@@ -223,7 +223,7 @@ assert.ok(
 assert.ok(
   /scheduled_task:run_updated[\s\S]{0,180}scheduleScheduledRunRefresh\(\)/.test(tauriBridge) &&
     /function scheduleScheduledRunRefresh\([\s\S]{0,900}refreshScheduledTaskData\(20\)[\s\S]{0,320}loadScheduledTaskRecentRuns\(\)/.test(tauriBridge) &&
-    /async function init\(\)[\s\S]{0,420}loadScheduledTasks\(\)\.catch/.test(tauriBridge),
+    /async function init\(\)[\s\S]{0,1200}loadScheduledTasks\(\)\.catch/.test(tauriBridge),
   'run updates should debounce a global task and run refresh regardless of the current page'
 );
 assert.ok(
@@ -1102,6 +1102,408 @@ async function scheduledDoneBeforeBufferCreatesTerminalTombstone() {
     !Object.prototype.hasOwnProperty.call(bridge.getState().sessionBusy, "ordinary-done-without-buffer"),
     "an ordinary unknown chat:done must not create a background session buffer"
   );
+}
+
+async function authoritativeTurnSyncDoesNotCrossSessions() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  await bridge.switchToSession("chat-authority-a");
+  harness.emit("chat:delta", { session_id: "chat-authority-a", text: "remote tail" });
+  var authorityLoad = deferred();
+  harness.handlers.load_session = function (args) {
+    if (args.id === "chat-authority-a") return authorityLoad.promise;
+    return { metadata: { id: args.id, title: "Other" }, messages: [], artifacts: [] };
+  };
+  harness.emit("chat:done", { session_id: "chat-authority-a" });
+  await tick();
+  var pendingSend = bridge.sendMessage("must stay in A");
+  await tick();
+  assert.strictEqual(await bridge.switchToSession("chat-authority-b"), true);
+  authorityLoad.resolve({
+    metadata: { id: "chat-authority-a", title: "Authority A" },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "remote prompt" }] },
+      { role: "assistant", content: [{ type: "text", text: "remote tail" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "authority-a-final",
+  });
+  await pendingSend;
+  await tick();
+  assert.strictEqual(bridge.getState().activeSessionId, "chat-authority-b");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "a send awaiting Session A reconciliation must never drift into newly active Session B"
+  );
+}
+
+async function authoritativeHydrateDropsReplayedAssistantTail() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  await bridge.switchToSession("chat-authority-tail");
+  harness.emit("chat:delta", { session_id: "chat-authority-tail", text: "answer tail" });
+  harness.handlers.load_session = function (args) {
+    return {
+      metadata: { id: args.id, title: "Authority tail" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "question" }] },
+        { role: "assistant", content: [{ type: "text", text: "complete answer tail" }] },
+      ],
+      artifacts: [],
+      transcript_revision: "authority-tail-final",
+    };
+  };
+  harness.emit("chat:done", { session_id: "chat-authority-tail" });
+  await tick();
+  await tick();
+  var assistantItems = bridge.getState().chatItems.filter(function (item) {
+    return item.type === "assistant";
+  });
+  assert.strictEqual(assistantItems.length, 1, "durable full answer must replace the replayed assistant tail");
+  assert.strictEqual(
+    (JSON.stringify(assistantItems).match(/answer tail/g) || []).length,
+    1,
+    "the mid-turn replay tail must not be appended after the authoritative full answer"
+  );
+}
+
+async function remoteAcceptPlanConvergesAcrossClients() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var backendMode = "plan";
+  var planSnapshot = {
+    explanation: "execute the approved work",
+    items: [{ step: "ship it", status: "pending" }],
+  };
+  harness.handlers.get_mode_state = function () { return { mode: backendMode }; };
+  await bridge.switchToSession("chat-remote-plan-accept");
+  harness.emit("chat:plan_ready", {
+    session_id: "chat-remote-plan-accept",
+    plan_id: "plan-ticket-remote-accept",
+    mode_state: { mode: "plan" },
+    plan_snapshot: planSnapshot,
+  });
+  var activePlan = bridge.getState().chatItems.find(function (item) {
+    return item.type === "plan_card" && item.cardState === "active";
+  });
+  assert.ok(activePlan, "the remote-accept regression needs one actionable plan card");
+  assert.strictEqual(activePlan.planId, "plan-ticket-remote-accept", "plan_ready must retain its backend ticket");
+
+  backendMode = "yolo";
+  harness.emit("chat:user_message", {
+    session_id: "chat-remote-plan-accept",
+    content: "✅ 就这么干",
+    operation: "append",
+    action: "accept_plan",
+    plan_id: "plan-ticket-remote-accept",
+    mode_state: { mode: "yolo" },
+    base_transcript_revision: "plan-before-accept",
+  });
+  var admitted = bridge.getState();
+  var admittedPlan = admitted.chatItems.find(function (item) { return item.id === activePlan.id; });
+  assert.ok(admittedPlan && admittedPlan.resolved, "a remote accept must resolve the local active plan immediately");
+  assert.notStrictEqual(admittedPlan.cardState, "active", "a remote accepted plan must stop being actionable");
+  assert.strictEqual(admitted.modeState.mode, "yolo", "the accept event must synchronize the shared mode");
+  assert.strictEqual(
+    admitted.chatItems.filter(function (item) { return item.type === "user" && item.text === "✅ 就这么干"; }).length,
+    1,
+    "the remote admission should render exactly one user echo"
+  );
+
+  harness.handlers.load_session = function (args) {
+    return {
+      metadata: { id: args.id, title: "Remote accepted plan" },
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "plan-tool-remote", name: "update_plan", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "plan-tool-remote",
+            content: "Plan updated:\n" + JSON.stringify(planSnapshot),
+          }],
+        },
+        { role: "user", content: [{ type: "text", text: "✅ 就这么干" }] },
+        { role: "assistant", content: [{ type: "text", text: "approved work complete" }] },
+      ],
+      artifacts: [],
+      transcript_revision: "plan-after-accept",
+    };
+  };
+  harness.emit("chat:transcript_committed", {
+    session_id: "chat-remote-plan-accept",
+    transcript_revision: "plan-after-accept",
+  });
+  harness.emit("chat:done", { session_id: "chat-remote-plan-accept" });
+  await tick();
+  await tick();
+
+  var terminal = bridge.getState();
+  var terminalPlans = terminal.chatItems.filter(function (item) { return item.type === "plan_card"; });
+  assert.strictEqual(terminalPlans.length, 1, "terminal authority hydrate must not duplicate the resolved plan card");
+  assert.ok(
+    terminalPlans.every(function (item) { return item.resolved && item.cardState !== "active"; }),
+    "the authoritative plan history must contain no stale action button"
+  );
+  assert.strictEqual(
+    terminalPlans[0].planId,
+    "plan-ticket-remote-accept",
+    "terminal authority hydrate must carry the resolved ticket onto the durable plan card"
+  );
+  assert.strictEqual(terminal.modeState.mode, "yolo", "terminal hydrate must retain the accepted Yolo mode");
+  assert.strictEqual(
+    terminal.chatItems.filter(function (item) { return item.type === "user" && item.text === "✅ 就这么干"; }).length,
+    1,
+    "authority hydrate must replace, not duplicate, the remote user echo"
+  );
+}
+
+async function activePlanSurvivesUnrelatedTerminalHydrate() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  harness.handlers.get_mode_state = function () { return { mode: "plan" }; };
+  await bridge.switchToSession("chat-active-plan-survives");
+  harness.emit("chat:plan_ready", {
+    session_id: "chat-active-plan-survives",
+    plan_id: "plan-ticket-active-survives",
+    mode_state: { mode: "plan" },
+    plan_snapshot: { items: [{ step: "still awaiting approval", status: "pending" }] },
+  });
+  harness.emit("chat:user_message", {
+    session_id: "chat-active-plan-survives",
+    content: "one more clarification",
+    operation: "append",
+    base_transcript_revision: "active-plan-before-followup",
+  });
+  harness.handlers.load_session = function (args) {
+    return {
+      metadata: { id: args.id, title: "Active plan survives" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "one more clarification" }] },
+        { role: "assistant", content: [{ type: "text", text: "clarification noted" }] },
+      ],
+      artifacts: [],
+      transcript_revision: "active-plan-after-followup",
+    };
+  };
+  harness.emit("chat:done", { session_id: "chat-active-plan-survives" });
+  await tick();
+  await tick();
+  var plans = bridge.getState().chatItems.filter(function (item) { return item.type === "plan_card"; });
+  assert.strictEqual(plans.length, 1, "an unrelated terminal hydrate must retain the genuinely active plan");
+  assert.strictEqual(plans[0].cardState, "active");
+  assert.strictEqual(plans[0].resolved, false);
+}
+
+async function activePlanHydrateMigratesTicketWithoutDuplicate() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-active-plan-hydrate";
+  var planId = "plan-ticket-active-hydrate";
+  var planSnapshot = {
+    explanation: "hydrate the canonical plan card",
+    items: [{ step: "keep one actionable card", status: "pending" }],
+  };
+  harness.handlers.get_mode_state = function () { return { mode: "plan" }; };
+  await bridge.switchToSession(sessionId);
+  harness.emit("chat:turn_started", { session_id: sessionId });
+  harness.emit("chat:plan_ready", {
+    session_id: sessionId,
+    plan_id: planId,
+    mode_state: { mode: "plan" },
+    plan_snapshot: planSnapshot,
+  });
+  harness.handlers.load_session = function (args) {
+    return {
+      metadata: { id: args.id, title: "Active plan hydrate" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "make a plan" }] },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "plan-tool-active-hydrate", name: "update_plan", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "plan-tool-active-hydrate",
+            content: "Plan updated:\n" + JSON.stringify(planSnapshot),
+          }],
+        },
+      ],
+      artifacts: [],
+      transcript_revision: "active-plan-hydrate-final",
+    };
+  };
+  harness.emit("chat:done", { session_id: sessionId });
+  await tick();
+  await tick();
+
+  var hydratedPlans = bridge.getState().chatItems.filter(function (item) {
+    return item.type === "plan_card";
+  });
+  assert.strictEqual(
+    hydratedPlans.length,
+    1,
+    "plan_ready followed by its durable transcript must render one canonical plan card"
+  );
+  assert.strictEqual(hydratedPlans[0].planId, planId, "hydrate must migrate the live plan ticket");
+  assert.strictEqual(hydratedPlans[0].cardState, "active", "the canonical hydrated card must remain actionable");
+  assert.strictEqual(hydratedPlans[0].resolved, false);
+
+  harness.handlers.accept_plan = function (args) {
+    assert.strictEqual(args.sessionId, sessionId);
+    assert.strictEqual(args.planId, planId, "the migrated ticket must reach accept_plan unchanged");
+    return { mode: "yolo" };
+  };
+  await bridge.acceptPlan(
+    hydratedPlans[0].id,
+    hydratedPlans[0].planMarkdown,
+    undefined,
+    hydratedPlans[0].planId
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "accept_plan"; }).length,
+    1,
+    "the deduplicated canonical plan card must still be executable"
+  );
+}
+
+async function planNotActiveRollbackFreezesStaleCard() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var backendMode = "plan";
+  harness.handlers.get_mode_state = function () { return { mode: backendMode }; };
+  harness.handlers.accept_plan = function (args) {
+    assert.strictEqual(args.planId, "plan-ticket-stale", "accept_plan must carry the exact plan ticket");
+    throw new Error("accept_plan: plan_not_active");
+  };
+  await bridge.switchToSession("chat-stale-plan");
+  harness.emit("chat:plan_ready", {
+    session_id: "chat-stale-plan",
+    plan_id: "plan-ticket-stale",
+    mode_state: { mode: "plan" },
+    plan_snapshot: { items: [{ step: "stale work", status: "pending" }] },
+  });
+  var plan = bridge.getState().chatItems.find(function (item) { return item.type === "plan_card"; });
+  assert.ok(plan && plan.cardState === "active");
+  backendMode = "yolo";
+  await bridge.acceptPlan(plan.id, plan.planMarkdown, undefined, plan.planId);
+  var rolledBack = bridge.getState();
+  var stalePlan = rolledBack.chatItems.find(function (item) { return item.id === plan.id; });
+  assert.ok(stalePlan && stalePlan.resolved, "plan_not_active must freeze the stale local card");
+  assert.notStrictEqual(stalePlan.cardState, "active", "plan_not_active must never restore an old action button");
+  assert.strictEqual(rolledBack.modeState.mode, "yolo", "plan_not_active must resynchronize backend mode");
+}
+
+async function planTicketCommandsAndRemoteDiscardConverge() {
+  var localHarness = createBridgeHarness();
+  var localBridge = localHarness.bridge;
+  localHarness.handlers.get_mode_state = function () { return { mode: "plan" }; };
+  localHarness.handlers.discard_plan = function (args) {
+    assert.strictEqual(args.sessionId, "chat-local-plan-discard");
+    assert.strictEqual(args.planId, "plan-ticket-local-discard", "discard_plan must carry the exact plan ticket");
+    return { mode: "plan" };
+  };
+  await localBridge.switchToSession("chat-local-plan-discard");
+  localHarness.emit("chat:plan_ready", {
+    session_id: "chat-local-plan-discard",
+    plan_id: "plan-ticket-local-discard",
+    mode_state: { mode: "plan" },
+    plan_snapshot: { items: [{ step: "discard locally", status: "pending" }] },
+  });
+  var localPlan = localBridge.getState().chatItems.find(function (item) { return item.type === "plan_card"; });
+  await localBridge.discardPlan(localPlan.id, localPlan.planId);
+  assert.strictEqual(
+    localHarness.calls.filter(function (call) { return call.cmd === "discard_plan"; }).length,
+    1,
+    "one local discard should issue exactly one ticketed command"
+  );
+  await localBridge.acceptPlan(localPlan.id, localPlan.planMarkdown, undefined, localPlan.planId);
+  assert.strictEqual(
+    localHarness.calls.filter(function (call) { return call.cmd === "accept_plan"; }).length,
+    0,
+    "a locally discarded card must not be executable again"
+  );
+
+  var remoteHarness = createBridgeHarness();
+  var remoteBridge = remoteHarness.bridge;
+  remoteHarness.handlers.get_mode_state = function () { return { mode: "plan" }; };
+  await remoteBridge.switchToSession("chat-remote-plan-discard");
+  remoteHarness.emit("chat:plan_ready", {
+    session_id: "chat-remote-plan-discard",
+    plan_id: "plan-ticket-remote-discard",
+    mode_state: { mode: "plan" },
+    plan_snapshot: { items: [{ step: "discard remotely", status: "pending" }] },
+  });
+  var remotePlan = remoteBridge.getState().chatItems.find(function (item) { return item.type === "plan_card"; });
+  var userCountBefore = remoteBridge.getState().chatItems.filter(function (item) { return item.type === "user"; }).length;
+  remoteHarness.emit("chat:plan_resolved", {
+    session_id: "chat-remote-plan-discard",
+    plan_id: "plan-ticket-remote-discard",
+    mode_state: { mode: "plan" },
+  });
+  var remotelyResolved = remoteBridge.getState();
+  var resolvedCard = remotelyResolved.chatItems.find(function (item) { return item.id === remotePlan.id; });
+  assert.ok(resolvedCard && resolvedCard.resolved && resolvedCard.cardState === "frozen",
+    "chat:plan_resolved must immediately freeze the matching remote card");
+  assert.strictEqual(remotelyResolved.busy, false, "discard resolution must not create a model turn");
+  assert.strictEqual(
+    remotelyResolved.chatItems.filter(function (item) { return item.type === "user"; }).length,
+    userCountBefore,
+    "discard resolution must not synthesize a user bubble"
+  );
+  assert.strictEqual(remotelyResolved.modeState.mode, "plan", "discard resolution must apply its mode snapshot");
+  await remoteBridge.acceptPlan(remotePlan.id, remotePlan.planMarkdown, undefined, remotePlan.planId);
+  assert.strictEqual(
+    remoteHarness.calls.filter(function (call) { return call.cmd === "accept_plan"; }).length,
+    0,
+    "a remotely discarded ticket must not reach accept_plan"
+  );
+}
+
+async function discardPlanFailureRollbackFollowsTicketAuthority() {
+  var transientHarness = createBridgeHarness();
+  var transientBridge = transientHarness.bridge;
+  transientHarness.handlers.get_mode_state = function () { return { mode: "plan" }; };
+  transientHarness.handlers.discard_plan = function () { throw new Error("relay temporarily unavailable"); };
+  await transientBridge.switchToSession("chat-discard-transient");
+  transientHarness.emit("chat:plan_ready", {
+    session_id: "chat-discard-transient",
+    plan_id: "plan-ticket-discard-transient",
+    mode_state: { mode: "plan" },
+    plan_snapshot: { items: [{ step: "retry discard", status: "pending" }] },
+  });
+  var transientPlan = transientBridge.getState().chatItems.find(function (item) { return item.type === "plan_card"; });
+  await transientBridge.discardPlan(transientPlan.id, transientPlan.planId);
+  var restoredPlan = transientBridge.getState().chatItems.find(function (item) { return item.id === transientPlan.id; });
+  assert.ok(restoredPlan && restoredPlan.cardState === "active" && restoredPlan.resolved === false,
+    "a definite transient discard failure must restore the still-valid ticket");
+
+  var staleHarness = createBridgeHarness();
+  var staleBridge = staleHarness.bridge;
+  var backendMode = "plan";
+  staleHarness.handlers.get_mode_state = function () { return { mode: backendMode }; };
+  staleHarness.handlers.discard_plan = function () { throw new Error("discard_plan: plan_not_active"); };
+  await staleBridge.switchToSession("chat-discard-stale");
+  staleHarness.emit("chat:plan_ready", {
+    session_id: "chat-discard-stale",
+    plan_id: "plan-ticket-discard-stale",
+    mode_state: { mode: "plan" },
+    plan_snapshot: { items: [{ step: "already resolved", status: "pending" }] },
+  });
+  var stalePlan = staleBridge.getState().chatItems.find(function (item) { return item.type === "plan_card"; });
+  backendMode = "yolo";
+  await staleBridge.discardPlan(stalePlan.id, stalePlan.planId);
+  var frozenPlan = staleBridge.getState().chatItems.find(function (item) { return item.id === stalePlan.id; });
+  assert.ok(frozenPlan && frozenPlan.cardState === "frozen" && frozenPlan.resolved,
+    "plan_not_active must keep the stale discard ticket frozen");
+  assert.strictEqual(staleBridge.getState().modeState.mode, "yolo",
+    "plan_not_active discard must resynchronize the authoritative mode");
 }
 
 async function failedRunningOpenRollsBackOnlyItsProvisionalBusy() {
@@ -2394,6 +2796,14 @@ Promise.resolve()
   .then(terminalEventWinsStaleRunningOpen)
   .then(completedRunReopenPreservesStreamingFollowup)
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
+  .then(authoritativeTurnSyncDoesNotCrossSessions)
+  .then(authoritativeHydrateDropsReplayedAssistantTail)
+  .then(remoteAcceptPlanConvergesAcrossClients)
+  .then(activePlanSurvivesUnrelatedTerminalHydrate)
+  .then(activePlanHydrateMigratesTicketWithoutDuplicate)
+  .then(planNotActiveRollbackFreezesStaleCard)
+  .then(planTicketCommandsAndRemoteDiscardConverge)
+  .then(discardPlanFailureRollbackFollowsTicketAuthority)
   .then(failedRunningOpenRollsBackOnlyItsProvisionalBusy)
   .then(concurrentFailedRunningOpensShareRollback)
   .then(scheduledOwnerRegistryIsBoundedAndProtectsLive)

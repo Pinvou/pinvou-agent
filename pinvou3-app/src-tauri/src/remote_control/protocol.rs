@@ -1,78 +1,72 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelayEnvelope {
-    pub v: u8,
-    pub id: String,
-    pub room_id: String,
-    pub session_id: String,
-    pub direction: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub ts: String,
-    #[serde(default)]
-    pub payload: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemotePairingInfo {
-    pub room_id: String,
-    pub session_id: String,
-    pub url: String,
-    pub qr_data_url: Option<String>,
-    pub status: RemoteControlStatusKind,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteControlStatus {
-    pub active: bool,
-    pub room_id: Option<String>,
-    pub session_id: Option<String>,
-    pub url: Option<String>,
-    pub status: RemoteControlStatusKind,
+/// The long-lived desktop endpoint credentials persisted in
+/// `~/.pinvou3/web-access.json`.
+///
+/// `access_token` is safe to put in the browser URL fragment.  The
+/// `desktop_secret` is never returned to the UI and is only used to prove the
+/// desktop role to the relay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebAccessConfig {
     pub relay_url: String,
+    pub endpoint_id: String,
+    pub access_token: String,
+    pub desktop_secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebAccessInfo {
+    pub endpoint_id: String,
+    pub url: String,
+    pub status: WebAccessStatusKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebAccessStatus {
+    pub active: bool,
+    pub endpoint_id: Option<String>,
+    pub url: Option<String>,
+    pub status: WebAccessStatusKind,
+    pub relay_url: String,
+    pub web_client_connected: bool,
     pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RemoteControlStatusKind {
+pub enum WebAccessStatusKind {
     Idle,
     ConnectingRelay,
-    WaitingMobile,
-    MobileConnected,
-    MobileDisconnected,
-    Expired,
+    WaitingWebClient,
+    WebClientConnected,
+    WebClientDisconnected,
+    Revoked,
     Stopped,
     Error,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct MobileAction {
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(default)]
-    pub client_message_id: Option<String>,
-    #[serde(default)]
-    pub payload: Value,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn now_ts() -> String {
-    chrono::Utc::now().to_rfc3339()
-}
+    #[test]
+    fn persisted_config_round_trips_without_schema_ambiguity() {
+        let config = WebAccessConfig {
+            relay_url: "wss://example.test/ws".into(),
+            endpoint_id: "ep_123".into(),
+            access_token: "browser-token".into(),
+            desktop_secret: "desktop-secret".into(),
+        };
+        let json = serde_json::to_string(&config).expect("serialize config");
+        let decoded: WebAccessConfig = serde_json::from_str(&json).expect("parse config");
+        assert_eq!(decoded, config);
+        assert!(json.contains("endpoint_id"));
+    }
 
-pub fn envelope(room_id: &str, session_id: &str, kind: &str, payload: Value) -> RelayEnvelope {
-    RelayEnvelope {
-        v: PROTOCOL_VERSION,
-        id: format!("evt_{}", crate::remote_control::short_token(18)),
-        room_id: room_id.to_string(),
-        session_id: session_id.to_string(),
-        direction: "desktop_to_mobile".to_string(),
-        kind: kind.to_string(),
-        ts: now_ts(),
-        payload,
+    #[test]
+    fn protocol_version_is_v2() {
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 }

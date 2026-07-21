@@ -41,6 +41,42 @@ async function main() {
     args: ['--no-sandbox', '--disable-gpu'],
   });
   const page = await browser.newPage();
+  await page.evaluateOnNewDocument(() => {
+    const invoke = async (command) => {
+      if (command === 'get_settings') return { theme: 'genesis', language: 'zh-Hans' };
+      if (command === 'get_app_version') return '1.1.0';
+      if (command === 'get_effective_model_config') return {};
+      if (command === 'list_models') return { models: [], active_model_id: null };
+      if (command === 'list_sessions' || command === 'list_archived_sessions' ||
+          command === 'list_personas' || command === 'list_scheduled_tasks' ||
+          command === 'list_scheduled_runs') return [];
+      if (command === 'check_for_update') {
+        return {
+          available: true,
+          latest_version: '1.2.0',
+          current_version: '1.1.0',
+          platform: 'linux',
+          notes: 'UI smoke update',
+        };
+      }
+      if (command === 'get_super_permission_status') return false;
+      if (command === 'get_backend_status') return {};
+      if (command === 'find_resumable_run' || command === 'get_active_persona') return null;
+      return null;
+    };
+    window.__TAURI__ = {
+      core: { invoke },
+      event: { listen: async () => () => {}, emit: async () => {} },
+      dialog: { open: async () => null },
+      window: {
+        getCurrentWindow: () => ({
+          minimize() {}, maximize() {}, close() {}, toggleMaximize() {}, startDragging() {},
+          isMaximized: async () => false,
+          onResized: async () => () => {},
+        }),
+      },
+    };
+  });
   page.on('pageerror', err => { throw err; });
   page.on('console', msg => {
     if (msg.type() === 'error') console.error('BROWSER:', msg.text());

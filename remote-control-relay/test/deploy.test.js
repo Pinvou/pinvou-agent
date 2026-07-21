@@ -9,12 +9,20 @@ import { test } from "node:test";
 const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const deployScript = join(repoRoot, "scripts", "deploy-remote-relay.sh");
 
+test("legacy rollback targets the Relay's served web/dist entry", async () => {
+  const source = await readFile(deployScript, "utf8");
+  assert.match(source, /remote_dir\/web\/dist\/index\.html/);
+  assert.doesNotMatch(source, /remote_dir\/web\/index\.html/);
+});
+
 async function executable(path, content) {
   await writeFile(path, content);
   await chmod(path, 0o755);
 }
 
-test("deploy script rolls back when post-deploy public verification fails", async () => {
+test("deploy script rolls back when post-deploy public verification fails", {
+  skip: process.platform === "win32" ? "deployment script targets a POSIX host" : false,
+}, async () => {
   const root = await mkdtemp(join(tmpdir(), "pinvou-relay-deploy-test-"));
   const bin = join(root, "bin");
   const log = join(root, "calls.log");
@@ -62,6 +70,7 @@ esac
       XDG_CACHE_HOME: join(root, "cache"),
       PINVOU_REMOTE_PUBLIC_URL: "https://public.invalid/pinvou3/remote",
       PINVOU_REMOTE_DIRECT_URL: "http://direct.invalid/pinvou3/remote",
+      PINVOU_ALLOW_LEGACY_REMOTE_DEPLOY: "1",
     },
     encoding: "utf8",
   });

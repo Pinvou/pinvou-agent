@@ -3,6 +3,7 @@ import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Play, Plus, Trash2, X } from '../../components/icons.jsx';
 import { bridge, useBridge } from '../../hooks/useBridge.js';
 import { isBuiltInModelOption, visibleUserModels } from '../../shared/model-options.js';
+import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
 import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
@@ -380,6 +381,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const busyAction = appState.scheduledTaskBusyAction || null;
       const error = appState.scheduledTaskError || null;
       const isDark = theme === 'dark';
+      const canOpenTaskFolder = can('externalSystemOpen');
       const [taskFilter, setTaskFilter] = useState('all');
       const [clockNow, setClockNow] = useState(() => Date.now());
       const [previewSelectedId, setPreviewSelectedId] = useState(null);
@@ -1370,16 +1372,18 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <button type="button" data-testid="scheduled-run-now"
                   disabled={!!busyAction || !detailFormIsValid}
                   onClick={() => runTaskNow(selected.id)}
-                  className={`flex min-h-12 w-full items-center justify-between gap-3 border-b px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${iosSeparator} ${pressedRow}`}>
+                  className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${canOpenTaskFolder ? `border-b ${iosSeparator}` : ''} ${pressedRow}`}>
                   <span className={`font-medium ${bodyText}`}>立即运行</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
                 </button>
-                <button type="button" data-testid="scheduled-open-folder"
-                  onClick={() => bridge && bridge.openScheduledTaskFolder && bridge.openScheduledTaskFolder(selected.id)}
-                  className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
-                  <span className={`font-medium ${bodyText}`}>打开文件夹</span>
-                  <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
-                </button>
+                {canOpenTaskFolder && (
+                  <button type="button" data-testid="scheduled-open-folder"
+                    onClick={() => bridge && bridge.openScheduledTaskFolder && bridge.openScheduledTaskFolder(selected.id)}
+                    className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
+                    <span className={`font-medium ${bodyText}`}>打开文件夹</span>
+                    <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
+                  </button>
+                )}
               </div>
 
               <section>

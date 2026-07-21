@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
@@ -9,6 +10,15 @@ import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
+
+const openChatExternalUrl = (url) => {
+  if (isWeb) {
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
+    if (opened) opened.opener = null;
+    return;
+  }
+  window.__TAURI__?.core?.invoke('open_external_url', { url }).catch(() => {});
+};
 
 const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const isDark = theme === 'dark';
@@ -219,6 +229,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
+      const canPickHostFiles = can('hostFilePicker');
+      const canUseMicrophone = can('browserMicrophone');
+      const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const [inputText, setInputText] = useState('');
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
@@ -456,7 +469,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handleVoiceClick() {
-        if (!bridge.available) return;
+        if (!canUseMicrophone || !bridge.available) return;
         if (voiceInput.status === 'recording') {
           bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
           return;
@@ -478,6 +491,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handlePaste(e) {
+        if (isWeb) return;
         const items = (e.clipboardData && e.clipboardData.items) || [];
         for (const it of items) {
           if (it.type && it.type.indexOf('image/') === 0) {
@@ -495,8 +509,16 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         }
       }
 
+      function blockWebLocalFileDrop(e) {
+        if (!isWeb) return;
+        const types = Array.from((e.dataTransfer && e.dataTransfer.types) || []);
+        if (!types.includes('Files')) return;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+
       return (
-        <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
+        <div ref={rootRef} onDragOver={blockWebLocalFileDrop} onDrop={blockWebLocalFileDrop} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div className="flex-1 flex flex-col min-w-0 relative h-full">
 
           {/* Top Header (浮动) */}
@@ -649,7 +671,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     : voiceInput.message}
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
-                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && onGotoSettings && (
+                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && canInstallLocalAsr && onGotoSettings && (
                     <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
                   )}
                   {voiceInput.status === 'failed' && (
@@ -664,7 +686,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 </div>
               </div>
             )}
-            {voiceAsrSetup.open && (() => {
+            {voiceAsrSetup.open && !canInstallLocalAsr && (
+              <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
+                <span>语音识别组件尚未安装，请先在桌面端完成安装后再试。</span>
+                <button onClick={() => bridge.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>知道了</button>
+              </div>
+            )}
+            {voiceAsrSetup.open && canInstallLocalAsr && (() => {
               const su = voiceAsrSetup;
               const prog = su.progress || {};
               const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
@@ -717,11 +745,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
+                  {canPickHostFiles && <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
                     className={COMPOSER_ICON_BUTTON_CLASS}>
                     <Paperclip size={18} />
-                  </button>
-                  <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
+                  </button>}
+                  {canUseMicrophone && <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
                     className={`${
                       voiceRecording
                         ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
@@ -730,7 +758,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                           : COMPOSER_ICON_BUTTON_CLASS
                     }`}>
                     <Mic size={18} />
-                  </button>
+                  </button>}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
@@ -1339,7 +1367,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   const href = a.getAttribute('href') || '';
                   if (/^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    window.__TAURI__.core.invoke('open_external_url', { url: href }).catch(() => {});
+                    openChatExternalUrl(href);
                   }
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}

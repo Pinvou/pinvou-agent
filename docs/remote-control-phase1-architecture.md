@@ -1,555 +1,212 @@
-# Remote Control 一期架构设计
+# 完整 WebUI v2 架构
 
-日期：2026-07-09
+> 本文保留旧文件名，内容描述当前 WebUI v2。v2 直接替代旧的 Session 级手机
+> Remote 页面和协议，不提供兼容层。
 
-## 目标
+## 1. 目标与边界
 
-一期只解决一个问题：手机扫码接入桌面端当前远控 room，能够选择或创建 session、远程查看会话、发送消息、处理基础确认，并与桌面端实时同步。
+WebUI 与 Tauri 桌面端使用同一套 React 界面源码，电脑浏览器和手机浏览器都打开这套
+完整界面。桌面端仍是唯一执行与数据权威：Session、EnginePool、模型、工具、知识库、
+附件路径和产物都留在桌面主机；Relay 不保存这些业务数据，也不执行应用命令。
 
-它不是底座远程控制，也不是飞书 / 微信 Bot Channel。一期的对象是 `session`，不是 `device`、`knowledge base` 或全局任务中心。
+WebUI 当前刻意隐藏以下仅适合桌面环境的入口：
 
-## 设计原则
+- OAuth、扫码、SSO、外部取 key 等授权入口；
+- 超级权限、应用更新/重启、依赖及本地模型组件安装；
+- 桌面系统窗口、打开本地目录、标题栏、窗口分离和桌宠；
+- Web 访问链接自身的启用、停用和刷新入口。
 
-- 本地执行权不外移：DeepSeek-TUI Engine、本地模型、文件系统和工具执行仍在本地 pinvou3 主机。
-- 云端只做 relay：云端负责配对、鉴权、WebSocket 中继和连接状态，不默认保存用户消息全文、工具参数、文件内容。
-- 不重复造底座：复用现有 `EnginePool`、`SessionStore`、`chat:*` Tauri 事件、`chat` / `submit_user_input` / `cancel_user_input` 命令。
-- 一期只绑定当前远控 room：扫码链接不提供设备级能力；room 内可以列出、新建和切换 pinvou3 session，但不能切换桌面工作区、任意浏览文件或访问知识库。
-- 断线可恢复：手机断线重连后，从本地重新取 session snapshot，而不是依赖云端缓存还原状态。
+已授权连接器的状态查询和使用、工具/技能商店只读浏览、对话、计划、工作流、知识库、
+记忆、定时任务、监控、每 Session 模型选择及 Session 产物仍属于 WebUI 业务面。全局模型
+增删改/测试、连接器开关及工具/技能安装卸载当前在 Web 隐藏，避免显示无法执行的入口。
 
-## 当前可复用基础
-
-后端已有三块关键基础：
-
-- `pinvou3-app/src-tauri/src/engine.rs`：每个 session 的 event forwarder 已把底座事件转成 `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:user_input_required`、`chat:done` 等 Tauri 事件。
-- `pinvou3-app/src-tauri/src/commands.rs`：已有 `chat`、`cancel_generation`、`submit_user_input`、`cancel_user_input` 等命令，且都支持 `session_id` 路由。
-- `pinvou3-app/src-tauri/src/connector_cli.rs`：已有通用二维码生成函数 `make_qr(url)`，可直接用于 Remote Control 配对二维码。
-
-因此一期新增层不应直接调用 DeepSeek-TUI Engine，而应挂在 pinvou3-app 的 Tauri bridge 外侧。
-
-## 总体架构
+## 2. 组件关系
 
 ```text
-手机浏览器
-  - remote session UI
-  - WebSocket client
-        |
-        v
-Pinvou Cloud Relay
-  - pairing token
-  - room routing
-  - desktop/mobile ws 中继
-  - 连接状态与审计元数据
-        |
-        v
-pinvou3 desktop / local app
-  - RemoteControlBridge
-  - SessionSnapshotBuilder
-  - chat:* event subscriber
-  - command router
-        |
-        v
-现有 pinvou3 runtime
-  - EnginePool
-  - SessionStore
-  - DeepSeek-TUI Engine
-  - 本地模型 / 工具 / 文件系统
+同一套 React UI
+├─ Tauri 桌面入口 ── Tauri invoke/event ── Rust + EnginePool（权威）
+└─ 浏览器入口 ───── WebBridge RPC/event ─┐
+                                         │ WebSocket v2
+桌面 WebAccessManager ────────────────────┤
+                                         ▼
+                                  Relay（鉴权与盲转发）
 ```
 
-一期需要新增三个模块：
+代码位置：
 
-1. 本地 `RemoteControlBridge`：运行在 `pinvou3-app` 内，负责生成配对、连接云端、把本地 session 事件转成 relay event，也把手机端指令转成本地 command。
-2. 云端 `Pinvou Relay`：极薄 WebSocket relay，只维护 room、token、连接关系和有限审计。
-3. 手机 Web Remote Control：由云端托管的移动端页面，渲染当前 session snapshot 和实时事件。
+- `pinvou3-app/src/`：共享 React UI、平台能力门控、浏览器 bridge；
+- `pinvou3-app/src/web-access-policy.json`：Web 可调用命令和可订阅事件白名单；
+- `pinvou3-app/src-tauri/src/remote_control/`：持久 endpoint、RPC 去重、事件序列与重放；
+- `remote-control-relay/server.js`：静态站点和 WebSocket v2 Relay；
+- `remote-control-relay/PROTOCOL.md`：线上消息格式的单一协议说明。
 
-## 本地侧设计
+## 3. 构建与页面更新
 
-### 新增模块
+桌面和 Web 使用相同源码，但分别产出：
 
-建议新增：
+```bash
+npm --prefix pinvou3-app run build:ui   # 桌面 UI
+npm --prefix pinvou3-app run build:web  # remote-control-relay/web/dist
+```
+
+Web 构建以 `/pinvou3/remote/` 为默认 base path。Relay 对 HTML 禁止缓存，对固定名脚本
+要求重新验证，对带 hash 的静态资源使用 immutable 缓存，因此替换 Web dist 后浏览器可在
+下次加载获得新版本，而不受已安装桌面版本的 UI 资源约束。
+
+这里仅说明构建能力。**正式发布流程目前尚未启用 Web dist 的打包或部署**；是否把该产物
+接入现有发布脚本，需要单独评审后再做，不能把本地 `build:web` 视为已上线。
+
+## 4. 持久访问链接
+
+桌面首次启用 Web 访问时生成：
+
+- `endpoint_id`：桌面实例的持久标识；
+- `access_token`：浏览器访问凭据；
+- `desktop_secret`：桌面向 Relay 注册和撤销 endpoint 的凭据。
+
+配置保存在 `~/.pinvou3/web-access.json`，RPC 幂等台账和待撤销 endpoint 台账保存在同目录的
+私有文件中；这些文件都以临时文件写入、同步后原子替换，Unix 下权限固定为 `0600`。进程级
+独占锁保证同一份持久配置只由一个桌面进程拥有。启用后桌面重启会自动恢复连接；桌面临时
+离线时 endpoint 仍可保留，浏览器显示等待状态。停用或刷新先持久记录撤销意图，再删除/替换
+当前配置；待撤销台账有界且只保存 `relay_url`、`endpoint_id` 和 `desktop_secret`，不保存浏览器
+`access_token`。与当前配置仍完全匹配的记录视为“已准备但尚未提交”，不会误撤销仍在使用的
+链接；配置删除或替换后，独立于 active endpoint 的 worker 持续重试。Relay 离线或应用在 ACK
+前退出时，下次启动继续重放；只有收到 `desktop_endpoint_revoked`、明确的
+`endpoint_not_found` 或 endpoint 已被替换的终态后才清除记录。
+
+用户粘贴的链接形如：
 
 ```text
-pinvou3-app/src-tauri/src/remote_control/
-  mod.rs
-  manager.rs
-  protocol.rs
-  snapshot.rs
-  relay_client.rs
+https://host/pinvou3/remote/#endpoint=...&token=...
 ```
 
-职责：
+凭据只放在 URL fragment 中，fragment 不会进入 HTTP 请求、访问日志或静态资源 URL。
+浏览器加载后才把它用于 WebSocket 首帧鉴权。
 
-- `manager.rs`：管理当前配对状态、active remote session、手机连接状态、停止远控。
-- `protocol.rs`：定义 relay event 的 Rust 结构体和版本号。
-- `snapshot.rs`：从 `SessionStore` 和前端可恢复数据中构造手机初始快照。
-- `relay_client.rs`：维护本地到云端 relay 的 WebSocket 连接。
+## 5. Relay v2
 
-### Tauri commands
+Relay 只维护 endpoint 的连接和凭据 hash：
 
-新增 commands：
+1. 桌面发送 `desktop_endpoint_register`；
+2. 浏览器发送 `web_client_join`，同时带 `stream_epoch` 和 `after_seq` 游标；
+3. Relay 分配 `lease_id`，并盲转发白名单消息类型；
+4. 同一 endpoint 同时只保留一个 Web lease，新客户端接管后旧客户端收到
+   `endpoint_replaced`；
+5. 桌面发送 `desktop_endpoint_revoke` 后，浏览器收到 `endpoint_revoked`。
 
-```text
-remote_control_start(session_id?: string) -> RemotePairingInfo
-remote_control_stop(room_id: string) -> ()
-remote_control_status() -> RemoteControlStatus
-remote_control_refresh_qr(room_id: string) -> RemotePairingInfo
+浏览器到桌面只允许：
+
+- `rpc_request`
+- `event_subscribe`
+- `event_unsubscribe`
+- `client_ready`
+
+桌面到浏览器只允许：
+
+- `rpc_response`
+- `event`
+- `stream_reset`
+- `desktop_snapshot`
+
+Relay 不分配业务事件序号、不维护 Session snapshot、不解释 RPC command，也不保留用户消息
+或附件。访问 token 和桌面 secret 只以 SHA-256 hash 留在 Relay 内存中。
+
+## 6. WebBridge 与权限
+
+浏览器先同步加载 `web-bootstrap.js`，再加载原有 `tauri-bridge.js`。WebBootstrap 提供受限的
+Tauri 形状接口，让共享 UI 继续通过 `invoke/listen` 工作；真正的调用会成为 v2 RPC。
+
+权限在两端收口：
+
+- 浏览器只发送 `web-access-policy.json` 允许的 command/event；
+- Rust WebAccessManager 再次校验同一白名单；
+- 桌面 WebView 代理只执行 Rust 已接受的业务命令并回传结果；
+- Relay 只按协议消息类型转发，不获得任意 Tauri invoke 能力。
+
+每次 `desktop_snapshot` 都携带已安装桌面后端的协议版本、command 和 event 能力。中央 WebUI
+把线上 policy 与这份能力取交集：未知能力默认关闭，语义入口（主机文件选择、产物下载、
+浏览器语音、Session 模型切换等）由实际 command 集合派生，因此较旧桌面缺少新命令时会
+降级或隐藏，而不是点击后才失败。桌面主 WebView 在宣布 bridge ready 前预装全部允许事件的
+转发器，关闭订阅握手中的丢事件窗口；分离窗口无权代理 RPC。
+
+浏览器导航、当前选中的 Session、草稿、主题和语言属于每个客户端自己的 UI 状态；底层
+Session 数据和执行状态由桌面共享。同一 Session 同时只接受一个 Engine 回合：后端在提交
+边界拒绝第二个并发回合。`TurnReservation` 在解析 Web 附件 handle、消费一次性 skill/persona
+注入及落暂存文件之前完成原子准入；任何提交前错误都会释放回合和恢复一次性状态。提交成功
+后依次广播带 `base_transcript_revision` 的 `chat:user_message` 与 `chat:turn_started`，另一 UI
+在首 token 前即可显示用户气泡并进入忙碌态。
+
+Engine 的 `SessionUpdated` 是 transcript 唯一权威来源：Rust 把仅供模型使用的附件正文、skill /
+persona 注入替换为 UI display message 后原子落盘，发送 `chat:transcript_committed`，并保证最终
+commit 先于 `chat:done`。发起页面即使刷新、关闭或被另一浏览器接管，回合仍会完整保存；桌面
+和 WebUI 都不再用各自的内存消息覆盖权威 transcript。WebUI 不重新实现 Engine、Session 或
+流式处理。
+
+## 7. 幂等、流与恢复
+
+每个 RPC 都带稳定的 `client_request_id`。桌面在派发前把 command 与规范化 args 的指纹写入
+endpoint 级、最多 512 条的持久台账；同 ID 同参数复用结果或 tombstone，同 ID 不同参数直接
+返回冲突。桌面 WebView 每次加载会生成新的 generation，请求只有在 `rpc_begin` ACK 已持久化
+后才允许调用业务命令。WebView 重载时，尚未 ACK 的请求可交给新 generation 重发；已经 ACK
+但没有完成结果的请求返回 `outcome_unknown`，不会盲目重复执行。这样浏览器和桌面断线重试
+都不会把有副作用的动作静默执行两次。
+
+RPC command 限制为短 ASCII 标识符，普通参数上限 1 MiB、普通响应上限 2 MiB、并发执行上限
+32；错误文本、完成缓存和持久 tombstone 都有界。Session、产物和音频使用专用分块/紧凑
+包装器，不靠放宽普通 RPC。未 ACK 的持久 tombstone 可安全恢复派发；ACK 台账无法写入时
+请求在执行业务命令前形成确定错误响应。
+
+Relay client 入站只接受不超过 2 MiB 的文本帧，并以 32 槽原始 JSON 文本队列施加背压；
+解析发生在出队之后，因此队列不会保存 32 份膨胀后的 `serde_json::Value`。桌面出站完整帧
+上限为 `4 MiB - 64 KiB`，只序列化一次，并让 2048 槽发送 channel 与 2048 条断线 FIFO
+共享 128 MiB 字节预算。断线 FIFO 满时停止抽取 channel，绝不淘汰中间帧；上游随后通过
+显式 stream reset 恢复。Shutdown 不与数据排队竞争；饱和时的 reset 采用单 worker、只保留
+最新一条的合并队列，额外内存最多两个 64 KiB 控制帧。
+
+桌面为事件流维护：
+
+- 随桌面进程生成的 `stream_epoch`；
+- 单调递增的 `seq`；
+- 最多 1024 个完整事件帧、合计最多 16 MiB 的内存 journal。
+
+浏览器在 `sessionStorage` 保存 `{stream_epoch, after_seq}`。重连时桌面按游标重放；epoch
+不一致或游标已超出 journal 时发送 `stream_reset`/`desktop_snapshot`，浏览器再重新拉取权威
+状态。首次 `client_ready(state_ready=false)` 只协商桌面能力并建立游标；共享 UI 拉完 durable
+Session 索引后再发送 `state_ready=true`，桌面才重放初始化窗口内的业务事件，避免事件尾巴先于
+基线 hydration。Relay 本身不承担这份恢复状态。
+
+完整 event envelope 超过帧上限、journal 游标过旧，或 snapshot/replay/live enqueue 失败时，
+桌面都会原子换 epoch、停止当前 lease 的 live delivery 并发送小型 `stream_reset`。超限事件
+本身不推进 seq、不入 journal；live enqueue 失败时最后一个关键事件迁入新 epoch，避免最终
+`chat:done` 或 `chat:user_input_required` 被静默丢失。
+
+## 8. 文件、产物与语音
+
+- Web 附件选择浏览桌面主机允许范围内的文件，不上传浏览器本机文件；
+- 粘贴图片和浏览器拖放本机路径不作为 Web 附件入口；
+- 附件在桌面解析后只向浏览器返回有界元数据和一次性 opaque handle，解析后的正文不经过
+  Relay；附件、Session 上传/下载缓存均有数量、总字节和过期边界；
+- 长 Session 通过 opaque download id 分块读取。正常回合不向 Web 暴露 transcript 上传命令；
+  revision 仅用于标识 Rust 已提交的权威快照及事件幂等，旧 UI 的无 revision 覆盖写会被拒绝；
+- 只有当前 Session 允许范围内的产物可以分块读取和下载，Rust 负责路径校验；
+- 麦克风采集发生在当前浏览器设备，音频通过 allowlisted RPC 交给桌面 ASR；缺少桌面 ASR
+  组件时只提示去桌面安装，WebUI 不显示安装操作。
+
+## 9. 验证
+
+协议单测：
+
+```bash
+npm --prefix remote-control-relay test
+cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml remote_control:: -- --test-threads=1
 ```
 
-`remote_control_start` 行为：
+共享 WebUI smoke：
 
-1. 取 `session_id`，未传则使用 `SessionStore.active_id()`。
-2. 创建 `room_id`、`pairing_token`、`desktop_secret`。
-3. 本地连接云端 relay，并以 desktop 身份注册 room。
-4. 生成手机访问 URL。
-5. 使用 `connector_cli::make_qr(url)` 生成二维码 data URL。
-6. 返回给桌面端弹窗展示。
-
-返回结构：
-
-```json
-{
-  "room_id": "rc_...",
-  "session_id": "p3_...",
-  "url": "https://remote.pinvou.ai/r/...",
-  "qr_data_url": "data:image/svg+xml;base64,...",
-  "status": "waiting_mobile"
-}
+```bash
+npm --prefix pinvou3-app run test:webui
 ```
 
-### 本地事件转发
-
-现有 engine forwarder 继续向 Tauri emit `chat:*`。一期新增的 `RemoteControlBridge` 订阅同一批事件，按 session 过滤后转发到 relay。
-
-需要转发的事件：
-
-```text
-chat:delta
-chat:tool_start
-chat:tool_end
-chat:plan_snapshot
-chat:plan_ready
-chat:user_input_required
-chat:transient_error
-chat:done
-chat:usage
-chat:compaction
-artifact:disk
-```
-
-实时事件只转发 artifact card 摘要字段和路径尾部；手机可按需请求当前 session workspace/artifacts 内经过 canonical path 校验的受限预览，文件下载和任意文件浏览放到二期。
-
-### 手机指令路由
-
-手机端发来的 action 只允许以下几类：
-
-```text
-user_message
-cancel_generation
-submit_user_input
-cancel_user_input
-request_snapshot
-disconnect
-```
-
-本地收到后映射到现有命令逻辑：
-
-- `user_message` -> `EnginePool.send_user_message(session_id, content, mode)`
-- `cancel_generation` -> `EnginePool.cancel(session_id)`
-- `submit_user_input` -> `EnginePool.submit_user_input(session_id, tool_call_id, response)`
-- `cancel_user_input` -> `EnginePool.cancel_user_input(session_id, tool_call_id)`
-- `request_snapshot` -> `SessionSnapshotBuilder.build(session_id)`
-
-注意：一期不建议让手机端经 Tauri command 字符串转发调用任意 command，必须做 allowlist，避免远端变成通用 RPC 后门。
-
-## 云端 Relay 设计
-
-### 职责
-
-云端只做：
-
-- 创建和校验配对 token。
-- 维护 `room_id -> desktop_ws + mobile_ws`。
-- 转发 desktop/mobile 双向事件。
-- 记录最小审计：连接时间、断开时间、设备类型、错误码、事件计数。
-- 托管手机 Web 页面。
-- 公开健康检查只返回聚合状态，不暴露 `room_id`、`session_id` 或审计明细。
-
-云端不做：
-
-- 不持久化 session 全量消息。
-- 不保存工具参数和工具输出全文。
-- 不保存用户本地文件内容。
-- 不直接访问用户本机端口。
-- 不执行模型调用或工具调用。
-- 不通过未鉴权接口暴露可用于接管房间的标识。
-
-### Room 状态
-
-```json
-{
-  "room_id": "rc_...",
-  "session_id_hash": "...",
-  "desktop_connected": true,
-  "mobile_connected": false,
-  "created_at": "...",
-  "paired_at": null,
-  "closed_at": null,
-  "status": "waiting_mobile"
-}
-```
-
-### 配对时序
-
-```text
-desktop -> relay: create_room(desktop_secret, session_id_hash)
-relay -> desktop: room_created(room_id, pairing_url)
-desktop: show QR
-mobile -> relay: open pairing_url(pairing_token)
-relay: validate token
-relay -> desktop: mobile_join_requested
-desktop -> relay: session_snapshot
-relay -> mobile: session_snapshot
-desktop <-> relay <-> mobile: live events
-```
-
-一期可以先默认扫码即连接，不加二次桌面确认；但桌面必须显示“手机已连接”，并提供停止按钮。更严格的“手机请求连接，桌面点允许”可作为安全增强项。
-
-同一个 `room_id` 已存在时，desktop 重新注册只允许来自同一个桌面端：relay 必须校验 `desktop_secret`，校验失败时不得关闭旧 desktop、不得继承已连接 mobile，也不得向新连接透露房间状态。这个约束用于支持桌面端断线重连，同时挡住公网 relay 上的 room 抢占。
-
-### Token 策略
-
-- `pairing_token` 是当前 room 的能力凭证，与 room 同寿命，不使用固定 5-10 分钟 TTL。
-- 持有二维码或完整链接即拥有连接权；同一 room 只保留一个 mobile，后来扫码或打开链接的设备接管控制，旧设备进入“已被占用”状态页。
-- 手机刷新页面、重扫二维码或重新打开链接，均可使用同一个 `pairing_token` 恢复连接。
-- “刷新二维码”会关闭旧 room、吊销旧 token 和旧手机连接，再创建全新的 room/token。
-- “刷新二维码”、停止远控、旧 room/token 不可用统一进入手机端“远程连接已结束”页面；页面不猜测具体关闭原因，引导用户返回桌面确认并扫描当前二维码。
-- 新二维码只在 URL fragment（`#token=...`）携带 token，避免进入 HTTP 和反向代理访问日志；手机页保留读取 query 的兼容逻辑，供旧 App 生成的链接继续使用；relay 只保存 token hash。
-
-## 协议设计
-
-所有 WebSocket 消息使用统一 envelope：
-
-```json
-{
-  "v": 1,
-  "id": "evt_...",
-  "room_id": "rc_...",
-  "session_id": "p3_...",
-  "direction": "desktop_to_mobile",
-  "type": "session_snapshot",
-  "ts": "2026-07-09T10:00:00Z",
-  "payload": {}
-}
-```
-
-### Desktop -> Mobile
-
-```text
-session_snapshot
-message_append
-assistant_delta
-tool_call_start
-tool_call_end
-plan_snapshot
-plan_ready
-user_input_required
-session_status
-usage_update
-compaction_update
-artifact_summary
-error
-mobile_connection_state
-```
-
-`session_snapshot` 最小结构：
-
-```json
-{
-  "session": {
-    "id": "p3_...",
-    "title": "新对话",
-    "mode": "yolo",
-    "status": "idle"
-  },
-  "messages": [
-    {
-      "id": "m_...",
-      "role": "user",
-      "content": "你好",
-      "created_at": "..."
-    }
-  ],
-  "pending_user_inputs": [
-    {
-      "tool_call_id": "call_...",
-      "questions": []
-    }
-  ],
-  "running_tools": [],
-  "artifacts": []
-}
-```
-
-### Mobile -> Desktop
-
-```text
-user_message
-cancel_generation
-submit_user_input
-cancel_user_input
-request_snapshot
-ping
-disconnect
-```
-
-`user_message`：
-
-```json
-{
-  "type": "user_message",
-  "payload": {
-    "content": "继续",
-    "client_message_id": "cm_..."
-  }
-}
-```
-
-`submit_user_input`：
-
-```json
-{
-  "type": "submit_user_input",
-  "payload": {
-    "tool_call_id": "call_...",
-    "answers": [
-      { "id": "q1", "label": "允许", "value": "allow" }
-    ]
-  }
-}
-```
-
-### 一期增量:附件上传 / 知识库挂载 / 工具开关
-
-一期上线后追加三项桌面端对齐能力,仍严格遵循「本地执行权不外移」「云端只做 relay」两条原则:
-
-**Mobile -> Desktop 新增 action**(`remote_control/manager.rs` 内分发):
-
-```text
-attach_file_start / attach_file_chunk / attach_file_abort
-list_kb_collections / mount_kb_collection / unmount_kb_collection
-list_tools / set_disabled_connectors
-```
-
-`user_message` payload 新增可选字段 `attachment_upload_ids: string[]`,把上一次 `attach_file_*` 完成的 upload_id 透传给 Engine。
-
-**Desktop -> Mobile 新增 event**:
-
-```text
-attach_file_start_ack / attach_file_relay_ack / attach_file_result / attach_file_aborted
-kb_collections_snapshot / kb_mount_changed
-tools_snapshot / tools_changed
-```
-
-**附件上传链路**(完全镜像已合并的下载链路 PR #203):
-
-- 上限与既有 `file_ingest` 对齐为 20MiB、分块 768KiB、base64 上行。
-- 三层背压:WS TCP 有序 + 有界 mpsc channel(cap 4) + 显式 `attach_file_relay_ack` + 60s ack 超时。
-- mobile 在 start 前生成稳定 `upload_id`,因此 `start_ack` 返回前也能取消;桌面端校验字符集和长度后使用。文件落盘到 `<pinvou3_home>/uploads/<upload_id>/<净化后原文件名>`,保留扩展名供既有 `file_ingest` 正确分派。
-- 落盘完成后 `spawn_blocking` 调 `file_ingest::ingest`,产出 `IngestResult`,但只把 `ingest_preview`(kind / byte_size / token_estimate / warning,不含 markdown 与本地路径)回送 mobile;完整 `IngestResult` 在下一条 `user_message` 时本地消费。
-- `user_message` 消费附件时先把源文件复制进 session workspace 的 `.pinvou3/remote-attachments/`,再释放内存解析结果和 uploads 临时目录;图片和超长文本后续按稳定路径读取。取消、切 session、mobile 断线、stop/close 和 streaming timeout 都会清理未消费的临时上传。
-
-**知识库挂载开关**(对齐桌面端 `session_mount_collection` / `session_unmount_collection`):
-
-- 每个 remote session 独立挂载/摘挂一个 KB collection;空集合拒绝挂载。
-- 挂载/摘挂通过 `remote_control:kb_mount_changed` 事件即时回推 mobile。
-- 已知限制:`KbSearchTool` 仅 Plan 模式注册(`tool_setup.rs:41`),Yolo 模式下 KB toggle 实际无效,修复需改 fork,不在本增量范围。
-
-**工具开关**(对齐桌面端 `set_disabled_connectors`):
-
-- 全局 connector 开关,跨 session 持久化到 `disabled_connectors.json`。
-- 当前 session 立即生效,通过 `EnginePool::set_disallowed_all` 下发。
-- 桌面端 chip 通过 `pinvou:tools-changed` DOM 事件即时刷新(由 `tauri-bridge.js` 从 `remote_control:tools_changed` 转译)。
-
-**relay 侧改动**:
-
-- 新增 `acknowledgeUploadChunk`,仅在 `attach_file_chunk` 转发失败时触发 NAK。
-- mobile 上传速率限流默认 100MiB / 5s 滑动窗口,可由 `MOBILE_UPLOAD_WINDOW_BYTES` / `MOBILE_UPLOAD_WINDOW_SECS` 环境变量覆盖;触发限流时 emit `attach_file_rate_limited`。
-
-## 手机 Web UI 一期范围
-
-一期页面以单个 session 会话页为主，并提供轻量 session 选择面板：
-
-- 顶部显示 session 标题、连接状态、桌面在线状态。
-- 中间渲染消息流、工具执行状态、等待确认卡。
-- 底部输入框支持发送文字和停止生成。
-- `request_user_input` 渲染为确认卡，支持提交/取消。
-- 断线时显示重连状态，重连成功后拉取 snapshot。
-- 支持列出、新建和切换 pinvou3 session。
-- 支持当前 session 受限 artifact 预览。
-
-不做：
-
-- 文件树。
-- 知识库搜索。
-- 设备列表。
-- 设置页。
-- 附件上传。
-- 多手机同时控制。
-
-## 桌面 UI 一期范围
-
-桌面端新增“移动端远程控制”入口：
-
-- 展示二维码、复制链接、刷新二维码、停止远控。
-- 展示状态：等待手机、手机已连接、连接断开、已过期。
-- 连接成功后在桌面明显提示“手机正在控制当前 session”。
-
-建议入口先放在当前 session 顶部或侧栏工具区，不要放进全局设置。因为一期能力只绑定当前 session。
-
-## 安全边界
-
-一期必须实现：
-
-- 高熵 room token，仅通过 HTTPS/WSS 传输，relay 只保存 hash。
-- room 单 session 绑定。
-- 已存在 room 的 desktop 重新注册必须校验 `desktop_secret`，防止未知桌面端抢占。
-- 公开 `/healthz` 不暴露 room/session 明细，只返回聚合计数。
-- mobile action allowlist。
-- 桌面端停止远控后立即吊销 room。
-- 云端不落全文消息和文件内容。
-- 手机端不能调用任意 Tauri command。
-- 手机端可以列出、新建、切换 pinvou3 session；扫码者应被视为临时拥有当前远控入口下的会话操作权。
-- 手机端可以预览当前 session workspace/artifacts 内的受限文件；relay 不读取本地文件，预览内容由桌面端按 session 根目录校验后发送。
-- 所有 mobile action 带 `client_message_id`，本地去重，避免断线重发造成重复消息。
-
-一期暂不解决：
-
-- 多设备长期绑定。
-- 账号体系下的设备管理。
-- 远程知识库搜索。
-- 文件下载和任意文件浏览。
-- Bot Channel 审批。
-
-这些全部进入二期/三期。
-
-## 可靠性策略
-
-### 断线重连
-
-- 手机 WebSocket 断开后自动重连。
-- 手机重连继续使用与 room 同寿命的 `pairing_token`。
-- relay 校验 room 未关闭且桌面仍在线。
-- 手机发送 `request_snapshot`。
-- 本地返回最新 `session_snapshot`，手机用 snapshot 覆盖本地临时状态。
-- 桌面 WebSocket 意外断开时，relay 保留 room 和 mobile 15 秒；手机显示“桌面重连中”并暂停操作。同一 `desktop_secret` 在宽限期内恢复则继续原 room 并重拉 snapshot，超时才关闭 room。
-- relay 每 15 秒发送 WebSocket ping；无 pong 的半开连接会被终止并进入对应重连流程。
-
-### 消息去重
-
-Mobile -> Desktop 的 action 必须带 `client_message_id`。本地 `RemoteControlBridge` 对每个 room 保留短期去重表，至少覆盖 10 分钟或最近 200 条 action。
-
-### 背压
-
-`assistant_delta` 可能高频。relay 可以不持久化 delta，但本地发送前应允许做 50-100ms 小窗口合并，减少手机端渲染压力。桌面本地 UI 仍走原始 `chat:delta`，不受影响。
-
-### Relay 容量与入口保护
-
-- Relay 默认最多保留 2000 个 room；已有 room 的桌面重连不受容量上限影响。
-- 同一客户端默认每分钟最多新建 20 个 room；反向代理来源只在其 IP 被显式信任时读取 `X-Forwarded-For`，并采用代理追加的最后一个地址，避免客户端伪造首段地址绕过限流。
-- Relay 默认最多同时保留 5000 条 WebSocket 连接，同一客户端默认每分钟最多发起 120 次 WebSocket 建连；达到容量时在 Upgrade 阶段拒绝新连接，避免未认证连接绕过 room 上限持续消耗资源。
-- WebSocket 建立后必须在 10 秒内完成 `desktop_register` 或 `mobile_join`，否则 Relay 主动关闭；已认证连接不受该超时影响，仍按正常心跳和重连规则运行。
-- 生产环境通过 `PINVOU_REMOTE_ALLOWED_PROXY_IPS` 只允许本机健康检查和指定反向代理访问 Relay，公网客户端统一走 `https/wss://pinvou.com`。
-- WebSocket 单条消息默认上限为 4 MiB，可通过 `MAX_PAYLOAD_BYTES` 调整，服务端硬限制不超过 16 MiB。
-- `/healthz` 额外返回 WebSocket 总连接数和未认证连接数，仍只提供聚合计数，不暴露 room、session 或客户端明细。
-
-## 实施拆分
-
-### M1：本地配对入口
-
-- 新增 `remote_control` 模块骨架。
-- 新增 `remote_control_start/stop/status/refresh_qr` commands。
-- 复用 `connector_cli::make_qr` 生成二维码。
-- 桌面 UI 弹窗展示二维码和状态。
-
-### M2：relay 最小可用
-
-- 实现 `create_room`、desktop ws、mobile ws。
-- 实现 pairing URL 和 token 校验。
-- 实现事件双向转发。
-- 不落全文，只记录 room 状态和错误。
-
-### M3：session snapshot
-
-- 从 `SessionStore.load(session_id)` 构造消息快照。
-- 增加运行态字段：busy、pending user input、running tools。
-- 手机扫码后能看到当前 session 历史。
-
-### M4：实时事件同步
-
-- 本地桥订阅并过滤 `chat:*` 事件。
-- 转发 delta、tool、done、user_input_required 等事件。
-- 手机 UI 实时更新。
-
-### M5：手机控制
-
-- 手机发送 `user_message`。
-- 本地路由到 `EnginePool.send_user_message`。
-- 手机支持 `cancel_generation`。
-- 手机支持 `submit_user_input` / `cancel_user_input`。
-
-### M6：安全与验收
-
-- token 过期、停止远控、断线重连。
-- action allowlist 和去重。
-- 云端日志脱敏。
-- 桌面连接状态提示。
-
-线上 relay 使用 `scripts/deploy-remote-relay.sh` 部署：脚本先确认现有公网基线正常，再运行自动化测试、备份、原子替换并重启 systemd。部署后会验证公网健康检查、新版手机页面标识和直连端口隔离；任何一项失败都会恢复本次部署前的备份，并再次执行本机和公网复检。
-
-## 验收标准
-
-一期完成必须满足：
-
-1. 桌面端当前 session 可生成二维码。
-2. 手机扫码打开 Web Remote Control。
-3. 手机能看到当前 session 历史消息。
-4. 桌面端继续生成时，手机能实时看到回复增量。
-5. 手机发送消息后，本地当前 session 继续执行。
-6. 手机能取消当前生成。
-7. `request_user_input` 出现时，手机能提交选择并解锁本地 engine。
-8. 手机断线重连后能恢复最新 session snapshot。
-9. 二维码在 room 存续期间持续有效；刷新二维码后旧链接不可连接。
-10. 停止远控后，手机端不能继续发送 action。
-
-## 与二期的接口预留
-
-一期协议不预留无实际语义的 `device_id` 字段；二期升级 device room 时再随协议版本新增。
-
-一期 relay room 是 `session` 级；二期升级为：
-
-```text
-device room
-  -> task/session channels
-  -> approval channel
-  -> knowledge search channel
-```
-
-一期 `session_snapshot` 不应塞入设备/知识库概念，避免提前污染边界。二期再新增：
-
-```text
-device_status
-task_list
-approval_list
-kb_search_result
-knowledge_card
-source_card
-```
-
-> **增量说明**:一期上线后追加的「知识库挂载开关」仅提供 KB collection 的挂载/摘挂能力(复用桌面端 `session_mount_collection`),不引入 `kb_search_result` / `knowledge_card` / `source_card` 等 device-room 级语义——这些仍留给二期 device room 升级。「附件上传」「工具开关」同理,均为复用桌面端已有命令,不污染 session room 边界。
-
-## 关键决策
-
-- 一期采用云端 relay，不做公网直连本地 web server。
-- 一期采用手机 Web，不做原生 App。
-- 一期只控制当前 session，不做设备级远程控制。
-- 一期不修改 DeepSeek-TUI fork，不触碰底座 Engine。
-- 一期不把云端变成业务状态源，业务状态以本地 `SessionStore` 和 runtime 为准。
+该 smoke 构建真实共享 WebUI，启动真实本地 Relay，用 WebSocket 模拟桌面 endpoint，并验证
+1440×900 与 390×844 渲染、fragment 凭据隔离、单客户端接管、RPC 往返以及事件游标重连。
+缺少 Chromium/Edge 时按统一 runner 约定以 exit 2 跳过。

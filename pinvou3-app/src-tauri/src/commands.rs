@@ -25,7 +25,8 @@ use crate::bridge::sessions::{SessionKind, SessionStore};
 use crate::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };
-use crate::engine_pool::EnginePool;
+use crate::engine::{TurnAdmissionMetadata, TurnReservation};
+use crate::engine_pool::{user_display_message, EnginePool};
 use crate::knowledge::KnowledgeService;
 use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
@@ -92,6 +93,39 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    let reservation = pool
+        .reserve_turn(&sid)
+        .map_err(|error| format!("reserve chat turn: {error:#}"))?;
+    chat_with_reservation(
+        message,
+        attachments,
+        sid,
+        restrict_tools,
+        reservation,
+        &pool,
+        &store,
+        &app,
+    )
+    .await
+}
+
+/// Complete a chat turn after the caller has atomically reserved its session.
+/// Remote-control callers use this seam to reserve before resolving opaque
+/// attachment handles; every early return drops the reservation and restores
+/// the lifecycle.
+pub(crate) async fn chat_with_reservation(
+    message: String,
+    attachments: Option<Vec<crate::file_ingest::IngestResult>>,
+    sid: String,
+    restrict_tools: Option<bool>,
+    reservation: TurnReservation,
+    pool: &EnginePool,
+    store: &SessionStore,
+    app: &AppHandle,
+) -> Result<(), String> {
+    if message.trim().is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
+        return Err("empty message".to_string());
+    }
     let execution_workspace = store
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
@@ -114,14 +148,16 @@ pub async fn chat(
     } else {
         "attachments".to_string()
     };
+    let display_content =
+        display_chat_message(&message, attachments.as_deref().unwrap_or_default());
     let raw_message = message.clone();
-    crate::timing::start_turn(&sid);
     let mut full = build_message_with_attachments_in_dir(
         message,
         attachments.unwrap_or_default(),
         &execution_workspace,
         &attachment_dir,
     );
+    let pending_injections = store.take_pending_turn_injections(&sid);
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
     // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
     // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
@@ -129,7 +165,7 @@ pub async fn chat(
     // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
     // MANDATORY 段遵循率衰减(h3c-ppt 跑到 p5+ 后频繁不出 `<phase id=".."/>`
     // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
-    if let Some(injected) = store.take_pending_skill_instruction(&sid) {
+    if let Some(injected) = pending_injections.skill_instruction() {
         full = format!("{injected}\n\n---\n\n{full}");
     }
     // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
@@ -138,13 +174,10 @@ pub async fn chat(
 
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
-    if let Some(body) = store.take_pending_persona_body(&sid) {
+    if let Some(body) = pending_injections.persona_body() {
         full = format!("{body}\n\n---\n\n{full}");
     }
     let memory_enabled = crate::memory::memory_enabled();
-    if memory_enabled {
-        crate::memory::record_turn_user(&sid, &raw_message);
-    }
     match crate::memory::runtime_snapshot(&sid) {
         Ok(snapshot) => {
             let _ = app.emit(
@@ -186,16 +219,25 @@ pub async fn chat(
     }
     // 取该 session 的 mode。
     let mode = store.mode_state(&sid).mode;
+    crate::timing::start_turn(&sid);
     match pool
-        .send_user_message(
+        .send_reserved_user_message(
             &sid,
             full,
+            user_display_message(display_content.clone()),
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
+            reservation,
         )
         .await
     {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            pending_injections.commit();
+            if memory_enabled {
+                crate::memory::record_turn_user(&sid, &raw_message);
+            }
+            Ok(())
+        }
         Err(e) => {
             crate::timing::finish_turn(&sid, "send_error", Some(&format!("{e:?}")));
             Err(format!("send_user_message failed: {e:?}"))
@@ -279,6 +321,24 @@ pub fn session_mounted_collection(
     store: State<'_, SessionStore>,
 ) -> Option<i64> {
     store.mounted_collection(&session_id)
+}
+
+/// Match the desktop UI's user bubble: the typed text plus attachment names,
+/// never the extracted attachment markdown or engine-only prompt injections.
+fn display_chat_message(message: &str, attachments: &[crate::file_ingest::IngestResult]) -> String {
+    if attachments.is_empty() {
+        return message.to_string();
+    }
+    let names = attachments
+        .iter()
+        .map(|attachment| attachment.basename.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if message.is_empty() {
+        format!("📎 {names}")
+    } else {
+        format!("{message}\n\n📎 {names}")
+    }
 }
 
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
@@ -1097,7 +1157,7 @@ pub struct VoiceCommandError {
 }
 
 impl VoiceCommandError {
-    fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
         Self {
             category: category.to_string(),
             stage: stage.to_string(),
@@ -1616,6 +1676,7 @@ pub async fn list_archived_sessions(
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
 #[tauri::command]
 pub async fn create_session(
+    set_active: Option<bool>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
@@ -1624,7 +1685,9 @@ pub async fn create_session(
     let session = store
         .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
-    store.set_active(Some(session.metadata.id.clone()));
+    if set_active.unwrap_or(true) {
+        store.set_active(Some(session.metadata.id.clone()));
+    }
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(session.metadata)
@@ -1664,16 +1727,11 @@ pub async fn delete_session(
         .map_err(|e| format!("delete_session({id}): {e:?}"))?
     {
         SessionKind::Chat => {
-            // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
-            // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
-            pool.evict(&id).await;
-            let result = store
-                .delete(&id)
-                .map_err(|e| format!("delete_session({id}): {e:?}"));
-            if result.is_ok() {
-                pool.forget_session(&id);
-            }
-            result
+            // Reclaim, disk delete and lifecycle cleanup share the same turn
+            // gate as lazy spawn/send; a queued sender cannot resurrect the id.
+            pool.delete_chat_session(&id)
+                .await
+                .map_err(|e| format!("delete_session({id}): {e:?}"))
         }
         SessionKind::ScheduledRun => {
             let scheduled = app
@@ -1732,8 +1790,10 @@ pub async fn get_active_session(store: State<'_, SessionStore>) -> Result<Option
     Ok(store.active_id())
 }
 
-/// 落盘普通 chat session 的 messages 数组。前端是普通 chat 的 source of truth；
-/// scheduled-run transcript 由 Engine `SessionUpdated` 独占持久化，拒绝 UI 覆盖。
+/// Legacy desktop flush hook. Ordinary and scheduled transcripts are now
+/// Engine-authoritative; an identical flush is accepted as an idempotent no-op,
+/// while any divergent WebView snapshot is rejected so it cannot roll disk
+/// state backwards after a backend `SessionUpdated` commit.
 #[tauri::command]
 pub async fn save_session_messages(
     id: String,
@@ -1741,9 +1801,14 @@ pub async fn save_session_messages(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     ensure_chat_session(&store, &id, "save_session_messages")?;
-    store
-        .update_messages(&id, messages)
-        .map_err(|e| format!("save_session_messages({id}): {e:?}"))
+    let durable = store
+        .load(&id)
+        .map_err(|e| format!("save_session_messages({id}): {e:?}"))?;
+    if durable.messages == messages {
+        Ok(())
+    } else {
+        Err("backend_authoritative_transcript: divergent WebView transcript rejected".to_string())
+    }
 }
 
 /// 落盘 session 的产物 paths 列表。前端跟踪 write_file / append_file 调用后调用,
@@ -2467,11 +2532,20 @@ pub async fn edit_last_turn(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    let reservation = pool
+        .reserve_turn(&sid)
+        .map_err(|error| format!("reserve edit turn: {error:#}"))?;
     // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
     // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
-    pool.edit_last_turn(&sid, new_message)
-        .await
-        .map_err(|e| format!("edit_last_turn: {e:?}"))
+    pool.edit_last_turn_reserved(
+        &sid,
+        new_message.clone(),
+        user_display_message(new_message.clone()),
+        reservation,
+    )
+    .await
+    .map_err(|e| format!("edit_last_turn: {e:?}"))?;
+    Ok(())
 }
 
 // ===================== 阶段 C: 产物面板 =====================
@@ -4064,23 +4138,51 @@ fn accept_plan_instruction(plan_markdown: &str) -> String {
 #[tauri::command]
 pub async fn accept_plan(
     session_id: String,
+    plan_id: String,
     plan_markdown: String,
+    display_message: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    store
-        .set_mode(&session_id, SerializableMode::Yolo)
+    let mut reservation = pool
+        .reserve_turn(&session_id)
+        .map_err(|error| format!("reserve accept_plan turn: {error:#}"))?;
+    let plan_claim = store
+        .claim_pending_plan(&session_id, &plan_id)
         .map_err(|error| format!("accept_plan({session_id}): {error:#}"))?;
+    let accepted_mode_state = plan_claim.accepted_state().clone();
+    reservation
+        .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
+            plan_id.clone(),
+            accepted_mode_state.clone(),
+        ))
+        .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
     let instruction = accept_plan_instruction(&plan_markdown);
-    pool.send_user_message(
-        &session_id,
-        instruction,
-        SerializableMode::Yolo.to_app_mode(),
-        false,
-    )
-    .await
-    .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
-    Ok(store.mode_state(&session_id))
+    let display_content = display_message
+        .map(|message| message.trim().to_string())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "✅ 就这么干".to_string());
+    if let Err(error) = pool
+        .send_reserved_user_message(
+            &session_id,
+            instruction,
+            user_display_message(display_content.clone()),
+            SerializableMode::Yolo.to_app_mode(),
+            false,
+            reservation,
+        )
+        .await
+    {
+        let rollback = plan_claim.rollback();
+        return Err(match rollback {
+            Ok(()) => format!("accept_plan send_user_message: {error:?}"),
+            Err(rollback_error) => format!(
+                "accept_plan send_user_message: {error:?}; restore plan claim failed: {rollback_error:#}"
+            ),
+        });
+    }
+    plan_claim.commit();
+    Ok(accepted_mode_state)
 }
 
 /// 超级权限开关：当前用户能否跑 sudo 免密。
@@ -4160,10 +4262,23 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
+    plan_id: String,
     store: State<'_, SessionStore>,
+    app: AppHandle,
 ) -> Result<SessionModeState, String> {
-    // 不动 mode——放弃方案 ≠ 退出 Plan;仅回传当前状态供前端刷新卡片。
-    Ok(store.mode_state(&session_id))
+    // 不动 mode——放弃方案 ≠ 退出 Plan；只原子消费当前 ticket。
+    let mode_state = store
+        .discard_pending_plan(&session_id, &plan_id)
+        .map_err(|error| format!("discard_plan({session_id}): {error:#}"))?;
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "plan_id": plan_id,
+        "action": "discard_plan",
+        "mode_state": mode_state,
+    });
+    let _ = app.emit("chat:plan_resolved", payload.clone());
+    crate::remote_control::forward_app_event(&app, "chat:plan_resolved", payload);
+    Ok(mode_state)
 }
 
 // ===================== request_user_input 工具气泡 =====================
@@ -4486,6 +4601,7 @@ pub struct ActiveSkillState {
 #[tauri::command]
 pub async fn start_skill_session(
     name: String,
+    set_active: Option<bool>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<StartSkillSessionResult, String> {
@@ -4518,7 +4634,9 @@ pub async fn start_skill_session(
         // 恢复：切到已有 session，重新加载对话历史。
         // 多 session 并发:不显式 sync engine,EnginePool 下次 chat 时
         // get_or_spawn 为该 session rehydrate 专属 engine。
-        store.set_active(Some(sid.clone()));
+        if set_active.unwrap_or(true) {
+            store.set_active(Some(sid.clone()));
+        }
         let session_data = store
             .load(&sid)
             .map_err(|e| format!("load existing session: {e:?}"))?;
@@ -4540,7 +4658,9 @@ pub async fn start_skill_session(
         .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
     let sid = session.metadata.id.clone();
-    store.set_active(Some(sid.clone()));
+    if set_active.unwrap_or(true) {
+        store.set_active(Some(sid.clone()));
+    }
 
     // 多 session 并发:不预热 engine(lazy)。首条 chat 时 EnginePool 为这个空 session
     //    spawn 专属 engine,空历史无需 SyncSession。
@@ -6693,6 +6813,7 @@ mod tests {
                 .expect("ordinary execution workspace"),
             expected
         );
+        assert!(store.execution_workspace("../outside").is_err());
         assert_eq!(
             resolve_artifact_path("report.md", Some(&chat.metadata.id), &store)
                 .expect("ordinary artifact workspace"),

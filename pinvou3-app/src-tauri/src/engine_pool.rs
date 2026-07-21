@@ -38,9 +38,11 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::bridge::prefs::{SavedModel, UserPrefs};
-use crate::bridge::sessions::{ScheduledRunProfile, SessionStore};
+use crate::bridge::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::bridge::Pinvou3Bridge;
-use crate::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
+use crate::engine::{
+    AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -165,6 +167,43 @@ where
     let _turn = turn_lock.lock().await;
     evict_locked().await;
     store.delete_scheduled_run(session_id, expected_task_id)
+}
+
+async fn delete_chat_session_with_gate<F, Fut, G>(
+    turn_locks: &SessionTurnLocks,
+    store: &SessionStore,
+    session_id: &str,
+    evict_locked: F,
+    forget: G,
+) -> Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+    G: FnOnce(),
+{
+    let turn_lock = turn_locks.for_session(session_id).await;
+    let _turn = turn_lock.lock().await;
+    evict_locked().await;
+    store.delete(session_id)?;
+    forget();
+    Ok(())
+}
+
+async fn quiesce_engine_before_reclaim<C, S, SFut, F, Fut, T>(
+    cancel_current: C,
+    stop_forwarder: S,
+    finish_reclaimed: F,
+) -> T
+where
+    C: FnOnce(),
+    S: FnOnce() -> SFut,
+    SFut: Future<Output = ()>,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    cancel_current();
+    stop_forwarder().await;
+    finish_reclaimed().await
 }
 
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
@@ -308,14 +347,13 @@ impl EnginePool {
                 }
             }
             Ok(_) => {}
-            Err(error) if is_scheduled => {
+            Err(error) => {
                 let _ = engine.handle.send(Op::Shutdown).await;
                 forwarder.abort();
                 return Err(error).with_context(|| {
-                    format!("load scheduled session {session_id} before its first turn")
+                    format!("load session {session_id} before spawning its engine")
                 });
             }
-            Err(_) => {}
         }
 
         entries.insert(
@@ -346,6 +384,20 @@ impl EnginePool {
         self.evict_locked(session_id).await;
     }
 
+    /// Delete an ordinary chat under the exact turn gate used by lazy spawn
+    /// and send. No queued sender can slip between engine reclaim, disk delete,
+    /// and lifecycle cleanup to resurrect the session.
+    pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
+        delete_chat_session_with_gate(
+            &self.turn_locks,
+            &self.store,
+            session_id,
+            || self.evict_locked(session_id),
+            || self.forget_session(session_id),
+        )
+        .await
+    }
+
     /// Atomically closes the live engine and removes a scheduled session under
     /// the same per-session turn gate used by initial and follow-up turns.
     /// A follow-up already queued on that gate observes the deletion and fails
@@ -371,18 +423,35 @@ impl EnginePool {
 
     async fn evict_locked(&self, session_id: &str) {
         if let Some(entry) = self.entries.lock().await.remove(session_id) {
-            if entry.engine.finish_reclaimed_turn(&self.app, session_id) {
+            // Stop the producer before admission fallback awaits disk I/O.
+            // An in-flight SessionUpdated save is serialized with the fallback
+            // by SessionStore's mutation gate; no later delta/tool event can
+            // overtake the authoritative transcript_committed + done pair.
+            let EngineEntry { engine, forwarder } = entry;
+            let reclaimed = quiesce_engine_before_reclaim(
+                || engine.cancel_current(),
+                || async move {
+                    forwarder.abort();
+                    let _ = forwarder.await;
+                },
+                || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
+            )
+            .await;
+            if reclaimed {
                 log::warn!(
                     "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                     session_id
                 );
                 crate::timing::finish_turn(session_id, "Interrupted", None);
             }
-            entry.engine.cancel_current();
-            entry.forwarder.abort();
-            if let Err(e) = entry.engine.handle.send(Op::Shutdown).await {
+            if let Err(e) = engine.handle.send(Op::Shutdown).await {
                 eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
             }
+        } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+            // A caller can reserve before lazy spawn. Reclaim that Reserved
+            // phase without fabricating chat:done; the guard's eventual send
+            // will observe that its reservation was invalidated.
+            lifecycle.invalidate_unsubmitted_reservation();
         }
     }
 
@@ -448,6 +517,16 @@ impl EnginePool {
 
     // ── 高层路由(commands.rs 调用)─────────────────────────────────
 
+    /// Atomically reserve the single turn slot for a session before callers
+    /// consume one-shot state, stage attachments, or perform other side effects.
+    /// Dropping the returned guard before submission restores the slot.
+    pub(crate) fn reserve_turn(&self, session_id: &str) -> Result<TurnReservation> {
+        let mut reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        let baseline = self.store.load(session_id)?;
+        reservation.set_base_transcript_revision(transcript_revision(&baseline.messages)?);
+        Ok(reservation)
+    }
+
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
     pub async fn send_user_message(
         &self,
@@ -456,6 +535,39 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
     ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        self.send_reserved_user_message(
+            session_id,
+            content,
+            display_message,
+            mode,
+            restrict_tools_for_turn,
+            reservation,
+        )
+        .await
+    }
+
+    /// Submit a previously admitted append operation. This is the entry point
+    /// used by chat commands that must reserve before resolving attachments.
+    pub(crate) async fn send_reserved_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        display_message: Message,
+        mode: AppMode,
+        restrict_tools_for_turn: bool,
+        mut reservation: TurnReservation,
+    ) -> Result<()> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(
+            TranscriptOperation::Append,
+            display_message,
+            baseline_revision,
+        )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
         if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
@@ -464,7 +576,12 @@ impl EnginePool {
         let _turn = turn_lock.lock().await;
         if let Some(profile) = scheduled_profile {
             scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
+        } else {
+            self.store.load(session_id).with_context(|| {
+                format!("Session '{session_id}' was deleted before the turn could start")
+            })?;
         }
+        reservation.ensure_active()?;
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
         // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
@@ -482,7 +599,13 @@ impl EnginePool {
         let restrict_tools = restrict_tools || restrict_tools_for_turn;
         self.get_or_spawn(session_id)
             .await?
-            .send_user_message(content, mode, persona_reminder, restrict_tools)
+            .send_reserved_user_message(
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+                reservation,
+            )
             .await
     }
 
@@ -563,15 +686,12 @@ impl EnginePool {
 
     /// 取消指定 session 正在生成的回复。engine 没起则 no-op。
     pub async fn cancel(&self, session_id: &str) {
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-            lifecycle.emit_terminal_once(
-                &self.app,
-                session_id,
-                TurnOutcomeStatus::Interrupted,
-                None,
-            );
+            lifecycle.invalidate_unsubmitted_reservation();
         }
     }
 
@@ -597,6 +717,28 @@ impl EnginePool {
 
     /// 编辑/重发指定 session 最后一轮 user 消息。
     pub async fn edit_last_turn(&self, session_id: &str, new_message: String) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(new_message.clone());
+        self.edit_last_turn_reserved(session_id, new_message, display_message, reservation)
+            .await
+    }
+
+    pub(crate) async fn edit_last_turn_reserved(
+        &self,
+        session_id: &str,
+        new_message: String,
+        display_message: Message,
+        mut reservation: TurnReservation,
+    ) -> Result<()> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(
+            TranscriptOperation::EditLast,
+            display_message,
+            baseline_revision,
+        )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
         if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
@@ -605,10 +747,15 @@ impl EnginePool {
         let _turn = turn_lock.lock().await;
         if let Some(profile) = scheduled_profile {
             scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
+        } else {
+            self.store.load(session_id).with_context(|| {
+                format!("Session '{session_id}' was deleted before the edit could start")
+            })?;
         }
+        reservation.ensure_active()?;
         self.get_or_spawn(session_id)
             .await?
-            .edit_last_turn(new_message)
+            .edit_last_turn_reserved(new_message, reservation)
             .await
     }
 
@@ -655,6 +802,16 @@ impl EnginePool {
             "[engine_pool] sudo permission changed; {live_count} live session(s) — \
              new state takes effect next turn via per-turn system-reminder"
         );
+    }
+}
+
+pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
+    Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: text.into(),
+            cache_control: None,
+        }],
     }
 }
 
@@ -817,7 +974,8 @@ fn resolve_spawn_model(
 #[cfg(test)]
 mod scheduled_model_tests {
     use super::{
-        delete_scheduled_run_with_gate, resolve_scheduled_model, resolve_spawn_model,
+        delete_chat_session_with_gate, delete_scheduled_run_with_gate,
+        quiesce_engine_before_reclaim, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
         SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
     };
@@ -826,7 +984,7 @@ mod scheduled_model_tests {
     use crate::credential_store::{CredentialEditAction, CredentialState};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     fn model(id: &str, wire_name: &str) -> SavedModel {
         SavedModel {
@@ -1053,6 +1211,109 @@ mod scheduled_model_tests {
         let probe = locks.for_session("turn-lock-prune-probe").await;
         assert!(!locks.locks.lock().await.contains_key(&session_id));
         drop(probe);
+
+        match previous_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn engine_reclaim_quiesces_event_producer_before_persistence() {
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let cancel_order = order.clone();
+        let abort_order = order.clone();
+        let persist_order = order.clone();
+
+        let result = quiesce_engine_before_reclaim(
+            move || cancel_order.lock().unwrap().push("cancel"),
+            move || async move {
+                abort_order.lock().unwrap().push("abort");
+                tokio::task::yield_now().await;
+                abort_order.lock().unwrap().push("joined");
+            },
+            move || async move {
+                persist_order.lock().unwrap().push("persist");
+                42
+            },
+        )
+        .await;
+
+        assert_eq!(result, 42);
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["cancel", "abort", "joined", "persist"]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_delete_keeps_evict_delete_and_forget_ahead_of_waiting_send() {
+        let _env_guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-chat-delete-race-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("PINVOU3_HOME", &home);
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let locks = SessionTurnLocks::default();
+        let gate = locks.for_session(&session_id).await;
+        let blocker = gate.lock().await;
+        let fake_engine_present = Arc::new(AtomicBool::new(true));
+        let forgotten = Arc::new(AtomicBool::new(false));
+
+        let delete_locks = locks.clone();
+        let delete_store = store.clone();
+        let delete_id = session_id.clone();
+        let delete_engine = fake_engine_present.clone();
+        let delete_forgotten = forgotten.clone();
+        let delete = tokio::spawn(async move {
+            delete_chat_session_with_gate(
+                &delete_locks,
+                &delete_store,
+                &delete_id,
+                || async move {
+                    delete_engine.store(false, Ordering::Release);
+                },
+                || delete_forgotten.store(true, Ordering::Release),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        let send_locks = locks.clone();
+        let send_store = store.clone();
+        let send_id = session_id.clone();
+        let waiting_send = tokio::spawn(async move {
+            let gate = send_locks.for_session(&send_id).await;
+            let _turn = gate.lock().await;
+            send_store.load(&send_id)
+        });
+        tokio::task::yield_now().await;
+        drop(blocker);
+        drop(gate);
+
+        delete
+            .await
+            .expect("delete task joins")
+            .expect("delete chat");
+        assert!(
+            waiting_send.await.expect("send task joins").is_err(),
+            "a sender queued on the gate must observe the completed delete"
+        );
+        assert!(!fake_engine_present.load(Ordering::Acquire));
+        assert!(forgotten.load(Ordering::Acquire));
+        assert!(store.load(&session_id).is_err());
 
         match previous_home {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),

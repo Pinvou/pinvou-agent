@@ -68,7 +68,7 @@ function injectSource() {
         default: return Promise.resolve(null);
       }
     }
-    window.__TAURI__={core:{invoke},event:{listen(){return Promise.resolve(function(){});}},
+    window.__TAURI__={core:{invoke},event:{listen(){return Promise.resolve(function(){});},emit(){return Promise.resolve();}},
       window:{getCurrentWindow(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(function(){});},startDragging(){}};}},
       dialog:{open(){return Promise.resolve(null);}}};
   })();`;

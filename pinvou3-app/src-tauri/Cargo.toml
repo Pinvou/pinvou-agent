@@ -67,6 +67,7 @@ tar = "0.4"
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
+fs2 = "0.4"
 
 # 时间戳：SessionMetadata.updated_at 用 chrono::Utc::now()，对齐上游 schema
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -109,7 +110,7 @@ device_query = "2"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。

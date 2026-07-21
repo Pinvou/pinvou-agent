@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, Search, TableIcon, Trash2, X } from '../../components/icons.jsx';
 import { bridge, useBridge } from '../../hooks/useBridge.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
 
@@ -8,6 +9,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
+      const canOpenSystemFiles = can('externalSystemOpen');
+      const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
+      const canPickHostFiles = !isWeb || can('hostFilePicker');
+      const canDownloadArtifacts = !isWeb || can('artifactDownload');
       const bs = useBridge(); // 取 kbModelSetup 的实时下载进度
       const inv = (cmd, args) =>
         (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
@@ -17,8 +22,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 
       // ---------- 共用 ----------
-      const openFile = (p) => inv('open_in_system', { path: p }).catch(() => {});
-      const openFolder = (p) => inv('open_containing_folder', { path: p }).catch(() => {});
+      const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
+      const openFolder = (p) => canOpenSystemFiles ? inv('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
       const fmtSize = (b) => {
         if (b == null) return '';
         if (b < 1024) return b + ' B';
@@ -73,7 +78,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [outCat, setOutCat] = useState('all');
       const [outQuery, setOutQuery] = useState('');
       const [outView, setOutView] = useState('grid');
-      const [outputPreviewPath, setOutputPreviewPath] = useState(null);
+      const [outputPreview, setOutputPreview] = useState(null);
       const outPreviewCache = useRef({});
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
@@ -190,7 +195,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       const OutputLivePreview = ({ o, onOpen }) => {
         const ext = String(o.ext || '').toLowerCase();
-        const cacheKey = `${o.path}|${o.mtime || 0}`;
+        const outputSessionId = o.sessionId || o.session_id || null;
+        const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
         const boxRef = useRef(null);
         const [visible, setVisible] = useState(false);
         const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
@@ -223,22 +229,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             try {
               let next = null;
               if (o.category === 'img' && bridge.readArtifactImageB64) {
-                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path) };
+                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path, outputSessionId) };
               } else if (ext === 'pptx' && bridge.readArtifactThumbnail) {
-                const thumb = await bridge.readArtifactThumbnail(o.path);
+                const thumb = await bridge.readArtifactThumbnail(o.path, outputSessionId);
                 next = thumb ? { kind: 'image', url: thumb } : null;
               }
               if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.readArtifactText) {
-                next = { kind: 'html', html: await bridge.readArtifactText(o.path) };
+                next = { kind: 'html', html: await bridge.readArtifactText(o.path, outputSessionId) };
               }
               if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.renderArtifactVisual) {
-                const visual = await bridge.renderArtifactVisual(o.path);
+                const visual = await bridge.renderArtifactVisual(o.path, outputSessionId);
                 if (visual && visual.mode === 'html' && visual.html) {
                   next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                 }
               }
               if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.readArtifactText) {
-                const text = await bridge.readArtifactText(o.path);
+                const text = await bridge.readArtifactText(o.path, outputSessionId);
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
@@ -252,7 +258,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, o.path, o.category, ext, runQueuedPreview]);
+        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
 
         const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
@@ -331,6 +337,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           const hit = outPreviewCache.current[cacheKey];
           if (hit) { setPv(hit); return () => { alive = false; }; }
           if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
+          // 本机知识文件不是 Session 产物；Web 端不读取或下载任意主机路径。
+          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
           setPv({ loading: true });
           setFrameReady(false);
           const timer = setTimeout(() => {
@@ -380,9 +388,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
         const shell = (children) => (
-          <div ref={boxRef} onClick={onOpen} role="button" tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
-            className="h-[126px] rounded-[14px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] cursor-pointer mb-3">
+          <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
+            onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
+            className={`h-[126px] rounded-[14px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] mb-3 ${onOpen ? 'cursor-pointer' : ''}`}>
             {children}
           </div>
         );
@@ -552,6 +560,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         : dlProg.stage === 'done' ? t.kbModelStageDone
         : t.kbModelStageDownload;
       const startModelDownload = async () => {
+        if (!canInstallKbModel) return;
         try {
           const st = await bridge.downloadKbModel();
           if (st) { setKbModel(st); kbCache.model = st; }
@@ -725,12 +734,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                               {results.slice(0, 4).map((f) => { const e = extOf(f); const col = extColor(e); return (
                                 <div key={f.path} className={`p-3 rounded-2xl ${panel} ${panelHover} transition-all`} style={panelShadow}>
-                                  <LocalFilePreview f={f} onOpen={() => setOutputPreviewPath(f.path)} />
+                                  <LocalFilePreview f={f} onOpen={isWeb ? null : () => setOutputPreview({ path: f.path, sessionId: null })} />
                                   <div className={`text-[13px] font-bold truncate ${ink}`} title={f.name}>{f.name}</div>
                                   <div className={`text-[11px] truncate mt-1 ${muted}`}>{f.path}</div>
                                   <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-400/10">
                                     <span className={`text-[11px] ${muted}`}>{fmtDate(f.mtime)}</span>
-                                    <button onClick={() => openFile(f.path)} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${soft}`}>{t.kbOpen}</button>
+                                    {canOpenSystemFiles && <button onClick={() => openFile(f.path)} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${soft}`}>{t.kbOpen}</button>}
                                   </div>
                                 </div>
                               );})}
@@ -765,8 +774,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                 <span className={`w-28 text-right text-[12px] ${muted}`}>{fmtDate(f.mtime)}</span>
                                 <div className="w-24 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button title={t.kbAddToKb} onClick={() => setAddToKb(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><Plus size={15} /></button>
-                                  <button title={t.kbOpen} onClick={() => openFile(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={15} /></button>
-                                  <button title={t.kbOpenFolder} onClick={() => openFolder(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><BookOpen size={15} /></button>
+                                  {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={15} /></button>}
+                                  {canOpenSystemFiles && <button title={t.kbOpenFolder} onClick={() => openFolder(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><BookOpen size={15} /></button>}
                                 </div>
                               </div>
                             );})}
@@ -829,7 +838,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     <div className={`flex items-center gap-2 ${compact ? 'justify-end' : 'mt-4'}`}>
                       <button onClick={() => continueOutput(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-[#283650] text-[#8db7ff]' : 'bg-[#e9f1ff] text-[#2f6beb]'}`}>{t.kbOutContinue}</button>
                       <button onClick={() => newOutputProject(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-white/[0.075] text-[#dfe3e9]' : 'bg-[#f2f4f8] text-[#444746]'}`}>{t.kbOutNewProject}</button>
-                      <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><FolderOpen size={16} /></button>
+                      {canOpenSystemFiles && <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><FolderOpen size={16} /></button>}
+                      {isWeb && canDownloadArtifacts && <button title="下载产物" onClick={() => bridge.downloadArtifact(o.path, o.sessionId || o.session_id)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><Download size={16} /></button>}
                     </div>
                   );
                   return (
@@ -873,7 +883,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   const meta = outCatMeta(o.category);
                                   return (
                                     <article key={o.path} className={`min-h-[288px] rounded-[18px] overflow-hidden border transition-all ${isDark ? 'bg-[linear-gradient(180deg,rgba(36,38,42,.92),rgba(28,30,33,.92))] border-white/[0.08] hover:border-[#79aaff]/30' : 'bg-white border-[#ececf1] hover:border-[#b9cdf6]'}`} style={panelShadow}>
-                                      <OutputLivePreview o={o} onOpen={() => setOutputPreviewPath(o.path)} />
+                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
                                       <div className="px-5 pb-[18px]">
                                         <div className="flex items-start gap-2 mt-1">
                                           <div className={`text-[17px] leading-snug font-extrabold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
@@ -925,7 +935,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 })()}
               </div>
             )}
-            {outputPreviewPath && <FilePreviewModal path={outputPreviewPath} theme={theme} onClose={() => setOutputPreviewPath(null)} />}
+            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} onClose={() => setOutputPreview(null)} />}
 
             {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
             {sub === 'kb' && !modelInstalled && (
@@ -970,7 +980,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 </div>
 
-                {!downloading ? (
+                {!canInstallKbModel ? (
+                  <div className={`mt-5 rounded-xl px-4 py-3 text-[13px] leading-relaxed ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
+                    知识库模型尚未安装，请先在桌面端完成安装；安装后刷新此页面即可使用。
+                  </div>
+                ) : !downloading ? (
                   <div className="mt-5">
                     <button onClick={startModelDownload}
                       className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
@@ -1044,7 +1058,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       <div className={`text-[15px] font-bold ${ink}`}>{t.kbMyColls}</div>
                       <div className={`text-[12px] ${muted}`}>{colls.length} {t.kbCollUnit} · {colls.reduce((s, c) => s + (c.docCount || 0), 0)} {t.kbDocs} · {fmtSize(colls.reduce((s, c) => s + (c.totalBytes || 0), 0))}</div>
                     </div>
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
                       {shown.map((c) => {
                         const prog = (idx && idx.running && idx.collectionId === c.id && idx.total > 0) ? Math.round((idx.done / idx.total) * 100) : null;
                         const isIdx = c.status === 'indexing' || prog != null;
@@ -1091,10 +1105,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         </>}
                       </div>
                       {activeColl && <div className="flex items-center gap-2 shrink-0">
-                        <button onClick={() => addSources(activeColl.id)} disabled={indexing} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${indexing ? 'opacity-60 cursor-default' : ''} ${soft}`}>
+                        {canPickHostFiles && <button onClick={() => addSources(activeColl.id)} disabled={indexing} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${indexing ? 'opacity-60 cursor-default' : ''} ${soft}`}>
                           {indexing ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />}
                           {indexing ? `${t.kbIndexing} ${idx.done}/${idx.total}` : t.kbAddFiles}
-                        </button>
+                        </button>}
                         <button title={t.kbEditColl} onClick={() => setNewColl({ id: activeColl.id, name: activeColl.name, category: activeColl.category || '', description: activeColl.description ?? null })} className={`p-2 rounded-full ${iconHover}`}><Edit2 size={15} /></button>
                         <button title={t.kbDeleteColl} onClick={() => setDelColl(activeColl)} className={`p-2 rounded-full ${iconHover}`}><Trash2 size={15} /></button>
                       </div>}
@@ -1129,7 +1143,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               </div>
                             ) : (
                               <div className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>
+                                {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>}
                                 <button title={t.kbRemove} onClick={() => setConfirmDoc(d.id)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
                               </div>
                             )}
@@ -1142,11 +1156,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 )}
 
                 {/* 加入知识库入口：点击选文件(单知识集直接加，多个弹选择) */}
-                <div onClick={dzPick}
+                {canPickHostFiles && <div onClick={dzPick}
                   className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed cursor-pointer transition-colors ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
                   <Plus size={16} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
-                </div>
+                </div>}
               </div>
             )}
 
@@ -1154,8 +1168,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
           {/* 删除知识集 二次确认(删库连同所有文档+索引,不可恢复) */}
           {delColl && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDelColl(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4" onClick={() => setDelColl(null)}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-[400px] max-h-full overflow-y-auto rounded-2xl p-5 sm:p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
                   {t.kbDelCollConfirm.replace('{n}', delColl.name)}
@@ -1171,8 +1185,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
           {/* 新建知识集 modal */}
           {newColl && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4" onClick={() => setNewColl(null)}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-[400px] max-h-full overflow-y-auto rounded-2xl p-5 sm:p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
                 <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') createColl(); }}
                   className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`} />
@@ -1188,8 +1202,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
           {/* 加入知识库 浮层 */}
           {addToKb && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddToKb(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4" onClick={() => setAddToKb(null)}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-[380px] max-h-full overflow-y-auto rounded-2xl p-5 sm:p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
                 <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
                 {colls.length === 0 ? (

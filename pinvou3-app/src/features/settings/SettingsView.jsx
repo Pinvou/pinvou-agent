@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Smartphone, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -8,6 +8,7 @@ import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
+import { can } from '../../shared/platform.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
 import { notifyComposerToolsChanged } from '../tools/tool-events.js';
 import deepseekIcon from '../../brand-icons/deepseek.svg';
@@ -580,6 +581,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 聊天输入框上方:当前会话模型 chip + 下拉热切。
     const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
       const [open, setOpen] = useState(false);
+      const canManageModels = can('modelManagement');
+      const canSwitchModels = can('sessionModelSwitch');
       const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
@@ -595,14 +598,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       }
       return (
         <div className="relative px-2 mb-2">
-          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+          <button onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
             title={busy ? t.modelSwitchBusy : t.switchModelTitle}
             className={`inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-[12px] font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#EAEDF1] text-[#1F1F1F] hover:bg-[#E0E3E7]'}`}>
             <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]"></span>
             <span className="max-w-[220px] truncate">{current ? current.name : t.modelNonePick}</span>
             <ChevronDown size={13} />
           </button>
-          {open && (
+          {open && canSwitchModels && (
             <div>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className={`absolute bottom-full left-2 mb-1 z-50 min-w-[240px] max-h-[340px] overflow-y-auto rounded-xl border shadow-lg py-1 ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
@@ -617,12 +620,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     {m.id === activeModelId && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37393B] text-[#9AA0A6]' : 'bg-[#E8EAED] text-[#5F6368]'}`}>{t.modelActiveTag}</span>}
                   </button>
                 ))}
-                <div className={`border-t mt-1 pt-1 ${isDark ? 'border-[#333537]' : 'border-[#E8EAED]'}`}>
-                  <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
-                    className={`w-full px-3 py-1.5 text-left text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-[#2A2B2D]' : 'text-[#5F6368] hover:bg-[#F0F4F9]'}`}>
-                    {t.manageModels}
-                  </button>
-                </div>
+                {canManageModels && (
+                  <div className={`border-t mt-1 pt-1 ${isDark ? 'border-[#333537]' : 'border-[#E8EAED]'}`}>
+                    <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                      className={`w-full px-3 py-1.5 text-left text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-[#2A2B2D]' : 'text-[#5F6368] hover:bg-[#F0F4F9]'}`}>
+                      {t.manageModels}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -633,6 +638,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
+      const canManageModels = can('modelManagement');
+      const canSwitchModels = can('sessionModelSwitch');
       const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
@@ -644,7 +651,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
       return (
         <div className="relative min-w-0">
-          <button onClick={() => { if (!busy) setOpen(o => !o); }} disabled={busy}
+          <button onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
             title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
             className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
             {compact ? (
@@ -660,7 +667,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </>
             )}
           </button>
-          {open && (
+          {open && canSwitchModels && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
@@ -674,12 +681,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
                   </button>
                 ))}
-                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                  <Plus size={15} className="text-gray-400 group-hover:text-white/90" />
-                  {t.manageModels}
-                </button>
+                {canManageModels && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                      <Plus size={15} className="text-gray-400 group-hover:text-white/90" />
+                      {t.manageModels}
+                    </button>
+                  </>
+                )}
               </div>
             </>
           )}
@@ -687,37 +698,37 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const RemoteControlModal = ({ theme, bs, onClose }) => {
+    const WebAccessModal = ({ theme, bs, onClose }) => {
       const isDark = theme === 'dark';
+      const canManageWebAccess = can('webAccessAdmin');
       const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
       const [actionBusy, setActionBusy] = useState(false);
-      const remoteControl = (bs && bs.remoteControl) || {};
-      const remotePairing = remoteControl.pairing || remoteControl;
-      const remoteActive = !!remoteControl.active;
-      const statusKey = remoteControl.starting ? 'starting' : (remoteControl.status || 'idle');
+      const webAccess = (bs && bs.webAccess) || {};
+      const webAccessActive = !!webAccess.active;
+      const statusKey = webAccess.starting ? 'starting' : (webAccess.status || 'idle');
       const statusMeta = {
-        idle: { label: '未开启', detail: '点击手机控制图标后才会开启远程控制。', color: '#8A9097' },
-        starting: { label: '正在开启', detail: '正在创建远程控制连接和二维码。', color: '#F9AB00' },
+        idle: { label: '未开启', detail: '开启后会生成一个长期有效的 WebUI 链接。', color: '#8A9097' },
+        starting: { label: '正在开启', detail: '正在创建 WebUI 访问端点。', color: '#F9AB00' },
         connecting_relay: { label: '正在连接', detail: '正在连接云端中继，请稍候。', color: '#F9AB00' },
-        waiting_mobile: { label: '等待手机连接', detail: '用手机扫码，或在手机上打开链接。', color: '#F9AB00' },
-        mobile_connected: { label: '手机已连接', detail: '当前手机可以查看和控制远程会话。', color: '#34A853' },
-        mobile_disconnected: { label: '手机已断开', detail: '原二维码仍然有效，手机可随时重新连接。', color: '#F9AB00' },
-        expired: { label: '连接已失效', detail: '请刷新二维码后重新连接。', color: '#EA4335' },
-        stopped: { label: '已停止', detail: '再次点击手机控制图标可重新开启。', color: '#8A9097' },
-        error: { label: '连接异常', detail: remoteControl.last_error || '远程控制暂时不可用，请重试。', color: '#EA4335' },
-      }[statusKey] || { label: String(statusKey), detail: '远程控制状态已更新。', color: '#8A9097' };
+        waiting_web_client: { label: '等待浏览器', detail: '在电脑或手机浏览器中粘贴下方链接即可。', color: '#F9AB00' },
+        web_client_connected: { label: '浏览器已连接', detail: 'WebUI 正在连接这台桌面端。', color: '#34A853' },
+        web_client_disconnected: { label: '浏览器已断开', detail: '链接仍然有效，浏览器可随时重新连接。', color: '#F9AB00' },
+        revoked: { label: '链接已撤销', detail: '请重新开启 WebUI 访问。', color: '#EA4335' },
+        stopped: { label: '已停止', detail: '再次打开此面板即可重新开启。', color: '#8A9097' },
+        error: { label: '连接异常', detail: webAccess.last_error || 'WebUI 访问暂时不可用，请重试。', color: '#EA4335' },
+      }[statusKey] || { label: String(statusKey), detail: 'WebUI 访问状态已更新。', color: '#8A9097' };
 
       useEffect(() => {
-        if (!remoteActive && bridge.available) {
-          bridge.startRemoteControl(null).catch(() => {});
+        if (canManageWebAccess && !webAccessActive && bridge.available) {
+          bridge.enableWebAccess().catch(() => {});
         }
-      }, []);
+      }, [canManageWebAccess]);
 
-      async function handleRefreshRemoteControl() {
+      async function handleRotateWebAccess() {
         if (!bridge.available) return;
         setActionBusy(true);
         try {
-          await bridge.refreshRemoteControlQr(null);
+          await bridge.rotateWebAccessLink();
           setRefreshConfirmOpen(false);
         } catch (_) {
         } finally {
@@ -725,41 +736,43 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         }
       }
 
-      async function handleStopRemoteControl() {
+      async function handleDisableWebAccess() {
         if (!bridge.available) return;
         setActionBusy(true);
         try {
-          await bridge.stopRemoteControl();
+          await bridge.disableWebAccess();
           onClose();
         } finally {
           setActionBusy(false);
         }
       }
 
-      async function handleRetryRemoteControl() {
+      async function handleRetryWebAccess() {
         if (!bridge.available) return;
         setActionBusy(true);
-        try { await bridge.startRemoteControl(null); }
+        try { await bridge.enableWebAccess(); }
         catch (_) {}
         finally { setActionBusy(false); }
       }
+
+      if (!canManageWebAccess) return null;
 
       return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
           <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
-                <div className="text-[17px] font-semibold">移动端远程控制</div>
-                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>扫码或在手机上打开链接，即可远程控制当前工作区。</div>
+                <div className="text-[17px] font-semibold">WebUI 访问</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>在电脑或手机浏览器中粘贴链接，打开与桌面端相同的完整界面。</div>
               </div>
               <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
             </div>
             <div className={`rounded-[16px] border p-3 mb-4 ${isDark ? 'border-white/10 bg-white/[0.035]' : 'border-black/10 bg-[#F8F9FA]'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex items-start gap-3">
-                  <div className={`mt-0.5 w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}><Smartphone size={17} /></div>
+                  <div className={`mt-0.5 w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}><Globe size={17} /></div>
                   <div className="min-w-0">
-                    <div className="text-[14px] font-medium">手机扫码连接</div>
+                    <div className="text-[14px] font-medium">浏览器连接</div>
                     <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{statusMeta.detail}</div>
                   </div>
                 </div>
@@ -767,41 +780,40 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}>
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusMeta.color }}></span>{statusMeta.label}
                   </span>
-                  {remoteActive && <button disabled={actionBusy} onClick={handleStopRemoteControl}
+                  {webAccessActive && <button disabled={actionBusy} onClick={handleDisableWebAccess}
                     className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>停止</button>}
                 </div>
               </div>
             </div>
-            {remotePairing && remotePairing.qr_data_url ? (
-              <div className="flex flex-col items-center">
-                <div className="p-3 rounded-[16px] bg-white">
-                  <img src={remotePairing.qr_data_url} alt="Remote control QR" className="w-[220px] h-[220px]" />
-                </div>
-                <div className={`mt-3 w-full text-[12px] leading-relaxed break-all px-3 py-2 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>{remotePairing.url || remoteControl.url}</div>
+            {webAccess.url ? (
+              <div className={`w-full rounded-[14px] border px-4 py-3 ${isDark ? 'border-white/10 bg-white/5' : 'border-black/10 bg-[#F8F9FA]'}`}>
+                <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>完整 WebUI 链接</div>
+                <div className={`select-all break-all text-[12px] leading-relaxed ${isDark ? 'text-[#D2E3FC]' : 'text-[#174EA6]'}`}>{webAccess.url}</div>
+                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>链接会在桌面端重启后继续有效；刷新链接或停止访问会立即撤销旧链接。</div>
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
-                {remoteControl.starting ? '正在生成二维码...' : (remoteControl.last_error || '当前会话还未开启远程控制。')}
+                {webAccess.starting ? '正在生成 WebUI 链接…' : (webAccess.last_error || 'WebUI 访问尚未开启。')}
               </div>
             )}
-            {remoteControl.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{remoteControl.last_error}</div>}
+            {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(remotePairing.url || remoteControl.url || '')}
-                disabled={!(remotePairing.url || remoteControl.url)}
+              <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(webAccess.url || '')}
+                disabled={!webAccess.url}
                 className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
-              {remoteActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
-                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
-                : <button disabled={actionBusy} onClick={handleRetryRemoteControl}
-                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">重新开启</button>}
+              {webAccessActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
+                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新链接</button>
+                : <button disabled={actionBusy} onClick={handleRetryWebAccess}
+                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">开启访问</button>}
             </div>
             {refreshConfirmOpen && (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
                 <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl ${isDark ? 'bg-[#2A2B2D]' : 'bg-white'}`}>
-                  <div className="text-[16px] font-semibold">刷新二维码？</div>
-                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>刷新后，之前复制或扫码得到的远程控制链接将失效，已连接的手机需要重新扫码。</div>
+                  <div className="text-[16px] font-semibold">刷新 WebUI 链接？</div>
+                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>刷新后，旧链接立即失效；当前浏览器连接也会断开，需要粘贴新链接重新打开。</div>
                   <div className="mt-5 flex justify-end gap-2">
                     <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] ${isDark ? 'bg-white/5 hover:bg-white/10' : 'bg-black/5 hover:bg-black/10'}`}>取消</button>
-                    <button disabled={actionBusy} onClick={handleRefreshRemoteControl} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? '正在刷新…' : '刷新二维码'}</button>
+                    <button disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? '正在刷新…' : '刷新链接'}</button>
                   </div>
                 </div>
               </div>
@@ -909,6 +921,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill }) => {
       const [open, setOpen] = useState(false);
+      const canMutateToolStore = can('toolStoreMutations');
       const [marketplaceTools, setMarketplaceTools] = useState([]);
       const [marketplaceSkills, setMarketplaceSkills] = useState([]);
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
@@ -964,6 +977,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
       function toggleTool(id) {
+        if (!canMutateToolStore) return;
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
@@ -998,8 +1012,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <span className="min-w-0">
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
           </span>
-          <button onClick={() => toggleTool(row.id)} aria-label={row.id}
-            className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+          <button onClick={() => toggleTool(row.id)} aria-label={row.id} disabled={!canMutateToolStore}
+            className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
             <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${row.enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
           </button>
         </div>
@@ -1054,6 +1068,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const initialCatalogMatch = initialCatalogGroups.some(group =>
         group.preset === initial.preset && group.items.some(item => !item.custom && item.model === initial.model)
       );
+      const canSetUpLocalModel = can('localModelSetup');
       const [name, setName] = useState(initial.name || '');
       const [preset, setPreset] = useState(initial.preset || 'local_vllm');
       const [model, setModel] = useState(initial.model || '');
@@ -1113,7 +1128,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
       async function handleDetect() {
-        if (!bridge.available || detecting) return;
+        if (!canSetUpLocalModel || !bridge.available || detecting) return;
         setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
         try {
           const result = await bridge.discoverLocalVllm({
@@ -1357,7 +1372,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <span className={`text-[11px] block ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>{t.vllmDetectHint}</span>
                 </div>
               )}
-              {preset === 'local_vllm' && (offerSetup || bootstrapHere) && (
+              {preset === 'local_vllm' && canSetUpLocalModel && (offerSetup || bootstrapHere) && (
                 <div className={`rounded-xl border p-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
                   {bootstrapHere ? (
                     bs && bs.vllmBootstrapDone ? (
@@ -1409,6 +1424,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
+      const canUsePet = can('pet');
+      const canUseSuperPermission = can('superPermission');
+      const canUpdateApp = can('appUpdate');
+      const canInstallDependencies = can('dependencyInstall');
+      const canConfigureDesktopNotifications = can('desktopNotifications');
+      const canManageModels = can('modelManagement');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
       const [editingSearch, setEditingSearch] = useState(null);
@@ -1425,7 +1446,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const archivedSessions = (bs && bs.archivedSessions) || [];
-      const memorySettingsVisible = language === 'zh';
+      const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -1439,11 +1460,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return idx >= 0 ? name.slice(idx + 1).toLowerCase() : '';
       };
       useEffect(() => {
-        if (!updateFocusTick || !versionUpdateRef.current) return;
+        if (!canUpdateApp || !updateFocusTick || !versionUpdateRef.current) return;
         requestAnimationFrame(() => {
           versionUpdateRef.current && versionUpdateRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
-      }, [updateFocusTick]);
+      }, [canUpdateApp, updateFocusTick]);
       useEffect(() => {
         if (initialSection) setActiveSection(initialSection);
       }, [initialSection]);
@@ -1531,7 +1552,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
-        if (!bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
+        if (!canInstallDependencies || !bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
         let cancelled = false;
         const run = () => { if (!cancelled) bridge.checkDependencies(); };
         if (window.requestIdleCallback) {
@@ -1759,11 +1780,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme} options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
             </IOSRow>
           </IOSSection>
+          {canConfigureDesktopNotifications && (
           <IOSSection title="通知">
             <IOSRow label="任务完成提醒" desc="任务完成后展示系统通知">
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
             </IOSRow>
           </IOSSection>
+          )}
+          {canUsePet && (
           <section className="mb-6">
             <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>桌面助手</div>
             <div className={`overflow-hidden rounded-[18px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>
@@ -1788,6 +1812,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               )}
             </div>
           </section>
+          )}
         </>
       );
       const renderModels = () => (
@@ -2098,9 +2123,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>系统</div>
               <div className="space-y-2">
-                <SectionButton id="permissions" icon={<Wrench size={17} />} label="权限与环境" />
+                {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label="权限与环境" />}
                 <SectionButton id="data" icon={<Archive size={17} />} label="数据管理" />
-                <SectionButton id="update" icon={<RefreshCw size={17} />} label="更新" dot={hasUpdate} />
+                {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label="更新" dot={hasUpdate} />}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label="帮助反馈" />
               </div>
             </aside>
@@ -2301,4 +2326,4 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // ==========================================
     // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
 
-export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ModelChip, ComposerModelSelector, RemoteControlModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };
+export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ModelChip, ComposerModelSelector, WebAccessModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };

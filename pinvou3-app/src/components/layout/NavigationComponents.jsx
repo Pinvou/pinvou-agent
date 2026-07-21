@@ -211,7 +211,10 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
       const [menuOpen, setMenuOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
       const [val, setVal] = useState(chat.title);
-      const drag = useLongPressDrag('session', onPickUp);
+      const sessionDragKind = onPickUp ? 'session' : null;
+      const drag = useLongPressDrag(sessionDragKind, onPickUp);
+      const dragProps = sessionDragKind ? drag.handlers : {};
+      const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       const closeMenu = () => setMenuOpen(false);
       const placeMenu = (target) => {
@@ -276,10 +279,12 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           {(onOpenFolder || onArchive) && (
             <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
           )}
-          <button className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder && onOpenFolder(chat.id); }}>
-            <FolderOpen size={15} />
-            <span>{t.riOpenFolder}</span>
-          </button>
+          {onOpenFolder && (
+            <button className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
+              <FolderOpen size={15} />
+              <span>{t.riOpenFolder}</span>
+            </button>
+          )}
           {onArchive && (
             <button className={menuItemCls} onClick={() => { closeMenu(); onArchive(chat.id); }}>
               <Archive size={15} />
@@ -302,8 +307,8 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
         );
       }
       return (
-        <div onClick={drag.guardClick(() => onSelect(chat.id))}
-          {...drag.handlers}
+        <div onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
+          {...dragProps}
           onContextMenu={openContextMenu}
           data-testid={chat.testId}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}

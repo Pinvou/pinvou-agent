@@ -11,10 +11,22 @@ const staticScripts = new Set([
   'personas-i18n.js',
   'tauri-bridge.js',
   'update-notice-logic.js',
+  'web-bootstrap.js',
+  'web-host-file-picker.js',
+  'web-access-policy.json',
   'vendor/marked.min.js',
   'vendor/purify.min.js',
   'vendor/tailwind.js',
 ]);
+
+function normalizeWebBasePath(value) {
+  let raw = String(value || '/pinvou3/remote').trim();
+  try {
+    if (/^https?:\/\//i.test(raw)) raw = new URL(raw).pathname;
+  } catch {}
+  const trimmed = raw.replace(/^\/+|\/+$/g, '');
+  return trimmed ? `/${trimmed}/` : '/';
+}
 
 function copyRuntimeAssets() {
   let outputRoot;
@@ -44,8 +56,13 @@ function copyRuntimeAssets() {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const webBuild = mode === 'web';
+  return {
   root: 'src',
+  // The Relay and Vite build intentionally share one deployment variable;
+  // each side only normalizes the trailing slash for its own router contract.
+  base: webBuild ? normalizeWebBasePath(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH) : '/',
   publicDir: false,
   server: {
     host: process.env.PINVOU3_UI_DEV_HOST || '127.0.0.1',
@@ -54,13 +71,16 @@ export default defineConfig({
   },
   plugins: [react(), copyRuntimeAssets()],
   build: {
-    outDir: '../dist',
+    outDir: webBuild ? '../../remote-control-relay/web/dist' : '../dist',
     emptyOutDir: true,
     rolldownOptions: {
-      input: {
-        main: resolve(sourceRoot, 'index.html'),
-        pet: resolve(sourceRoot, 'pet.html'),
-      },
+      input: webBuild
+        ? { main: resolve(sourceRoot, 'index.html') }
+        : {
+            main: resolve(sourceRoot, 'index.html'),
+            pet: resolve(sourceRoot, 'pet.html'),
+          },
     },
   },
+  };
 });

@@ -1,94 +1,197 @@
 import http from "node:http";
 import crypto from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createTelemetryService } from "./telemetry-service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIB = 1024 * 1024;
+const RELAY_STATE_VERSION = 1;
 const PORT = Number(process.env.PORT || 8787);
-const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote");
-const DESKTOP_RECONNECT_GRACE_MS = Math.max(1000, Number(process.env.DESKTOP_RECONNECT_GRACE_MS || 15_000));
-const HEARTBEAT_INTERVAL_MS = Math.max(5000, Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000));
-const MAX_PAYLOAD_BYTES = boundedInteger(process.env.MAX_PAYLOAD_BYTES, 4 * MIB, MIB, 16 * MIB);
-const MAX_ROOMS = boundedInteger(process.env.MAX_ROOMS, 2000, 1, 100_000);
-const ROOM_CREATE_LIMIT = boundedInteger(process.env.ROOM_CREATE_LIMIT, 20, 1, 10_000);
-const ROOM_CREATE_WINDOW_MS = boundedInteger(process.env.ROOM_CREATE_WINDOW_MS, 60_000, 1000, 60 * 60_000);
+const PUBLIC_BASE_PATH = normalizeBasePath(
+  process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote",
+);
+const WEB_ROOT = resolve(process.env.PINVOU_REMOTE_WEB_DIR || resolve(__dirname, "web", "dist"));
+const HEARTBEAT_INTERVAL_MS = Math.max(
+  5000,
+  Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000),
+);
+// The v2 RPC contract permits up to 1 MiB of JSON args. Base64-heavy requests
+// and normal envelope overhead need a Relay ceiling comfortably above that.
+const MAX_PAYLOAD_BYTES = boundedInteger(
+  process.env.MAX_PAYLOAD_BYTES,
+  4 * MIB,
+  4 * MIB,
+  16 * MIB,
+);
+const MAX_ENDPOINTS = boundedInteger(
+  process.env.MAX_ENDPOINTS ?? process.env.MAX_ROOMS,
+  2000,
+  1,
+  100_000,
+);
+const ENDPOINT_CREATE_LIMIT = boundedInteger(
+  process.env.ENDPOINT_CREATE_LIMIT ?? process.env.ROOM_CREATE_LIMIT,
+  20,
+  1,
+  10_000,
+);
+const ENDPOINT_CREATE_WINDOW_MS = boundedInteger(
+  process.env.ENDPOINT_CREATE_WINDOW_MS ?? process.env.ROOM_CREATE_WINDOW_MS,
+  60_000,
+  1000,
+  60 * 60_000,
+);
 const MAX_WS_CONNECTIONS = boundedInteger(
   process.env.MAX_WS_CONNECTIONS,
-  MAX_ROOMS * 2 + 1000,
+  MAX_ENDPOINTS * 2 + 1000,
   2,
   250_000,
 );
 const WS_CONNECT_LIMIT = boundedInteger(process.env.WS_CONNECT_LIMIT, 120, 1, 100_000);
-const WS_CONNECT_WINDOW_MS = boundedInteger(process.env.WS_CONNECT_WINDOW_MS, 60_000, 1000, 60 * 60_000);
-const WS_AUTH_TIMEOUT_MS = boundedInteger(process.env.WS_AUTH_TIMEOUT_MS, 10_000, 1000, 60_000);
-// mobile → desktop 上传分片的字节速率窗口(防 mobile 在慢网/抖动下把 desktop 写盘撑爆)。
-// 与其它限额一样支持 env 覆盖,便于单测用小窗口触发限流。
-const MOBILE_UPLOAD_WINDOW_BYTES = boundedInteger(
-  process.env.MOBILE_UPLOAD_WINDOW_BYTES,
-  100 * 1024 * 1024,
-  1024,
-  1024 * 1024 * 1024,
+const WS_CONNECT_WINDOW_MS = boundedInteger(
+  process.env.WS_CONNECT_WINDOW_MS,
+  60_000,
+  1000,
+  60 * 60_000,
 );
-const MOBILE_UPLOAD_WINDOW_SECS = boundedInteger(process.env.MOBILE_UPLOAD_WINDOW_SECS, 5, 1, 3600);
+const WS_AUTH_TIMEOUT_MS = boundedInteger(
+  process.env.WS_AUTH_TIMEOUT_MS,
+  10_000,
+  1000,
+  60_000,
+);
+const ENDPOINT_OFFLINE_TTL_MS = boundedInteger(
+  process.env.ENDPOINT_OFFLINE_TTL_MS,
+  24 * 60 * 60_000,
+  1000,
+  365 * 24 * 60 * 60_000,
+);
+const WS_INGRESS_WINDOW_MS = boundedInteger(
+  process.env.WS_INGRESS_WINDOW_MS,
+  60_000,
+  1000,
+  60 * 60_000,
+);
+const WS_INGRESS_MESSAGE_LIMIT = boundedInteger(
+  process.env.WS_INGRESS_MESSAGE_LIMIT,
+  12_000,
+  1,
+  1_000_000,
+);
+const WS_INGRESS_BYTE_LIMIT = boundedInteger(
+  process.env.WS_INGRESS_BYTE_LIMIT,
+  512 * MIB,
+  1024,
+  16 * 1024 * MIB,
+);
+// Never configure the outbound high-water mark below one legal inbound frame:
+// doing so would accept a request/response and then terminate its destination
+// solely because of contradictory limits.
+const WS_MAX_BUFFERED_BYTES = Math.max(
+  MAX_PAYLOAD_BYTES,
+  boundedInteger(
+    process.env.WS_MAX_BUFFERED_BYTES,
+    8 * MIB,
+    512,
+    256 * MIB,
+  ),
+);
+const MAX_REVOKED_ENDPOINTS = boundedInteger(
+  process.env.MAX_REVOKED_ENDPOINTS,
+  100_000,
+  1,
+  1_000_000,
+);
+const MAX_RELAY_STATE_BYTES = boundedInteger(
+  process.env.MAX_RELAY_STATE_BYTES,
+  16 * MIB,
+  1024,
+  256 * MIB,
+);
+const RELAY_STATE_PATH = resolve(
+  process.env.PINVOU_REMOTE_STATE_PATH || resolve(__dirname, "data", "relay-state.json"),
+);
+const ALLOWED_WEB_ORIGINS = parseOriginSet(process.env.PINVOU_REMOTE_ALLOWED_WEB_ORIGINS);
 const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
 const TRUSTED_PROXY_IPS = parseIpSet(
-  process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
+  process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS
+    || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
 );
-const rooms = new Map();
-const roomCreationBuckets = new Map();
-const wsConnectionBuckets = new Map();
-// 每个 mobile ws → { bytes, resetAt(ms epoch) };用 WeakMap 让 ws 被 GC 时窗口自动回收。
-const mobileUploadRate = new WeakMap();
-const telemetry = createTelemetryService();
 
-function send(ws, value, onSent) {
-  if (!ws || ws.readyState !== ws.OPEN) {
-    onSent?.(new Error("websocket is not open"));
+const WEB_TO_DESKTOP_TYPES = new Set([
+  "rpc_request",
+  "event_subscribe",
+  "event_unsubscribe",
+  "client_ready",
+]);
+const DESKTOP_TO_WEB_TYPES = new Set([
+  "rpc_response",
+  "event",
+  "stream_reset",
+  "desktop_snapshot",
+]);
+const MIME_TYPES = new Map([
+  [".css", "text/css; charset=utf-8"],
+  [".gif", "image/gif"],
+  [".html", "text/html; charset=utf-8"],
+  [".ico", "image/x-icon"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".map", "application/json; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml"],
+  [".txt", "text/plain; charset=utf-8"],
+  [".wasm", "application/wasm"],
+  [".webp", "image/webp"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"],
+]);
+
+const endpoints = new Map();
+const revokedEndpoints = new Map();
+const endpointCreationBuckets = new Map();
+const wsConnectionBuckets = new Map();
+const telemetry = createTelemetryService();
+let relayStateMutation = Promise.resolve();
+
+await loadRelayState();
+
+function send(ws, value) {
+  if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
+  const encoded = JSON.stringify(value);
+  const bytes = Buffer.byteLength(encoded);
+  if (bytes > WS_MAX_BUFFERED_BYTES
+    || ws.bufferedAmount + bytes > WS_MAX_BUFFERED_BYTES) {
+    ws.policyClosing = true;
+    clearTimeout(ws.authTimer);
+    ws.authTimer = null;
+    try { ws.terminate(); } catch {}
     return false;
   }
   try {
-    ws.send(JSON.stringify(value), onSent);
+    ws.send(encoded, (error) => {
+      if (!error) return;
+      ws.policyClosing = true;
+      try { ws.terminate(); } catch {}
+    });
     return true;
-  } catch (error) {
-    onSent?.(error);
+  } catch {
+    ws.policyClosing = true;
+    try { ws.terminate(); } catch {}
     return false;
   }
 }
 
-function acknowledgeDownloadChunk(room, payload, error) {
-  send(room.desktop, {
-    type: "artifact_download_relay_ack",
-    room_id: room.room_id,
-    session_id: room.session_id,
-    payload: {
-      download_id: payload?.download_id || "",
-      index: payload?.index,
-      ok: !error,
-      message: error ? String(error.message || error) : undefined,
-    },
-  });
-}
-
-// mobile → desktop 的 attach_file_chunk 转发结果(成功或失败)时,relay 主动向 mobile 回一份
-// ack,让 mobile 端的 waitForRelayAck 立即 resolve(成功)或 reject(失败),而不是干等 60s 超时。
-// 镜像 acknowledgeDownloadChunk 的结构,字段名换成 upload_id,事件名换成 attach_file_relay_ack。
-// 方向与下载相反:下载 ack 回 desktop(发送方),上传 ack 回 mobile(发送方)。
-function acknowledgeUploadChunk(room, payload, error) {
-  send(room.mobile, {
-    type: "attach_file_relay_ack",
-    room_id: room.room_id,
-    session_id: room.session_id,
-    payload: {
-      upload_id: payload?.upload_id || "",
-      index: payload?.index,
-      ok: !error,
-      message: error ? String(error.message || error) : undefined,
-    },
-  });
+function closeSocket(ws, code = 1000, reason = "") {
+  if (!ws) return;
+  ws.policyClosing = true;
+  try { ws.close(code, String(reason).slice(0, 123)); } catch {}
 }
 
 function boundedInteger(raw, fallback, min, max) {
@@ -107,6 +210,36 @@ function parseIpSet(value) {
     .split(",")
     .map(normalizeIp)
     .filter(Boolean));
+}
+
+function parseOriginSet(value) {
+  const origins = new Set();
+  for (const item of String(value || "").split(",").map((part) => part.trim()).filter(Boolean)) {
+    let parsed;
+    try { parsed = new URL(item); } catch {
+      throw new Error(`invalid PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry: ${item}`);
+    }
+    if (!/^https?:$/.test(parsed.protocol) || parsed.origin === "null") {
+      throw new Error(`invalid browser WebSocket origin: ${item}`);
+    }
+    origins.add(parsed.origin.toLowerCase());
+  }
+  return origins;
+}
+
+function browserOriginAllowed(req) {
+  const raw = req.headers.origin;
+  // Native desktop clients do not send Origin and remain eligible. This is a
+  // browser CSWSH defense, not a replacement for the deployment enrollment gate.
+  if (raw === undefined) return true;
+  if (typeof raw !== "string" || raw.includes(",")) return false;
+  let parsed;
+  try { parsed = new URL(raw); } catch { return false; }
+  if (!/^https?:$/.test(parsed.protocol) || parsed.origin === "null") return false;
+  const origin = parsed.origin.toLowerCase();
+  if (ALLOWED_WEB_ORIGINS.has(origin)) return true;
+  const requestHost = String(req.headers.host || "").trim().toLowerCase();
+  return Boolean(requestHost) && parsed.host.toLowerCase() === requestHost;
 }
 
 function isLoopback(ip) {
@@ -144,12 +277,12 @@ function consumeRateLimit(buckets, ip, limit, windowMs, now = Date.now()) {
   return true;
 }
 
-function consumeRoomCreation(ip, now = Date.now()) {
+function consumeEndpointCreation(ip, now = Date.now()) {
   return consumeRateLimit(
-    roomCreationBuckets,
+    endpointCreationBuckets,
     ip,
-    ROOM_CREATE_LIMIT,
-    ROOM_CREATE_WINDOW_MS,
+    ENDPOINT_CREATE_LIMIT,
+    ENDPOINT_CREATE_WINDOW_MS,
     now,
   );
 }
@@ -164,29 +297,30 @@ function consumeWsConnection(ip, now = Date.now()) {
   );
 }
 
-// 固定窗口(tumbling window):单个 mobile ws 在 MOBILE_UPLOAD_WINDOW_SECS 窗口内累计超过
-// MOBILE_UPLOAD_WINDOW_BYTES 时拒绝转发。窗口到期整体重置为 0(非逐事件滑动)。返回 true 表示
-// 放行(已从预算中扣减 byteLen),false 表示限流(未扣减,调用方需自行向 mobile 发
-// attach_file_rate_limited 通知)。
-// 边界注意:窗口刚好翻转的瞬间最多放行 ~2× 预算(翻转前满载 + 翻转后再次满载);由
-// MAX_PAYLOAD_BYTES(默认 4MiB)与桌面端 single-active-upload 不变量兜底,不影响保护目标。
-function consumeMobileUploadBudget(ws, byteLen, now = Date.now()) {
-  let entry = mobileUploadRate.get(ws);
-  if (!entry || now >= entry.resetAt) {
-    entry = { bytes: 0, resetAt: now + MOBILE_UPLOAD_WINDOW_SECS * 1000 };
-    mobileUploadRate.set(ws, entry);
+function rawMessageBytes(raw) {
+  if (typeof raw === "string") return Buffer.byteLength(raw);
+  if (raw && Number.isSafeInteger(raw.byteLength)) return raw.byteLength;
+  if (raw && Number.isSafeInteger(raw.length)) return raw.length;
+  return Buffer.byteLength(String(raw || ""));
+}
+
+function consumeIngress(ws, bytes, now = Date.now()) {
+  if (!ws.ingressBucket || now - ws.ingressBucket.started_at >= WS_INGRESS_WINDOW_MS) {
+    ws.ingressBucket = { started_at: now, messages: 0, bytes: 0 };
   }
-  if (entry.bytes + byteLen > MOBILE_UPLOAD_WINDOW_BYTES) {
-    // 限流:返回窗口还要多久翻转,调用方据此回 retry_after_ms;至少 1s 避免边界反复试探。
-    return { allowed: false, retryAfterMs: Math.max(1000, entry.resetAt - now) };
+  const nextMessages = ws.ingressBucket.messages + 1;
+  const nextBytes = ws.ingressBucket.bytes + bytes;
+  if (nextMessages > WS_INGRESS_MESSAGE_LIMIT || nextBytes > WS_INGRESS_BYTE_LIMIT) {
+    return false;
   }
-  entry.bytes += byteLen;
-  return { allowed: true, retryAfterMs: 0 };
+  ws.ingressBucket.messages = nextMessages;
+  ws.ingressBucket.bytes = nextBytes;
+  return true;
 }
 
 function rejectSocket(ws, code, message) {
-  send(ws, { type: "error", code, message });
-  try { ws.close(1008, message); } catch {}
+  send(ws, { v: 2, type: "error", code, message });
+  closeSocket(ws, 1008, message);
 }
 
 function rejectUpgrade(socket, status, message) {
@@ -202,11 +336,12 @@ function rejectUpgrade(socket, status, message) {
   socket.destroy();
 }
 
-function authenticateSocket(ws, role, roomId) {
+function authenticateSocket(ws, role, endpointId, leaseId = null) {
   clearTimeout(ws.authTimer);
   ws.authTimer = null;
   ws.role = role;
-  ws.roomId = roomId;
+  ws.endpointId = endpointId;
+  ws.leaseId = leaseId;
 }
 
 function normalizeBasePath(value) {
@@ -220,6 +355,11 @@ function normalizeBasePath(value) {
   return raw.startsWith("/") ? raw : `/${raw}`;
 }
 
+function isWithinPublicBasePath(pathname) {
+  if (!PUBLIC_BASE_PATH) return true;
+  return pathname === PUBLIC_BASE_PATH || pathname.startsWith(`${PUBLIC_BASE_PATH}/`);
+}
+
 function stripPublicBasePath(pathname) {
   if (!PUBLIC_BASE_PATH) return pathname;
   if (pathname === PUBLIC_BASE_PATH) return "/";
@@ -229,11 +369,11 @@ function stripPublicBasePath(pathname) {
   return pathname;
 }
 
-function audit(room, event, patch = {}) {
-  room.audit.event_count += 1;
-  room.audit.last_event = event;
-  room.audit.last_at = new Date().toISOString();
-  Object.assign(room.audit, patch);
+function audit(endpoint, event, patch = {}) {
+  endpoint.audit.event_count += 1;
+  endpoint.audit.last_event = event;
+  endpoint.audit.last_at = new Date().toISOString();
+  Object.assign(endpoint.audit, patch);
 }
 
 function tokenHash(token) {
@@ -247,56 +387,332 @@ function tokenHashMatches(token, expectedHash) {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
-function loadMobilePage() {
-  return readFile(join(__dirname, "web", "index.html"), "utf8");
+function boundedCredential(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 1024
+    ? value
+    : null;
 }
 
-function clearDesktopReconnectTimer(room) {
-  if (!room?.desktop_reconnect_timer) return;
-  clearTimeout(room.desktop_reconnect_timer);
-  room.desktop_reconnect_timer = null;
+function hasLegacyTokenAlias(message) {
+  return Object.hasOwn(message, "token") || Object.hasOwn(message, "pairing_token");
 }
 
-function closeRoom(room, reason) {
-  if (!room || room.closed || rooms.get(room.room_id) !== room) return;
-  clearDesktopReconnectTimer(room);
-  room.closed = true;
-  audit(room, "room_closed", { reason });
-  send(room.mobile, { type: "room_closed", reason });
-  try { room.mobile?.close(); } catch {}
-  try { room.desktop?.close(); } catch {}
-  rooms.delete(room.room_id);
+function validEndpointId(value) {
+  return typeof value === "string"
+    && value.length >= 4
+    && value.length <= 128
+    && /^[A-Za-z0-9_-]+$/.test(value);
 }
 
-function waitForDesktopReconnect(room) {
-  clearDesktopReconnectTimer(room);
-  room.desktop = null;
-  audit(room, "desktop_reconnecting", { grace_ms: DESKTOP_RECONNECT_GRACE_MS });
-  send(room.mobile, {
-    type: "desktop_connection_state",
-    status: "reconnecting",
-    grace_ms: DESKTOP_RECONNECT_GRACE_MS,
-  });
-  room.desktop_reconnect_timer = setTimeout(() => {
-    if (rooms.get(room.room_id) === room && !room.desktop) {
-      closeRoom(room, "desktop_disconnected");
+function relayStateContents(entries) {
+  const revoked = [...entries]
+    .map(([endpointId, revokedAt]) => ({
+      endpoint_id: endpointId,
+      revoked_at: revokedAt,
+    }))
+    .sort((left, right) => left.endpoint_id.localeCompare(right.endpoint_id));
+  const contents = `${JSON.stringify({
+    version: RELAY_STATE_VERSION,
+    revoked_endpoints: revoked,
+  }, null, 2)}\n`;
+  if (Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
+    throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
+  }
+  return contents;
+}
+
+async function loadRelayState() {
+  let contents;
+  try {
+    const metadata = await stat(RELAY_STATE_PATH);
+    if (!metadata.isFile()) throw new Error("relay state path is not a regular file");
+    if (metadata.size > MAX_RELAY_STATE_BYTES) {
+      throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
     }
-  }, DESKTOP_RECONNECT_GRACE_MS);
-  room.desktop_reconnect_timer.unref?.();
+    contents = await readFile(RELAY_STATE_PATH, "utf8");
+    if (Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
+      throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new Error(`failed to load relay state: ${error.message}`, { cause: error });
+  }
+
+  let state;
+  try { state = JSON.parse(contents); } catch (error) {
+    throw new Error("failed to load relay state: invalid JSON", { cause: error });
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state)
+    || state.version !== RELAY_STATE_VERSION
+    || !Array.isArray(state.revoked_endpoints)
+    || state.revoked_endpoints.length > MAX_REVOKED_ENDPOINTS) {
+    throw new Error("failed to load relay state: unsupported or malformed state");
+  }
+
+  for (const entry of state.revoked_endpoints) {
+    const revokedAt = typeof entry?.revoked_at === "string" ? entry.revoked_at : "";
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || !validEndpointId(entry.endpoint_id)
+      || !Number.isFinite(Date.parse(revokedAt))
+      || revokedEndpoints.has(entry.endpoint_id)) {
+      throw new Error("failed to load relay state: malformed revoked endpoint");
+    }
+    revokedEndpoints.set(entry.endpoint_id, revokedAt);
+  }
 }
 
+async function syncDirectory(path) {
+  let directory;
+  try {
+    directory = await open(path, "r");
+    await directory.sync();
+  } catch (error) {
+    // Directory fsync is not supported on every platform. The file itself is
+    // always fsynced before rename; supported hosts get the stronger guarantee.
+    if (!["EACCES", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(error?.code)) {
+      throw error;
+    }
+  } finally {
+    try { await directory?.close(); } catch {}
+  }
+}
+
+async function atomicWriteRelayState(nextState) {
+  const contents = relayStateContents(nextState);
+  const stateDirectory = dirname(RELAY_STATE_PATH);
+  await mkdir(stateDirectory, { recursive: true });
+  const temporaryPath = `${RELAY_STATE_PATH}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+  let temporaryFile;
+  try {
+    temporaryFile = await open(temporaryPath, "wx", 0o600);
+    await temporaryFile.writeFile(contents, "utf8");
+    await temporaryFile.sync();
+    await temporaryFile.close();
+    temporaryFile = null;
+    await rename(temporaryPath, RELAY_STATE_PATH);
+    try { await chmod(RELAY_STATE_PATH, 0o600); } catch {}
+    await syncDirectory(stateDirectory);
+  } catch (error) {
+    try { await temporaryFile?.close(); } catch {}
+    try { await rm(temporaryPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
+function persistRevocation(endpointId) {
+  const operation = relayStateMutation.then(async () => {
+    if (revokedEndpoints.has(endpointId)) return revokedEndpoints.get(endpointId);
+    if (revokedEndpoints.size >= MAX_REVOKED_ENDPOINTS) {
+      throw new Error("revoked endpoint capacity reached");
+    }
+    const revokedAt = new Date().toISOString();
+    const nextState = new Map(revokedEndpoints);
+    nextState.set(endpointId, revokedAt);
+    await atomicWriteRelayState(nextState);
+    revokedEndpoints.set(endpointId, revokedAt);
+    return revokedAt;
+  });
+  relayStateMutation = operation.catch(() => {});
+  return operation;
+}
+
+function randomLeaseId() {
+  return `lease_${crypto.randomBytes(18).toString("base64url")}`;
+}
+
+function withoutCredentials(message) {
+  const {
+    access_token: _accessToken,
+    token: _token,
+    pairing_token: _pairingToken,
+    desktop_secret: _desktopSecret,
+    ...safe
+  } = message;
+  return safe;
+}
+
+function socketOpen(ws) {
+  return Boolean(ws && ws.readyState === ws.OPEN);
+}
+
+function makeAudit() {
+  return {
+    created_at: new Date().toISOString(),
+    connected_at: null,
+    disconnected_at: null,
+    event_count: 0,
+  };
+}
+
+function desktopStatus(endpoint, status) {
+  send(endpoint.web, {
+    v: 2,
+    type: "desktop_connection_state",
+    endpoint_id: endpoint.endpoint_id,
+    lease_id: endpoint.lease_id,
+    status,
+  });
+}
+
+function notifyDesktopOfWeb(endpoint) {
+  if (!socketOpen(endpoint.desktop) || !socketOpen(endpoint.web)) return;
+  send(endpoint.desktop, {
+    v: 2,
+    type: "web_client_connected",
+    endpoint_id: endpoint.endpoint_id,
+    lease_id: endpoint.lease_id,
+    stream_epoch: endpoint.web.streamEpoch || null,
+    after_seq: endpoint.web.afterSeq,
+  });
+}
+
+function revokeEndpoint(endpoint, reason = "revoked", requester = null) {
+  if (!endpoint || endpoints.get(endpoint.endpoint_id) !== endpoint) return;
+  endpoints.delete(endpoint.endpoint_id);
+  audit(endpoint, "endpoint_revoked", { reason });
+  send(requester, {
+    v: 2,
+    type: "desktop_endpoint_revoked",
+    endpoint_id: endpoint.endpoint_id,
+    reason,
+  });
+  send(endpoint.web, {
+    v: 2,
+    type: "endpoint_revoked",
+    endpoint_id: endpoint.endpoint_id,
+    reason,
+  });
+  if (endpoint.desktop !== requester) {
+    send(endpoint.desktop, {
+      v: 2,
+      type: "desktop_endpoint_revoked",
+      endpoint_id: endpoint.endpoint_id,
+      reason,
+    });
+  }
+  closeSocket(endpoint.web, 4003, "endpoint revoked");
+  if (endpoint.desktop !== requester) closeSocket(endpoint.desktop, 4003, "endpoint revoked");
+  endpoint.web = null;
+  endpoint.desktop = null;
+  endpoint.lease_id = null;
+}
+
+function expireEndpoint(endpoint, reason = "desktop_offline_ttl_expired") {
+  if (!endpoint || endpoint.revoking || endpoints.get(endpoint.endpoint_id) !== endpoint) return;
+  endpoints.delete(endpoint.endpoint_id);
+  audit(endpoint, "endpoint_expired", { reason });
+  send(endpoint.web, {
+    v: 2,
+    type: "endpoint_revoked",
+    endpoint_id: endpoint.endpoint_id,
+    reason,
+  });
+  send(endpoint.desktop, {
+    v: 2,
+    type: "desktop_endpoint_revoked",
+    endpoint_id: endpoint.endpoint_id,
+    reason,
+  });
+  closeSocket(endpoint.web, 4003, "endpoint expired");
+  closeSocket(endpoint.desktop, 4003, "endpoint expired");
+  endpoint.web = null;
+  endpoint.desktop = null;
+  endpoint.lease_id = null;
+}
+
+function pruneExpiredEndpoints(now = Date.now()) {
+  for (const endpoint of endpoints.values()) {
+    if (endpoint.revoking || socketOpen(endpoint.desktop)
+      || !Number.isFinite(endpoint.desktop_offline_since)) continue;
+    if (now - endpoint.desktop_offline_since >= ENDPOINT_OFFLINE_TTL_MS) {
+      expireEndpoint(endpoint);
+    }
+  }
+}
 
 function healthSummary() {
-  const values = [...rooms.values()];
+  pruneExpiredEndpoints();
+  const values = [...endpoints.values()];
   return {
     ok: true,
+    endpoint_count: values.length,
+    // Keep the aggregate-only key consumed by the current deployment probe.
     room_count: values.length,
-    paired_count: values.filter((room) => room.paired).length,
-    desktop_open_count: values.filter((room) => room.desktop && room.desktop.readyState === room.desktop.OPEN).length,
-    mobile_open_count: values.filter((room) => room.mobile && room.mobile.readyState === room.mobile.OPEN).length,
+    connected_endpoint_count: values.filter((endpoint) => socketOpen(endpoint.desktop)).length,
+    desktop_open_count: values.filter((endpoint) => socketOpen(endpoint.desktop)).length,
+    desktop_offline_count: values.filter((endpoint) => !socketOpen(endpoint.desktop)).length,
+    web_client_open_count: values.filter((endpoint) => socketOpen(endpoint.web)).length,
     ws_connection_count: wss.clients.size,
-    unauthenticated_connection_count: [...wss.clients].filter((ws) => ws.role === "unknown").length,
+    unauthenticated_connection_count: [...wss.clients]
+      .filter((ws) => ws.role === "unknown").length,
   };
+}
+
+function webHeaders(contentType, cacheControl) {
+  return {
+    "content-type": contentType,
+    "cache-control": cacheControl,
+    "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' ws: wss:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    "cross-origin-opener-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+  };
+}
+
+function safeWebPath(routePath) {
+  let decoded;
+  try { decoded = decodeURIComponent(routePath); } catch { return null; }
+  if (decoded.includes("\0")) return null;
+  const requested = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  const candidate = resolve(WEB_ROOT, requested);
+  const relation = relative(WEB_ROOT, candidate);
+  if (relation.startsWith("..") || relation.includes(":") || relation.startsWith("/")) return null;
+  return candidate;
+}
+
+async function regularFile(path) {
+  try { return (await stat(path)).isFile(); } catch { return false; }
+}
+
+async function serveWebUi(req, res, routePath) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { allow: "GET, HEAD" });
+    res.end();
+    return;
+  }
+
+  let path = safeWebPath(routePath);
+  if (!path) {
+    res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+    res.end("bad path");
+    return;
+  }
+  if (!(await regularFile(path))) {
+    if (extname(path)) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("not found");
+      return;
+    }
+    path = resolve(WEB_ROOT, "index.html");
+  }
+  if (!(await regularFile(path))) {
+    res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+    res.end("WebUI build is not available");
+    return;
+  }
+
+  const extension = extname(path).toLowerCase();
+  const webRelativePath = relative(WEB_ROOT, path).replaceAll("\\", "/");
+  const contentHashedAsset = /^assets\/(?:.*\/)?[^/]+-[A-Za-z0-9_-]{8,}\.[^/]+$/.test(webRelativePath);
+  const cacheControl = extension === ".html"
+    ? "no-store"
+    : contentHashedAsset
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+  const body = req.method === "HEAD" ? null : await readFile(path);
+  res.writeHead(200, webHeaders(MIME_TYPES.get(extension) || "application/octet-stream", cacheControl));
+  res.end(body);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -308,21 +724,16 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const routePath = stripPublicBasePath(url.pathname);
   if (await telemetry.handleHttp(req, res, routePath, { clientIp: clientIp(req) })) return;
-  if (routePath === "/healthz") {
-    res.writeHead(200, { "content-type": "application/json" });
+  if (isWithinPublicBasePath(url.pathname) && routePath === "/healthz") {
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
     res.end(JSON.stringify(healthSummary()));
     return;
   }
-  if (routePath.startsWith("/r/")) {
-    const roomId = routePath.split("/").filter(Boolean).pop();
-    const room = rooms.get(roomId);
-    if (room) audit(room, "mobile_page");
-    const html = await loadMobilePage();
-    res.writeHead(200, {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-    });
-    res.end(html);
+  if (isWithinPublicBasePath(url.pathname)) {
+    await serveWebUi(req, res, routePath);
     return;
   }
   res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -338,8 +749,12 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-  if (stripPublicBasePath(url.pathname) !== "/ws") {
+  if (!isWithinPublicBasePath(url.pathname) || stripPublicBasePath(url.pathname) !== "/ws") {
     socket.destroy();
+    return;
+  }
+  if (!browserOriginAllowed(req)) {
+    rejectUpgrade(socket, "403 Forbidden", "websocket origin forbidden");
     return;
   }
   if (wss.clients.size >= MAX_WS_CONNECTIONS) {
@@ -355,11 +770,246 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
+function registerDesktop(ws, msg) {
+  const endpointId = msg.endpoint_id;
+  const accessToken = boundedCredential(msg.access_token);
+  const desktopSecret = boundedCredential(msg.desktop_secret);
+  if (ws.role !== "unknown" || msg.v !== 2 || !validEndpointId(endpointId)
+    || !accessToken || !desktopSecret) {
+    rejectSocket(ws, "bad_desktop_endpoint_register", "bad desktop endpoint registration");
+    return;
+  }
+
+  pruneExpiredEndpoints();
+  if (revokedEndpoints.has(endpointId)) {
+    rejectSocket(ws, "endpoint_revoked", "endpoint was permanently revoked");
+    return;
+  }
+
+  let endpoint = endpoints.get(endpointId);
+  if (!endpoint) {
+    if (endpoints.size >= MAX_ENDPOINTS) {
+      rejectSocket(ws, "endpoint_capacity_reached", "endpoint capacity reached");
+      return;
+    }
+    if (!consumeEndpointCreation(ws.clientIp)) {
+      rejectSocket(ws, "endpoint_creation_rate_limited", "endpoint creation rate limited");
+      return;
+    }
+    endpoint = {
+      endpoint_id: endpointId,
+      access_token_hash: tokenHash(accessToken),
+      desktop_secret_hash: tokenHash(desktopSecret),
+      desktop: null,
+      web: null,
+      lease_id: null,
+      desktop_offline_since: null,
+      revoking: false,
+      audit: makeAudit(),
+    };
+    endpoints.set(endpointId, endpoint);
+  } else {
+    if (!tokenHashMatches(desktopSecret, endpoint.desktop_secret_hash)) {
+      audit(endpoint, "desktop_register_rejected", { reason: "invalid_desktop_secret" });
+      rejectSocket(ws, "invalid_desktop_secret", "invalid desktop secret");
+      return;
+    }
+    if (!tokenHashMatches(accessToken, endpoint.access_token_hash)) {
+      audit(endpoint, "desktop_register_rejected", { reason: "invalid_access_token" });
+      rejectSocket(ws, "invalid_access_token", "invalid access token");
+      return;
+    }
+    if (socketOpen(endpoint.desktop) && endpoint.desktop !== ws) {
+      send(endpoint.desktop, {
+        v: 2,
+        type: "desktop_endpoint_replaced",
+        endpoint_id: endpointId,
+      });
+      closeSocket(endpoint.desktop, 4001, "desktop endpoint replaced");
+    }
+  }
+
+  endpoint.desktop = ws;
+  endpoint.desktop_offline_since = null;
+  authenticateSocket(ws, "desktop", endpointId);
+  audit(endpoint, "desktop_endpoint_registered", { connected_at: new Date().toISOString() });
+  send(ws, {
+    v: 2,
+    type: "desktop_endpoint_registered",
+    endpoint_id: endpointId,
+    web_client_connected: socketOpen(endpoint.web),
+    lease_id: socketOpen(endpoint.web) ? endpoint.lease_id : null,
+  });
+  if (socketOpen(endpoint.web)) {
+    desktopStatus(endpoint, "connected");
+    notifyDesktopOfWeb(endpoint);
+  }
+}
+
+function joinWebClient(ws, msg) {
+  const endpointId = msg.endpoint_id;
+  const accessToken = boundedCredential(msg.access_token);
+  if (ws.role !== "unknown" || msg.v !== 2 || !validEndpointId(endpointId) || !accessToken) {
+    rejectSocket(ws, "bad_web_client_join", "bad web client join");
+    return;
+  }
+  pruneExpiredEndpoints();
+  const endpoint = endpoints.get(endpointId);
+  if (!endpoint) {
+    rejectSocket(ws, "endpoint_not_found", "endpoint not found");
+    return;
+  }
+  if (!tokenHashMatches(accessToken, endpoint.access_token_hash)) {
+    audit(endpoint, "web_join_rejected", { reason: "invalid_token" });
+    rejectSocket(ws, "invalid_token", "invalid token");
+    return;
+  }
+
+  const leaseId = randomLeaseId();
+  const previousWeb = socketOpen(endpoint.web) ? endpoint.web : null;
+  if (previousWeb) {
+    send(previousWeb, {
+      v: 2,
+      type: "endpoint_replaced",
+      endpoint_id: endpointId,
+      lease_id: previousWeb.leaseId,
+    });
+  }
+
+  ws.streamEpoch = typeof msg.stream_epoch === "string" ? msg.stream_epoch.slice(0, 256) : null;
+  ws.afterSeq = Math.max(0, Number.isSafeInteger(msg.after_seq) ? msg.after_seq : 0);
+  endpoint.web = ws;
+  endpoint.lease_id = leaseId;
+  authenticateSocket(ws, "web", endpointId, leaseId);
+  audit(endpoint, "web_client_joined", { connected_at: new Date().toISOString() });
+  send(ws, {
+    v: 2,
+    type: "web_client_joined",
+    endpoint_id: endpointId,
+    lease_id: leaseId,
+    desktop_connected: socketOpen(endpoint.desktop),
+  });
+  notifyDesktopOfWeb(endpoint);
+
+  if (previousWeb) closeSocket(previousWeb, 4001, "endpoint replaced");
+}
+
+async function revokeFromSocket(ws, msg) {
+  const endpointId = msg.endpoint_id || ws.endpointId;
+  const desktopSecret = boundedCredential(msg.desktop_secret);
+  const endpoint = validEndpointId(endpointId) ? endpoints.get(endpointId) : null;
+  if (!endpoint) {
+    rejectSocket(ws, "endpoint_not_found", "endpoint not found");
+    return;
+  }
+  if ((ws.role !== "desktop" || ws.endpointId !== endpointId)
+    && !tokenHashMatches(desktopSecret, endpoint.desktop_secret_hash)) {
+    rejectSocket(ws, "invalid_desktop_secret", "invalid desktop secret");
+    return;
+  }
+  if (desktopSecret && !tokenHashMatches(desktopSecret, endpoint.desktop_secret_hash)) {
+    rejectSocket(ws, "invalid_desktop_secret", "invalid desktop secret");
+    return;
+  }
+  if (endpoint.revoking) {
+    rejectSocket(ws, "revocation_in_progress", "endpoint revocation is already in progress");
+    return;
+  }
+  endpoint.revoking = true;
+  ws.revokePending = true;
+  clearTimeout(ws.authTimer);
+  ws.authTimer = null;
+  try {
+    await persistRevocation(endpointId);
+  } catch (error) {
+    endpoint.revoking = false;
+    ws.revokePending = false;
+    console.error(`failed to persist revocation for ${endpointId}: ${error.message}`);
+    rejectSocket(ws, "revoke_persistence_failed", "failed to persist endpoint revocation");
+    return;
+  }
+  revokeEndpoint(endpoint, msg.reason || "revoked", ws);
+  closeSocket(ws, 1000, "endpoint revoked");
+}
+
+function forwardAuthenticatedMessage(ws, msg) {
+  const endpoint = endpoints.get(ws.endpointId);
+  if (!endpoint) {
+    rejectSocket(ws, "endpoint_not_found", "endpoint not found");
+    return;
+  }
+
+  if (ws.role === "web") {
+    if (endpoint.web !== ws || endpoint.lease_id !== ws.leaseId) {
+      rejectSocket(ws, "stale_lease", "stale web client lease");
+      return;
+    }
+    if (!WEB_TO_DESKTOP_TYPES.has(msg.type)) {
+      send(ws, {
+        v: 2,
+        type: "error",
+        code: "unsupported_message_type",
+        message: `unsupported web message type: ${String(msg.type || "")}`,
+      });
+      return;
+    }
+    if (!socketOpen(endpoint.desktop)) {
+      send(ws, {
+        v: 2,
+        type: "error",
+        code: "desktop_offline",
+        message: "desktop is offline",
+      });
+      return;
+    }
+    audit(endpoint, `web:${msg.type}`);
+    send(endpoint.desktop, {
+      ...withoutCredentials(msg),
+      v: 2,
+      endpoint_id: endpoint.endpoint_id,
+      lease_id: endpoint.lease_id,
+    });
+    return;
+  }
+
+  if (ws.role === "desktop") {
+    if (endpoint.desktop !== ws) {
+      rejectSocket(ws, "desktop_endpoint_replaced", "desktop endpoint was replaced");
+      return;
+    }
+    if (!DESKTOP_TO_WEB_TYPES.has(msg.type)) {
+      send(ws, {
+        v: 2,
+        type: "error",
+        code: "unsupported_message_type",
+        message: `unsupported desktop message type: ${String(msg.type || "")}`,
+      });
+      return;
+    }
+    if (!socketOpen(endpoint.web)) return;
+    if (msg.lease_id && msg.lease_id !== endpoint.lease_id) {
+      audit(endpoint, `desktop:${msg.type}:stale_lease`);
+      return;
+    }
+    audit(endpoint, `desktop:${msg.type}`);
+    send(endpoint.web, {
+      ...withoutCredentials(msg),
+      v: 2,
+      endpoint_id: endpoint.endpoint_id,
+      lease_id: endpoint.lease_id,
+    });
+  }
+}
+
 wss.on("connection", (ws, req) => {
   ws.role = "unknown";
-  ws.roomId = null;
+  ws.endpointId = null;
+  ws.leaseId = null;
   ws.clientIp = clientIp(req);
   ws.isAlive = true;
+  ws.policyClosing = false;
+  ws.revokePending = false;
+  ws.ingressBucket = { started_at: Date.now(), messages: 0, bytes: 0 };
   ws.authTimer = setTimeout(() => {
     if (ws.role === "unknown") {
       rejectSocket(ws, "authentication_timeout", "websocket authentication timeout");
@@ -368,215 +1018,97 @@ wss.on("connection", (ws, req) => {
   ws.authTimer.unref?.();
   ws.on("pong", () => { ws.isAlive = true; });
 
-  ws.on("message", (raw) => {
+  ws.on("message", (raw, isBinary) => {
+    if (ws.policyClosing || ws.revokePending) return;
+    if (!consumeIngress(ws, rawMessageBytes(raw))) {
+      rejectSocket(ws, "ingress_rate_limited", "websocket ingress rate limit exceeded");
+      return;
+    }
+    if (isBinary) {
+      send(ws, { v: 2, type: "error", code: "binary_unsupported", message: "binary messages are unsupported" });
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(String(raw));
     } catch {
-      send(ws, { type: "error", message: "bad json" });
+      send(ws, { v: 2, type: "error", code: "bad_json", message: "bad json" });
+      return;
+    }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
+      send(ws, { v: 2, type: "error", code: "bad_message", message: "bad message" });
+      return;
+    }
+    if (msg.v !== 2) {
+      rejectSocket(
+        ws,
+        "unsupported_protocol_version",
+        "protocol version 2 is required",
+      );
+      return;
+    }
+    if (hasLegacyTokenAlias(msg)) {
+      rejectSocket(
+        ws,
+        "legacy_token_alias_unsupported",
+        "legacy token aliases are unsupported",
+      );
       return;
     }
 
-    if (msg.type === "desktop_register") {
-      if (!msg.room_id || typeof msg.session_id !== "string" || !msg.pairing_token || !msg.desktop_secret) {
-        send(ws, { type: "error", message: "bad desktop_register" });
-        return;
-      }
-      const old = rooms.get(msg.room_id);
-      if (!old && rooms.size >= MAX_ROOMS) {
-        rejectSocket(ws, "room_capacity_reached", "room capacity reached");
-        return;
-      }
-      if (!old && !consumeRoomCreation(ws.clientIp)) {
-        rejectSocket(ws, "room_creation_rate_limited", "room creation rate limited");
-        return;
-      }
-      const existingMobile =
-        old && old.mobile && old.mobile.readyState === old.mobile.OPEN ? old.mobile : null;
-      const wasPaired = Boolean(old?.paired && existingMobile);
-      if (old) {
-        if (!tokenHashMatches(msg.desktop_secret, old.desktop_secret_hash)) {
-          audit(old, "desktop_register_rejected", { reason: "invalid_desktop_secret" });
-          send(ws, { type: "error", message: "invalid desktop secret" });
-          try { ws.close(); } catch {}
-          return;
-        }
-        clearDesktopReconnectTimer(old);
-        try { old.desktop?.close(); } catch {}
-      }
-      const room = {
-        room_id: msg.room_id,
-        session_id: msg.session_id,
-        desktop: ws,
-        mobile: existingMobile,
-        pairing_token_hash: tokenHash(msg.pairing_token),
-        desktop_secret_hash: tokenHash(msg.desktop_secret),
-        paired: wasPaired,
-        closed: false,
-        desktop_reconnect_timer: null,
-        audit: old?.audit || {
-          created_at: new Date().toISOString(),
-          connected_at: null,
-          disconnected_at: null,
-          event_count: 0,
-        },
-      };
-      rooms.set(room.room_id, room);
-      authenticateSocket(ws, "desktop", room.room_id);
-      audit(room, "desktop_register");
-      send(ws, { type: "room_registered", room_id: room.room_id });
-      if (existingMobile) {
-        send(existingMobile, { type: "desktop_connection_state", status: "connected" });
-        send(ws, { type: "mobile_connected", room_id: room.room_id });
-        send(ws, {
-          type: "mobile_action",
-          room_id: room.room_id,
-          session_id: room.session_id,
-          payload: { type: room.session_id ? "request_snapshot" : "request_session_list", payload: {} },
-        });
-      }
+    if (msg.type === "desktop_endpoint_register") {
+      registerDesktop(ws, msg);
       return;
     }
-
-    if (msg.type === "mobile_join") {
-      const room = rooms.get(msg.room_id);
-      if (!room || room.closed) {
-        console.log("[relay] mobile_join rejected", msg.room_id, "room not found");
-        send(ws, { type: "error", message: "room not found" });
-        return;
-      }
-      if (!tokenHashMatches(msg.token, room.pairing_token_hash)) {
-        console.log("[relay] mobile_join rejected", msg.room_id, "invalid token");
-        send(ws, { type: "error", message: "invalid token" });
-        return;
-      }
-      if (room.mobile && room.mobile.readyState === room.mobile.OPEN) {
-        send(room.mobile, { type: "room_replaced" });
-        try { room.mobile.close(); } catch {}
-      }
-      room.paired = true;
-      room.mobile = ws;
-      authenticateSocket(ws, "mobile", room.room_id);
-      audit(room, "mobile_connected", { connected_at: new Date().toISOString() });
-      console.log("[relay] mobile_connected", room.room_id);
-      send(ws, { type: "mobile_joined", room_id: room.room_id, session_id: room.session_id });
-      if (!room.desktop) {
-        send(ws, {
-          type: "desktop_connection_state",
-          status: "reconnecting",
-          grace_ms: DESKTOP_RECONNECT_GRACE_MS,
-        });
-      }
-      send(room.desktop, { type: "mobile_connected", room_id: room.room_id });
-      send(room.desktop, {
-        type: "mobile_action",
-        room_id: room.room_id,
-        session_id: room.session_id,
-        payload: { type: room.session_id ? "request_snapshot" : "request_session_list", payload: {} },
+    if (msg.type === "web_client_join") {
+      joinWebClient(ws, msg);
+      return;
+    }
+    if (msg.type === "desktop_endpoint_revoke") {
+      void revokeFromSocket(ws, msg).catch((error) => {
+        console.error(`unexpected endpoint revoke failure: ${error.message}`);
+        rejectSocket(ws, "revoke_failed", "endpoint revocation failed");
       });
       return;
     }
-
-    const room = rooms.get(ws.roomId);
-    if (!room || room.closed) return;
-
-    if (ws.role === "desktop") {
-      if (msg.type === "desktop_disconnect") {
-        const reason = msg.payload?.reason || "stopped";
-        audit(room, "desktop_disconnect", { reason });
-        closeRoom(room, reason);
-        return;
-      }
-      if (typeof msg.session_id === "string" && msg.session_id) {
-        room.session_id = msg.session_id;
-      }
-      audit(room, `desktop:${msg.type || "event"}`);
-      // 下载分片必须等 relay 真正把当前帧写出后才通知 desktop 继续下一块。
-      // 这把桌面端的有界通道背压贯穿到 relay→mobile 的慢速链路，避免
-      // ws.send 在慢网手机前无限累计几十 MiB 的 bufferedAmount。
-      if (msg.type === "artifact_download_chunk") {
-        const payload = msg.payload || {};
-        send(room.mobile, msg, (error) => acknowledgeDownloadChunk(room, payload, error));
-        return;
-      }
-      send(room.mobile, msg);
+    if (ws.role === "unknown") {
+      rejectSocket(ws, "authentication_required", "authenticate first");
       return;
     }
-
-    if (ws.role === "mobile") {
-      const payload = msg.type === "mobile_action" ? msg.payload : msg;
-      audit(room, `mobile:${payload?.type || "action"}`);
-      if (payload?.type === "attach_file_chunk") {
-        // 上传分片先做字节速率限流:mobile 网络抖动时避免把 desktop 写盘撑爆。
-        // base64 长度 ≈ 4/3 原始字节,粗估即可,精确解码反而消耗 CPU。
-        // data_base64 必须是 string:非 string(数字/对象等)的 .length 为 undefined,
-        // 会让 approxBytes 变 NaN 并把窗口计数器永久污染成 NaN,限流器随之 fail-open。
-        const dataBase64 = typeof payload?.data_base64 === "string" ? payload.data_base64 : "";
-        const approxBytes = Math.ceil(dataBase64.length * 3 / 4);
-        const uploadDecision = consumeMobileUploadBudget(ws, approxBytes);
-        if (!uploadDecision.allowed) {
-          // 超出窗口:直接通知 mobile 限流并停止转发,desktop 不会收到这一块。
-          send(ws, {
-            type: "attach_file_rate_limited",
-            room_id: room.room_id,
-            session_id: room.session_id,
-            payload: {
-              upload_id: payload?.upload_id || "",
-              retry_after_ms: uploadDecision.retryAfterMs,
-            },
-          });
-          return;
-        }
-        // 上传分片的背压贯穿(PR #213 审查 #3):relay 不在「转发给 desktop socket」时
-        // 就向 mobile 回 ok:true ack —— desktop 把帧写进 TCP 缓冲并不意味着桌面应用已把
-        // 数据落盘,这条提前 ack 会让 mobile 在慢盘设备上抢跑发下一块,堆积到 desktop 的
-        // 无界 inbound 通道。正确语义:成功 ack 由桌面端 streaming task 写盘后自己回
-        // `attach_file_relay_ack`(见 manager.rs stream_file_upload),relay 只负责把
-        // 「desktop 不可达 / 转发硬失败」这种**对端异常**立即回 NAK,避免 mobile 干等
-        // 65s 超时。这与下载链路对称:下载的成功 ack 也由 mobile 落盘后回,relay 只补 NAK。
-        const forwarded = send(room.desktop, {
-          type: "mobile_action",
-          room_id: room.room_id,
-          session_id: room.session_id,
-          payload,
-        });
-        if (!forwarded) {
-          // desktop socket 不可写(断开 / 未就绪):立刻 NAK,让 mobile 进入重试或失败,
-          // 不必等 desktop 端那条永远不会来的 ok:true ack。
-          acknowledgeUploadChunk(room, payload, new Error("desktop unreachable"));
-        }
-        return;
-      }
-      send(room.desktop, {
-        type: "mobile_action",
-        room_id: room.room_id,
-        session_id: room.session_id,
-        payload,
-      });
-    }
+    forwardAuthenticatedMessage(ws, msg);
   });
 
   ws.on("close", () => {
     clearTimeout(ws.authTimer);
     ws.authTimer = null;
-    const room = rooms.get(ws.roomId);
-    if (!room) return;
-    if (ws.role === "mobile" && room.mobile === ws) {
-      room.mobile = null;
-      audit(room, "mobile_disconnected", { disconnected_at: new Date().toISOString() });
-      send(room.desktop, { type: "mobile_disconnected", room_id: room.room_id });
+    const endpoint = endpoints.get(ws.endpointId);
+    if (!endpoint) return;
+    if (ws.role === "web" && endpoint.web === ws) {
+      const leaseId = endpoint.lease_id;
+      endpoint.web = null;
+      endpoint.lease_id = null;
+      audit(endpoint, "web_client_disconnected", { disconnected_at: new Date().toISOString() });
+      send(endpoint.desktop, {
+        v: 2,
+        type: "web_client_disconnected",
+        endpoint_id: endpoint.endpoint_id,
+        lease_id: leaseId,
+      });
     }
-    if (ws.role === "desktop" && room.desktop === ws) {
-      audit(room, "desktop_disconnected");
-      waitForDesktopReconnect(room);
+    if (ws.role === "desktop" && endpoint.desktop === ws) {
+      endpoint.desktop = null;
+      endpoint.desktop_offline_since = Date.now();
+      audit(endpoint, "desktop_disconnected", { disconnected_at: new Date().toISOString() });
+      desktopStatus(endpoint, "offline");
     }
   });
 });
 
 const heartbeatTimer = setInterval(() => {
-  const bucketExpiry = Date.now() - ROOM_CREATE_WINDOW_MS;
-  for (const [ip, bucket] of roomCreationBuckets) {
-    if (bucket.started_at <= bucketExpiry) roomCreationBuckets.delete(ip);
+  pruneExpiredEndpoints();
+  const endpointBucketExpiry = Date.now() - ENDPOINT_CREATE_WINDOW_MS;
+  for (const [ip, bucket] of endpointCreationBuckets) {
+    if (bucket.started_at <= endpointBucketExpiry) endpointCreationBuckets.delete(ip);
   }
   const wsBucketExpiry = Date.now() - WS_CONNECT_WINDOW_MS;
   for (const [ip, bucket] of wsConnectionBuckets) {
@@ -596,10 +1128,15 @@ heartbeatTimer.unref();
 server.listen(PORT, "0.0.0.0", () => {
   console.log(
     `pinvou remote relay listening on http://127.0.0.1:${PORT}`
-    + ` (max_rooms=${MAX_ROOMS}, max_ws_connections=${MAX_WS_CONNECTIONS}`
+    + ` (protocol=v2, max_endpoints=${MAX_ENDPOINTS}`
+    + `, max_ws_connections=${MAX_WS_CONNECTIONS}`
     + `, ws_connect_limit=${WS_CONNECT_LIMIT}/${WS_CONNECT_WINDOW_MS}ms`
     + `, ws_auth_timeout=${WS_AUTH_TIMEOUT_MS}ms`
-    + `, room_create_limit=${ROOM_CREATE_LIMIT}/${ROOM_CREATE_WINDOW_MS}ms`
+    + `, ws_ingress_limit=${WS_INGRESS_MESSAGE_LIMIT}msg/${WS_INGRESS_BYTE_LIMIT}B/${WS_INGRESS_WINDOW_MS}ms`
+    + `, ws_buffer_high_water=${WS_MAX_BUFFERED_BYTES}B`
+    + `, endpoint_create_limit=${ENDPOINT_CREATE_LIMIT}/${ENDPOINT_CREATE_WINDOW_MS}ms`
+    + `, endpoint_offline_ttl=${ENDPOINT_OFFLINE_TTL_MS}ms`
+    + `, revoked_endpoints=${revokedEndpoints.size}`
     + `, max_payload=${MAX_PAYLOAD_BYTES})`,
   );
 });

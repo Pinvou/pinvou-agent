@@ -408,7 +408,7 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     const PlanCard = ({ item, theme, t, onPrefill }) => {
       const isDark = theme === 'dark';
-      const active = item.cardState === 'active' && !item.resolved;
+      const active = item.cardState === 'active' && !item.resolved && !!item.planId;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
           <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.planReady}</div>
@@ -422,9 +422,9 @@ const ToolOutput = ({ item, isDark, t }) => {
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planNext}</span>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.acceptPlan(item.id, item.planMarkdown)}>{t.planGo}</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
               <button className={cardBtnCls(isDark)} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>{t.planDrop}</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
             </div>
           ) : (
             <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{item.statusLabel}</div>

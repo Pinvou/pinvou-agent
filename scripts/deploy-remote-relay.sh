@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# 部署 PINVOU 手机远控 relay：公网基线 → 本地验证 → 远端备份/原子替换 → 公网验证/失败回滚。
+# LEGACY：仅把已经退役的 v1 页面临时放入 Relay 当前实际服务的 web/dist/index.html。
+# 完整 WebUI 的正式发布方案尚待项目发起者确认；在此之前不要用本脚本发布 WebUI。
+# 旧流程：公网基线 → 本地验证 → 远端备份/原子替换 → 公网验证/失败回滚。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ "${PINVOU_ALLOW_LEGACY_REMOTE_DEPLOY:-0}" != "1" ]]; then
+  echo "Refusing to deploy the retired v1 remote page." >&2
+  echo "The WebUI v2 production release plan is intentionally not enabled yet." >&2
+  echo "Set PINVOU_ALLOW_LEGACY_REMOTE_DEPLOY=1 only for an explicitly approved legacy rollback." >&2
+  exit 64
+fi
+
 RELAY_DIR="$ROOT/remote-control-relay"
 SERVER="${PINVOU_REMOTE_DEPLOY_SERVER:-root@47.120.8.237}"
 REMOTE_DIR="${PINVOU_REMOTE_DEPLOY_DIR:-/opt/pinvou-remote-relay}"
@@ -123,7 +133,7 @@ node --check "$server_tmp"
 node --check "$telemetry_tmp"
 mkdir -p "$backup"
 cp -a "$remote_dir/server.js" "$backup/server.js"
-cp -a "$remote_dir/web/index.html" "$backup/index.html"
+cp -a "$remote_dir/web/dist/index.html" "$backup/index.html"
 cp -a "$remote_dir/package.json" "$backup/package.json"
 cp -a "$remote_dir/package-lock.json" "$backup/package-lock.json"
 if [[ -f "$remote_dir/telemetry-service.js" ]]; then
@@ -145,7 +155,7 @@ fi
 
 rollback() {
   cp -a "$backup/server.js" "$remote_dir/server.js"
-  cp -a "$backup/index.html" "$remote_dir/web/index.html"
+  cp -a "$backup/index.html" "$remote_dir/web/dist/index.html"
   cp -a "$backup/package.json" "$remote_dir/package.json"
   cp -a "$backup/package-lock.json" "$remote_dir/package-lock.json"
   (cd "$remote_dir" && npm ci --omit=dev)
@@ -187,7 +197,8 @@ mv "$lock_tmp" "$remote_dir/package-lock.json"
 (cd "$remote_dir" && npm ci --omit=dev)
 mv "$server_tmp" "$remote_dir/server.js"
 mv "$telemetry_tmp" "$remote_dir/telemetry-service.js"
-mv "$web_tmp" "$remote_dir/web/index.html"
+mkdir -p "$remote_dir/web/dist"
+mv "$web_tmp" "$remote_dir/web/dist/index.html"
 mv "$stats_tmp" "$remote_dir/web/stats.html"
 mv "$hardening_tmp" "$dropin"
 systemctl daemon-reload
@@ -226,7 +237,8 @@ esac
 test -f "$backup/server.js"
 test -f "$backup/index.html"
 cp -a "$backup/server.js" "$remote_dir/server.js"
-cp -a "$backup/index.html" "$remote_dir/web/index.html"
+mkdir -p "$remote_dir/web/dist"
+cp -a "$backup/index.html" "$remote_dir/web/dist/index.html"
 cp -a "$backup/package.json" "$remote_dir/package.json"
 cp -a "$backup/package-lock.json" "$remote_dir/package-lock.json"
 (cd "$remote_dir" && npm ci --omit=dev)

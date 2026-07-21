@@ -30,6 +30,7 @@ use deepseek_tui::session_manager::{
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
 use super::paths;
@@ -133,6 +134,17 @@ pub struct ScheduledEngineState {
     pub token_accounting: ScheduledTokenAccounting,
 }
 
+/// Authoritative engine snapshot for an ordinary chat session. The event
+/// forwarder sanitizes engine-only user prompt injections before constructing
+/// this value; persistence therefore never depends on a WebView staying alive.
+#[derive(Debug, Clone)]
+pub struct ChatEngineState {
+    pub messages: Vec<Message>,
+    pub system_prompt: Option<SystemPrompt>,
+    pub model: String,
+    pub workspace: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledProfileRegistry {
     schema_version: u32,
@@ -176,6 +188,94 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
+}
+
+/// Transactional checkout of the two per-session one-shot prompt injections.
+/// Unless committed after Engine submission, Drop restores values that still
+/// belong to the same skill/persona and have not been replaced meanwhile.
+pub(crate) struct PendingTurnInjections {
+    store: SessionStore,
+    session_id: String,
+    skill: Option<(String, String)>,
+    persona: Option<(Option<String>, String)>,
+    committed: bool,
+}
+
+impl PendingTurnInjections {
+    pub(crate) fn skill_instruction(&self) -> Option<&str> {
+        self.skill
+            .as_ref()
+            .map(|(_, instruction)| instruction.as_str())
+    }
+
+    pub(crate) fn persona_body(&self) -> Option<&str> {
+        self.persona.as_ref().map(|(_, body)| body.as_str())
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingTurnInjections {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.store.restore_pending_turn_injections(
+            &self.session_id,
+            self.skill.take(),
+            self.persona.take(),
+        );
+    }
+}
+
+/// Atomic checkout of the currently actionable Plan ticket. Claiming switches
+/// the session to Yolo before the execution turn is submitted. Drop restores
+/// Plan + ticket on every pre-submission error or cancelled command future.
+pub(crate) struct PendingPlanClaim {
+    store: SessionStore,
+    session_id: String,
+    plan_id: String,
+    accepted_state: SessionModeState,
+    settled: bool,
+}
+
+impl PendingPlanClaim {
+    pub(crate) fn accepted_state(&self) -> &SessionModeState {
+        &self.accepted_state
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.store
+            .finish_pending_plan_claim(&self.session_id, &self.plan_id);
+        self.settled = true;
+    }
+
+    pub(crate) fn rollback(mut self) -> Result<()> {
+        let result = self
+            .store
+            .restore_pending_plan_claim(&self.session_id, &self.plan_id);
+        self.settled = true;
+        result
+    }
+}
+
+impl Drop for PendingPlanClaim {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        if let Err(error) = self
+            .store
+            .restore_pending_plan_claim(&self.session_id, &self.plan_id)
+        {
+            eprintln!(
+                "[sessions] restore dropped plan claim for {} failed: {error:#}",
+                self.session_id
+            );
+        }
+    }
 }
 
 impl SessionStore {
@@ -335,6 +435,17 @@ impl SessionStore {
             .with_context(|| format!("load_session({id})"))
     }
 
+    /// Return the persisted Session size without loading its transcript. Web
+    /// downloads use this to reserve bounded transfer capacity before the
+    /// comparatively expensive deserialize/serialize step begins.
+    pub(crate) fn persisted_size(&self, id: &str) -> Result<u64> {
+        validate_session_id(id)?;
+        let path = self.manager.sessions_dir().join(format!("{id}.json"));
+        std::fs::metadata(&path)
+            .with_context(|| format!("read Session metadata {}", path.display()))
+            .map(|metadata| metadata.len())
+    }
+
     /// 落盘整个 session（atomic write 由上游处理）。
     pub fn save(&self, session: &SavedSession) -> Result<PathBuf> {
         if self.is_scheduled_session(&session.metadata.id)? {
@@ -434,6 +545,10 @@ impl SessionStore {
     /// session. Each scheduled run has an independent conversation, while all
     /// runs owned by the same automation share that automation's workspace.
     pub fn execution_workspace(&self, id: &str) -> Result<PathBuf> {
+        // This helper is a path authority boundary, not merely a convenience
+        // accessor. Validate before any join so callers can never turn a
+        // Session id such as `../outside` into an escaping workspace path.
+        validate_session_id(id)?;
         if let Some(profile) = self.scheduled_profile(id) {
             return Ok(profile.workspace);
         }
@@ -507,6 +622,89 @@ impl SessionStore {
         if let Err(error) = self.enforce_session_retention_locked() {
             eprintln!(
                 "[sessions] scheduled retention reconciliation failed after committed engine state save: {error:#}"
+            );
+        }
+        Ok(session)
+    }
+
+    /// Persist a sanitized `SessionUpdated` snapshot for an ordinary chat.
+    ///
+    /// The same mutation lock used by UI CAS, metadata edits, artifacts, and
+    /// scheduled persistence covers the complete read/modify/atomic-save chain.
+    /// Engine snapshots are authoritative and may legitimately truncate the
+    /// transcript for edit-last-turn or compaction, so the UI overwrite guard
+    /// is intentionally not applied here.
+    pub fn persist_chat_engine_state(
+        &self,
+        id: &str,
+        state: ChatEngineState,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is a scheduled-run session");
+        }
+        validate_session_id(id)?;
+
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load chat session {id} for engine persistence"))?;
+        session.metadata.updated_at = Utc::now();
+        session.metadata.message_count = state.messages.len();
+        session.metadata.model = state.model;
+        session.metadata.workspace = state.workspace;
+        session.messages = state.messages;
+        session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
+
+        self.save_session_atomic(&session)
+            .with_context(|| format!("persist chat engine state for {id}"))?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!(
+                "[sessions] chat retention reconciliation failed after committed engine state save: {error:#}"
+            );
+        }
+        Ok(session)
+    }
+
+    /// Terminal fallback for an admitted chat or interactive scheduled turn
+    /// whose Engine failed before
+    /// emitting a user-bearing `SessionUpdated` snapshot (for example, an
+    /// unconfigured model client). The content revision captured before
+    /// submission prevents a duplicate append or stale edit if another
+    /// authoritative writer already advanced the transcript.
+    pub(crate) fn persist_admitted_chat_display(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        display_message: Message,
+        edit_last: bool,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        validate_session_id(id)?;
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load chat session {id} for admitted display fallback"))?;
+        if transcript_revision(&session.messages)? != expected_revision {
+            return Ok(session);
+        }
+        if edit_last {
+            if let Some(index) = session
+                .messages
+                .iter()
+                .rposition(|message| message.role == "user")
+            {
+                session.messages.truncate(index);
+            }
+        }
+        session.messages.push(display_message);
+        session.metadata.message_count = session.messages.len();
+        session.metadata.updated_at = Utc::now();
+        self.save_session_atomic(&session)
+            .with_context(|| format!("persist admitted chat display for {id}"))?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!(
+                "[sessions] chat retention reconciliation failed after admitted display save: {error:#}"
             );
         }
         Ok(session)
@@ -885,11 +1083,15 @@ impl SessionStore {
         Ok(session)
     }
 
-    /// 替换 session 的 messages 数组并刷新 updated_at / message_count。
-    /// 前端每轮 TurnComplete 后调用，把 messages 数组同步给后端持久化。
-    /// total_tokens 暂时不维护（前端没拿到 usage 数据），保持原值。
+    /// Replace a transcript for explicit store-maintenance flows. Live ordinary
+    /// turns use [`Self::persist_chat_engine_state`]; Web edits use the revision
+    /// CAS entry point. `total_tokens` is preserved.
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
-        let mut session = self.load(id)?;
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for transcript update"))?;
         if looks_like_truncating_overwrite(&session.messages, &messages) {
             anyhow::bail!(
                 "refusing to overwrite {} existing messages with {} unrelated messages",
@@ -900,18 +1102,70 @@ impl SessionStore {
         session.metadata.message_count = messages.len();
         session.metadata.updated_at = Utc::now();
         session.messages = messages;
-        self.save(&session)?;
+        self.save_session_atomic(&session)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!(
+                "[sessions] retention reconciliation failed after transcript update: {error:#}"
+            );
+        }
         Ok(())
+    }
+
+    /// Atomically replace a normal chat transcript only when the caller's
+    /// content-derived revision still matches the durable transcript.
+    ///
+    /// The mutation lock deliberately covers load, revision comparison,
+    /// truncation protection, and the atomic file replacement. Metadata-only
+    /// changes (for example title or artifacts) never create false conflicts.
+    pub fn compare_and_swap_messages(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        messages: Vec<Message>,
+    ) -> Result<String> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot replace messages for scheduled-run session '{id}'");
+        }
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for transcript CAS"))?;
+        let current_revision = transcript_revision(&session.messages)?;
+        if current_revision != expected_revision {
+            bail!("session_revision_conflict: Session transcript changed while WebUI was editing");
+        }
+        if looks_like_truncating_overwrite(&session.messages, &messages) {
+            bail!(
+                "refusing to overwrite {} existing messages with {} unrelated messages",
+                session.messages.len(),
+                messages.len()
+            );
+        }
+
+        let next_revision = transcript_revision(&messages)?;
+        session.metadata.message_count = messages.len();
+        session.metadata.updated_at = Utc::now();
+        session.messages = messages;
+        self.save_session_atomic(&session)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!("[sessions] retention reconciliation failed after transcript CAS: {error:#}");
+        }
+        Ok(next_revision)
     }
 
     /// 替换 session 的产物列表。前端跟踪 write_file / append_file 工具调用积累的 paths,
     /// 每轮 TurnComplete 一起落盘。重启 / 切换 session 后能从 SavedSession.artifacts
     /// 恢复列表(让用户感知产物跟 session 是一对一的)。
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
             bail!("Cannot replace artifacts for scheduled-run session '{id}'");
         }
-        let mut session = self.load(id)?;
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for artifact update"))?;
         let session_id = session.metadata.id.clone();
         let now = Utc::now();
         session.artifacts = paths
@@ -934,7 +1188,12 @@ impl SessionStore {
             })
             .collect();
         session.metadata.updated_at = now;
-        self.save(&session)?;
+        self.save_session_atomic(&session)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!(
+                "[sessions] retention reconciliation failed after artifact update: {error:#}"
+            );
+        }
         Ok(())
     }
 
@@ -1006,7 +1265,89 @@ impl SessionStore {
         let mut m = self.mode_states.write();
         let entry = m.entry(id.to_string()).or_default();
         entry.mode = mode;
+        entry.pending_plan_id = None;
+        entry.plan_claim_in_flight = None;
         Ok(())
+    }
+
+    /// Register the newest actionable plan only while the session is still in
+    /// Plan mode. A newer TurnComplete supersedes the previous ticket.
+    pub(crate) fn register_pending_plan(
+        &self,
+        id: &str,
+        plan_id: String,
+    ) -> Option<SessionModeState> {
+        let mut states = self.mode_states.write();
+        let entry = states.entry(id.to_string()).or_default();
+        if entry.mode != SerializableMode::Plan || entry.plan_claim_in_flight.is_some() {
+            return None;
+        }
+        entry.pending_plan_id = Some(plan_id);
+        Some(entry.clone())
+    }
+
+    /// Atomically compare-and-consume a Plan ticket and switch to Yolo. The
+    /// returned guard restores the ticket if Engine submission does not commit.
+    pub(crate) fn claim_pending_plan(&self, id: &str, plan_id: &str) -> Result<PendingPlanClaim> {
+        let accepted_state = {
+            let mut states = self.mode_states.write();
+            let entry = states.entry(id.to_string()).or_default();
+            if entry.mode != SerializableMode::Plan
+                || entry.pending_plan_id.as_deref() != Some(plan_id)
+                || entry.plan_claim_in_flight.is_some()
+            {
+                bail!("plan_not_active");
+            }
+            entry.mode = SerializableMode::Yolo;
+            entry.pending_plan_id = None;
+            entry.plan_claim_in_flight = Some(plan_id.to_string());
+            entry.clone()
+        };
+        Ok(PendingPlanClaim {
+            store: self.clone(),
+            session_id: id.to_string(),
+            plan_id: plan_id.to_string(),
+            accepted_state,
+            settled: false,
+        })
+    }
+
+    fn finish_pending_plan_claim(&self, id: &str, plan_id: &str) {
+        let mut states = self.mode_states.write();
+        let Some(entry) = states.get_mut(id) else {
+            return;
+        };
+        if entry.plan_claim_in_flight.as_deref() == Some(plan_id) {
+            entry.plan_claim_in_flight = None;
+        }
+    }
+
+    fn restore_pending_plan_claim(&self, id: &str, plan_id: &str) -> Result<()> {
+        let mut states = self.mode_states.write();
+        let entry = states.entry(id.to_string()).or_default();
+        if entry.mode != SerializableMode::Yolo
+            || entry.pending_plan_id.is_some()
+            || entry.plan_claim_in_flight.as_deref() != Some(plan_id)
+        {
+            bail!("restore plan claim conflict");
+        }
+        entry.mode = SerializableMode::Plan;
+        entry.pending_plan_id = Some(plan_id.to_string());
+        entry.plan_claim_in_flight = None;
+        Ok(())
+    }
+
+    pub(crate) fn discard_pending_plan(&self, id: &str, plan_id: &str) -> Result<SessionModeState> {
+        let mut states = self.mode_states.write();
+        let entry = states.entry(id.to_string()).or_default();
+        if entry.mode != SerializableMode::Plan
+            || entry.pending_plan_id.as_deref() != Some(plan_id)
+            || entry.plan_claim_in_flight.is_some()
+        {
+            bail!("plan_not_active");
+        }
+        entry.pending_plan_id = None;
+        Ok(entry.clone())
     }
 
     /// 设置品悟 review 开关（用户在 UI 顶部 toggle 切换）。
@@ -1046,6 +1387,65 @@ impl SessionStore {
         let entry = m.get_mut(id)?;
         let skill = entry.active_skill.as_mut()?;
         skill.pending_instruction.take()
+    }
+
+    /// Atomically checkout every one-shot prompt injection for a turn. The
+    /// returned guard restores them on any pre-submission error or cancelled
+    /// future; callers commit it only after EngineHandle accepts the operation.
+    pub(crate) fn take_pending_turn_injections(&self, id: &str) -> PendingTurnInjections {
+        let (skill, persona) = {
+            let mut states = self.mode_states.write();
+            match states.get_mut(id) {
+                Some(state) => {
+                    let skill = state.active_skill.as_mut().and_then(|binding| {
+                        binding
+                            .pending_instruction
+                            .take()
+                            .map(|instruction| (binding.name.clone(), instruction))
+                    });
+                    let persona = state
+                        .pending_persona_body
+                        .take()
+                        .map(|body| (state.active_persona.clone(), body));
+                    (skill, persona)
+                }
+                None => (None, None),
+            }
+        };
+        PendingTurnInjections {
+            store: self.clone(),
+            session_id: id.to_string(),
+            skill,
+            persona,
+            committed: false,
+        }
+    }
+
+    fn restore_pending_turn_injections(
+        &self,
+        id: &str,
+        skill: Option<(String, String)>,
+        persona: Option<(Option<String>, String)>,
+    ) {
+        if skill.is_none() && persona.is_none() {
+            return;
+        }
+        let mut states = self.mode_states.write();
+        let Some(state) = states.get_mut(id) else {
+            return;
+        };
+        if let Some((skill_name, instruction)) = skill {
+            if let Some(binding) = state.active_skill.as_mut() {
+                if binding.name == skill_name && binding.pending_instruction.is_none() {
+                    binding.pending_instruction = Some(instruction);
+                }
+            }
+        }
+        if let Some((persona_id, body)) = persona {
+            if state.active_persona == persona_id && state.pending_persona_body.is_none() {
+                state.pending_persona_body = Some(body);
+            }
+        }
     }
 
     /// 解除 session 的 skill 绑定(用户点 chips 区 ✕ 时调用)。
@@ -1494,6 +1894,16 @@ fn generate_session_id() -> String {
     buf
 }
 
+/// Stable optimistic-concurrency token for transcript content only.
+///
+/// Session metadata and artifacts intentionally do not participate: renaming a
+/// Session or discovering an artifact must not invalidate a browser transcript
+/// edit that was based on the same messages.
+pub fn transcript_revision(messages: &[Message]) -> Result<String> {
+    let encoded = serde_json::to_vec(messages).context("serialize transcript for revision")?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
 fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -> bool {
     if incoming.len() >= existing.len() || existing.len() <= 2 {
         return false;
@@ -1528,8 +1938,7 @@ mod tests {
                 .unwrap_or(0)
         ));
         std::env::set_var("PINVOU3_HOME", &tmp);
-        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled"))
-            .expect("boot");
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
         // 注意：不 remove_var——锁还没 drop，下面的断言需要 PINVOU3_HOME 仍是这个值。
         (store, guard)
     }
@@ -1626,6 +2035,113 @@ mod tests {
             mode,
             token_accounting,
         }
+    }
+
+    fn chat_engine_state(messages: Vec<Message>) -> ChatEngineState {
+        ChatEngineState {
+            messages,
+            system_prompt: Some(SystemPrompt::Text("ordinary system prompt".to_string())),
+            model: "/ordinary-engine-model".to_string(),
+            workspace: std::env::temp_dir().join("ordinary-engine-workspace"),
+        }
+    }
+
+    #[test]
+    fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
+        let (store, _g) = isolated_store();
+        let session = store
+            .create_new("/initial-model".into(), None, std::env::temp_dir())
+            .expect("create ordinary chat");
+        store
+            .update_messages(
+                &session.metadata.id,
+                vec![user_text("old"), assistant_text("old answer")],
+            )
+            .expect("seed transcript");
+
+        let authoritative = vec![
+            user_text("visible user prompt"),
+            assistant_text("authoritative answer"),
+        ];
+        let saved = store
+            .persist_chat_engine_state(
+                &session.metadata.id,
+                chat_engine_state(authoritative.clone()),
+            )
+            .expect("persist ordinary SessionUpdated");
+
+        assert_eq!(saved.messages, authoritative);
+        assert_eq!(saved.metadata.message_count, 2);
+        assert_eq!(saved.metadata.model, "/ordinary-engine-model");
+        assert_eq!(
+            saved.system_prompt.as_deref(),
+            Some("ordinary system prompt")
+        );
+        let reopened = reopen_store(&store).expect("reopen");
+        assert_eq!(
+            reopened
+                .load(&session.metadata.id)
+                .expect("load durable chat")
+                .messages,
+            authoritative
+        );
+    }
+
+    #[test]
+    fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
+        let (store, _g) = isolated_store();
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let baseline = vec![user_text("first"), assistant_text("answer")];
+        store
+            .update_messages(&session.metadata.id, baseline.clone())
+            .unwrap();
+        let baseline_revision = transcript_revision(&baseline).unwrap();
+
+        let appended = store
+            .persist_admitted_chat_display(
+                &session.metadata.id,
+                &baseline_revision,
+                user_text("second"),
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            appended.messages,
+            vec![
+                user_text("first"),
+                assistant_text("answer"),
+                user_text("second")
+            ]
+        );
+        let unchanged = store
+            .persist_admitted_chat_display(
+                &session.metadata.id,
+                &baseline_revision,
+                user_text("must not duplicate"),
+                false,
+            )
+            .unwrap();
+        assert_eq!(unchanged.messages, appended.messages);
+
+        let edit_revision = transcript_revision(&appended.messages).unwrap();
+        let edited = store
+            .persist_admitted_chat_display(
+                &session.metadata.id,
+                &edit_revision,
+                user_text("edited second"),
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            edited.messages,
+            vec![
+                user_text("first"),
+                assistant_text("answer"),
+                user_text("edited second")
+            ]
+        );
     }
 
     #[test]
@@ -2594,6 +3110,128 @@ mod tests {
     }
 
     #[test]
+    fn transcript_cas_commits_and_returns_content_revision() {
+        let (store, _g) = isolated_store();
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let expected = transcript_revision(&session.messages).expect("empty revision");
+        let messages = vec![user_text("hello")];
+
+        let committed = store
+            .compare_and_swap_messages(&session.metadata.id, &expected, messages.clone())
+            .expect("CAS commit");
+
+        assert_eq!(committed, transcript_revision(&messages).expect("revision"));
+        assert_eq!(
+            store.load(&session.metadata.id).expect("load").messages,
+            messages
+        );
+    }
+
+    #[test]
+    fn transcript_cas_rejects_stale_revision_without_overwrite() {
+        let (store, _g) = isolated_store();
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let stale = transcript_revision(&session.messages).expect("empty revision");
+        let winner = vec![user_text("winner")];
+        store
+            .compare_and_swap_messages(&session.metadata.id, &stale, winner.clone())
+            .expect("first commit");
+
+        let error = store
+            .compare_and_swap_messages(
+                &session.metadata.id,
+                &stale,
+                vec![user_text("stale overwrite")],
+            )
+            .expect_err("stale CAS must fail");
+
+        assert!(format!("{error:#}").contains("session_revision_conflict"));
+        assert_eq!(
+            store.load(&session.metadata.id).expect("load").messages,
+            winner
+        );
+    }
+
+    #[test]
+    fn metadata_and_artifacts_do_not_change_transcript_revision() {
+        let (store, _g) = isolated_store();
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let messages = vec![user_text("stable transcript")];
+        store
+            .update_messages(&session.metadata.id, messages.clone())
+            .expect("seed transcript");
+        let before = transcript_revision(&store.load(&session.metadata.id).unwrap().messages)
+            .expect("revision before metadata edits");
+
+        store
+            .set_title(&session.metadata.id, "renamed".to_string())
+            .expect("rename");
+        store
+            .update_artifacts(
+                &session.metadata.id,
+                vec![std::env::temp_dir()
+                    .join("transcript-revision-artifact.txt")
+                    .to_string_lossy()
+                    .into_owned()],
+            )
+            .expect("update artifacts");
+
+        let after = transcript_revision(&store.load(&session.metadata.id).unwrap().messages)
+            .expect("revision after metadata edits");
+        assert_eq!(before, after);
+        assert_eq!(
+            store.load(&session.metadata.id).expect("load").messages,
+            messages
+        );
+    }
+
+    #[test]
+    fn concurrent_stale_transcript_write_cannot_overwrite_winner() {
+        let (store, _g) = isolated_store();
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let expected = transcript_revision(&session.messages).expect("empty revision");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+
+        let mut handles = Vec::new();
+        for text in ["writer one", "writer two"] {
+            let thread_store = store.clone();
+            let thread_id = session.metadata.id.clone();
+            let thread_expected = expected.clone();
+            let thread_barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                thread_barrier.wait();
+                thread_store.compare_and_swap_messages(
+                    &thread_id,
+                    &thread_expected,
+                    vec![user_text(text)],
+                )
+            }));
+        }
+
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("writer thread"))
+            .collect();
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
+
+        let durable = store.load(&session.metadata.id).expect("load winner");
+        let durable_revision = transcript_revision(&durable.messages).expect("durable revision");
+        assert!(outcomes
+            .iter()
+            .filter_map(|result| result.as_ref().ok())
+            .any(|revision| revision == &durable_revision));
+    }
+
+    #[test]
     fn delete_removes_session() {
         let (store, _g) = isolated_store();
         let s = store
@@ -2803,6 +3441,54 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
+        let (store, _g) = isolated_store();
+        let sid = "plan-ticket-session";
+        store
+            .set_mode(sid, SerializableMode::Plan)
+            .expect("enter plan");
+        let registered = store
+            .register_pending_plan(sid, "plan-1".to_string())
+            .expect("register plan");
+        assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
+        assert!(store.claim_pending_plan(sid, "stale-plan").is_err());
+
+        let claim = store
+            .claim_pending_plan(sid, "plan-1")
+            .expect("claim current plan");
+        assert_eq!(claim.accepted_state().mode, SerializableMode::Yolo);
+        assert!(claim.accepted_state().pending_plan_id.is_none());
+        assert!(store.claim_pending_plan(sid, "plan-1").is_err());
+        drop(claim);
+        let restored = store.mode_state(sid);
+        assert_eq!(restored.mode, SerializableMode::Plan);
+        assert_eq!(restored.pending_plan_id.as_deref(), Some("plan-1"));
+
+        store
+            .claim_pending_plan(sid, "plan-1")
+            .expect("reclaim current plan")
+            .commit();
+        let committed = store.mode_state(sid);
+        assert_eq!(committed.mode, SerializableMode::Yolo);
+        assert!(committed.pending_plan_id.is_none());
+        assert!(store.claim_pending_plan(sid, "plan-1").is_err());
+
+        store
+            .set_mode(sid, SerializableMode::Plan)
+            .expect("re-enter plan");
+        store
+            .register_pending_plan(sid, "plan-2".to_string())
+            .expect("register newer plan");
+        assert!(store.discard_pending_plan(sid, "plan-1").is_err());
+        let discarded = store
+            .discard_pending_plan(sid, "plan-2")
+            .expect("discard current plan");
+        assert_eq!(discarded.mode, SerializableMode::Plan);
+        assert!(discarded.pending_plan_id.is_none());
+        assert!(store.discard_pending_plan(sid, "plan-2").is_err());
+    }
+
     /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next(→Plan) /
     /// accept_plan / exit_plan_to_yolo(→Yolo) 实质都只调 set_mode,全程**只动 mode**——
     /// 品悟开关 / 挂载知识集 / 人格卡 / skill 绑定等正交状态必须原样保留。
@@ -2883,6 +3569,53 @@ mod tests {
         // 仅 pending_instruction 槽位被消费 — 关键:phases 不丢
         let b2 = store.active_skill("s1").expect("still bound");
         assert_eq!(b2.name, "h3c-ppt");
+    }
+
+    #[test]
+    fn pending_turn_injections_restore_on_drop_and_commit_only_after_submission() {
+        let (store, _g) = isolated_store();
+        store.bind_skill(
+            "s1",
+            ActiveSkillBinding {
+                name: "skill-a".into(),
+                pending_instruction: Some("SKILL BODY".into()),
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+        store.set_active_persona("s1", Some("persona-a".into()));
+        store.set_pending_persona_body("s1", Some("PERSONA BODY".into()));
+
+        {
+            let pending = store.take_pending_turn_injections("s1");
+            assert_eq!(pending.skill_instruction(), Some("SKILL BODY"));
+            assert_eq!(pending.persona_body(), Some("PERSONA BODY"));
+            assert!(store.take_pending_skill_instruction("s1").is_none());
+            assert!(store.take_pending_persona_body("s1").is_none());
+            // Simulate attachment/build/Engine submission failure.
+        }
+        assert_eq!(
+            store.take_pending_skill_instruction("s1").as_deref(),
+            Some("SKILL BODY")
+        );
+        assert_eq!(
+            store.take_pending_persona_body("s1").as_deref(),
+            Some("PERSONA BODY")
+        );
+
+        store.bind_skill(
+            "s1",
+            ActiveSkillBinding {
+                name: "skill-a".into(),
+                pending_instruction: Some("SECOND SKILL".into()),
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+        store.set_pending_persona_body("s1", Some("SECOND PERSONA".into()));
+        store.take_pending_turn_injections("s1").commit();
+        assert!(store.take_pending_skill_instruction("s1").is_none());
+        assert!(store.take_pending_persona_body("s1").is_none());
     }
 
     #[test]

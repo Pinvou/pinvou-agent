@@ -1,321 +1,1455 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
+use fs2::FileExt as _;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::protocol::{
-    envelope, MobileAction, RemoteControlStatus, RemoteControlStatusKind, RemotePairingInfo,
+    WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
 };
-use super::relay_client::{self, DownloadSender, RelayInbound, RelayOutbound, RelaySender};
-use super::snapshot;
-use crate::bridge::mode_state::SerializableMode;
-use crate::bridge::prefs::{SavedModel, UserPrefs};
+use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 use crate::bridge::{paths, sessions::SessionStore};
-use crate::connector_cli;
-use crate::engine_pool::EnginePool;
 
-const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
-// 远程下载单文件上限，避免把超大文件一次性读进内存并经 relay 转发。
-const DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
-// 每块原始字节数；base64 后约 1MiB，低于 relay 默认 4MiB 的 WS payload 上限。
-const DOWNLOAD_CHUNK_BYTES: usize = 768 * 1024;
-// 远程上传单文件上限。**对齐 file_ingest::MAX_FILE_BYTES(20MiB)**:file_ingest 按
-// 磁盘路径扩展名 + 字节数分派,超过 20MiB 一律回 `kind:"oversize"` 空 markdown 兜底,
-// 模型读不到内容。若这里设 64MiB,mobile 会让用户等 20-64MiB 文件传完(可能数十秒),
-// 再被 ingest 静默降级成「文件太大」,体验差且浪费带宽 / 磁盘。这里把硬上限收到 20MiB,
-// 让 attach_file_start / 累计 gate 直接拒绝(PR #213 审查 #5)。
-// 下载链路不受此约束(DOWNLOAD_LIMIT_BYTES 仍 64MiB):下载是把桌面已有产物原样发回
-// mobile 预览,不经过 file_ingest,没有 20MiB 语义。
-const UPLOAD_LIMIT_BYTES: u64 = crate::file_ingest::MAX_FILE_BYTES;
-// 上传分块原始字节数;与下载保持一致(base64 后约 1MiB)。
-const UPLOAD_CHUNK_BYTES: usize = 768 * 1024;
-// 上传 ACK 等待超时:超过即视为中继或对端异常,主动收尾。
-const UPLOAD_ACK_TIMEOUT_SECS: u64 = 60;
-// 上传分块通道容量:dispatch 投递 → streaming task 消费写盘的有界通道,提供背压。
-const UPLOAD_CHANNEL_CAPACITY: usize = 4;
-// 同一 session 内已就绪(ingest 完成、等 user_message 消费)的附件上限。超过即拒绝
-// 新 attach_file_start,防恶意 client 不发 user_message 无限堆积 IngestResult(markdown
-// 最大 ~20MB,见 file_ingest::MAX_FILE_BYTES)。正常用户单条消息挂 8 个附件已属罕见。
-const MAX_PENDING_ATTACHMENTS_PER_SESSION: usize = 16;
-// 服务端对单块原始字节的硬上限 = chunk_bytes × 2(容许 client 用更大 chunk_bytes,但
-// 不能大到撑爆 dispatcher 协程的 base64 缓冲)。relay 默认 WS payload 4MiB 也是兜底。
-const UPLOAD_CHUNK_MAX_BYTES: usize = UPLOAD_CHUNK_BYTES * 2;
-// mobile 端 set_disabled_connectors 入参防御性上限:connector id 数量与单 id 长度。
-// 防止 mobile(或被劫持的中继)用单条 4MiB 消息塞入海量/超长字符串,落盘成
-// ~/.pinvou3/disabled_connectors.json 后缓慢撑盘。正常工具 id 数量远小于这些上限。
-const MAX_DISABLED_CONNECTOR_IDS: usize = 256;
-const MAX_CONNECTOR_ID_LEN: usize = 128;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
-
-/// 净化 mobile 传入的原始文件名为安全的落盘文件名,并**保留扩展名**。
-///
-/// 为何必须保留扩展名:`file_ingest::ingest` 按**磁盘路径扩展名**分派(txt/pdf/docx/
-/// xlsx/png/...),扩展名丢失会把所有类型都打到 binary 兜底,得到「不支持的文件类型」,
-/// 模型读不到真实内容。审查(PR #213)指出旧实现把每个文件都落盘成 `data.bin`,
-/// 导致 txt/pdf/word/excel/图片全部失效。
-///
-/// 安全要求:上传文件名是半可信客户端输入,直接 `join(filename)` 会被 `../` 或绝对路径
-/// 路径穿越出 `<uploads_base>/<upload_id>/`(写盘到任意位置)。所以:
-/// 1. 只取 `file_name()`(剥掉所有目录成分);
-/// 2. 拒绝非 ASCII 可见字符之外的可疑字符,只允许字母/数字/`-`/`_`/`.`;
-/// 3. 文件名退化(空 / 全非法字符 / 单独 `.`/`..`)→ 回退 `data.bin`(向后兼容)。
-/// 扩展名原样保留(小写化为 file_ingest::classify 的预期),不限制类型白名单 ——
-/// classify 对未知扩展名自然落到 binary 兜底,不需要服务端预先枚举。
-fn sanitize_upload_filename(raw: &str) -> String {
-    use std::path::Path as StdPath;
-    // file_name 只在最后一层且不为 `..`/`.` 时返回 Some,天然防目录穿越(剥掉所有
-    // `/` `\` 目录成分)。这里只做字符净化:保留**任何 Unicode 字母/数字**(中文 /
-    // 日文 / 韩文 / 带重音拉丁字母等)+ 常见安全文件名标点;过滤控制字符、空字节
-    // 与 Windows 保留字符(`: < > | ? *`)防 cross-platform 文件系统问题。
-    //
-    // 旧实现用 is_ascii_alphanumeric 会丢掉所有非 ASCII 字符:`报告.pdf` → `.pdf`
-    // → trim → `pdf`(无扩展名)→ binary 兜底,中文文件名与扩展名双丢失。这是回归。
-    // 文件名仅用于构造 PathBuf 喂给 file_ingest::ingest / pandoc / soffice(均用
-    // Command::arg 参数数组,不经 shell),故 shell 注入不是威胁模型。
-    let leaf = StdPath::new(raw)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    let cleaned: String = leaf
-        .chars()
-        .filter(|c| {
-            c.is_alphanumeric() // Unicode-aware:含中文等
-                || matches!(
-                    c,
-                    '-' | '_' | '.' | ' ' | '(' | ')' | '[' | ']' | '+' | ',' | '&' | '@'
-                )
-        })
-        .collect();
-    // 压缩连续空格为单空格(避免 "a   b.txt" 这类异常空白),去掉首尾 `.`(防 `.`/`..`
-    // 残留与以 `.` 起头当隐藏文件)与首尾空白。
-    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = collapsed.trim_matches(|c: char| c == '.' || c.is_whitespace());
-    if trimmed.is_empty() {
-        return "data.bin".to_string();
-    }
-    // 扩展名小写:file_ingest::classify 用 to_ascii_lowercase 比较;stem 原样保留
-    // (含 Unicode,大小写不动)。
-    match trimmed.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
-            format!("{stem}.{}", ext.to_ascii_lowercase())
-        }
-        _ => trimmed.to_string(), // 无扩展名原样保留，由既有 file_ingest 规则处理。
-    }
-}
-
-fn valid_client_upload_id(upload_id: &str) -> bool {
-    (3..=96).contains(&upload_id.len())
-        && upload_id.starts_with("up_")
-        && upload_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-}
-
-/// 收敛 mobile set_disabled_connectors 入参:丢弃非 string 元素与超长 id,数量封顶。
-/// 返回 (净化后的 ids, 是否被截断)。被截断说明入参异常,调用方可据此上报 error。
-/// 不做白名单校验(未知 id 在 marketplace 侧本就 no-op),只做结构性防 DoS。
-fn sanitize_disabled_connector_ids(raw: Option<&serde_json::Value>) -> (Vec<String>, bool) {
-    let Some(arr) = raw.and_then(|v| v.as_array()) else {
-        return (Vec::new(), false);
-    };
-    let mut ids = Vec::new();
-    let mut truncated = false;
-    for x in arr {
-        let Some(s) = x.as_str() else { continue };
-        if s.len() > MAX_CONNECTOR_ID_LEN {
-            continue;
-        }
-        if ids.len() >= MAX_DISABLED_CONNECTOR_IDS {
-            truncated = true;
-            break;
-        }
-        ids.push(s.to_string());
-    }
-    (ids, truncated)
-}
 const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote/ws";
+const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
+const JOURNAL_CAPACITY: usize = 1_024;
+const JOURNAL_BYTES_CAPACITY: usize = 16 * 1024 * 1024;
+// Relay-issued lease IDs are `lease_` plus 24 base64url characters. Use an
+// equal-length placeholder while no browser is connected so a journaled
+// event's complete replay envelope is still sized conservatively.
+const LEASE_ID_WIRE_PLACEHOLDER: &str = "lease_000000000000000000000000";
+const RPC_CACHE_CAPACITY: usize = 512;
+const RPC_CACHE_BYTES_CAPACITY: usize = 32 * 1024 * 1024;
+const MAX_RPC_IN_FLIGHT: usize = 32;
+const MAX_RPC_COMMAND_BYTES: usize = 128;
+const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const RPC_LEDGER_VERSION: u8 = 1;
+const MAX_HOST_ENTRIES: usize = 5_000;
+pub const MAX_ARTIFACT_CHUNK_BYTES: usize = 256 * 1024;
+const MAX_WEB_ATTACHMENTS: usize = 16;
+const MAX_WEB_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_WEB_ATTACHMENTS_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WEB_SESSION_UPLOADS: usize = 4;
+const MAX_WEB_SESSION_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
+const MAX_WEB_SESSION_DOWNLOADS: usize = 2;
+const PENDING_REVOCATIONS_VERSION: u8 = 1;
+const MAX_PENDING_REVOCATIONS: usize = 32;
+const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
+const MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+
+const RUST_FORWARDED_EVENTS: &[&str] = &[
+    "artifact:disk",
+    "chat:compaction",
+    "chat:delta",
+    "chat:done",
+    "chat:plan_ready",
+    "chat:plan_resolved",
+    "chat:plan_snapshot",
+    "chat:transcript_committed",
+    "chat:turn_started",
+    "chat:tool_end",
+    "chat:tool_start",
+    "chat:transient_error",
+    "chat:usage",
+    "chat:user_message",
+    "chat:user_input_required",
+    "scheduled_task:run_updated",
+];
 
 #[derive(Clone)]
 pub struct RemoteControlManager {
-    // 仅测试构造(new_headless)时为 None:headless 场景没有 Tauri runtime,emit 全部降级为 no-op。
-    app: Option<AppHandle>,
+    app: AppHandle,
     inner: Arc<Mutex<Inner>>,
+    lifecycle: Arc<Mutex<()>>,
+    policy: Arc<AccessPolicy>,
+    policy_error: Option<String>,
 }
 
 struct Inner {
-    room: Option<ActiveRoom>,
-    seen: Dedup,
-    /// 同一房间同时只允许一个下载任务(值为 download_id),防止重复点击并行堆叠大文件传输。
-    active_download: Option<String>,
-    download_ack_sender: Option<tokio::sync::mpsc::UnboundedSender<DownloadRelayAck>>,
-    /// 同一房间同时只允许一个上传任务(值为 upload_id),防止并发堆叠。
-    active_upload: Option<String>,
-    /// 上传分块通道:dispatch 把 chunk 投到这里,streaming task 消费写盘。有界,背压来源之一。
-    upload_chunk_sender: Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>,
-    /// 已完成上传但尚未随消息发走的附件,等待 user_message 取用。key = upload_id。
-    pending_attachments: HashMap<String, PendingAttachment>,
-    /// 上传落盘根目录。每个 upload 一个子目录,文件名保留净化后的原始扩展名。
-    uploads_base: PathBuf,
+    /// Held for the remainder of this desktop process after Web access is
+    /// first touched. This makes the persistent endpoint and RPC ledger a
+    /// single-process authority even if two app instances are launched.
+    process_lock: Option<File>,
+    endpoint: Option<ActiveEndpoint>,
+    idle_status: WebAccessStatusKind,
+    idle_error: Option<String>,
+    stream: StreamState,
+    subscriptions: HashSet<String>,
+    bridge_generation: Option<String>,
+    rpc_ledger: RpcLedger,
+    rpc_cache: HashMap<String, RpcCacheEntry>,
+    rpc_order: VecDeque<String>,
+    web_attachments: HashMap<String, CachedWebAttachment>,
+    web_attachment_order: VecDeque<String>,
+    web_attachment_bytes: usize,
+    web_session_uploads: HashMap<String, WebSessionUpload>,
+    web_session_upload_order: VecDeque<String>,
+    web_session_downloads: HashMap<String, WebSessionDownload>,
+    web_session_download_order: VecDeque<String>,
+    pending_revocations_in_flight: HashSet<String>,
 }
 
 impl Default for Inner {
     fn default() -> Self {
         Self {
-            room: None,
-            seen: Dedup::default(),
-            active_download: None,
-            download_ack_sender: None,
-            active_upload: None,
-            upload_chunk_sender: None,
-            pending_attachments: HashMap::new(),
-            uploads_base: crate::bridge::paths::pinvou3_home().join("uploads"),
+            process_lock: None,
+            endpoint: None,
+            idle_status: WebAccessStatusKind::Idle,
+            idle_error: None,
+            stream: StreamState::new(),
+            subscriptions: HashSet::new(),
+            bridge_generation: None,
+            rpc_ledger: RpcLedger::default(),
+            rpc_cache: HashMap::new(),
+            rpc_order: VecDeque::new(),
+            web_attachments: HashMap::new(),
+            web_attachment_order: VecDeque::new(),
+            web_attachment_bytes: 0,
+            web_session_uploads: HashMap::new(),
+            web_session_upload_order: VecDeque::new(),
+            web_session_downloads: HashMap::new(),
+            web_session_download_order: VecDeque::new(),
+            pending_revocations_in_flight: HashSet::new(),
         }
     }
 }
 
 #[derive(Debug)]
-struct DownloadRelayAck {
-    index: usize,
-    ok: bool,
-    message: Option<String>,
+struct WebSessionUpload {
+    session_id: String,
+    expected_revision: String,
+    total: usize,
+    data: Vec<u8>,
+    last_touched: Instant,
 }
 
 #[derive(Debug)]
-struct UploadChunkMsg {
-    upload_id: String,
-    index: usize,
-    data: Vec<u8>,
-    last: bool,
+struct WebSessionDownload {
+    session_id: String,
+    path: PathBuf,
+    reserved_bytes: usize,
+    total: usize,
+    ready: bool,
+    last_touched: Instant,
+}
+
+pub struct WebSessionDownloadReservation {
+    manager: RemoteControlManager,
+    download_id: String,
+    session_id: String,
+    path: PathBuf,
+    committed: bool,
+}
+
+impl WebSessionDownloadReservation {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn commit(mut self) -> Result<String, String> {
+        let result = self.manager.commit_web_session_download(
+            &self.download_id,
+            &self.session_id,
+            &self.path,
+        );
+        if result.is_ok() {
+            self.committed = true;
+        }
+        result.map(|()| self.download_id.clone())
+    }
+}
+
+impl Drop for WebSessionDownloadReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.manager
+                .remove_web_session_download(&self.download_id, Some(&self.path));
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WebSessionDownloadChunk {
+    pub total: usize,
+    pub data: Vec<u8>,
+    pub eof: bool,
 }
 
 #[derive(Debug, Clone)]
-struct PendingAttachment {
-    session_id: String,
-    filename: String,
-    byte_size: u64,
-    mime: String,
-    /// streaming task 已写盘字节数,用于在 handle_attach_file_chunk 校验累计不超过
-    /// 声明 byte_size 的 2×(防 client 谎报 byte_size 后发巨量分块)。
-    bytes_written: u64,
-    /// 已过 gate 但消费者尚未确认写盘的累计字节(背压预算)。cap-4 有界通道下,
-    /// client 可在消费者更新 bytes_written 之前把多块送进 channel,仅看 bytes_written
-    /// 会有 TOCTOU 窗口可绕过累计上限;gate 增减此值把「已通过但未落盘」也算进预算。
-    bytes_in_flight: u64,
-    /// streaming task 写盘+ingest 成功后填。user_message arm 取用时若 None 则报错。
-    ingest_result: Option<crate::file_ingest::IngestResult>,
+struct CachedWebAttachment {
+    result: crate::file_ingest::IngestResult,
+    bytes: usize,
+    reservation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WebAttachmentSummary {
+    pub handle: String,
+    pub kind: String,
+    pub basename: String,
+    pub token_estimate: u32,
+    pub byte_size: u64,
+    pub warning: Option<String>,
 }
 
 #[derive(Clone)]
-struct ActiveRoom {
-    room_id: String,
-    session_id: String,
+struct ActiveEndpoint {
+    config: WebAccessConfig,
     url: String,
-    relay_ws_url: String,
-    status: RemoteControlStatusKind,
+    status: WebAccessStatusKind,
+    web_client_connected: bool,
+    client_ready: bool,
+    lease_id: Option<String>,
+    last_lease_id: Option<String>,
+    /// Stream head captured when a browser without a cursor joins. Readiness
+    /// is asynchronous, so fresh-client replay must start here rather than at
+    /// the later `client_ready` instant.
+    fresh_baseline_seq: Option<u64>,
     last_error: Option<String>,
     sender: RelaySender,
-    download_sender: DownloadSender,
 }
 
-#[derive(Default)]
-struct Dedup {
-    ids: HashSet<String>,
-    order: VecDeque<(String, Instant)>,
+#[derive(Debug, Clone)]
+enum RpcCacheEntry {
+    Pending(PendingRpc),
+    Complete {
+        fingerprint: String,
+        completion: RpcCompletion,
+    },
 }
 
-impl Dedup {
-    fn remember(&mut self, id: &str) -> bool {
-        self.prune();
-        if self.ids.contains(id) {
-            return false;
+#[derive(Debug, Clone)]
+struct PendingRpc {
+    lease_id: String,
+    command: String,
+    args: Value,
+    fingerprint: String,
+    dispatched_generation: Option<String>,
+    acknowledged_generation: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RpcDispatch {
+    request_id: String,
+    command: String,
+    args: Value,
+    bridge_generation: String,
+}
+
+#[derive(Debug, Clone)]
+struct RpcCompletion {
+    ok: bool,
+    result: Value,
+    error: Option<String>,
+    error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RpcLedger {
+    #[serde(default = "rpc_ledger_version")]
+    version: u8,
+    #[serde(default)]
+    endpoint_id: String,
+    #[serde(default)]
+    entries: VecDeque<RpcTombstone>,
+}
+
+impl Default for RpcLedger {
+    fn default() -> Self {
+        Self {
+            version: RPC_LEDGER_VERSION,
+            endpoint_id: String::new(),
+            entries: VecDeque::new(),
         }
-        self.ids.insert(id.to_string());
-        self.order.push_back((id.to_string(), Instant::now()));
-        while self.order.len() > 200 {
-            if let Some((old, _)) = self.order.pop_front() {
-                self.ids.remove(&old);
-            }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RpcTombstone {
+    request_id: String,
+    fingerprint: String,
+    #[serde(default)]
+    acknowledged: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingRevocation {
+    relay_url: String,
+    endpoint_id: String,
+    desktop_secret: String,
+}
+
+impl From<&WebAccessConfig> for PendingRevocation {
+    fn from(config: &WebAccessConfig) -> Self {
+        Self {
+            relay_url: config.relay_url.clone(),
+            endpoint_id: config.endpoint_id.clone(),
+            desktop_secret: config.desktop_secret.clone(),
         }
-        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingRevocationLedger {
+    version: u8,
+    #[serde(default)]
+    entries: VecDeque<PendingRevocation>,
+}
+
+impl Default for PendingRevocationLedger {
+    fn default() -> Self {
+        Self {
+            version: PENDING_REVOCATIONS_VERSION,
+            entries: VecDeque::new(),
+        }
+    }
+}
+
+const fn rpc_ledger_version() -> u8 {
+    RPC_LEDGER_VERSION
+}
+
+impl RpcLedger {
+    fn for_endpoint(endpoint_id: &str) -> Self {
+        Self {
+            version: RPC_LEDGER_VERSION,
+            endpoint_id: endpoint_id.to_string(),
+            entries: VecDeque::new(),
+        }
     }
 
-    fn prune(&mut self) {
-        let cutoff = Instant::now() - Duration::from_secs(600);
-        while let Some((_, at)) = self.order.front() {
-            if *at > cutoff {
-                break;
+    fn get(&self, request_id: &str) -> Option<&RpcTombstone> {
+        self.entries
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+    }
+
+    fn remember(&mut self, request_id: &str, fingerprint: &str) -> Result<bool, String> {
+        if let Some(existing) = self.get(request_id) {
+            if existing.fingerprint != fingerprint {
+                return Err("client_request_id was reused with different command or args".into());
             }
-            if let Some((old, _)) = self.order.pop_front() {
-                self.ids.remove(&old);
-            }
+            return Ok(false);
         }
+        if self.entries.len() == RPC_CACHE_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(RpcTombstone {
+            request_id: request_id.to_string(),
+            fingerprint: fingerprint.to_string(),
+            acknowledged: false,
+        });
+        Ok(true)
+    }
+
+    fn acknowledge(&mut self, request_id: &str, fingerprint: &str) -> Result<(), String> {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.request_id == request_id)
+            .ok_or_else(|| format!("RPC tombstone is missing: {request_id}"))?;
+        if entry.fingerprint != fingerprint {
+            return Err("RPC tombstone fingerprint conflict".to_string());
+        }
+        entry.acknowledged = true;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StreamEvent {
+    seq: u64,
+    event: String,
+    payload: Value,
+    wire_bytes: usize,
+}
+
+#[derive(Debug)]
+struct StreamState {
+    epoch: String,
+    seq: u64,
+    journal: VecDeque<StreamEvent>,
+    journal_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StreamRecordError {
+    Serialize(String),
+    Oversized { wire_bytes: usize, limit: usize },
+}
+
+impl std::fmt::Display for StreamRecordError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serialize(error) => write!(formatter, "serialize WebUI event frame: {error}"),
+            Self::Oversized { wire_bytes, limit } => write!(
+                formatter,
+                "WebUI event frame is too large ({wire_bytes} bytes; limit {limit})"
+            ),
+        }
+    }
+}
+
+impl StreamState {
+    fn new() -> Self {
+        Self {
+            epoch: new_stream_epoch(),
+            seq: 0,
+            journal: VecDeque::new(),
+            journal_bytes: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.epoch = new_stream_epoch();
+        self.seq = 0;
+        self.journal.clear();
+        self.journal_bytes = 0;
+    }
+
+    fn record(
+        &mut self,
+        endpoint_id: &str,
+        lease_id: &str,
+        event: String,
+        payload: Value,
+    ) -> Result<Value, StreamRecordError> {
+        self.record_with_limits(
+            endpoint_id,
+            lease_id,
+            event,
+            payload,
+            relay_client::MAX_RELAY_FRAME_BYTES,
+            JOURNAL_CAPACITY,
+            JOURNAL_BYTES_CAPACITY,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_with_limits(
+        &mut self,
+        endpoint_id: &str,
+        lease_id: &str,
+        event: String,
+        payload: Value,
+        max_wire_bytes: usize,
+        journal_capacity: usize,
+        journal_bytes_capacity: usize,
+    ) -> Result<Value, StreamRecordError> {
+        let mut recorded = StreamEvent {
+            seq: self.seq.saturating_add(1),
+            event,
+            payload,
+            wire_bytes: 0,
+        };
+        let message = event_message(endpoint_id, lease_id, &self.epoch, &recorded);
+        let wire_bytes = serde_json::to_vec(&message)
+            .map_err(|error| StreamRecordError::Serialize(error.to_string()))?
+            .len();
+        if wire_bytes > max_wire_bytes {
+            // The rejected event never advances seq or enters the journal. A
+            // fresh epoch makes every existing browser cursor explicitly
+            // invalid instead of leaving a permanent, unreplayable hole.
+            self.reset();
+            return Err(StreamRecordError::Oversized {
+                wire_bytes,
+                limit: max_wire_bytes,
+            });
+        }
+
+        recorded.wire_bytes = wire_bytes;
+        self.seq = recorded.seq;
+        self.journal_bytes = self.journal_bytes.saturating_add(wire_bytes);
+        self.journal.push_back(recorded);
+        while self.journal.len() > journal_capacity || self.journal_bytes > journal_bytes_capacity {
+            let Some(evicted) = self.journal.pop_front() else {
+                break;
+            };
+            self.journal_bytes = self.journal_bytes.saturating_sub(evicted.wire_bytes);
+        }
+        Ok(message)
+    }
+
+    /// `None` means the cursor cannot be satisfied from the bounded journal.
+    fn replay_after(&self, after_seq: u64) -> Option<Vec<StreamEvent>> {
+        if after_seq > self.seq {
+            return None;
+        }
+        if after_seq == self.seq {
+            return Some(Vec::new());
+        }
+        let oldest = self.journal.front()?.seq;
+        if after_seq.saturating_add(1) < oldest {
+            return None;
+        }
+        Some(
+            self.journal
+                .iter()
+                .filter(|entry| entry.seq > after_seq)
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddedPolicy {
+    protocol_version: u8,
+    #[serde(default)]
+    allowed_commands: Vec<String>,
+    #[serde(default)]
+    allowed_events: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct AccessPolicy {
+    commands: HashSet<String>,
+    events: HashSet<String>,
+}
+
+impl AccessPolicy {
+    fn load() -> Result<Self, String> {
+        let parsed: EmbeddedPolicy =
+            serde_json::from_str(include_str!("../../../src/web-access-policy.json"))
+                .map_err(|error| format!("parse embedded Web access policy: {error}"))?;
+        if parsed.protocol_version != PROTOCOL_VERSION {
+            return Err(format!(
+                "Web access policy protocol {} does not match backend protocol {}",
+                parsed.protocol_version, PROTOCOL_VERSION
+            ));
+        }
+        let policy = Self {
+            commands: parsed.allowed_commands.into_iter().collect(),
+            events: parsed.allowed_events.into_iter().collect(),
+        };
+        policy.validate_capability_snapshot()?;
+        Ok(policy)
+    }
+
+    fn capability_snapshot_wire_bytes(&self) -> Result<usize, String> {
+        let mut commands = self.commands.iter().cloned().collect::<Vec<_>>();
+        commands.sort();
+        let mut events = self.events.iter().cloned().collect::<Vec<_>>();
+        events.sort();
+        let endpoint_id = "e".repeat(128);
+        let stream_epoch = format!("epoch_{}", "0".repeat(24));
+        serde_json::to_vec(&snapshot_message(
+            &endpoint_id,
+            LEASE_ID_WIRE_PLACEHOLDER,
+            &stream_epoch,
+            u64::MAX,
+            &commands,
+            &events,
+        ))
+        .map(|encoded| encoded.len())
+        .map_err(|error| format!("serialize Web access capability snapshot: {error}"))
+    }
+
+    fn validate_capability_snapshot(&self) -> Result<(), String> {
+        let wire_bytes = self.capability_snapshot_wire_bytes()?;
+        if wire_bytes > relay_client::MAX_CONTROL_FRAME_BYTES {
+            return Err(format!(
+                "Web access capability snapshot is too large ({wire_bytes} bytes; limit {})",
+                relay_client::MAX_CONTROL_FRAME_BYTES
+            ));
+        }
+        Ok(())
     }
 }
 
 impl RemoteControlManager {
     pub fn new(app: AppHandle) -> Self {
+        let (policy, policy_error) = match AccessPolicy::load() {
+            Ok(policy) => (policy, None),
+            Err(error) => {
+                eprintln!("[web-access] {error}");
+                (AccessPolicy::default(), Some(error))
+            }
+        };
         Self {
-            app: Some(app),
+            app,
             inner: Arc::new(Mutex::new(Inner::default())),
+            lifecycle: Arc::new(Mutex::new(())),
+            policy: Arc::new(policy),
+            policy_error,
         }
     }
 
-    /// 无 Tauri runtime 的测试构造:事件 emit 降级为 no-op,relay/消息分发逻辑保持真实。
-    #[cfg(test)]
-    fn new_headless() -> Self {
-        Self {
-            app: None,
-            inner: Arc::new(Mutex::new(Inner::default())),
+    /// Resume the persistent endpoint after all authoritative application
+    /// state (notably `EnginePool`) has been managed by Tauri.
+    pub fn resume(&self) -> Result<bool, String> {
+        let _lifecycle = self.lifecycle.lock();
+        self.ensure_policy()?;
+        self.ensure_process_ownership()?;
+        self.replay_pending_revocations()?;
+        if self.inner.lock().endpoint.is_some() {
+            return Ok(true);
         }
+        let Some(config) = load_config()? else {
+            return Ok(false);
+        };
+        validate_config(&config)?;
+        self.activate(config)?;
+        Ok(true)
     }
 
-    pub fn start(
+    /// Enable WebUI access. Repeated calls return the same persistent endpoint
+    /// instead of creating session-scoped rooms.
+    pub fn start(&self) -> Result<WebAccessInfo, String> {
+        let _lifecycle = self.lifecycle.lock();
+        self.ensure_policy()?;
+        self.ensure_process_ownership()?;
+        self.replay_pending_revocations()?;
+        if let Some(endpoint) = self.inner.lock().endpoint.clone() {
+            return Ok(pairing_info(&endpoint));
+        }
+
+        let config = match load_config()? {
+            Some(config) => {
+                validate_config(&config)?;
+                config
+            }
+            None => {
+                let config = fresh_config();
+                persist_config(&config)?;
+                config
+            }
+        };
+        self.activate(config)?;
+        let inner = self.inner.lock();
+        let endpoint = inner
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| "Web access endpoint failed to start".to_string())?;
+        Ok(pairing_info(endpoint))
+    }
+
+    /// Rotate both browser and desktop credentials. The previous endpoint is
+    /// revoked at the relay and can no longer reconnect.
+    pub fn refresh(&self) -> Result<WebAccessInfo, String> {
+        let _lifecycle = self.lifecycle.lock();
+        self.ensure_policy()?;
+        self.ensure_process_ownership()?;
+        self.replay_pending_revocations()?;
+        let persisted_previous = load_config()?;
+        let previous_config = self
+            .inner
+            .lock()
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.clone())
+            .or_else(|| persisted_previous.clone());
+        if let Some(previous) = previous_config.as_ref() {
+            queue_pending_revocation(previous)?;
+        }
+        let config = fresh_config();
+        // The old credentials are already durably queued above. If this write
+        // fails, the queue entry still matches the current config and replay
+        // deliberately leaves the still-active endpoint alone.
+        persist_config(&config)?;
+        let previous = {
+            let mut inner = self.inner.lock();
+            inner.subscriptions.clear();
+            inner.rpc_ledger = RpcLedger::default();
+            inner.rpc_cache.clear();
+            inner.rpc_order.clear();
+            clear_web_attachments(&mut inner);
+            inner.stream.reset();
+            inner.endpoint.take()
+        };
+        if let Some(previous) = previous {
+            let _ = previous.sender.try_send(RelayOutbound::Shutdown);
+        }
+        self.replay_pending_revocations()?;
+        self.activate(config)?;
+        let inner = self.inner.lock();
+        Ok(pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
+            "Web access endpoint failed to rotate".to_string()
+        })?))
+    }
+
+    pub fn stop_current(&self) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock();
+        self.ensure_process_ownership()?;
+        self.replay_pending_revocations()?;
+        let persisted = load_config()?;
+        let current_config = self
+            .inner
+            .lock()
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.clone())
+            .or_else(|| persisted.clone());
+        if let Some(config) = current_config.as_ref() {
+            queue_pending_revocation(config)?;
+        }
+        // A failed removal leaves the old config authoritative. Its queued
+        // entry therefore remains dormant instead of revoking a live link.
+        remove_config()?;
+        let endpoint = {
+            let mut inner = self.inner.lock();
+            inner.subscriptions.clear();
+            inner.rpc_cache.clear();
+            inner.rpc_order.clear();
+            clear_web_attachments(&mut inner);
+            inner.rpc_ledger = RpcLedger::default();
+            inner.stream.reset();
+            inner.idle_status = WebAccessStatusKind::Stopped;
+            inner.idle_error = None;
+            inner.endpoint.take()
+        };
+        if let Some(endpoint) = endpoint {
+            let _ = endpoint.sender.try_send(RelayOutbound::Shutdown);
+        }
+        self.replay_pending_revocations()?;
+        remove_rpc_ledger()?;
+        self.emit_status();
+        Ok(())
+    }
+
+    fn ensure_process_ownership(&self) -> Result<(), String> {
+        let mut inner = self.inner.lock();
+        if inner.process_lock.is_some() {
+            return Ok(());
+        }
+        let lock = acquire_process_lock(&process_lock_path())?;
+        inner.process_lock = Some(lock);
+        Ok(())
+    }
+
+    /// Start independent retry workers for every retired endpoint. A queue
+    /// entry matching the current config is a prepared-but-not-yet-committed
+    /// rotation/stop and must remain dormant. This makes crashes between
+    /// queueing and replacing/removing `web-access.json` safe.
+    fn replay_pending_revocations(&self) -> Result<(), String> {
+        let ledger = load_pending_revocations()?;
+        let current = load_config()?;
+        for pending in eligible_pending_revocations(&ledger, current.as_ref()) {
+            let key = pending_revocation_key(&pending);
+            {
+                let mut inner = self.inner.lock();
+                if !inner.pending_revocations_in_flight.insert(key.clone()) {
+                    continue;
+                }
+            }
+
+            let mut receiver = relay_client::spawn_revocation(
+                pending.relay_url.clone(),
+                pending.endpoint_id.clone(),
+                pending.desktop_secret.clone(),
+            );
+            let manager = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut acknowledged = false;
+                while let Some(inbound) = receiver.recv().await {
+                    if let RelayInbound::Message(text) = inbound {
+                        match serde_json::from_str::<Value>(&text) {
+                            Ok(value) if pending_revocation_ack(&value, &pending.endpoint_id) => {
+                                acknowledged = true;
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[web-access] queued revocation JSON ignored: {error}")
+                            }
+                        }
+                    }
+                }
+                manager.finish_pending_revocation(pending, key, acknowledged);
+            });
+        }
+        Ok(())
+    }
+
+    fn finish_pending_revocation(
         &self,
-        session_id: String,
-        store: SessionStore,
-        pool: EnginePool,
-    ) -> Result<RemotePairingInfo, String> {
-        self.close_current("qr_refreshed");
-        let relay_ws_url = remote_relay_ws_url();
-        let public_base = remote_public_base_url();
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
-        // 二维码与当前 room 同寿命：只有刷新二维码、停止远控或关闭桌面端才失效。
-        let url = format!(
-            "{}/r/{}#token={}",
-            public_base.trim_end_matches('/'),
-            room_id,
-            pairing_token
-        );
-        let qr_data_url = connector_cli::make_qr(&url);
-        let (sender, download_sender, mut receiver) = relay_client::spawn(
-            relay_ws_url.clone(),
-            room_id.clone(),
-            session_id.clone(),
-            pairing_token,
-            desktop_secret,
-        );
+        pending: PendingRevocation,
+        key: String,
+        acknowledged: bool,
+    ) {
+        let _lifecycle = self.lifecycle.lock();
+        if acknowledged {
+            if let Err(error) = acknowledge_pending_revocation(&pending) {
+                // Leave the durable entry in place. The next lifecycle replay
+                // will prove the endpoint absent and retry cleanup.
+                eprintln!(
+                    "[web-access] persist revocation acknowledgement for {} failed: {error}",
+                    pending.endpoint_id
+                );
+            }
+        }
+        self.inner.lock().pending_revocations_in_flight.remove(&key);
+    }
 
+    /// Keep parsed attachment contents on the desktop. The browser receives
+    /// only an opaque handle and compact display metadata, so neither the
+    /// ingest response nor the subsequent chat request can overflow Relay.
+    pub fn cache_web_attachment(
+        &self,
+        result: crate::file_ingest::IngestResult,
+    ) -> Result<WebAttachmentSummary, String> {
+        let bytes = serde_json::to_vec(&result)
+            .map_err(|error| format!("serialize Web attachment: {error}"))?
+            .len();
+        if bytes > MAX_WEB_ATTACHMENT_BYTES {
+            return Err(format!(
+                "parsed attachment exceeds the WebUI desktop cache limit of {} MiB",
+                MAX_WEB_ATTACHMENT_BYTES / (1024 * 1024)
+            ));
+        }
+        let handle = format!("attachment_{}", crate::remote_control::short_token(32));
+        let summary = WebAttachmentSummary {
+            handle: handle.clone(),
+            kind: result.kind.clone(),
+            basename: result.basename.clone(),
+            token_estimate: result.token_estimate,
+            byte_size: result.byte_size,
+            warning: result.warning.clone(),
+        };
+        let mut inner = self.inner.lock();
+        let mut eviction_attempts = inner.web_attachment_order.len();
+        while (inner.web_attachments.len() >= MAX_WEB_ATTACHMENTS
+            || inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES)
+            && eviction_attempts > 0
+        {
+            eviction_attempts -= 1;
+            let Some(oldest) = inner.web_attachment_order.pop_front() else {
+                break;
+            };
+            if inner
+                .web_attachments
+                .get(&oldest)
+                .is_some_and(|cached| cached.reservation_id.is_some())
+            {
+                inner.web_attachment_order.push_back(oldest);
+                continue;
+            }
+            if let Some(removed) = inner.web_attachments.remove(&oldest) {
+                inner.web_attachment_bytes =
+                    inner.web_attachment_bytes.saturating_sub(removed.bytes);
+            }
+        }
+        if inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES {
+            return Err("WebUI attachment cache is full; remove an attachment and retry".into());
+        }
+        inner.web_attachment_bytes = inner.web_attachment_bytes.saturating_add(bytes);
+        inner.web_attachment_order.push_back(handle.clone());
+        inner.web_attachments.insert(
+            handle,
+            CachedWebAttachment {
+                result,
+                bytes,
+                reservation_id: None,
+            },
+        );
+        Ok(summary)
+    }
+
+    /// Atomically reserve opaque handles while a chat submission crosses the
+    /// async engine admission boundary. A rejected turn releases them for the
+    /// same browser to retry; only an accepted turn consumes them.
+    pub fn reserve_web_attachments(
+        &self,
+        handles: &[String],
+    ) -> Result<(String, Vec<crate::file_ingest::IngestResult>), String> {
+        if handles.len() > MAX_WEB_ATTACHMENTS {
+            return Err("too many WebUI attachments in one message".into());
+        }
+        let mut inner = self.inner.lock();
+        let mut unique = HashSet::new();
+        for handle in handles {
+            if !unique.insert(handle.as_str()) {
+                return Err("duplicate WebUI attachment handle".into());
+            }
+            if !inner.web_attachments.contains_key(handle) {
+                return Err(format!(
+                    "WebUI attachment handle is missing or expired: {handle}"
+                ));
+            }
+            if inner
+                .web_attachments
+                .get(handle)
+                .and_then(|cached| cached.reservation_id.as_ref())
+                .is_some()
+            {
+                return Err(format!(
+                    "WebUI attachment handle is already in use: {handle}"
+                ));
+            }
+        }
+        let reservation_id = format!("attachment_use_{}", crate::remote_control::short_token(24));
+        let mut results = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let cached = inner
+                .web_attachments
+                .get_mut(handle)
+                .expect("attachment presence checked above");
+            cached.reservation_id = Some(reservation_id.clone());
+            results.push(cached.result.clone());
+        }
+        Ok((reservation_id, results))
+    }
+
+    pub fn finish_web_attachment_reservation(
+        &self,
+        reservation_id: &str,
+        handles: &[String],
+        consume: bool,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock();
+        for handle in handles {
+            let Some(cached) = inner.web_attachments.get(handle) else {
+                // Stop/rotate deliberately clears the whole lease cache.
+                continue;
+            };
+            if cached.reservation_id.as_deref() != Some(reservation_id) {
+                return Err(format!(
+                    "WebUI attachment reservation no longer owns handle: {handle}"
+                ));
+            }
+        }
+        if consume {
+            let handle_set = handles.iter().map(String::as_str).collect::<HashSet<_>>();
+            for handle in handles {
+                if let Some(cached) = inner.web_attachments.remove(handle) {
+                    inner.web_attachment_bytes =
+                        inner.web_attachment_bytes.saturating_sub(cached.bytes);
+                }
+            }
+            inner
+                .web_attachment_order
+                .retain(|handle| !handle_set.contains(handle.as_str()));
+        } else {
+            for handle in handles {
+                if let Some(cached) = inner.web_attachments.get_mut(handle) {
+                    cached.reservation_id = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn append_web_session_upload(
+        &self,
+        upload_id: &str,
+        session_id: &str,
+        expected_revision: &str,
+        offset: usize,
+        total: usize,
+        data: &[u8],
+        commit: bool,
+    ) -> Result<Option<Vec<u8>>, String> {
+        if upload_id.len() < 8
+            || upload_id.len() > 128
+            || !upload_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err("invalid WebUI Session upload id".into());
+        }
+        if total > MAX_WEB_SESSION_UPLOAD_BYTES {
+            return Err(format!(
+                "Session payload exceeds the WebUI {} MiB limit",
+                MAX_WEB_SESSION_UPLOAD_BYTES / (1024 * 1024)
+            ));
+        }
+        if expected_revision.trim().is_empty() || expected_revision.len() > 128 {
+            return Err("WebUI Session upload requires a valid expected revision".into());
+        }
+        let mut inner = self.inner.lock();
+        prune_expired_web_session_transfers(&mut inner);
+        if offset == 0 {
+            if let Some(previous) = inner.web_session_uploads.remove(upload_id) {
+                drop(previous);
+            }
+            while inner.web_session_uploads.len() >= MAX_WEB_SESSION_UPLOADS {
+                let Some(oldest) = inner.web_session_upload_order.pop_front() else {
+                    break;
+                };
+                inner.web_session_uploads.remove(&oldest);
+            }
+            inner.web_session_upload_order.retain(|id| id != upload_id);
+            inner
+                .web_session_upload_order
+                .push_back(upload_id.to_string());
+            inner.web_session_uploads.insert(
+                upload_id.to_string(),
+                WebSessionUpload {
+                    session_id: session_id.to_string(),
+                    expected_revision: expected_revision.to_string(),
+                    total,
+                    data: Vec::with_capacity(total.min(4 * 1024 * 1024)),
+                    last_touched: Instant::now(),
+                },
+            );
+        }
+        let retained_upload_bytes: usize = inner
+            .web_session_uploads
+            .iter()
+            .filter(|(id, _)| id.as_str() != upload_id)
+            .map(|(_, upload)| upload.data.len())
+            .sum();
+        if retained_upload_bytes
+            .saturating_add(offset)
+            .saturating_add(data.len())
+            > MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES
+        {
+            return Err("WebUI Session upload cache exceeds its total byte limit".into());
+        }
+        let upload = inner
+            .web_session_uploads
+            .get_mut(upload_id)
+            .ok_or_else(|| "WebUI Session upload is missing or expired".to_string())?;
+        if upload.session_id != session_id
+            || upload.expected_revision != expected_revision
+            || upload.total != total
+        {
+            return Err("WebUI Session upload metadata changed".into());
+        }
+        if upload.data.len() != offset {
+            return Err(format!(
+                "WebUI Session upload expected offset {}, got {offset}",
+                upload.data.len()
+            ));
+        }
+        if upload.data.len().saturating_add(data.len()) > total {
+            return Err("WebUI Session upload exceeds its declared size".into());
+        }
+        upload.data.extend_from_slice(data);
+        upload.last_touched = Instant::now();
+        if !commit {
+            return Ok(None);
+        }
+        if upload.data.len() != total {
+            return Err(format!(
+                "WebUI Session upload is incomplete: {} of {total} bytes",
+                upload.data.len()
+            ));
+        }
+        let completed = inner
+            .web_session_uploads
+            .remove(upload_id)
+            .expect("upload exists above")
+            .data;
+        inner.web_session_upload_order.retain(|id| id != upload_id);
+        Ok(Some(completed))
+    }
+
+    pub fn begin_web_session_download(
+        &self,
+        session_id: &str,
+        reserved_bytes: usize,
+    ) -> Result<WebSessionDownloadReservation, String> {
+        if reserved_bytes > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
+            return Err(format!(
+                "Session payload exceeds the WebUI {} MiB limit",
+                MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
+            ));
+        }
+        let download_id = format!("download_{}", crate::remote_control::short_token(32));
+        let download_dir = paths::pinvou3_home().join("web-session-downloads");
+        std::fs::create_dir_all(&download_dir)
+            .map_err(|error| format!("create WebUI Session download directory: {error}"))?;
+        let path = download_dir.join(format!("{download_id}.json"));
+        let mut inner = self.inner.lock();
+        prune_expired_web_session_transfers(&mut inner);
+        ensure_web_session_download_capacity(&inner, reserved_bytes)?;
+        inner
+            .web_session_download_order
+            .push_back(download_id.clone());
+        inner.web_session_downloads.insert(
+            download_id.clone(),
+            WebSessionDownload {
+                session_id: session_id.to_string(),
+                path: path.clone(),
+                reserved_bytes,
+                total: 0,
+                ready: false,
+                last_touched: Instant::now(),
+            },
+        );
+        Ok(WebSessionDownloadReservation {
+            manager: self.clone(),
+            download_id,
+            session_id: session_id.to_string(),
+            path,
+            committed: false,
+        })
+    }
+
+    fn commit_web_session_download(
+        &self,
+        download_id: &str,
+        session_id: &str,
+        path: &Path,
+    ) -> Result<(), String> {
+        let total = std::fs::metadata(path)
+            .map_err(|error| format!("inspect serialized WebUI Session download: {error}"))?
+            .len();
+        let total = usize::try_from(total)
+            .map_err(|_| "serialized WebUI Session download is too large".to_string())?;
+        if total > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
+            return Err(format!(
+                "Session payload exceeds the WebUI {} MiB limit",
+                MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
+            ));
+        }
+
+        let mut inner = self.inner.lock();
+        prune_expired_web_session_transfers(&mut inner);
+        let reserved = inner
+            .web_session_downloads
+            .get(download_id)
+            .ok_or_else(|| "WebUI Session download reservation expired".to_string())?;
+        if reserved.session_id != session_id || reserved.path != path {
+            return Err("WebUI Session download reservation changed".into());
+        }
+        let other_bytes = inner
+            .web_session_downloads
+            .iter()
+            .filter(|(id, _)| id.as_str() != download_id)
+            .map(|(_, download)| download.reserved_bytes)
+            .sum::<usize>();
+        if other_bytes.saturating_add(total) > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
+            return Err(format!(
+                "Active WebUI Session downloads would exceed the {} MiB total limit",
+                MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
+            ));
+        }
+        let download = inner
+            .web_session_downloads
+            .get_mut(download_id)
+            .expect("reservation checked above");
+        download.reserved_bytes = total;
+        download.total = total;
+        download.ready = true;
+        download.last_touched = Instant::now();
+        Ok(())
+    }
+
+    fn remove_web_session_download(&self, download_id: &str, expected_path: Option<&Path>) {
+        let removed = {
+            let mut inner = self.inner.lock();
+            let matches = inner
+                .web_session_downloads
+                .get(download_id)
+                .is_some_and(|download| {
+                    expected_path.is_none_or(|path| download.path.as_path() == path)
+                });
+            if matches {
+                inner
+                    .web_session_download_order
+                    .retain(|id| id != download_id);
+                inner.web_session_downloads.remove(download_id)
+            } else {
+                None
+            }
+        };
+        if let Some(path) = removed
+            .map(|download| download.path)
+            .or_else(|| expected_path.map(Path::to_path_buf))
+        {
+            // The reservation path is unique. Removing it even when the map
+            // entry was concurrently cleared closes the cancellation/crash
+            // race where Windows could not unlink an open writer earlier.
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    pub fn read_web_session_download(
+        &self,
+        download_id: &str,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<WebSessionDownloadChunk, String> {
+        let mut inner = self.inner.lock();
+        prune_expired_web_session_transfers(&mut inner);
+        let download = inner
+            .web_session_downloads
+            .get_mut(download_id)
+            .ok_or_else(|| "WebUI Session download is missing or expired".to_string())?;
+        if download.session_id != session_id {
+            return Err("WebUI Session download belongs to another Session".into());
+        }
+        if !download.ready {
+            return Err("WebUI Session download is still being prepared".into());
+        }
+        if offset > download.total {
+            return Err(format!(
+                "Session offset {offset} exceeds payload size {}",
+                download.total
+            ));
+        }
+        let total = download.total;
+        let end = offset.saturating_add(limit).min(total);
+        let path = download.path.clone();
+        let mut file =
+            File::open(&path).map_err(|error| format!("open WebUI Session download: {error}"))?;
+        file.seek(SeekFrom::Start(offset as u64))
+            .map_err(|error| format!("seek WebUI Session download: {error}"))?;
+        let mut data = vec![0_u8; end.saturating_sub(offset)];
+        file.read_exact(&mut data)
+            .map_err(|error| format!("read WebUI Session download: {error}"))?;
+        drop(file);
+        download.last_touched = Instant::now();
+        let eof = end == total;
+        if eof {
+            inner.web_session_downloads.remove(download_id);
+            inner
+                .web_session_download_order
+                .retain(|id| id != download_id);
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(WebSessionDownloadChunk { total, data, eof })
+    }
+
+    pub fn status(&self) -> WebAccessStatus {
+        let inner = self.inner.lock();
+        if let Some(endpoint) = &inner.endpoint {
+            WebAccessStatus {
+                active: true,
+                endpoint_id: Some(endpoint.config.endpoint_id.clone()),
+                url: Some(endpoint.url.clone()),
+                status: endpoint.status,
+                relay_url: endpoint.config.relay_url.clone(),
+                web_client_connected: endpoint.web_client_connected,
+                last_error: endpoint.last_error.clone(),
+            }
+        } else {
+            WebAccessStatus {
+                active: false,
+                endpoint_id: None,
+                url: None,
+                status: inner.idle_status,
+                relay_url: remote_relay_ws_url(),
+                web_client_connected: false,
+                last_error: inner
+                    .idle_error
+                    .clone()
+                    .or_else(|| self.policy_error.clone()),
+            }
+        }
+    }
+
+    pub fn forward_local_event(&self, event: &str, payload: Value) {
+        if let Err(error) = self.publish_event_inner(event, payload, EventSource::Rust) {
+            eprintln!("[web-access] forward {event} failed: {error}");
+        }
+    }
+
+    pub fn publish_frontend_event(&self, event: &str, payload: Value) -> Result<(), String> {
+        self.publish_event_inner(event, payload, EventSource::Frontend)
+    }
+
+    /// Register a concrete desktop WebView generation. Unacknowledged work may
+    /// be dispatched to a new generation; work whose begin ACK was persisted
+    /// is never re-run and is resolved as `outcome_unknown` instead.
+    pub fn mark_frontend_ready(&self, generation: String) -> Result<(), String> {
+        validate_bridge_generation(&generation)?;
+        let (actions, subscriptions) = {
+            let mut inner = self.inner.lock();
+            let actions = prepare_bridge_generation(&mut inner, &generation);
+            let subscriptions = inner.subscriptions.iter().cloned().collect::<Vec<_>>();
+            (actions, subscriptions)
+        };
+        let mut first_error = None;
+        for action in actions {
+            match action {
+                RpcReadyAction::Dispatch(dispatch) => {
+                    if let Err(error) = self.emit_rpc_dispatch(dispatch) {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                RpcReadyAction::Respond(sender, response) => {
+                    if sender.try_send(RelayOutbound::Message(response)).is_err() {
+                        first_error
+                            .get_or_insert_with(|| "Web access relay task has stopped".to_string());
+                    }
+                }
+            }
+        }
+        // The browser may reconnect and subscribe before a restarted desktop
+        // WebView has installed its forwarding listeners. Replaying the set
+        // after the main bridge readiness barrier closes that lost-event race.
+        for event in subscriptions {
+            if let Err(error) = self.app.emit_to(
+                "main",
+                "web_access:event_subscribe",
+                json!({ "event": event }),
+            ) {
+                first_error.get_or_insert_with(|| {
+                    format!("restore Web access frontend subscription: {error}")
+                });
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Persist the side-effect barrier before allowing the desktop WebView to
+    /// invoke the requested command. Returning `false` means this dispatch was
+    /// already acknowledged and must not be executed again.
+    pub fn begin_rpc(&self, request_id: &str, generation: &str) -> Result<bool, String> {
+        validate_bridge_generation(generation)?;
+        let mut inner = self.inner.lock();
+        if inner.bridge_generation.as_deref() != Some(generation) {
+            return Err("stale WebView bridge generation".to_string());
+        }
+        let (fingerprint, lease_id, already_acknowledged) = match inner.rpc_cache.get(request_id) {
+            Some(RpcCacheEntry::Pending(pending)) => {
+                if pending.dispatched_generation.as_deref() != Some(generation) {
+                    return Err("RPC was not dispatched to this WebView generation".to_string());
+                }
+                (
+                    pending.fingerprint.clone(),
+                    pending.lease_id.clone(),
+                    pending.acknowledged_generation.is_some(),
+                )
+            }
+            Some(RpcCacheEntry::Complete { .. }) => return Ok(false),
+            None => return Err(format!("unknown Web RPC request: {request_id}")),
+        };
+        if already_acknowledged {
+            return Ok(false);
+        }
+
+        let mut next_ledger = inner.rpc_ledger.clone();
+        next_ledger.acknowledge(request_id, &fingerprint)?;
+        if let Err(error) = persist_rpc_ledger(&next_ledger) {
+            // Never leave this generation in a dispatched-but-unacknowledged
+            // limbo. Return a deterministic terminal response without running
+            // the application command when the durable side-effect barrier
+            // cannot be committed.
+            let completion = rpc_error_completion(
+                "rpc_ledger_unavailable",
+                format!("cannot durably begin Web RPC: {error}"),
+            );
+            inner.rpc_cache.insert(
+                request_id.to_string(),
+                RpcCacheEntry::Complete {
+                    fingerprint,
+                    completion: completion.clone(),
+                },
+            );
+            prune_rpc_cache(&mut inner);
+            if let Some(endpoint) = inner.endpoint.as_ref() {
+                let response = rpc_response(
+                    &endpoint.config.endpoint_id,
+                    &lease_id,
+                    request_id,
+                    &completion,
+                );
+                let _ = endpoint.sender.try_send(RelayOutbound::Message(response));
+            }
+            return Ok(false);
+        }
+        inner.rpc_ledger = next_ledger;
+        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get_mut(request_id) else {
+            return Err(format!("unknown Web RPC request: {request_id}"));
+        };
+        pending.acknowledged_generation = Some(generation.to_string());
+        Ok(true)
+    }
+
+    pub fn complete_rpc(
+        &self,
+        request_id: &str,
+        generation: &str,
+        ok: bool,
+        result: Option<Value>,
+        error: Option<String>,
+    ) -> Result<(), String> {
+        validate_bridge_generation(generation)?;
+        let (sender, response) = {
+            let mut inner = self.inner.lock();
+            if inner.bridge_generation.as_deref() != Some(generation) {
+                return Err("stale WebView bridge generation".to_string());
+            }
+            let (lease_id, fingerprint) = match inner.rpc_cache.get(request_id) {
+                Some(RpcCacheEntry::Pending(pending)) => {
+                    if pending.acknowledged_generation.as_deref() != Some(generation) {
+                        return Err("Web RPC completion arrived before its begin ACK".to_string());
+                    }
+                    (pending.lease_id.clone(), pending.fingerprint.clone())
+                }
+                Some(RpcCacheEntry::Complete { .. }) => return Ok(()),
+                None => return Err(format!("unknown Web RPC request: {request_id}")),
+            };
+            let completion = bounded_rpc_completion(ok, result, error);
+            inner.rpc_cache.insert(
+                request_id.to_string(),
+                RpcCacheEntry::Complete {
+                    fingerprint,
+                    completion: completion.clone(),
+                },
+            );
+            prune_rpc_cache(&mut inner);
+            let endpoint = inner
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+            (
+                endpoint.sender.clone(),
+                rpc_response(
+                    &endpoint.config.endpoint_id,
+                    &lease_id,
+                    request_id,
+                    &completion,
+                ),
+            )
+        };
+        sender
+            .try_send(RelayOutbound::Message(response))
+            .map_err(|_| "Web access relay task has stopped".to_string())
+    }
+
+    fn ensure_policy(&self) -> Result<(), String> {
+        match &self.policy_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn activate(&self, config: WebAccessConfig) -> Result<(), String> {
+        let rpc_ledger = load_or_initialize_rpc_ledger(&config.endpoint_id)?;
+        let url = public_url(&config);
+        let (sender, mut receiver) = relay_client::spawn(config.clone());
         {
             let mut inner = self.inner.lock();
-            inner.seen = Dedup::default();
-            inner.active_download = None;
-            inner.download_ack_sender = None;
-            inner.room = Some(ActiveRoom {
-                room_id: room_id.clone(),
-                session_id: session_id.clone(),
-                url: url.clone(),
-                relay_ws_url: relay_ws_url.clone(),
-                status: RemoteControlStatusKind::ConnectingRelay,
+            inner.idle_error = None;
+            inner.idle_status = WebAccessStatusKind::Idle;
+            inner.rpc_ledger = rpc_ledger;
+            inner.rpc_cache.clear();
+            inner.rpc_order.clear();
+            inner.endpoint = Some(ActiveEndpoint {
+                config: config.clone(),
+                url,
+                status: WebAccessStatusKind::ConnectingRelay,
+                web_client_connected: false,
+                client_ready: false,
+                lease_id: None,
+                last_lease_id: None,
+                fresh_baseline_seq: None,
                 last_error: None,
-                sender: sender.clone(),
-                download_sender,
+                sender,
             });
         }
         self.emit_status();
@@ -324,1711 +1458,2017 @@ impl RemoteControlManager {
         tauri::async_runtime::spawn(async move {
             while let Some(inbound) = receiver.recv().await {
                 match inbound {
-                    RelayInbound::MobileAction {
-                        room_id,
-                        session_id,
-                        payload,
-                    } => {
-                        manager
-                            .handle_mobile_action(&room_id, &session_id, payload, &store, &pool)
-                            .await;
-                    }
-                    RelayInbound::Status {
-                        room_id,
-                        status,
-                        message,
-                    } => manager.update_status_from_relay(&room_id, &status, message),
-                    RelayInbound::DownloadAck {
-                        download_id,
-                        index,
-                        ok,
-                        message,
-                    } => manager.handle_download_relay_ack(
-                        &download_id,
-                        DownloadRelayAck { index, ok, message },
-                    ),
-                    RelayInbound::Error(err) => manager.set_error(err),
-                }
-            }
-        });
-
-        Ok(RemotePairingInfo {
-            room_id,
-            session_id,
-            url,
-            qr_data_url,
-            status: RemoteControlStatusKind::WaitingMobile,
-        })
-    }
-
-    pub fn stop_current(&self) {
-        self.close_current("stopped");
-    }
-
-    fn close_current(&self, reason: &str) {
-        // 锁内统一摘除 room 和全部上传状态，锁外删除临时目录。已经随消息发出的附件会先
-        // 被复制进 session workspace，不依赖 uploads 临时目录，因此这里不存在 read_file 竞争。
-        let (old, upload_dirs) = {
-            let mut inner = self.inner.lock();
-            inner.active_download = None;
-            inner.download_ack_sender = None;
-            inner.active_upload = None;
-            inner.upload_chunk_sender = None;
-            let mut upload_ids = inner
-                .pending_attachments
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            upload_ids.sort();
-            upload_ids.dedup();
-            let upload_dirs = upload_ids
-                .into_iter()
-                .map(|id| inner.uploads_base.join(id))
-                .collect::<Vec<_>>();
-            inner.pending_attachments.clear();
-            (inner.room.take(), upload_dirs)
-        };
-        Self::remove_upload_dirs(upload_dirs, reason);
-        if let Some(room) = old {
-            let _ = room.sender.send(RelayOutbound::Close {
-                room_id: room.room_id,
-                session_id: room.session_id,
-                reason: reason.to_string(),
-            });
-            self.emit_status();
-        }
-    }
-
-    /// 清理当前进行中的上传:丢 sender 让 streaming task 自然终止,清 Inner 字段,
-    /// best-effort 删除盘上未完成的 upload 目录。失败仅 log,不阻塞调用方。
-    ///
-    /// 调用方需保证**不在持锁状态**下调用 —— 本方法自己 lock,且 lock 之间无嵌套。
-    fn cleanup_active_upload(&self, reason: &str) {
-        let dir_to_remove = {
-            let mut inner = self.inner.lock();
-            let Some(upload_id) = inner.active_upload.take() else {
-                return;
-            };
-            inner.upload_chunk_sender = None;
-            inner.pending_attachments.remove(&upload_id);
-            let dir_to_remove = inner.uploads_base.join(&upload_id);
-            dir_to_remove
-        };
-        Self::remove_upload_dirs(vec![dir_to_remove], reason);
-    }
-
-    fn cleanup_session_uploads(&self, session_id: &str, reason: &str) {
-        let dirs = {
-            let mut inner = self.inner.lock();
-            let upload_ids = inner
-                .pending_attachments
-                .iter()
-                .filter(|(_, pending)| pending.session_id == session_id)
-                .map(|(upload_id, _)| upload_id.clone())
-                .collect::<Vec<_>>();
-            if inner
-                .active_upload
-                .as_ref()
-                .is_some_and(|active| upload_ids.contains(active))
-            {
-                inner.active_upload = None;
-                inner.upload_chunk_sender = None;
-            }
-            let dirs = upload_ids
-                .iter()
-                .map(|upload_id| inner.uploads_base.join(upload_id))
-                .collect::<Vec<_>>();
-            for upload_id in upload_ids {
-                inner.pending_attachments.remove(&upload_id);
-            }
-            dirs
-        };
-        Self::remove_upload_dirs(dirs, reason);
-    }
-
-    fn cleanup_all_uploads(&self, reason: &str) {
-        let dirs = {
-            let mut inner = self.inner.lock();
-            inner.active_upload = None;
-            inner.upload_chunk_sender = None;
-            let dirs = inner
-                .pending_attachments
-                .keys()
-                .map(|upload_id| inner.uploads_base.join(upload_id))
-                .collect::<Vec<_>>();
-            inner.pending_attachments.clear();
-            dirs
-        };
-        Self::remove_upload_dirs(dirs, reason);
-    }
-
-    fn remove_upload_dirs(dirs: Vec<PathBuf>, reason: &str) {
-        for dir in dirs {
-            if let Err(error) = std::fs::remove_dir_all(&dir) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!(
-                        "[remote-control] remove upload dir failed path={} reason={reason}: {error:#}",
-                        dir.display()
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn status(&self) -> RemoteControlStatus {
-        let inner = self.inner.lock();
-        if let Some(room) = &inner.room {
-            RemoteControlStatus {
-                active: true,
-                room_id: Some(room.room_id.clone()),
-                session_id: if room.session_id.is_empty() {
-                    None
-                } else {
-                    Some(room.session_id.clone())
-                },
-                url: Some(room.url.clone()),
-                status: room.status,
-                relay_url: room.relay_ws_url.clone(),
-                last_error: room.last_error.clone(),
-            }
-        } else {
-            RemoteControlStatus {
-                active: false,
-                room_id: None,
-                session_id: None,
-                url: None,
-                status: RemoteControlStatusKind::Idle,
-                relay_url: remote_relay_ws_url(),
-                last_error: None,
-            }
-        }
-    }
-
-    pub fn forward_local_event(&self, source_event: &str, payload: Value) {
-        let Some(session_id) = payload
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-        else {
-            return;
-        };
-        let mapped = match source_event {
-            "chat:delta" => "assistant_delta",
-            "chat:tool_start" => "tool_call_start",
-            "chat:tool_end" => "tool_call_end",
-            "chat:plan_snapshot" => "plan_snapshot",
-            "chat:plan_ready" => "plan_ready",
-            "chat:user_input_required" => "user_input_required",
-            "chat:transient_error" => "error",
-            "chat:done" => "session_status",
-            "chat:usage" => "usage_update",
-            "chat:compaction" => "compaction_update",
-            "artifact:disk" => "artifact_summary",
-            _ => return,
-        };
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        };
-        if let Some(room) = room {
-            let _ = room.sender.send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                mapped,
-                payload,
-            )));
-        }
-    }
-
-    async fn handle_mobile_action(
-        &self,
-        room_id: &str,
-        session_id: &str,
-        payload: Value,
-        store: &SessionStore,
-        pool: &EnginePool,
-    ) {
-        let Ok(action) = serde_json::from_value::<MobileAction>(payload) else {
-            self.send_error("bad_mobile_action", "invalid mobile action payload");
-            return;
-        };
-        let active_session_id = match self.active_session_for_room(room_id) {
-            Some(active_session_id) => active_session_id,
-            None => {
-                self.send_error("room_mismatch", "mobile action room mismatch");
-                return;
-            }
-        };
-        if session_id != active_session_id {
-            eprintln!(
-                "[remote-control] mobile action session mismatch ignored: relay={session_id}, active={active_session_id}"
-            );
-        }
-        if !self.room_exists(room_id) {
-            self.send_error("room_mismatch", "mobile action room/session mismatch");
-            return;
-        }
-        if !matches!(
-            action.kind.as_str(),
-            "ping"
-                | "request_snapshot"
-                | "request_session_list"
-                | "request_artifacts"
-                | "request_artifact_preview"
-                | "request_chips"
-                | "disconnect"
-                // 分块流式上传按 upload_id 关联,不走 cmid 去重通道(每块都自带 cmid 反而难复用)。
-                | "attach_file_chunk"
-        ) {
-            let Some(id) = action.client_message_id.as_deref() else {
-                self.send_error("missing_client_message_id", "client_message_id required");
-                return;
-            };
-            if !self.inner.lock().seen.remember(id) {
-                return;
-            }
-        }
-        if active_session_id.is_empty()
-            && !matches!(
-                action.kind.as_str(),
-                "ping"
-                    | "request_snapshot"
-                    | "request_session_list"
-                    | "create_remote_session"
-                    | "switch_remote_session"
-                    | "disconnect"
-                    // 工具开关是全局态,刚扫码未选会话的移动端也能查目录,不必强制选中会话。
-                    | "list_tools"
-            )
-        {
-            self.send_error("session_required", "please select a session first");
-            return;
-        }
-
-        let result = match action.kind.as_str() {
-            "user_message" => {
-                let content = action
-                    .payload
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                // 去重 + 保序:mobile 若重复传同一 upload_id,只取一次,避免附件被双发。
-                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                let attachment_upload_ids: Vec<String> = action
-                    .payload
-                    .get("attachment_upload_ids")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_str().map(String::from))
-                            .filter(|id| seen.insert(id.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.dispatch_mobile_user_message(
-                    &active_session_id,
-                    content,
-                    attachment_upload_ids,
-                    action.client_message_id.clone(),
-                    store,
-                )
-            }
-            "cancel_generation" => {
-                pool.cancel(&active_session_id).await;
-                Ok(())
-            }
-            "submit_user_input" => {
-                let tool_call_id = action
-                    .payload
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "missing tool_call_id".to_string())
-                    .map(ToString::to_string);
-                let answers = action
-                    .payload
-                    .get("answers")
-                    .cloned()
-                    .ok_or_else(|| "missing answers".to_string())
-                    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
-                match (tool_call_id, answers) {
-                    (Ok(tool_call_id), Ok(answers)) => {
-                        let response =
-                            deepseek_tui::tools::user_input::UserInputResponse { answers };
-                        pool.submit_user_input(&active_session_id, tool_call_id, response)
-                            .await
-                            .map_err(|e| format!("{e:?}"))
-                    }
-                    (Err(e), _) | (_, Err(e)) => Err(e),
-                }
-            }
-            "cancel_user_input" => {
-                let tool_call_id = action
-                    .payload
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "missing tool_call_id".to_string());
-                match tool_call_id {
-                    Ok(tool_call_id) => pool
-                        .cancel_user_input(&active_session_id, tool_call_id.to_string())
-                        .await
-                        .map_err(|e| format!("{e:?}")),
-                    Err(e) => Err(e),
-                }
-            }
-            "request_snapshot" | "ping" if active_session_id.is_empty() => {
-                self.send_session_list(store, "")
-            }
-            "request_snapshot" | "ping" => {
-                self.send_snapshot_with_live_request(store, &active_session_id)
-            }
-            "request_session_list" => self.send_session_list(store, &active_session_id),
-            "create_remote_session" => self.create_remote_session(store, pool),
-            "switch_remote_session" => {
-                match action.payload.get("session_id").and_then(|v| v.as_str()) {
-                    Some(id) => self.switch_remote_session(store, id),
-                    None => Err("missing session_id".to_string()),
-                }
-            }
-            "request_artifacts" => self.send_artifact_list(store, &active_session_id),
-            "request_artifact_preview" => {
-                if let Some(id) = action.payload.get("artifact_id").and_then(|v| v.as_str()) {
-                    self.send_artifact_preview(store, &active_session_id, id)
-                } else if let Some(path) =
-                    action.payload.get("artifact_path").and_then(|v| v.as_str())
-                {
-                    self.send_artifact_preview_by_path(store, &active_session_id, path)
-                } else {
-                    Err("missing artifact_id".to_string())
-                }
-            }
-            "request_chips" => self.send_chips_snapshot(store, &active_session_id),
-            "request_artifact_download" => {
-                let artifact_id = action.payload.get("artifact_id").and_then(|v| v.as_str());
-                let artifact_path = action.payload.get("artifact_path").and_then(|v| v.as_str());
-                if artifact_id.is_none() && artifact_path.is_none() {
-                    Err("missing artifact_id".to_string())
-                } else {
-                    self.send_artifact_download(
-                        store,
-                        &active_session_id,
-                        artifact_id,
-                        artifact_path,
-                    )
-                }
-            }
-            "accept_plan" => {
-                let plan_markdown = action
-                    .payload
-                    .get("plan_markdown")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                match store.set_mode(&active_session_id, SerializableMode::Yolo) {
-                    Ok(()) => {
-                        let instruction =
-                            format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}");
-                        pool.send_user_message(
-                            &active_session_id,
-                            instruction,
-                            SerializableMode::Yolo.to_app_mode(),
-                            false,
-                        )
-                        .await
-                        .map_err(|e| format!("accept_plan send_user_message: {e:?}"))
-                        .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
-                    }
-                    Err(error) => Err(format!("accept_plan set_mode: {error:#}")),
-                }
-            }
-            "discard_plan" => self.send_chips_snapshot(store, &active_session_id),
-            // --- 知识库 (KB) 分发:list / mount / unmount ---
-            "list_kb_collections" => {
-                let Some(app) = &self.app else {
-                    self.send_error(
-                        "headless_unsupported",
-                        "knowledge service needs Tauri runtime",
-                    );
-                    return;
-                };
-                let collections = match app.try_state::<crate::knowledge::KnowledgeService>() {
-                    Some(svc) => match svc.l1().list_collections() {
-                        Ok(rows) => rows,
-                        Err(e) => {
-                            self.send_error("kb_list_failed", &format!("{e:#}"));
-                            return;
+                    RelayInbound::Message(text) => match serde_json::from_str::<Value>(&text) {
+                        Ok(value) => manager.handle_relay_message(value),
+                        Err(error) => {
+                            eprintln!("[web-access] queued relay JSON ignored: {error}")
                         }
                     },
-                    None => Vec::new(),
-                };
-                let mounted = app
-                    .try_state::<SessionStore>()
-                    .and_then(|s| s.mounted_collection(&active_session_id));
-                self.send_event(
-                    &active_session_id,
-                    "kb_collections_snapshot",
-                    json!({
-                        "collections": collections,
-                        "mounted_collection_id": mounted,
-                    }),
-                );
-                return;
-            }
-            "mount_kb_collection" => {
-                let Some(app) = &self.app else {
-                    self.send_error(
-                        "headless_unsupported",
-                        "knowledge service needs Tauri runtime",
-                    );
-                    return;
-                };
-                let collection_id = action
-                    .payload
-                    .get("collection_id")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                if collection_id <= 0 {
-                    self.send_error("invalid_collection_id", "collection_id required");
-                    return;
+                    RelayInbound::Connection {
+                        endpoint_id,
+                        connected,
+                        error,
+                    } => manager.handle_connection(&endpoint_id, connected, error),
                 }
-                let (knowledge, store) = (
-                    app.try_state::<crate::knowledge::KnowledgeService>(),
-                    app.try_state::<SessionStore>(),
-                );
-                let Some(knowledge) = knowledge else {
-                    self.send_error("headless_unsupported", "knowledge service not managed");
-                    return;
-                };
-                let Some(store) = store else {
-                    self.send_error("headless_unsupported", "session store not managed");
-                    return;
-                };
-                // 完全门控:embedding 模型未就绪 → 知识库整体不可用,拒绝挂载
-                // (与 commands::session_mount_collection 同源兜底,防远程绕过)。
-                if !knowledge.semantic_ready() {
-                    self.send_error("kb_not_ready", "embedding 模型未就绪,知识库暂不可用");
-                    return;
-                }
-                // kb_search 工具只在 Plan 模式注册到 turn registry(见 chips_snapshot 里
-                // kb_search_available 的注释)。非 Plan 模式(Yolo / Coverage 等)挂载
-                // collection 不会让模型真检索,chip 会显示「挂载成功」但实际无效 —— 拒绝并
-                // 给出明确文案,让 mobile 提示用户切到 Plan 模式(PR #213 审查 #6)。
-                if store.mode_state(&active_session_id).mode != SerializableMode::Plan {
-                    self.send_error(
-                        "kb_search_unavailable",
-                        "当前模式不支持知识库检索,请切到 Plan 模式后再挂载",
-                    );
-                    return;
-                }
-                // 拒绝挂载空集合(规范 §3 决策:doc_count==0 视为空)。
-                let non_empty = knowledge
-                    .l1()
-                    .list_collections()
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|c| c.id == collection_id && c.doc_count > 0);
-                if !non_empty {
-                    self.send_error("collection_empty", "cannot mount empty collection");
-                    return;
-                }
-                store.set_mounted_collection(&active_session_id, Some(collection_id));
-                let _ = app.emit(
-                    "remote_control:kb_mount_changed",
-                    json!({
-                        "session_id": active_session_id,
-                        "collection_id": collection_id,
-                    }),
-                );
-                self.send_event(
-                    &active_session_id,
-                    "kb_mount_changed",
-                    json!({
-                        "session_id": active_session_id,
-                        "collection_id": collection_id,
-                    }),
-                );
-                return;
-            }
-            "unmount_kb_collection" => {
-                let Some(app) = &self.app else {
-                    self.send_error(
-                        "headless_unsupported",
-                        "knowledge service needs Tauri runtime",
-                    );
-                    return;
-                };
-                let Some(store) = app.try_state::<SessionStore>() else {
-                    self.send_error("headless_unsupported", "session store not managed");
-                    return;
-                };
-                store.set_mounted_collection(&active_session_id, None);
-                let _ = app.emit(
-                    "remote_control:kb_mount_changed",
-                    json!({
-                        "session_id": active_session_id,
-                        "collection_id": null,
-                    }),
-                );
-                self.send_event(
-                    &active_session_id,
-                    "kb_mount_changed",
-                    json!({
-                        "session_id": active_session_id,
-                        "collection_id": Value::Null,
-                    }),
-                );
-                return;
-            }
-            // --- 工具开关 (tools) 分发:list / set ---
-            "list_tools" => {
-                let Some(_app) = &self.app else {
-                    self.send_error("headless_unsupported", "marketplace needs Tauri runtime");
-                    return;
-                };
-                // list_marketplace_tools 是 sync I/O(扫 manifest 目录),走 spawn_blocking
-                // 避免阻塞 dispatcher 协程。
-                let all =
-                    match tokio::task::spawn_blocking(|| crate::commands::list_marketplace_tools())
-                        .await
-                    {
-                        Ok(Ok(tools)) => tools,
-                    Ok(Err(e)) => {
-                        self.send_error("tools_list_failed", &format!("{e:#}"));
-                        return;
-                    }
-                    Err(e) => {
-                        self.send_error("tools_list_failed", &format!("join: {e:#}"));
-                        return;
-                    }
-                };
-                let disabled_ids = crate::bridge::marketplace::load_disabled_connectors();
-                self.send_event(
-                    &active_session_id,
-                    "tools_snapshot",
-                    json!({
-                        "all": all,
-                        "disabled_ids": disabled_ids,
-                    }),
-                );
-                return;
-            }
-            "set_disabled_connectors" => {
-                let Some(app) = &self.app else {
-                    self.send_error("headless_unsupported", "marketplace needs Tauri runtime");
-                    return;
-                };
-                let (ids, truncated) =
-                    sanitize_disabled_connector_ids(action.payload.get("connector_ids"));
-                if truncated {
-                    // 入参异常(数量超上限):仍应用净化后的列表,但先上报,便于排查中继/客户端异常。
-                    self.send_error(
-                        "too_many_connector_ids",
-                        &format!("截断到 {MAX_DISABLED_CONNECTOR_IDS} 个"),
-                    );
-                }
-                match crate::commands::apply_disabled_connectors(Some(app), pool, ids).await {
-                    Ok(()) => {
-                        // apply_disabled_connectors 自身不 emit,这里补一次本地广播。
-                        let _ = app.emit("remote_control:tools_changed", ());
-                        self.send_event(&active_session_id, "tools_changed", json!({}));
-                    }
-                    Err(e) => self.send_error("set_tools_failed", &format!("{e:#}")),
-                }
-                return;
-            }
-            // --- 附件上传 (attach) 分发:start / chunk / abort ---
-            // 三个动作都不依赖 EnginePool / SessionStore / KB / 工具市场,只读 manager 内部状态,
-            // 因此抽到独立私有方法里(便于单测直接调,不必起 EnginePool)。
-            "attach_file_start" => {
-                self.handle_attach_file_start(&active_session_id, &action.payload);
-                return;
-            }
-            "attach_file_chunk" => {
-                self.handle_attach_file_chunk(&action.payload).await;
-                return;
-            }
-            "attach_file_abort" => {
-                self.handle_attach_file_abort(&active_session_id, &action.payload);
-                return;
-            }
-            "set_mode" => {
-                let mode = match action.payload.get("mode").and_then(|v| v.as_str()) {
-                    Some(mode) => mode,
-                    None => return self.send_error("mobile_action_failed", "missing mode"),
-                };
-                let mode = match mode {
-                    "plan" => SerializableMode::Plan,
-                    "yolo" => SerializableMode::Yolo,
-                    other => {
-                        return self
-                            .send_error("mobile_action_failed", &format!("invalid mode: {other}"))
-                    }
-                };
-                store
-                    .set_mode(&active_session_id, mode)
-                    .map_err(|error| format!("set_mode: {error:#}"))
-                    .and_then(|_| self.send_chips_snapshot(store, &active_session_id))
-            }
-            "set_model" => {
-                let model_id = action.payload.get("model_id").and_then(|v| {
-                    if v.is_null() {
-                        None
-                    } else {
-                        v.as_str().map(ToString::to_string)
-                    }
-                });
-                if let Some(mid) = &model_id {
-                    if UserPrefs::load().model_by_id(mid).is_none() {
-                        return self.send_error(
-                            "mobile_action_failed",
-                            &format!("model not found: {mid}"),
-                        );
-                    }
-                }
-                match pool
-                    .switch_session_model(&active_session_id, model_id)
-                    .await
-                {
-                    Ok(()) => self.send_chips_snapshot(store, &active_session_id),
-                    Err(error) => Err(format!("set_model: {error:#}")),
-                }
-            }
-            "disconnect" => {
-                self.stop_current();
-                Ok(())
-            }
-            other => Err(format!("action not allowed: {other}")),
-        };
-        if let Err(err) = result {
-            self.send_error("mobile_action_failed", &err);
-        }
-    }
-
-    pub fn send_snapshot(&self, store: &SessionStore, session_id: &str) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        let snapshot = snapshot::build_session_snapshot(store, session_id)?;
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "session_snapshot",
-                snapshot,
-            )))
-            .map_err(|e| format!("send snapshot: {e}"))?;
-        self.send_session_list(store, session_id)?;
-        self.send_chips_snapshot(store, session_id)?;
-        self.send_artifact_list(store, session_id)
-    }
-
-    pub fn send_snapshot_with_live_request(
-        &self,
-        store: &SessionStore,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let result = self.send_snapshot(store, session_id);
-        if let Some(app) = &self.app {
-            let _ = app.emit(
-                "remote_control:snapshot_requested",
-                json!({ "session_id": session_id }),
-            );
-        }
-        result
-    }
-
-    pub fn send_session_list(
-        &self,
-        store: &SessionStore,
-        active_session_id: &str,
-    ) -> Result<(), String> {
-        let room = self
-            .active_room()
-            .ok_or_else(|| "remote control not active".to_string())?;
-        let sessions = store
-            .list()
-            .map_err(|e| format!("list sessions: {e:?}"))?
-            .into_iter()
-            .map(|s| {
-                let id = s.id.clone();
-                let active = id == active_session_id;
-                json!({
-                    "id": id,
-                    "title": s.title,
-                    "updated_at": s.updated_at,
-                    "message_count": s.message_count,
-                    "active": active,
-                })
-            })
-            .collect::<Vec<_>>();
-        let sessions = if active_session_id.is_empty() {
-            sessions
-        } else {
-            ensure_active_session_in_list(store, sessions, active_session_id)
-        };
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "session_list",
-                json!({
-                    "active_session_id": active_session_id,
-                    "sessions": sessions,
-                }),
-            )))
-            .map_err(|e| format!("send session list: {e}"))
-    }
-
-    pub fn switch_remote_session(
-        &self,
-        store: &SessionStore,
-        target_session_id: &str,
-    ) -> Result<(), String> {
-        // 切 session 时旧 session 的进行中和已就绪附件都失效。mobile 会清空上传卡片，
-        // 服务端必须同步释放内存中的 markdown 和盘上临时源文件。
-        if let Some(previous_session_id) = self.current_session_id() {
-            self.cleanup_session_uploads(&previous_session_id, "switch_session");
-        }
-        let saved = store
-            .load(target_session_id)
-            .map_err(|e| format!("load target session({target_session_id}): {e:?}"))?;
-        let room = {
-            let mut inner = self.inner.lock();
-            let room = inner
-                .room
-                .as_mut()
-                .ok_or_else(|| "remote control not active".to_string())?;
-            room.session_id = target_session_id.to_string();
-            room.clone()
-        };
-        self.emit_status();
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "remote_session_switched",
-                json!({
-                    "session": {
-                        "id": saved.metadata.id,
-                        "title": saved.metadata.title,
-                        "updated_at": saved.metadata.updated_at,
-                        "message_count": saved.metadata.message_count,
-                    }
-                }),
-            )))
-            .map_err(|e| format!("send remote session switched: {e}"))?;
-        self.send_session_list(store, target_session_id)?;
-        self.send_snapshot_with_live_request(store, target_session_id)
-    }
-
-    pub fn create_remote_session(
-        &self,
-        store: &SessionStore,
-        pool: &EnginePool,
-    ) -> Result<(), String> {
-        let (model, model_id) = pool.default_model_for_new_session();
-        let workspace = pool.bridge.workspace.clone();
-        let saved = store
-            .create_new(model, model_id, workspace)
-            .map_err(|e| format!("create remote session: {e:?}"))?;
-        let target_session_id = saved.metadata.id.clone();
-        let room = {
-            let mut inner = self.inner.lock();
-            let room = inner
-                .room
-                .as_mut()
-                .ok_or_else(|| "remote control not active".to_string())?;
-            room.session_id = target_session_id.clone();
-            room.clone()
-        };
-        let session_payload = json!({
-            "id": saved.metadata.id,
-            "title": saved.metadata.title,
-            "updated_at": saved.metadata.updated_at,
-            "message_count": saved.metadata.message_count,
-        });
-        if let Some(app) = &self.app {
-            let _ = app.emit(
-                "remote_control:session_created",
-                json!({ "session": session_payload.clone() }),
-            );
-        }
-        self.emit_status();
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "remote_session_switched",
-                json!({ "session": session_payload }),
-            )))
-            .map_err(|e| format!("send remote session created: {e}"))?;
-        self.send_session_list(store, &target_session_id)?;
-        self.send_snapshot_with_live_request(store, &target_session_id)
-    }
-
-    pub fn send_artifact_list(&self, store: &SessionStore, session_id: &str) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        let saved = store
-            .load(session_id)
-            .map_err(|e| format!("load artifacts({session_id}): {e:?}"))?;
-        let artifacts = saved
-            .artifacts
-            .iter()
-            .map(|a| {
-                let path = a.storage_path.to_string_lossy().to_string();
-                json!({
-                    "id": a.id,
-                    "basename": a.storage_path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                    "path_tail": tail_path(&path),
-                    "kind": format!("{:?}", a.kind),
-                    "byte_size": a.byte_size,
-                    "created_at": a.created_at,
-                })
-            })
-            .collect::<Vec<_>>();
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "artifact_list",
-                json!({
-                    "session_id": session_id,
-                    "artifacts": artifacts,
-                }),
-            )))
-            .map_err(|e| format!("send artifact list: {e}"))
-    }
-
-    pub fn send_artifact_preview(
-        &self,
-        store: &SessionStore,
-        session_id: &str,
-        artifact_id: &str,
-    ) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        let saved = store
-            .load(session_id)
-            .map_err(|e| format!("load artifact preview({session_id}): {e:?}"))?;
-        let artifact = saved
-            .artifacts
-            .iter()
-            .find(|a| a.id == artifact_id)
-            .ok_or_else(|| format!("artifact not found: {artifact_id}"))?;
-        let preview = build_artifact_preview(&artifact.storage_path)?;
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "artifact_preview",
-                json!({
-                    "session_id": session_id,
-                    "artifact_id": artifact.id,
-                    "basename": artifact.storage_path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                    "path_tail": tail_path(&artifact.storage_path.to_string_lossy()),
-                    "kind": format!("{:?}", artifact.kind),
-                    "byte_size": artifact.byte_size,
-                    "preview": preview,
-                }),
-            )))
-            .map_err(|e| format!("send artifact preview: {e}"))
-    }
-
-    pub fn send_artifact_preview_by_path(
-        &self,
-        store: &SessionStore,
-        session_id: &str,
-        artifact_path: &str,
-    ) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        let path = resolve_session_preview_path(store, session_id, artifact_path)?;
-        let metadata =
-            std::fs::metadata(&path).map_err(|e| format!("read artifact metadata: {e}"))?;
-        let preview = build_artifact_preview(&path)?;
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "artifact_preview",
-                json!({
-                    "session_id": session_id,
-                    "artifact_id": Value::Null,
-                    "basename": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                    "path_tail": tail_path(&path.to_string_lossy()),
-                    "kind": display_kind_for_path(&path),
-                    "byte_size": metadata.len(),
-                    "preview": preview,
-                }),
-            )))
-            .map_err(|e| format!("send artifact preview: {e}"))
-    }
-
-    pub fn send_artifact_download(
-        &self,
-        store: &SessionStore,
-        session_id: &str,
-        artifact_id: Option<&str>,
-        artifact_path: Option<&str>,
-    ) -> Result<(), String> {
-        let (path, artifact_id) = if let Some(id) = artifact_id {
-            let saved = store
-                .load(session_id)
-                .map_err(|e| format!("load artifact download({session_id}): {e:?}"))?;
-            let artifact = saved
-                .artifacts
-                .iter()
-                .find(|a| a.id == id)
-                .ok_or_else(|| format!("artifact not found: {id}"))?;
-            (
-                artifact.storage_path.clone(),
-                Value::String(artifact.id.clone()),
-            )
-        } else if let Some(requested) = artifact_path {
-            (
-                resolve_session_preview_path(store, session_id, requested)?,
-                Value::Null,
-            )
-        } else {
-            return Err("missing artifact_id".to_string());
-        };
-        let metadata =
-            std::fs::metadata(&path).map_err(|e| format!("read artifact metadata: {e}"))?;
-        if !metadata.is_file() {
-            return Err("artifact is not a file".to_string());
-        }
-        let byte_size = metadata.len();
-        if byte_size > DOWNLOAD_LIMIT_BYTES {
-            return Err(format!(
-                "artifact too large to download ({byte_size} bytes, limit {DOWNLOAD_LIMIT_BYTES} bytes)"
-            ));
-        }
-        // 同步打开一次,把权限/占用类错误留在同步路径,由 handle_mobile_action 回错给 mobile。
-        std::fs::File::open(&path).map_err(|e| format!("open artifact file: {e}"))?;
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let download_id = format!(
-            "dl_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0)
-        );
-        let (ack_sender, ack_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let room = {
-            let mut inner = self.inner.lock();
-            let room = inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-                .ok_or_else(|| "remote control not active".to_string())?;
-            if inner.active_download.is_some() {
-                return Err("已有下载进行中,请等待完成后再试".to_string());
-            }
-            inner.active_download = Some(download_id.clone());
-            inner.download_ack_sender = Some(ack_sender);
-            room
-        };
-        // 流式传输在独立任务里进行:不阻塞消息循环,分块经有界通道发送形成背压。
-        let manager = self.clone();
-        let task_download_id = download_id;
-        tauri::async_runtime::spawn(async move {
-            let result = stream_artifact_download(
-                &room,
-                &path,
-                artifact_id,
-                &task_download_id,
-                &ext,
-                byte_size,
-                ack_receiver,
-            )
-            .await;
-            if let Err(err) = result {
-                manager.send_error("artifact_download_failed", &err);
-            }
-            let mut inner = manager.inner.lock();
-            if inner.active_download.as_deref() == Some(task_download_id.as_str()) {
-                inner.active_download = None;
-                inner.download_ack_sender = None;
             }
         });
         Ok(())
     }
 
-    fn handle_download_relay_ack(&self, download_id: &str, ack: DownloadRelayAck) {
-        let sender = {
-            let inner = self.inner.lock();
-            if inner.active_download.as_deref() != Some(download_id) {
-                return;
-            }
-            inner.download_ack_sender.clone()
-        };
-        if let Some(sender) = sender {
-            let _ = sender.send(ack);
-        }
-    }
-
-    pub fn send_chips_snapshot(
-        &self,
-        store: &SessionStore,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        let prefs = UserPrefs::load();
-        let session_model_id = store.session_model_id(session_id);
-        let effective_model = session_model_id
-            .as_deref()
-            .and_then(|id| prefs.model_by_id(id))
-            .or_else(|| prefs.active_model());
-        let mode_state = store.mode_state(session_id);
-        let models = prefs
-            .advanced
-            .saved_models
-            .iter()
-            .map(model_chip)
-            .collect::<Vec<_>>();
-        let effective_model_id = effective_model.map(|m| m.id.clone());
-        let effective_model_name = effective_model.map(|m| m.name.clone());
-        let global_model_id = prefs.advanced.active_model_id.clone();
-        // KB chip 是否真实可用(PR #213 审查 #6):kb_search 工具只在 Plan 模式注册到
-        // turn registry(DeepSeek-TUI tool_setup.rs 的 `if mode != AppMode::Plan` 早返回),
-        // Yolo / 其它非 Plan 模式下挂载 collection 不会让模型真的能检索 —— chip 会
-        // 显示「已挂载」但实际无效。这里把「Plan 模式且有内容且 embedding 就绪」作为
-        // kb_search_available 下发,mobile 据此禁用 / 置灰 KB chip,避免误导用户。
-        // 注意:这是临时产品收敛(根因是 fork 的 extra_tools 只在 Plan 注册,改 fork 超本 PR 范围)。
-        let kb_search_available = mode_state.mode == SerializableMode::Plan
-            && self
-                .app
-                .as_ref()
-                .and_then(|app| app.try_state::<crate::knowledge::KnowledgeService>())
-                .map(|s| s.has_indexed_content() && s.semantic_ready())
-                .unwrap_or(false);
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "chips_snapshot",
-                json!({
-                    "session_id": session_id,
-                    "mode": mode_state.mode,
-                    "pinvou_review_enabled": mode_state.pinvou_review_enabled,
-                    "model_id": session_model_id,
-                    "effective_model_id": effective_model_id,
-                    "effective_model_name": effective_model_name,
-                    "global_model_id": global_model_id,
-                    "models": models,
-                    "skill": mode_state.active_skill.as_ref().map(|skill| json!({
-                        "name": skill.name,
-                        "project_dir": skill.project_dir,
-                    })),
-                    "persona_id": mode_state.active_persona,
-                    "mounted_collection": mode_state.mounted_collection,
-                    "kb_search_available": kb_search_available,
-                }),
-            )))
-            .map_err(|e| format!("send chips snapshot: {e}"))
-    }
-
-    pub fn publish_user_message(
-        &self,
-        session_id: &str,
-        content: String,
-        client_message_id: Option<String>,
-    ) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "message_append",
-                json!({
-                    "role": "user",
-                    "content": content,
-                    "client_message_id": client_message_id,
-                }),
-            )))
-            .map_err(|e| format!("publish user message: {e}"))
-    }
-
-    pub fn publish_desktop_event(
-        &self,
-        session_id: &str,
-        kind: &str,
-        payload: Value,
-    ) -> Result<(), String> {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        }
-        .ok_or_else(|| "remote control not active".to_string())?;
-        room.sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                kind,
-                payload,
-            )))
-            .map_err(|e| format!("publish desktop event: {e}"))
-    }
-
-    fn active_room(&self) -> Option<ActiveRoom> {
-        self.inner.lock().room.as_ref().cloned()
-    }
-
-    fn active_session_for_room(&self, room_id: &str) -> Option<String> {
-        let inner = self.inner.lock();
-        inner
-            .room
-            .as_ref()
-            .filter(|r| r.room_id == room_id)
-            .map(|r| r.session_id.clone())
-    }
-
-    fn room_exists(&self, room_id: &str) -> bool {
-        let inner = self.inner.lock();
-        inner.room.as_ref().is_some_and(|r| r.room_id == room_id)
-    }
-
-    fn update_status_from_relay(&self, room_id: &str, status: &str, message: Option<String>) {
+    fn handle_connection(&self, endpoint_id: &str, connected: bool, error: Option<String>) {
         {
             let mut inner = self.inner.lock();
-            let Some(room) = inner.room.as_mut().filter(|r| r.room_id == room_id) else {
+            let Some(endpoint) = inner.endpoint.as_mut() else {
                 return;
             };
-            room.status = match status {
-                "connecting_relay" => RemoteControlStatusKind::ConnectingRelay,
-                "room_registered" => RemoteControlStatusKind::WaitingMobile,
-                "mobile_connected" => RemoteControlStatusKind::MobileConnected,
-                "mobile_disconnected" => RemoteControlStatusKind::MobileDisconnected,
-                _ => room.status,
-            };
-            room.last_error = message;
-        }
-        // mobile 断开:旧 upload 必然无法收到后续 chunk,清掉槽位 + 删盘上数据。
-        // 锁外调 cleanup(它自己再 lock,且 lock 之间无嵌套)。
-        if status == "mobile_disconnected" {
-            self.cleanup_all_uploads("mobile_disconnected");
-        }
-        self.emit_status();
-    }
-
-    fn set_error(&self, err: String) {
-        {
-            let mut inner = self.inner.lock();
-            if let Some(room) = inner.room.as_mut() {
-                room.status = RemoteControlStatusKind::Error;
-                room.last_error = Some(err);
+            if endpoint.config.endpoint_id != endpoint_id {
+                return;
             }
-        }
-        self.emit_status();
-    }
-
-    fn send_error(&self, code: &str, message: &str) {
-        let room = {
-            let inner = self.inner.lock();
-            inner.room.as_ref().cloned()
-        };
-        if let Some(room) = room {
-            let _ = room.sender.send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "error",
-                json!({ "code": code, "message": message }),
-            )));
-        }
-    }
-
-    /// 推一帧事件给当前会话绑定的房间。room 不存在或 session_id 不匹配时静默丢弃
-    /// (与 forward_local_event / send_artifact_list 等既有路径一致)。
-    fn send_event(&self, session_id: &str, kind: &str, payload: Value) {
-        let room = {
-            let inner = self.inner.lock();
-            inner
-                .room
-                .as_ref()
-                .filter(|room| room.session_id == session_id)
-                .cloned()
-        };
-        if let Some(room) = room {
-            let _ = room.sender.send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                kind,
-                payload,
-            )));
-        }
-    }
-
-    /// 公开广播:把一个事件推给当前 mobile 远控端(若已连接且 session 匹配)。
-    /// 用于桌面本地命令(set_disabled_connectors / session_mount_collection 等)
-    /// 在本地状态变更后,把变更同步给正在远控的 mobile 端,避免 mobile UI 陈旧。
-    /// 与内部 `send_event` 同实现,只是提升可见性给 commands.rs 调用。
-    pub fn broadcast_to_mobile(&self, session_id: &str, kind: &str, payload: Value) {
-        self.send_event(session_id, kind, payload);
-    }
-
-    /// 当前远控 room 绑定的 session_id(若已配对);供桌面命令判断是否需要广播。
-    pub fn current_session_id(&self) -> Option<String> {
-        self.inner
-            .lock()
-            .room
-            .as_ref()
-            .map(|r| r.session_id.clone())
-    }
-
-    fn dispatch_mobile_user_message(
-        &self,
-        active_session_id: &str,
-        content: String,
-        attachment_upload_ids: Vec<String>,
-        client_message_id: Option<String>,
-        store: &SessionStore,
-    ) -> Result<(), String> {
-        if content.is_empty() && attachment_upload_ids.is_empty() {
-            return Err("empty message".to_string());
-        }
-
-        // 先只读收集，不能在锁内复制文件。任一附件缺失时保留全部 pending，允许重试。
-        let candidates = {
-            let inner = self.inner.lock();
-            attachment_upload_ids
-                .iter()
-                .map(|upload_id| {
-                    inner
-                        .pending_attachments
-                        .get(upload_id)
-                        .filter(|pending| pending.session_id == active_session_id)
-                        .and_then(|pending| pending.ingest_result.clone())
-                        .map(|ingest| (upload_id.clone(), ingest))
-                        .ok_or_else(|| upload_id.clone())
-                })
-                .collect::<Result<Vec<_>, _>>()
-        };
-        let candidates =
-            candidates.map_err(|missing| format!("attachments not ready: {missing}"))?;
-
-        // uploads 是短生命周期目录。先把源文件复制进 session workspace，再重写 path，
-        // 图片和超长文本后续按路径读取时就不会与临时目录清理竞争。
-        let workspace = store
-            .execution_workspace(active_session_id)
-            .map_err(|e| format!("resolve attachment workspace: {e:#}"))?;
-        let mut attachments = Vec::with_capacity(candidates.len());
-        for (_, original) in &candidates {
-            let mut ingest = original.clone();
-            let staged = crate::commands::stage_remote_attachment_source(
-                &ingest.path,
-                &ingest.basename,
-                &workspace,
-            )
-            .ok_or_else(|| format!("stage remote attachment failed: {}", ingest.basename))?;
-            ingest.path = staged.to_string_lossy().to_string();
-            attachments.push(ingest);
-        }
-
-        if let Some(app) = &self.app {
-            app.emit(
-                "remote_control:mobile_user_message",
-                json!({
-                    "session_id": active_session_id,
-                    "content": content,
-                    "client_message_id": client_message_id,
-                    "attachments": attachments,
-                }),
-            )
-            .map_err(|e| format!("emit mobile_user_message: {e}"))?;
-        }
-
-        // 事件载荷已经引用稳定副本，可以释放内存 markdown 和 uploads 临时源文件。
-        let dirs = {
-            let mut inner = self.inner.lock();
-            let dirs = candidates
-                .iter()
-                .map(|(upload_id, _)| inner.uploads_base.join(upload_id))
-                .collect::<Vec<_>>();
-            for (upload_id, _) in &candidates {
-                inner.pending_attachments.remove(upload_id);
-            }
-            dirs
-        };
-        Self::remove_upload_dirs(dirs, "attachment_consumed");
-        Ok(())
-    }
-
-    // ─── 附件上传分发(attach_file_*)───
-    // 不读 EnginePool / SessionStore / KB / 工具市场,只操作 manager 内部上传状态,
-    // 因此独立成方法,dispatch arm 仅做薄转发;单测可直接调,不必起 EnginePool。
-
-    /// 处理 `attach_file_start`:校验 → 占用 active_upload 槽位 → 起 streaming task →
-    /// 回 `attach_file_start_ack`。streaming task(Group E)负责真正的写盘 + ingest。
-    fn handle_attach_file_start(&self, active_session_id: &str, payload: &Value) {
-        let requested_upload_id = payload
-            .get("upload_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !requested_upload_id.is_empty() && !valid_client_upload_id(requested_upload_id) {
-            self.send_error("invalid_upload_id", "upload_id format invalid");
-            return;
-        }
-        // 新客户端在 start 时就生成稳定 ID，使用户在 start_ack 返回前也能取消。旧客户端
-        // 没传 upload_id 时仍由桌面端生成，保持协议向后兼容。
-        let upload_id = if requested_upload_id.is_empty() {
-            format!(
-                "up_{}_{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            )
-        } else {
-            requested_upload_id.to_string()
-        };
-        let filename = payload
-            .get("filename")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let byte_size = payload
-            .get("byte_size")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let mime = payload
-            .get("mime")
-            .and_then(|v| v.as_str())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        if filename.is_empty() || byte_size == 0 {
-            self.send_error("invalid_attach_params", "filename and byte_size required");
-            return;
-        }
-        if byte_size > UPLOAD_LIMIT_BYTES {
-            self.send_error(
-                "upload_too_large",
-                &format!("max {UPLOAD_LIMIT_BYTES} bytes"),
-            );
-            return;
-        }
-        // 关键:锁内分支只决定"是否要拒绝",不在锁内调 send_error / send_event
-        // (二者都会再 `inner.lock()` → re-entrant 死锁)。锁外再回错。
-        // 拒绝信息用 (code, message) 元组传出锁块,避免字符串拼接 + split_once 的脆弱解析。
-        let prepared: Result<
-            (String, tokio::sync::mpsc::Receiver<UploadChunkMsg>),
-            (&str, String),
-        > = {
-            let mut inner = self.inner.lock();
-            if inner.active_upload.is_some() {
-                Err((
-                    "upload_in_progress",
-                    "another upload is running".to_string(),
-                ))
-            } else if inner.pending_attachments.contains_key(&upload_id) {
-                Err(("upload_id_conflict", "upload_id already exists".to_string()))
+            if connected {
+                endpoint.status = WebAccessStatusKind::ConnectingRelay;
+                endpoint.last_error = None;
             } else {
-                // 防滥用:同一 session 内已就绪(未随 user_message 消费)的附件数有上限。
-                // 超过即拒绝,避免恶意 client 不发 user_message 无限堆积 IngestResult。
-                    let pending_for_session = inner
-                        .pending_attachments
-                        .values()
-                        .filter(|p| p.session_id == active_session_id)
-                        .count();
-                    if pending_for_session >= MAX_PENDING_ATTACHMENTS_PER_SESSION {
-                        Err((
-                            "too_many_pending_attachments",
-                            format!(
-                                "已就绪附件 {} 达上限 {}(请先发送一条消息消费它们)",
-                                pending_for_session, MAX_PENDING_ATTACHMENTS_PER_SESSION
-                        ),
-                    ))
-                } else {
-                    let upload_dir = inner.uploads_base.join(&upload_id);
-                    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
-                        // 不在锁内 send_error —— collect 错误,锁外回。
-                            Err(("upload_dir_failed", format!("{e:#}")))
+                endpoint.status = WebAccessStatusKind::ConnectingRelay;
+                endpoint.web_client_connected = false;
+                endpoint.lease_id = None;
+                endpoint.fresh_baseline_seq = None;
+                endpoint.last_error = error;
+            }
+        }
+        self.emit_status();
+    }
+
+    fn handle_relay_message(&self, value: Value) {
+        let endpoint_id = value
+            .get("endpoint_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !self.is_current_endpoint(endpoint_id) {
+            return;
+        }
+        match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "desktop_endpoint_registered" => self.handle_registered(&value),
+            "web_client_connected" => self.handle_web_connected(&value),
+            "web_client_disconnected" => self.handle_web_disconnected(&value),
+            "rpc_request" => self.handle_rpc_request(&value),
+            "event_subscribe" => self.handle_event_subscription(&value, true),
+            "event_unsubscribe" => self.handle_event_subscription(&value, false),
+            "client_ready" => self.synchronize_client_from_value(&value),
+            "desktop_endpoint_revoked" => self.handle_revoked(endpoint_id),
+            "desktop_endpoint_replaced" => self.handle_replaced(endpoint_id),
+            "error" => {
+                let error = value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("relay rejected Web access request")
+                    .to_string();
+                self.set_endpoint_error(error);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_registered(&self, value: &Value) {
+        let connected = value
+            .get("web_client_connected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let lease_id = value
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        {
+            let mut inner = self.inner.lock();
+            let lease_changed = connected
+                && inner
+                    .endpoint
+                    .as_ref()
+                    .and_then(|endpoint| endpoint.last_lease_id.as_ref())
+                    != lease_id.as_ref();
+            if lease_changed {
+                inner.subscriptions.clear();
+                clear_web_attachments(&mut inner);
+            }
+            let Some(endpoint) = inner.endpoint.as_mut() else {
+                return;
+            };
+            endpoint.web_client_connected = connected;
+            endpoint.client_ready = false;
+            endpoint.fresh_baseline_seq = None;
+            if connected {
+                endpoint.lease_id = lease_id.clone();
+                endpoint.last_lease_id = lease_id;
+            } else {
+                endpoint.lease_id = None;
+            }
+            endpoint.status = if connected {
+                WebAccessStatusKind::WebClientConnected
+            } else {
+                WebAccessStatusKind::WaitingWebClient
+            };
+            endpoint.last_error = None;
+        }
+        self.emit_status();
+    }
+
+    fn handle_web_connected(&self, value: &Value) {
+        let lease_id = value
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if lease_id.is_empty() {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock();
+            let fresh_client = value
+                .get("stream_epoch")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty);
+            let fresh_baseline_seq = fresh_client.then_some(inner.stream.seq);
+            let lease_changed = inner
+                .endpoint
+                .as_ref()
+                .and_then(|endpoint| endpoint.last_lease_id.as_deref())
+                != Some(lease_id.as_str());
+            if lease_changed {
+                // Subscriptions belong to a concrete Web lease. A takeover or
+                // reload must rebuild them before `client_ready` requests a
+                // replay, otherwise old subscriptions can advance the new
+                // client's event cursor before it is ready.
+                inner.subscriptions.clear();
+                clear_web_attachments(&mut inner);
+            }
+            let Some(endpoint) = inner.endpoint.as_mut() else {
+                return;
+            };
+            endpoint.web_client_connected = true;
+            endpoint.client_ready = false;
+            endpoint.lease_id = Some(lease_id.clone());
+            endpoint.last_lease_id = Some(lease_id.clone());
+            endpoint.fresh_baseline_seq = fresh_baseline_seq;
+            endpoint.status = WebAccessStatusKind::WebClientConnected;
+            endpoint.last_error = None;
+            // A pending request may finish just after a reconnect. Route that
+            // first completion to the new valid lease; a completed request is
+            // still replayed from cache if the browser resends it.
+            for entry in inner.rpc_cache.values_mut() {
+                if let RpcCacheEntry::Pending(pending) = entry {
+                    pending.lease_id = lease_id.clone();
+                }
+            }
+        }
+        self.emit_status();
+    }
+
+    fn handle_web_disconnected(&self, value: &Value) {
+        let disconnected_lease = value.get("lease_id").and_then(Value::as_str);
+        {
+            let mut inner = self.inner.lock();
+            let Some(endpoint) = inner.endpoint.as_mut() else {
+                return;
+            };
+            if disconnected_lease.is_some() && endpoint.lease_id.as_deref() != disconnected_lease {
+                return;
+            }
+            endpoint.web_client_connected = false;
+            endpoint.client_ready = false;
+            endpoint.lease_id = None;
+            endpoint.fresh_baseline_seq = None;
+            endpoint.status = WebAccessStatusKind::WebClientDisconnected;
+        }
+        self.emit_status();
+    }
+
+    fn handle_revoked(&self, endpoint_id: &str) {
+        let revoked = {
+            let mut inner = self.inner.lock();
+            if inner
+                .endpoint
+                .as_ref()
+                .is_none_or(|endpoint| endpoint.config.endpoint_id != endpoint_id)
+            {
+                return;
+            }
+            let revoked = inner.endpoint.take();
+            inner.subscriptions.clear();
+            inner.rpc_ledger = RpcLedger::default();
+            inner.rpc_cache.clear();
+            inner.rpc_order.clear();
+            clear_web_attachments(&mut inner);
+            inner.stream.reset();
+            inner.idle_status = WebAccessStatusKind::Revoked;
+            inner.idle_error = None;
+            revoked
+        };
+        if let Some(endpoint) = revoked {
+            let _ = endpoint.sender.try_send(RelayOutbound::Shutdown);
+        }
+        if let Err(error) = remove_config() {
+            eprintln!("[web-access] remove revoked config failed: {error}");
+        }
+        if let Err(error) = remove_rpc_ledger() {
+            eprintln!("[web-access] remove revoked RPC ledger failed: {error}");
+        }
+        self.emit_status();
+    }
+
+    fn handle_replaced(&self, endpoint_id: &str) {
+        {
+            let mut inner = self.inner.lock();
+            let Some(endpoint) = inner.endpoint.as_mut() else {
+                return;
+            };
+            if endpoint.config.endpoint_id != endpoint_id {
+                return;
+            }
+            endpoint.status = WebAccessStatusKind::Error;
+            endpoint.web_client_connected = false;
+            endpoint.client_ready = false;
+            endpoint.lease_id = None;
+            endpoint.fresh_baseline_seq = None;
+            endpoint.last_error = Some(
+                "this endpoint is active in another desktop process; rotate Web access to take a new endpoint"
+                    .to_string(),
+            );
+            inner.subscriptions.clear();
+            inner.rpc_cache.clear();
+            inner.rpc_order.clear();
+            clear_web_attachments(&mut inner);
+        }
+        self.emit_status();
+    }
+
+    fn handle_event_subscription(&self, value: &Value, subscribe: bool) {
+        let Some(event) = value.get("event").and_then(Value::as_str) else {
+            return;
+        };
+        if !self.policy.events.contains(event) {
+            return;
+        }
+        let changed = {
+            let mut inner = self.inner.lock();
+            if subscribe {
+                inner.subscriptions.insert(event.to_string())
+            } else {
+                inner.subscriptions.remove(event)
+            }
+        };
+        if changed {
+            let bridge_event = if subscribe {
+                "web_access:event_subscribe"
+            } else {
+                "web_access:event_unsubscribe"
+            };
+            let _ = self
+                .app
+                .emit_to("main", bridge_event, json!({ "event": event }));
+        }
+    }
+
+    fn handle_rpc_request(&self, value: &Value) {
+        let request_id = value
+            .get("client_request_id")
+            .or_else(|| value.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let command = value
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let lease_id = value
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if request_id.is_empty() || request_id.len() > 256 || lease_id.is_empty() {
+            return;
+        }
+        let args = value.get("args").cloned().unwrap_or_else(|| json!({}));
+        let command_error = validate_rpc_command(&command).err();
+        let fingerprint_command = if command_error.is_some() {
+            "__invalid_web_rpc_command__"
+        } else {
+            command.as_str()
+        };
+        let fingerprint = match rpc_fingerprint(fingerprint_command, &args) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                self.set_endpoint_error(error);
+                return;
+            }
+        };
+
+        let allowed = command_error.is_none() && self.policy.commands.contains(&command);
+        let preflight_completion = if let Some(error) = command_error {
+            Some(rpc_error_completion("invalid_command", error))
+        } else if serde_json::to_vec(&args)
+            .map(|encoded| encoded.len() > MAX_RPC_REQUEST_BYTES)
+            .unwrap_or(true)
+        {
+            Some(rpc_error_completion(
+                "request_too_large",
+                format!(
+                    "WebUI RPC arguments exceed the {} MiB limit",
+                    MAX_RPC_REQUEST_BYTES / (1024 * 1024)
+                ),
+            ))
+        } else if allowed {
+            validate_web_rpc_scope(&self.app, &command, &args)
+                .err()
+                .map(|error| rpc_error_completion("invalid_session_scope", error))
+        } else {
+            None
+        };
+        let action = {
+            let mut inner = self.inner.lock();
+            let Some(endpoint) = inner.endpoint.as_ref() else {
+                return;
+            };
+            let endpoint_id = endpoint.config.endpoint_id.clone();
+            let sender = endpoint.sender.clone();
+            let bridge_generation = inner.bridge_generation.clone();
+            let in_flight_count = inner
+                .rpc_cache
+                .values()
+                .filter(|entry| matches!(entry, RpcCacheEntry::Pending(_)))
+                .count();
+            match inner.rpc_cache.get_mut(&request_id) {
+                Some(RpcCacheEntry::Pending(pending)) => {
+                    if pending.fingerprint != fingerprint {
+                        RpcRequestAction::Respond(
+                            sender,
+                            rpc_response(
+                                &endpoint_id,
+                                &lease_id,
+                                &request_id,
+                                &request_conflict_completion(),
+                            ),
+                        )
+                    } else {
+                        pending.lease_id = lease_id;
+                        if pending.acknowledged_generation.is_none()
+                            && bridge_generation.is_some()
+                            && pending.dispatched_generation != bridge_generation
+                        {
+                            pending.dispatched_generation = bridge_generation.clone();
+                            RpcRequestAction::Dispatch(RpcDispatch {
+                                request_id: request_id.clone(),
+                                command: pending.command.clone(),
+                                args: pending.args.clone(),
+                                bridge_generation: bridge_generation.unwrap_or_default(),
+                            })
                         } else {
-                            let (tx, rx) =
-                                tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-                            inner.active_upload = Some(upload_id.clone());
-                            inner.upload_chunk_sender = Some(tx);
-                            inner.pending_attachments.insert(
-                                upload_id.clone(),
-                                PendingAttachment {
-                                    session_id: active_session_id.to_string(),
-                                    filename: filename.clone(),
-                                    byte_size,
-                                    mime: mime.clone(),
-                                    bytes_written: 0,
-                                    bytes_in_flight: 0,
-                                    ingest_result: None,
-                                },
-                            );
-                            Ok((upload_id, rx))
+                            RpcRequestAction::None
                         }
                     }
                 }
-            };
-        let (upload_id, rx) = match prepared {
-            Ok(pair) => pair,
-            Err((code, message)) => {
-                self.send_error(code, &message);
-                return;
+                Some(RpcCacheEntry::Complete {
+                    fingerprint: existing_fingerprint,
+                    completion,
+                }) => {
+                    let completion = if existing_fingerprint == &fingerprint {
+                        completion.clone()
+                    } else {
+                        request_conflict_completion()
+                    };
+                    RpcRequestAction::Respond(
+                        sender,
+                        rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
+                    )
+                }
+                None => {
+                    if let Some(tombstone) = inner.rpc_ledger.get(&request_id).cloned() {
+                        if tombstone.fingerprint != fingerprint || tombstone.acknowledged {
+                            let completion = tombstone_completion(&tombstone, &fingerprint);
+                            inner.rpc_cache.insert(
+                                request_id.clone(),
+                                RpcCacheEntry::Complete {
+                                    fingerprint: tombstone.fingerprint,
+                                    completion: completion.clone(),
+                                },
+                            );
+                            inner.rpc_order.push_back(request_id.clone());
+                            prune_rpc_cache(&mut inner);
+                            RpcRequestAction::Respond(
+                                sender,
+                                rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
+                            )
+                        } else {
+                            // `remember` was durable but the desktop never
+                            // acknowledged execution. Reconstructing the
+                            // pending request is safe after a process/WebView
+                            // restart; only acknowledged tombstones become
+                            // outcome_unknown.
+                            let rejection = rpc_admission_rejection(
+                                preflight_completion.as_ref(),
+                                allowed,
+                                in_flight_count,
+                            );
+                            if let Some(completion) = rejection {
+                                inner.rpc_cache.insert(
+                                    request_id.clone(),
+                                    RpcCacheEntry::Complete {
+                                        fingerprint: fingerprint.clone(),
+                                        completion: completion.clone(),
+                                    },
+                                );
+                                inner.rpc_order.push_back(request_id.clone());
+                                prune_rpc_cache(&mut inner);
+                                RpcRequestAction::Respond(
+                                    sender,
+                                    rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
+                                )
+                            } else {
+                                inner.rpc_cache.insert(
+                                    request_id.clone(),
+                                    RpcCacheEntry::Pending(PendingRpc {
+                                        lease_id,
+                                        command: command.clone(),
+                                        args: args.clone(),
+                                        fingerprint,
+                                        dispatched_generation: bridge_generation.clone(),
+                                        acknowledged_generation: None,
+                                    }),
+                                );
+                                inner.rpc_order.push_back(request_id.clone());
+                                prune_rpc_cache(&mut inner);
+                                if let Some(bridge_generation) = bridge_generation {
+                                    RpcRequestAction::Dispatch(RpcDispatch {
+                                        request_id: request_id.clone(),
+                                        command,
+                                        args,
+                                        bridge_generation,
+                                    })
+                                } else {
+                                    RpcRequestAction::None
+                                }
+                            }
+                        }
+                    } else {
+                        match prepare_new_rpc_admission(
+                            &inner.rpc_ledger,
+                            &request_id,
+                            &fingerprint,
+                            preflight_completion.as_ref(),
+                            allowed,
+                            in_flight_count,
+                        ) {
+                            Ok(NewRpcAdmission::Rejected(completion)) => {
+                                inner.rpc_cache.insert(
+                                    request_id.clone(),
+                                    RpcCacheEntry::Complete {
+                                        fingerprint: fingerprint.clone(),
+                                        completion: completion.clone(),
+                                    },
+                                );
+                                inner.rpc_order.push_back(request_id.clone());
+                                prune_rpc_cache(&mut inner);
+                                RpcRequestAction::Respond(
+                                    sender,
+                                    rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
+                                )
+                            }
+                            Ok(NewRpcAdmission::Durable(next_ledger)) => {
+                                if let Err(error) = persist_rpc_ledger(&next_ledger) {
+                                    let completion = rpc_error_completion(
+                                        "rpc_ledger_unavailable",
+                                        format!("cannot durably accept Web RPC: {error}"),
+                                    );
+                                    inner.rpc_cache.insert(
+                                        request_id.clone(),
+                                        RpcCacheEntry::Complete {
+                                            fingerprint: fingerprint.clone(),
+                                            completion: completion.clone(),
+                                        },
+                                    );
+                                    inner.rpc_order.push_back(request_id.clone());
+                                    prune_rpc_cache(&mut inner);
+                                    RpcRequestAction::Respond(
+                                        sender,
+                                        rpc_response(
+                                            &endpoint_id,
+                                            &lease_id,
+                                            &request_id,
+                                            &completion,
+                                        ),
+                                    )
+                                } else {
+                                    inner.rpc_ledger = next_ledger;
+                                    inner.rpc_cache.insert(
+                                        request_id.clone(),
+                                        RpcCacheEntry::Pending(PendingRpc {
+                                            lease_id,
+                                            command: command.clone(),
+                                            args: args.clone(),
+                                            fingerprint,
+                                            dispatched_generation: bridge_generation.clone(),
+                                            acknowledged_generation: None,
+                                        }),
+                                    );
+                                    inner.rpc_order.push_back(request_id.clone());
+                                    prune_rpc_cache(&mut inner);
+                                    if let Some(bridge_generation) = bridge_generation {
+                                        RpcRequestAction::Dispatch(RpcDispatch {
+                                            request_id: request_id.clone(),
+                                            command,
+                                            args,
+                                            bridge_generation,
+                                        })
+                                    } else {
+                                        RpcRequestAction::None
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let completion = rpc_error_completion(
+                                    "rpc_ledger_unavailable",
+                                    format!("cannot durably accept Web RPC: {error}"),
+                                );
+                                inner.rpc_cache.insert(
+                                    request_id.clone(),
+                                    RpcCacheEntry::Complete {
+                                        fingerprint: fingerprint.clone(),
+                                        completion: completion.clone(),
+                                    },
+                                );
+                                inner.rpc_order.push_back(request_id.clone());
+                                prune_rpc_cache(&mut inner);
+                                RpcRequestAction::Respond(
+                                    sender,
+                                    rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
+                                )
+                            }
+                        }
+                    }
+                }
             }
         };
-        // 启动流式任务消费分块(Group E 落地真正的写盘 + ingest 逻辑)。
-        let manager_clone = self.clone();
-        tauri::async_runtime::spawn(manager_clone.stream_file_upload(upload_id.clone(), rx));
-        self.send_event(
-            active_session_id,
-            "attach_file_start_ack",
-            json!({
-                "upload_id": upload_id,
-                "chunk_bytes": UPLOAD_CHUNK_BYTES,
-            }),
-        );
+
+        match action {
+            RpcRequestAction::None => {}
+            RpcRequestAction::Respond(sender, response) => {
+                let _ = sender.try_send(RelayOutbound::Message(response));
+            }
+            RpcRequestAction::Dispatch(dispatch) => {
+                let _ = self.emit_rpc_dispatch(dispatch);
+            }
+        }
     }
 
-    /// 处理 `attach_file_chunk`:base64 解码 → 投到 streaming task 通道。ACK 由
-    /// streaming task(Group E)写盘成功后 emit `attach_file_relay_ack`,不在本方法里。
-    async fn handle_attach_file_chunk(&self, payload: &Value) {
-        let upload_id = payload
-            .get("upload_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let index = payload.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let last = payload
-            .get("last")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let data_b64 = payload
-            .get("data_base64")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let data = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
-            Ok(d) => d,
-            Err(e) => {
-                self.send_error("invalid_base64", &format!("{e:#}"));
-                return;
+    fn emit_rpc_dispatch(&self, dispatch: RpcDispatch) -> Result<(), String> {
+        let request_id = dispatch.request_id;
+        let generation = dispatch.bridge_generation;
+        let emitted = self.app.emit_to(
+            "main",
+            "web_access:rpc_request",
+            json!({
+                "request_id": &request_id,
+                "id": &request_id,
+                "command": dispatch.command,
+                "args": dispatch.args,
+                "bridge_generation": &generation,
+            }),
+        );
+        if let Err(error) = emitted {
+            let mut inner = self.inner.lock();
+            if let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get_mut(&request_id) {
+                if pending.acknowledged_generation.is_none()
+                    && pending.dispatched_generation.as_deref() == Some(generation.as_str())
+                {
+                    pending.dispatched_generation = None;
+                }
             }
-        };
-        // 服务端硬校验:单块原始字节不得超过 UPLOAD_CHUNK_MAX_BYTES(2× 默认 chunk)。
-        // chunk_bytes 是给 client 的 hint,不能信任 client 遵守 —— 一块发数 MiB 会撑爆
-        // dispatcher 协程的 base64 缓冲与有界通道。
-        if data.len() > UPLOAD_CHUNK_MAX_BYTES {
-            self.send_error(
-                "chunk_too_large",
-                &format!(
-                    "chunk {} bytes > limit {} bytes",
-                    data.len(),
-                    UPLOAD_CHUNK_MAX_BYTES
-                ),
-            );
+            return Err(format!("dispatch Web RPC to desktop UI: {error}"));
+        }
+        Ok(())
+    }
+
+    fn synchronize_client_from_value(&self, value: &Value) {
+        let lease_id = value
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if lease_id.is_empty() {
             return;
         }
-        // 关键:在锁外 await,避免持有 parking_lot::Mutex 跨 await 点死锁。
-        // send_error 自身会 lock inner,mismatch 分支必须先 drop 守卫再 send_error,
-        // 否则 parking_lot 不可重入 → 永久死锁。
-        // 同理:累计字节超限分支也要在锁外 send_error,所以把判定结果用元组带出。
-        enum ChunkGate {
-            Ok(Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>),
-            UnknownUpload,
-            SizeExceeded {
-                written: u64,
-                inflight: u64,
-                chunk: usize,
-                declared: u64,
-            },
-        }
-        let gate = {
+        let requested_epoch = value
+            .get("stream_epoch")
+            .and_then(Value::as_str)
+            .filter(|epoch| !epoch.is_empty());
+        let after_seq = value.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+        let state_ready = value
+            .get("state_ready")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
+        let mut capability_commands = self.policy.commands.iter().cloned().collect::<Vec<_>>();
+        capability_commands.sort();
+        let mut capability_events = self.policy.events.iter().cloned().collect::<Vec<_>>();
+        capability_events.sort();
+        {
             let mut inner = self.inner.lock();
-            if inner.active_upload.as_deref() != Some(&upload_id) {
-                ChunkGate::UnknownUpload
-            } else if let Some(pending) = inner.pending_attachments.get_mut(&upload_id) {
-                let declared = pending.byte_size.max(1);
-                // 已写盘 + 已过 gate 未落盘 + 本块:必须同时满足两条上限。
-                // ① 声明 byte_size 的 2×(软上限,防 client 谎报 byte_size)。
-                // ② UPLOAD_LIMIT_BYTES 硬上限(无条件,即便 client 声明 64MiB 也不得多写)。
-                // 用 in_flight 预算消掉「cap-4 通道下多块在消费者更新 bytes_written 前都已过 gate」
-                // 的 TOCTOU 窗口:本块过 gate 即刻占用 in_flight,写盘确认后再归还成 bytes_written。
-                let projected = pending
-                    .bytes_written
-                    .saturating_add(pending.bytes_in_flight)
-                    .saturating_add(data.len() as u64);
-                if projected > declared.saturating_mul(2) || projected > UPLOAD_LIMIT_BYTES {
-                    ChunkGate::SizeExceeded {
-                        written: pending.bytes_written,
-                        inflight: pending.bytes_in_flight,
-                        chunk: data.len(),
-                        declared,
-                    }
-                } else {
-                    // 预占本块字节,直到 streaming task 写盘后在消费者侧归还。
-                    pending.bytes_in_flight =
-                        pending.bytes_in_flight.saturating_add(data.len() as u64);
-                    ChunkGate::Ok(inner.upload_chunk_sender.clone())
-                }
-            } else {
-                ChunkGate::Ok(inner.upload_chunk_sender.clone())
-            }
-        };
-        let sender = match gate {
-            ChunkGate::UnknownUpload => {
-                self.send_error("unknown_upload", "upload_id not active");
+            let Some(endpoint) = inner.endpoint.as_ref() else {
+                return;
+            };
+            if endpoint.lease_id.as_deref() != Some(lease_id) {
                 return;
             }
-            ChunkGate::SizeExceeded {
-                written,
-                inflight,
-                chunk,
-                declared,
-            } => {
-                self.send_error(
-                    "upload_size_exceeded",
-                    &format!(
-                        "累计 已写{written}+在途{inflight}+本块{chunk} > 声明 {declared}×2 或硬上限 {UPLOAD_LIMIT_BYTES},client 谎报 byte_size"
+            let endpoint_id = endpoint.config.endpoint_id.clone();
+            let sender = endpoint.sender.clone();
+            let fresh_baseline_seq = endpoint.fresh_baseline_seq;
+            let epoch_matches = requested_epoch
+                .map(|epoch| epoch == inner.stream.epoch)
+                .unwrap_or(false);
+            if !state_ready {
+                if requested_epoch.is_some() && (!epoch_matches || after_seq > inner.stream.seq) {
+                    inner.stream.reset();
+                    let stream_epoch = inner.stream.epoch.clone();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.client_ready = false;
+                        endpoint.fresh_baseline_seq = None;
+                    }
+                    enqueue_stream_reset(
+                        sender,
+                        stream_reset_message(
+                            &endpoint_id,
+                            lease_id,
+                            &stream_epoch,
+                            "epoch_changed",
+                        ),
+                    );
+                    return;
+                }
+                let baseline = if requested_epoch.is_none() {
+                    fresh_baseline_seq.unwrap_or(inner.stream.seq)
+                } else {
+                    after_seq
+                };
+                let snapshot = snapshot_message(
+                    &endpoint_id,
+                    lease_id,
+                    &inner.stream.epoch,
+                    baseline,
+                    &capability_commands,
+                    &capability_events,
+                );
+                if sender.try_send(RelayOutbound::Message(snapshot)).is_err() {
+                    inner.stream.reset();
+                    let stream_epoch = inner.stream.epoch.clone();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.client_ready = false;
+                        endpoint.fresh_baseline_seq = None;
+                    }
+                    enqueue_stream_reset(
+                        sender,
+                        stream_reset_message(
+                            &endpoint_id,
+                            lease_id,
+                            &stream_epoch,
+                            "snapshot_enqueue_failed",
+                        ),
+                    );
+                }
+                return;
+            }
+            // A client without an epoch is a fresh browser/device, not a
+            // reconnect from sequence zero. Give it a baseline snapshot at
+            // the current head so historical interactive events are never
+            // replayed as if they had just happened.
+            let fresh_client = requested_epoch.is_none();
+            let replay = if fresh_client {
+                inner
+                    .stream
+                    .replay_after(fresh_baseline_seq.unwrap_or(inner.stream.seq))
+            } else if epoch_matches {
+                inner.stream.replay_after(after_seq)
+            } else {
+                None
+            };
+
+            let mut messages = match replay {
+                Some(events) if fresh_client => {
+                    let baseline = fresh_baseline_seq.unwrap_or(inner.stream.seq);
+                    let mut messages = vec![snapshot_message(
+                        &endpoint_id,
+                        lease_id,
+                        &inner.stream.epoch,
+                        baseline,
+                        &capability_commands,
+                        &capability_events,
+                    )];
+                    messages.extend(events.into_iter().map(|event| {
+                        event_message(&endpoint_id, lease_id, &inner.stream.epoch, &event)
+                    }));
+                    messages
+                }
+                Some(events) => events
+                    .into_iter()
+                    .map(|event| event_message(&endpoint_id, lease_id, &inner.stream.epoch, &event))
+                    .collect::<Vec<_>>(),
+                None => {
+                    // The browser reload behavior deliberately persists the new
+                    // epoch with cursor zero. Resetting the journal here makes
+                    // that next join satisfiable instead of causing a loop.
+                    let reason = if fresh_client || epoch_matches {
+                        "journal_gap"
+                    } else {
+                        "epoch_changed"
+                    };
+                    inner.stream.reset();
+                    let stream_epoch = inner.stream.epoch.clone();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.client_ready = false;
+                        endpoint.fresh_baseline_seq = None;
+                    }
+                    enqueue_stream_reset(
+                        sender,
+                        stream_reset_message(&endpoint_id, lease_id, &stream_epoch, reason),
+                    );
+                    return;
+                }
+            };
+            if !messages.iter().any(|message| {
+                message.get("type").and_then(Value::as_str) == Some("desktop_snapshot")
+            }) {
+                messages.push(snapshot_message(
+                    &endpoint_id,
+                    lease_id,
+                    &inner.stream.epoch,
+                    inner.stream.seq,
+                    &capability_commands,
+                    &capability_events,
+                ));
+            }
+            // Enqueue the complete replay while holding the stream lock. Live
+            // events also enqueue under this lock, so seq N+1 cannot overtake
+            // the replay suffix ending at N.
+            if !try_enqueue_message_batch(messages, |message| {
+                sender.try_send(RelayOutbound::Message(message)).is_ok()
+            }) {
+                // A partially enqueued suffix is always followed by a reset;
+                // never advertise readiness after silently losing its tail.
+                inner.stream.reset();
+                let stream_epoch = inner.stream.epoch.clone();
+                if let Some(endpoint) = inner.endpoint.as_mut() {
+                    endpoint.client_ready = false;
+                    endpoint.fresh_baseline_seq = None;
+                }
+                enqueue_stream_reset(
+                    sender,
+                    stream_reset_message(
+                        &endpoint_id,
+                        lease_id,
+                        &stream_epoch,
+                        "replay_enqueue_failed",
                     ),
                 );
                 return;
             }
-            ChunkGate::Ok(sender) => sender,
-        };
-        let Some(sender) = sender else {
-            self.send_error("upload_closed", "sender dropped");
-            return;
-        };
-        let chunk_len = data.len() as u64;
-        if let Err(e) = sender
-            .send(UploadChunkMsg {
-                upload_id: upload_id.clone(),
-                index,
-                data,
-                last,
-            })
-            .await
-        {
-            // 投递失败:这块不会到达 streaming task 消费者,in_flight 预算必须归还,
-            // 否则一次失败就永久吃掉一块预算,最终把后续合法上传全堵死。
-            {
-                let mut inner = self.inner.lock();
-                if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
-                    p.bytes_in_flight = p.bytes_in_flight.saturating_sub(chunk_len);
+            if let Some(endpoint) = inner.endpoint.as_mut() {
+                if endpoint.lease_id.as_deref() == Some(lease_id) {
+                    endpoint.client_ready = true;
+                    endpoint.fresh_baseline_seq = None;
                 }
             }
-            self.send_error("upload_send_failed", &format!("{e:#}"));
         }
     }
 
-    /// 处理 `attach_file_abort`:丢 sender 让 streaming task 自然收尾 → 删盘上数据 → 回 ACK。
-    fn handle_attach_file_abort(&self, active_session_id: &str, payload: &Value) {
-        let upload_id = payload
-            .get("upload_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let (known_for_session, dir_to_remove) = {
-            let mut inner = self.inner.lock();
-            let known_for_session = inner
-                .pending_attachments
-                .get(&upload_id)
-                .is_some_and(|pending| pending.session_id == active_session_id);
-            if !known_for_session {
-                (false, None)
-            } else {
-                if inner.active_upload.as_deref() == Some(&upload_id) {
-                    // 丢掉 sender 让 streaming task 自然结束(rx 返回 None)。
-                    inner.upload_chunk_sender = None;
-                    inner.active_upload = None;
-                }
-                inner.pending_attachments.remove(&upload_id);
-                (true, Some(inner.uploads_base.join(&upload_id)))
-            }
-        };
-        if let Some(dir) = dir_to_remove {
-            Self::remove_upload_dirs(vec![dir], "client_abort");
+    fn publish_event_inner(
+        &self,
+        event: &str,
+        payload: Value,
+        source: EventSource,
+    ) -> Result<(), String> {
+        if !self.policy.events.contains(event) {
+            return Err(format!("WebUI event is not allowed: {event}"));
         }
-        // abort 是幂等操作：取消可能在 start_ack 前后各触发一次。未知或已经清理的同一 ID
-        // 也回 aborted，避免迟到 ACK/重复 catch 把客户端带回错误状态。
-        self.send_event(
-            active_session_id,
-            "attach_file_aborted",
-            json!({
-                "upload_id": upload_id,
-                "reason": if known_for_session { "client_abort" } else { "already_aborted" },
-            }),
-        );
+        // The engine/file watcher already call `forward_app_event` directly.
+        // The desktop WebView proxy also sees the corresponding Tauri event;
+        // ignore that second source to keep sequence semantics exact.
+        if source == EventSource::Frontend && RUST_FORWARDED_EVENTS.contains(&event) {
+            return Ok(());
+        }
+        {
+            let mut inner = self.inner.lock();
+            let endpoint = inner
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+            let endpoint_id = endpoint.config.endpoint_id.clone();
+            let lease_id = endpoint.lease_id.clone();
+            let client_ready = endpoint.client_ready;
+            let sender = endpoint.sender.clone();
+            // Journal every allowlisted event independently of the current
+            // lease's subscribe handshake. A reconnect can otherwise lose
+            // deltas emitted between `web_client_connected` and the browser's
+            // subscribe/client_ready messages without leaving a sequence gap.
+            let sizing_lease_id = lease_id.as_deref().unwrap_or(LEASE_ID_WIRE_PLACEHOLDER);
+            let message =
+                match inner
+                    .stream
+                    .record(&endpoint_id, sizing_lease_id, event.to_string(), payload)
+                {
+                    Ok(message) => message,
+                    Err(error @ StreamRecordError::Oversized { .. }) => {
+                        // `record` already rotated the epoch and cleared the
+                        // journal atomically. Stop live delivery until the WebUI
+                        // reloads and negotiates that new epoch, so no later event
+                        // can overtake this recovery barrier.
+                        let stream_epoch = inner.stream.epoch.clone();
+                        if let Some(endpoint) = inner.endpoint.as_mut() {
+                            endpoint.client_ready = false;
+                            endpoint.fresh_baseline_seq = None;
+                        }
+                        if let Some(lease_id) = lease_id.as_deref() {
+                            enqueue_stream_reset(
+                                sender,
+                                stream_reset_message(
+                                    &endpoint_id,
+                                    lease_id,
+                                    &stream_epoch,
+                                    "event_too_large",
+                                ),
+                            );
+                        }
+                        return Err(error.to_string());
+                    }
+                    Err(error) => return Err(error.to_string()),
+                };
+            let Some(lease_id) = lease_id.as_deref() else {
+                // Keep the event in the journal for a reconnecting subscribed
+                // browser, but there is no valid destination at this instant.
+                return Ok(());
+            };
+            if !client_ready {
+                // Subscriptions arrive before client_ready. Keep journaling,
+                // but do not let a live high sequence overtake its replay.
+                return Ok(());
+            }
+            debug_assert_eq!(
+                message.get("lease_id").and_then(Value::as_str),
+                Some(lease_id)
+            );
+            match sender.try_send(RelayOutbound::Message(message)) {
+                Ok(()) => Ok(()),
+                Err(send_error) => {
+                    // The just-recorded event is the journal tail. Rebase it
+                    // into a fresh epoch before exposing the reset barrier, so
+                    // a full relay queue cannot strand a final `done` or
+                    // `user_input_required` with no later gap to trigger a
+                    // reconnect.
+                    let failed_event = inner
+                        .stream
+                        .journal
+                        .back()
+                        .cloned()
+                        .ok_or_else(|| "WebUI stream tail disappeared".to_string())?;
+                    inner.stream.reset();
+                    let rebase_result = inner.stream.record(
+                        &endpoint_id,
+                        lease_id,
+                        failed_event.event,
+                        failed_event.payload,
+                    );
+                    let stream_epoch = inner.stream.epoch.clone();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.client_ready = false;
+                        endpoint.fresh_baseline_seq = None;
+                    }
+                    enqueue_stream_reset(
+                        sender,
+                        stream_reset_message(
+                            &endpoint_id,
+                            lease_id,
+                            &stream_epoch,
+                            "live_enqueue_failed",
+                        ),
+                    );
+                    rebase_result.map_err(|error| {
+                        format!("rebase WebUI event after enqueue failure: {error}")
+                    })?;
+                    Err(format!(
+                        "enqueue WebUI live event failed; stream recovery scheduled: {send_error}"
+                    ))
+                }
+            }
+        }
+    }
+
+    fn is_current_endpoint(&self, endpoint_id: &str) -> bool {
+        !endpoint_id.is_empty()
+            && self
+                .inner
+                .lock()
+                .endpoint
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.config.endpoint_id == endpoint_id)
+    }
+
+    fn set_endpoint_error(&self, error: String) {
+        {
+            let mut inner = self.inner.lock();
+            if let Some(endpoint) = inner.endpoint.as_mut() {
+                endpoint.status = WebAccessStatusKind::Error;
+                endpoint.last_error = Some(error);
+            }
+        }
+        self.emit_status();
     }
 
     fn emit_status(&self) {
-        if let Some(app) = &self.app {
-            let _ = app.emit("remote_control:status", self.status());
+        let status = self.status();
+        let _ = self.app.emit("web_access:status", status);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventSource {
+    Rust,
+    Frontend,
+}
+
+enum RpcRequestAction {
+    None,
+    Respond(RelaySender, Value),
+    Dispatch(RpcDispatch),
+}
+
+enum NewRpcAdmission {
+    Rejected(RpcCompletion),
+    Durable(RpcLedger),
+}
+
+fn rpc_admission_rejection(
+    preflight_completion: Option<&RpcCompletion>,
+    allowed: bool,
+    in_flight_count: usize,
+) -> Option<RpcCompletion> {
+    if let Some(completion) = preflight_completion {
+        Some(completion.clone())
+    } else if !allowed {
+        Some(rpc_error_completion(
+            "command_not_allowed",
+            "WebUI command is not allowed",
+        ))
+    } else if in_flight_count >= MAX_RPC_IN_FLIGHT {
+        Some(rpc_error_completion(
+            "too_many_in_flight_requests",
+            "too many WebUI RPC requests are already running",
+        ))
+    } else {
+        None
+    }
+}
+
+fn prepare_new_rpc_admission(
+    ledger: &RpcLedger,
+    request_id: &str,
+    fingerprint: &str,
+    preflight_completion: Option<&RpcCompletion>,
+    allowed: bool,
+    in_flight_count: usize,
+) -> Result<NewRpcAdmission, String> {
+    if let Some(completion) =
+        rpc_admission_rejection(preflight_completion, allowed, in_flight_count)
+    {
+        // Rejections are deterministic and side-effect free. Keep them only in
+        // the bounded in-memory response cache; they must never consume a
+        // durable idempotency slot or evict an acknowledged request tombstone.
+        return Ok(NewRpcAdmission::Rejected(completion));
+    }
+    let mut next_ledger = ledger.clone();
+    next_ledger.remember(request_id, fingerprint)?;
+    Ok(NewRpcAdmission::Durable(next_ledger))
+}
+
+enum RpcReadyAction {
+    Respond(RelaySender, Value),
+    Dispatch(RpcDispatch),
+}
+
+fn prepare_bridge_generation(inner: &mut Inner, generation: &str) -> Vec<RpcReadyAction> {
+    let generation_changed = inner.bridge_generation.as_deref() != Some(generation);
+    inner.bridge_generation = Some(generation.to_string());
+
+    let response_target = inner
+        .endpoint
+        .as_ref()
+        .map(|endpoint| (endpoint.config.endpoint_id.clone(), endpoint.sender.clone()));
+    let request_ids = inner.rpc_order.iter().cloned().collect::<Vec<_>>();
+    let mut actions = Vec::new();
+    for request_id in request_ids {
+        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get(&request_id) else {
+            continue;
+        };
+
+        if generation_changed && pending.acknowledged_generation.is_some() {
+            let lease_id = pending.lease_id.clone();
+            let fingerprint = pending.fingerprint.clone();
+            let completion = outcome_unknown_completion();
+            inner.rpc_cache.insert(
+                request_id.clone(),
+                RpcCacheEntry::Complete {
+                    fingerprint,
+                    completion: completion.clone(),
+                },
+            );
+            if let Some((endpoint_id, sender)) = &response_target {
+                actions.push(RpcReadyAction::Respond(
+                    sender.clone(),
+                    rpc_response(endpoint_id, &lease_id, &request_id, &completion),
+                ));
+            }
+            continue;
+        }
+
+        if pending.acknowledged_generation.is_some()
+            || pending.dispatched_generation.as_deref() == Some(generation)
+        {
+            continue;
+        }
+        let command = pending.command.clone();
+        let args = pending.args.clone();
+        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get_mut(&request_id) else {
+            continue;
+        };
+        pending.dispatched_generation = Some(generation.to_string());
+        actions.push(RpcReadyAction::Dispatch(RpcDispatch {
+            request_id,
+            command,
+            args,
+            bridge_generation: generation.to_string(),
+        }));
+    }
+    actions
+}
+
+fn prune_rpc_cache(inner: &mut Inner) {
+    while inner.rpc_cache.len() > RPC_CACHE_CAPACITY
+        || rpc_cache_bytes(inner) > RPC_CACHE_BYTES_CAPACITY
+    {
+        let Some(position) = inner.rpc_order.iter().position(|request_id| {
+            matches!(
+                inner.rpc_cache.get(request_id),
+                Some(RpcCacheEntry::Complete { .. })
+            )
+        }) else {
+            // Do not evict in-flight work. The cache falls back under the cap
+            // as those requests complete and later insertions prune it.
+            break;
+        };
+        if let Some(request_id) = inner.rpc_order.remove(position) {
+            inner.rpc_cache.remove(&request_id);
         }
     }
 }
 
-fn model_chip(model: &SavedModel) -> Value {
+fn rpc_cache_bytes(inner: &Inner) -> usize {
+    inner
+        .rpc_cache
+        .iter()
+        .map(|(request_id, entry)| {
+            request_id.len()
+                + match entry {
+                    RpcCacheEntry::Pending(pending) => {
+                        pending.lease_id.len()
+                            + pending.command.len()
+                            + pending.fingerprint.len()
+                            + serde_json::to_vec(&pending.args)
+                                .map(|encoded| encoded.len())
+                                .unwrap_or(MAX_RPC_REQUEST_BYTES)
+                    }
+                    RpcCacheEntry::Complete {
+                        fingerprint,
+                        completion,
+                    } => {
+                        fingerprint.len()
+                            + serde_json::to_vec(&completion.result)
+                                .map(|encoded| encoded.len())
+                                .unwrap_or(MAX_RPC_RESPONSE_BYTES)
+                            + completion.error.as_ref().map_or(0, String::len)
+                            + completion.error_code.as_ref().map_or(0, String::len)
+                    }
+                }
+        })
+        .sum()
+}
+
+fn clear_web_attachments(inner: &mut Inner) {
+    inner.web_attachments.clear();
+    inner.web_attachment_order.clear();
+    inner.web_attachment_bytes = 0;
+    inner.web_session_uploads.clear();
+    inner.web_session_upload_order.clear();
+    for (_, download) in inner.web_session_downloads.drain() {
+        let _ = std::fs::remove_file(download.path);
+    }
+    inner.web_session_download_order.clear();
+}
+
+fn prune_expired_web_session_transfers(inner: &mut Inner) {
+    let now = Instant::now();
+    inner.web_session_uploads.retain(|_, upload| {
+        now.saturating_duration_since(upload.last_touched) <= WEB_SESSION_TRANSFER_TTL
+    });
+    let active_uploads = inner
+        .web_session_uploads
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    inner
+        .web_session_upload_order
+        .retain(|id| active_uploads.contains(id));
+    let expired_downloads = inner
+        .web_session_downloads
+        .iter()
+        .filter(|(_, download)| {
+            now.saturating_duration_since(download.last_touched) > WEB_SESSION_TRANSFER_TTL
+        })
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in expired_downloads {
+        if let Some(download) = inner.web_session_downloads.remove(&id) {
+            let _ = std::fs::remove_file(download.path);
+        }
+    }
+    let active_downloads = inner
+        .web_session_downloads
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    inner
+        .web_session_download_order
+        .retain(|id| active_downloads.contains(id));
+}
+
+fn ensure_web_session_download_capacity(
+    inner: &Inner,
+    reserved_bytes: usize,
+) -> Result<(), String> {
+    if inner.web_session_downloads.len() >= MAX_WEB_SESSION_DOWNLOADS {
+        return Err(format!(
+            "WebUI already has {} active Session downloads; finish or retry an existing download",
+            MAX_WEB_SESSION_DOWNLOADS
+        ));
+    }
+    let active_bytes = inner
+        .web_session_downloads
+        .values()
+        .map(|download| download.reserved_bytes)
+        .sum::<usize>();
+    if active_bytes.saturating_add(reserved_bytes) > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
+        return Err(format!(
+            "Active WebUI Session downloads would exceed the {} MiB total limit",
+            MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
+fn rpc_response(
+    endpoint_id: &str,
+    lease_id: &str,
+    request_id: &str,
+    completion: &RpcCompletion,
+) -> Value {
     json!({
-        "id": model.id,
-        "name": model.name,
-        "model": model.model,
-        "preset": model.preset,
+        "v": PROTOCOL_VERSION,
+        "type": "rpc_response",
+        "endpoint_id": endpoint_id,
+        "lease_id": lease_id,
+        "id": request_id,
+        "client_request_id": request_id,
+        "ok": completion.ok,
+        "result": completion.result,
+        "error": completion.error,
+        "error_code": completion.error_code,
     })
+}
+
+fn rpc_error_completion(code: impl Into<String>, error: impl Into<String>) -> RpcCompletion {
+    RpcCompletion {
+        ok: false,
+        result: Value::Null,
+        error: Some(error.into().chars().take(16_384).collect()),
+        error_code: Some(code.into()),
+    }
+}
+
+fn bounded_rpc_completion(ok: bool, result: Option<Value>, error: Option<String>) -> RpcCompletion {
+    let result = result.unwrap_or(Value::Null);
+    let response_bytes = serde_json::to_vec(&result)
+        .map(|encoded| encoded.len())
+        .unwrap_or(usize::MAX);
+    if response_bytes > MAX_RPC_RESPONSE_BYTES {
+        return rpc_error_completion(
+            "response_too_large",
+            format!(
+                "WebUI RPC response exceeds the {} MiB limit; use a paged or chunked Web command",
+                MAX_RPC_RESPONSE_BYTES / (1024 * 1024)
+            ),
+        );
+    }
+    RpcCompletion {
+        ok,
+        result,
+        error: error.map(|message| message.chars().take(16_384).collect()),
+        error_code: None,
+    }
+}
+
+fn outcome_unknown_completion() -> RpcCompletion {
+    rpc_error_completion(
+        "outcome_unknown",
+        "the desktop may have started this request before its result was durably observed; it will not be run again",
+    )
+}
+
+fn request_conflict_completion() -> RpcCompletion {
+    rpc_error_completion(
+        "request_id_conflict",
+        "client_request_id was reused with different command or args",
+    )
+}
+
+fn tombstone_completion(tombstone: &RpcTombstone, fingerprint: &str) -> RpcCompletion {
+    if tombstone.fingerprint != fingerprint {
+        request_conflict_completion()
+    } else if tombstone.acknowledged {
+        outcome_unknown_completion()
+    } else {
+        rpc_error_completion(
+            "request_not_started",
+            "the request was durably accepted but not acknowledged for execution",
+        )
+    }
+}
+
+fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, String> {
+    let canonical = canonicalize_json(args);
+    let encoded = serde_json::to_vec(&(command, canonical))
+        .map_err(|error| format!("serialize Web RPC fingerprint: {error}"))?;
+    let digest = Sha256::digest(encoded);
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    Ok(fingerprint)
+}
+
+fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
+        Value::Object(values) => {
+            let mut entries = values.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonicalize_json(value)))
+                    .collect(),
+            )
+        }
+        _ => value.clone(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebSessionScope {
+    Required(&'static str),
+    Optional(&'static str),
+}
+
+fn web_session_scope(command: &str) -> Option<WebSessionScope> {
+    use WebSessionScope::{Optional, Required};
+    let scope = match command {
+        // Commands whose Rust API historically falls back to the desktop
+        // process-wide active Session must be explicit over WebUI.
+        "add_run_materials"
+        | "approve_workflow_gate"
+        | "archive_recent_work_memory"
+        | "cancel_generation"
+        | "cancel_user_input"
+        | "compact_now"
+        | "confirm_pending_memory"
+        | "delete_memory_preference"
+        | "delete_timed_memory"
+        | "delete_work_context_memory"
+        | "edit_last_turn"
+        | "get_memory_overview"
+        | "ignore_pending_memory"
+        | "kick_workflow"
+        | "never_pending_memory"
+        | "reject_workflow_gate"
+        | "retry_workflow_role"
+        | "stop_workflow"
+        | "submit_user_input"
+        | "summon_pinvou"
+        | "update_memory_profile"
+        | "update_memory_preference"
+        | "update_timed_memory"
+        | "update_work_context_memory" => Required("sessionId"),
+
+        "accept_plan"
+        | "cancel_shell_task"
+        | "discard_plan"
+        | "equip_persona"
+        | "exit_plan_to_yolo"
+        | "get_active_persona"
+        | "get_mode_state"
+        | "get_session_model_id"
+        | "get_session_persona_events"
+        | "get_session_pinvou_reviews"
+        | "get_workflow_state"
+        | "list_shell_tasks"
+        | "list_workspace_files"
+        | "save_session_persona_events"
+        | "save_session_pinvou_reviews"
+        | "session_mount_collection"
+        | "session_mounted_collection"
+        | "session_unmount_collection"
+        | "set_plan_mode_next"
+        | "set_session_model"
+        | "unbind_session_skill"
+        | "unequip_persona"
+        | "web_access_artifact_info"
+        | "web_access_chat"
+        | "web_access_get_gate_report"
+        | "web_access_get_role_logs"
+        | "web_access_get_role_outputs"
+        | "web_access_get_role_prompt"
+        | "web_access_list_deliverables"
+        | "web_access_read_artifact_chunk"
+        | "web_access_read_artifact_image_b64"
+        | "web_access_read_artifact_text"
+        | "web_access_read_artifact_thumbnail"
+        | "web_access_render_artifact_visual"
+        | "web_access_transcribe_voice_audio"
+        | "web_access_write_artifact_text" => Required("sessionId"),
+
+        "delete_session"
+        | "rename_session"
+        | "save_session_artifacts"
+        | "set_session_archived"
+        | "set_session_pinned"
+        | "web_access_load_session_chunk"
+        | "web_access_save_session_messages_chunk" => Required("id"),
+
+        // Omitting this one deliberately means "create a fresh workflow
+        // Session"; it never consults the desktop active pointer.
+        "start_workflow" => Optional("sessionId"),
+        _ => return None,
+    };
+    Some(scope)
+}
+
+fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Result<(), String> {
+    let Some(scope) = web_session_scope(command) else {
+        return Ok(());
+    };
+    let (field, required) = match scope {
+        WebSessionScope::Required(field) => (field, true),
+        WebSessionScope::Optional(field) => (field, false),
+    };
+    let session_id = args
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(session_id) = session_id else {
+        return if required {
+            Err(format!("{command} requires an explicit {field}"))
+        } else {
+            Ok(())
+        };
+    };
+    crate::bridge::sessions::validate_session_id(session_id)
+        .map_err(|error| format!("invalid WebUI Session id: {error:#}"))?;
+    if (command == "web_access_load_session_chunk"
+        && args
+            .get("downloadId")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()))
+        || (command == "web_access_save_session_messages_chunk"
+            && args.get("offset").and_then(Value::as_u64).unwrap_or(0) > 0)
+    {
+        // The opaque transfer token is already bound to the validated
+        // Session id in RemoteControlManager; avoid re-reading a large Session
+        // file for every 256 KiB chunk.
+        return Ok(());
+    }
+    let store = app
+        .try_state::<SessionStore>()
+        .ok_or_else(|| "Session store is not ready".to_string())?;
+    store
+        .load(session_id)
+        .map_err(|error| format!("WebUI Session {session_id} does not exist: {error:#}"))?;
+    Ok(())
+}
+
+fn validate_bridge_generation(generation: &str) -> Result<(), String> {
+    let generation = generation.trim();
+    if generation.len() < 8 || generation.len() > 256 {
+        return Err("invalid WebView bridge generation".to_string());
+    }
+    if !generation
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid WebView bridge generation".to_string());
+    }
+    Ok(())
+}
+
+fn validate_rpc_command(command: &str) -> Result<(), String> {
+    if command.is_empty() || command.len() > MAX_RPC_COMMAND_BYTES {
+        return Err("invalid WebUI RPC command".to_string());
+    }
+    if !command
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
+    {
+        return Err("invalid WebUI RPC command".to_string());
+    }
+    Ok(())
+}
+
+fn event_message(
+    endpoint_id: &str,
+    lease_id: &str,
+    stream_epoch: &str,
+    event: &StreamEvent,
+) -> Value {
+    json!({
+        "v": PROTOCOL_VERSION,
+        "type": "event",
+        "endpoint_id": endpoint_id,
+        "lease_id": lease_id,
+        "stream_epoch": stream_epoch,
+        "seq": event.seq,
+        "event": event.event,
+        "payload": event.payload,
+    })
+}
+
+fn stream_reset_message(
+    endpoint_id: &str,
+    lease_id: &str,
+    stream_epoch: &str,
+    reason: &str,
+) -> Value {
+    json!({
+        "v": PROTOCOL_VERSION,
+        "type": "stream_reset",
+        "endpoint_id": endpoint_id,
+        "lease_id": lease_id,
+        "stream_epoch": stream_epoch,
+        "seq": 0,
+        "reason": reason,
+    })
+}
+
+fn try_enqueue_message_batch(messages: Vec<Value>, mut enqueue: impl FnMut(Value) -> bool) -> bool {
+    for message in messages {
+        if !enqueue(message) {
+            return false;
+        }
+    }
+    true
+}
+
+fn enqueue_stream_reset(sender: RelaySender, message: Value) {
+    // RelaySender owns a single bounded waiter and coalesces repeated recovery
+    // barriers to the latest lease/epoch while the data channel is saturated.
+    if sender.enqueue_stream_reset(message).is_err() {
+        eprintln!("[web-access] stream reset could not reach the relay task");
+    }
+}
+
+fn snapshot_message(
+    endpoint_id: &str,
+    lease_id: &str,
+    epoch: &str,
+    seq: u64,
+    commands: &[String],
+    events: &[String],
+) -> Value {
+    json!({
+        "v": PROTOCOL_VERSION,
+        "type": "desktop_snapshot",
+        "endpoint_id": endpoint_id,
+        "lease_id": lease_id,
+        "stream_epoch": epoch,
+        "seq": seq,
+        "snapshot": {
+            "desktop_connected": true,
+            "server_time": chrono::Utc::now().to_rfc3339(),
+            "backend_version": env!("CARGO_PKG_VERSION"),
+            "capabilities": {
+                "protocol_version": PROTOCOL_VERSION,
+                "commands": commands,
+                "events": events,
+            },
+        },
+    })
+}
+
+fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
+    WebAccessInfo {
+        endpoint_id: endpoint.config.endpoint_id.clone(),
+        url: endpoint.url.clone(),
+        status: endpoint.status,
+    }
+}
+
+fn fresh_config() -> WebAccessConfig {
+    WebAccessConfig {
+        relay_url: remote_relay_ws_url(),
+        endpoint_id: format!("ep_{}", crate::remote_control::short_token(24)),
+        access_token: crate::remote_control::short_token(48),
+        desktop_secret: crate::remote_control::short_token(48),
+    }
+}
+
+fn validate_config(config: &WebAccessConfig) -> Result<(), String> {
+    if config.relay_url.len() > 2_048
+        || !(config.relay_url.starts_with("ws://") || config.relay_url.starts_with("wss://"))
+        || config.relay_url.chars().any(char::is_whitespace)
+    {
+        return Err("Web access relay_url is invalid".to_string());
+    }
+    if config.endpoint_id.len() < 8
+        || config.endpoint_id.len() > 128
+        || !config
+            .endpoint_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("Web access endpoint_id is invalid".to_string());
+    }
+    if !(24..=1_024).contains(&config.access_token.len())
+        || !(24..=1_024).contains(&config.desktop_secret.len())
+    {
+        return Err("Web access credentials are invalid".to_string());
+    }
+    Ok(())
+}
+
+fn config_path() -> PathBuf {
+    paths::pinvou3_home().join("web-access.json")
+}
+
+fn process_lock_path() -> PathBuf {
+    paths::pinvou3_home().join("web-access.lock")
+}
+
+fn pending_revocations_path() -> PathBuf {
+    paths::pinvou3_home().join("web-access-pending-revocations.json")
+}
+
+fn acquire_process_lock(path: &Path) -> Result<File, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid Web access lock path: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("set private permissions on {}: {error}", path.display()))?;
+    }
+    file.try_lock_exclusive().map_err(|error| {
+        format!(
+            "Web access is already owned by another desktop process ({}): {error}",
+            path.display()
+        )
+    })?;
+    Ok(file)
+}
+
+fn rpc_ledger_path() -> PathBuf {
+    paths::pinvou3_home().join("web-access-rpc-ledger.json")
+}
+
+fn load_config() -> Result<Option<WebAccessConfig>, String> {
+    load_config_from(&config_path())
+}
+
+fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, String> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let mut text = String::new();
+    file.take((MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if text.len() > MAX_WEB_ACCESS_CONFIG_BYTES {
+        return Err(format!(
+            "Web access config is larger than {} KiB: {}",
+            MAX_WEB_ACCESS_CONFIG_BYTES / 1024,
+            path.display()
+        ));
+    }
+    let config: WebAccessConfig = serde_json::from_str(&text)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    validate_config(&config)?;
+    Ok(Some(config))
+}
+
+fn persist_config(config: &WebAccessConfig) -> Result<(), String> {
+    validate_config(config)?;
+    atomic_write_private_json(&config_path(), config, "Web access config")
+}
+
+fn remove_config() -> Result<(), String> {
+    remove_private_file(&config_path())
+}
+
+fn pending_revocation_key(pending: &PendingRevocation) -> String {
+    format!("{}\n{}", pending.relay_url, pending.endpoint_id)
+}
+
+fn validate_pending_revocation(pending: &PendingRevocation) -> Result<(), String> {
+    if pending.relay_url.len() > 2_048
+        || !(pending.relay_url.starts_with("ws://") || pending.relay_url.starts_with("wss://"))
+        || pending.relay_url.chars().any(char::is_whitespace)
+    {
+        return Err("pending Web revocation has an invalid relay_url".to_string());
+    }
+    if pending.endpoint_id.len() < 4
+        || pending.endpoint_id.len() > 128
+        || !pending
+            .endpoint_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("pending Web revocation has an invalid endpoint_id".to_string());
+    }
+    if pending.desktop_secret.len() < 24 || pending.desktop_secret.len() > 1_024 {
+        return Err("pending Web revocation has an invalid desktop secret".to_string());
+    }
+    Ok(())
+}
+
+fn validate_pending_revocation_ledger(ledger: &PendingRevocationLedger) -> Result<(), String> {
+    if ledger.version != PENDING_REVOCATIONS_VERSION {
+        return Err(format!(
+            "unsupported pending Web revocation version {}",
+            ledger.version
+        ));
+    }
+    if ledger.entries.len() > MAX_PENDING_REVOCATIONS {
+        return Err(format!(
+            "pending Web revocation count exceeds {MAX_PENDING_REVOCATIONS}"
+        ));
+    }
+    let mut keys = HashSet::new();
+    for pending in &ledger.entries {
+        validate_pending_revocation(pending)?;
+        if !keys.insert(pending_revocation_key(pending)) {
+            return Err(format!(
+                "duplicate pending Web revocation for {}",
+                pending.endpoint_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn load_pending_revocations() -> Result<PendingRevocationLedger, String> {
+    load_pending_revocations_from(&pending_revocations_path())
+}
+
+fn load_pending_revocations_from(path: &Path) -> Result<PendingRevocationLedger, String> {
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PendingRevocationLedger::default());
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    if data.len() > MAX_PENDING_REVOCATIONS_FILE_BYTES {
+        return Err(format!(
+            "pending Web revocation file is larger than {} KiB: {}",
+            MAX_PENDING_REVOCATIONS_FILE_BYTES / 1024,
+            path.display()
+        ));
+    }
+    let ledger: PendingRevocationLedger = serde_json::from_slice(&data)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    validate_pending_revocation_ledger(&ledger)?;
+    Ok(ledger)
+}
+
+fn persist_pending_revocations_to(
+    path: &Path,
+    ledger: &PendingRevocationLedger,
+) -> Result<(), String> {
+    validate_pending_revocation_ledger(ledger)?;
+    if ledger.entries.is_empty() {
+        remove_private_file(path)
+    } else {
+        atomic_write_private_json(path, ledger, "pending Web revocations")
+    }
+}
+
+fn queue_pending_revocation(config: &WebAccessConfig) -> Result<(), String> {
+    queue_pending_revocation_at(&pending_revocations_path(), PendingRevocation::from(config))
+}
+
+fn queue_pending_revocation_at(path: &Path, pending: PendingRevocation) -> Result<(), String> {
+    validate_pending_revocation(&pending)?;
+    let mut ledger = load_pending_revocations_from(path)?;
+    let key = pending_revocation_key(&pending);
+    if let Some(existing) = ledger
+        .entries
+        .iter()
+        .find(|entry| pending_revocation_key(entry) == key)
+    {
+        return if existing == &pending {
+            Ok(())
+        } else {
+            Err(format!(
+                "conflicting pending Web revocation credentials for {}",
+                pending.endpoint_id
+            ))
+        };
+    }
+    if ledger.entries.len() >= MAX_PENDING_REVOCATIONS {
+        return Err(format!(
+            "pending Web revocation queue is full ({MAX_PENDING_REVOCATIONS})"
+        ));
+    }
+    ledger.entries.push_back(pending);
+    persist_pending_revocations_to(path, &ledger)
+}
+
+fn acknowledge_pending_revocation(pending: &PendingRevocation) -> Result<(), String> {
+    acknowledge_pending_revocation_at(&pending_revocations_path(), pending)
+}
+
+fn acknowledge_pending_revocation_at(
+    path: &Path,
+    pending: &PendingRevocation,
+) -> Result<(), String> {
+    let mut ledger = load_pending_revocations_from(path)?;
+    ledger.entries.retain(|entry| entry != pending);
+    persist_pending_revocations_to(path, &ledger)
+}
+
+fn eligible_pending_revocations(
+    ledger: &PendingRevocationLedger,
+    current: Option<&WebAccessConfig>,
+) -> Vec<PendingRevocation> {
+    ledger
+        .entries
+        .iter()
+        .filter(|pending| {
+            current.is_none_or(|config| {
+                pending.relay_url != config.relay_url
+                    || pending.endpoint_id != config.endpoint_id
+                    || pending.desktop_secret != config.desktop_secret
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn pending_revocation_ack(value: &Value, endpoint_id: &str) -> bool {
+    let message_endpoint = value.get("endpoint_id").and_then(Value::as_str);
+    match value.get("type").and_then(Value::as_str) {
+        Some("desktop_endpoint_revoked") | Some("desktop_endpoint_replaced") => {
+            message_endpoint == Some(endpoint_id)
+        }
+        Some("error")
+            if value.get("code").and_then(Value::as_str) == Some("endpoint_not_found") =>
+        {
+            message_endpoint.is_none_or(|value| value == endpoint_id)
+        }
+        _ => false,
+    }
+}
+
+fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedger, String> {
+    let path = rpc_ledger_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let ledger = RpcLedger::for_endpoint(endpoint_id);
+            persist_rpc_ledger(&ledger)?;
+            return Ok(ledger);
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let mut ledger: RpcLedger = serde_json::from_str(&text)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    if ledger.endpoint_id != endpoint_id {
+        let ledger = RpcLedger::for_endpoint(endpoint_id);
+        persist_rpc_ledger(&ledger)?;
+        return Ok(ledger);
+    }
+    if ledger.version != RPC_LEDGER_VERSION {
+        return Err(format!(
+            "unsupported Web RPC ledger version {} in {}",
+            ledger.version,
+            path.display()
+        ));
+    }
+    let mut request_ids = HashSet::new();
+    for entry in &ledger.entries {
+        if entry.request_id.is_empty()
+            || entry.request_id.len() > 256
+            || entry.fingerprint.len() != 64
+            || !entry
+                .fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(format!(
+                "invalid Web RPC ledger entry in {}",
+                path.display()
+            ));
+        }
+        if !request_ids.insert(entry.request_id.as_str()) {
+            return Err(format!(
+                "duplicate Web RPC request id in {}: {}",
+                path.display(),
+                entry.request_id
+            ));
+        }
+    }
+    if ledger.entries.len() > RPC_CACHE_CAPACITY {
+        let overflow = ledger.entries.len() - RPC_CACHE_CAPACITY;
+        ledger.entries.drain(..overflow);
+        persist_rpc_ledger(&ledger)?;
+    }
+    Ok(ledger)
+}
+
+fn persist_rpc_ledger(ledger: &RpcLedger) -> Result<(), String> {
+    if ledger.version != RPC_LEDGER_VERSION || ledger.endpoint_id.is_empty() {
+        return Err("refusing to persist an invalid Web RPC ledger".to_string());
+    }
+    atomic_write_private_json(&rpc_ledger_path(), ledger, "Web RPC ledger")
+}
+
+fn remove_rpc_ledger() -> Result<(), String> {
+    remove_private_file(&rpc_ledger_path())
+}
+
+fn atomic_write_private_json<T: Serialize>(
+    path: &Path,
+    value: &T,
+    label: &str,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid {label} path: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    let data =
+        serde_json::to_vec_pretty(value).map_err(|error| format!("serialize {label}: {error}"))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("web-access");
+    let mut temporary = None;
+    for _ in 0..16 {
+        let candidate = parent.join(format!(
+            ".{file_name}.tmp-{}-{}",
+            std::process::id(),
+            crate::remote_control::short_token(12)
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                        .map_err(|error| {
+                            format!(
+                                "set private permissions on {}: {error}",
+                                candidate.display()
+                            )
+                        })?;
+                }
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create {}: {error}", candidate.display())),
+        }
+    }
+    let (temporary, mut file) =
+        temporary.ok_or_else(|| format!("allocate a temporary file next to {}", path.display()))?;
+    let result = (|| {
+        file.write_all(&data)
+            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("sync {}: {error}", temporary.display()))?;
+        drop(file);
+        atomic_replace(&temporary, path)
+            .map_err(|error| format!("commit {}: {error}", path.display()))?;
+        sync_parent_directory(parent)
+            .map_err(|error| format!("sync {}: {error}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn remove_private_file(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                sync_parent_directory(parent)
+                    .map_err(|error| format!("sync {}: {error}", parent.display()))?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove {}: {error}", path.display())),
+    }
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both buffers are NUL-terminated and remain alive for the call.
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn remote_public_base_url() -> String {
@@ -2040,59 +3480,228 @@ fn remote_relay_ws_url() -> String {
     std::env::var("PINVOU_REMOTE_RELAY_WS_URL").unwrap_or_else(|_| DEFAULT_RELAY_WS_URL.to_string())
 }
 
-fn ensure_active_session_in_list(
-    store: &SessionStore,
-    mut sessions: Vec<Value>,
-    active_session_id: &str,
-) -> Vec<Value> {
-    if sessions
-        .iter()
-        .any(|s| s.get("id").and_then(|v| v.as_str()) == Some(active_session_id))
-    {
-        return sessions;
+fn public_url(config: &WebAccessConfig) -> String {
+    let mut url = format!(
+        "{}/#endpoint={}&token={}",
+        remote_public_base_url().trim_end_matches('/'),
+        percent_encode(&config.endpoint_id),
+        percent_encode(&config.access_token),
+    );
+    if config.relay_url != DEFAULT_RELAY_WS_URL {
+        url.push_str("&relay=");
+        url.push_str(&percent_encode(&config.relay_url));
     }
-    if let Ok(saved) = store.load(active_session_id) {
-        sessions.insert(
-            0,
-            json!({
-                "id": saved.metadata.id,
-                "title": saved.metadata.title,
-                "updated_at": saved.metadata.updated_at,
-                "message_count": saved.metadata.message_count,
-                "active": true,
-            }),
-        );
-    }
-    sessions
+    url
 }
 
-fn resolve_session_preview_path(
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn new_stream_epoch() -> String {
+    format!("epoch_{}", crate::remote_control::short_token(24))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostFileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostFileRoot {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostFileListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub entries: Vec<HostFileEntry>,
+    pub roots: Vec<HostFileRoot>,
+}
+
+pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, String> {
+    let requested = requested
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(paths::user_home_dir);
+    let directory = crate::file_ingest::validate_path(&requested.to_string_lossy())?;
+    if !directory.is_dir() {
+        return Err(format!(
+            "host path is not a directory: {}",
+            directory.display()
+        ));
+    }
+    let mut entries = Vec::new();
+    let read_dir = std::fs::read_dir(&directory)
+        .map_err(|error| format!("list host path {}: {error}", directory.display()))?;
+    for entry in read_dir.take(MAX_HOST_ENTRIES) {
+        let Ok(entry) = entry else { continue };
+        let entry_path = entry.path();
+        let Ok(authorized_path) = crate::file_ingest::validate_path(&entry_path.to_string_lossy())
+        else {
+            continue;
+        };
+        let Ok(metadata) = std::fs::metadata(&authorized_path) else {
+            continue;
+        };
+        let is_dir = metadata.is_dir();
+        entries.push(HostFileEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: display_path(&authorized_path),
+            is_dir,
+            size: (!is_dir).then_some(metadata.len()),
+        });
+    }
+    entries.sort_by(|left, right| {
+        right
+            .is_dir
+            .cmp(&left.is_dir)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    Ok(HostFileListing {
+        path: display_path(&directory),
+        parent: directory.parent().and_then(|parent| {
+            crate::file_ingest::validate_path(&parent.to_string_lossy())
+                .ok()
+                .map(|path| display_path(&path))
+        }),
+        entries,
+        roots: host_roots(),
+    })
+}
+
+fn host_roots() -> Vec<HostFileRoot> {
+    let home = paths::user_home_dir();
+    vec![HostFileRoot {
+        name: "Home".to_string(),
+        path: display_path(&home),
+    }]
+}
+
+#[cfg(windows)]
+fn display_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.into_owned()
+    }
+}
+
+#[cfg(not(windows))]
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactChunk {
+    pub name: String,
+    pub size: u64,
+    pub offset: u64,
+    pub data_base64: String,
+    pub eof: bool,
+}
+
+pub fn read_artifact_chunk(
+    store: &SessionStore,
+    path: &str,
+    session_id: &str,
+    offset: u64,
+    limit: Option<usize>,
+) -> Result<ArtifactChunk, String> {
+    let session_id = require_explicit_session_id(session_id)?;
+    let limit = limit.unwrap_or(MAX_ARTIFACT_CHUNK_BYTES);
+    if limit == 0 || limit > MAX_ARTIFACT_CHUNK_BYTES {
+        return Err(format!(
+            "artifact chunk limit must be between 1 and {MAX_ARTIFACT_CHUNK_BYTES}"
+        ));
+    }
+    let resolved = resolve_session_artifact_path(store, session_id, path)?;
+    let mut file = File::open(&resolved)
+        .map_err(|error| format!("open artifact {}: {error}", resolved.display()))?;
+    let size = file
+        .metadata()
+        .map_err(|error| format!("stat artifact {}: {error}", resolved.display()))?
+        .len();
+    if offset > size {
+        return Err(format!("artifact offset {offset} exceeds file size {size}"));
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("seek artifact {}: {error}", resolved.display()))?;
+    let mut data = vec![0_u8; limit];
+    let read = file
+        .read(&mut data)
+        .map_err(|error| format!("read artifact {}: {error}", resolved.display()))?;
+    data.truncate(read);
+    Ok(ArtifactChunk {
+        name: resolved
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("artifact")
+            .to_string(),
+        size,
+        offset,
+        data_base64: base64::engine::general_purpose::STANDARD.encode(data),
+        eof: offset.saturating_add(read as u64) >= size,
+    })
+}
+
+fn require_explicit_session_id(session_id: &str) -> Result<&str, String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("sessionId is required to download an artifact".to_string());
+    }
+    Ok(session_id)
+}
+
+/// Resolve only files owned by the selected Session. For ordinary Sessions,
+/// their isolated workspace and private artifacts directory are both owned by
+/// that Session. Scheduled Sessions share a wider workspace, so only explicitly
+/// recorded deliverables and their private artifacts directory are accepted.
+pub(crate) fn resolve_session_artifact_path(
     store: &SessionStore,
     session_id: &str,
     requested: &str,
 ) -> Result<PathBuf, String> {
+    crate::bridge::sessions::validate_session_id(session_id)
+        .map_err(|error| format!("invalid Session id: {error:#}"))?;
+    let saved = store
+        .load(session_id)
+        .map_err(|error| format!("load Session {session_id}: {error:#}"))?;
     let requested = requested.trim();
     if requested.is_empty() {
-        return Err("missing artifact_path".to_string());
+        return Err("missing artifact path".to_string());
     }
     let workspace = store
         .execution_workspace(session_id)
-        .map_err(|e| format!("resolve session workspace: {e:#}"))?;
+        .map_err(|error| format!("resolve session workspace: {error:#}"))?;
     let scheduled = store.scheduled_profile(session_id).is_some();
     let artifacts = paths::session_artifacts_dir(session_id);
     let workspace_root = workspace
         .canonicalize()
-        .map_err(|e| format!("resolve session workspace: {e}"))?;
+        .map_err(|error| format!("resolve session workspace: {error}"))?;
     let artifacts_root = artifacts.canonicalize().ok();
-    // A scheduled engine executes in the shared user workspace. Treating that
-    // entire tree as remotely previewable would let a path-shaped mobile
-    // request read unrelated user files. Only paths already recorded as this
-    // conversation's artifacts (plus its private artifacts directory) inherit
-    // preview authority.
     let scheduled_artifacts = if scheduled {
-        store
-            .load(session_id)
-            .map_err(|e| format!("load scheduled artifacts({session_id}): {e:#}"))?
+        saved
             .artifacts
             .into_iter()
             .filter_map(|artifact| artifact.storage_path.canonicalize().ok())
@@ -2100,6 +3709,7 @@ fn resolve_session_preview_path(
     } else {
         Vec::new()
     };
+
     let mut candidates = Vec::new();
     let requested_path = Path::new(requested);
     if requested_path.is_absolute() {
@@ -2134,7 +3744,7 @@ fn resolve_session_preview_path(
         }
     }
     Err(format!(
-        "artifact path not found in current session: {requested}"
+        "artifact path not found in Session {session_id}: {requested}"
     ))
 }
 
@@ -2144,3223 +3754,803 @@ fn path_after_segment(path: &str, segment: &str) -> Option<PathBuf> {
     while let Some(part) = parts.next() {
         if part == segment {
             let tail = parts.collect::<Vec<_>>().join("/");
-            if !tail.is_empty() {
-                return Some(PathBuf::from(tail));
-            }
-            return None;
+            return (!tail.is_empty()).then(|| PathBuf::from(tail));
         }
     }
     None
 }
 
-fn display_kind_for_path(path: &Path) -> String {
-    match path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "md" | "markdown" => "MD".to_string(),
-        "html" | "htm" => "HTML".to_string(),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" => "IMAGE".to_string(),
-        "csv" => "CSV".to_string(),
-        "json" => "JSON".to_string(),
-        other if !other.is_empty() => other.to_ascii_uppercase(),
-        _ => "FILE".to_string(),
-    }
-}
-
-fn build_artifact_preview(path: &Path) -> Result<Value, String> {
-    let metadata = std::fs::metadata(path).map_err(|e| format!("read artifact metadata: {e}"))?;
-    if !metadata.is_file() {
-        return Err("artifact is not a file".to_string());
-    }
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let bytes = std::fs::read(path).map_err(|e| format!("read artifact file: {e}"))?;
-    let truncated = bytes.len() > PREVIEW_LIMIT_BYTES;
-    let slice = if truncated {
-        &bytes[..PREVIEW_LIMIT_BYTES]
-    } else {
-        &bytes[..]
-    };
-    if is_text_ext(&ext) {
-        let content = String::from_utf8_lossy(slice).to_string();
-        let preview_type = if ext == "html" || ext == "htm" {
-            "html"
-        } else if ext == "md" || ext == "markdown" {
-            "markdown"
-        } else {
-            "text"
-        };
-        return Ok(json!({
-            "type": preview_type,
-            "content": content,
-            "truncated": truncated,
-            "mime": mime_for_ext(&ext),
-        }));
-    }
-    if is_image_ext(&ext) && !truncated {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(slice);
-        return Ok(json!({
-            "type": "image",
-            "data_url": format!("data:{};base64,{}", mime_for_ext(&ext), encoded),
-            "truncated": false,
-            "mime": mime_for_ext(&ext),
-        }));
-    }
-    Ok(json!({
-        "type": "unsupported",
-        "content": "",
-        "truncated": truncated,
-        "mime": mime_for_ext(&ext),
-        "reason": if is_image_ext(&ext) { "image too large for inline preview" } else { "preview not supported for this file type" },
-    }))
-}
-
-fn is_text_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "md" | "markdown"
-            | "txt"
-            | "html"
-            | "htm"
-            | "json"
-            | "csv"
-            | "log"
-            | "xml"
-            | "js"
-            | "ts"
-            | "tsx"
-            | "jsx"
-            | "css"
-            | "py"
-            | "rs"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "svg"
-    )
-}
-
-fn is_image_ext(ext: &str) -> bool {
-    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp")
-}
-
-fn mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "html" | "htm" => "text/html",
-        "md" | "markdown" => "text/markdown",
-        "json" => "application/json",
-        "csv" => "text/csv",
-        "xml" => "application/xml",
-        "js" => "text/javascript",
-        "ts" | "tsx" | "jsx" => "text/plain",
-        "css" => "text/css",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        _ => "text/plain",
-    }
-}
-
-fn download_chunk_count(byte_len: usize) -> usize {
-    if byte_len == 0 {
-        0
-    } else {
-        byte_len.div_ceil(DOWNLOAD_CHUNK_BYTES)
-    }
-}
-
-/// 流式发送一个产物下载:start → 逐块 chunk → end,全部经有界下载通道。
-/// 文件按 768KB 逐块读取,同一时刻内存里只有一块原始字节 + 其 base64;
-/// 通道满时 `.await` 挂起形成背压,大文件不会在无界队列里堆积。
-async fn stream_artifact_download(
-    room: &ActiveRoom,
-    path: &Path,
-    artifact_id: Value,
-    download_id: &str,
-    ext: &str,
-    byte_size: u64,
-    mut ack_receiver: tokio::sync::mpsc::UnboundedReceiver<DownloadRelayAck>,
-) -> Result<(), String> {
-    use tokio::io::AsyncReadExt;
-
-    let total_chunks = download_chunk_count(byte_size as usize);
-    room.download_sender
-        .send(RelayOutbound::Envelope(envelope(
-            &room.room_id,
-            &room.session_id,
-            "artifact_download_start",
-            json!({
-                "session_id": room.session_id,
-                "artifact_id": artifact_id,
-                "download_id": download_id,
-                "basename": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                "path_tail": tail_path(&path.to_string_lossy()),
-                "mime": download_mime_for_ext(ext),
-                "byte_size": byte_size,
-                "total_chunks": total_chunks,
-            }),
-        )))
-        .await
-        .map_err(|e| format!("send artifact download start: {e}"))?;
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| format!("open artifact file: {e}"))?;
-    let mut buffer = vec![0u8; DOWNLOAD_CHUNK_BYTES];
-    let mut index = 0usize;
-    let mut remaining = byte_size as usize;
-    while remaining > 0 {
-        // read 不保证一次填满,循环读满一块或到 EOF。
-        let mut filled = 0usize;
-        let target = buffer.len().min(remaining);
-        while filled < target {
-            let read = file
-                .read(&mut buffer[filled..target])
-                .await
-                .map_err(|e| format!("read artifact file: {e}"))?;
-            if read == 0 {
-                break;
-            }
-            filled += read;
-        }
-        if filled != target {
-            return Err(format!(
-                "artifact changed during download (expected {byte_size} bytes, reached EOF after {} bytes)",
-                byte_size as usize - remaining + filled
-            ));
-        }
-        room.download_sender
-            .send(RelayOutbound::Envelope(envelope(
-                &room.room_id,
-                &room.session_id,
-                "artifact_download_chunk",
-                json!({
-                    "download_id": download_id,
-                    "index": index,
-                    "data": base64::engine::general_purpose::STANDARD.encode(&buffer[..filled]),
-                }),
-            )))
-            .await
-            .map_err(|e| format!("send artifact download chunk {index}: {e}"))?;
-        let ack = tokio::time::timeout(Duration::from_secs(60), ack_receiver.recv())
-            .await
-            .map_err(|_| format!("relay/mobile is too slow while sending chunk {index}"))?
-            .ok_or_else(|| "download acknowledgement channel closed".to_string())?;
-        if ack.index != index {
-            return Err(format!(
-                "unexpected download acknowledgement: expected chunk {index}, got {}",
-                ack.index
-            ));
-        }
-        if !ack.ok {
-            return Err(format!(
-                "relay could not deliver chunk {index}: {}",
-                ack.message
-                    .unwrap_or_else(|| "mobile disconnected".to_string())
-            ));
-        }
-        remaining -= filled;
-        index += 1;
-    }
-    let mut extra = [0u8; 1];
-    if file
-        .read(&mut extra)
-        .await
-        .map_err(|e| format!("read artifact file: {e}"))?
-        != 0
-    {
-        return Err(format!(
-            "artifact changed during download (grew beyond declared {byte_size} bytes)"
-        ));
-    }
-    room.download_sender
-        .send(RelayOutbound::Envelope(envelope(
-            &room.room_id,
-            &room.session_id,
-            "artifact_download_end",
-            json!({
-                "download_id": download_id,
-                "total_chunks": total_chunks,
-                "byte_size": byte_size,
-            }),
-        )))
-        .await
-        .map_err(|e| format!("send artifact download end: {e}"))?;
-    Ok(())
-}
-
-fn download_mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "zip" => "application/zip",
-        "pdf" => "application/pdf",
-        "gz" | "tgz" => "application/gzip",
-        "tar" => "application/x-tar",
-        "7z" => "application/x-7z-compressed",
-        "mp4" => "video/mp4",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        other if is_text_ext(other) || is_image_ext(other) => mime_for_ext(other),
-        _ => "application/octet-stream",
-    }
-}
-
-impl RemoteControlManager {
-    /// 上传分块流式任务(Group E 落地真正的写盘 + ingest + 完成事件)。
-    ///
-    /// 消费 dispatch 端投递的 `UploadChunkMsg`:逐块 base64 解码后已变 Vec<u8>,
-    /// 直接 `write_all` 写 `<uploads_base>/<upload_id>/<sanitized_filename>`,每块写完发
-    /// `attach_file_relay_ack { index, ok: true }` 让 mobile 推下一块(背压源头)。
-    /// 最后一块(`last == true`)触发 flush + close → `file_ingest::ingest`(sync,
-    /// 放 `spawn_blocking` 避免阻塞 dispatcher)→ 写 `ingest_result` → emit
-    /// `attach_file_result { ok: true, ingest: <IngestResult> }`。
-    ///
-    /// 错误路径:
-    /// - 任何 IO 失败 → `attach_file_result { ok: false, error }` + cleanup;
-    /// - `rx.recv()` 超过 60s(ack 超时) → `attach_file_aborted { reason: "ack_timeout" }`;
-    /// - `rx.recv()` 返回 `None`(sender dropped,即 mobile abort/disconnect)
-    ///   → `attach_file_aborted { reason: "client_disconnected" }`。
-    ///
-    /// 上传成功完成后:active_upload 槽位让出(允许下一个 upload),但 pending_attachments
-    /// 保留到 user_message 取用(消费后才删)。
-    async fn stream_file_upload(
-        self,
-        upload_id: String,
-        mut rx: tokio::sync::mpsc::Receiver<UploadChunkMsg>,
-    ) {
-        use tokio::io::AsyncWriteExt;
-
-        // 锁内只取写盘路径 + session_id,锁外做所有 await / fs / send_event。
-        // pending_attachments 已经被 cleanup 清掉时 session_id 空 → 直接退出。
-        //
-        // 落盘文件名保留**原始扩展名**(经 sanitize_upload_filename 净化):file_ingest
-        // 按磁盘路径扩展名分派,旧实现写死 data.bin 会让 txt/pdf/docx/xlsx/png 全部
-        // 进入 binary 兜底「不支持的文件类型」,模型读不到真实内容(PR #213 审查 #1)。
-        let (data_path, session_id, declared_byte_size) = {
-            let inner = self.inner.lock();
-            let base = inner.uploads_base.join(&upload_id);
-            let pending = inner.pending_attachments.get(&upload_id);
-            let session_id = pending.map(|p| p.session_id.clone()).unwrap_or_default();
-            let declared_byte_size = pending.map(|p| p.byte_size).unwrap_or(0);
-            let leaf = pending
-                .map(|p| sanitize_upload_filename(&p.filename))
-                .unwrap_or_else(|| "data.bin".to_string());
-            (base.join(&leaf), session_id, declared_byte_size)
-        };
-        if session_id.is_empty() {
-            // 不在 pending_attachments 里 → 已经被 cleanup 清掉了,直接退出。
-            return;
-        }
-
-        let mut file = match tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&data_path)
-            .await
-        {
-            Ok(f) => f,
-            Err(e) => {
-                self.send_event(
-                    &session_id,
-                    "attach_file_result",
-                    json!({
-                        "upload_id": upload_id,
-                        "ok": false,
-                        "error": format!("open upload file: {e:#}"),
-                    }),
-                );
-                self.cleanup_active_upload("stream_open_failed");
-                return;
-            }
-        };
-
-        let mut index_expected = 0usize;
-        loop {
-            let recv =
-                tokio::time::timeout(Duration::from_secs(UPLOAD_ACK_TIMEOUT_SECS), rx.recv()).await;
-            let msg = match recv {
-                Err(_) => {
-                    // 60s 没收到下一块 → 视为对端 / relay 异常,主动收尾。
-                    self.send_event(
-                        &session_id,
-                        "attach_file_aborted",
-                        json!({
-                            "upload_id": upload_id,
-                            "reason": "ack_timeout",
-                        }),
-                    );
-                    self.cleanup_active_upload("stream_ack_timeout");
-                    return;
-                }
-                Ok(None) => {
-                    // sender dropped(mobile abort / disconnect / cleanup 触发)。
-                    self.send_event(
-                        &session_id,
-                        "attach_file_aborted",
-                        json!({
-                            "upload_id": upload_id,
-                            "reason": "client_disconnected",
-                        }),
-                    );
-                    self.cleanup_active_upload("stream_sender_dropped");
-                    return;
-                }
-                Ok(Some(msg)) => msg,
-            };
-            // 索引连续性校验(防乱序 / 重发)。
-            if msg.index != index_expected {
-                self.send_event(
-                    &session_id,
-                    "attach_file_result",
-                    json!({
-                        "upload_id": upload_id,
-                        "ok": false,
-                        "error": format!(
-                            "chunk index out of order: expected {index_expected}, got {}",
-                            msg.index
-                        ),
-                    }),
-                );
-                self.cleanup_active_upload("stream_index_oob");
-                return;
-            }
-            if let Err(e) = file.write_all(&msg.data).await {
-                self.send_event(
-                    &session_id,
-                    "attach_file_result",
-                    json!({
-                        "upload_id": upload_id,
-                        "ok": false,
-                        "error": format!("write upload file: {e:#}"),
-                    }),
-                );
-                self.cleanup_active_upload("stream_write_failed");
-                return;
-            }
-            // 累计已写字节并把该块从 in_flight 预算里归还,handle_attach_file_chunk 据此
-            // 拦截累计超 byte_size×2 的攻击(in_flight 用于消除 cap-4 通道的 TOCTOU 窗口)。
-            {
-                let mut inner = self.inner.lock();
-                if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
-                    p.bytes_written = p.bytes_written.saturating_add(msg.data.len() as u64);
-                    p.bytes_in_flight = p.bytes_in_flight.saturating_sub(msg.data.len() as u64);
-                }
-            }
-            // 回 chunk ack,让 mobile 发下一块(对应 mobile 端的 acknowledgeUploadChunk)。
-            self.send_event(
-                &session_id,
-                "attach_file_relay_ack",
-                json!({
-                    "upload_id": upload_id,
-                    "index": msg.index,
-                    "ok": true,
-                }),
-            );
-            index_expected += 1;
-            if msg.last {
-                break;
-            }
-        }
-
-        // flush + 关文件后再 ingest;ingest 是 sync + 可能重 I/O(图片/pdf/office
-        // 转换),放 spawn_blocking 避免阻塞 async dispatcher。
-        if let Err(e) = file.flush().await {
-            self.send_event(
-                &session_id,
-                "attach_file_result",
-                json!({
-                    "upload_id": upload_id,
-                    "ok": false,
-                    "error": format!("flush upload file: {e:#}"),
-                }),
-            );
-            self.cleanup_active_upload("stream_flush_failed");
-            return;
-        }
-        drop(file);
-
-        // 最终字节数一致性校验(PR #213 审查 #4):收到 last=true 后,实际写盘字节数
-        // 必须严格等于 attach_file_start 声明的 byte_size。截断 / 畸形上传
-        // (声明 1000 实到 800)会被旧实现静默 ingest 并标「已就绪」;此处拒绝并
-        // 回 ok:false,让 mobile 重传而不是把残缺文件喂给模型。
-        // bytes_written 由 streaming task 在每块写盘后累加(见 loop 内),是真实落盘字节。
-        let bytes_written_final = {
-            let inner = self.inner.lock();
-            inner
-                .pending_attachments
-                .get(&upload_id)
-                .map(|p| p.bytes_written)
-                .unwrap_or(0)
-        };
-        if bytes_written_final != declared_byte_size {
-            self.send_event(
-                &session_id,
-                "attach_file_result",
-                json!({
-                    "upload_id": upload_id,
-                    "ok": false,
-                    "error": format!(
-                        "size mismatch: declared {declared_byte_size} bytes, got {bytes_written_final}"
-                    ),
-                }),
-            );
-            self.cleanup_active_upload("stream_size_mismatch");
-            return;
-        }
-
-        let data_path_for_ingest = data_path.clone();
-        let ingest_result = match tokio::task::spawn_blocking(move || {
-            crate::file_ingest::ingest(&data_path_for_ingest)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(join_err) => {
-                self.send_event(
-                    &session_id,
-                    "attach_file_result",
-                    json!({
-                        "upload_id": upload_id,
-                        "ok": false,
-                        "error": format!("ingest join: {join_err:#}"),
-                    }),
-                );
-                self.cleanup_active_upload("stream_ingest_join_failed");
-                return;
-            }
-        };
-
-        // 把 ingest_result 存进 pending_attachments;清 active_upload 槽位
-        // (上传已完成,槽位让出,但 pending_attachments 保留到 user_message 取用)。
-        {
-            let mut inner = self.inner.lock();
-            if inner.active_upload.as_deref() == Some(&upload_id) {
-                inner.active_upload = None;
-                inner.upload_chunk_sender = None;
-            }
-            if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
-                p.ingest_result = Some(ingest_result.clone());
-            }
-        }
-
-        // 源文件必须保留到 user_message：图片和超长文本在正常 chat 链路仍会按 path
-        // 读取。user_message 会先复制到 session workspace，再删除这个 uploads 临时目录；
-        // 未发送附件则由 abort / 切 session / 断线 / stop 统一回收。
-
-        // spec §4.2:回给 mobile 的只是 ingest_preview(filename + kind + byte_size +
-        // token_estimate + warning),**不含 markdown / path**(markdown 走 WS 太重,
-        // path 是桌面绝对路径,不该泄漏)。完整 IngestResult 留在 pending_attachments
-        // 里,user_message 时随 mobile_user_message 一起透传给前端走桌面 chat。
-        let preview_filename = {
-            let inner = self.inner.lock();
-            inner
-                .pending_attachments
-                .get(&upload_id)
-                .map(|p| p.filename.clone())
-                .unwrap_or_else(|| ingest_result.basename.clone())
-        };
-        self.send_event(
-            &session_id,
-            "attach_file_result",
-            json!({
-                "upload_id": upload_id,
-                "ok": true,
-                "ingest_preview": {
-                    "filename": preview_filename,
-                    "kind": ingest_result.kind,
-                    "byte_size": ingest_result.byte_size,
-                    "token_estimate": ingest_result.token_estimate,
-                    "warning": ingest_result.warning,
-                },
-            }),
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
-    use std::ffi::OsString;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn sanitize_disabled_connector_ids_drops_non_string_truncates_oversized_and_caps_count() {
-        // 非 string 元素丢弃;超长 id 丢弃;数量超上限截断并标记。
-        let payload = serde_json::json!({
-            "connector_ids": [
-                "good_connector",
-                12345,                       // 非 string → 丢
-                true,                        // 非 string → 丢
-                "x".repeat(MAX_CONNECTOR_ID_LEN),     // 刚好在上限 → 保留
-                "y".repeat(MAX_CONNECTOR_ID_LEN + 1), // 超长 → 丢
-            ]
-        });
-        let (ids, truncated) = sanitize_disabled_connector_ids(payload.get("connector_ids"));
-        assert!(!truncated, "未超数量上限不应截断");
-        assert_eq!(
-            ids,
-            vec![
-                "good_connector".to_string(),
-                "x".repeat(MAX_CONNECTOR_ID_LEN)
-            ]
-        );
+    const TEST_ENDPOINT_ID: &str = "ep_test";
+    const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
 
-        // 数量超上限:截断到 MAX_DISABLED_CONNECTOR_IDS 且 truncated=true。
-        let huge: Vec<String> = (0..MAX_DISABLED_CONNECTOR_IDS + 50)
-            .map(|i| format!("c{i}"))
-            .collect();
-        let payload = serde_json::json!({ "connector_ids": huge });
-        let (ids, truncated) = sanitize_disabled_connector_ids(payload.get("connector_ids"));
-        assert!(truncated, "超数量上限必须截断");
-        assert_eq!(ids.len(), MAX_DISABLED_CONNECTOR_IDS);
-
-        // 缺字段 / 非 array → 空列表,不截断。
-        let (ids, truncated) = sanitize_disabled_connector_ids(None);
-        assert!(ids.is_empty() && !truncated);
-        let (ids, truncated) =
-            sanitize_disabled_connector_ids(Some(&serde_json::json!("not_an_array")));
-        assert!(ids.is_empty() && !truncated);
-    }
-
-    struct PinvouHomeOverride {
-        previous: Option<OsString>,
-        root: PathBuf,
-    }
-
-    impl PinvouHomeOverride {
-        fn new(label: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "pinvou3-remote-{label}-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|duration| duration.as_nanos())
-                    .unwrap_or(0)
-            ));
-            let previous = std::env::var_os("PINVOU3_HOME");
-            std::env::set_var("PINVOU3_HOME", &root);
-            Self { previous, root }
-        }
-    }
-
-    impl Drop for PinvouHomeOverride {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                Some(previous) => std::env::set_var("PINVOU3_HOME", previous),
-                None => std::env::remove_var("PINVOU3_HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    fn write_file(path: &Path, contents: &[u8]) {
-        std::fs::create_dir_all(path.parent().expect("test file parent")).expect("create parent");
-        std::fs::write(path, contents).expect("write test file");
+    fn record_stream_event(stream: &mut StreamState, event: &str, payload: Value) {
+        stream
+            .record(TEST_ENDPOINT_ID, TEST_LEASE_ID, event.to_string(), payload)
+            .expect("record stream event");
     }
 
     #[test]
-    fn inner_default_uploads_base_is_under_pinvou3_home() {
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let override_env = PinvouHomeOverride::new("inner-default-uploads");
-        let inner = Inner::default();
-        assert!(
-            inner.uploads_base.ends_with("uploads"),
-            "uploads_base should end with `uploads`, got {:?}",
-            inner.uploads_base
-        );
-        assert!(inner.active_upload.is_none());
-        assert!(inner.upload_chunk_sender.is_none());
-        assert!(inner.pending_attachments.is_empty());
-        drop(override_env);
-    }
-
-    #[test]
-    fn dedup_rejects_duplicates_and_evicts_the_oldest_id() {
-        let mut dedup = Dedup::default();
-        assert!(dedup.remember("same-message"));
-        assert!(!dedup.remember("same-message"));
-
-        let mut capacity = Dedup::default();
-        for index in 0..=200 {
-            assert!(capacity.remember(&format!("message-{index}")));
-        }
-        assert_eq!(capacity.ids.len(), 200);
-        assert!(
-            capacity.remember("message-0"),
-            "oldest id should be evicted"
-        );
-        assert!(!capacity.remember("message-200"), "newest id must remain");
-    }
-
-    #[test]
-    fn dedup_accepts_an_id_again_after_expiry() {
-        let mut dedup = Dedup::default();
-        dedup.ids.insert("expired".to_string());
-        dedup.order.push_back((
-            "expired".to_string(),
-            Instant::now() - Duration::from_secs(601),
-        ));
-
-        assert!(dedup.remember("expired"));
-        assert!(!dedup.remember("expired"));
-    }
-
-    #[test]
-    fn session_preview_path_allows_current_session_and_rejects_escape() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let home = PinvouHomeOverride::new("preview-path");
-        let store = SessionStore::boot().expect("boot session store");
-        let current = store
-            .create_new(
-                "test-model".to_string(),
-                None,
-                home.root.join("ignored-current"),
-            )
-            .expect("create current session");
-        let other = store
-            .create_new(
-                "test-model".to_string(),
-                None,
-                home.root.join("ignored-other"),
-            )
-            .expect("create other session");
-        let current_session = current.metadata.id.as_str();
-        let other_session = other.metadata.id.as_str();
-        let workspace_file = paths::session_workspace_dir(current_session).join("reports/daily.md");
-        let artifact_file = paths::session_artifacts_dir(current_session).join("chart.json");
-        let other_file = paths::session_workspace_dir(other_session).join("secret.md");
-        let outside_file = home.root.join("outside.txt");
-        write_file(&workspace_file, b"workspace report");
-        write_file(&artifact_file, br#"{"ok":true}"#);
-        write_file(&other_file, b"other session secret");
-        write_file(&outside_file, b"outside home");
-
-        assert_eq!(
-            resolve_session_preview_path(&store, current_session, "reports/daily.md")
-                .expect("workspace"),
-            workspace_file
-                .canonicalize()
-                .expect("canonical workspace file")
-        );
-        assert_eq!(
-            resolve_session_preview_path(&store, current_session, "artifacts/chart.json")
-                .expect("artifacts path tail"),
-            artifact_file
-                .canonicalize()
-                .expect("canonical artifact file")
-        );
-        assert!(resolve_session_preview_path(
-            &store,
-            current_session,
-            other_file.to_str().expect("utf-8 test path")
-        )
-        .is_err());
-        assert!(resolve_session_preview_path(
-            &store,
-            current_session,
-            "../session-other/workspace/secret.md"
-        )
-        .is_err());
-        assert!(resolve_session_preview_path(
-            &store,
-            current_session,
-            outside_file.to_str().expect("utf-8 test path")
-        )
-        .is_err());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-
-            let link = paths::session_workspace_dir(current_session).join("outside-link.txt");
-            symlink(&outside_file, &link).expect("create escape symlink");
+    fn embedded_policy_is_v2_and_blocks_native_authority() {
+        let policy = AccessPolicy::load().expect("embedded policy");
+        for command in [
+            "chat",
+            "ingest_file",
+            "save_session_messages",
+            "delete_model",
+            "save_model",
+            "set_active_model",
+            "test_model_connection",
+            "set_disabled_connectors",
+            "install_marketplace_skill",
+            "install_marketplace_tool",
+            "uninstall_marketplace_skill",
+            "uninstall_marketplace_tool",
+            "install_voice_asr",
+            "save_settings_and_restart",
+            "artifact_info",
+            "read_artifact_text",
+            "write_artifact_text",
+            "read_artifact_image_b64",
+            "read_artifact_thumbnail",
+            "render_artifact_visual",
+            "list_deliverables",
+            "get_role_prompt",
+            "get_role_outputs",
+            "get_role_logs",
+            "get_gate_report",
+            "update_settings",
+            "create_session",
+            "load_session",
+            "start_skill_session",
+            "web_access_bridge_ready",
+            "web_access_rpc_begin",
+            "web_access_rpc_respond",
+        ] {
             assert!(
-                resolve_session_preview_path(&store, current_session, "outside-link.txt").is_err()
+                !policy.commands.contains(command),
+                "{command} must stay native-only"
             );
         }
+        for command in [
+            "web_access_artifact_info",
+            "web_access_read_artifact_text",
+            "web_access_write_artifact_text",
+            "web_access_read_artifact_image_b64",
+            "web_access_read_artifact_thumbnail",
+            "web_access_render_artifact_visual",
+            "web_access_list_deliverables",
+            "web_access_get_role_prompt",
+            "web_access_get_role_outputs",
+            "web_access_get_role_logs",
+            "web_access_get_gate_report",
+            "web_access_update_settings",
+            "web_access_create_session",
+            "web_access_chat",
+            "web_access_ingest_file",
+            "web_access_load_session_chunk",
+            "web_access_start_skill_session",
+        ] {
+            assert!(
+                policy.commands.contains(command),
+                "{command} must be Web-scoped"
+            );
+        }
+        assert!(
+            !policy
+                .commands
+                .contains("web_access_save_session_messages_chunk"),
+            "frontend transcript writes must stay blocked"
+        );
+        assert!(policy.events.contains("chat:delta"));
+        assert!(policy.events.contains("chat:user_message"));
+        assert!(policy.events.contains("chat:plan_resolved"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:plan_resolved"));
+        assert!(policy.events.contains("chat:transcript_committed"));
     }
 
     #[test]
-    fn artifact_preview_reports_kind_and_truncation() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-remote-preview-{}-{}",
+    fn capability_snapshot_policy_is_bounded_before_web_access_starts() {
+        let policy = AccessPolicy::load().expect("embedded policy");
+        assert!(
+            policy.capability_snapshot_wire_bytes().unwrap()
+                <= relay_client::MAX_CONTROL_FRAME_BYTES
+        );
+
+        let mut oversized = AccessPolicy::default();
+        oversized
+            .commands
+            .insert("x".repeat(relay_client::MAX_CONTROL_FRAME_BYTES));
+        let error = oversized
+            .validate_capability_snapshot()
+            .expect_err("oversized capability snapshot must fail closed");
+        assert!(error.contains("capability snapshot is too large"));
+    }
+
+    #[test]
+    fn web_access_config_matches_relay_bounds_and_has_a_bounded_loader() {
+        let valid = WebAccessConfig {
+            relay_url: "wss://example.test/ws".into(),
+            endpoint_id: "ep_123456".into(),
+            access_token: "a".repeat(24),
+            desktop_secret: "d".repeat(24),
+        };
+        validate_config(&valid).expect("valid Web access config");
+
+        let mut invalid = valid.clone();
+        invalid.endpoint_id = "e".repeat(129);
+        assert!(validate_config(&invalid).is_err());
+        invalid = valid.clone();
+        invalid.access_token = "a".repeat(1_025);
+        assert!(validate_config(&invalid).is_err());
+        invalid = valid.clone();
+        invalid.relay_url = "wss://example.test/ws with-space".into();
+        assert!(validate_config(&invalid).is_err());
+
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-config-test-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0)
+            crate::remote_control::short_token(8)
         ));
-        let markdown = root.join("result.md");
-        let oversized = root.join("large.txt");
-        let binary = root.join("archive.bin");
-        write_file(&markdown, b"# Remote result\n");
-        write_file(&oversized, &vec![b'x'; PREVIEW_LIMIT_BYTES + 17]);
-        write_file(&binary, &[0, 1, 2, 3]);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("web-access.json");
+        std::fs::write(&path, serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert_eq!(load_config_from(&path).unwrap(), Some(valid));
 
-        let markdown_preview = build_artifact_preview(&markdown).expect("markdown preview");
-        assert_eq!(markdown_preview["type"], "markdown");
-        assert_eq!(markdown_preview["mime"], "text/markdown");
-        assert_eq!(markdown_preview["truncated"], false);
+        std::fs::write(&path, vec![b'x'; MAX_WEB_ACCESS_CONFIG_BYTES + 1]).unwrap();
+        let error = load_config_from(&path).expect_err("oversized config must fail closed");
+        assert!(error.contains("config is larger"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
-        let large_preview = build_artifact_preview(&oversized).expect("large text preview");
-        assert_eq!(large_preview["type"], "text");
-        assert_eq!(large_preview["truncated"], true);
-        assert_eq!(
-            large_preview["content"]
-                .as_str()
-                .expect("preview content")
-                .len(),
-            PREVIEW_LIMIT_BYTES
-        );
-
-        let binary_preview = build_artifact_preview(&binary).expect("binary preview");
-        assert_eq!(binary_preview["type"], "unsupported");
-        assert_eq!(binary_preview["truncated"], false);
-
-        let _ = std::fs::remove_dir_all(root);
+    fn pending_rpc(
+        dispatched_generation: Option<&str>,
+        acknowledged_generation: Option<&str>,
+    ) -> RpcCacheEntry {
+        RpcCacheEntry::Pending(PendingRpc {
+            lease_id: "lease".into(),
+            command: "chat".into(),
+            args: json!({ "sessionId": "s1" }),
+            fingerprint: "a".repeat(64),
+            dispatched_generation: dispatched_generation.map(ToOwned::to_owned),
+            acknowledged_generation: acknowledged_generation.map(ToOwned::to_owned),
+        })
     }
 
     #[test]
-    fn path_segment_tail_accepts_slashes_from_both_platforms() {
+    fn a_new_bridge_generation_redelivers_only_unacknowledged_rpcs() {
+        let mut inner = Inner::default();
+        inner.bridge_generation = Some("generation-old".into());
+        inner
+            .rpc_cache
+            .insert("queued".into(), pending_rpc(Some("generation-old"), None));
+        inner.rpc_order.push_back("queued".into());
+
+        let first = prepare_bridge_generation(&mut inner, "generation-new");
+        assert_eq!(first.len(), 1);
+        assert!(matches!(
+            &first[0],
+            RpcReadyAction::Dispatch(dispatch)
+                if dispatch.request_id == "queued"
+                    && dispatch.command == "chat"
+                    && dispatch.bridge_generation == "generation-new"
+        ));
+        assert!(prepare_bridge_generation(&mut inner, "generation-new").is_empty());
+    }
+
+    #[test]
+    fn an_acknowledged_rpc_becomes_outcome_unknown_after_bridge_replacement() {
+        let mut inner = Inner::default();
+        inner.bridge_generation = Some("generation-old".into());
+        inner.rpc_cache.insert(
+            "started".into(),
+            pending_rpc(Some("generation-old"), Some("generation-old")),
+        );
+        inner.rpc_order.push_back("started".into());
+
+        assert!(prepare_bridge_generation(&mut inner, "generation-new").is_empty());
+        let Some(RpcCacheEntry::Complete { completion, .. }) = inner.rpc_cache.get("started")
+        else {
+            panic!("started request must become a conservative completion");
+        };
+        assert!(!completion.ok);
+        assert_eq!(completion.error_code.as_deref(), Some("outcome_unknown"));
+    }
+
+    #[test]
+    fn rpc_tombstones_survive_serialization_and_reject_conflicting_reuse() {
+        let fingerprint = rpc_fingerprint("chat", &json!({ "b": 2, "a": 1 })).unwrap();
+        let mut ledger = RpcLedger::for_endpoint("ep_test");
+        assert!(ledger.remember("request-1", &fingerprint).unwrap());
+        let encoded = serde_json::to_vec(&ledger).unwrap();
+        let restored: RpcLedger = serde_json::from_slice(&encoded).unwrap();
+        let tombstone = restored.get("request-1").expect("durable tombstone");
         assert_eq!(
-            path_after_segment("sessions/s1/workspace/reports/a.md", "workspace"),
-            Some(PathBuf::from("reports/a.md"))
+            tombstone_completion(tombstone, &fingerprint)
+                .error_code
+                .as_deref(),
+            Some("request_not_started")
         );
         assert_eq!(
-            path_after_segment(r"sessions\s1\artifacts\chart.json", "artifacts"),
-            Some(PathBuf::from("chart.json"))
+            tombstone_completion(tombstone, &"f".repeat(64))
+                .error_code
+                .as_deref(),
+            Some("request_id_conflict")
+        );
+        let mut acknowledged = restored.clone();
+        acknowledged
+            .acknowledge("request-1", &fingerprint)
+            .expect("acknowledge tombstone");
+        assert_eq!(
+            tombstone_completion(
+                acknowledged
+                    .get("request-1")
+                    .expect("acknowledged tombstone"),
+                &fingerprint,
+            )
+            .error_code
+            .as_deref(),
+            Some("outcome_unknown")
+        );
+    }
+
+    #[test]
+    fn rpc_ledger_retains_only_the_most_recent_512_ids() {
+        let mut ledger = RpcLedger::for_endpoint("ep_test");
+        for index in 0..=RPC_CACHE_CAPACITY {
+            ledger
+                .remember(&format!("request-{index}"), &"a".repeat(64))
+                .unwrap();
+        }
+        assert_eq!(ledger.entries.len(), RPC_CACHE_CAPACITY);
+        assert!(ledger.get("request-0").is_none());
+        assert!(ledger
+            .get(&format!("request-{RPC_CACHE_CAPACITY}"))
+            .is_some());
+    }
+
+    #[test]
+    fn rejected_rpcs_never_consume_durable_tombstone_capacity() {
+        let protected_fingerprint = rpc_fingerprint("delete_session", &json!({ "id": "s1" }))
+            .expect("protected fingerprint");
+        let mut ledger = RpcLedger::for_endpoint("ep_test");
+        ledger
+            .remember("protected-request", &protected_fingerprint)
+            .expect("remember protected request");
+        ledger
+            .acknowledge("protected-request", &protected_fingerprint)
+            .expect("acknowledge protected request");
+
+        let invalid_scope = rpc_error_completion("invalid_session_scope", "missing Session");
+        for index in 0..RPC_CACHE_CAPACITY {
+            let fingerprint = rpc_fingerprint("rejected", &json!({ "index": index }))
+                .expect("rejected fingerprint");
+            let admission = match index % 3 {
+                0 => prepare_new_rpc_admission(
+                    &ledger,
+                    &format!("rejected-{index}"),
+                    &fingerprint,
+                    Some(&invalid_scope),
+                    true,
+                    0,
+                ),
+                1 => prepare_new_rpc_admission(
+                    &ledger,
+                    &format!("rejected-{index}"),
+                    &fingerprint,
+                    None,
+                    false,
+                    0,
+                ),
+                _ => prepare_new_rpc_admission(
+                    &ledger,
+                    &format!("rejected-{index}"),
+                    &fingerprint,
+                    None,
+                    true,
+                    MAX_RPC_IN_FLIGHT,
+                ),
+            }
+            .expect("classify rejected request");
+            assert!(matches!(admission, NewRpcAdmission::Rejected(_)));
+        }
+
+        assert_eq!(ledger.entries.len(), 1);
+        let protected = ledger
+            .get("protected-request")
+            .expect("acknowledged tombstone must remain");
+        assert!(protected.acknowledged);
+        assert_eq!(protected.fingerprint, protected_fingerprint);
+    }
+
+    #[test]
+    fn rpc_command_and_error_envelopes_are_bounded() {
+        assert!(validate_rpc_command("web_access_chat").is_ok());
+        assert!(validate_rpc_command("workflow:resume-2").is_ok());
+        assert!(validate_rpc_command("").is_err());
+        assert!(validate_rpc_command(&"x".repeat(MAX_RPC_COMMAND_BYTES + 1)).is_err());
+        assert!(validate_rpc_command("chat/../../native").is_err());
+
+        let completion = rpc_error_completion("test", "e".repeat(20_000));
+        assert_eq!(
+            completion.error.as_deref().unwrap_or_default().len(),
+            16_384
+        );
+    }
+
+    #[test]
+    fn native_active_session_fallbacks_are_not_valid_web_scopes() {
+        for command in [
+            "cancel_generation",
+            "compact_now",
+            "edit_last_turn",
+            "kick_workflow",
+            "stop_workflow",
+            "web_access_chat",
+        ] {
+            assert_eq!(
+                web_session_scope(command),
+                Some(WebSessionScope::Required("sessionId")),
+                "{command} must require the browser-selected Session"
+            );
+        }
+        assert_eq!(
+            web_session_scope("start_workflow"),
+            Some(WebSessionScope::Optional("sessionId"))
+        );
+    }
+
+    #[test]
+    fn oversized_rpc_results_become_small_structured_errors() {
+        let completion = bounded_rpc_completion(
+            true,
+            Some(Value::String("x".repeat(MAX_RPC_RESPONSE_BYTES + 1))),
+            None,
+        );
+        assert!(!completion.ok);
+        assert_eq!(completion.error_code.as_deref(), Some("response_too_large"));
+        assert!(serde_json::to_vec(&completion.result).unwrap().len() < 1024);
+    }
+
+    #[test]
+    fn process_lock_rejects_a_second_desktop_owner() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-access-lock-test-{}-{}",
+            std::process::id(),
+            crate::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("owner.lock");
+        let first = acquire_process_lock(&path).expect("first owner");
+        assert!(acquire_process_lock(&path).is_err());
+        drop(first);
+        let replacement = acquire_process_lock(&path).expect("replacement after release");
+        drop(replacement);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rpc_fingerprint_is_independent_of_object_key_order() {
+        assert_eq!(
+            rpc_fingerprint("chat", &json!({ "a": 1, "b": { "x": 2, "y": 3 } })).unwrap(),
+            rpc_fingerprint("chat", &json!({ "b": { "y": 3, "x": 2 }, "a": 1 })).unwrap()
+        );
+    }
+
+    #[test]
+    fn stream_replays_an_exact_contiguous_suffix() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "a" }));
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "b" }));
+        let replay = stream.replay_after(1).expect("replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].seq, 2);
+        assert_eq!(replay[0].payload["text"], "b");
+        assert!(stream.replay_after(3).is_none());
+    }
+
+    #[test]
+    fn fresh_client_baseline_skips_history_but_keeps_ready_window_events() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:done", json!({ "turn": "historical" }));
+        let baseline_at_join = stream.seq;
+        record_stream_event(&mut stream, "chat:turn_started", json!({ "turn": "live" }));
+
+        let replay = stream.replay_after(baseline_at_join).expect("fresh replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].event, "chat:turn_started");
+        assert_eq!(replay[0].payload["turn"], "live");
+    }
+
+    #[test]
+    fn bounded_stream_rejects_a_cursor_older_than_the_journal() {
+        let mut stream = StreamState::new();
+        for seq in 0..=JOURNAL_CAPACITY {
+            record_stream_event(&mut stream, "chat:delta", json!(seq));
+        }
+        assert!(stream.replay_after(0).is_none());
+        assert!(stream.replay_after(1).is_some());
+    }
+
+    #[test]
+    fn oversized_complete_event_frame_rotates_epoch_without_recording_the_event() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "safe" }));
+        let previous_epoch = stream.epoch.clone();
+        let oversized_payload = json!({ "text": "x".repeat(400) });
+        let test_wire_limit = 512;
+        assert!(serde_json::to_vec(&oversized_payload).unwrap().len() < test_wire_limit);
+
+        let error = stream
+            .record_with_limits(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                "chat:delta".into(),
+                oversized_payload,
+                test_wire_limit,
+                JOURNAL_CAPACITY,
+                JOURNAL_BYTES_CAPACITY,
+            )
+            .expect_err("the complete envelope, not just payload, must be bounded");
+        assert!(matches!(
+            error,
+            StreamRecordError::Oversized {
+                wire_bytes,
+                limit: 512
+            } if wire_bytes > 512
+        ));
+        assert_ne!(stream.epoch, previous_epoch);
+        assert_eq!(stream.seq, 0);
+        assert!(stream.journal.is_empty());
+        assert_eq!(stream.journal_bytes, 0);
+        assert!(stream
+            .replay_after(0)
+            .is_some_and(|events| events.is_empty()));
+
+        stream
+            .record_with_limits(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                "chat:done".into(),
+                json!({ "status": "failed" }),
+                test_wire_limit,
+                JOURNAL_CAPACITY,
+                JOURNAL_BYTES_CAPACITY,
+            )
+            .expect("new epoch remains usable");
+        let replay = stream.replay_after(0).expect("reconnect replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].seq, 1);
+        assert_eq!(replay[0].event, "chat:done");
+    }
+
+    #[test]
+    fn stream_journal_evicts_oldest_complete_frames_by_total_bytes() {
+        let mut stream = StreamState::new();
+        stream
+            .record_with_limits(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                "chat:delta".into(),
+                json!({ "text": "same-size" }),
+                4 * 1024,
+                JOURNAL_CAPACITY,
+                usize::MAX,
+            )
+            .unwrap();
+        let frame_bytes = stream.journal.back().unwrap().wire_bytes;
+        let byte_capacity = frame_bytes * 2;
+        for _ in 0..2 {
+            stream
+                .record_with_limits(
+                    TEST_ENDPOINT_ID,
+                    TEST_LEASE_ID,
+                    "chat:delta".into(),
+                    json!({ "text": "same-size" }),
+                    4 * 1024,
+                    JOURNAL_CAPACITY,
+                    byte_capacity,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(stream.seq, 3);
+        assert_eq!(stream.journal.len(), 2);
+        assert_eq!(stream.journal.front().map(|event| event.seq), Some(2));
+        assert!(stream.journal_bytes <= byte_capacity);
+        assert!(stream.replay_after(0).is_none());
+        assert_eq!(stream.replay_after(1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn failed_live_enqueue_can_rebase_the_critical_tail_for_reconnect() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "prefix" }));
+        record_stream_event(
+            &mut stream,
+            "chat:user_input_required",
+            json!({ "request_id": "request-1" }),
+        );
+        let failed_event = stream.journal.back().unwrap().clone();
+        let previous_epoch = stream.epoch.clone();
+
+        stream.reset();
+        stream
+            .record(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                failed_event.event,
+                failed_event.payload,
+            )
+            .unwrap();
+
+        assert_ne!(stream.epoch, previous_epoch);
+        assert_eq!(stream.seq, 1);
+        let replay = stream.replay_after(0).unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].event, "chat:user_input_required");
+        assert_eq!(replay[0].payload["request_id"], "request-1");
+    }
+
+    #[test]
+    fn replay_batch_failure_stops_at_the_gap_instead_of_claiming_the_tail() {
+        let messages = vec![
+            json!({ "seq": 1 }),
+            json!({ "seq": 2 }),
+            json!({ "seq": 3 }),
+        ];
+        let mut attempted = Vec::new();
+        let complete = try_enqueue_message_batch(messages, |message| {
+            let seq = message["seq"].as_u64().unwrap();
+            attempted.push(seq);
+            seq != 2
+        });
+
+        assert!(!complete);
+        assert_eq!(attempted, vec![1, 2]);
+        let reset = stream_reset_message(
+            TEST_ENDPOINT_ID,
+            TEST_LEASE_ID,
+            "epoch_recovered",
+            "replay_enqueue_failed",
+        );
+        assert_eq!(reset["seq"], 0);
+        assert_eq!(reset["reason"], "replay_enqueue_failed");
+        assert!(serde_json::to_vec(&reset).unwrap().len() < relay_client::MAX_RELAY_FRAME_BYTES);
+    }
+
+    #[test]
+    fn public_link_keeps_secrets_in_the_fragment_and_encodes_relay() {
+        let config = WebAccessConfig {
+            relay_url: "ws://127.0.0.1:8787/ws?x=1".into(),
+            endpoint_id: "ep_test".into(),
+            access_token: "a+b/c".into(),
+            desktop_secret: "never-in-url".into(),
+        };
+        let link = public_url(&config);
+        assert!(link.contains("#endpoint=ep_test&token=a%2Bb%2Fc"));
+        assert!(link.contains("relay=ws%3A%2F%2F127.0.0.1%3A8787%2Fws%3Fx%3D1"));
+        assert!(!link.contains("never-in-url"));
+    }
+
+    #[test]
+    fn artifact_segment_helper_never_retains_parent_prefix() {
+        assert_eq!(
+            path_after_segment("ignored/workspace/reports/a.pdf", "workspace"),
+            Some(PathBuf::from("reports/a.pdf"))
         );
         assert_eq!(path_after_segment("workspace", "workspace"), None);
     }
 
     #[test]
-    fn concurrent_download_is_rejected_until_active_download_finishes() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let home = PinvouHomeOverride::new("download-lock");
-        let store = SessionStore::boot().expect("boot session store");
-        let session = store
-            .create_new("test-model".to_string(), None, home.root.join("ignored"))
-            .expect("create session");
-        let session_id = session.metadata.id.clone();
-        let workspace = paths::session_workspace_dir(&session_id);
-        // 8 块 > 下载通道容量(4):消费端不排空时流式任务堵在背压上,锁必然保持。
-        let big = vec![b'x'; DOWNLOAD_CHUNK_BYTES * 8];
-        write_file(&workspace.join("reports/lock.bin"), &big);
-
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, mut download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_lock_test".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-        }
-
-        manager
-            .send_artifact_download(&store, &session_id, None, Some("reports/lock.bin"))
-            .expect("first download should be accepted");
-        let second =
-            manager.send_artifact_download(&store, &session_id, None, Some("reports/lock.bin"));
-        assert!(
-            second.is_err(),
-            "a second download must be rejected while one is active"
-        );
-        assert!(second.unwrap_err().contains("进行中"));
-
-        // 排空有界通道，并模拟 relay 每写出一块后的 ACK；任务走完后锁必须归还。
-        tauri::async_runtime::block_on(async {
-            let mut drained = 0usize;
-            while drained < 10 {
-                match tokio::time::timeout(Duration::from_secs(5), download_rx.recv()).await {
-                    Ok(Some(RelayOutbound::Envelope(env))) => {
-                        if env.kind == "artifact_download_chunk" {
-                            let index =
-                                env.payload["index"].as_u64().expect("chunk index") as usize;
-                            let download_id =
-                                env.payload["download_id"].as_str().expect("download id");
-                            manager.handle_download_relay_ack(
-                                download_id,
-                                DownloadRelayAck {
-                                    index,
-                                    ok: true,
-                                    message: None,
-                                },
-                            );
-                        }
-                        drained += 1;
-                    }
-                    Ok(Some(RelayOutbound::Close { .. })) => {
-                        panic!("download channel must not carry Close")
-                    }
-                    other => panic!("download stream ended early: {other:?}"),
-                }
-            }
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while manager.inner.lock().active_download.is_some() {
-                assert!(Instant::now() < deadline, "download lock was not released");
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        });
+    fn artifact_chunk_limit_is_exactly_256_kib() {
+        assert_eq!(MAX_ARTIFACT_CHUNK_BYTES, 262_144);
     }
 
-    /// 直接走 handle_attach_file_start,断言 attach_file_start 在超限时拒绝并保留无 active_upload
-    /// (而非 panic / 静默)。headless 模式不需要 AppHandle,attach 不读 KB / 工具市场。
-    /// 用 `#[test]` + `block_on` 而非 `#[tokio::test]`,以与 concurrent_download 测试对齐:
-    /// `tauri::async_runtime::spawn` 派发的 streaming task 必须挂在 tauri runtime 上才能被调度。
     #[test]
-    fn attach_file_start_rejects_oversize() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-oversize");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-oversize-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_oversize".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-        }
-
-        // 比 UPLOAD_LIMIT_BYTES 多 1 字节,触发 upload_too_large。
-        let payload = serde_json::json!({
-            "filename": "huge.bin",
-            "byte_size": UPLOAD_LIMIT_BYTES + 1,
-            "mime": "application/octet-stream",
-        });
-        manager.handle_attach_file_start(&session_id, &payload);
-
-        // 锁不应被占用:send_error 必须在 spawn 前短路。
-        assert!(
-            manager.inner.lock().active_upload.is_none(),
-            "oversize upload must not occupy the upload slot"
-        );
-        assert!(
-            manager.inner.lock().pending_attachments.is_empty(),
-            "oversize upload must not register a pending attachment"
-        );
-    }
-
-    /// 一个上传进行中时,第二个 start 必须被拒(upload_in_progress),active_upload 不被替换。
-    /// 第三步 abort 验证槽位能放出来。
-    ///
-    /// 不通过 `handle_attach_file_start` 起第一个 upload(那会触发 streaming task spawn,
-    /// 而本测试是 sync `#[test]`,无法驱动 tauri::async_runtime 让 task 前进 —— 会让进程
-    /// 在退出时 hang 在 task join 上)。直接手工写入 `active_upload`,只覆盖并发拒绝 + abort
-    /// 释放两条纯同步路径。streaming task 的端到端正确性留给 Group E / Group L 的集成测试。
-    #[test]
-    fn attach_file_start_blocks_concurrent() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-concurrent");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-concurrent-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_concurrent".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-        }
-
-        // 手工占用 upload 槽位(模拟"已有一个 upload 进行中"):
-        // 写入 active_upload + pending_attachments,但**不**起 streaming task。
-        // 这样可以纯同步地覆盖并发拒绝 + abort 释放两条路径,无需驱动 tauri runtime
-        // 让 streaming task 前进 —— 否则 sync `#[test]` 进程退出时会 hang 在 task join 上。
-        // streaming task 的端到端正确性留给 Group E / Group L 的集成测试。
-        let existing_upload_id = "up_existing_test".to_string();
-        {
-            let mut inner = manager.inner.lock();
-            inner.active_upload = Some(existing_upload_id.clone());
-            inner.pending_attachments.insert(
-                existing_upload_id.clone(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "preexisting.bin".to_string(),
-                    byte_size: 1024,
-                    mime: "application/octet-stream".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
-            );
-        }
-
-        // 第二次 start 必须被拒:槽位被占 → send_error(upload_in_progress),active 不被替换。
-        let second_payload = serde_json::json!({
-            "filename": "b.bin",
-            "byte_size": 1024u64,
-            "mime": "application/octet-stream",
-        });
-        manager.handle_attach_file_start(&session_id, &second_payload);
-
-        let active_after_second = manager.inner.lock().active_upload.clone();
+    fn artifact_chunk_requires_an_explicit_session_id() {
         assert_eq!(
-            active_after_second.as_deref(),
-            Some(existing_upload_id.as_str()),
-            "second attach_file_start must not evict the active upload"
+            require_explicit_session_id("  ").unwrap_err(),
+            "sessionId is required to download an artifact"
         );
-
-        // abort 当前 upload,验证槽位真的能放出来(覆盖 abort 路径)。
-        let abort_payload = serde_json::json!({ "upload_id": existing_upload_id });
-        manager.handle_attach_file_abort(&session_id, &abort_payload);
-
-        assert!(
-            manager.inner.lock().active_upload.is_none(),
-            "attach_file_abort must release the upload slot"
-        );
-        assert!(
-            manager.inner.lock().pending_attachments.is_empty(),
-            "attach_file_abort must drop the pending attachment"
-        );
-    }
-
-    /// 回归:attach_file_chunk 在 upload_id 不匹配时,必须在 drop 锁守卫之后再 send_error,
-    /// 否则 parking_lot::Mutex 不可重入 → 永久死锁。本测试用 1s 超时驱动 async fn,
-    /// 若路径未修复则会 hang 到超时失败。
-    #[test]
-    fn attach_file_chunk_unknown_upload_id_does_not_deadlock() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-chunk-unknown");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-chunk-unknown-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_chunk_unknown".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            // 槽位被另一个 upload 占用,使下面的 chunk upload_id 必然不匹配。
-            inner.active_upload = Some("up_other_active".to_string());
-        }
-
-        let payload = serde_json::json!({
-            "upload_id": "up_does_not_match",
-            "index": 0u64,
-            "data_base64": "AA==",
-            "last": false,
-        });
-
-        let manager_clone = manager.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build one-off runtime");
-        rt.block_on(async move {
-            // 修复前:这里会永久 hang(send_error 重入死锁)。修复后:mismatch 分支 drop
-            // 守卫后正常 send_error 并 return。
-            tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                manager_clone.handle_attach_file_chunk(&payload),
-            )
-            .await
-            .expect("handle_attach_file_chunk must not deadlock on unknown upload_id");
-        });
-
-        // 锁仍然可用(未被毒化/未被泄漏持有)。
-        assert!(
-            manager.inner.lock().active_upload.is_some(),
-            "unknown upload_id chunk must not evict the active upload slot"
-        );
-    }
-
-    /// 服务端硬校验:单块原始字节超过 UPLOAD_CHUNK_MAX_BYTES 必须被拒绝,
-    /// 避免 client 用巨大 chunk_bytes 撑爆 dispatcher 协程的 base64 缓冲。
-    #[test]
-    fn attach_file_chunk_rejects_oversized_chunk() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-chunk-oversize");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-chunk-oversize-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_chunk_oversize".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            inner.active_upload = Some("up_oversize".to_string());
-            inner.pending_attachments.insert(
-                "up_oversize".to_string(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "big.bin".to_string(),
-                    byte_size: UPLOAD_LIMIT_BYTES,
-                    mime: "application/octet-stream".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
-            );
-            // 注:不设 upload_chunk_sender,因为 chunk_too_large 校验在锁前就 return,
-            // 不会走到 sender.send();None 也 OK。
-        }
-        // 构造一个超过 UPLOAD_CHUNK_MAX_BYTES 的 base64 字符串。
-        let big = vec![0u8; UPLOAD_CHUNK_MAX_BYTES + 1];
-        let big_b64 = base64::engine::general_purpose::STANDARD.encode(&big);
-        let payload = serde_json::json!({
-            "upload_id": "up_oversize",
-            "index": 0u64,
-            "data_base64": big_b64,
-            "last": false,
-        });
-        let manager_clone = manager.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build one-off runtime");
-        rt.block_on(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                manager_clone.handle_attach_file_chunk(&payload),
-            )
-            .await
-            .expect("oversized chunk rejection must not hang");
-        });
-        // active_upload 不应被 chunk_too_large 清掉(它只在 cleanup_active_upload 路径清)。
-        assert!(
-            manager.inner.lock().active_upload.is_some(),
-            "oversized chunk rejection must not evict active upload slot"
-        );
-    }
-
-    /// 服务端硬校验:client 谎报 byte_size=1,实际累计写入超过 2× 必须被拒绝。
-    /// 防 client 持续发分块撑爆 disk。
-    #[test]
-    fn attach_file_chunk_rejects_cumulative_size_exceeded() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-chunk-cumulative");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-chunk-cumulative-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        // 声明 byte_size=10,但模拟已经写了 100 字节 → 第 4 字节的 chunk 就应被拒。
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_chunk_cumulative".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            inner.active_upload = Some("up_lie".to_string());
-            inner.pending_attachments.insert(
-                "up_lie".to_string(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "lie.bin".to_string(),
-                    byte_size: 10,
-                    mime: "application/octet-stream".to_string(),
-                    bytes_written: 100,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
-            );
-        }
-        // 5 字节 chunk:100 + 5 = 105 > 10×2=20 → 拒绝。
-        let payload = serde_json::json!({
-            "upload_id": "up_lie",
-            "index": 0u64,
-            "data_base64": base64::engine::general_purpose::STANDARD.encode(b"hello"),
-            "last": false,
-        });
-        let manager_clone = manager.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build one-off runtime");
-        rt.block_on(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                manager_clone.handle_attach_file_chunk(&payload),
-            )
-            .await
-            .expect("cumulative-size rejection must not hang");
-        });
-        assert!(
-            manager.inner.lock().active_upload.is_some(),
-            "cumulative-size rejection must not evict active upload slot"
-        );
-    }
-
-    /// 回归:gate 不得只看 bytes_written(消费者写盘后才更新),否则在 cap-4 有界通道里
-    /// client 可在消费者确认第一块之前把多块都送进 channel,绕过累计上限。
-    ///
-    /// 复现路径:声明 byte_size=1MiB,bytes_written=0(消费者尚未确认)。
-    /// 发第一个 768KiB 块 → written(0)+768K < 1MiB×2,放行,该块在 cap-4 channel
-    /// 里尚未被消费。若 gate 不把「已过 gate 但未落盘」算进预算,发第二块时 written 仍是 0,
-    /// 同样放行 —— 累计实际进 channel 的字节(1.5MiB)其实已超声明 1MiB,只是 gate 没看见。
-    ///
-    /// 修复后 gate 必须在第二块基于 in_flight=768K 拦住:768K+768K > 1MiB×2 → 拒绝。
-    #[test]
-    fn attach_file_chunk_gate_counts_in_flight_not_just_written() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-chunk-inflight");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        // cap-4 channel 但故意不消费(_upload_rx 保留存活以避免 sender 立即 err):
-        // 这样第一块 send().await 成功且 bytes_written 不会被更新,精确复现 TOCTOU 窗口。
-        let (upload_tx, _upload_rx) =
-            tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-chunk-inflight-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_chunk_inflight".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            inner.active_upload = Some("up_inflight".to_string());
-            inner.upload_chunk_sender = Some(upload_tx);
-            // 声明 1MiB;bytes_written=0(模拟消费者尚未确认第一块)。
-            inner.pending_attachments.insert(
-                "up_inflight".to_string(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "inflight.bin".to_string(),
-                    byte_size: 1024 * 1024,
-                    mime: "application/octet-stream".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
-            );
-        }
-        // 768KiB 块:小于 UPLOAD_CHUNK_MAX_BYTES(单块硬上限),不触发 chunk_too_large。
-        let chunk = vec![0u8; 768 * 1024];
-        let mk_payload = |index: u64| {
-            serde_json::json!({
-                "upload_id": "up_inflight",
-                "index": index,
-                "data_base64": base64::engine::general_purpose::STANDARD.encode(&chunk),
-                "last": false,
-            })
-        };
-        let manager_clone = manager.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build one-off runtime");
-        rt.block_on(async move {
-            // 第一块:768K < 1MiB×2,必须放行进 channel。
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                manager_clone.handle_attach_file_chunk(&mk_payload(0)),
-            )
-            .await
-            .expect("first chunk must not hang");
-            // 第二块:消费者未确认,bytes_written 仍 0。只看 bytes_written 会再放行(漏洞);
-            // 修复后应看到 in_flight=768K → 768K+768K > 2MiB... 不,1MiB×2=2MiB,768+768=1536K<2MiB 放行。
-            // 所以这里仍放行,继续测第三块。
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                manager_clone.handle_attach_file_chunk(&mk_payload(1)),
-            )
-            .await
-            .expect("second chunk must not hang");
-            // 第三块:累计进 channel 已 2×768K=1536K。修复后 in_flight=1536K,加 768K=2304K
-            // > 1MiB×2=2048K → 必须拒绝。旧实现只看 bytes_written=0 仍放行(漏洞复现)。
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                manager_clone.handle_attach_file_chunk(&mk_payload(2)),
-            )
-            .await
-            .expect("third chunk gate decision must not hang");
-        });
-        // 修复后第三块被拒 → in_flight 停在 1536K(两块),不会被增加也不会被错误扣减。
-        let inner = manager.inner.lock();
-        let p = inner
-            .pending_attachments
-            .get("up_inflight")
-            .expect("pending attachment must still exist");
         assert_eq!(
-            p.bytes_in_flight,
-            2u64 * (768 * 1024) as u64,
-            "应在第二块放行后 in_flight=1536K,第三块被拒不改变它;实际={}",
-            p.bytes_in_flight
-        );
-        assert!(
-            inner.active_upload.is_some(),
-            "in-flight gate 拒绝不得 evict active upload slot"
+            require_explicit_session_id(" session-1 ").unwrap(),
+            "session-1"
         );
     }
 
-    /// 服务端硬校验:同一 session 已就绪(未消费)的 pending_attachments 达上限必须拒绝。
-    /// 防 client 不发 user_message 无限堆积 IngestResult(markdown 最大 ~20MB)。
     #[test]
-    fn attach_file_start_rejects_too_many_pending_attachments() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-start-too-many");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-start-too-many-session".to_string();
-        let manager = RemoteControlManager::new_headless();
+    fn private_json_write_atomically_replaces_the_target() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-access-test-{}-{}",
+            std::process::id(),
+            crate::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("state.json");
+        atomic_write_private_json(&path, &json!({ "value": 1 }), "test state").unwrap();
+        atomic_write_private_json(&path, &json!({ "value": 2 }), "test state").unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["value"], 2);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        #[cfg(unix)]
         {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_start_too_many".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            // 预填满 MAX_PENDING_ATTACHMENTS_PER_SESSION 个已就绪附件。
-            for i in 0..MAX_PENDING_ATTACHMENTS_PER_SESSION {
-                inner.pending_attachments.insert(
-                    format!("up_preexisting_{i}"),
-                    PendingAttachment {
-                        session_id: session_id.clone(),
-                        filename: format!("pre{i}.bin"),
-                        byte_size: 100,
-                        mime: "application/octet-stream".to_string(),
-                        bytes_written: 100,
-                        bytes_in_flight: 0,
-                        ingest_result: None,
-                    },
-                );
-            }
-        }
-        // 这次 start 必须走 too_many_pending_attachments 分支,而不是创建 upload。
-        let payload = serde_json::json!({
-            "filename": "new.bin",
-            "byte_size": 100u64,
-            "mime": "application/octet-stream",
-        });
-        manager.handle_attach_file_start(&session_id, &payload);
-        assert!(
-            manager.inner.lock().active_upload.is_none(),
-            "too-many-pendingAttachments must not create a new active_upload"
-        );
-    }
-
-    /// 回归:attach_file_abort 在 upload_id 不匹配时同样要 drop 锁守卫后再 send_error。
-    /// 同一类 re-entrant 死锁防御。
-    #[test]
-    fn attach_file_abort_unknown_upload_id_does_not_deadlock() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-abort-unknown");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-abort-unknown-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_abort_unknown".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            inner.active_upload = Some("up_other_active".to_string());
-        }
-
-        let payload = serde_json::json!({ "upload_id": "up_does_not_match" });
-
-        // abort 是 sync fn,但内含 send_error → 修复前会直接死锁本线程。
-        // 用 channel + recv_timeout 真正检测:死锁回归会让 recv_timeout 超时失败,
-        // 而不是让 cargo 整体 test 超时才被动发现。
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let manager_clone = manager.clone();
-        let session_id_for_thread = session_id.clone();
-        std::thread::spawn(move || {
-            manager_clone.handle_attach_file_abort(&session_id_for_thread, &payload);
-            let _ = done_tx.send(());
-        });
-        done_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("handle_attach_file_abort must not deadlock on unknown upload_id");
-
-        assert!(
-            manager.inner.lock().active_upload.is_some(),
-            "unknown upload_id abort must not evict the active upload slot"
-        );
-    }
-
-    /// 回归:handle_attach_file_start 在 uploads_base 创建失败时(磁盘满 / 权限丢失)
-    /// 不能在锁内 send_error —— 否则 parking_lot 重入死锁。本测试通过把 upload_id
-    /// 目录预置为文件让 create_dir_all 失败,断言 start 在 1s 内返回而非 hang。
-    #[test]
-    fn attach_file_start_dir_create_failure_does_not_deadlock() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("attach-dir-fail");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-attach-dir-fail-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_attach_dir_fail".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            // 把 uploads_base 设成一个已存在的**文件**路径 → join(upload_id) 后
-            // create_dir_all 必然失败(EEXIST / ENOTDIR)。
-            let uploads_base = inner.uploads_base.clone();
-            drop(inner);
-            std::fs::create_dir_all(
-                uploads_base
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("/")),
-            )
-            .ok();
-            std::fs::write(&uploads_base, b"blocker").expect("seed uploads_base as file");
-        }
-
-        let payload = serde_json::json!({
-            "filename": "any.bin",
-            "byte_size": 16u64,
-            "mime": "application/octet-stream",
-        });
-
-        // 修复前:create_dir_all 失败 → 锁内 send_error → 死锁,handle 永不返回。
-        // 修复后:错误以元组传出锁块,锁外 send_error。
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let manager_clone = manager.clone();
-        let session_id_for_thread = session_id.clone();
-        std::thread::spawn(move || {
-            manager_clone.handle_attach_file_start(&session_id_for_thread, &payload);
-            let _ = done_tx.send(());
-        });
-        done_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("handle_attach_file_start must not deadlock when uploads_base is not a dir");
-
-        assert!(
-            manager.inner.lock().active_upload.is_none(),
-            "dir-failed start must not occupy the upload slot"
-        );
-    }
-
-    /// 回归:close_current / stop_current 必须清空 upload 相关 Inner 字段,并 best-effort
-    /// 删除盘上未完成的 upload 目录。防止 manager 拆除后 active_upload 槽位残留,导致下次
-    /// attach_file_start 被永久拒服务,以及 <uploads_base>/<upload_id>/ 半成品文件堆积。
-    #[test]
-    fn close_current_clears_active_upload_slot() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("close-clears-upload");
-        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (download_sender, _download_rx) =
-            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
-        let session_id = "rc-close-clears-upload-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        let upload_dir;
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: "rc_close_clears_upload".to_string(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url: String::new(),
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-            inner.active_upload = Some("up_close_test".to_string());
-            inner.pending_attachments.insert(
-                "up_close_test".to_string(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "x.bin".to_string(),
-                    byte_size: 8,
-                    mime: "application/octet-stream".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
             );
-            upload_dir = inner.uploads_base.join("up_close_test");
-            std::fs::create_dir_all(&upload_dir).expect("seed upload dir");
-            std::fs::write(upload_dir.join("data.bin"), b"partial").expect("seed partial file");
         }
-
-        manager.close_current("test");
-
-        let inner = manager.inner.lock();
-        assert!(
-            inner.active_upload.is_none(),
-            "close_current must clear active_upload"
-        );
-        assert!(
-            inner.upload_chunk_sender.is_none(),
-            "close_current must clear sender"
-        );
-        assert!(
-            inner.pending_attachments.is_empty(),
-            "close_current must clear pending_attachments"
-        );
-        assert!(
-            !upload_dir.exists(),
-            "close_current must remove unfinished upload dir"
-        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
-    /// 回归:cleanup_active_upload 在没有进行中 upload 时必须 no-op,既不 panic 也不修改状态。
-    /// 这覆盖 mobile_disconnected / switch_session 在"恰好无上传"时的快路径。
-    #[test]
-    fn cleanup_active_upload_is_noop_when_no_upload_active() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("cleanup-noop");
-        let manager = RemoteControlManager::new_headless();
-        manager.cleanup_active_upload("noop_test"); // 不应 panic
-        assert!(
-            manager.inner.lock().active_upload.is_none(),
-            "cleanup with no active upload must not populate the slot"
-        );
-        assert!(
-            manager.inner.lock().pending_attachments.is_empty(),
-            "cleanup with no active upload must not populate pending_attachments"
-        );
+    fn test_pending_revocation(endpoint_id: &str) -> PendingRevocation {
+        PendingRevocation {
+            relay_url: "wss://relay.example.test/ws".into(),
+            endpoint_id: endpoint_id.into(),
+            desktop_secret: format!("desktop-secret-{endpoint_id}-0123456789"),
+        }
+    }
+
+    fn test_web_config(endpoint_id: &str) -> WebAccessConfig {
+        let pending = test_pending_revocation(endpoint_id);
+        WebAccessConfig {
+            relay_url: pending.relay_url,
+            endpoint_id: pending.endpoint_id,
+            access_token: "browser-token-01234567890123456789".into(),
+            desktop_secret: pending.desktop_secret,
+        }
     }
 
     #[test]
-    fn cleanup_session_uploads_removes_active_and_ready_attachments_only_for_that_session() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("cleanup-session-uploads");
-        let manager = RemoteControlManager::new_headless();
-        let uploads_base = {
-            let mut inner = manager.inner.lock();
-            for (upload_id, session_id) in [
-                ("up_s1_active", "s1"),
-                ("up_s1_ready", "s1"),
-                ("up_s2_ready", "s2"),
-            ] {
-                let dir = inner.uploads_base.join(upload_id);
-                std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(dir.join("data.txt"), b"data").unwrap();
-                inner.pending_attachments.insert(
-                    upload_id.to_string(),
-                    PendingAttachment {
-                        session_id: session_id.to_string(),
-                        filename: "data.txt".to_string(),
-                        byte_size: 4,
-                        mime: "text/plain".to_string(),
-                        bytes_written: 4,
-                        bytes_in_flight: 0,
-                        ingest_result: Some(crate::file_ingest::ingest(&dir.join("data.txt"))),
-                    },
-                );
-            }
-            inner.active_upload = Some("up_s1_active".to_string());
-            inner.uploads_base.clone()
-        };
+    fn pending_revocations_round_trip_in_a_bounded_private_ledger() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-revocation-roundtrip-{}-{}",
+            std::process::id(),
+            crate::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        let first = test_pending_revocation("ep_retired_one");
+        let second = test_pending_revocation("ep_retired_two");
 
-        manager.cleanup_session_uploads("s1", "test_switch");
-        let inner = manager.inner.lock();
-        assert!(inner.active_upload.is_none());
-        assert!(!inner.pending_attachments.contains_key("up_s1_active"));
-        assert!(!inner.pending_attachments.contains_key("up_s1_ready"));
-        assert!(inner.pending_attachments.contains_key("up_s2_ready"));
-        drop(inner);
-        assert!(!uploads_base.join("up_s1_active").exists());
-        assert!(!uploads_base.join("up_s1_ready").exists());
-        assert!(uploads_base.join("up_s2_ready").exists());
-        manager.cleanup_all_uploads("test_end");
-    }
+        queue_pending_revocation_at(&path, first.clone()).unwrap();
+        queue_pending_revocation_at(&path, second.clone()).unwrap();
+        // An idempotent retry must not grow the durable queue.
+        queue_pending_revocation_at(&path, first.clone()).unwrap();
 
-    /// 端到端 happy path:dispatch 推两块("hello" + "world",最后一块 last=true)→
-    /// stream_file_upload 必须 (1) 拼接写盘成 "helloworld" 并**保留 .txt 扩展名**(PR #213
-    /// 审查 #1);(2) 跑 file_ingest::ingest 填 ingest_result,kind 必须是 "text" 而非
-    /// binary 兜底;(3) 发 attach_file_result(ok=true);(4) 释放 active_upload 槽位;
-    /// (5) 成功后保留源文件到 user_message 消费，避免图片/大文本 path 提前失效。
-    #[tokio::test]
-    async fn stream_file_upload_writes_chunks_and_ingests() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("stream-upload-happy");
-        let session_id = "rc-stream-happy-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        let upload_id = "up_stream_happy".to_string();
-        let uploads_base = {
-            let mut inner = manager.inner.lock();
-            std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
-            inner.active_upload = Some(upload_id.clone());
-            inner.pending_attachments.insert(
-                upload_id.clone(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "hello.txt".to_string(),
-                    byte_size: 10,
-                    mime: "text/plain".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(restored.version, PENDING_REVOCATIONS_VERSION);
+        assert_eq!(restored.entries, VecDeque::from([first, second]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
             );
-            inner.uploads_base.clone()
-        };
-        // 推两块:第一块 "hello",最后一块 "world"。
-        let (tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-        tx.send(UploadChunkMsg {
-            upload_id: upload_id.clone(),
-            index: 0,
-            data: b"hello".to_vec(),
-            last: false,
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn revocation_ack_removes_only_the_matching_durable_entry() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-revocation-ack-{}-{}",
+            std::process::id(),
+            crate::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        let first = test_pending_revocation("ep_retired_one");
+        let second = test_pending_revocation("ep_retired_two");
+        queue_pending_revocation_at(&path, first.clone()).unwrap();
+        queue_pending_revocation_at(&path, second.clone()).unwrap();
+
+        acknowledge_pending_revocation_at(&path, &first).unwrap();
+        assert_eq!(
+            load_pending_revocations_from(&path).unwrap().entries,
+            VecDeque::from([second.clone()])
+        );
+        acknowledge_pending_revocation_at(&path, &second).unwrap();
+        assert!(!path.exists(), "an empty revocation ledger is removed");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restart_replays_retired_entries_but_not_an_uncommitted_current_one() {
+        let current = test_web_config("ep_current");
+        let retired = test_pending_revocation("ep_retired");
+        let prepared_current = PendingRevocation::from(&current);
+        let encoded = serde_json::to_vec(&PendingRevocationLedger {
+            version: PENDING_REVOCATIONS_VERSION,
+            entries: VecDeque::from([prepared_current.clone(), retired.clone()]),
         })
-        .await
         .unwrap();
-        tx.send(UploadChunkMsg {
-            upload_id: upload_id.clone(),
-            index: 1,
-            data: b"world".to_vec(),
-            last: true,
-        })
-        .await
-        .unwrap();
-        drop(tx); // 关 sender,避免后续 rx.recv() 永久挂起(streaming task 在 last 后已 break,不会等)
+        let restored: PendingRevocationLedger = serde_json::from_slice(&encoded).unwrap();
 
-        // stream_file_upload 消费 self(manager 是 Clone,Arc<Mutex<Inner>> 共享)。
-        // clone 一份调用,原 manager 留给后续断言用。
-        manager
-            .clone()
-            .stream_file_upload(upload_id.clone(), rx)
-            .await;
-
-        // ingest_result 携带文件解析结果，源文件则保留到 user_message 完成稳定暂存。
-        let inner = manager.inner.lock();
-        let pending = inner
-            .pending_attachments
-            .get(&upload_id)
-            .expect("pending_attachment preserved after successful upload");
-        let ir = pending
-            .ingest_result
-            .as_ref()
-            .expect("ingest_result must be filled after last chunk");
-        // 审查 #1:扩展名保留后,ingest 必须按 .txt 走 text 分派(kind == "text"),
-        // 不再是 binary 兜底「不支持的文件类型」。markdown 正文 = 写盘内容 = "helloworld"。
         assert_eq!(
-            ir.kind, "text",
-            "ingest must dispatch by preserved .txt extension, not fall back to binary (review #1)"
+            eligible_pending_revocations(&restored, Some(&current)),
+            vec![retired.clone()]
         );
-        assert_eq!(ir.basename, "hello.txt");
-        assert_eq!(ir.byte_size, 10);
         assert_eq!(
-            ir.markdown.as_deref(),
-            Some("helloworld"),
-            "ingest markdown must be the concatenated chunk content (review #1)"
+            eligible_pending_revocations(&restored, None),
+            vec![prepared_current, retired]
         );
-        assert!(
-            inner.active_upload.is_none(),
-            "active_upload slot must be released after successful upload"
-        );
-        assert!(
-            inner.upload_chunk_sender.is_none(),
-            "upload_chunk_sender must be cleared after successful upload"
-        );
-        drop(inner);
-
-        assert!(
-            uploads_base.join(&upload_id).join("hello.txt").exists(),
-            "successful upload source must survive until user_message consumes it"
-        );
-        manager.cleanup_session_uploads(&session_id, "test_cleanup");
-        assert!(!uploads_base.join(&upload_id).exists());
     }
 
-    /// 审查 #4 截断拒绝回归:声明 byte_size=1000,只发 800 字节然后 last=true。
-    /// 旧实现会静默 ingest 残缺文件并标「已就绪」;新实现必须 ok:false 拒绝 +
-    /// cleanup(清状态 + 删盘)。data.bin 文件名为兜底(无扩展名),ingest 不被调用。
-    #[tokio::test]
-    async fn stream_file_upload_rejects_truncated_upload_with_size_mismatch() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("stream-trunc");
-        let session_id = "rc-stream-trunc-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        let upload_id = "up_stream_trunc".to_string();
-        let uploads_base = {
-            let mut inner = manager.inner.lock();
-            std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
-            inner.active_upload = Some(upload_id.clone());
-            inner.pending_attachments.insert(
-                upload_id.clone(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "doc.txt".to_string(),
-                    byte_size: 1000, // 声明 1000
-                    mime: "text/plain".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
+    #[test]
+    fn only_explicit_terminal_relay_messages_acknowledge_a_revocation() {
+        assert!(pending_revocation_ack(
+            &json!({
+                "type": "desktop_endpoint_revoked",
+                "endpoint_id": "ep_retired"
+            }),
+            "ep_retired"
+        ));
+        assert!(pending_revocation_ack(
+            &json!({
+                "type": "desktop_endpoint_replaced",
+                "endpoint_id": "ep_retired"
+            }),
+            "ep_retired"
+        ));
+        assert!(pending_revocation_ack(
+            &json!({ "type": "error", "code": "endpoint_not_found" }),
+            "ep_retired"
+        ));
+        assert!(!pending_revocation_ack(
+            &json!({
+                "type": "desktop_endpoint_revoked",
+                "endpoint_id": "ep_other"
+            }),
+            "ep_retired"
+        ));
+    }
+
+    #[test]
+    fn active_session_downloads_are_rejected_not_evicted() {
+        let download = |id: &str, reserved_bytes: usize| {
+            (
+                id.to_string(),
+                WebSessionDownload {
+                    session_id: format!("session_{id}"),
+                    path: PathBuf::from(format!("{id}.json")),
+                    reserved_bytes,
+                    total: reserved_bytes,
+                    ready: true,
+                    last_touched: Instant::now(),
                 },
-            );
-            inner.uploads_base.clone()
-        };
-        // 只发 800 字节就 last=true(截断)。
-        let (tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-        tx.send(UploadChunkMsg {
-            upload_id: upload_id.clone(),
-            index: 0,
-            data: vec![b'A'; 800],
-            last: true,
-        })
-        .await
-        .unwrap();
-        drop(tx);
-
-        manager
-            .clone()
-            .stream_file_upload(upload_id.clone(), rx)
-            .await;
-
-        let inner = manager.inner.lock();
-        // 必须拒绝:active_upload 释放,cleanup 清掉 pending_attachments(无 ingest_result)。
-        assert!(
-            inner.active_upload.is_none(),
-            "truncated upload must be rejected and release active_upload slot"
-        );
-        assert!(
-            inner.pending_attachments.get(&upload_id).is_none()
-                || inner
-                    .pending_attachments
-                    .get(&upload_id)
-                    .map(|p| p.ingest_result.is_none())
-                    .unwrap_or(true),
-            "truncated upload must not be marked ready (no ingest_result)"
-        );
-        drop(inner);
-        // 截断上传目录必须被 cleanup 删除。
-        assert!(
-            !uploads_base.join(&upload_id).exists(),
-            "truncated upload dir must be deleted after rejection (review #4)"
-        );
-    }
-
-    /// 审查 #1 文件名净化单元:sanitize_upload_filename 必须保留扩展名 + 防路径穿越,
-    /// 且**保留 Unicode 文件名**(中文 / 日韩 / 带重音),不得把非 ASCII 全过滤掉。
-    #[test]
-    fn sanitize_upload_filename_preserves_extension_and_blocks_traversal() {
-        // 保留扩展名(小写化),stem 原样。
-        assert_eq!(sanitize_upload_filename("report.PDF"), "report.pdf");
-        assert_eq!(sanitize_upload_filename("data.xlsx"), "data.xlsx");
-        assert_eq!(sanitize_upload_filename("photo.JPEG"), "photo.jpeg");
-        // Unicode 文件名必须保留(中文 / 日文 / 带重音):旧 is_ascii 过滤会丢成 .pdf→pdf。
-        assert_eq!(sanitize_upload_filename("报告.pdf"), "报告.pdf");
-        assert_eq!(sanitize_upload_filename("データ.xlsx"), "データ.xlsx");
-        assert_eq!(sanitize_upload_filename("café.md"), "café.md");
-        assert_eq!(
-            sanitize_upload_filename("季度总结 第一期.docx"),
-            "季度总结 第一期.docx"
-        );
-        // 防路径穿越:file_name() 剥掉目录成分。
-        assert_eq!(sanitize_upload_filename("../evil.txt"), "evil.txt");
-        assert_eq!(sanitize_upload_filename("/etc/passwd"), "passwd");
-        // Windows 风格反斜杠:在 Linux 上 file_name() 不把它当分隔符(Linux 只认 /),
-        // 但反斜杠不在允许字符集 → 被过滤,结果仍无目录穿越(无 / 或 \ 残留)。
-        assert_eq!(
-            sanitize_upload_filename("..\\windows\\x.exe"),
-            "windowsx.exe"
-        );
-        // Windows 保留字符被过滤(: < > | ? *),其余安全标点保留。
-        assert_eq!(sanitize_upload_filename("data:v2.txt"), "datav2.txt");
-        assert_eq!(
-            sanitize_upload_filename("report (v2).csv"),
-            "report (v2).csv"
-        );
-        assert_eq!(sanitize_upload_filename("a+b&c@d.json"), "a+b&c@d.json");
-        // 退化输入回退 data.bin(向后兼容)。
-        assert_eq!(sanitize_upload_filename(""), "data.bin");
-        assert_eq!(sanitize_upload_filename(".."), "data.bin");
-        assert_eq!(sanitize_upload_filename("   "), "data.bin");
-        // 无扩展名原样保留，由既有 file_ingest 规则处理。
-        assert_eq!(sanitize_upload_filename("README"), "README");
-        assert_eq!(sanitize_upload_filename("Dockerfile"), "Dockerfile");
-        // 连续空格压缩 + 首尾空白/点去除。
-        assert_eq!(sanitize_upload_filename("  a   b.txt  "), "a b.txt");
-        assert_eq!(sanitize_upload_filename(".hidden.txt"), "hidden.txt");
-    }
-
-    #[test]
-    fn client_upload_id_is_stable_and_path_safe() {
-        assert!(valid_client_upload_id("up_web_1720000000_ab12cd"));
-        assert!(valid_client_upload_id("up_mobile-1"));
-        assert!(!valid_client_upload_id("upload_1"));
-        assert!(!valid_client_upload_id("up_../escape"));
-        assert!(!valid_client_upload_id("up_含中文"));
-        assert!(!valid_client_upload_id(&format!("up_{}", "a".repeat(94))));
-    }
-
-    /// 审查 #5 上限对齐:UPLOAD_LIMIT_BYTES 必须等于 file_ingest::MAX_FILE_BYTES(20MiB),
-    /// 不得是 64MiB,否则 20-64MiB 文件会被 mobile 接受但 file_ingest 静默降级。
-    #[test]
-    fn upload_limit_bytes_matches_file_ingest_max() {
-        assert_eq!(
-            UPLOAD_LIMIT_BYTES,
-            crate::file_ingest::MAX_FILE_BYTES,
-            "mobile upload hard cap must align with file_ingest 20MiB cap (review #5)"
-        );
-        assert_eq!(UPLOAD_LIMIT_BYTES, 20 * 1024 * 1024);
-    }
-
-    /// Abort 路径:dispatch 还没推任何 chunk,channel sender 就被 drop(mobile abort /
-    /// disconnect)→ stream_file_upload 的 rx.recv() 立刻返回 None → 必须发
-    /// attach_file_aborted(reason=client_disconnected) + cleanup_active_upload(删盘 + 清状态)。
-    #[tokio::test]
-    async fn stream_file_upload_emits_aborted_on_sender_drop() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _home = PinvouHomeOverride::new("stream-abort");
-        let session_id = "rc-stream-abort-session".to_string();
-        let manager = RemoteControlManager::new_headless();
-        let upload_id = "up_stream_abort".to_string();
-        {
-            let mut inner = manager.inner.lock();
-            std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
-            inner.active_upload = Some(upload_id.clone());
-            inner.pending_attachments.insert(
-                upload_id.clone(),
-                PendingAttachment {
-                    session_id: session_id.clone(),
-                    filename: "x.bin".to_string(),
-                    byte_size: 100,
-                    mime: "application/octet-stream".to_string(),
-                    bytes_written: 0,
-                    bytes_in_flight: 0,
-                    ingest_result: None,
-                },
-            );
-        }
-        let (_tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-        drop(_tx); // 立即关 sender 模拟 mobile abort / disconnect
-
-        manager
-            .clone()
-            .stream_file_upload(upload_id.clone(), rx)
-            .await;
-
-        let inner = manager.inner.lock();
-        assert!(
-            inner.active_upload.is_none(),
-            "cleanup must release active_upload slot on sender drop"
-        );
-        assert!(
-            inner.pending_attachments.is_empty(),
-            "cleanup must drop pending_attachment on sender drop"
-        );
-        let data_path = inner.uploads_base.join(&upload_id).join("data.bin");
-        assert!(
-            !data_path.exists(),
-            "cleanup must remove upload dir on sender drop"
-        );
-    }
-}
-
-fn tail_path(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    let parts = normalized.split('/').rev().take(3).collect::<Vec<_>>();
-    parts.into_iter().rev().collect::<Vec<_>>().join("/")
-}
-
-#[cfg(test)]
-mod scheduled_tests {
-    use super::*;
-    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
-
-    #[test]
-    fn preview_paths_follow_execution_workspace_without_exposing_shared_home() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-remote-preview-{}-{}",
-            std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        let state_home = root.join("state");
-        let previous_pinvou3_home = std::env::var_os("PINVOU3_HOME");
-        let previous_user_profile = std::env::var_os("USERPROFILE");
-        let previous_home = std::env::var_os("HOME");
-        std::fs::create_dir_all(&root).expect("create test home");
-        std::env::set_var("PINVOU3_HOME", &state_home);
-        std::env::set_var("USERPROFILE", &root);
-        std::env::set_var("HOME", &root);
-
-        let store = SessionStore::boot().expect("boot session store");
-        let scheduled = store
-            .create_scheduled_run(ScheduledRunProfile {
-                task_id: "remote-preview-task".to_string(),
-                model: "test-model".to_string(),
-                model_id: None,
-                workspace: root.join("ignored-profile-workspace"),
-                mode: ScheduledRunMode::Yolo,
-                allow_shell: true,
-                trust_mode: true,
-                auto_approve: true,
-            })
-            .expect("create scheduled conversation");
-        let recorded = root.join("scheduled-report.md");
-        let unrelated = root.join("unrelated-secret.txt");
-        std::fs::write(&recorded, "report").expect("write recorded artifact");
-        std::fs::write(&unrelated, "secret").expect("write unrelated file");
-        store
-            .append_scheduled_artifact_path(&scheduled.metadata.id, recorded.clone())
-            .expect("record scheduled artifact");
-
-        assert_eq!(
-            resolve_session_preview_path(
-                &store,
-                &scheduled.metadata.id,
-                &recorded.to_string_lossy(),
             )
-            .expect("resolve recorded scheduled artifact"),
-            recorded
-                .canonicalize()
-                .expect("canonical recorded artifact")
-        );
-        assert!(
-            resolve_session_preview_path(
-                &store,
-                &scheduled.metadata.id,
-                &unrelated.to_string_lossy()
-            )
-            .is_err(),
-            "the shared scheduled workspace must not grant remote preview authority over arbitrary home files"
-        );
-
-        let chat = store
-            .create_new("test-model".to_string(), None, root.join("ignored"))
-            .expect("create ordinary conversation");
-        let chat_workspace = crate::bridge::paths::session_workspace_dir(&chat.metadata.id);
-        std::fs::create_dir_all(&chat_workspace).expect("create chat workspace");
-        let chat_artifact = chat_workspace.join("chat-report.md");
-        std::fs::write(&chat_artifact, "chat report").expect("write chat artifact");
-        assert_eq!(
-            resolve_session_preview_path(&store, &chat.metadata.id, "chat-report.md")
-                .expect("resolve ordinary workspace artifact"),
-            chat_artifact
-                .canonicalize()
-                .expect("canonical ordinary artifact")
-        );
-
-        drop(store);
-        match previous_pinvou3_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        match previous_user_profile {
-            Some(value) => std::env::set_var("USERPROFILE", value),
-            None => std::env::remove_var("USERPROFILE"),
-        }
-        match previous_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn download_chunk_count_matches_chunk_boundaries() {
-        assert_eq!(download_chunk_count(0), 0);
-        assert_eq!(download_chunk_count(1), 1);
-        assert_eq!(download_chunk_count(DOWNLOAD_CHUNK_BYTES), 1);
-        assert_eq!(download_chunk_count(DOWNLOAD_CHUNK_BYTES + 1), 2);
-        assert_eq!(download_chunk_count(DOWNLOAD_CHUNK_BYTES * 3), 3);
-    }
-
-    #[test]
-    fn download_mime_falls_back_to_octet_stream_for_binary() {
-        assert_eq!(download_mime_for_ext("md"), "text/markdown");
-        assert_eq!(download_mime_for_ext("png"), "image/png");
-        assert_eq!(download_mime_for_ext("zip"), "application/zip");
-        assert_eq!(download_mime_for_ext("bin"), "application/octet-stream");
-        assert_eq!(download_mime_for_ext(""), "application/octet-stream");
-    }
-}
-
-/// 端到端测试:真实 node relay + 真实 relay_client(WS) + 真实 manager 下载逻辑,
-/// mobile 侧用 tokio-tungstenite 扮演,验证 request_artifact_download 全链路字节一致。
-/// 依赖 remote-control-relay/node_modules(npm ci)与 node 可执行文件,缺失时跳过。
-#[cfg(test)]
-mod e2e_tests {
-    use super::relay_client::RelayReceiver;
-    use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
-    use futures_util::{SinkExt, StreamExt};
-    use std::ffi::OsString;
-    use std::net::TcpListener;
-    use std::process::{Child, Command, Stdio};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio_tungstenite::{connect_async, tungstenite::Message};
-
-    struct E2eEnv {
-        home: PathBuf,
-        previous_home: Option<OsString>,
-        child: Option<Child>,
-    }
-
-    impl Drop for E2eEnv {
-        fn drop(&mut self) {
-            if let Some(mut child) = self.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            match self.previous_home.take() {
-                Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                None => std::env::remove_var("PINVOU3_HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.home);
-        }
-    }
-
-    fn now_nanos() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    }
-
-    fn report_missing_e2e_dependency(reason: &str) {
-        if std::env::var("PINVOU_REQUIRE_REMOTE_E2E").as_deref() == Ok("1") {
-            panic!("required remote e2e dependency missing: {reason}");
-        }
-        eprintln!("skip remote e2e: {reason}");
-    }
-
-    #[test]
-    fn artifact_download_round_trips_through_real_relay() {
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../remote-control-relay")
-            .canonicalize()
-            .expect("remote-control-relay dir");
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-remote-e2e-{}-{}",
-            std::process::id(),
-            now_nanos()
-        ));
-        let previous_home = std::env::var_os("PINVOU3_HOME");
-        std::env::set_var("PINVOU3_HOME", &home);
-        if !relay_dir.join("node_modules/ws/package.json").exists() {
-            report_missing_e2e_dependency(
-                "relay node_modules missing (npm ci in remote-control-relay)",
-            );
-            return;
-        }
-        let port = TcpListener::bind("127.0.0.1:0")
-            .expect("bind ephemeral port")
-            .local_addr()
-            .expect("local addr")
-            .port();
-        let child = match Command::new("node")
-            .arg("server.js")
-            .current_dir(&relay_dir)
-            .env("PORT", port.to_string())
-            .env("PINVOU_REMOTE_PUBLIC_BASE_PATH", "")
-            .env("HEARTBEAT_INTERVAL_MS", "60000")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(err) => {
-                report_missing_e2e_dependency(&format!("cannot spawn node: {err}"));
-                std::env::remove_var("PINVOU3_HOME");
-                return;
-            }
-        };
-        let mut guard = E2eEnv {
-            home: home.clone(),
-            previous_home,
-            child: Some(child),
-        };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(
-                Instant::now() < deadline,
-                "relay did not start on port {port}"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        let store = SessionStore::boot().expect("boot session store");
-        let session = store
-            .create_new("test-model".to_string(), None, home.join("ignored"))
-            .expect("create session");
-        let session_id = session.metadata.id.clone();
-        let workspace = paths::session_workspace_dir(&session_id);
-        let big_bytes: Vec<u8> = (0..2_000_000u32).map(|i| (i % 251) as u8).collect();
-        let big_path = workspace.join("reports/e2e-big.bin");
-        std::fs::create_dir_all(big_path.parent().expect("big parent")).expect("big dir");
-        std::fs::write(&big_path, &big_bytes).expect("write big file");
-        let text_bytes = "你好,远程下载".as_bytes().to_vec();
-        let text_path = workspace.join("notes/hello.txt");
-        std::fs::create_dir_all(text_path.parent().expect("text parent")).expect("text dir");
-        std::fs::write(&text_path, &text_bytes).expect("write text file");
-
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
-        let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
-        let (sender, download_sender, mut receiver) = relay_client::spawn(
-            relay_ws_url.clone(),
-            room_id.clone(),
-            session_id.clone(),
-            pairing_token.clone(),
-            desktop_secret,
-        );
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: room_id.clone(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url,
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-        }
-
-        let big_expect = big_bytes.clone();
-        let text_expect = text_bytes.clone();
-        tauri::async_runtime::block_on(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(60),
-                run_mobile_e2e(
-                    port,
-                    room_id,
-                    pairing_token,
-                    session_id.clone(),
-                    manager,
-                    store,
-                    &mut receiver,
-                    big_expect,
-                    text_expect,
-                ),
-            )
-            .await;
-            assert!(result.is_ok(), "remote download e2e timed out");
-        });
-        let _ = &mut guard;
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_mobile_e2e(
-        port: u16,
-        room_id: String,
-        pairing_token: String,
-        session_id: String,
-        manager: RemoteControlManager,
-        store: SessionStore,
-        receiver: &mut RelayReceiver,
-        big_expect: Vec<u8>,
-        text_expect: Vec<u8>,
-    ) {
-        let url = format!("ws://127.0.0.1:{port}/ws");
-        // desktop_register 由 relay_client 后台任务异步完成,mobile_join 需要等 room 就绪。
-        let (mut write, mut read) = 'join: {
-            for attempt in 0..40 {
-                let (ws, _) = connect_async(&url).await.expect("mobile ws connect");
-                let (mut write, mut read) = ws.split();
-                write
-                    .send(Message::Text(
-                        json!({
-                            "type": "mobile_join",
-                            "room_id": room_id,
-                            "token": pairing_token,
-                        })
-                        .to_string(),
-                    ))
-                    .await
-                    .expect("send mobile_join");
-                let reply = tokio::time::timeout(Duration::from_secs(3), read.next())
-                    .await
-                    .expect("join reply timeout")
-                    .expect("join reply stream")
-                    .expect("join reply ws");
-                let value: Value =
-                    serde_json::from_str(reply.to_text().unwrap_or("")).expect("join reply json");
-                if value.get("type").and_then(|v| v.as_str()) == Some("mobile_joined") {
-                    break 'join (write, read);
-                }
-                assert!(attempt < 39, "mobile_join never succeeded: {}", value);
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            unreachable!("join loop must break or assert")
         };
 
-        // relay 在 mobile_join 后自动向 desktop 推 request_snapshot,确认 desktop 侧真实收到。
-        let first_action = recv_mobile_action(receiver).await;
+        let mut by_count = Inner::default();
+        by_count
+            .web_session_downloads
+            .extend([download("first", 1), download("second", 1)]);
+        let ids_before = by_count
+            .web_session_downloads
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
+        assert!(ensure_web_session_download_capacity(&by_count, 1).is_err());
         assert_eq!(
-            first_action.get("type").and_then(|v| v.as_str()),
-            Some("request_snapshot"),
-            "relay should forward the auto request_snapshot to desktop: {first_action}"
+            by_count
+                .web_session_downloads
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            ids_before
         );
 
-        // mobile 请求下载大文件(2MB,应分 3 块),desktop 经真实 WS 收到 action。
-        send_mobile_action(
-            &mut write,
-            "dl-big",
-            json!({ "artifact_path": "reports/e2e-big.bin" }),
-        )
-        .await;
-        let download_action = recv_mobile_action(receiver).await;
-        assert_eq!(
-            download_action.get("type").and_then(|v| v.as_str()),
-            Some("request_artifact_download"),
-            "desktop should receive the download action: {download_action}"
-        );
-        assert_eq!(
-            download_action
-                .get("payload")
-                .and_then(|p| p.get("artifact_path"))
-                .and_then(|v| v.as_str()),
-            Some("reports/e2e-big.bin")
-        );
-
-        // desktop 侧分发目标:send_artifact_download(handle_mobile_action 的该 action 命中函数)。
-        manager
-            .send_artifact_download(&store, &session_id, None, Some("reports/e2e-big.bin"))
-            .expect("send big artifact download");
-        let big = collect_download(&mut read, receiver, &manager, "e2e-big.bin").await;
-        assert_eq!(big.session_id, session_id);
-        assert_eq!(big.mime, "application/octet-stream");
-        assert_eq!(big.byte_size, big_expect.len() as u64);
-        assert_eq!(big.total_chunks, 3);
-        assert_eq!(big.bytes, big_expect, "big file bytes must round-trip");
-        // 下载锁在任务发送完 end 后才释放,下一次下载前等它归位,避免时序抖动。
-        wait_download_idle(&manager).await;
-
-        // 小文本文件:单块 + 正确 MIME。
-        send_mobile_action(
-            &mut write,
-            "dl-text",
-            json!({ "artifact_path": "notes/hello.txt" }),
-        )
-        .await;
-        let _ = recv_mobile_action(receiver).await;
-        manager
-            .send_artifact_download(&store, &session_id, None, Some("notes/hello.txt"))
-            .expect("send text artifact download");
-        let text = collect_download(&mut read, receiver, &manager, "hello.txt").await;
-        assert_eq!(text.mime, "text/plain");
-        assert_eq!(text.total_chunks, 1);
-        assert_eq!(text.bytes, text_expect, "text file bytes must round-trip");
-        wait_download_idle(&manager).await;
-
-        // 越界路径必须被拒绝(不会向 mobile 发任何 download 事件)。
-        let escape =
-            manager.send_artifact_download(&store, &session_id, None, Some("/etc/hostname"));
-        assert!(
-            escape.is_err(),
-            "absolute path outside session must be rejected"
-        );
-        let missing = manager.send_artifact_download(&store, &session_id, None, Some("nope.bin"));
-        assert!(missing.is_err(), "missing artifact must be rejected");
-    }
-
-    async fn send_mobile_action(
-        write: &mut futures_util::stream::SplitSink<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-            Message,
-        >,
-        client_message_id: &str,
-        payload: Value,
-    ) {
-        write
-            .send(Message::Text(
-                json!({
-                    "type": "mobile_action",
-                    "payload": {
-                        "type": "request_artifact_download",
-                        "client_message_id": client_message_id,
-                        "payload": payload,
-                    },
-                })
-                .to_string(),
-            ))
-            .await
-            .expect("send mobile_action");
-    }
-
-    async fn recv_mobile_action(receiver: &mut RelayReceiver) -> Value {
-        loop {
-            let inbound = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
-                .await
-                .expect("desktop inbound timeout")
-                .expect("desktop inbound closed");
-            if let RelayInbound::MobileAction { payload, .. } = inbound {
-                return payload;
-            }
-        }
-    }
-
-    async fn wait_download_idle(manager: &RemoteControlManager) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while manager.inner.lock().active_download.is_some() {
-            assert!(Instant::now() < deadline, "download lock was not released");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-
-    struct CollectedDownload {
-        session_id: String,
-        mime: String,
-        byte_size: u64,
-        total_chunks: usize,
-        bytes: Vec<u8>,
-    }
-
-    async fn collect_download(
-        read: &mut futures_util::stream::SplitStream<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-        >,
-        receiver: &mut RelayReceiver,
-        manager: &RemoteControlManager,
-        expect_basename: &str,
-    ) -> CollectedDownload {
-        let mut session_id = String::new();
-        let mut mime = String::new();
-        let mut byte_size = 0_u64;
-        let mut total_chunks = 0_usize;
-        let mut download_id = String::new();
-        let mut chunks: Vec<Option<String>> = Vec::new();
-        loop {
-            let msg = tokio::time::timeout(Duration::from_secs(15), read.next())
-                .await
-                .expect("download event timeout")
-                .expect("download stream closed")
-                .expect("download ws error");
-            let value: Value =
-                serde_json::from_str(msg.to_text().unwrap_or("")).expect("download event json");
-            let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
-            match kind {
-                "artifact_download_start" => {
-                    assert_eq!(
-                        payload.get("basename").and_then(|v| v.as_str()),
-                        Some(expect_basename)
-                    );
-                    download_id = payload
-                        .get("download_id")
-                        .and_then(|v| v.as_str())
-                        .expect("download_id")
-                        .to_string();
-                    assert!(!download_id.is_empty());
-                    session_id = payload
-                        .get("session_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    mime = payload
-                        .get("mime")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    byte_size = payload
-                        .get("byte_size")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    total_chunks = payload
-                        .get("total_chunks")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as usize;
-                    chunks = vec![None; total_chunks];
-                }
-                "artifact_download_chunk" => {
-                    assert!(!download_id.is_empty(), "chunk before start");
-                    assert_eq!(
-                        payload.get("download_id").and_then(|v| v.as_str()),
-                        Some(download_id.as_str())
-                    );
-                    let index = payload.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    assert!(index < total_chunks, "chunk index {index} out of range");
-                    let data = payload
-                        .get("data")
-                        .and_then(|v| v.as_str())
-                        .expect("chunk data")
-                        .to_string();
-                    chunks[index] = Some(data);
-                    let ack = loop {
-                        let inbound =
-                            tokio::time::timeout(Duration::from_secs(10), receiver.recv())
-                                .await
-                                .expect("download ack timeout")
-                                .expect("desktop inbound closed");
-                        if let RelayInbound::DownloadAck {
-                            download_id,
-                            index,
-                            ok,
-                            message,
-                        } = inbound
-                        {
-                            break (download_id, DownloadRelayAck { index, ok, message });
-                        }
-                    };
-                    manager.handle_download_relay_ack(&ack.0, ack.1);
-                }
-                "artifact_download_end" => {
-                    assert_eq!(
-                        payload.get("download_id").and_then(|v| v.as_str()),
-                        Some(download_id.as_str())
-                    );
-                    assert_eq!(
-                        payload.get("total_chunks").and_then(|v| v.as_u64()),
-                        Some(total_chunks as u64),
-                        "end total_chunks must match start"
-                    );
-                    assert_eq!(
-                        payload.get("byte_size").and_then(|v| v.as_u64()),
-                        Some(byte_size),
-                        "end byte_size must match start"
-                    );
-                    let mut bytes = Vec::new();
-                    for (index, chunk) in chunks.iter().enumerate() {
-                        let data = chunk
-                            .as_ref()
-                            .unwrap_or_else(|| panic!("missing chunk {index}"));
-                        let decoded = base64::engine::general_purpose::STANDARD
-                            .decode(data)
-                            .expect("chunk base64");
-                        bytes.extend_from_slice(&decoded);
-                    }
-                    return CollectedDownload {
-                        session_id,
-                        mime,
-                        byte_size,
-                        total_chunks,
-                        bytes,
-                    };
-                }
-                other => panic!("unexpected mobile event during download: {other}"),
-            }
-        }
-    }
-
-    fn bin_runnable(bin: &str, args: &[&str]) -> bool {
-        Command::new(bin)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-
-    /// Chrome 解析顺序:CHROME 环境变量 → 仓库本地 .cache/puppeteer(手动 zip 或
-    /// npx @puppeteer/browsers 布局) → 常见系统路径。只返回能跑 --version 的。
-    fn resolve_chrome_binary(app_dir: &Path) -> Option<String> {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Ok(from_env) = std::env::var("CHROME") {
-            if !from_env.is_empty() {
-                candidates.push(PathBuf::from(from_env));
-            }
-        }
-        if let Some(repo_root) = app_dir.parent() {
-            candidates.push(repo_root.join(".cache/puppeteer/chrome-linux64/chrome"));
-            if let Ok(entries) = std::fs::read_dir(repo_root.join(".cache/puppeteer/chrome")) {
-                for entry in entries.flatten() {
-                    candidates.push(entry.path().join("chrome-linux64/chrome"));
-                }
-            }
-        }
-        for system in [
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-        ] {
-            candidates.push(PathBuf::from(system));
-        }
-        candidates
-            .into_iter()
-            .find(|path| path.exists() && bin_runnable(&path.to_string_lossy(), &["--version"]))
-            .map(|path| path.to_string_lossy().to_string())
-    }
-
-    /// 真实浏览器全链路:真实 node relay + 真实 manager(流式下载/单下载锁/背压)
-    /// + 真实 Chrome/Chromium(puppeteer-core 驱动 relay 服务的真实手机端页面)。
-    /// 覆盖:64MiB 近上限下载字节一致、64MiB+1 超限拒绝、下载中重复点击拦截、
-    /// 中途杀 relay 断连中断。依赖 node 与 Chrome 二进制,缺失时跳过。
-    /// Chrome 解析顺序:CHROME 环境变量 → 仓库本地 .cache/puppeteer → 常见系统路径。
-    #[test]
-    fn real_browser_download_full_stack() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../remote-control-relay")
-            .canonicalize()
-            .expect("remote-control-relay dir");
-        let app_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .canonicalize()
-            .expect("pinvou3-app dir");
-        if !relay_dir.join("node_modules/ws/package.json").exists() {
-            report_missing_e2e_dependency(
-                "relay node_modules missing (npm ci in remote-control-relay)",
-            );
-            return;
-        }
-        if !app_dir
-            .join("node_modules/puppeteer-core/package.json")
-            .exists()
-        {
-            report_missing_e2e_dependency(
-                "pinvou3-app node_modules missing (npm ci in pinvou3-app)",
-            );
-            return;
-        }
-        if !bin_runnable("node", &["--version"]) {
-            report_missing_e2e_dependency("node not available");
-            return;
-        }
-        let chrome_bin = resolve_chrome_binary(&app_dir);
-        let Some(chrome_bin) = chrome_bin else {
-            report_missing_e2e_dependency(
-                "no Chrome/Chromium binary (set CHROME, or install Chrome for Testing into .cache/puppeteer)",
-            );
-            return;
-        };
-
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-remote-browser-e2e-{}-{}",
-            std::process::id(),
-            now_nanos()
-        ));
-        let previous_home = std::env::var_os("PINVOU3_HOME");
-        std::env::set_var("PINVOU3_HOME", &home);
-        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        struct Guard {
-            home: PathBuf,
-            previous_home: Option<OsString>,
-            relay_child: Arc<parking_lot::Mutex<Option<Child>>>,
-        }
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                if let Some(mut child) = self.relay_child.lock().take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                match self.previous_home.take() {
-                    Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                    None => std::env::remove_var("PINVOU3_HOME"),
-                }
-                let _ = std::fs::remove_dir_all(&self.home);
-            }
-        }
-        let guard = Guard {
-            home: home.clone(),
-            previous_home,
-            relay_child: relay_child.clone(),
-        };
-
-        // 近上限文件:恰好 64MiB(边界值,>64MiB 才拒绝);内容为确定性伪随机。
-        let store = SessionStore::boot().expect("boot session store");
-        let session = store
-            .create_new("test-model".to_string(), None, home.join("ignored"))
-            .expect("create session");
-        let session_id = session.metadata.id.clone();
-        let workspace = paths::session_workspace_dir(&session_id);
-        let pattern: Vec<u8> = (0..1024 * 1024u32)
-            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
-            .collect();
-        let near_bytes = pattern.repeat((DOWNLOAD_LIMIT_BYTES as usize) / pattern.len());
-        assert_eq!(near_bytes.len() as u64, DOWNLOAD_LIMIT_BYTES);
-        let near_path = workspace.join("reports/near-limit.bin");
-        std::fs::create_dir_all(near_path.parent().expect("near parent")).expect("near dir");
-        std::fs::write(&near_path, &near_bytes).expect("write near-limit file");
-        // 超限文件:稀疏到 64MiB+1,仅元数据参与判定。
-        let oversize_path = workspace.join("reports/oversize.bin");
-        let oversize_file = std::fs::File::create(&oversize_path).expect("create oversize file");
-        oversize_file
-            .set_len(DOWNLOAD_LIMIT_BYTES + 1)
-            .expect("size oversize file");
-        drop(oversize_file);
-        store
-            .update_artifacts(
-                &session_id,
-                vec![
-                    near_path.to_string_lossy().to_string(),
-                    oversize_path.to_string_lossy().to_string(),
-                ],
-            )
-            .expect("register artifacts");
-
-        let port = TcpListener::bind("127.0.0.1:0")
-            .expect("bind ephemeral port")
-            .local_addr()
-            .expect("local addr")
-            .port();
-        let child = Command::new("node")
-            .arg("server.js")
-            .current_dir(&relay_dir)
-            .env("PORT", port.to_string())
-            .env("PINVOU_REMOTE_PUBLIC_BASE_PATH", "")
-            .env("HEARTBEAT_INTERVAL_MS", "60000")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn relay");
-        *relay_child.lock() = Some(child);
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(
-                Instant::now() < deadline,
-                "relay did not start on port {port}"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
-        let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
-        let (sender, download_sender, mut receiver) = relay_client::spawn(
-            relay_ws_url.clone(),
-            room_id.clone(),
-            session_id.clone(),
-            pairing_token.clone(),
-            desktop_secret,
-        );
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: room_id.clone(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url,
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-        }
-
-        // 分发任务:扮演 handle_mobile_action 中本场景用到的 action 子集
-        // (EnginePool 需要 AppHandle,headless 无法构造;下载/预览/列表路径全部真实)。
-        let download_actions = Arc::new(AtomicUsize::new(0));
-        let stop_dispatch = Arc::new(AtomicBool::new(false));
-        let control_file = home.join("control.txt");
-        {
-            let manager = manager.clone();
-            let store = store.clone();
-            let download_actions = download_actions.clone();
-            let stop_dispatch = stop_dispatch.clone();
-            let control_file = control_file.clone();
-            let relay_child = relay_child.clone();
-            tauri::async_runtime::spawn(async move {
-                while !stop_dispatch.load(Ordering::SeqCst) {
-                    // 控制文件:驱动端要求杀 relay,模拟真实网络中断。
-                    if let Ok(cmd) = std::fs::read_to_string(&control_file) {
-                        if cmd.trim() == "kill_relay" {
-                            if let Some(mut child) = relay_child.lock().take() {
-                                let _ = child.kill();
-                                let _ = child.wait();
-                            }
-                            let _ = std::fs::remove_file(&control_file);
-                        }
-                    }
-                    let inbound =
-                        match tokio::time::timeout(Duration::from_millis(100), receiver.recv())
-                            .await
-                        {
-                            Ok(Some(inbound)) => inbound,
-                            Ok(None) => break,
-                            Err(_) => continue,
-                        };
-                    let payload = match inbound {
-                        RelayInbound::DownloadAck {
-                            download_id,
-                            index,
-                            ok,
-                            message,
-                        } => {
-                            manager.handle_download_relay_ack(
-                                &download_id,
-                                DownloadRelayAck { index, ok, message },
-                            );
-                            continue;
-                        }
-                        RelayInbound::MobileAction { payload, .. } => payload,
-                        _ => continue,
-                    };
-                    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let action_payload = payload.get("payload").cloned().unwrap_or(Value::Null);
-                    let sid = manager
-                        .inner
-                        .lock()
-                        .room
-                        .as_ref()
-                        .map(|room| room.session_id.clone())
-                        .unwrap_or_default();
-                    if sid.is_empty() {
-                        continue;
-                    }
-                    let result = match kind {
-                        "request_snapshot" | "ping" => {
-                            manager.send_snapshot_with_live_request(&store, &sid)
-                        }
-                        "request_session_list" => manager.send_session_list(&store, &sid),
-                        "request_chips" => manager.send_chips_snapshot(&store, &sid),
-                        "request_artifacts" => manager.send_artifact_list(&store, &sid),
-                        "switch_remote_session" => {
-                            match action_payload.get("session_id").and_then(|v| v.as_str()) {
-                                Some(id) => manager.switch_remote_session(&store, id),
-                                None => Ok(()),
-                            }
-                        }
-                        "request_artifact_preview" => {
-                            if let Some(id) =
-                                action_payload.get("artifact_id").and_then(|v| v.as_str())
-                            {
-                                manager.send_artifact_preview(&store, &sid, id)
-                            } else if let Some(path) =
-                                action_payload.get("artifact_path").and_then(|v| v.as_str())
-                            {
-                                manager.send_artifact_preview_by_path(&store, &sid, path)
-                            } else {
-                                Err("missing artifact_id".to_string())
-                            }
-                        }
-                        "request_artifact_download" => {
-                            download_actions.fetch_add(1, Ordering::SeqCst);
-                            let id = action_payload.get("artifact_id").and_then(|v| v.as_str());
-                            let path = action_payload.get("artifact_path").and_then(|v| v.as_str());
-                            manager.send_artifact_download(&store, &sid, id, path)
-                        }
-                        _ => Ok(()),
-                    };
-                    if let Err(err) = result {
-                        manager.send_error("mobile_action_failed", &err);
-                    }
-                }
-            });
-        }
-
-        let download_dir = home.join("firefox-downloads");
-        let params_path = home.join("driver-params.json");
-        let params = json!({
-            "pageUrl": format!("http://127.0.0.1:{port}/r/{room_id}#token={pairing_token}"),
-            "sessionTitle": session.metadata.title,
-            "sessionIdShort": &session_id[..session_id.len().min(6)],
-            "artifactName": "near-limit.bin",
-            "oversizeName": "oversize.bin",
-            "downloadDir": download_dir,
-            "controlFile": control_file,
-            "sourceFile": near_path,
-            "expectedSize": DOWNLOAD_LIMIT_BYTES,
-            "chromeBin": chrome_bin,
-        });
-        std::fs::write(
-            &params_path,
-            serde_json::to_string_pretty(&params).expect("params json"),
-        )
-        .expect("write driver params");
-
-        let status = Command::new("node")
-            .arg(relay_dir.join("test/real-browser-download.driver.mjs"))
-            .arg(&params_path)
-            .current_dir(&relay_dir)
-            .stdin(Stdio::null())
-            .status()
-            .expect("spawn real browser driver");
-        stop_dispatch.store(true, Ordering::SeqCst);
-        assert!(status.success(), "real browser driver failed");
-        assert_eq!(
-            download_actions.load(Ordering::SeqCst),
-            3,
-            "desktop must see exactly 3 download actions: 64MiB 完成 + 超限拒绝 + 第二次 64MiB(重复点击被浏览器拦截)"
-        );
-        let _ = &guard;
-    }
-
-    /// 真实浏览器全链路上传:真实 node relay + 真实 manager(分块写盘 +
-    /// file_ingest::ingest) + 真实 Chrome/Chromium(puppeteer 驱动真实手机端页面)。
-    /// 覆盖:小文本(2MiB)、4MiB 多分块全链路、20MiB+1 超限拒绝、
-    /// abort 中止、XSS 文件名转义、连击拦截(attachBtn disabled)。
-    /// 依赖 node 与 Chrome 二进制,缺失时跳过(与 real_browser_download_full_stack 同策略)。
-    /// KB / 工具开关链路需要 Tauri AppHandle,headless 无法构造,留给 jsdom e2e 覆盖。
-    #[test]
-    fn real_browser_upload_full_stack() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../remote-control-relay")
-            .canonicalize()
-            .expect("remote-control-relay dir");
-        let app_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .canonicalize()
-            .expect("pinvou3-app dir");
-        if !relay_dir.join("node_modules/ws/package.json").exists() {
-            report_missing_e2e_dependency(
-                "relay node_modules missing (npm ci in remote-control-relay)",
-            );
-            return;
-        }
-        if !app_dir
-            .join("node_modules/puppeteer-core/package.json")
-            .exists()
-        {
-            report_missing_e2e_dependency(
-                "pinvou3-app node_modules missing (npm ci in pinvou3-app)",
-            );
-            return;
-        }
-        if !bin_runnable("node", &["--version"]) {
-            report_missing_e2e_dependency("node not available");
-            return;
-        }
-        let chrome_bin = resolve_chrome_binary(&app_dir);
-        let Some(chrome_bin) = chrome_bin else {
-            report_missing_e2e_dependency(
-                "no Chrome/Chromium binary (set CHROME, or install Chrome for Testing into .cache/puppeteer)",
-            );
-            return;
-        };
-
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-remote-upload-browser-e2e-{}-{}",
-            std::process::id(),
-            now_nanos()
-        ));
-        let previous_home = std::env::var_os("PINVOU3_HOME");
-        std::env::set_var("PINVOU3_HOME", &home);
-        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        struct Guard {
-            home: PathBuf,
-            previous_home: Option<OsString>,
-            relay_child: Arc<parking_lot::Mutex<Option<Child>>>,
-        }
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                if let Some(mut child) = self.relay_child.lock().take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                match self.previous_home.take() {
-                    Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                    None => std::env::remove_var("PINVOU3_HOME"),
-                }
-                let _ = std::fs::remove_dir_all(&self.home);
-            }
-        }
-        let guard = Guard {
-            home: home.clone(),
-            previous_home,
-            relay_child: relay_child.clone(),
-        };
-
-        let store = SessionStore::boot().expect("boot session store");
-        let session = store
-            .create_new("test-model".to_string(), None, home.join("ignored"))
-            .expect("create session");
-        let session_id = session.metadata.id.clone();
-
-        // 小文本文件:2MiB 确定性内容(走多分块路径但远低于上限)。
-        let small_dir = home.join("upload-src");
-        std::fs::create_dir_all(&small_dir).expect("small src dir");
-        let small_path = small_dir.join("small.txt");
-        let small_pattern = b"pinvou3-upload-e2e\n";
-        let small_bytes = small_pattern.repeat((2 * 1024 * 1024) / small_pattern.len());
-        std::fs::write(&small_path, &small_bytes).expect("write small file");
-
-        // 多分块文件:4 MiB(≈ 6 个 768KiB 分块),用于真实浏览器 + relay + 桌面端
-        // 多分块全链路验证。不取满 20MiB 的原因:满额文件经真实 puppeteer + base64
-        // + relay ack 全链路耗时较长;字节级一致性已有下载 e2e 的大文件场景补充验证。
-        // 这里聚焦「多分块合并正确」(6 分块就够覆盖边界)。
-        let pattern: Vec<u8> = (0..1024 * 1024u32)
-            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
-            .collect();
-        let large_bytes = pattern.repeat(4);
-        assert_eq!(large_bytes.len(), 4 * 1024 * 1024);
-        let large_path = small_dir.join("multi-chunk.bin");
-        std::fs::write(&large_path, &large_bytes).expect("write multi-chunk file");
-
-        // abort / busy 用慢文件:16MiB(21 个 768KiB 分块),上传耗时数秒,
-        // 让 × 按钮与 attachBtn disabled 在 'uploading' 状态停留足够长,可被点击 / 断言。
-        let abort_slow_bytes = pattern.repeat(16);
-        assert_eq!(abort_slow_bytes.len(), 16 * 1024 * 1024);
-        let abort_slow_path = small_dir.join("abort-slow.bin");
-        std::fs::write(&abort_slow_path, &abort_slow_bytes).expect("write abort slow file");
-
-        // 超限文件:20MiB + 1,稀疏。
-        let oversize_path = small_dir.join("oversize.bin");
-        let oversize_file = std::fs::File::create(&oversize_path).expect("create oversize file");
-        oversize_file
-            .set_len(UPLOAD_LIMIT_BYTES + 1)
-            .expect("size oversize file");
-        drop(oversize_file);
-
-        let port = TcpListener::bind("127.0.0.1:0")
-            .expect("bind ephemeral port")
-            .local_addr()
-            .expect("local addr")
-            .port();
-        let child = Command::new("node")
-            .arg("server.js")
-            .current_dir(&relay_dir)
-            .env("PORT", port.to_string())
-            .env("PINVOU_REMOTE_PUBLIC_BASE_PATH", "")
-            .env("HEARTBEAT_INTERVAL_MS", "60000")
-            // 上传 e2e 不测速率限流(由 server-upload-rate-limit.test.js 专门覆盖),
-            // 把窗口调到极大避免真实浏览器多分块被误限。
-            .env("MOBILE_UPLOAD_WINDOW_BYTES", "1073741824")
-            .env("MOBILE_UPLOAD_WINDOW_SECS", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn relay");
-        *relay_child.lock() = Some(child);
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(
-                Instant::now() < deadline,
-                "relay did not start on port {port}"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
-        let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
-        let (sender, download_sender, mut receiver) = relay_client::spawn(
-            relay_ws_url.clone(),
-            room_id.clone(),
-            session_id.clone(),
-            pairing_token.clone(),
-            desktop_secret,
-        );
-        let manager = RemoteControlManager::new_headless();
-        {
-            let mut inner = manager.inner.lock();
-            inner.room = Some(ActiveRoom {
-                room_id: room_id.clone(),
-                session_id: session_id.clone(),
-                url: String::new(),
-                relay_ws_url,
-                status: RemoteControlStatusKind::WaitingMobile,
-                last_error: None,
-                sender,
-                download_sender,
-            });
-        }
-
-        // 分发任务:扮演 handle_mobile_action 中本场景用到的 action 子集。
-        // attach_file_* 调用 manager 内部私有方法(同模块可见);KB/tools/marketplace
-        // 需要 AppHandle,headless 不支持,故不测(由 jsdom e2e + Rust 单测覆盖)。
-        let start_actions = Arc::new(AtomicUsize::new(0));
-        let chunk_actions = Arc::new(AtomicUsize::new(0));
-        let abort_actions = Arc::new(AtomicUsize::new(0));
-        let user_message_actions = Arc::new(AtomicUsize::new(0));
-        let stop_dispatch = Arc::new(AtomicBool::new(false));
-        {
-            let manager = manager.clone();
-            let dispatch_store = store.clone();
-            let start_actions = start_actions.clone();
-            let chunk_actions = chunk_actions.clone();
-            let abort_actions = abort_actions.clone();
-            let user_message_actions = user_message_actions.clone();
-            let stop_dispatch = stop_dispatch.clone();
-            tauri::async_runtime::spawn(async move {
-                while !stop_dispatch.load(Ordering::SeqCst) {
-                    let inbound =
-                        match tokio::time::timeout(Duration::from_millis(100), receiver.recv())
-                            .await
-                        {
-                            Ok(Some(inbound)) => inbound,
-                            Ok(None) => break,
-                            Err(_) => continue,
-                        };
-                    let payload = match inbound {
-                        RelayInbound::MobileAction { payload, .. } => payload,
-                        _ => continue,
-                    };
-                    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let action_payload = payload.get("payload").cloned().unwrap_or(Value::Null);
-                    let sid = manager
-                        .inner
-                        .lock()
-                        .room
-                        .as_ref()
-                        .map(|room| room.session_id.clone())
-                        .unwrap_or_default();
-                    if sid.is_empty() {
-                        continue;
-                    }
-                    match kind {
-                        "attach_file_start" => {
-                            start_actions.fetch_add(1, Ordering::SeqCst);
-                            manager.handle_attach_file_start(&sid, &action_payload);
-                        }
-                        "attach_file_chunk" => {
-                            chunk_actions.fetch_add(1, Ordering::SeqCst);
-                            manager.handle_attach_file_chunk(&action_payload).await;
-                        }
-                        "attach_file_abort" => {
-                            abort_actions.fetch_add(1, Ordering::SeqCst);
-                            manager.handle_attach_file_abort(&sid, &action_payload);
-                        }
-                        "user_message" => {
-                            user_message_actions.fetch_add(1, Ordering::SeqCst);
-                            let content = action_payload
-                                .get("content")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            let attachment_ids = action_payload
-                                .get("attachment_upload_ids")
-                                .and_then(|value| value.as_array())
-                                .map(|values| {
-                                    values
-                                        .iter()
-                                        .filter_map(|value| value.as_str().map(ToString::to_string))
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-                            let _ = manager.dispatch_mobile_user_message(
-                                &sid,
-                                content,
-                                attachment_ids,
-                                None,
-                                &dispatch_store,
-                            );
-                        }
-                        // room 加入后 web 客户端会自动请求 snapshot / session list / chips,
-                        // 必须真实响应,否则 session 面板永远为空,后续步骤全部超时。
-                        "request_snapshot" | "ping" => {
-                            let _ = manager.send_snapshot_with_live_request(&dispatch_store, &sid);
-                        }
-                        "request_session_list" => {
-                            let _ = manager.send_session_list(&dispatch_store, &sid);
-                        }
-                        "request_chips" => {
-                            let _ = manager.send_chips_snapshot(&dispatch_store, &sid);
-                        }
-                        // KB / 工具开关需要 AppHandle,headless 不支持;由 jsdom e2e 覆盖。
-                        "list_kb_collections" | "list_tools" => {}
-                        _ => {}
-                    }
-                }
-            });
-        }
-
-        let params_path = home.join("upload-driver-params.json");
-        let params = json!({
-            "pageUrl": format!("http://127.0.0.1:{port}/r/{room_id}#token={pairing_token}"),
-            "sessionTitle": session.metadata.title,
-            "sessionIdShort": &session_id[..session_id.len().min(6)],
-            "chromeBin": chrome_bin,
-            "smallFilePath": small_path.to_string_lossy(),
-            "smallFileName": "small.txt",
-            "largeFilePath": large_path.to_string_lossy(),
-            "largeFileName": "multi-chunk.bin",
-            "abortSlowFilePath": abort_slow_path.to_string_lossy(),
-            "abortSlowFileName": "abort-slow.bin",
-            "oversizeFilePath": oversize_path.to_string_lossy(),
-            "oversizeFileName": "oversize.bin",
-        });
-        std::fs::write(
-            &params_path,
-            serde_json::to_string_pretty(&params).expect("params json"),
-        )
-        .expect("write driver params");
-
-        let status = Command::new("node")
-            .arg(relay_dir.join("test/real-browser-upload.driver.mjs"))
-            .arg(&params_path)
-            .current_dir(&relay_dir)
-            .stdin(Stdio::null())
-            .status()
-            .expect("spawn real browser upload driver");
-        stop_dispatch.store(true, Ordering::SeqCst);
-        assert!(status.success(), "real browser upload driver failed");
-
-        // 桌面端必须看到:
-        //   small(1) + multi-chunk(1) + abort-slow-retries(>=1) + busy-abort-slow(1) = >=4 attach_file_start
-        //   (oversize 由 mobile 客户端预检拦截,不发 attach_file_start —— 这是客户端
-        //    UPLOAD_LIMIT_BYTES 预检的硬约束,与下载链路同源模式)。
-        //   abort 触发的 attach_file_abort: >=1(driver 重试 + requestAttachFile catch 自身
-        //    发 abort 可能产生多次,只要至少 1 次就证明 abort 链路通了)。
-        let starts = start_actions.load(Ordering::SeqCst);
-        let aborts = abort_actions.load(Ordering::SeqCst);
-        assert!(
-            starts >= 4,
-            "desktop must see at least 4 attach_file_start actions (small + multi-chunk + abort-slow + busy-abort-slow), got {starts}"
-        );
-        assert!(
-            aborts >= 1,
-            "desktop must see at least 1 attach_file_abort, got {aborts}"
-        );
-        assert_eq!(
-            user_message_actions.load(Ordering::SeqCst),
-            2,
-            "browser must submit both groups of ready attachments through user_message"
-        );
-
-        // user_message 已把源文件复制到 session workspace，uploads 临时目录应全部回收。
-        let uploads_root = home.join("uploads");
-        let leaked: Vec<_> = if uploads_root.exists() {
-            std::fs::read_dir(&uploads_root)
-                .map(|it| {
-                    it.filter_map(|e| e.ok())
-                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        assert!(
-            leaked.is_empty(),
-            "成功上传 + abort 后 uploads 目录必须清空(无磁盘泄漏,审查 #2),实际残留: {:?}",
-            leaked.iter().map(|e| e.file_name()).collect::<Vec<_>>()
-        );
-        let stable_dir = store
-            .execution_workspace(&session_id)
-            .expect("session workspace")
-            .join(".pinvou3/remote-attachments");
-        assert_eq!(
-            std::fs::metadata(stable_dir.join("small.txt"))
-                .expect("small stable attachment")
-                .len(),
-            small_bytes.len() as u64
-        );
-        assert_eq!(
-            std::fs::metadata(stable_dir.join("multi-chunk.bin"))
-                .expect("multi-chunk stable attachment")
-                .len(),
-            large_bytes.len() as u64
-        );
-
-        let _ = &guard;
+        let mut by_bytes = Inner::default();
+        by_bytes
+            .web_session_downloads
+            .extend([download("large", MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES - 1)]);
+        assert!(ensure_web_session_download_capacity(&by_bytes, 2).is_err());
+        assert!(by_bytes.web_session_downloads.contains_key("large"));
     }
 }

@@ -8,11 +8,13 @@ import { VllmSetupProgress } from './components/VllmSetupProgress.jsx';
 import { bridge, useBridge } from './hooks/useBridge.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from './shared/i18n.js';
 import { formatSessionDate } from './shared/date-utils.js';
+import { can, isWeb } from './shared/platform.js';
 import { KnowledgeView } from './features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from './features/monitor/MonitorView.jsx';
-import { RemoteControlModal, SettingsView } from './features/settings/SettingsView.jsx';
+import { SettingsView, WebAccessModal } from './features/settings/SettingsView.jsx';
 import { ChatView } from './features/chat/ChatView.jsx';
 import { ScheduledTasksView } from './features/scheduled/ScheduledTasksView.jsx';
+import { WebConnectionStatus } from './features/web/WebConnectionStatus.jsx';
 
 // 临时止血：定时任务创建流程修复前，不向用户暴露入口或自动跳转。
 // 保留后端、数据与页面实现，修复完成后只需恢复此开关。
@@ -102,14 +104,29 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
     const App = () => {
       const bs = useBridge();
+      const [, refreshPlatformCapabilities] = useState(0);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
-      const [activeTheme, setActiveTheme] = useState('dark');
+      const [activeTheme, setActiveTheme] = useState(() => {
+        if (!isWeb) return 'dark';
+        try { return window.localStorage.getItem('pinvou.web.theme') === 'light' ? 'light' : 'dark'; }
+        catch (_) { return 'dark'; }
+      });
       // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
       const activeChatRef = useRef(activeChat);
       activeChatRef.current = activeChat;
       const currentViewRef = useRef(currentView);
       currentViewRef.current = currentView;
+      useEffect(() => {
+        if (!isWeb) return undefined;
+        const refresh = () => refreshPlatformCapabilities(value => value + 1);
+        window.addEventListener('pinvou:web-capabilities', refresh);
+        window.addEventListener('pinvou:web-connection', refresh);
+        return () => {
+          window.removeEventListener('pinvou:web-capabilities', refresh);
+          window.removeEventListener('pinvou:web-connection', refresh);
+        };
+      }, []);
       useEffect(() => {
         const liveBridge = window.TauriBridge || bridge;
         if (!liveBridge || typeof liveBridge.startMonitorPolling !== 'function') return;
@@ -121,9 +138,17 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
-      useEffect(() => { if (bridge.available) bridge.detectLocalVllmSetup(); }, []);
+      useEffect(() => {
+        if (can('localModelSetup') && bridge.available) bridge.detectLocalVllmSetup();
+      }, []);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
-      const [language, setLanguage] = useState('zh');
+      const [language, setLanguage] = useState(() => {
+        if (!isWeb) return 'zh';
+        try {
+          const value = window.localStorage.getItem('pinvou.web.language');
+          return value && dict[value] ? value : 'zh';
+        } catch (_) { return 'zh'; }
+      });
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = !/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
@@ -190,13 +215,14 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         };
       }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+      const canDetachWindows = can('detachWindows');
       const [chatPrefill, setChatPrefill] = useState('');
       const composerPrefillSeenRef = useRef(0);
       const scheduledTaskAutoOpenSeenRef = useRef(null);
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
-      const [remoteOpen, setRemoteOpen] = useState(false);
+      const [webAccessOpen, setWebAccessOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
       const [settingsInitialSection, setSettingsInitialSection] = useState('general');
       const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
@@ -208,6 +234,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
       const dragOffsetRef = useRef({ dx: 0, dy: 0 });
       const beginTearOff = (kind, id, label, info) => {
+        if (!can('detachWindows')) return;
         const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
         if (!inv || !info) return;
         inv('begin_detach_drag', { kind, id: id != null ? id : null });
@@ -237,6 +264,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       }, [!!dragAvatar]);
       // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
+        if (!can('detachWindows')) return undefined;
         if (!window.__TAURI__ || !window.__TAURI__.event) return;
         let un;
         window.__TAURI__.event.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
@@ -245,10 +273,11 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
-      const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+      const hasUpdate = can('appUpdate') && !!(bs && bs.updateInfo && bs.updateInfo.available);
 
-      function handleOpenRemoteControl() {
-        setRemoteOpen(true);
+      function handleOpenWebAccess() {
+        if (!can('webAccessAdmin')) return;
+        setWebAccessOpen(true);
       }
 
       function handleActivateSkill(name) {
@@ -280,13 +309,17 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         }
         // UI 语言/主题:启动时从落盘 settings 恢复一次(此前只写不读,重启即回中文+深色)
         if (!uiPrefsInitRef.current && bs.settings) {
-          const lang = TAG_TO_LANG[bs.settings.language];
-          if (lang && lang !== language) setLanguage(lang);
-          // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
-          bootedLanguageRef.current = lang || 'zh';
-          // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
-          const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
-          if (th !== activeTheme) setActiveTheme(th);
+          if (isWeb) {
+            bootedLanguageRef.current = language;
+          } else {
+            const lang = TAG_TO_LANG[bs.settings.language];
+            if (lang && lang !== language) setLanguage(lang);
+            // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
+            bootedLanguageRef.current = lang || 'zh';
+            // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
+            const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
+            if (th !== activeTheme) setActiveTheme(th);
+          }
           const notifications = bs.settings.notifications || {};
           setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
           uiPrefsInitRef.current = true;
@@ -522,6 +555,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         working: chat.working,
       }));
       useEffect(() => {
+        if (!can('pet')) return undefined;
         const ev = window.__TAURI__ && window.__TAURI__.event;
         if (!ev) return undefined;
         let disposed = false;
@@ -548,12 +582,20 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         }
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
+        closeMobileSidebar();
         return true;
       }
 
       function openSettingsSection(section = 'general') {
         setSettingsInitialSection(section);
         return navigateFromScheduledRun('settings');
+      }
+
+      function closeMobileSidebar() {
+        if (!isWeb || typeof window === 'undefined') return;
+        if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
+          setIsSidebarOpen(false);
+        }
       }
 
       function scheduledRunLabel(value) {
@@ -570,6 +612,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         if (!run || !run.sessionId) return;
         if (!bridge.available || !bridge.openScheduledRunChat) {
           setCurrentView('scheduled');
+          closeMobileSidebar();
           return;
         }
         const task = {
@@ -578,7 +621,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           model: run.taskModel || null,
         };
         const opened = await bridge.openScheduledRunChat(run, task);
-        if (opened) setCurrentView('scheduled');
+        if (opened) {
+          setCurrentView('scheduled');
+          closeMobileSidebar();
+        }
       }
 
       function handleNewChat(installedToolId) {
@@ -591,6 +637,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         }
         if (bridge.available) bridge.createNewSession();
         setCurrentView('chat');
+        closeMobileSidebar();
       }
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
@@ -607,12 +654,14 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         if (!switched) return;
         setActiveChat(id);
         setCurrentView('chat');
+        closeMobileSidebar();
       }
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
       // 完成瞬间若该会话正处于前台聊天视图且窗口有焦点，直接标记已读，
       // 卡片自动消失，不需要用户再去点。
       useEffect(() => {
+        if (!can('pet')) return undefined;
         const tauri = window.__TAURI__;
         const ev = tauri && tauri.event;
         if (!ev) return undefined;
@@ -649,6 +698,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       // 运行中的卡不会被 markSessionViewed 删除；等它完成时，上面的
       // chat:done 监听会再次确认当前画面并完成收尾。
       useEffect(() => {
+        if (!can('pet')) return undefined;
         const ev = window.__TAURI__ && window.__TAURI__.event;
         if (!ev || currentView !== 'chat' || !activeChat) return;
         if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
@@ -659,6 +709,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       }, [currentView, activeChat]);
 
       useEffect(() => {
+        if (!can('pet')) return undefined;
         const tauri = window.__TAURI__;
         const ev = tauri && tauri.event;
         const core = tauri && tauri.core;
@@ -757,6 +808,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       }, []);
 
       useEffect(() => {
+        if (!can('pet')) return undefined;
         const tauri = window.__TAURI__;
         const ev = tauri && tauri.event;
         const core = tauri && tauri.core;
@@ -915,7 +967,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         delete topOverrides.search;
         delete topOverrides.notifications;
         const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
-        const nextLanguage = topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans');
+        const nextLanguage = topOverrides.language !== undefined
+          ? topOverrides.language
+          : (isWeb ? (base.language || 'zh-Hans') : (LANG_TO_TAG[language] || 'zh-Hans'));
         const memoryAvailable = nextLanguage === 'zh-Hans';
         const nextMemoryEnabled = memoryAvailable
           ? (topOverrides.memory_enabled !== undefined ? !!topOverrides.memory_enabled : !!base.memory_enabled)
@@ -925,7 +979,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         return {
           ...base,
           ...topOverrides,
-          theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
+          theme: topOverrides.theme !== undefined
+            ? topOverrides.theme
+            : (isWeb ? (base.theme || 'genesis') : (activeTheme === 'dark' ? 'genesis' : 'liquid-light')),
           language: nextLanguage,
           memory_enabled: nextMemoryEnabled,
           search: searchOverrides ? { ...baseSearch, ...searchOverrides } : baseSearch,
@@ -936,6 +992,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       function handleSetTheme(th) {
         setActiveTheme(th);
+        if (isWeb) {
+          try { window.localStorage.setItem('pinvou.web.theme', th); } catch (_) {}
+          return;
+        }
         if (bridge.available) {
           bridge.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' }));
         }
@@ -980,9 +1040,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       function handleConfirmSearchConfig() {
         if (bridge.available) {
-          bridge.saveSettingsAndRestart(buildFullSettings({
-            search: buildSearchSettingsPayload(),
-          }));
+          const settings = buildFullSettings({ search: buildSearchSettingsPayload() });
+          if (isWeb) bridge.saveSettings(settings);
+          else bridge.saveSettingsAndRestart(settings);
         }
       }
 
@@ -1000,6 +1060,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       function handleSetLanguage(lang) {
         setLanguage(lang);
+        if (isWeb) {
+          try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
+          return;
+        }
         if (bridge.available) {
           const nextLanguage = LANG_TO_TAG[lang] || 'zh-Hans';
           bridge.saveSettings(buildFullSettings({ language: nextLanguage }));
@@ -1008,13 +1072,13 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       function handleSetMemoryEnabled(enabled) {
         if (bridge.available) {
-          const memoryAvailable = (LANG_TO_TAG[language] || 'zh-Hans') === 'zh-Hans';
+          const memoryAvailable = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
           bridge.saveSettings(buildFullSettings({ memory_enabled: memoryAvailable && !!enabled }));
         }
       }
 
       function handleSetPetEnabled(enabled) {
-        if (!bridge.available) return;
+        if (!can('pet') || !bridge.available) return;
         // 单一路径:set_pet_enabled 负责持久化 + 窗口显隐 + 广播
         // pet:enabled_changed(bridge 听到后刷新 settings 副本,防旧值回写)。
         window.__TAURI__.core.invoke('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
@@ -1099,7 +1163,17 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       }
 
       return (
-        <div data-testid="app-root" data-current-view={currentView} className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+        <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
+          className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
+          style={isWeb ? {
+            height: '100dvh',
+            paddingTop: 'env(safe-area-inset-top)',
+            paddingRight: 'env(safe-area-inset-right)',
+            paddingBottom: 'env(safe-area-inset-bottom)',
+            paddingLeft: 'env(safe-area-inset-left)',
+          } : undefined}>
+
+          <WebConnectionStatus theme={activeTheme} />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
           {dragAvatar && (
@@ -1142,12 +1216,21 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             document.body
           )}
 
-          <TitleBar theme={activeTheme} t={t} />
+          {can('desktopChrome') && <TitleBar theme={activeTheme} t={t} />}
 
           <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
+          {isWeb && isSidebarOpen && (
+            <button
+              type="button"
+              aria-label="关闭导航"
+              onClick={() => setIsSidebarOpen(false)}
+              className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
+            />
+          )}
+
           {/* ================= Sidebar (Gemini Style) ================= */}
-          <div className={`${isSidebarOpen ? 'w-[280px]' : 'w-[68px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+          <div data-testid="app-sidebar" className={`${isSidebarOpen ? 'w-[280px] max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:w-[min(84vw,280px)] max-sm:shadow-2xl' : 'w-[68px] max-sm:w-[56px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
             {/* Header / Logo */}
             <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
@@ -1200,7 +1283,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                     if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
                   });
                 }}
-                dragKind="monitor" dragging={!!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
+                dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('monitor', undefined, t.monitor, geom) : undefined}
               />
               <NavItem
                 icon={<Layers size={18} />} label={t.cardPool}
@@ -1208,7 +1291,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                dragKind="cardpool" dragging={!!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={(geom) => beginTearOff('cardpool', undefined, t.cardPool, geom)}
+                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
                 icon={<ClipboardList size={18} />} label={t.workflow}
@@ -1216,7 +1299,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('workflow')}
-                dragKind="workflow" dragging={!!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={(geom) => beginTearOff('workflow', undefined, t.workflow, geom)}
+                dragKind={canDetachWindows ? 'workflow' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('workflow', undefined, t.workflow, geom) : undefined}
               />
               <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
@@ -1224,7 +1307,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('toolStore')}
-                dragKind="toolstore" dragging={!!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={(geom) => beginTearOff('toolstore', undefined, t.toolStore, geom)}
+                dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
               />
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
@@ -1232,7 +1315,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
-                dragKind="knowledge" dragging={!!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={(geom) => beginTearOff('knowledge', undefined, t.knowledge, geom)}
+                dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -1283,10 +1366,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                                 onRename={handleRenameSession}
                                 onDelete={handleDeleteSession}
                                 onTogglePinned={handleToggleSessionPinned}
-                                onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                                onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
                                 onArchive={handleArchiveSession}
-                                dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                                onPickUp={(geom) => beginTearOff('session', chat.id, item.title, geom)}
+                                dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                                onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, item.title, geom)) : undefined}
                               />
                             );
                           })}
@@ -1317,10 +1400,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                             onRename={handleRenameSession}
                             onDelete={handleDeleteSession}
                             onTogglePinned={handleToggleSessionPinned}
-                            onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
                             onArchive={handleArchiveSession}
-                            dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                            onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                            dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                            onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
                           />
                         ))}
                       </div>
@@ -1350,10 +1433,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                               onRename={handleRenameSession}
                               onDelete={handleDeleteSession}
                               onTogglePinned={handleToggleSessionPinned}
-                              onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                              onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
                               onArchive={handleArchiveSession}
-                              dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                              onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                              dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                              onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
                             />
                           ))}
                         </div>
@@ -1368,21 +1451,21 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             <div className={`p-3 mt-auto flex ${isSidebarOpen ? 'flex-row items-center justify-between' : 'flex-col items-center gap-3 pb-6'}`}>
               {!isSidebarOpen && (
                 <>
-                  <button
-                    onClick={handleOpenRemoteControl}
-                    title="手机扫码连接"
+                  {can('webAccessAdmin') && <button
+                    onClick={handleOpenWebAccess}
+                    title="WebUI 访问"
                     className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                   >
-                    <Smartphone size={18} />
-                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                  </button>
-                  <button
+                    <Globe size={18} />
+                    {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>}
+                  {can('pet') && <button
                     onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
                     title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
                     className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                   >
                     <PetPawIcon />
-                  </button>
+                  </button>}
                   <button
                     onClick={() => openSettingsSection('general')}
                     title={t.settings}
@@ -1393,7 +1476,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                   </button>
                 </>
               )}
-              <button
+              {can('externalAuth') && <button
                 onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
                 title={t.megacubeSite}
                 className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
@@ -1402,24 +1485,24 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 {isSidebarOpen && (
                   <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
                 )}
-              </button>
+              </button>}
               {isSidebarOpen && (
                 <div className="flex items-center gap-1">
-                  <button
-                    onClick={handleOpenRemoteControl}
-                    title="手机扫码连接"
+                  {can('webAccessAdmin') && <button
+                    onClick={handleOpenWebAccess}
+                    title="WebUI 访问"
                     className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                   >
-                    <Smartphone size={18} />
-                    {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                  </button>
-                  <button
+                    <Globe size={18} />
+                    {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                  </button>}
+                  {can('pet') && <button
                     onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
                     title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
                     className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                   >
                     <PetPawIcon />
-                  </button>
+                  </button>}
                   <button
                     onClick={() => navigateFromScheduledRun('settings')}
                     title={t.settings}
@@ -1434,7 +1517,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           </div>
 
           {/* ================= Main Content ================= */}
-          <div className={`flex-1 flex flex-col relative min-w-0 overflow-hidden rounded-tl-[24px] ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'}`}>
+          <div data-testid="app-main" className={`flex-1 flex flex-col relative min-w-0 overflow-hidden rounded-tl-[24px] max-sm:rounded-tl-[18px] ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'}`}>
 
             {/* Gemini Style Background Glow */}
             {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
@@ -1502,8 +1585,8 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
-            {remoteOpen && (
-              <RemoteControlModal theme={activeTheme} bs={bs} onClose={() => setRemoteOpen(false)} />
+            {can('webAccessAdmin') && webAccessOpen && (
+              <WebAccessModal theme={activeTheme} bs={bs} onClose={() => setWebAccessOpen(false)} />
             )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
@@ -1533,7 +1616,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             )}
 
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
-            {bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
+            {can('localModelSetup') && bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
                    onClick={() => { if (!bs.vllmBootstrapping) bridge.dismissVllmSetup(); }}>
                 <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
