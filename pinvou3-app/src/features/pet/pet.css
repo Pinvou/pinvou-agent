@@ -26,6 +26,20 @@ html.pet-window #root {
   box-sizing: border-box;
 }
 
+/* 靠近屏幕顶部时把人物放到窗口顶部、活动卡放到人物下方。
+   这样 X11 无需使用会被窗口管理器拒绝的负 y 坐标，人物仍能真正贴顶。 */
+.pet-root.pet-valign-top {
+  justify-content: flex-start;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.pet-root.pet-valign-top .pet-activities {
+  order: 1;
+  margin-top: 2px;
+  margin-bottom: 0;
+}
+
 .pet-root.pet-align-left {
   align-items: flex-start;
   padding-left: 24px;
@@ -47,12 +61,6 @@ html.pet-window #root {
   left: 50%;
   bottom: 0;
   transform-origin: 50% 100%;
-}
-
-/* 拖拽倾斜层:JS 按水平速度直接写 rotate(不走 React state,60fps)。 */
-.pet-tilt {
-  transform-origin: 50% 90%;
-  will-change: transform;
 }
 
 .pet-character {
@@ -652,4 +660,38 @@ html.pet-window #root {
 .pet-activities--collapsed {
   opacity: 0;
   pointer-events: none;
+}
+
+/* 右键菜单:窗口内 DOM 浮层(不再另起透明 webview,规避 GB10 的 malloc 闪退
+   与 GTK 200x200 钳制)。绝对定位于 pet-root，位置在 JS 里已钳进窗口内。 */
+.pet-context-menu {
+  position: absolute;
+  z-index: 50;
+  margin: 0;
+  padding: 0;
+}
+
+.pet-context-menu-item {
+  display: block;
+  min-width: 72px;
+  height: 26px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(20, 24, 31, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(20, 24, 31, 0.15);
+  color: #30343b;
+  font: 12px/1 system-ui, "Microsoft YaHei UI", sans-serif;
+  white-space: nowrap;
+  cursor: default;
+  backdrop-filter: blur(10px);
+}
+
+.pet-context-menu-item:hover,
+.pet-context-menu-item:focus-visible {
+  border-color: #2f3338;
+  outline: 0;
+  background: #2f3338;
+  color: #fff;
 }

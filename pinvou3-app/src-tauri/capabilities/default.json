@@ -5,8 +5,7 @@
   "windows": [
     "main",
     "detached-*",
-    "pet",
-    "pet-menu"
+    "pet"
   ],
   "permissions": [
     "core:default",
