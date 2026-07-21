@@ -143,6 +143,7 @@
     .sheet-head h2 { margin: 0; font-size: 20px; font-weight: 800; }
     #previewTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     #previewClose { flex: 0 0 auto; }
+    .preview-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
     .sheet-body { max-height: calc(84dvh - 66px); overflow: auto; padding: 14px 16px 24px; }
     .sheet-toolbar { padding: 0 0 12px; }
     .sheet-create { width: 100%; min-height: 46px; border-radius: 14px; background: var(--blue); color: #fff; font-weight: 800; }
@@ -345,7 +346,10 @@
       <section class="preview">
         <div class="sheet-head">
           <h2 id="previewTitle">预览</h2>
-          <button class="ghost" id="previewClose">关闭</button>
+          <div class="preview-actions">
+            <button class="ghost" id="previewDownload">下载</button>
+            <button class="ghost" id="previewClose">关闭</button>
+          </div>
         </div>
         <div class="preview-toolbar hidden" id="previewToolbar" aria-label="HTML 预览缩放">
           <button class="preview-zoom-button" id="previewZoomOut" aria-label="缩小预览">−</button>
@@ -495,6 +499,7 @@
       previewTitle: document.getElementById('previewTitle'),
       previewBody: document.getElementById('previewBody'),
       previewClose: document.getElementById('previewClose'),
+      previewDownload: document.getElementById('previewDownload'),
       previewToolbar: document.getElementById('previewToolbar'),
       previewZoomOut: document.getElementById('previewZoomOut'),
       previewZoomFit: document.getElementById('previewZoomFit'),
@@ -547,6 +552,9 @@
       replaced: false,
       terminal: false,
       desktopReconnecting: false,
+      previewArtifact: null,
+      downloads: {},
+      downloadBusy: false,
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -1351,6 +1359,120 @@
       if (path) return sendAction('request_artifact_preview', { artifact_path: path });
       return false;
     }
+    function requestArtifactDownload(artifact) {
+      if (!artifact) return false;
+      const artifactId = artifact.id || artifact.artifact_id || '';
+      const path = artifact.path || artifact.path_tail || artifact.storage_path || artifact.basename || '';
+      if (artifactId) return sendAction('request_artifact_download', { artifact_id: artifactId });
+      if (path) return sendAction('request_artifact_download', { artifact_path: path });
+      return false;
+    }
+    function setDownloadBusy(busy) {
+      state.downloadBusy = busy;
+      if (el.previewDownload) el.previewDownload.disabled = busy;
+    }
+    function startArtifactDownload(p) {
+      if (!p || !p.download_id) return;
+      const name = p.basename || 'artifact';
+      const byteSize = Number(p.byte_size);
+      const totalChunks = Number(p.total_chunks);
+      // 与桌面端 DOWNLOAD_LIMIT_BYTES 对齐,异常 start 直接拒绝,不构造稀疏/超大缓冲。
+      const DOWNLOAD_LIMIT_BYTES = 64 * 1024 * 1024;
+      if (
+        !Number.isInteger(byteSize) || byteSize < 0 || byteSize > DOWNLOAD_LIMIT_BYTES
+        || !Number.isInteger(totalChunks) || totalChunks < 0
+        || totalChunks !== Math.ceil(byteSize / (768 * 1024))
+      ) {
+        setDownloadBusy(false);
+        addSystem(`下载 ${name} 失败：桌面端返回了非法的下载描述。`);
+        return;
+      }
+      const node = document.createElement('div');
+      node.className = 'system';
+      node.textContent = `正在下载 ${name}（${formatSize(byteSize)}）…`;
+      appendToMessages(node);
+      scrollBottom();
+      state.downloads[p.download_id] = {
+        name,
+        mime: p.mime || 'application/octet-stream',
+        size: byteSize,
+        totalChunks,
+        chunks: new Array(totalChunks),
+        received: 0,
+        receivedBytes: 0,
+        node,
+      };
+      setDownloadBusy(true);
+    }
+    function receiveArtifactDownloadChunk(p) {
+      const download = p && state.downloads[p.download_id];
+      if (!download || typeof p.data !== 'string') return;
+      const index = Number(p.index);
+      if (!Number.isInteger(index) || index < 0 || index >= download.totalChunks) return;
+      if (download.chunks[index] !== undefined) return;
+      // 到一块解码一块、立即丢弃 base64,避免 base64(约 4/3 倍)与字节长期并存占内存。
+      let bytes;
+      try {
+        bytes = Uint8Array.from(atob(p.data), c => c.charCodeAt(0));
+      } catch {
+        return;
+      }
+      download.chunks[index] = bytes;
+      download.received += 1;
+      download.receivedBytes += bytes.length;
+      if (download.node && download.totalChunks > 1) {
+        const percent = Math.min(100, Math.round((download.received / download.totalChunks) * 100));
+        download.node.textContent = `正在下载 ${download.name}（${formatSize(download.size)}）… ${percent}%`;
+      }
+    }
+    function finishArtifactDownload(p) {
+      const download = p && state.downloads[p.download_id];
+      if (!download) return;
+      delete state.downloads[p.download_id];
+      setDownloadBusy(false);
+      const fail = reason => {
+        if (download.node) download.node.textContent = `下载 ${download.name} 失败：${reason}`;
+      };
+      if (p.total_chunks !== undefined && Number(p.total_chunks) !== download.totalChunks) {
+        fail('结束消息的分块数与开始不一致。');
+        return;
+      }
+      if (p.byte_size !== undefined && Number(p.byte_size) !== download.size) {
+        fail('结束消息的字节数与开始不一致。');
+        return;
+      }
+      if (download.received !== download.totalChunks) {
+        fail('数据不完整，请重试。');
+        return;
+      }
+      if (download.receivedBytes !== download.size) {
+        fail(`字节数不符（预期 ${download.size}，实际 ${download.receivedBytes}）。`);
+        return;
+      }
+      try {
+        const blob = new Blob(download.chunks, { type: download.mime });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = download.name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        if (download.node) download.node.textContent = `已下载 ${download.name}（${formatSize(download.size)}）。`;
+      } catch (error) {
+        fail((error && error.message) || error);
+      }
+    }
+    function abortArtifactDownloads(reason) {
+      setDownloadBusy(false);
+      const active = Object.values(state.downloads);
+      if (!active.length) return;
+      state.downloads = {};
+      active.forEach(download => {
+        if (download.node) download.node.textContent = `下载 ${download.name} 中断：${reason}`;
+      });
+    }
     function artifactKind(kind, path) {
       const normalized = String(kind || '').trim();
       const lowerKind = normalized.toLowerCase();
@@ -1463,6 +1585,11 @@
     function showPreview(payload) {
       const preview = payload.preview || {};
       const previewName = payload.basename || basename(payload.path_tail) || '预览';
+      state.previewArtifact = {
+        id: payload.artifact_id || '',
+        path: payload.path_tail || '',
+        name: previewName,
+      };
       const markdownByName = /\.(md|markdown)$/i.test(previewName);
       el.previewTitle.textContent = previewName;
       el.previewTitle.title = previewName;
@@ -2285,6 +2412,15 @@
         case 'artifact_preview':
           showPreview(msg.payload || {});
           break;
+        case 'artifact_download_start':
+          startArtifactDownload(msg.payload || {});
+          break;
+        case 'artifact_download_chunk':
+          receiveArtifactDownloadChunk(msg.payload || {});
+          break;
+        case 'artifact_download_end':
+          finishArtifactDownload(msg.payload || {});
+          break;
         case 'chips_snapshot':
           state.chips = msg.payload || {};
           renderChips();
@@ -2405,6 +2541,7 @@
           break;
         case 'error':
           state.creatingSession = false;
+          abortArtifactDownloads('桌面端返回错误。');
           {
             const message = (msg.payload && msg.payload.message) || msg.message || 'unknown';
             if (/room expired|not found|invalid token/i.test(message)) {
@@ -2480,6 +2617,7 @@
       ws.onclose = () => {
         joined = false;
         clearTimeout(joinTimer);
+        abortArtifactDownloads('连接中断，请重试。');
         if (state.replaced || state.terminal) return;
         setStatus('重连中');
         reconnectTimer = setTimeout(connect, 1600);
@@ -2557,6 +2695,17 @@
     el.sheetClose.onclick = closeSheet;
     el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
     el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
+    el.previewDownload.onclick = () => {
+      if (state.downloadBusy) {
+        addSystem('下载进行中，请等待当前下载完成。');
+        return;
+      }
+      if (!requestArtifactDownload(state.previewArtifact)) {
+        addSystem('当前预览没有可下载的产物。');
+        return;
+      }
+      setDownloadBusy(true);
+    };
     el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) el.previewOverlay.classList.add('hidden'); };
     el.previewZoomOut.onclick = () => setPreviewZoom(previewZoom.current - 0.1);
     el.previewZoomFit.onclick = () => setPreviewZoom(previewZoom.fit, true);
