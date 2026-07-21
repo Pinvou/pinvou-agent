@@ -192,7 +192,7 @@
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
     // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
-    vllmSetup: null,          // {eligible, is_megacube, has_packages, vllm_online, already_bootstrapped}, null=未检测
+    vllmSetup: null,          // {eligible, has_packages, vllm_online, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
     vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)
     vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
@@ -4222,14 +4222,26 @@
   }
 
   // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
-  // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。普通机/已配好后端会短路秒回。
+  var vllmSetupPollTimer = null;
+  // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
+  // 开机加载中不弹框，每 3 秒静默复查，直到 ready 或 failed/stopped。
   async function detectLocalVllmSetup() {
+    if (vllmSetupPollTimer) {
+      clearTimeout(vllmSetupPollTimer);
+      vllmSetupPollTimer = null;
+    }
     try {
       state.vllmSetup = await invoke("detect_local_vllm_setup");
     } catch (e) {
       state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
     }
     notify();
+    if (state.vllmSetup && state.vllmSetup.engine_state === 'starting') {
+      vllmSetupPollTimer = setTimeout(function () {
+        vllmSetupPollTimer = null;
+        detectLocalVllmSetup();
+      }, 3000);
+    }
     return state.vllmSetup; // 返回供设置页「检测本机 vLLM」判断 has_packages
   }
   // 用户点「启用」:后端一次 pkexec 拉起引擎+装 systemd 服务,轮询就绪后写模型配置。

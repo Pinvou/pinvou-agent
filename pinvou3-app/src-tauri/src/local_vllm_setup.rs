@@ -2,7 +2,8 @@
 //!
 //! 整机出厂会在 `/opt/.h3c/packages/vllm/` 预装推理引擎容器压缩包 + `models/` 下
 //! 模型压缩包 + `startup.sh` 可执行启动脚本,但开箱后并未拉起。本模块负责:
-//!  1. `detect_local_vllm_setup` —— 首屏检测"预装但未启用"状态(预装齐全+未在线+没引导过 → 弹框)。
+//!  1. `detect_local_vllm_setup` —— 首屏区分 ready / starting / stopped / failed，
+//!     只在真正未启动或启动失败时弹框，避免开机加载模型期间误提示。
 //!  2. `bootstrap_local_vllm` —— 用户点"启用"后,把 startup.sh 装成 systemd 服务拉起引擎+
 //!     开机自启、探到就绪后把本地 vLLM 写进模型配置设为默认。
 //!
@@ -33,6 +34,7 @@ const H3C_VLLM_DIR: &str = "/opt/.h3c/packages/vllm";
 const STARTUP_SH: &str = "/opt/.h3c/packages/vllm/startup.sh";
 const MODELS_DIR: &str = "/opt/.h3c/packages/vllm/models";
 const SERVICE_NAME: &str = "pinvou3-vllm.service";
+const CONTAINER_NAME: &str = "pinvou3-vllm-sim";
 const PRODUCT_NAME_PATH: &str = "/sys/class/dmi/id/product_name";
 const VLLM_PORTS: [u16; 3] = [8000, 8001, 8002];
 /// 探到在线但 /v1/models 没回模型名时的兜底(正常 vLLM 一定有 served name,极少用到)。
@@ -40,13 +42,24 @@ const FALLBACK_MODEL: &str = "qwen36_35b_256k";
 /// 引导成功后写入的固定模型 id(再次引导按 id upsert,幂等)。
 const BOOTSTRAP_MODEL_ID: &str = "local-vllm-megacube";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalVllmEngineState {
+    Ready,
+    Starting,
+    Stopped,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalVllmSetupStatus {
-    /// eligible:预装包齐全 + 本地 vLLM 未在线 + 没成功跑过引导。机型仅作诊断,不进门槛。
+    /// eligible:预装包齐全 + 引擎确实停止/失败 + 没成功跑过引导。
+    /// 机型仅作诊断,不进门槛。
     pub eligible: bool,
     pub is_megacube: bool,
     pub has_packages: bool,
     pub vllm_online: bool,
+    pub engine_state: LocalVllmEngineState,
     pub already_bootstrapped: bool,
 }
 
@@ -124,6 +137,89 @@ async fn probe_online() -> Option<(String, Option<String>)> {
     None
 }
 
+#[derive(Debug, Default)]
+struct RuntimeSnapshot {
+    container_status: Option<String>,
+    service_load: Option<String>,
+    service_active: Option<String>,
+    service_sub: Option<String>,
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn runtime_snapshot() -> RuntimeSnapshot {
+    let container_status = command_stdout(
+        "docker",
+        &["inspect", "--format={{.State.Status}}", CONTAINER_NAME],
+    )
+    .filter(|s| !s.is_empty());
+
+    let mut snapshot = RuntimeSnapshot {
+        container_status,
+        ..RuntimeSnapshot::default()
+    };
+    if let Some(raw) = command_stdout(
+        "systemctl",
+        &[
+            "show",
+            SERVICE_NAME,
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--property=SubState",
+        ],
+    ) {
+        for line in raw.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = (!value.is_empty()).then(|| value.to_string());
+            match key {
+                "LoadState" => snapshot.service_load = value,
+                "ActiveState" => snapshot.service_active = value,
+                "SubState" => snapshot.service_sub = value,
+                _ => {}
+            }
+        }
+    }
+    snapshot
+}
+
+fn classify_runtime_state(snapshot: &RuntimeSnapshot) -> LocalVllmEngineState {
+    match snapshot.container_status.as_deref() {
+        Some("running" | "restarting" | "created") => return LocalVllmEngineState::Starting,
+        Some("exited" | "dead" | "removing" | "paused") => {
+            return LocalVllmEngineState::Failed;
+        }
+        _ => {}
+    }
+
+    match snapshot.service_active.as_deref() {
+        Some("activating") => LocalVllmEngineState::Starting,
+        Some("failed") => LocalVllmEngineState::Failed,
+        // oneshot + RemainAfterExit 会在容器退出后仍 active(exited)，不能当成启动中。
+        Some("active") if snapshot.service_sub.as_deref() == Some("exited") => {
+            LocalVllmEngineState::Failed
+        }
+        Some("active") => LocalVllmEngineState::Starting,
+        _ => LocalVllmEngineState::Stopped,
+    }
+}
+
+async fn detect_engine_state() -> LocalVllmEngineState {
+    if probe_online().await.is_some() {
+        return LocalVllmEngineState::Ready;
+    }
+    tokio::task::spawn_blocking(|| classify_runtime_state(&runtime_snapshot()))
+        .await
+        .unwrap_or(LocalVllmEngineState::Stopped)
+}
+
 fn systemd_unit() -> String {
     format!(
         "[Unit]\n\
@@ -142,6 +238,15 @@ fn systemd_unit() -> String {
     )
 }
 
+fn privileged_start_script() -> &'static str {
+    "set -e\n\
+     chmod +x /opt/.h3c/packages/vllm/startup.sh\n\
+     install -m 0644 -o root -g root \"$1\" /etc/systemd/system/pinvou3-vllm.service\n\
+     systemctl daemon-reload\n\
+     systemctl enable pinvou3-vllm.service\n\
+     systemctl restart pinvou3-vllm.service"
+}
+
 /// 跑 pkexec 并捕获输出(失败时把 stderr 带回前端)。
 /// 退出码约定同 super_permission:126 用户取消 / 127 未授权或 pkexec 不可用。
 fn run_pkexec_capture(args: &[&str]) -> Result<(), String> {
@@ -156,12 +261,13 @@ fn run_pkexec_capture(args: &[&str]) -> Result<(), String> {
     let stderr = String::from_utf8_lossy(&out.stderr);
     Err(match code {
         126 => "用户取消了授权".to_string(),
-        127 => "未授权或 pkexec 不可用".to_string(),
+        127 => "系统授权失败，或当前会话无法显示授权框 (pkexec exit 127)".to_string(),
         _ => format!("启动脚本执行失败 (exit {code}): {}", stderr.trim()),
     })
 }
 
-/// 首屏检测:预装齐全 + 本地 vLLM 未在线 + 没成功引导过 + 没婉拒过 → eligible(前端据此弹引导框)。
+/// 首屏检测:预装齐全 + 引擎 stopped/failed + 没成功引导过 + 没婉拒过
+/// → eligible(前端据此弹引导框)。starting 时只后台等待，不误弹框。
 ///
 /// 机型不再作硬门槛——`/opt/.h3c/packages/vllm` 这套预装是 H3C 出厂镜像独有的强凭据,比 DMI
 /// product_name 可靠(同型号不同批次 DMI 串都不一样)。`is_megacube` 仍回填供诊断。
@@ -175,19 +281,24 @@ pub async fn detect_local_vllm_setup() -> Result<LocalVllmSetupStatus, String> {
     let already_bootstrapped = prefs.advanced.local_vllm_bootstrapped;
     let declined = prefs.advanced.local_vllm_setup_declined;
 
-    let worth_probing = has_packages && !already_bootstrapped && !declined;
-    let vllm_online = if worth_probing {
-        probe_online().await.is_some()
+    let engine_state = if has_packages {
+        detect_engine_state().await
     } else {
-        false
+        LocalVllmEngineState::Stopped
     };
-    let eligible = has_packages && !vllm_online && !already_bootstrapped && !declined;
+    let vllm_online = engine_state == LocalVllmEngineState::Ready;
+    let can_offer_start = matches!(
+        engine_state,
+        LocalVllmEngineState::Stopped | LocalVllmEngineState::Failed
+    );
+    let eligible = has_packages && can_offer_start && !already_bootstrapped && !declined;
 
     Ok(LocalVllmSetupStatus {
         eligible,
         is_megacube,
         has_packages,
         vllm_online,
+        engine_state,
         already_bootstrapped,
     })
 }
@@ -202,7 +313,8 @@ pub fn decline_local_vllm_setup() -> Result<(), String> {
     Ok(())
 }
 
-/// 用户点"启用"后执行:把预装 startup.sh 装成 systemd 服务(一次 pkexec、enable --now)
+/// 用户点"启用"后执行:弹 pkexec 系统授权框，把预装 startup.sh 装成
+/// systemd 服务并 restart（已是 active(exited) 也会真正重跑）
 /// → 轮询就绪 → 写模型配置设默认 + 置 bootstrapped 标记。
 ///
 /// 全程发 `vllm-setup:phase` 事件(authorizing → waiting{attempt} → ready),
@@ -214,34 +326,59 @@ pub async fn bootstrap_local_vllm(app: tauri::AppHandle) -> Result<BootstrapResu
         return Err("未找到完整的本地大模型预装包(startup.sh / 引擎包 / models)。".to_string());
     }
 
-    // 2. 写 systemd 单元到临时文件(用户态),交 pkexec 用 install 提权落到系统路径。
-    //    预装 startup.sh 本身就是可执行启动脚本,直接当 ExecStart——不再解析/转写,也不生成中间脚本。
-    //    `cd` 由 systemd WorkingDirectory 提供;shebang / `set -euo pipefail` 由 startup.sh 自带。
-    let tmp_unit = std::env::temp_dir().join("pinvou3-vllm.service");
-    std::fs::write(&tmp_unit, systemd_unit()).map_err(|e| format!("写服务单元失败: {e}"))?;
+    // 2. 点击与执行之间再校验一次。若引擎已被开机服务拉起，直接接管等待，
+    //    不用授权后的 restart 打断正在加载的模型。只有确认 stopped/failed 才弹系统授权框。
+    let already_online = probe_online().await;
+    if already_online.is_none() {
+        let runtime_state =
+            tokio::task::spawn_blocking(|| classify_runtime_state(&runtime_snapshot()))
+                .await
+                .unwrap_or(LocalVllmEngineState::Stopped);
+        if matches!(
+            runtime_state,
+            LocalVllmEngineState::Stopped | LocalVllmEngineState::Failed
+        ) {
+            // 写 systemd 单元到临时文件(用户态),交 pkexec 用 install 提权落到系统路径。
+            let tmp_unit = std::env::temp_dir().join("pinvou3-vllm.service");
+            std::fs::write(&tmp_unit, systemd_unit())
+                .map_err(|e| format!("写服务单元失败: {e}"))?;
 
-    // 3. 一次 pkexec:给 startup.sh 加可执行位 + 装单元 → daemon-reload → enable --now(现在拉起 + 开机自启)。
-    //    pkexec 同步阻塞(含密码框 + docker load 大镜像),期间前端靠自跑计时显示「在动」。
-    let _ = app.emit(PHASE_EVENT, serde_json::json!({ "phase": "authorizing", "attempt": 0 }));
-    let script = "set -e\n\
-        chmod +x /opt/.h3c/packages/vllm/startup.sh\n\
-        install -m 0644 -o root -g root \"$1\" /etc/systemd/system/pinvou3-vllm.service\n\
-        systemctl daemon-reload\n\
-        systemctl enable --now pinvou3-vllm.service";
-    let tu = tmp_unit.to_string_lossy().to_string();
-    run_pkexec_capture(&["bash", "-c", script, "pinvou3", &tu])?;
-    let _ = std::fs::remove_file(&tmp_unit);
+            // 事先发 authorizing，前端先显示「等待系统授权」，紧接着由 pkexec 弹系统框。
+            // enable 和 restart 分开：restart 可确保 oneshot 处于 active(exited) 时也重跑。
+            let _ = app.emit(
+                PHASE_EVENT,
+                serde_json::json!({ "phase": "authorizing", "attempt": 0 }),
+            );
+            let tu = tmp_unit.to_string_lossy().to_string();
+            let auth_result =
+                run_pkexec_capture(&["bash", "-c", privileged_start_script(), "pinvou3", &tu]);
+            let _ = std::fs::remove_file(&tmp_unit);
+            auth_result?;
+        }
+    }
 
     // 4. 健康轮询,每轮发 waiting{attempt} 事件。
     //    超时给 10 分钟:113 真机实测 GB10 NVFP4 首启 ~5-6min(权重 117s + torch.compile 33s
     //    + flashinfer autotune + cudagraph capture),5 分钟会刚好误杀;二次启动有
     //    ~/.cache/vllm 编译/autotune 缓存会快很多,故 600s 仅首启用得满。
-    let _ = app.emit(PHASE_EVENT, serde_json::json!({ "phase": "waiting", "attempt": 0 }));
+    let _ = app.emit(
+        PHASE_EVENT,
+        serde_json::json!({ "phase": "waiting", "attempt": 0 }),
+    );
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut attempt: u32 = 0;
     let (base_url, served) = loop {
-        if let Some(found) = probe_online().await {
+        if let Some(found) = already_online.clone().or(probe_online().await) {
             break found;
+        }
+        let runtime_state =
+            tokio::task::spawn_blocking(|| classify_runtime_state(&runtime_snapshot()))
+                .await
+                .unwrap_or(LocalVllmEngineState::Stopped);
+        if runtime_state == LocalVllmEngineState::Failed {
+            return Err(format!(
+                "推理引擎启动后已退出。可重试，或终端查看 `docker logs {CONTAINER_NAME}`。"
+            ));
         }
         if Instant::now() >= deadline {
             return Err(format!(
@@ -249,10 +386,16 @@ pub async fn bootstrap_local_vllm(app: tauri::AppHandle) -> Result<BootstrapResu
             ));
         }
         attempt += 1;
-        let _ = app.emit(PHASE_EVENT, serde_json::json!({ "phase": "waiting", "attempt": attempt }));
+        let _ = app.emit(
+            PHASE_EVENT,
+            serde_json::json!({ "phase": "waiting", "attempt": attempt }),
+        );
         tokio::time::sleep(Duration::from_secs(3)).await;
     };
-    let _ = app.emit(PHASE_EVENT, serde_json::json!({ "phase": "ready", "attempt": attempt }));
+    let _ = app.emit(
+        PHASE_EVENT,
+        serde_json::json!({ "phase": "ready", "attempt": attempt }),
+    );
     let model = served.unwrap_or_else(|| FALLBACK_MODEL.to_string());
 
     // 5. 写模型配置 + 设默认 + 置标记。
@@ -274,7 +417,9 @@ pub async fn bootstrap_local_vllm(app: tauri::AppHandle) -> Result<BootstrapResu
     });
     prefs.advanced.active_model_id = Some(BOOTSTRAP_MODEL_ID.to_string());
     prefs.advanced.local_vllm_bootstrapped = true;
-    prefs.save().map_err(|e| format!("保存模型配置失败: {e:?}"))?;
+    prefs
+        .save()
+        .map_err(|e| format!("保存模型配置失败: {e:?}"))?;
 
     Ok(BootstrapResult { base_url, model })
 }
@@ -303,5 +448,52 @@ mod tests {
         assert!(u.contains("RemainAfterExit=yes"));
         assert!(u.contains("ExecStart=/opt/.h3c/packages/vllm/startup.sh"));
         assert!(u.contains("WantedBy=multi-user.target"));
+    }
+
+    #[test]
+    fn runtime_state_distinguishes_loading_stopped_and_failed() {
+        let running = RuntimeSnapshot {
+            container_status: Some("running".into()),
+            service_active: Some("active".into()),
+            service_sub: Some("exited".into()),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&running),
+            LocalVllmEngineState::Starting
+        );
+
+        let activating = RuntimeSnapshot {
+            service_active: Some("activating".into()),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&activating),
+            LocalVllmEngineState::Starting
+        );
+
+        let stale_oneshot = RuntimeSnapshot {
+            container_status: Some("exited".into()),
+            service_active: Some("active".into()),
+            service_sub: Some("exited".into()),
+            ..RuntimeSnapshot::default()
+        };
+        assert_eq!(
+            classify_runtime_state(&stale_oneshot),
+            LocalVllmEngineState::Failed
+        );
+
+        assert_eq!(
+            classify_runtime_state(&RuntimeSnapshot::default()),
+            LocalVllmEngineState::Stopped
+        );
+    }
+
+    #[test]
+    fn privileged_start_always_restarts_existing_oneshot() {
+        let script = privileged_start_script();
+        assert!(script.contains("systemctl enable pinvou3-vllm.service"));
+        assert!(script.contains("systemctl restart pinvou3-vllm.service"));
+        assert!(!script.contains("enable --now"));
     }
 }
