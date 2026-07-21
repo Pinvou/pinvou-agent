@@ -72,6 +72,24 @@ function loadBuiltinSecrets({
   return { loaded, missing, secretsPath };
 }
 
+function stageWindowsRuntime({ environment = process.env } = {}) {
+  if (process.platform !== "win32") {
+    return null;
+  }
+
+  const scriptPath = path.resolve(__dirname, "prepare-windows-runtimes.ps1");
+  const child = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    { cwd: path.resolve(__dirname, ".."), env: environment, stdio: "inherit" },
+  );
+  if (child.error) throw child.error;
+  if (child.status !== 0) {
+    throw new Error(`Windows 私有运行时解析/staging 失败（退出码 ${child.status ?? "unknown"}）。`);
+  }
+  return path.resolve(__dirname, "..", "src-tauri", "tauri.windows-runtime.generated.conf.json");
+}
+
 function main() {
   const args = process.argv.slice(2);
   const validateOnly = args[0] === "--validate-only";
@@ -84,6 +102,13 @@ function main() {
     console.log(`[build] 已加载并校验 ${result.loaded.length} 项内置 MCP 密钥。`);
   }
   if (validateOnly) return;
+
+  if (args[0] === "build" || args[0] === "bundle") {
+    const runtimeConfig = stageWindowsRuntime();
+    if (runtimeConfig && !args.includes("--config")) {
+      args.push("--config", runtimeConfig);
+    }
+  }
 
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
   const child = spawnSync(process.execPath, [tauriCli, ...args], {
@@ -104,4 +129,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { REQUIRED_SECRET_NAMES, loadBuiltinSecrets, parseEnvFile };
+module.exports = { REQUIRED_SECRET_NAMES, loadBuiltinSecrets, parseEnvFile, stageWindowsRuntime };

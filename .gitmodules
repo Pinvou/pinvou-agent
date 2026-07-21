@@ -2,3 +2,6 @@
 	path = DeepSeek-TUI
 	url = https://github.com/h3c-hexin/DeepSeek-TUI.git
 	branch = pinvou3-clean
+[submodule "private-runtimes/windows"]
+	path = private-runtimes/windows
+	url = https://github.com/Pinvou/pinvou3-windows-runtime.git
