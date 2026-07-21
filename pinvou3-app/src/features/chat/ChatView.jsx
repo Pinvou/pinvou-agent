@@ -7,6 +7,7 @@ import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../pe
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 
@@ -219,7 +220,18 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
-      const [inputText, setInputText] = useState('');
+      const [inputText, setInputTextState] = useState('');
+      const [inputLimitReached, setInputLimitReached] = useState(false);
+      const inputTextRef = useRef('');
+      const setInputText = useCallback((valueOrUpdater) => {
+        const rawValue = typeof valueOrUpdater === 'function'
+          ? valueOrUpdater(inputTextRef.current)
+          : valueOrUpdater;
+        const constrained = constrainChatInput(rawValue);
+        inputTextRef.current = constrained.text;
+        setInputTextState(constrained.text);
+        setInputLimitReached(constrained.limitReached);
+      }, []);
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
       const ART_MIN = 360, CHAT_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
@@ -531,7 +543,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       function handleSend() {
         // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (!canSend) return;
-        if (bridge.available) bridge.sendMessage(inputText.trim());
+        const constrained = constrainChatInput(inputText);
+        if (constrained.truncated) {
+          setInputText(constrained.text);
+          return;
+        }
+        if (bridge.available) bridge.sendMessage(constrained.text.trim());
         setInputText('');
       }
 
@@ -933,11 +950,18 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
+                maxLength={CHAT_INPUT_MAX_LENGTH}
                 placeholder={t.placeholder}
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
+              {inputLimitReached && (
+                <div role="status" aria-live="polite" data-testid="chat-input-limit-notice"
+                  className={`px-1 pb-1 text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+                  {t.chatInputLimitReached(CHAT_INPUT_MAX_LENGTH.toLocaleString())}
+                </div>
+              )}
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}

@@ -154,6 +154,7 @@ const dict = {
         feedbackBodyRequired: '请填写反馈说明。', feedbackUnsupportedFile: '附件格式不支持。',
         feedbackTooManyFiles: '最多只能上传 5 个附件。', feedbackPickUnavailable: '当前环境无法打开文件选择器。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
+        chatInputLimitReached: n => `已达到 ${n} 字符上限，无法继续输入。`,
         searchPlaceholder: 'Search chats',
         // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
         cpSubtitle: '专家能力卡组',
@@ -429,6 +430,7 @@ const dict = {
         feedbackBodyRequired: 'Please enter feedback details.', feedbackUnsupportedFile: 'Unsupported attachment format.',
         feedbackTooManyFiles: 'You can attach up to 5 files.', feedbackPickUnavailable: 'File picker is unavailable.',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
+        chatInputLimitReached: n => `The ${n}-character limit has been reached.`,
         searchPlaceholder: 'Search chats',
         // —— Card Pool (cp*) ——
         cpSubtitle: 'Expert Capability Deck',
@@ -703,6 +705,7 @@ const dict = {
         feedbackBodyRequired: '内容を入力してください。', feedbackUnsupportedFile: '対応していない添付形式です。',
         feedbackTooManyFiles: '添付は最大 5 件です。', feedbackPickUnavailable: 'ファイル選択を利用できません。',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
+        chatInputLimitReached: n => `${n} 文字の上限に達しました。これ以上入力できません。`,
         searchPlaceholder: 'チャットを検索',
         // —— カードプール (cp*) ——
         cpSubtitle: 'エキスパートデッキ',
