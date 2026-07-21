@@ -7,6 +7,7 @@ import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
+import { visibleUserModels } from '../../shared/model-options.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
 import { notifyComposerToolsChanged } from '../tools/tool-events.js';
 import deepseekIcon from '../../brand-icons/deepseek.svg';
@@ -601,7 +602,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 聊天输入框上方:当前会话模型 chip + 下拉热切。
     const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = visibleSortedModels((bs && bs.savedModels) || [], bs);
+      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -654,7 +655,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
-      const savedModels = visibleSortedModels((bs && bs.savedModels) || [], bs);
+      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeModelId = bs && bs.activeModelId;
       const currentSessionModelId = bs && bs.currentSessionModelId;
@@ -1277,8 +1278,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         );
       }
       return (
-        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
-          <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
+        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
+          <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
             className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
@@ -1418,7 +1419,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               )}
             </div>
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
-              <button onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cpCancel}</button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cpCancel}</button>
               <button onClick={doSave} disabled={!canSave}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{t.modelSaveBtn}</button>
             </div>

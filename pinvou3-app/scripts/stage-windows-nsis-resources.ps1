@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $appRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $tauriRoot = Join-Path $appRoot "src-tauri"
 $configPath = Join-Path $tauriRoot "tauri.conf.json"
+$runtimeConfigPath = Join-Path $tauriRoot "tauri.windows-runtime.generated.conf.json"
 $releaseRoot = Join-Path $tauriRoot "target\release"
 $mainBinaryPath = Join-Path $releaseRoot "pinvou3-tauri.exe"
 $stagingRoot = Join-Path $releaseRoot "nsis-stage"
@@ -92,7 +93,12 @@ if (-not (Test-Path -LiteralPath $mainBinaryPath -PathType Leaf)) {
 
 $configJson = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8)
 $config = ConvertFrom-Json -InputObject $configJson
-$resourceProperties = @($config.bundle.resources.PSObject.Properties)
+if (-not (Test-Path -LiteralPath $runtimeConfigPath -PathType Leaf)) {
+  throw "Windows runtime staging config is missing. Run scripts/prepare-windows-runtimes.ps1 first: $runtimeConfigPath"
+}
+$runtimeConfigJson = [System.IO.File]::ReadAllText($runtimeConfigPath, [System.Text.Encoding]::UTF8)
+$runtimeConfig = ConvertFrom-Json -InputObject $runtimeConfigJson
+$resourceProperties = @($config.bundle.resources.PSObject.Properties) + @($runtimeConfig.bundle.resources.PSObject.Properties)
 if ($resourceProperties.Count -eq 0) {
   throw "No bundle.resources mappings were found in $configPath"
 }
