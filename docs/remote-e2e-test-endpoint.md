@@ -32,8 +32,9 @@ relay 主机  root@47.120.8.237
 
 **隧道权限收敛**：隧道不再使用 `admin` 账号。代理侧有专用低权限账号 `relay-tunnel`
 （nologin shell，无 sudo），其 `authorized_keys` 仅一行，options 为
-`restrict,permitlisten="127.0.0.1:8788"`——即使 relay 主机 root 或隧道私钥泄露，
-也只能建立这一个回环反向转发，无法在代理机执行任何命令或转发其他端口。
+`no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten="127.0.0.1:8788"`
+——即使 relay 主机 root 或隧道私钥泄露，也只能建立这一个回环反向转发，
+无法在代理机执行任何命令或转发其他端口。
 
 与生产的关系：
 
@@ -120,14 +121,24 @@ pinvou3-tauri        # 或 ./pinvou3-app/run-dev.sh 调试构建
    （表现为 `Connection refused`）。部署脚本启动隧道前会先 `unbanip` 兜底；手工排查时用
    `sudo fail2ban-client status sshd` 确认。
 2. **隧道 key 权限**：用专用账号 `relay-tunnel`（nologin shell）+ options
-   `restrict,permitlisten="127.0.0.1:8788"`。注意 options 里**不能写 `permitopen="none"`**——
-   语法非法会让 sshd 忽略整条 key（`Server accepts key` 都没有），随后触发上面第 1 条的
-   fail2ban 连锁。`restrict` 与 `permitlisten` 组合是合法且收敛的写法（2026-07-20 实测）。
-3. **密钥轮换**：relay 侧隧道私钥在 `/root/.ssh/id_ed25519_relay_test_tunnel`，重新生成后
-   只需重跑部署脚本——代理侧按 comment 整行原子替换 authorized_keys，旧公钥自动失效。
-4. 改代理 nginx 只有 `nginx -t` 通过才 reload；脚本改 `sites-enabled/pinvou` 前会自动备份
+   `no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten="127.0.0.1:8788"`。
+   两个坑：options 里**不能写 `permitopen="none"`**——语法非法会让 sshd 忽略整条 key
+   （2026-07-20 实测）；也**不能用 `restrict` 替代显式 no-\* 列表**——`restrict` 会置
+   `no_port_forwarding` 把转发整体禁用，`permitlisten` 只是转发被允许时的白名单，
+   两者组合 = 全部转发被拒（OpenSSH 9.6p1 实测报 `Server has disabled port forwarding`，
+   2026-07-21 踩坑）。
+3. **新建系统账号默认是锁定的**：`useradd` 出来的账号 shadow 为 `!`，sshd 按
+   "account is locked" 拒绝**包括 pubkey 在内**的一切登录——隧道重启风暴随即触发 fail2ban
+   封 IP（2026-07-21 实测踩坑）。必须 `usermod -p '*'`：密码登录不可用但账号不算锁定，
+   pubkey 可正常认证。脚本已内置此步骤。
+4. **密钥轮换**：relay 侧隧道私钥在 `/root/.ssh/id_ed25519_relay_test_tunnel`，重新生成后
+   只需重跑部署脚本——`relay-tunnel` 是脚本全权管理的专用账号，其 authorized_keys 每次
+   原子重写为恰好一行，旧公钥/历史错位行自动失效。
+   （实现细节：ssh 会把命令参数拼接成一个字符串交给远端 shell 重新分词，含空格的参数
+   如公钥必须二次引用——脚本用 `shq` 统一处理，否则 authorized_keys 会写入错位行。）
+5. 改代理 nginx 只有 `nginx -t` 通过才 reload；脚本改 `sites-enabled/pinvou` 前会自动备份
    （`pinvou.bak-*`），snippet 更新走 `.new` 暂存 + 原子替换，验证失败自动恢复旧配置。
-5. 测试端点是**公网可达**的，依赖 pairing token 鉴权（与生产同模型）；不要用它挂长期敏感会话，
+6. 测试端点是**公网可达**的，依赖 pairing token 鉴权（与生产同模型）；不要用它挂长期敏感会话，
    测完敏感数据随手 `--teardown` 或换 QR。
 
 ## 服务器变更登记（2026-07-20 首次落地；2026-07-21 评审后收敛）

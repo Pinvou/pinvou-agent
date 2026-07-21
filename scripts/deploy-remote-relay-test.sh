@@ -34,7 +34,8 @@
 #   BASE_PATH      /pinvou3/remote-test
 #   PUBLIC_URL     https://pinvou.com/pinvou3/remote-test
 #   SKIP_LOCAL_TESTS=1                   跳过本地 npm test(默认会跑)
-set -euo pipefail
+# 注:必须带 -E,否则函数+heredoc 调用失败时 ERR trap 不触发(错误路径无阶段报告)。
+set -eEuo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RELAY_DIR="$ROOT/remote-control-relay"
@@ -99,10 +100,16 @@ validate_config() {
 relay_ssh() { ssh -i "$SSH_KEY" "$RELAY_SERVER" "$@"; }
 proxy_ssh() { ssh -i "$SSH_KEY" "$PROXY_SERVER" "$@"; }
 
+# ssh 会把所有命令参数用空格拼接成一个字符串,交给远端登录 shell 重新分词——
+# 含空格的参数(如公钥)若不按远端 shell 语法二次引用,会被拆散(2026-07-21 实测踩坑:
+# 公钥被拆成 3 个参数,authorized_keys 写入错位行)。shq 做 POSIX 安全单引号引用。
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+shq_all() { local out="" a; for a in "$@"; do out="$out $(shq "$a")"; done; printf '%s' "${out# }"; }
+
 teardown() {
   echo "── 拆除测试端点 ──"
   STAGE="拆除 relay 主机侧资源"
-  relay_ssh bash -s -- "$TEST_DIR" "$SERVICE" "$TUNNEL_SERVICE" <<'REMOTE'
+  relay_ssh "bash -s -- $(shq_all "$TEST_DIR" "$SERVICE" "$TUNNEL_SERVICE")" <<'REMOTE'
 set -euo pipefail
 test_dir="$1"; service="$2"; tunnel_service="$3"
 # 远端二次校验:任何删除动作之前,确认 test_dir 是预期的测试目录(防 env 覆盖导致 rm -rf 误伤)。
@@ -119,7 +126,7 @@ systemctl daemon-reload
 echo "relay 主机:已移除测试实例与隧道"
 REMOTE
   STAGE="拆除代理侧资源"
-  proxy_ssh bash -s -- "$NGINX_SNIPPET" "$NGINX_SITE" "$TUNNEL_KEY_COMMENT" "$TUNNEL_USER" <<'REMOTE'
+  proxy_ssh "bash -s -- $(shq_all "$NGINX_SNIPPET" "$NGINX_SITE" "$TUNNEL_KEY_COMMENT" "$TUNNEL_USER")" <<'REMOTE'
 set -euo pipefail
 snippet="$1"; site="$2"; key_comment="$3"; tunnel_user="$4"
 sudo cp -a "$site" "$site.bak-teardown-$(date +%Y%m%d-%H%M%S)"
@@ -171,7 +178,7 @@ scp -i "$SSH_KEY" "$RELAY_DIR/web/index.html" "$RELAY_DIR/web/stats.html" \
 
 STAGE="配置并重启测试 relay 实例(端口 $TEST_PORT,含失败回滚)"
 echo "── 配置并重启测试 relay 实例(端口 $TEST_PORT) ──"
-relay_ssh bash -s -- "$TEST_DIR" "$TEST_PORT" "$BASE_PATH" "$SERVICE" "$PROXY_SERVER" <<'REMOTE'
+relay_ssh "bash -s -- $(shq_all "$TEST_DIR" "$TEST_PORT" "$BASE_PATH" "$SERVICE" "$PROXY_SERVER")" <<'REMOTE'
 set -euo pipefail
 test_dir="$1"; port="$2"; base_path="$3"; service="$4"; proxy_server="$5"
 proxy_ip="${proxy_server#*@}"
@@ -241,36 +248,41 @@ REMOTE
 TUNNEL_PUBKEY="$(relay_ssh 'cat /root/.ssh/id_ed25519_relay_test_tunnel.pub')"
 
 STAGE="代理侧隧道账号与 authorized_keys(原子替换,支持密钥轮换)"
-# 权限收敛:专用低权限账号 relay-tunnel(nologin shell)+ restrict,permitlisten,
+# 权限收敛:专用低权限账号 relay-tunnel(nologin shell)+ options 白名单,
 # 私钥即使泄露也只能建立指定端口的回环反向转发,无法在代理机执行命令。
-# 注意:options 里绝不能写 permitopen="none"(语法非法会导致整条 key 被 sshd 忽略,
-# 认证失败后服务重启风暴会触发 fail2ban 封 IP —— 2026-07-20 实测踩坑)。
-proxy_ssh bash -s -- "$TUNNEL_USER" "$TUNNEL_PUBKEY" "$TEST_PORT" "$TUNNEL_KEY_COMMENT" <<'REMOTE'
+# 注意 1:options 里绝不能写 permitopen="none"(语法非法会导致整条 key 被 sshd 忽略,
+#   认证失败后服务重启风暴会触发 fail2ban 封 IP —— 2026-07-20 实测踩坑)。
+# 注意 2:不能用 restrict 替代显式 no-* 列表 —— restrict 会置 no_port_forwarding,
+#   把转发整体禁用,permitlisten 只是转发被允许时的白名单,两者组合 = 全部转发被拒
+#   (OpenSSH 9.6p1 实测:Server has disabled port forwarding,2026-07-21 踩坑)。
+proxy_ssh "bash -s -- $(shq_all "$TUNNEL_USER" "$TUNNEL_PUBKEY" "$TEST_PORT" "$TUNNEL_KEY_COMMENT")" <<'REMOTE'
 set -euo pipefail
 tunnel_user="$1"; pubkey="$2"; port="$3"; key_comment="$4"
 if ! id "$tunnel_user" >/dev/null 2>&1; then
   nologin_path="$(command -v nologin || echo /usr/sbin/nologin)"
   sudo useradd --create-home --shell "$nologin_path" --comment "pinvou3 remote-test tunnel" "$tunnel_user"
 fi
+# useradd 新建账号的 shadow 是 '!',sshd 按 "account is locked" 拒绝包括 pubkey 在内的一切登录,
+# 隧道重启风暴随即触发 fail2ban 封 IP(2026-07-21 实测踩坑)。
+# 置为 '*':密码登录不可用,但账号不算锁定,pubkey 可正常认证。幂等,每次部署都执行。
+sudo usermod -p '*' "$tunnel_user"
 tunnel_group="$(id -gn "$tunnel_user")"
 home_dir="$(getent passwd "$tunnel_user" | cut -d: -f6)"
 ak="$home_dir/.ssh/authorized_keys"
 sudo install -d -m 700 -o "$tunnel_user" -g "$tunnel_group" "$home_dir/.ssh"
-new_line="restrict,permitlisten=\"127.0.0.1:$port\" $pubkey"
-# 原子替换该 comment 对应的整行:暂存(同目录,保证 mv 同文件系统原子)→ 权限 → mv。
-# relay 侧密钥重新生成后,旧公钥会被本行整体替换,不会残留失效 key。
+new_line="no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten=\"127.0.0.1:$port\" $pubkey"
+# relay-tunnel 是本脚本全权管理的专用账号,authorized_keys 收敛为恰好一行:
+# 暂存(同目录,保证 mv 同文件系统原子)→ 权限 → mv。relay 侧密钥轮换后旧公钥被整体
+# 替换,历史错位行/失效 key 一并清除,天然幂等。
 sudo bash -c '
   set -euo pipefail
-  ak="$1"; new_line="$2"; key_comment="$3"; owner="$4"
+  ak="$1"; new_line="$2"; owner="$3"
   tmp="$(mktemp "$ak.XXXXXX")"
-  if [ -f "$ak" ]; then
-    grep -v " $key_comment\$" "$ak" > "$tmp" || true
-  fi
-  printf "%s\n" "$new_line" >> "$tmp"
+  printf "%s\n" "$new_line" > "$tmp"
   chmod 600 "$tmp"
   chown "$owner" "$tmp"
   mv "$tmp" "$ak"
-' _ "$ak" "$new_line" "$key_comment" "$tunnel_user:$tunnel_group"
+' _ "$ak" "$new_line" "$tunnel_user:$tunnel_group"
 # 兼容旧版脚本:该 key 若曾放在 admin 自己的 authorized_keys,移除(权限收敛)。
 if [ -f "$HOME/.ssh/authorized_keys" ] && grep -q " $key_comment\$" "$HOME/.ssh/authorized_keys"; then
   tmp="$(mktemp)"
@@ -286,7 +298,7 @@ STAGE="fail2ban 解封 relay 主机 IP"
 proxy_ssh "sudo fail2ban-client set sshd unbanip '$RELAY_HOST_IP' > /dev/null 2>&1 || true"
 
 STAGE="配置并重启 SSH 反向隧道"
-relay_ssh bash -s -- "$TUNNEL_SERVICE" "$TEST_PORT" "$PROXY_SERVER" "$TUNNEL_USER" <<'REMOTE'
+relay_ssh "bash -s -- $(shq_all "$TUNNEL_SERVICE" "$TEST_PORT" "$PROXY_SERVER" "$TUNNEL_USER")" <<'REMOTE'
 set -euo pipefail
 tunnel_service="$1"; port="$2"; proxy_server="$3"; tunnel_user="$4"
 proxy_ip="${proxy_server#*@}"
@@ -319,7 +331,7 @@ proxy_ssh "curl -fsS --max-time 5 'http://127.0.0.1:$TEST_PORT$BASE_PATH/healthz
 
 STAGE="配置前端代理 nginx($BASE_PATH,暂存 + 失败回滚)"
 echo "── 配置前端代理 nginx($BASE_PATH) ──"
-proxy_ssh bash -s -- "$NGINX_SNIPPET" "$NGINX_SITE" "$TEST_PORT" "$BASE_PATH" <<'REMOTE'
+proxy_ssh "bash -s -- $(shq_all "$NGINX_SNIPPET" "$NGINX_SITE" "$TEST_PORT" "$BASE_PATH")" <<'REMOTE'
 set -euo pipefail
 snippet="$1"; site="$2"; port="$3"; base_path="$4"
 # 1) 暂存新 snippet(不影响现役配置)
