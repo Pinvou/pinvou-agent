@@ -45,6 +45,7 @@ jobs:
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
       diff_viewer: ${{ steps.filter.outputs.diff_viewer }}
+      relay: ${{ steps.filter.outputs.relay }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -114,6 +115,11 @@ jobs:
               - 'pinvou3-app/package-lock.json'
               - 'pinvou3-app/vite.config.js'
               - 'pinvou3-app/eslint.config.mjs'
+              - '.github/workflows/pr-check.yml'
+            relay:
+              - 'remote-control-relay/**'
+              - 'scripts/deploy-remote-relay.sh'
+              - 'scripts/deploy-remote-relay-test.sh'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -208,6 +214,29 @@ jobs:
           node tests/update_notice_ui_smoke.js
           node tests/scheduled_tasks_smoke.js
           node tests/pet_selector_ui_smoke.js
+
+  relay-test:
+    name: relay-test
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.relay == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: 安装 relay 依赖
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: Relay 与部署脚本回归
+        run: |
+          bash -n scripts/deploy-remote-relay.sh
+          bash -n scripts/deploy-remote-relay-test.sh
+          npm --prefix remote-control-relay test
 
   diff-viewer-test:
     name: diff-viewer-test
