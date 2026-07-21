@@ -1207,17 +1207,18 @@
         return;
       }
       all.forEach(t => {
-        if (!t || !t.connector_id) return;
-        const isEnabled = !disabledSet.has(t.connector_id);
+        // MarketplaceToolInfo 字段是 id(marketplace.rs:337),不是 connector_id。
+        if (!t || !t.id) return;
+        const isEnabled = !disabledSet.has(t.id);
         el.sheetBody.appendChild(sheetItem({
-          title: t.name || t.connector_id,
-          sub: t.description || t.connector_id,
+          title: t.name || t.id,
+          sub: t.description || t.id,
           mark: isEnabled ? '已启用' : '已禁用',
           active: isEnabled,
           onClick: () => {
             const next = new Set(state.tools.disabledIds || []);
-            if (isEnabled) next.add(t.connector_id);
-            else next.delete(t.connector_id);
+            if (isEnabled) next.add(t.id);
+            else next.delete(t.id);
             state.tools.disabledIds = Array.from(next);
             renderToolsSheet();
             scheduleSetDisabledConnectors();
@@ -1608,7 +1609,9 @@
           }
         });
         realUploadId = startAck && startAck.upload_id;
-        const chunkBytes = (startAck && startAck.chunk_bytes) || (256 * 1024);
+        // 桌面端 UPLOAD_CHUNK_BYTES = 768KiB(manager.rs:28),ack 总会带 chunk_bytes;
+        // 这里只在 ack 字段缺失(极旧服务端 / 测试桩)时兜底,默认对齐桌面常量避免错位。
+        const chunkBytes = (startAck && startAck.chunk_bytes) || (768 * 1024);
         if (!realUploadId) throw new Error('attach_file_start_ack 缺少 upload_id');
         // 把临时 state 迁移到真实 upload_id
         const tempState = state.uploads[tempUploadId] || {};
@@ -2984,11 +2987,23 @@
           break;
         }
         case 'attach_file_rate_limited': {
-          // 仅作 UI 提示;重试由 requestAttachFile 的 NAK 重试循环负责。
+          // relay 限流时不会把 chunk 转给 desktop,因此桌面端不会回 attach_file_relay_ack。
+          // 若不在这里主动 reject,mobile 端的 waitForRelayAck 会傻等满 65s 超时。
+          // 用当前 in-flight 的 index 立即 reject,让 requestAttachFile 的重试循环马上接管。
+          // index 取 pendingRelayAcks[upload_id] 里最小的 key(即正在等的下一块)。
           const rlp = msg.payload || {};
-          if (rlp.upload_id && state.uploads[rlp.upload_id]) {
-            setUploadState(rlp.upload_id, { status: 'rate_limited', retryAfter: rlp.retry_after_ms });
-            renderAttachmentPreview();
+          if (rlp.upload_id) {
+            const perUpload = state.pendingRelayAcks[rlp.upload_id];
+            if (perUpload) {
+              const indexes = Object.keys(perUpload).map(Number).sort((a, b) => a - b);
+              if (indexes.length) {
+                resolveRelayAck(rlp.upload_id, indexes[0], false, 'rate_limited');
+              }
+            }
+            if (state.uploads[rlp.upload_id]) {
+              setUploadState(rlp.upload_id, { status: 'rate_limited', retryAfter: rlp.retry_after_ms });
+              renderAttachmentPreview();
+            }
           }
           break;
         }
