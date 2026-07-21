@@ -1400,50 +1400,49 @@ impl RemoteControlManager {
         }
         // 关键:锁内分支只决定"是否要拒绝",不在锁内调 send_error / send_event
         // (二者都会再 `inner.lock()` → re-entrant 死锁)。锁外再回错。
-        let prepared = {
-            let mut inner = self.inner.lock();
-            if inner.active_upload.is_some() {
-                Err("upload_in_progress:another upload is running")
-            } else {
-                // 与 download_id 同源格式:pid + nanos,保持单调,便于日志排查。
-                let upload_id = format!(
-                    "up_{}_{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0)
-                );
-                let upload_dir = inner.uploads_base.join(&upload_id);
-                if let Err(e) = std::fs::create_dir_all(&upload_dir) {
-                    return self.send_error("upload_dir_failed", &format!("{e:#}"));
+        // 拒绝信息用 (code, message) 元组传出锁块,避免字符串拼接 + split_once 的脆弱解析。
+        let prepared: Result<(String, tokio::sync::mpsc::Receiver<UploadChunkMsg>), (&str, String)> =
+            {
+                let mut inner = self.inner.lock();
+                if inner.active_upload.is_some() {
+                    Err(("upload_in_progress", "another upload is running".to_string()))
+                } else {
+                    // 与 download_id 同源格式:pid + nanos,保持单调,便于日志排查。
+                    let upload_id = format!(
+                        "up_{}_{}",
+                        std::process::id(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0)
+                    );
+                    let upload_dir = inner.uploads_base.join(&upload_id);
+                    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+                        // 不在锁内 send_error —— collect 错误,锁外回。
+                        Err(("upload_dir_failed", format!("{e:#}")))
+                    } else {
+                        let (tx, rx) =
+                            tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+                        inner.active_upload = Some(upload_id.clone());
+                        inner.upload_chunk_sender = Some(tx);
+                        inner.pending_attachments.insert(
+                            upload_id.clone(),
+                            PendingAttachment {
+                                session_id: active_session_id.to_string(),
+                                filename: filename.clone(),
+                                byte_size,
+                                mime: mime.clone(),
+                                ingest_result: None,
+                            },
+                        );
+                        Ok((upload_id, rx))
+                    }
                 }
-                let (tx, rx) =
-                    tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
-                inner.active_upload = Some(upload_id.clone());
-                inner.upload_chunk_sender = Some(tx);
-                inner.pending_attachments.insert(
-                    upload_id.clone(),
-                    PendingAttachment {
-                        session_id: active_session_id.to_string(),
-                        filename: filename.clone(),
-                        byte_size,
-                        mime: mime.clone(),
-                        ingest_result: None,
-                    },
-                );
-                Ok((upload_id, rx))
-            }
-        };
+            };
         let (upload_id, rx) = match prepared {
             Ok(pair) => pair,
-            Err(msg) => {
-                // msg 形如 "code:human message";无冒号时整体当 message,code 兜底。
-                let (code, message): (&str, &str) = match msg.split_once(':') {
-                    Some((c, m)) => (c, m),
-                    None => ("upload_failed", &msg),
-                };
-                self.send_error(code, message);
+            Err((code, message)) => {
+                self.send_error(code, &message);
                 return;
             }
         };
@@ -2484,18 +2483,82 @@ mod tests {
         let payload = serde_json::json!({ "upload_id": "up_does_not_match" });
 
         // abort 是 sync fn,但内含 send_error → 修复前会直接死锁本线程。
-        // 用 spawn + recv 超时检测:如果 abort 死锁,join 会超时。
+        // 用 channel + recv_timeout 真正检测:死锁回归会让 recv_timeout 超时失败,
+        // 而不是让 cargo 整体 test 超时才被动发现。
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let manager_clone = manager.clone();
-        let handle = std::thread::spawn(move || {
-            manager_clone.handle_attach_file_abort(&session_id, &payload);
+        let session_id_for_thread = session_id.clone();
+        std::thread::spawn(move || {
+            manager_clone.handle_attach_file_abort(&session_id_for_thread, &payload);
+            let _ = done_tx.send(());
         });
-        handle
-            .join()
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
             .expect("handle_attach_file_abort must not deadlock on unknown upload_id");
 
         assert!(
             manager.inner.lock().active_upload.is_some(),
             "unknown upload_id abort must not evict the active upload slot"
+        );
+    }
+
+    /// 回归:handle_attach_file_start 在 uploads_base 创建失败时(磁盘满 / 权限丢失)
+    /// 不能在锁内 send_error —— 否则 parking_lot 重入死锁。本测试通过把 upload_id
+    /// 目录预置为文件让 create_dir_all 失败,断言 start 在 1s 内返回而非 hang。
+    #[test]
+    fn attach_file_start_dir_create_failure_does_not_deadlock() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-dir-fail");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-dir-fail-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_dir_fail".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            // 把 uploads_base 设成一个已存在的**文件**路径 → join(upload_id) 后
+            // create_dir_all 必然失败(EEXIST / ENOTDIR)。
+            let uploads_base = inner.uploads_base.clone();
+            drop(inner);
+            std::fs::create_dir_all(uploads_base.parent().unwrap_or_else(|| std::path::Path::new("/")))
+                .ok();
+            std::fs::write(&uploads_base, b"blocker").expect("seed uploads_base as file");
+        }
+
+        let payload = serde_json::json!({
+            "filename": "any.bin",
+            "byte_size": 16u64,
+            "mime": "application/octet-stream",
+        });
+
+        // 修复前:create_dir_all 失败 → 锁内 send_error → 死锁,handle 永不返回。
+        // 修复后:错误以元组传出锁块,锁外 send_error。
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let manager_clone = manager.clone();
+        let session_id_for_thread = session_id.clone();
+        std::thread::spawn(move || {
+            manager_clone.handle_attach_file_start(&session_id_for_thread, &payload);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("handle_attach_file_start must not deadlock when uploads_base is not a dir");
+
+        assert!(
+            manager.inner.lock().active_upload.is_none(),
+            "dir-failed start must not occupy the upload slot"
         );
     }
 }
