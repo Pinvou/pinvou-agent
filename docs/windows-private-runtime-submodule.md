@@ -19,13 +19,13 @@ https://github.com/Pinvou/pinvou3-windows-runtime.git
 private-runtimes/windows  -> 私有仓库的确定 commit
 ```
 
-私有仓库的 `payload/` 按组件保存资源。Poppler、Tesseract、ASR 分别使用一个确定性 ZIP；
-Python、Node.js、Pandoc、ONNX Runtime 继续使用各自的上游组件包；7-Zip 和 VC Runtime
-保持独立文件。二进制由 Git LFS 管理。
+私有仓库的 `payload/` 按组件保存资源。Poppler、Tesseract、ASR、7-Zip 分别使用一个
+确定性 ZIP；Python、Node.js、Pandoc、ONNX Runtime 继续使用各自的上游组件包；
+VC Runtime 保持独立文件。二进制由 Git LFS 管理。
 
-`windows-runtime.manifest.json` 当前锁定 13 个仓库级资源，并额外记录三个组件 ZIP 内部
-108 个 Poppler/Tesseract/ASR 文件的路径、大小和 SHA-256。staging 会先校验 ZIP，解压后
-再逐文件复核内部清单。
+`windows-runtime.manifest.json` 当前锁定 9 个仓库级资源，并额外记录四个组件 ZIP 内部
+113 个 7-Zip/Poppler/Tesseract/ASR 文件的路径、大小和 SHA-256。staging 会先校验 ZIP，
+解压后再逐文件复核内部清单。
 
 主仓库 `pinvou3-app/src-tauri/resources/windows-runtime.lock.json` 再锁定：
 

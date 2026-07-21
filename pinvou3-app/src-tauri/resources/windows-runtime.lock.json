@@ -5,10 +5,10 @@
     "type": "git-submodule",
     "path": "private-runtimes/windows",
     "url": "https://github.com/Pinvou/pinvou3-windows-runtime.git",
-    "commit": "d92d7a5a0360294e1d10e527f8b122dc940ab6a2"
+    "commit": "5b77961dea402a1580ab9e79edb2a6346e519f4c"
   },
   "manifest": {
     "path": "windows-runtime.manifest.json",
-    "sha256": "1c32a81f1df28f2fd08e0bfa543a645944f5ef0fe02d81e2bf1a6586834dab8f"
+    "sha256": "0d14c4b67fd6dc1e0e5c3d4dc07c50a0e7a5072722b082edbeaef6a22b6cdc14"
   }
 }

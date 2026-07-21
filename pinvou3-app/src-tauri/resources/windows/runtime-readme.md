@@ -21,6 +21,7 @@ npm run runtime:windows:stage
 2. submodule 工作树没有 tracked 修改；
 3. 私有 manifest 的 SHA-256 等于主仓库 lock；
 4. manifest 中每个文件的大小与 SHA-256 正确，且不是未展开的 LFS pointer。
+5. 7-Zip、ASR、Poppler、Tesseract 解压后的文件数、大小与 SHA-256 符合 ZIP 内部清单。
 
 验证完成后，运行时会被复制、展开到：
 
