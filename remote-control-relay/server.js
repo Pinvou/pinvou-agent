@@ -164,9 +164,12 @@ function consumeWsConnection(ip, now = Date.now()) {
   );
 }
 
-// 滑动窗口:单个 mobile ws 在 MOBILE_UPLOAD_WINDOW_SECS 内累计超过 MOBILE_UPLOAD_WINDOW_BYTES
-// 时拒绝转发。返回 true 表示放行(已从预算中扣减 byteLen),false 表示限流(未扣减,调用方需
-// 自行向 mobile 发 attach_file_rate_limited 通知)。窗口过期自动重置。
+// 固定窗口(tumbling window):单个 mobile ws 在 MOBILE_UPLOAD_WINDOW_SECS 窗口内累计超过
+// MOBILE_UPLOAD_WINDOW_BYTES 时拒绝转发。窗口到期整体重置为 0(非逐事件滑动)。返回 true 表示
+// 放行(已从预算中扣减 byteLen),false 表示限流(未扣减,调用方需自行向 mobile 发
+// attach_file_rate_limited 通知)。
+// 边界注意:窗口刚好翻转的瞬间最多放行 ~2× 预算(翻转前满载 + 翻转后再次满载);由
+// MAX_PAYLOAD_BYTES(默认 4MiB)与桌面端 single-active-upload 不变量兜底,不影响保护目标。
 function consumeMobileUploadBudget(ws, byteLen, now = Date.now()) {
   let entry = mobileUploadRate.get(ws);
   if (!entry || now >= entry.resetAt) {
