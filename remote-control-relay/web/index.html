@@ -2215,7 +2215,7 @@
             reject(new Error(kind + ' timeout'));
           }
         }, timeoutMs || 10000);
-        state.pendingAcks[kind] = { resolve, timer };
+        state.pendingAcks[kind] = { resolve, reject, timer };
         // 用 sendAction 复用 cmid 生成 + ws.send,但 cmid 不参与匹配。
         sendAction(kind, payload);
       });
@@ -2251,7 +2251,7 @@
             reject(new Error('relay ack timeout for upload ' + upload_id + ' index ' + index));
           }
         }, timeoutMs || 65000);
-        perUpload[index] = { resolve, timer };
+        perUpload[index] = { resolve, reject, timer };
         state.pendingRelayAcks[upload_id] = perUpload;
       });
     }
