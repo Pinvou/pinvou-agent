@@ -202,13 +202,16 @@ export function deriveAnimation(state, now = Date.now()) {
 }
 
 /** Ready/Blocked are read-like notices; active and waiting work stays visible. */
-export function markSessionViewed(state, sid) {
+export function markSessionViewed(state, sid, { completed = false } = {}) {
   const key = String(sid || '').trim();
   if (!key) return false;
-  // 无论完成卡是否已经到达都先标记；chat:done 随后到达时会直接收尾。
-  if (state.viewedSessions) state.viewedSessions.add(key);
   const activity = state.sessions.get(key);
-  if (!activity || (activity.status !== 'review' && activity.status !== 'failed')) return false;
+  const isCompletedCard = activity?.status === 'review' || activity?.status === 'failed';
+  // 打开运行中的会话不等于看过未来的完成结果。只有完成事件确认主窗口此刻
+  // 正在显示该会话，或用户实际打开完成卡时，才留下防乱序的已读标记。
+  if (!completed && !isCompletedCard) return false;
+  if (state.viewedSessions) state.viewedSessions.add(key);
+  if (!isCompletedCard) return false;
   return state.sessions.delete(key);
 }
 

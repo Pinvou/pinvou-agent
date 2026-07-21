@@ -66,6 +66,8 @@ jobs:
       l1: ${{ steps.filter.outputs.l1 }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      diff_viewer: ${{ steps.filter.outputs.diff_viewer }}
+      relay: ${{ steps.filter.outputs.relay }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -123,6 +125,23 @@ jobs:
               - 'pinvou3-app/vite.config.js'
               - 'pinvou3-app/eslint.config.mjs'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
+              - '.github/workflows/pr-check.yml'
+            diff_viewer:
+              - 'pinvou3-app/src/features/tools/tool-common.jsx'
+              - 'pinvou3-app/src/features/tools/tool-renderers.jsx'
+              - 'pinvou3-app/src/features/tools/unified-diff-parser.js'
+              - 'pinvou3-app/tests/diff_viewer_ui_smoke.mjs'
+              - 'pinvou3-app/tests/fixtures/diff_viewer_smoke.*'
+              - 'pinvou3-app/tests/unified_diff_parser.test.js'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
+              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/eslint.config.mjs'
+              - '.github/workflows/pr-check.yml'
+            relay:
+              - 'remote-control-relay/**'
+              - 'scripts/deploy-remote-relay.sh'
+              - 'scripts/deploy-remote-relay-test.sh'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -218,6 +237,60 @@ jobs:
           node tests/scheduled_tasks_smoke.js
           node tests/pet_selector_ui_smoke.js
 
+  relay-test:
+    name: relay-test
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.relay == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: 安装 relay 依赖
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: Relay 与部署脚本回归
+        run: |
+          bash -n scripts/deploy-remote-relay.sh
+          bash -n scripts/deploy-remote-relay-test.sh
+          npm --prefix remote-control-relay test
+
+  diff-viewer-test:
+    name: diff-viewer-test
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.diff_viewer == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pinvou3-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Diff parser、Lint 与构建
+        run: |
+          npm run test:diff-parser
+          npm run lint:ui
+          npm run build:ui
+
+      - name: Diff viewer 浏览器 smoke
+        run: |
+          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          npm run test:diff-ui
+
   pet-frontend-test:
     name: pet-frontend-test
     needs: changes
@@ -292,6 +365,21 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
+      # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
+      - name: Node.js (relay e2e)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (真实 relay e2e)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -303,7 +391,10 @@ jobs:
 
       # --test-threads=1:bridge 测试读/写全局 env,并行会竞争(qwen_preset/vllm 等 flaky)。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+        run: |
+          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
       - name: L1 harness 严格错误回归（不调用真模型）
         # PR 仅在 harness 相关路径变化时跑；main push 恒跑，保留合并后的完整验证。

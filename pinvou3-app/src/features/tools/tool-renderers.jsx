@@ -63,6 +63,10 @@ const ToolOutput = ({ item, isDark, t }) => {
         if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} isDark={isDark} t={t} />;
         return <ShellTextView cmd={item.args && item.args.command} text={out} isDark={isDark} />;
       }
+      // edit_file / write_file 走 Rust similar crate 输出 unified diff,走 DiffView。
+      // 注意:apply_patch 后端返回 JSON(apply_patch.rs::execute 返回 ToolResult::json),
+      // looksDiff 永远 false,所以这里不把 apply_patch 加进路由 —— 加了也只是 dead code
+      // (PR #195 M2)。若未来后端给 apply_patch 输出 unified diff,再把它加回来。
       else if (item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} isDark={isDark} />; }
       else if (item.name === 'append_file') {
         const m = String(out).match(/appended (\d+) bytes[\s\S]*?\((\d+) -> (\d+) bytes\)/i);

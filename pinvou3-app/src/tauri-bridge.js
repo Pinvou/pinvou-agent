@@ -243,7 +243,7 @@
     depsInstalling: false,    // 一键安装进行中(pkexec apt)
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
     // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
-    vllmSetup: null,          // {eligible, is_megacube, has_packages, vllm_online, already_bootstrapped}, null=未检测
+    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
     vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(后端 vllm-setup:phase 事件驱动步骤指示)
     vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
@@ -4081,6 +4081,8 @@
       var r = roles[rid] || {};
       applyAgentPatch(rid, {
         id: rid, name: r.name || rid, status: r.status || "pending",
+        error: typeof r.error === "string" && r.error.trim() ? r.error : null,
+        retries: r.retries == null ? 0 : r.retries,
         last_gate_verdict: r.last_gate_verdict || null,
         outputs_present: r.outputs_present || 0,
         last_run_ts: r.last_run_ts || null,
@@ -4762,12 +4764,43 @@
   }
 
   // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
-  // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。普通机/已配好后端会短路秒回。
-  async function detectLocalVllmSetup() {
+  var vllmSetupPollTimer = null;
+  var vllmSetupPollStartedAt = 0;
+  var VLLM_SETUP_POLL_INTERVAL_MS = 3000;
+  var VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
+  // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
+  // 开机加载中不弹框，每 3 秒静默复查；12 分钟后仍 starting 则恢复可重试入口。
+  // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
+  async function detectLocalVllmSetup(options) {
+    var autoPoll = !!(options && options.autoPoll);
+    if (vllmSetupPollTimer) {
+      clearTimeout(vllmSetupPollTimer);
+      vllmSetupPollTimer = null;
+    }
+    if (!autoPoll) vllmSetupPollStartedAt = Date.now();
     try {
       state.vllmSetup = await invoke("detect_local_vllm_setup");
     } catch (e) {
       state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
+      vllmSetupPollStartedAt = 0;
+    }
+    if (state.vllmSetup && state.vllmSetup.engine_state === 'starting' && state.vllmSetup.may_offer_setup !== false) {
+      var elapsed = Date.now() - vllmSetupPollStartedAt;
+      if (vllmSetupPollStartedAt > 0 && elapsed >= VLLM_SETUP_POLL_TIMEOUT_MS) {
+        state.vllmSetup = Object.assign({}, state.vllmSetup, {
+          engine_state: 'failed',
+          eligible: !!state.vllmSetup.may_offer_setup,
+          detection_timed_out: true,
+        });
+        vllmSetupPollStartedAt = 0;
+      } else {
+        vllmSetupPollTimer = setTimeout(function () {
+          vllmSetupPollTimer = null;
+          detectLocalVllmSetup({ autoPoll: true });
+        }, VLLM_SETUP_POLL_INTERVAL_MS);
+      }
+    } else {
+      vllmSetupPollStartedAt = 0;
     }
     notify();
     return state.vllmSetup; // 返回供设置页「检测本机 vLLM」判断 has_packages
@@ -4818,13 +4851,16 @@
   }
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
-  async function saveModel(model) {
-    await invoke("save_model", { model: model });
-    await loadModels();
-  }
-  async function deleteModel(id) {
-    await invoke("delete_model", { id: id });
-    await loadModels();
+ async function saveModel(model) {
+   await invoke("save_model", { model: model });
+   await loadModels();
+ }
+ async function revealModelApiKey(id) {
+   return await invoke("reveal_model_api_key", { id: id });
+ }
+ async function deleteModel(id) {
+   await invoke("delete_model", { id: id });
+   await loadModels();
   }
   async function setActiveModel(id) {
     await invoke("set_active_model", { id: id });
@@ -4851,6 +4887,9 @@
   async function testModelConnection(baseUrl, apiKey, modelId) {
     return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
+  async function testSearchProvider(provider, apiKey) {
+    return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
+  }
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
@@ -4868,11 +4907,14 @@
       addSystemItem(state.superPermEnabled
         ? bt("superOn")
         : bt("superOff"));
+      notify();
+      return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
     } catch (e) {
       addSystemItem("⚠️ " + e);
       try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch (e2) {}
+      notify();
+      return { ok: false, enabled: state.superPermEnabled, error: String(e) };
     }
-    notify();
   }
 
   // ── Mode state ───────────────────────────────────────────────────
@@ -6284,6 +6326,17 @@
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
       var normalized = normalizeVoiceError(err, "recording");
+      if (normalized.category === "permission_denied") {
+        try {
+          var permissionReset = await invoke("reset_microphone_permission");
+          if (permissionReset) {
+            normalized.message = "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查 Windows 麦克风设置。";
+            emitVoiceDiagnostic("permission", "info", "microphone permission reset to default", normalized.message, normalized.category);
+          }
+        } catch (resetError) {
+          emitVoiceDiagnostic("permission", "warn", "failed to reset microphone permission: " + String(resetError), normalized.message, normalized.category);
+        }
+      }
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,
@@ -6640,13 +6693,15 @@
     dismissVllmSetup: dismissVllmSetup,
     declineVllmSetup: declineVllmSetup,
     getEffectiveModelConfig: getEffectiveModelConfig,
-    loadModels: loadModels,
-    saveModel: saveModel,
-    deleteModel: deleteModel,
+   loadModels: loadModels,
+   saveModel: saveModel,
+   revealModelApiKey: revealModelApiKey,
+   deleteModel: deleteModel,
     setActiveModel: setActiveModel,
     loadSessionModel: loadSessionModel,
     switchModel: switchModel,
     testModelConnection: testModelConnection,
+    testSearchProvider: testSearchProvider,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
     startRemoteControl: startRemoteControl,

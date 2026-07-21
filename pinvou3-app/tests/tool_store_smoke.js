@@ -43,7 +43,12 @@ function injectSource() {
       record(cmd,args);
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
+        case 'get_selected_pet': return Promise.resolve('lingling');
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
+        case 'get_app_version': return Promise.resolve('0.6.1');
+        case 'list_models': return Promise.resolve({models:[],active_model_id:null});
+        case 'list_scheduled_tasks': return Promise.resolve([]);
+        case 'list_scheduled_task_recent_runs': return Promise.resolve([]);
         case 'list_sessions': return Promise.resolve([]);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
@@ -91,7 +96,7 @@ function injectSource() {
       }
     }
     window.__emitTauri=async function(name,payload){for(const h of (window.__TAURI_EVENT_HANDLERS__[name]||[])) await h({payload:payload||{}});};
-    window.__TAURI__={core:{invoke},event:{listen(name,handler){const hs=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);hs.push(handler);return Promise.resolve(()=>{const i=hs.indexOf(handler);if(i>=0)hs.splice(i,1);});}},
+    window.__TAURI__={core:{invoke},event:{emit:function(name,payload){return window.__emitTauri(name,payload);},listen(name,handler){const hs=window.__TAURI_EVENT_HANDLERS__[name]||(window.__TAURI_EVENT_HANDLERS__[name]=[]);hs.push(handler);return Promise.resolve(()=>{const i=hs.indexOf(handler);if(i>=0)hs.splice(i,1);});}},
       window:{getCurrentWindow(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(()=>{});},startDragging(){}};}},dialog:{open(){return Promise.resolve(null);}}};
   })();`;
 }
@@ -151,13 +156,25 @@ async function closeDetail(page, title) {
   await page.evaluateOnNewDocument(injectSource());
   await page.setViewport({width:1440,height:1000});
   await page.goto(url,{waitUntil:'networkidle0'});
-  await sleep(1300);
+  await page.waitForFunction(() => window.TauriBridge && document.querySelector('[data-nav="toolstore"]'), { timeout: 20000 }).catch(() => {});
+  await sleep(500);
   const results=[];
   const rec=(name,pass,detail='')=>{results.push({name,pass});console.log(`${pass?'✅':'❌'} ${name}${detail?'  '+detail:''}`);};
 
-  await page.evaluate(()=>{const b=document.querySelector('[title*="侧边栏"],[title*="展开"]');if(b)b.click();});
-  await sleep(250); await clickExact(page,'工具商店'); await sleep(800);
-  rec('工具商店真实页面加载', await page.evaluate(()=>document.body.innerText.includes('工具商店')&&!!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]')));
+  const navClicked = await page.evaluate(()=>{
+    const el=document.querySelector('[data-nav="toolstore"]');
+    if(!el)return false;
+    el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+    return true;
+  });
+  await page.waitForFunction(() => !!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]'), { timeout: 10000 }).catch(() => {});
+  const toolStoreLoaded = await page.evaluate((navClicked)=>navClicked&&document.body.innerText.includes('工具商店')&&!!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]'), navClicked);
+  const navDebug = toolStoreLoaded ? '' : await page.evaluate(() => JSON.stringify({
+    currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') || null,
+    navs: [...document.querySelectorAll('[data-nav]')].map(node => ({ nav: node.getAttribute('data-nav'), text: (node.textContent || '').trim(), title: node.getAttribute('title') || '' })),
+    text: document.body.innerText.slice(0, 240),
+  })).then(detail => JSON.stringify({ detail: JSON.parse(detail), errors: errors.slice(0, 5) }));
+  rec('工具商店真实页面加载', toolStoreLoaded, navDebug);
 
   for (const [query,id] of [['高德天气','weather'],['同花顺问财','iwencai'],['企查查','qcc'],['PPT 生成','pptx'],['公文写作','gongwen']]) {
     await action(page,query,'安装'); await dismiss(page);

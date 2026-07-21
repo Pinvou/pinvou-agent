@@ -626,6 +626,7 @@ pub(crate) async fn apply_harness_action(
                     "role_name": role_name, "status": "running",
                 }),
             );
+            let failure_role = role_id.clone();
             let op = Op::SpawnSubAgent {
                 prompt,
                 role_id,
@@ -635,7 +636,15 @@ pub(crate) async fn apply_harness_action(
                 expects_file_output,
             };
             if let Err(e) = handle.send(op).await {
-                eprintln!("[harness] spawn subagent failed: {e:?}");
+                let reason = format!("{failure_role} SubAgent 派发失败: {e:?}");
+                eprintln!("[harness] {reason}");
+                crate::harness::record_runtime_failure(
+                    &ws,
+                    &failure_role,
+                    "spawn_subagent",
+                    &reason,
+                );
+                emit_workflow_blocked(app, active_id, &ws, &reason);
             }
             true
         }
@@ -675,7 +684,14 @@ pub(crate) async fn apply_harness_action(
                     expects_file_output: t.expects_file_output,
                 };
                 if let Err(e) = handle.send(op).await {
-                    eprintln!("[harness] fan-out spawn failed: {e:?}");
+                    let reason = format!("{base_role} fan-out 派发失败: {e:?}");
+                    eprintln!("[harness] {reason}");
+                    crate::harness::record_runtime_failure(
+                        &ws,
+                        &base_role,
+                        "spawn_subagent_batch",
+                        &reason,
+                    );
                 }
             }
             emit_fanout(app, active_id, &base_role); // 初始 fan-out 状态 → 前端
@@ -732,7 +748,9 @@ pub(crate) async fn apply_harness_action(
         }
         HA::Error(e) => {
             eprintln!("[harness] error: {e}");
-            false
+            crate::harness::record_runtime_failure(&ws, "", "harness", &e);
+            emit_workflow_blocked(app, active_id, &ws, &format!("工作流运行失败: {e}"));
+            true
         }
         HA::NotApplicable => false,
     }
@@ -1366,10 +1384,12 @@ fn spawn_event_forwarder(
                                 let ws = execution_workspace.clone();
                                 let err_text = result.clone();
                                 let base_for_failure = base_role.clone();
+                                let agent_for_failure = id.clone();
                                 let action = tokio::task::spawn_blocking(move || {
-                                    crate::harness::agent_failed(
+                                    crate::harness::agent_failed_for_agent(
                                         &ws,
                                         &base_for_failure,
+                                        &agent_for_failure,
                                         &err_text,
                                     )
                                 })
@@ -1534,9 +1554,15 @@ fn spawn_event_forwarder(
                                 // per_page 成员(role 带 #)不走这里:空壳检测已按页处理。
                                 let failed_single = failed && !role.contains('#');
                                 let err_text = result.clone();
+                                let agent_for_failure = id.clone();
                                 let action = tokio::task::spawn_blocking(move || {
                                     if failed_single {
-                                        crate::harness::agent_failed(&ws, &base_role, &err_text)
+                                        crate::harness::agent_failed_for_agent(
+                                            &ws,
+                                            &base_role,
+                                            &agent_for_failure,
+                                            &err_text,
+                                        )
                                     } else {
                                         crate::harness::step_after_role(&ws, &base_role)
                                     }

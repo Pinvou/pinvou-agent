@@ -74,3 +74,6 @@ pinvou3-app/src-tauri/resources/windows/python/
 pinvou3-app/src-tauri/resources/windows/node/
 pinvou3-app/src-tauri/resources/windows/pandoc/
 pinvou3-app/src-tauri/resources/windows/onnxruntime/
+
+# 本地下载的测试浏览器(Chrome for Testing),不提交
+.cache/

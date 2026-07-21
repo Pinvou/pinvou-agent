@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::bridge::mode_state::{SerializableMode, SessionModeState};
-use crate::bridge::prefs::{SavedModel, UserPrefs};
+use crate::bridge::prefs::{SavedModel, SearchProvider, UserPrefs};
 use crate::bridge::sessions::{SessionKind, SessionStore};
 use crate::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
@@ -1152,6 +1152,25 @@ pub async fn list_models() -> Result<ModelsView, String> {
     })
 }
 
+/// 用户在编辑模型弹窗里主动点击“显示”时，读取该模型已保存的 API Key。
+/// 环境变量覆盖的凭据不回显，避免给出一个前端并不拥有、保存也不会覆盖的值。
+#[tauri::command]
+pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> {
+    let prefs = refresh_safe_prefs(UserPrefs::load());
+    let model = prefs
+        .model_by_id(&id)
+        .ok_or_else(|| format!("model not found: {id}"))?;
+    if model.credential_state == CredentialState::EnvOverride {
+        return Ok(None);
+    }
+    let Some(reference) = &model.credential_ref else {
+        return Ok(None);
+    };
+    SystemCredentialStore::new()
+        .get(reference)
+        .map_err(|e| sanitize_command_error("reveal_model_api_key", e.user_message()))
+}
+
 /// 增或改一条模型(按 id)。前端负责生成稳定 id。
 #[tauri::command]
 pub async fn save_model(model: SavedModel) -> Result<(), String> {
@@ -1230,6 +1249,74 @@ pub async fn get_session_model_id(
     store: State<'_, SessionStore>,
 ) -> Result<Option<String>, String> {
     Ok(store.session_model_id(&session_id))
+}
+
+fn parse_search_provider(raw: &str) -> Result<SearchProvider, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bing" => Ok(SearchProvider::Bing),
+        "metaso" => Ok(SearchProvider::Metaso),
+        "bocha" => Ok(SearchProvider::Bocha),
+        "baidu" => Ok(SearchProvider::Baidu),
+        "tavily" => Ok(SearchProvider::Tavily),
+        other => Err(format!("不支持的搜索源: {other}")),
+    }
+}
+
+fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
+    for name in provider.env_key_names() {
+        if let Ok(value) = std::env::var(name) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(Some(trimmed.to_string()));
+            }
+        }
+    }
+    let mut prefs = UserPrefs::load();
+    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
+    let Some(credential) = prefs.search.credentials.get(&provider) else {
+        return Ok(None);
+    };
+    let Some(reference) = &credential.credential_ref else {
+        return Ok(None);
+    };
+    SystemCredentialStore::new()
+        .get(reference)
+        .map_err(|error| error.user_message())
+        .map(|value| value.map(|key| key.trim().to_string()).filter(|key| !key.is_empty()))
+}
+
+#[tauri::command]
+pub async fn test_search_provider(
+    provider: String,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    let provider = parse_search_provider(&provider)?;
+    if provider == SearchProvider::Bing {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .map_err(|e| format!("client: {e}"))?;
+        return match client
+            .get("https://www.bing.com/search")
+            .query(&[("q", "pinvou")])
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => Ok("Bing 搜索可用".to_string()),
+            Ok(resp) => Err(format!("Bing HTTP {}", resp.status().as_u16())),
+            Err(e) => Err(format!("Bing 搜索不可达: {e}")),
+        };
+    }
+    let provided_key = api_key.unwrap_or_default().trim().to_string();
+    let key = if provided_key.is_empty() {
+        resolve_saved_search_key(provider)?.unwrap_or_default()
+    } else {
+        provided_key
+    };
+    if key.trim().is_empty() {
+        return Err("请先填写并保存该搜索源的 API Key".to_string());
+    }
+    Ok("搜索源凭据已配置".to_string())
 }
 
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
@@ -5391,42 +5478,108 @@ fn stat_output(path: &std::path::Path) -> Option<OutputFile> {
     })
 }
 
-/// 取一个角色的执行日志尾部 N 条（从 `_state/workflow_flow.log` 按 role_id 过滤）。
-/// 详情 Drawer 的 "执行日志" Tab 用。
+fn read_role_logs_from_project(
+    project_dir: &std::path::Path,
+    role_id: &str,
+    tail: usize,
+) -> Result<Vec<serde_json::Value>, String> {
+    let state_dir = project_dir.join("_state");
+    let mut records: Vec<(String, usize, serde_json::Value)> = Vec::new();
+    let mut sequence = 0usize;
+    for file_name in ["flow_log.jsonl", "agent_log.jsonl", "workflow_flow.log"] {
+        let path = state_dir.join(file_name);
+        if !path.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(mut record) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let matches = record
+                .get("role_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|record_role| record_role == role_id)
+                .unwrap_or(true);
+            if !matches {
+                continue;
+            }
+            if let Some(object) = record.as_object_mut() {
+                object
+                    .entry("source")
+                    .or_insert_with(|| serde_json::Value::String(file_name.to_string()));
+            }
+            let timestamp = record
+                .get("timestamp")
+                .or_else(|| record.get("ts"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            records.push((timestamp, sequence, record));
+            sequence += 1;
+        }
+    }
+    records.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    let mut out = records
+        .into_iter()
+        .map(|(_, _, record)| record)
+        .collect::<Vec<_>>();
+
+    // flow 日志写入失败或旧版本没有日志时，workflow_progress 仍是角色状态真相源。
+    // 将其中的终态错误补成最后一条诊断，确保抽屉一定能看到具体失败原因。
+    let progress_path = state_dir.join("workflow_progress.json");
+    if let Ok(content) = std::fs::read_to_string(&progress_path) {
+        if let Ok(progress) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(role) = progress.get("roles").and_then(|roles| roles.get(role_id)) {
+                let status = role
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let reason = role
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty());
+                if matches!(status, "failed" | "blocked") {
+                    if let Some(reason) = reason {
+                        out.push(serde_json::json!({
+                            "timestamp": progress.get("updated_at").cloned().unwrap_or(serde_json::Value::Null),
+                            "layer": "state",
+                            "event": "failure_state",
+                            "role_id": role_id,
+                            "status": status,
+                            "reason": reason,
+                            "source": "workflow_progress.json",
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    let limit = tail.clamp(1, 1000);
+    let start = out.len().saturating_sub(limit);
+    Ok(out[start..].to_vec())
+}
+
+/// 取一个角色的执行日志尾部 N 条。新日志来自 `_state/flow_log.jsonl` 和
+/// `_state/agent_log.jsonl`，同时兼容旧版 `_state/workflow_flow.log`。
+/// 详情 Drawer 的“运行日志”区域使用。
 #[tauri::command]
 pub async fn get_role_logs(
     role_id: String,
     project_dir: String,
     tail: Option<usize>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let log_path = std::path::PathBuf::from(&project_dir)
-        .join("_state")
-        .join("workflow_flow.log");
-    if !log_path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(&log_path).map_err(|e| format!("read log: {e}"))?;
-    let limit = tail.unwrap_or(200);
-    let mut out: Vec<serde_json::Value> = Vec::new();
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        // role_id 过滤；缺字段或匹配则收下
-        let matches = rec
-            .get("role_id")
-            .and_then(|v| v.as_str())
-            .map(|r| r == role_id)
-            .unwrap_or(true); // 没有 role_id 字段的全局事件保留
-        if matches {
-            out.push(rec);
-        }
-    }
-    let start = out.len().saturating_sub(limit);
-    Ok(out[start..].to_vec())
+    read_role_logs_from_project(
+        std::path::Path::new(&project_dir),
+        &role_id,
+        tail.unwrap_or(200),
+    )
 }
 
 /// 取一个角色最近一份 gate 报告（来自 `_state/gate_reports/<role>_<ts>.json`）。
@@ -5990,6 +6143,62 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn role_logs_merge_real_jsonl_files_and_append_authoritative_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-role-logs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = root.join("_state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("flow_log.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-07-21T10:00:00+08:00\",\"event\":\"dispatch\",\"role_id\":\"taizi\"}\n",
+                "{\"timestamp\":\"2026-07-21T10:01:00+08:00\",\"event\":\"agent_failed\",\"role_id\":\"taizi\",\"detail\":\"HTTP 503 upstream unavailable\"}\n",
+                "{\"timestamp\":\"2026-07-21T10:02:00+08:00\",\"event\":\"agent_failed\",\"role_id\":\"zhongshu\"}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            state.join("agent_log.jsonl"),
+            "{\"timestamp\":\"2026-07-21T10:00:30+08:00\",\"event\":\"tool_call\",\"role_id\":\"taizi\",\"tool\":\"web_search\"}\n",
+        )
+        .unwrap();
+        write_json(
+            &state.join("workflow_progress.json"),
+            serde_json::json!({
+                "updated_at": "2026-07-21T10:03:00+08:00",
+                "roles": {
+                    "taizi": {
+                        "status": "failed",
+                        "error": "subagent 执行失败: HTTP 503 upstream unavailable"
+                    }
+                }
+            }),
+        );
+
+        let logs = read_role_logs_from_project(&root, "taizi", 60).unwrap();
+        let events = logs
+            .iter()
+            .filter_map(|record| record.get("event").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec!["dispatch", "tool_call", "agent_failed", "failure_state"]
+        );
+        assert_eq!(
+            logs.last().and_then(|record| record.get("reason")).and_then(serde_json::Value::as_str),
+            Some("subagent 执行失败: HTTP 503 upstream unavailable")
+        );
+        assert!(!logs.iter().any(|record| record.get("role_id") == Some(&serde_json::json!("zhongshu"))));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json::Value) {

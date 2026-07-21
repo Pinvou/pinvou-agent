@@ -165,13 +165,13 @@ impl ModelPreset {
         match self {
             ModelPreset::LocalVllm => "qwen36_35b_256k",
             ModelPreset::Deepseek => "deepseek-v4-pro",
-            ModelPreset::Kimi => "kimi-k2.6",
-            ModelPreset::OpenaiCompatible => "gpt-4o",
-            ModelPreset::Qwen => "qwen-max",
-            ModelPreset::Doubao => "doubao-pro-256k",
-            ModelPreset::Minimax => "abab6.5s-chat",
-            ModelPreset::Glm => "glm-4-plus",
-            ModelPreset::Mimo => "mimo-v2-flash",
+            ModelPreset::Kimi => "kimi-k3",
+            ModelPreset::OpenaiCompatible => "gpt-5.6-terra",
+            ModelPreset::Qwen => "qwen3.7-plus",
+            ModelPreset::Doubao => "doubao-seed-evolving",
+            ModelPreset::Minimax => "MiniMax-M3",
+            ModelPreset::Glm => "glm-5.2",
+            ModelPreset::Mimo => "mimo-v2.5-pro",
         }
     }
 }
@@ -228,6 +228,10 @@ impl SearchProvider {
     }
 }
 
+fn default_enabled_search_providers() -> Vec<SearchProvider> {
+    vec![SearchProvider::Bing]
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SearchCredential {
@@ -270,16 +274,29 @@ impl SearchCredential {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SearchPrefs {
     pub provider: SearchProvider,
+    #[serde(default = "default_enabled_search_providers")]
+    pub enabled_providers: Vec<SearchProvider>,
     /// 当 `provider = Metaso` 时:None 走底座内置共享 key。
     /// 当 `provider = Bocha`/`Baidu` 时:None 会让 web_search 直接报错(必填)。
     #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub credentials: BTreeMap<SearchProvider, SearchCredential>,
+}
+
+impl Default for SearchPrefs {
+    fn default() -> Self {
+        Self {
+            provider: SearchProvider::Bing,
+            enabled_providers: default_enabled_search_providers(),
+            api_key: None,
+            credentials: BTreeMap::new(),
+        }
+    }
 }
 
 impl SearchPrefs {
@@ -297,6 +314,17 @@ impl SearchPrefs {
 
     pub fn normalize(&mut self) {
         self.api_key = None;
+        if self.enabled_providers.is_empty() {
+            self.enabled_providers.push(SearchProvider::Bing);
+        }
+        if !self.enabled_providers.contains(&SearchProvider::Bing) {
+            self.enabled_providers.insert(0, SearchProvider::Bing);
+        }
+        if !self.enabled_providers.contains(&self.provider) {
+            self.enabled_providers.push(self.provider);
+        }
+        self.enabled_providers.sort();
+        self.enabled_providers.dedup();
         self.credentials
             .retain(|_, credential| credential.has_secret || credential.credential_ref.is_some());
         for credential in self.credentials.values_mut() {

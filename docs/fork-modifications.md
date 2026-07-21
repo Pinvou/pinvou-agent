@@ -84,12 +84,13 @@
 - **内容**：
   - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools。
   - `SpawnSubAgent` 接受 role、allowed tools、max steps、output schema、expects-file-output。
+  - `Custom` 工作流子 Agent 的显式工具白名单同时恢复父级允许的粗粒度能力；声明 `write_file`/`append_file` 后可以真实落盘，未声明工具仍由白名单拒绝，且只读父级不能被越权提升。
   - 合成 `submit_output` 工具；递归校验有限 JSON schema，只允许声明的安全相对路径落盘；最多 3 次催交后 fail-closed。
-  - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成。
+  - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成；重试耗尽时把最后一次工具错误带入失败信封，宿主日志无需读取私有转录即可显示具体原因。
   - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
-- **守护**：结构化 schema/安全路径、批量取消、OAuth drop-before-return 回归。
+- **守护**：结构化 schema/安全路径、Custom 显式写工具真实落盘、文件产出失败保留最后工具错误、批量取消、OAuth drop-before-return 回归。
 
 ### T6 `embed`：宿主路由、预算与 shared automation 接口
 

@@ -59,6 +59,8 @@ fingerprints=(
   "T5|SpawnSubAgent 工作流契约            |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
   "T5|结构化产出提交工具                 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBMIT_OUTPUT_TOOL: &str = \"submit_output\";"
   "T5|结构化产出安全路径回归             |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"
+  "T5|Custom 显式写工具真实落盘          |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_custom_explicit_write_tool_can_persist_file_without_tool_escalation"
+  "T5|文件产出失败保留工具错误           |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_missing_file_output_reports_last_tool_error"
   "T5|宿主取消全部后台 agent             |DeepSeek-TUI/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T5|批量取消行为回归                   |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
   "T5|OAuth 登录可取消                   |DeepSeek-TUI/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"

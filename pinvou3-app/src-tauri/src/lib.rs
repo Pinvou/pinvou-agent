@@ -36,6 +36,7 @@ pub mod llmapi_hub;
 mod local_vllm_setup;
 pub mod memory;
 mod monitor;
+mod microphone_permission;
 mod notifications;
 mod os;
 pub mod personas;
@@ -631,14 +632,17 @@ pub fn run() {
             local_vllm_setup::detect_local_vllm_setup,
             local_vllm_setup::bootstrap_local_vllm,
             local_vllm_setup::decline_local_vllm_setup,
-            commands::list_models,
-            commands::save_model,
+           commands::list_models,
+           commands::reveal_model_api_key,
+           commands::save_model,
             commands::delete_model,
             commands::set_active_model,
             commands::set_session_model,
             commands::get_session_model_id,
             commands::test_model_connection,
+            commands::test_search_provider,
             commands::transcribe_voice_audio,
+            microphone_permission::reset_microphone_permission,
             voice_asr::voice_asr_status,
             voice_asr::install_voice_asr,
             voice_asr::cancel_voice_asr,
@@ -715,12 +719,11 @@ pub fn run() {
             detach::open_detached_window,
             detach::begin_detach_drag,
             pet_window::set_pet_enabled,
-            pet_window::show_pet_context_menu,
-            pet_window::hide_pet_context_menu,
             pet_window::get_pet_scale,
             pet_window::set_pet_scale,
             pet_window::set_pet_activity_visible,
             pet_window::save_pet_position,
+            pet_window::save_pet_vertical_alignment,
             pet_window::open_main_from_pet,
             pet_window::take_pet_navigation,
             pet_window::queue_pet_reply,

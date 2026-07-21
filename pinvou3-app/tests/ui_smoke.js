@@ -26,7 +26,17 @@ function loadPuppeteer() {
 }
 const puppeteer = loadPuppeteer();
 const CHROME = process.env.CHROME ||
-  ['/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
+  [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/snap/bin/chromium',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+  ].find(p => fs.existsSync(p));
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 
@@ -38,7 +48,8 @@ function injectSource() {
     window.__TAURI_INVOKES__=[];
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
-    const SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    let ARCHIVED_SESSIONS=[];
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
       exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
@@ -71,6 +82,7 @@ function injectSource() {
           ? Promise.reject(new Error('temporary llmapi models failure'))
           : Promise.resolve(window.__LLMAPI_MODELS__ || {available_models:[],default_model:''});
         case 'list_sessions': return Promise.resolve(SESSIONS);
+        case 'list_archived_sessions': return Promise.resolve(ARCHIVED_SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
@@ -81,6 +93,10 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'get_role_logs': return Promise.resolve([
+          {timestamp:'2026-07-21T10:00:00+08:00',event:'agent_failed',role_id:'taizi',agent_id:'agent_diag01',category:'permission',reason:'未产出任何文件；最后一次工具错误: tool write_file failed: access denied',detail:'Tool write_file is not permitted for the read-only custom role'},
+          {timestamp:'2026-07-21T10:00:01+08:00',event:'agent_failure_terminal',role_id:'taizi',reason:'重试次数已用尽',attempt:'3',max_retries:'3'},
+        ]);
         case 'start_workflow': return Promise.resolve({session_id:'s-kick-fail',project_dir:'/x/kick-fail'});
         case 'kick_workflow': return window.__KICK_WORKFLOW_ERROR__
           ? Promise.reject(new Error('模型服务预检失败：HTTP 401'))
@@ -89,6 +105,17 @@ function injectSource() {
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
+        case 'set_session_archived':
+          if (args && args.archived) {
+            const session = SESSIONS.find(function(s){ return s.id === args.id; }) || { id: args.id, title: '第三季度财报分析', created_at: 1, updated_at: 9 };
+            SESSIONS = SESSIONS.filter(function(s){ return s.id !== args.id; });
+            ARCHIVED_SESSIONS = [Object.assign({}, session, { archived_at: '2026-07-21T10:00:00Z' })].concat(ARCHIVED_SESSIONS.filter(function(s){ return s.id !== args.id; }));
+          } else {
+            const archived = ARCHIVED_SESSIONS.find(function(s){ return s.id === args.id; });
+            ARCHIVED_SESSIONS = ARCHIVED_SESSIONS.filter(function(s){ return s.id !== args.id; });
+            if (archived) SESSIONS = [archived].concat(SESSIONS);
+          }
+          return Promise.resolve(null);
         case 'set_plan_mode_next': return Promise.resolve({mode:'plan',plan_phase:'planning'});
         case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
@@ -110,9 +137,12 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
-        case 'detect_local_vllm_setup': return Promise.resolve(window.__VLLM_ELIGIBLE__
-          ? {eligible:true,is_megacube:true,has_packages:true,vllm_online:false,already_bootstrapped:false}
-          : {eligible:false,is_megacube:false,has_packages:false,vllm_online:false,already_bootstrapped:false});
+        case 'detect_local_vllm_setup': {
+          const engineState = window.__VLLM_STATE__ || 'stopped';
+          return Promise.resolve(window.__VLLM_ELIGIBLE__ && engineState !== 'starting'
+            ? {eligible:true,may_offer_setup:true,is_megacube:true,has_packages:true,vllm_online:false,engine_state:engineState,already_bootstrapped:false}
+            : {eligible:false,may_offer_setup:!!window.__VLLM_ELIGIBLE__,is_megacube:engineState==='starting',has_packages:engineState==='starting',vllm_online:false,engine_state:engineState,already_bootstrapped:false});
+        }
         case 'bootstrap_local_vllm': return new Promise(function(){}); // 永不 resolve,停在 bootstrapping 态供测步骤指示
         default: return Promise.resolve(null);
       }
@@ -136,7 +166,16 @@ async function clickText(page, t) {
     return false;
   }, t);
 }
-async function expand(page) { return page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) { b.click(); return true; } return false; }); }
+async function expand(page) {
+  return page.evaluate(() => {
+    const hasVisibleHistory = [...document.querySelectorAll('span')]
+      .some(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left < 330);
+    if (hasVisibleHistory) return true;
+    const b = document.querySelector('[data-sidebar-toggle]') || document.querySelector('[title*="侧边栏"],[title*="展开"]');
+    if (b) { b.click(); return true; }
+    return false;
+  });
+}
 
 (async () => {
   const { url: INDEX } = await startUiTestServer();
@@ -246,6 +285,12 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   await sleep(700);
   const modelModalOutsideClick = await page.evaluate(async () => {
     const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const modelSection = [...document.querySelectorAll('aside button')]
+      .find(button => (button.textContent || '').trim() === '模型');
+    if (modelSection) {
+      modelSection.click();
+      await settle();
+    }
     const add = document.querySelector('[data-testid="settings-model-add"]');
     if (!add) return { addFound: false, opened: false, stayedOpen: false, cancelled: false };
     add.click();
@@ -342,11 +387,16 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
       await handler({ payload: { session_id: 's-blocked', status: 'blocked', stage: 'warmup', message: 'HTTP 401: authorization failed' } });
     }
     for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [])) {
-      await handler({ payload: { session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed', roles: { taizi: { status: 'pending' } } } });
+      await handler({ payload: {
+        session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed',
+        ui: { agentDefs: [{ id: 'taizi', name: '太子', desc: '接旨', color: '#8a1c1c' }], lanes: [{ title: '接旨', agents: ['taizi'] }] },
+        roles: { taizi: { name: '太子', status: 'failed', error: '模型服务鉴权失败：HTTP 401 authorization failed' } },
+      } });
     }
     const run = window.TauriBridge.getState().workflow.run;
     return {
       status: run.status,
+      agentError: run.agents.taizi && run.agents.taizi.error,
       blockedCards: (run.cards || []).filter(card => card.workflowBlocked).map(card => card.text),
     };
   });
@@ -354,9 +404,32 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     '①e 预热失败显示权威阻塞状态且不重复错误卡',
     blockedState.status === 'blocked'
       && blockedState.blockedCards.length === 1
-      && blockedState.blockedCards[0].includes('HTTP 401'),
+      && String(blockedState.blockedCards[0] || '').includes('HTTP 401')
+      && String(blockedState.agentError || '').includes('HTTP 401'),
     JSON.stringify(blockedState),
   );
+
+  // ①f 失败角色详情必须同时展示权威 error 和可读的结构化运行日志。
+  const failureDiagnostics = await page.evaluate(async () => {
+    window.TauriBridge.selectWorkflowRole('taizi');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return {
+      reason: (document.querySelector('[data-testid="workflow-failure-reason"]') || {}).textContent || '',
+      card: (document.querySelector('[data-testid="workflow-agent-error-taizi"]') || {}).textContent || '',
+      body: document.body.innerText,
+    };
+  });
+  rec(
+    '①f 失败角色展示具体原因和结构化运行日志',
+    failureDiagnostics.reason.includes('HTTP 401')
+      && failureDiagnostics.card.includes('HTTP 401')
+      && failureDiagnostics.body.includes('Tool write_file is not permitted')
+      && failureDiagnostics.body.includes('类型: 工具权限')
+      && failureDiagnostics.body.includes('Agent: agent_diag01')
+      && failureDiagnostics.body.includes('重试: 3/3'),
+    JSON.stringify(failureDiagnostics),
+  );
+  await page.evaluate(() => window.TauriBridge.closeWorkflowDrawer()); await sleep(100);
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
@@ -712,7 +785,77 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
-  // ⑦ MegaCube(GB10) 本地大模型引导框:eligible 时渲染标题+启用/暂不/不再提醒(默认 mock 返 eligible:false 不弹,这里末尾翻 __VLLM_ELIGIBLE__ 再手动触发 detect,不污染前序测试)
+  // ⑤b 收纳成功 toast 的「前往查看」必须直达设置页数据管理，且按钮不折行。
+  await expand(page); await sleep(200);
+  const archiveMenuOpened = await page.evaluate(() => {
+    const label = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left < 330);
+    const row = label && label.closest('div[class*="cursor-pointer"]');
+    if (!row) return false;
+    const rect = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + Math.min(rect.width - 12, 180),
+      clientY: rect.top + rect.height / 2,
+    }));
+    return true;
+  });
+  await sleep(250);
+  await clickText(page, '收纳');
+  await sleep(250);
+  await clickText(page, '确认收纳');
+  await sleep(450);
+  const archiveToastBefore = await page.evaluate(() => {
+    const button = [...document.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '前往查看');
+    const rect = button && button.getBoundingClientRect();
+    return {
+      opened: !!button,
+      noWrap: !!rect && rect.width >= 74 && rect.height <= 34,
+      text: document.body.innerText.includes('已收纳到【设置-任务收纳】'),
+    };
+  });
+  await clickText(page, '前往查看');
+  await sleep(600);
+  const archiveToastGoto = await page.evaluate(() => ({
+    currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
+    title: [...document.querySelectorAll('h1')].some(node => (node.textContent || '').trim() === '数据管理'),
+    archivedVisible: document.body.innerText.includes('第三季度财报分析'),
+    noSettingsError: !document.body.innerText.includes('设置页加载失败'),
+  }));
+  rec('⑤b 收纳 toast 前往查看直达设置-数据管理且按钮不折行',
+    archiveMenuOpened && archiveToastBefore.opened && archiveToastBefore.noWrap && archiveToastBefore.text &&
+    archiveToastGoto.currentView === 'settings' && archiveToastGoto.title && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
+    JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
+
+  // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
+  await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });
+  await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
+  await sleep(300);
+  const startingSetup = await page.evaluate(() => document.body.innerText.includes('启用本地大模型'));
+  rec('⑥ MegaCube 引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
+
+  // 将时钟推进到 12 分钟截止之后，等待内部自动轮询一次；卡死的 starting 必须恢复重试入口。
+  await page.evaluate(() => {
+    window.__VLLM_REAL_DATE_NOW__ = Date.now;
+    const base = Date.now();
+    Date.now = () => base + 13 * 60 * 1000;
+  });
+  await sleep(3300);
+  const timedOutSetup = await page.evaluate(() => {
+    const setup = window.TauriBridge.getState().vllmSetup || {};
+    return {
+      popup: document.body.innerText.includes('启用本地大模型'),
+      state: setup.engine_state,
+      timedOut: setup.detection_timed_out,
+    };
+  });
+  rec('⑦ MegaCube 引擎 starting 超时后恢复重试入口', timedOutSetup.popup && timedOutSetup.state === 'failed' && timedOutSetup.timedOut === true, JSON.stringify(timedOutSetup));
+
+  await page.evaluate(() => {
+    Date.now = window.__VLLM_REAL_DATE_NOW__;
+    window.__VLLM_STATE__ = 'stopped';
+  });
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
   await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
   await sleep(500);
@@ -720,9 +863,9 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
     const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
     return { title: document.body.innerText.includes('启用本地大模型'), enable: btns.includes('启用'), skip: btns.includes('暂不'), never: btns.includes('不再提醒') };
   });
-  rec('⑦ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
+  rec('⑧ MegaCube 引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
 
-  // ⑧ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
+  // ⑨ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
   await clickText(page, '不再提醒');
   await sleep(300);
   const decline = await page.evaluate(() => {
@@ -731,16 +874,16 @@ async function expand(page) { return page.evaluate(() => { const b = document.qu
   });
   await clickText(page, '再想想');
   await sleep(200);
-  rec('⑧ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
+  rec('⑨ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
 
-  // ⑨ 点「启用」→ 进行中步骤指示渲染(授权/等待步骤 + 计时;mock bootstrap 永不 resolve 停在进行中)
+  // ⑩ 点「启用」→ 立即进入等待系统授权；mock bootstrap 永不 resolve 停在进行中。
   await clickText(page, '启用');
   await sleep(700);
   const prog = await page.evaluate(() => {
     const txt = document.body.innerText;
-    return { auth: txt.includes('授权并启动引擎'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
+    return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
-  rec('⑨ 引导进行中步骤指示+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
+  rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
