@@ -444,20 +444,59 @@ impl RemoteControlManager {
                     .unwrap_or("")
                     .trim()
                     .to_string();
-                if content.is_empty() {
+                let attachment_upload_ids: Vec<String> = action
+                    .payload
+                    .get("attachment_upload_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if content.is_empty() && attachment_upload_ids.is_empty() {
                     Err("empty message".to_string())
-                } else if let Some(app) = &self.app {
-                    app.emit(
-                        "remote_control:mobile_user_message",
-                        json!({
-                            "session_id": active_session_id,
-                            "content": content,
-                            "client_message_id": action.client_message_id,
-                        }),
-                    )
-                    .map_err(|e| format!("emit mobile_user_message: {e}"))
                 } else {
-                    Ok(())
+                    // 收集 attachments:每个 upload_id 必须有 ingest_result(上传已完成)。
+                    // session_id 校验防 cross-session 取用别人的 pending attachment。
+                    let mut attachments: Vec<crate::file_ingest::IngestResult> = Vec::new();
+                    let mut missing: Vec<String> = Vec::new();
+                    {
+                        let mut inner = self.inner.lock();
+                        for upload_id in &attachment_upload_ids {
+                            match inner.pending_attachments.get_mut(upload_id) {
+                                Some(p) if p.session_id == active_session_id => {
+                                    match p.ingest_result.clone() {
+                                        Some(ir) => attachments.push(ir),
+                                        None => missing.push(upload_id.clone()),
+                                    }
+                                }
+                                _ => missing.push(upload_id.clone()),
+                            }
+                        }
+                        // 消费成功才删;若有 missing 不删,留给 mobile 重试或 abort。
+                        if missing.is_empty() {
+                            for upload_id in &attachment_upload_ids {
+                                inner.pending_attachments.remove(upload_id);
+                            }
+                        }
+                    }
+                    if !missing.is_empty() {
+                        Err(format!("attachments not ready: {}", missing.join(",")))
+                    } else if let Some(app) = &self.app {
+                        app.emit(
+                            "remote_control:mobile_user_message",
+                            json!({
+                                "session_id": active_session_id,
+                                "content": content,
+                                "client_message_id": action.client_message_id,
+                                "attachments": attachments,
+                            }),
+                        )
+                        .map_err(|e| format!("emit mobile_user_message: {e}"))
+                    } else {
+                        Ok(())
+                    }
                 }
             }
             "cancel_generation" => {
@@ -1984,18 +2023,211 @@ fn download_mime_for_ext(ext: &str) -> &'static str {
 impl RemoteControlManager {
     /// 上传分块流式任务(Group E 落地真正的写盘 + ingest + 完成事件)。
     ///
-    /// 当前为占位实现:逐块 drain 通道,防止 dispatch 端 `sender.send(...)` 因通道满而
-    /// 阻塞死锁。**TODO(Group E)**:替换为按 upload_id 写盘 → `file_ingest::ingest`
-    /// → 写 `pending_attachments[upload_id].ingest_result` → emit `attach_file_complete`。
+    /// 消费 dispatch 端投递的 `UploadChunkMsg`:逐块 base64 解码后已变 Vec<u8>,
+    /// 直接 `write_all` 写 `<uploads_base>/<upload_id>/data.bin`,每块写完发
+    /// `attach_file_relay_ack { index, ok: true }` 让 mobile 推下一块(背压源头)。
+    /// 最后一块(`last == true`)触发 flush + close → `file_ingest::ingest`(sync,
+    /// 放 `spawn_blocking` 避免阻塞 dispatcher)→ 写 `ingest_result` → emit
+    /// `attach_file_result { ok: true, ingest: <IngestResult> }`。
+    ///
+    /// 错误路径:
+    /// - 任何 IO 失败 → `attach_file_result { ok: false, error }` + cleanup;
+    /// - `rx.recv()` 超过 60s(ack 超时) → `attach_file_aborted { reason: "ack_timeout" }`;
+    /// - `rx.recv()` 返回 `None`(sender dropped,即 mobile abort/disconnect)
+    ///   → `attach_file_aborted { reason: "client_disconnected" }`。
+    ///
+    /// 上传成功完成后:active_upload 槽位让出(允许下一个 upload),但 pending_attachments
+    /// 保留到 user_message 取用(消费后才删)。
     async fn stream_file_upload(
         self,
         upload_id: String,
         mut rx: tokio::sync::mpsc::Receiver<UploadChunkMsg>,
     ) {
-        while let Some(_msg) = rx.recv().await {
-            // Group E:累积写入 `<uploads_base>/<upload_id>/data.bin`,最后一块时触发 ingest。
+        use tokio::io::AsyncWriteExt;
+
+        // 锁内只取写盘路径 + session_id,锁外做所有 await / fs / send_event。
+        // pending_attachments 已经被 cleanup 清掉时 session_id 空 → 直接退出。
+        let (data_path, session_id) = {
+            let inner = self.inner.lock();
+            let base = inner.uploads_base.join(&upload_id);
+            let session_id = inner
+                .pending_attachments
+                .get(&upload_id)
+                .map(|p| p.session_id.clone())
+                .unwrap_or_default();
+            (base.join("data.bin"), session_id)
+        };
+        if session_id.is_empty() {
+            // 不在 pending_attachments 里 → 已经被 cleanup 清掉了,直接退出。
+            return;
         }
-        let _ = upload_id;
+
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&data_path)
+            .await
+        {
+            Ok(f) => f,
+            Err(e) => {
+                self.send_event(
+                    &session_id,
+                    "attach_file_result",
+                    json!({
+                        "upload_id": upload_id,
+                        "ok": false,
+                        "error": format!("open data.bin: {e:#}"),
+                    }),
+                );
+                self.cleanup_active_upload("stream_open_failed");
+                return;
+            }
+        };
+
+        let mut index_expected = 0usize;
+        loop {
+            let recv = tokio::time::timeout(
+                Duration::from_secs(UPLOAD_ACK_TIMEOUT_SECS),
+                rx.recv(),
+            )
+            .await;
+            let msg = match recv {
+                Err(_) => {
+                    // 60s 没收到下一块 → 视为对端 / relay 异常,主动收尾。
+                    self.send_event(
+                        &session_id,
+                        "attach_file_aborted",
+                        json!({
+                            "upload_id": upload_id,
+                            "reason": "ack_timeout",
+                        }),
+                    );
+                    self.cleanup_active_upload("stream_ack_timeout");
+                    return;
+                }
+                Ok(None) => {
+                    // sender dropped(mobile abort / disconnect / cleanup 触发)。
+                    self.send_event(
+                        &session_id,
+                        "attach_file_aborted",
+                        json!({
+                            "upload_id": upload_id,
+                            "reason": "client_disconnected",
+                        }),
+                    );
+                    self.cleanup_active_upload("stream_sender_dropped");
+                    return;
+                }
+                Ok(Some(msg)) => msg,
+            };
+            // 索引连续性校验(防乱序 / 重发)。
+            if msg.index != index_expected {
+                self.send_event(
+                    &session_id,
+                    "attach_file_result",
+                    json!({
+                        "upload_id": upload_id,
+                        "ok": false,
+                        "error": format!(
+                            "chunk index out of order: expected {index_expected}, got {}",
+                            msg.index
+                        ),
+                    }),
+                );
+                self.cleanup_active_upload("stream_index_oob");
+                return;
+            }
+            if let Err(e) = file.write_all(&msg.data).await {
+                self.send_event(
+                    &session_id,
+                    "attach_file_result",
+                    json!({
+                        "upload_id": upload_id,
+                        "ok": false,
+                        "error": format!("write data.bin: {e:#}"),
+                    }),
+                );
+                self.cleanup_active_upload("stream_write_failed");
+                return;
+            }
+            // 回 chunk ack,让 mobile 发下一块(对应 mobile 端的 acknowledgeUploadChunk)。
+            self.send_event(
+                &session_id,
+                "attach_file_relay_ack",
+                json!({
+                    "upload_id": upload_id,
+                    "index": msg.index,
+                    "ok": true,
+                }),
+            );
+            index_expected += 1;
+            if msg.last {
+                break;
+            }
+        }
+
+        // flush + 关文件后再 ingest;ingest 是 sync + 可能重 I/O(图片/pdf/office
+        // 转换),放 spawn_blocking 避免阻塞 async dispatcher。
+        if let Err(e) = file.flush().await {
+            self.send_event(
+                &session_id,
+                "attach_file_result",
+                json!({
+                    "upload_id": upload_id,
+                    "ok": false,
+                    "error": format!("flush data.bin: {e:#}"),
+                }),
+            );
+            self.cleanup_active_upload("stream_flush_failed");
+            return;
+        }
+        drop(file);
+
+        let data_path_for_ingest = data_path.clone();
+        let ingest_result = match tokio::task::spawn_blocking(move || {
+            crate::file_ingest::ingest(&data_path_for_ingest)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(join_err) => {
+                self.send_event(
+                    &session_id,
+                    "attach_file_result",
+                    json!({
+                        "upload_id": upload_id,
+                        "ok": false,
+                        "error": format!("ingest join: {join_err:#}"),
+                    }),
+                );
+                self.cleanup_active_upload("stream_ingest_join_failed");
+                return;
+            }
+        };
+
+        // 把 ingest_result 存进 pending_attachments;清 active_upload 槽位
+        // (上传已完成,槽位让出,但 pending_attachments 保留到 user_message 取用)。
+        {
+            let mut inner = self.inner.lock();
+            if inner.active_upload.as_deref() == Some(&upload_id) {
+                inner.active_upload = None;
+                inner.upload_chunk_sender = None;
+            }
+            if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
+                p.ingest_result = Some(ingest_result.clone());
+            }
+        }
+
+        self.send_event(
+            &session_id,
+            "attach_file_result",
+            json!({
+                "upload_id": upload_id,
+                "ok": true,
+                "ingest": ingest_result,
+            }),
+        );
     }
 }
 
@@ -2688,6 +2920,137 @@ mod tests {
         assert!(
             manager.inner.lock().pending_attachments.is_empty(),
             "cleanup with no active upload must not populate pending_attachments"
+        );
+    }
+
+    /// 端到端 happy path:dispatch 推两块("hello" + "world",最后一块 last=true)→
+    /// stream_file_upload 必须 (1) 拼接写盘成 "helloworld";(2) 跑 file_ingest::ingest
+    /// 填 ingest_result;(3) 发 attach_file_result(ok=true);(4) 释放 active_upload 槽位。
+    ///
+    /// ingest 对 10 字节 .txt(由 data.bin 扩展名走 binary 兜底 —— 不需要任何外部工具)
+    /// 必返回有 basename/path/byte_size 的 IngestResult,无需 pandoc/pdftotext 等。
+    #[tokio::test]
+    async fn stream_file_upload_writes_chunks_and_ingests() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("stream-upload-happy");
+        let session_id = "rc-stream-happy-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        let upload_id = "up_stream_happy".to_string();
+        {
+            let mut inner = manager.inner.lock();
+            std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
+            inner.active_upload = Some(upload_id.clone());
+            inner.pending_attachments.insert(
+                upload_id.clone(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "hello.txt".to_string(),
+                    byte_size: 10,
+                    mime: "text/plain".to_string(),
+                    ingest_result: None,
+                },
+            );
+        }
+        // 推两块:第一块 "hello",最后一块 "world"。
+        let (tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+        tx.send(UploadChunkMsg {
+            upload_id: upload_id.clone(),
+            index: 0,
+            data: b"hello".to_vec(),
+            last: false,
+        })
+        .await
+        .unwrap();
+        tx.send(UploadChunkMsg {
+            upload_id: upload_id.clone(),
+            index: 1,
+            data: b"world".to_vec(),
+            last: true,
+        })
+        .await
+        .unwrap();
+        drop(tx); // 关 sender,避免后续 rx.recv() 永久挂起(streaming task 在 last 后已 break,不会等)
+
+        // stream_file_upload 消费 self(manager 是 Clone,Arc<Mutex<Inner>> 共享)。
+        // clone 一份调用,原 manager 留给后续断言用。
+        manager.clone().stream_file_upload(upload_id.clone(), rx).await;
+
+        let inner = manager.inner.lock();
+        let data_path = inner.uploads_base.join(&upload_id).join("data.bin");
+        let bytes = std::fs::read(&data_path).unwrap();
+        assert_eq!(
+            &bytes, b"helloworld",
+            "chunks must concatenate correctly into data.bin"
+        );
+        let pending = inner
+            .pending_attachments
+            .get(&upload_id)
+            .expect("pending_attachment preserved after successful upload");
+        let ir = pending
+            .ingest_result
+            .as_ref()
+            .expect("ingest_result must be filled after last chunk");
+        // ingest 用的是 data.bin 路径,basename 即 "data.bin";原 filename 保留在
+        // PendingAttachment.filename 里(供前端 UI 展示)。这是 spec §5 的已知取舍。
+        assert_eq!(ir.basename, "data.bin");
+        assert_eq!(ir.byte_size, 10);
+        assert!(
+            inner.active_upload.is_none(),
+            "active_upload slot must be released after successful upload"
+        );
+        assert!(
+            inner.upload_chunk_sender.is_none(),
+            "upload_chunk_sender must be cleared after successful upload"
+        );
+    }
+
+    /// Abort 路径:dispatch 还没推任何 chunk,channel sender 就被 drop(mobile abort /
+    /// disconnect)→ stream_file_upload 的 rx.recv() 立刻返回 None → 必须发
+    /// attach_file_aborted(reason=client_disconnected) + cleanup_active_upload(删盘 + 清状态)。
+    #[tokio::test]
+    async fn stream_file_upload_emits_aborted_on_sender_drop() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("stream-abort");
+        let session_id = "rc-stream-abort-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        let upload_id = "up_stream_abort".to_string();
+        {
+            let mut inner = manager.inner.lock();
+            std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
+            inner.active_upload = Some(upload_id.clone());
+            inner.pending_attachments.insert(
+                upload_id.clone(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "x.bin".to_string(),
+                    byte_size: 100,
+                    mime: "application/octet-stream".to_string(),
+                    ingest_result: None,
+                },
+            );
+        }
+        let (_tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+        drop(_tx); // 立即关 sender 模拟 mobile abort / disconnect
+
+        manager.clone().stream_file_upload(upload_id.clone(), rx).await;
+
+        let inner = manager.inner.lock();
+        assert!(
+            inner.active_upload.is_none(),
+            "cleanup must release active_upload slot on sender drop"
+        );
+        assert!(
+            inner.pending_attachments.is_empty(),
+            "cleanup must drop pending_attachment on sender drop"
+        );
+        let data_path = inner.uploads_base.join(&upload_id).join("data.bin");
+        assert!(
+            !data_path.exists(),
+            "cleanup must remove upload dir on sender drop"
         );
     }
 }
