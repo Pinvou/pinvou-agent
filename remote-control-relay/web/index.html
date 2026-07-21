@@ -795,8 +795,8 @@
       el.artifactTextChip.textContent = `${state.artifacts.length} 个产物`;
       el.modeChip.classList.add('control');
       el.modelChip.classList.add('control');
-      el.modeChip.innerHTML = `${state.chips.mode === 'plan' ? '◇' : '⚡'} <strong>${modeLabel(state.chips.mode)}</strong>`;
-      el.modelChip.innerHTML = `▣ ${state.chips.effective_model_name || '默认模型'}`;
+      el.modeChip.innerHTML = `${state.chips.mode === 'plan' ? '◇' : '⚡'} <strong>${escapeHtml(modeLabel(state.chips.mode))}</strong>`;
+      el.modelChip.innerHTML = `▣ ${escapeHtml(state.chips.effective_model_name || '默认模型')}`;
       [...el.chipbar.querySelectorAll('.chip.readonly')].forEach(node => node.remove());
       if (state.chips.skill && state.chips.skill.name) addReadonlyChip(`Skill ${state.chips.skill.name}`);
       if (state.chips.persona_id) addReadonlyChip(`Persona ${state.chips.persona_id}`);
@@ -811,9 +811,11 @@
         const mounted = state.kb && state.kb.mounted;
         if (mounted) {
           const col = (state.kb.collections || []).find(c => c && c.id === mounted);
-          el.knowledgeChip.innerHTML = '📚 <strong>' + ((col && (col.name || col.title)) || ('#' + mounted)) + '</strong>';
+          // 集合名是用户/服务端可控字符串,走 escapeHtml 防注入。
+          const label = (col && (col.name || col.title)) || ('#' + mounted);
+          el.knowledgeChip.innerHTML = '📚 <strong>' + escapeHtml(label) + '</strong>';
         } else {
-          el.knowledgeChip.innerHTML = '📚 知识库';
+          el.knowledgeChip.textContent = '📚 知识库';
         }
         el.knowledgeChip.disabled = !joined || state.replaced;
       }
@@ -974,6 +976,16 @@
     }
     function enterRemoteSession(id) {
       if (!id) return;
+      // 重入保护:500ms 内对同一 session 的重复点击短路(真实用户双击 / 误触连点),
+      // 但不阻塞正常重新进入 —— 仍允许用户在 500ms 之后强制刷新。
+      // 防止「双击同 session → 两次 list_kb_collections / list_tools / snapshot 风暴」。
+      const now = Date.now();
+      if (state.enterRemoteLastId === id && state.enterRemoteLastAt
+        && (now - state.enterRemoteLastAt) < 500) {
+        return;
+      }
+      state.enterRemoteLastId = id;
+      state.enterRemoteLastAt = now;
       state.pendingSessionId = id;
       state.sessionChoiceRequired = false;
       closeSheet();
@@ -985,6 +997,7 @@
         sendActionAwait('list_tools', {}).catch(() => {});
       };
       if (id === sessionId) {
+        // 同 session 重新进入:不切 session,只刷新当前视图。
         sendAction('request_snapshot', {});
         sendAction('request_chips', {});
         sendAction('request_artifacts', {});
@@ -1560,7 +1573,7 @@
       return false;
     }
     // 用户从 file picker 选了一个文件后调用:attach_file_start 等 ack → 分块上传
-    // (每块等 attach_file_relay_ack 再发下一块,NAK 重试 3 次) → 等 attach_file_result。
+    // (每块等 attach_file_relay_ack 再发下一块;仅对 rate_limited NAK 重试 3 次,硬错误立即抛出) → 等 attach_file_result。
     // 同时只允许一个上传在飞(state.uploadBusy)。
     async function requestAttachFile(file) {
       if (!joined || state.replaced) {
@@ -1569,6 +1582,18 @@
       }
       if (state.uploadBusy) {
         addSystem('已有附件正在上传,请等待完成或取消。');
+        return;
+      }
+      // 客户端预检:与桌面端 UPLOAD_LIMIT_BYTES=64MiB 对齐,避免把超大文件
+      // 完整 base64 后才被服务端拒绝(浪费带宽 + 误导性的 timeout 报错)。
+      // 与 startArtifactDownload 的 DOWNLOAD_LIMIT_BYTES 预检同源。
+      const UPLOAD_LIMIT_BYTES = 64 * 1024 * 1024;
+      if (!file || typeof file.size !== 'number' || file.size === 0) {
+        addSystem('空文件无法上传。');
+        return;
+      }
+      if (file.size > UPLOAD_LIMIT_BYTES) {
+        addSystem('附件超过 64MiB 上限,未上传。');
         return;
       }
       state.uploadBusy = true;
@@ -1639,8 +1664,16 @@
               await waitForRelayAck(realUploadId, index, 65000);
               break;
             } catch (e) {
-              if (attempt >= 3) throw e;
-              await new Promise(r => setTimeout(r, 1000 * attempt));
+              // 只对 rate_limited(NAK,relay 主动拒)重试;其他(timeout / ws 断)
+              // 是硬错误,继续重试只会逐级等满 65s 超时,立即抛出交给外层 catch。
+              const reason = (e && e.message) || '';
+              if (reason !== 'rate_limited' || attempt >= 3) throw e;
+              // rate_limited 时优先用服务端建议的 retry_after,缺省时退避。
+              const up = state.uploads[realUploadId] || {};
+              const backoff = (typeof up.retryAfter === 'number' && up.retryAfter > 0)
+                ? Math.min(up.retryAfter, 30000)
+                : 1000 * attempt;
+              await new Promise(r => setTimeout(r, backoff));
             }
           }
           offset = end;
@@ -2297,6 +2330,22 @@
     function clearUploadState(upload_id) {
       delete state.uploads[upload_id];
     }
+    // 统一回收所有上传相关异步资源(state.uploads / uploadStartResolvers / 三个
+    // debounce 定时器 / uploadBusy)。room_replaced / session_switch / ws.onclose
+    // 三条清理路径都要调,避免:
+    //   - zombie setTimeout 触发后被 sendAction 的 !joined 守卫吞掉(浪费 CPU);
+    //   - uploadStartResolvers['__pending__'] 旧 resolver 被新上传覆盖导致 promise 永悬;
+    //   - uploadBusy 卡 true 导致 attachBtn 永久禁用。
+    function clearAllUploadRuntime() {
+      Object.keys(state.uploads).forEach(clearUploadState);
+      if (state.uploadStartResolvers && state.uploadStartResolvers['__pending__']) {
+        try { state.uploadStartResolvers['__pending__'].reject(new Error('aborted')); } catch {}
+        delete state.uploadStartResolvers['__pending__'];
+      }
+      if (state.toolsDebounceTimer) { clearTimeout(state.toolsDebounceTimer); state.toolsDebounceTimer = null; }
+      if (state.toolsSetDebounceTimer) { clearTimeout(state.toolsSetDebounceTimer); state.toolsSetDebounceTimer = null; }
+      state.uploadBusy = false;
+    }
     // 根据 state.uploads 渲染附件预览卡片(文件名、进度、可中止)。空则隐藏整个区。
     function renderAttachmentPreview() {
       if (!el.attachmentPreview) return;
@@ -2890,8 +2939,7 @@
           state.kb.mounted = null;
           rejectAllPendingAcks('session switched');
           rejectAllPendingRelayAcksAll('session switched');
-          Object.keys(state.uploads).forEach(clearUploadState);
-          state.uploadBusy = false;
+          clearAllUploadRuntime();
           renderAttachmentPreview();
           state.sessionChoiceRequired = false;
           state.creatingSession = false;
@@ -3159,8 +3207,7 @@
         case 'room_replaced':
           rejectAllPendingAcks('room replaced');
           rejectAllPendingRelayAcksAll('room replaced');
-          Object.keys(state.uploads).forEach(clearUploadState);
-          state.uploadBusy = false;
+          clearAllUploadRuntime();
           state.kb.mounted = null;
           renderAttachmentPreview();
           showTakeoverScreen();
@@ -3223,8 +3270,7 @@
         clearTimeout(joinTimer);
         rejectAllPendingAcks('ws closed');
         rejectAllPendingRelayAcksAll('ws closed');
-        Object.keys(state.uploads).forEach(clearUploadState);
-        state.uploadBusy = false;
+        clearAllUploadRuntime();
         renderAttachmentPreview();
         updateChipLabels();
         abortArtifactDownloads('连接中断，请重试。');
