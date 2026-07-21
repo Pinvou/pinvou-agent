@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::protocol::{
     envelope, MobileAction, RemoteControlStatus, RemoteControlStatusKind, RemotePairingInfo,
@@ -376,6 +376,8 @@ impl RemoteControlManager {
                 | "request_artifact_preview"
                 | "request_chips"
                 | "disconnect"
+                // 分块流式上传按 upload_id 关联,不走 cmid 去重通道(每块都自带 cmid 反而难复用)。
+                | "attach_file_chunk"
         ) {
             let Some(id) = action.client_message_id.as_deref() else {
                 self.send_error("missing_client_message_id", "client_message_id required");
@@ -394,6 +396,8 @@ impl RemoteControlManager {
                     | "create_remote_session"
                     | "switch_remote_session"
                     | "disconnect"
+                    // 工具开关是全局态,刚扫码未选会话的移动端也能查目录,不必强制选中会话。
+                    | "list_tools"
             )
         {
             self.send_error("session_required", "please select a session first");
@@ -536,6 +540,204 @@ impl RemoteControlManager {
                 }
             }
             "discard_plan" => self.send_chips_snapshot(store, &active_session_id),
+            // --- 知识库 (KB) 分发:list / mount / unmount ---
+            "list_kb_collections" => {
+                let Some(app) = &self.app else {
+                    self.send_error("headless_unsupported", "knowledge service needs Tauri runtime");
+                    return;
+                };
+                let collections = match app.try_state::<crate::knowledge::KnowledgeService>() {
+                    Some(svc) => match svc.l1().list_collections() {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            self.send_error("kb_list_failed", &format!("{e:#}"));
+                            return;
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                let mounted = app
+                    .try_state::<SessionStore>()
+                    .and_then(|s| s.mounted_collection(&active_session_id));
+                self.send_event(
+                    &active_session_id,
+                    "kb_collections_snapshot",
+                    json!({
+                        "collections": collections,
+                        "mounted_collection_id": mounted,
+                    }),
+                );
+                return;
+            }
+            "mount_kb_collection" => {
+                let Some(app) = &self.app else {
+                    self.send_error("headless_unsupported", "knowledge service needs Tauri runtime");
+                    return;
+                };
+                let collection_id = action
+                    .payload
+                    .get("collection_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if collection_id <= 0 {
+                    self.send_error("invalid_collection_id", "collection_id required");
+                    return;
+                }
+                let (knowledge, store) = (
+                    app.try_state::<crate::knowledge::KnowledgeService>(),
+                    app.try_state::<SessionStore>(),
+                );
+                let Some(knowledge) = knowledge else {
+                    self.send_error("headless_unsupported", "knowledge service not managed");
+                    return;
+                };
+                let Some(store) = store else {
+                    self.send_error("headless_unsupported", "session store not managed");
+                    return;
+                };
+                // 完全门控:embedding 模型未就绪 → 知识库整体不可用,拒绝挂载
+                // (与 commands::session_mount_collection 同源兜底,防远程绕过)。
+                if !knowledge.semantic_ready() {
+                    self.send_error(
+                        "kb_not_ready",
+                        "embedding 模型未就绪,知识库暂不可用",
+                    );
+                    return;
+                }
+                // 拒绝挂载空集合(规范 §3 决策:doc_count==0 视为空)。
+                let non_empty = knowledge
+                    .l1()
+                    .list_collections()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|c| c.id == collection_id && c.doc_count > 0);
+                if !non_empty {
+                    self.send_error("collection_empty", "cannot mount empty collection");
+                    return;
+                }
+                store.set_mounted_collection(&active_session_id, Some(collection_id));
+                let _ = app.emit(
+                    "remote_control:kb_mount_changed",
+                    json!({
+                        "session_id": active_session_id,
+                        "collection_id": collection_id,
+                    }),
+                );
+                self.send_event(
+                    &active_session_id,
+                    "kb_mount_changed",
+                    json!({
+                        "session_id": active_session_id,
+                        "collection_id": collection_id,
+                    }),
+                );
+                return;
+            }
+            "unmount_kb_collection" => {
+                let Some(app) = &self.app else {
+                    self.send_error("headless_unsupported", "knowledge service needs Tauri runtime");
+                    return;
+                };
+                let Some(store) = app.try_state::<SessionStore>() else {
+                    self.send_error("headless_unsupported", "session store not managed");
+                    return;
+                };
+                store.set_mounted_collection(&active_session_id, None);
+                let _ = app.emit(
+                    "remote_control:kb_mount_changed",
+                    json!({
+                        "session_id": active_session_id,
+                        "collection_id": null,
+                    }),
+                );
+                self.send_event(
+                    &active_session_id,
+                    "kb_mount_changed",
+                    json!({
+                        "session_id": active_session_id,
+                        "collection_id": Value::Null,
+                    }),
+                );
+                return;
+            }
+            // --- 工具开关 (tools) 分发:list / set ---
+            "list_tools" => {
+                let Some(_app) = &self.app else {
+                    self.send_error("headless_unsupported", "marketplace needs Tauri runtime");
+                    return;
+                };
+                // list_marketplace_tools 是 sync I/O(扫 manifest 目录),走 spawn_blocking
+                // 避免阻塞 dispatcher 协程。
+                let all = match tokio::task::spawn_blocking(|| {
+                    crate::commands::list_marketplace_tools()
+                })
+                .await
+                {
+                    Ok(Ok(tools)) => tools,
+                    Ok(Err(e)) => {
+                        self.send_error("tools_list_failed", &format!("{e:#}"));
+                        return;
+                    }
+                    Err(e) => {
+                        self.send_error("tools_list_failed", &format!("join: {e:#}"));
+                        return;
+                    }
+                };
+                let disabled_ids = crate::bridge::marketplace::load_disabled_connectors();
+                self.send_event(
+                    &active_session_id,
+                    "tools_snapshot",
+                    json!({
+                        "all": all,
+                        "disabled_ids": disabled_ids,
+                    }),
+                );
+                return;
+            }
+            "set_disabled_connectors" => {
+                let Some(app) = &self.app else {
+                    self.send_error("headless_unsupported", "marketplace needs Tauri runtime");
+                    return;
+                };
+                let ids: Vec<String> = action
+                    .payload
+                    .get("connector_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match crate::commands::apply_disabled_connectors(Some(app), pool, ids).await {
+                    Ok(()) => {
+                        // apply_disabled_connectors 自身不 emit,这里补一次本地广播。
+                        let _ = app.emit("remote_control:tools_changed", ());
+                        self.send_event(
+                            &active_session_id,
+                            "tools_changed",
+                            json!({}),
+                        );
+                    }
+                    Err(e) => self.send_error("set_tools_failed", &format!("{e:#}")),
+                }
+                return;
+            }
+            // --- 附件上传 (attach) 分发:start / chunk / abort ---
+            // 三个动作都不依赖 EnginePool / SessionStore / KB / 工具市场,只读 manager 内部状态,
+            // 因此抽到独立私有方法里(便于单测直接调,不必起 EnginePool)。
+            "attach_file_start" => {
+                self.handle_attach_file_start(&active_session_id, &action.payload);
+                return;
+            }
+            "attach_file_chunk" => {
+                self.handle_attach_file_chunk(&action.payload).await;
+                return;
+            }
+            "attach_file_abort" => {
+                self.handle_attach_file_abort(&active_session_id, &action.payload);
+                return;
+            }
             "set_mode" => {
                 let mode = match action.payload.get("mode").and_then(|v| v.as_str()) {
                     Some(mode) => mode,
@@ -1149,6 +1351,194 @@ impl RemoteControlManager {
         }
     }
 
+    /// 推一帧事件给当前会话绑定的房间。room 不存在或 session_id 不匹配时静默丢弃
+    /// (与 forward_local_event / send_artifact_list 等既有路径一致)。
+    fn send_event(&self, session_id: &str, kind: &str, payload: Value) {
+        let room = {
+            let inner = self.inner.lock();
+            inner
+                .room
+                .as_ref()
+                .filter(|room| room.session_id == session_id)
+                .cloned()
+        };
+        if let Some(room) = room {
+            let _ = room.sender.send(RelayOutbound::Envelope(envelope(
+                &room.room_id,
+                &room.session_id,
+                kind,
+                payload,
+            )));
+        }
+    }
+
+    // ─── 附件上传分发(attach_file_*)───
+    // 不读 EnginePool / SessionStore / KB / 工具市场,只操作 manager 内部上传状态,
+    // 因此独立成方法,dispatch arm 仅做薄转发;单测可直接调,不必起 EnginePool。
+
+    /// 处理 `attach_file_start`:校验 → 占用 active_upload 槽位 → 起 streaming task →
+    /// 回 `attach_file_start_ack`。streaming task(Group E)负责真正的写盘 + ingest。
+    fn handle_attach_file_start(&self, active_session_id: &str, payload: &Value) {
+        let filename = payload
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let byte_size = payload.get("byte_size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let mime = payload
+            .get("mime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        if filename.is_empty() || byte_size == 0 {
+            self.send_error("invalid_attach_params", "filename and byte_size required");
+            return;
+        }
+        if byte_size > UPLOAD_LIMIT_BYTES {
+            self.send_error("upload_too_large", &format!("max {UPLOAD_LIMIT_BYTES} bytes"));
+            return;
+        }
+        // 关键:锁内分支只决定"是否要拒绝",不在锁内调 send_error / send_event
+        // (二者都会再 `inner.lock()` → re-entrant 死锁)。锁外再回错。
+        let prepared = {
+            let mut inner = self.inner.lock();
+            if inner.active_upload.is_some() {
+                Err("upload_in_progress:another upload is running")
+            } else {
+                // 与 download_id 同源格式:pid + nanos,保持单调,便于日志排查。
+                let upload_id = format!(
+                    "up_{}_{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                );
+                let upload_dir = inner.uploads_base.join(&upload_id);
+                if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+                    return self.send_error("upload_dir_failed", &format!("{e:#}"));
+                }
+                let (tx, rx) =
+                    tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+                inner.active_upload = Some(upload_id.clone());
+                inner.upload_chunk_sender = Some(tx);
+                inner.pending_attachments.insert(
+                    upload_id.clone(),
+                    PendingAttachment {
+                        session_id: active_session_id.to_string(),
+                        filename: filename.clone(),
+                        byte_size,
+                        mime: mime.clone(),
+                        ingest_result: None,
+                    },
+                );
+                Ok((upload_id, rx))
+            }
+        };
+        let (upload_id, rx) = match prepared {
+            Ok(pair) => pair,
+            Err(msg) => {
+                // msg 形如 "code:human message";无冒号时整体当 message,code 兜底。
+                let (code, message): (&str, &str) = match msg.split_once(':') {
+                    Some((c, m)) => (c, m),
+                    None => ("upload_failed", &msg),
+                };
+                self.send_error(code, message);
+                return;
+            }
+        };
+        // 启动流式任务消费分块(Group E 落地真正的写盘 + ingest 逻辑)。
+        let manager_clone = self.clone();
+        tauri::async_runtime::spawn(manager_clone.stream_file_upload(upload_id.clone(), rx));
+        self.send_event(
+            active_session_id,
+            "attach_file_start_ack",
+            json!({
+                "upload_id": upload_id,
+                "chunk_bytes": UPLOAD_CHUNK_BYTES,
+            }),
+        );
+    }
+
+    /// 处理 `attach_file_chunk`:base64 解码 → 投到 streaming task 通道。ACK 由
+    /// streaming task(Group E)写盘成功后 emit `attach_file_relay_ack`,不在本方法里。
+    async fn handle_attach_file_chunk(&self, payload: &Value) {
+        let upload_id = payload
+            .get("upload_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let index = payload
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let last = payload.get("last").and_then(|v| v.as_bool()).unwrap_or(false);
+        let data_b64 = payload.get("data_base64").and_then(|v| v.as_str()).unwrap_or("");
+        let data = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
+            Ok(d) => d,
+            Err(e) => {
+                self.send_error("invalid_base64", &format!("{e:#}"));
+                return;
+            }
+        };
+        // 关键:在锁外 await,避免持有 parking_lot::Mutex 跨 await 点死锁。
+        let sender = {
+            let inner = self.inner.lock();
+            if inner.active_upload.as_deref() != Some(&upload_id) {
+                self.send_error("unknown_upload", "upload_id not active");
+                return;
+            }
+            inner.upload_chunk_sender.clone()
+        };
+        let Some(sender) = sender else {
+            self.send_error("upload_closed", "sender dropped");
+            return;
+        };
+        if let Err(e) = sender
+            .send(UploadChunkMsg {
+                upload_id,
+                index,
+                data,
+                last,
+            })
+            .await
+        {
+            self.send_error("upload_send_failed", &format!("{e:#}"));
+        }
+    }
+
+    /// 处理 `attach_file_abort`:丢 sender 让 streaming task 自然收尾 → 删盘上数据 → 回 ACK。
+    fn handle_attach_file_abort(&self, active_session_id: &str, payload: &Value) {
+        let upload_id = payload
+            .get("upload_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let dir_to_remove = {
+            let mut inner = self.inner.lock();
+            if inner.active_upload.as_deref() != Some(&upload_id) {
+                self.send_error("unknown_upload", "upload_id not active");
+                return;
+            }
+            // 丢掉 sender 让 streaming task 自然结束(rx 返回 None)。
+            inner.upload_chunk_sender = None;
+            inner.active_upload = None;
+            inner.pending_attachments.remove(&upload_id);
+            Some(inner.uploads_base.join(&upload_id))
+        };
+        if let Some(dir) = dir_to_remove {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        self.send_event(
+            active_session_id,
+            "attach_file_aborted",
+            json!({
+                "upload_id": upload_id,
+                "reason": "client_abort",
+            }),
+        );
+    }
+
     fn emit_status(&self) {
         if let Some(app) = &self.app {
             let _ = app.emit("remote_control:status", self.status());
@@ -1548,6 +1938,24 @@ fn download_mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
+impl RemoteControlManager {
+    /// 上传分块流式任务(Group E 落地真正的写盘 + ingest + 完成事件)。
+    ///
+    /// 当前为占位实现:逐块 drain 通道,防止 dispatch 端 `sender.send(...)` 因通道满而
+    /// 阻塞死锁。**TODO(Group E)**:替换为按 upload_id 写盘 → `file_ingest::ingest`
+    /// → 写 `pending_attachments[upload_id].ingest_result` → emit `attach_file_complete`。
+    async fn stream_file_upload(
+        self,
+        upload_id: String,
+        mut rx: tokio::sync::mpsc::Receiver<UploadChunkMsg>,
+    ) {
+        while let Some(_msg) = rx.recv().await {
+            // Group E:累积写入 `<uploads_base>/<upload_id>/data.bin`,最后一块时触发 ingest。
+        }
+        let _ = upload_id;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1849,6 +2257,136 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
+    }
+
+    /// 直接走 handle_attach_file_start,断言 attach_file_start 在超限时拒绝并保留无 active_upload
+    /// (而非 panic / 静默)。headless 模式不需要 AppHandle,attach 不读 KB / 工具市场。
+    /// 用 `#[test]` + `block_on` 而非 `#[tokio::test]`,以与 concurrent_download 测试对齐:
+    /// `tauri::async_runtime::spawn` 派发的 streaming task 必须挂在 tauri runtime 上才能被调度。
+    #[test]
+    fn attach_file_start_rejects_oversize() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-oversize");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-oversize-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_oversize".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+        }
+
+        // 比 UPLOAD_LIMIT_BYTES 多 1 字节,触发 upload_too_large。
+        let payload = serde_json::json!({
+            "filename": "huge.bin",
+            "byte_size": UPLOAD_LIMIT_BYTES + 1,
+            "mime": "application/octet-stream",
+        });
+        manager.handle_attach_file_start(&session_id, &payload);
+
+        // 锁不应被占用:send_error 必须在 spawn 前短路。
+        assert!(
+            manager.inner.lock().active_upload.is_none(),
+            "oversize upload must not occupy the upload slot"
+        );
+        assert!(
+            manager.inner.lock().pending_attachments.is_empty(),
+            "oversize upload must not register a pending attachment"
+        );
+    }
+
+    /// 一个上传进行中时,第二个 start 必须被拒(upload_in_progress),active_upload 不被替换。
+    /// 第三步 abort 验证槽位能放出来。
+    ///
+    /// 不通过 `handle_attach_file_start` 起第一个 upload(那会触发 streaming task spawn,
+    /// 而本测试是 sync `#[test]`,无法驱动 tauri::async_runtime 让 task 前进 —— 会让进程
+    /// 在退出时 hang 在 task join 上)。直接手工写入 `active_upload`,只覆盖并发拒绝 + abort
+    /// 释放两条纯同步路径。streaming task 的端到端正确性留给 Group E / Group L 的集成测试。
+    #[test]
+    fn attach_file_start_blocks_concurrent() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-concurrent");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-concurrent-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_concurrent".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+        }
+
+        // 手工占用 upload 槽位(模拟"已有一个 upload 进行中"):
+        // 写入 active_upload + pending_attachments,但**不**起 streaming task。
+        // 这样可以纯同步地覆盖并发拒绝 + abort 释放两条路径,无需驱动 tauri runtime
+        // 让 streaming task 前进 —— 否则 sync `#[test]` 进程退出时会 hang 在 task join 上。
+        // streaming task 的端到端正确性留给 Group E / Group L 的集成测试。
+        let existing_upload_id = "up_existing_test".to_string();
+        {
+            let mut inner = manager.inner.lock();
+            inner.active_upload = Some(existing_upload_id.clone());
+            inner.pending_attachments.insert(
+                existing_upload_id.clone(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "preexisting.bin".to_string(),
+                    byte_size: 1024,
+                    mime: "application/octet-stream".to_string(),
+                    ingest_result: None,
+                },
+            );
+        }
+
+        // 第二次 start 必须被拒:槽位被占 → send_error(upload_in_progress),active 不被替换。
+        let second_payload = serde_json::json!({
+            "filename": "b.bin",
+            "byte_size": 1024u64,
+            "mime": "application/octet-stream",
+        });
+        manager.handle_attach_file_start(&session_id, &second_payload);
+
+        let active_after_second = manager.inner.lock().active_upload.clone();
+        assert_eq!(
+            active_after_second.as_deref(),
+            Some(existing_upload_id.as_str()),
+            "second attach_file_start must not evict the active upload"
+        );
+
+        // abort 当前 upload,验证槽位真的能放出来(覆盖 abort 路径)。
+        let abort_payload = serde_json::json!({ "upload_id": existing_upload_id });
+        manager.handle_attach_file_abort(&session_id, &abort_payload);
+
+        assert!(
+            manager.inner.lock().active_upload.is_none(),
+            "attach_file_abort must release the upload slot"
+        );
+        assert!(
+            manager.inner.lock().pending_attachments.is_empty(),
+            "attach_file_abort must drop the pending attachment"
+        );
     }
 }
 
