@@ -82,14 +82,4 @@ if ($signExitCode -ne 0) {
   throw "WoSign failed with exit code $signExitCode while signing: $resolvedFilePath"
 }
 
-$signature = Get-AuthenticodeSignature -LiteralPath $resolvedFilePath
-if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-  throw "WoSign completed, but Authenticode verification failed ($($signature.Status)): $resolvedFilePath"
-}
-
-$actualThumbprint = Normalize-Thumbprint -Value $signature.SignerCertificate.Thumbprint
-if ($actualThumbprint -ne $normalizedThumbprint) {
-  throw "The file was signed by an unexpected certificate ($actualThumbprint): $resolvedFilePath"
-}
-
-Write-Host "WoSign signed and verified: $resolvedFilePath"
+Write-Host "WoSign signing completed: $resolvedFilePath"

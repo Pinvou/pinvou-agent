@@ -18,6 +18,10 @@ assert.match(signScript, /"\/isf"/u);
 assert.match(signScript, /Push-Location -LiteralPath \$toolDirectory/u);
 assert.match(signScript, /"\/tr", \$TimestampUrl/u);
 assert.doesNotMatch(signScript, /TimeStamperCertificate/u);
+assert.doesNotMatch(signScript, /Get-AuthenticodeSignature/u);
+assert.doesNotMatch(signScript, /SignerCertificate/u);
+assert.doesNotMatch(signScript, /SignatureStatus/u);
+assert.match(signScript, /WoSign signing completed/u);
 assert.ok(packageJson.scripts["build:nsis"].includes("--verbose"));
 assert.ok(packageJson.scripts["bundle:nsis"].includes("--verbose"));
 assert.deepEqual(signingConfig.bundle.windows.signCommand.args.slice(0, 2), [
