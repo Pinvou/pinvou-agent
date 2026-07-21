@@ -94,11 +94,16 @@ validate_config() {
     *"$BASE_PATH"*) ;;
     *) echo "拒绝执行: PUBLIC_URL=$PUBLIC_URL 与 BASE_PATH=$BASE_PATH 不一致" >&2; err=1 ;;
   esac
+  # TEST_DIR/BASE_PATH 会被拼接进远端命令与 heredoc,只允许安全字符集
+  # (字母数字与 . _ / -;排除空白、引号、$、反引号、分号等一切 shell 元字符)。
+  if [[ ! "$TEST_DIR" =~ ^[A-Za-z0-9._/-]+$ || ! "$BASE_PATH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    echo "拒绝执行: TEST_DIR/BASE_PATH 只允许字母数字与 . _ / -" >&2; err=1
+  fi
   [ "$err" = 0 ] || exit 1
 }
 
-relay_ssh() { ssh -i "$SSH_KEY" "$RELAY_SERVER" "$@"; }
-proxy_ssh() { ssh -i "$SSH_KEY" "$PROXY_SERVER" "$@"; }
+relay_ssh() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=15 "$RELAY_SERVER" "$@"; }
+proxy_ssh() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=15 "$PROXY_SERVER" "$@"; }
 
 # ssh 会把所有命令参数用空格拼接成一个字符串,交给远端登录 shell 重新分词——
 # 含空格的参数(如公钥)若不按远端 shell 语法二次引用,会被拆散(2026-07-21 实测踩坑:
@@ -117,11 +122,15 @@ case "$test_dir" in
   /opt/pinvou-remote-relay-test|/opt/pinvou-remote-relay-test-*|/opt/pinvou-remote-relay-test/*) ;;
   *) echo "拒绝删除: test_dir=$test_dir 不在测试目录白名单内" >&2; exit 1 ;;
 esac
+if [[ ! "$test_dir" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  echo "拒绝删除: test_dir=$test_dir 含非法字符" >&2; exit 1
+fi
 systemctl disable --now "$tunnel_service" 2>/dev/null || true
 systemctl disable --now "$service" 2>/dev/null || true
 rm -f "/etc/systemd/system/$tunnel_service" "/etc/systemd/system/$service"
 rm -f /root/.ssh/id_ed25519_relay_test_tunnel /root/.ssh/id_ed25519_relay_test_tunnel.pub
-rm -rf "$test_dir" "$test_dir.bak" "$test_dir.failed" /var/lib/pinvou-telemetry-test
+rm -rf "$test_dir" "$test_dir.bak" "$test_dir.failed" "$test_dir.extract" "$test_dir.new" /var/lib/pinvou-telemetry-test
+rm -f "$test_dir.staging.tar.gz" "$test_dir.staging.tar.gz.tmp"
 systemctl daemon-reload
 echo "relay 主机:已移除测试实例与隧道"
 REMOTE
@@ -129,12 +138,31 @@ REMOTE
   proxy_ssh "bash -s -- $(shq_all "$NGINX_SNIPPET" "$NGINX_SITE" "$TUNNEL_KEY_COMMENT" "$TUNNEL_USER")" <<'REMOTE'
 set -euo pipefail
 snippet="$1"; site="$2"; key_comment="$3"; tunnel_user="$4"
-sudo cp -a "$site" "$site.bak-teardown-$(date +%Y%m%d-%H%M%S)"
+# 与部署阶段同理:解析软链真实路径(sed -i 会断软链),备份放 sites-enabled 之外。
+site="$(sudo readlink -f "$site")"
+backup_dir="/etc/nginx/pinvou-backups"
+sudo install -d -m 755 "$backup_dir"
+sudo cp -a "$site" "$backup_dir/pinvou.bak-teardown-$(date +%Y%m%d-%H%M%S)"
 sudo sed -i "\|include $snippet;|d" "$site"
 sudo rm -f "$snippet" "$snippet.new" "$snippet.rollback"
-# 专用隧道账号连同 home(含 authorized_keys)一起移除。
+# 兼容旧版脚本:遗留在 sites-enabled 的 pinvou.bak-* 备份会被 nginx 当活配置加载,移走。
+if ls /etc/nginx/sites-enabled/pinvou.bak-* >/dev/null 2>&1; then
+  sudo mv /etc/nginx/sites-enabled/pinvou.bak-* "$backup_dir/"
+fi
+# 专用隧道账号:先终止其残留进程(隧道客户端刚停,代理侧 sshd 会话可能仍在,
+# 直接 userdel 会报 "user is currently used by process" —— 2026-07-21 实测),
+# 再连同 home(含 authorized_keys)移除;重试 3 次仍失败则告警但不阻塞 nginx 清理。
 if id "$tunnel_user" >/dev/null 2>&1; then
-  sudo userdel -r "$tunnel_user" 2>/dev/null || sudo userdel "$tunnel_user"
+  sudo pkill -u "$tunnel_user" 2>/dev/null || true
+  sleep 1
+  sudo pkill -9 -u "$tunnel_user" 2>/dev/null || true
+  for attempt in 1 2 3; do
+    sudo userdel -r "$tunnel_user" 2>/dev/null && break
+    sleep 1
+  done
+  if id "$tunnel_user" >/dev/null 2>&1; then
+    echo "⚠ 未能删除 $tunnel_user 账号(仍有进程占用),nginx 清理继续;可重跑 --teardown 收敛" >&2
+  fi
 fi
 # 兼容旧版脚本:清理 admin 自己 authorized_keys 里的历史隧道 key 条目(原子替换)。
 if [ -f "$HOME/.ssh/authorized_keys" ] && grep -q " $key_comment\$" "$HOME/.ssh/authorized_keys"; then
@@ -165,16 +193,13 @@ if [[ "${SKIP_LOCAL_TESTS:-0}" != "1" ]]; then
   (cd "$RELAY_DIR" && npm test)
 fi
 
-STAGE="上传 relay 代码(旧版备份为 $TEST_DIR.bak)"
-echo "── 上传 relay 代码到 $RELAY_SERVER:$TEST_DIR ──"
-# 先整目录备份现役版本(含 node_modules),供健康检查失败时回滚;再覆盖上传。
-relay_ssh "if [ -d '$TEST_DIR' ]; then rm -rf '$TEST_DIR.bak' && cp -a '$TEST_DIR' '$TEST_DIR.bak'; fi; mkdir -p '$TEST_DIR/web'"
-scp -i "$SSH_KEY" \
-  "$RELAY_DIR/server.js" "$RELAY_DIR/telemetry-service.js" \
-  "$RELAY_DIR/package.json" "$RELAY_DIR/package-lock.json" \
-  "$RELAY_SERVER:$TEST_DIR/"
-scp -i "$SSH_KEY" "$RELAY_DIR/web/index.html" "$RELAY_DIR/web/stats.html" \
-  "$RELAY_SERVER:$TEST_DIR/web/"
+STAGE="打包并上传 relay 代码(tarball 暂存)"
+echo "── 上传 relay 代码到 $RELAY_SERVER:$TEST_DIR(暂存 + 整体替换)──"
+# 打成单个 tarball 流式上传,.tmp 落盘后原子 mv——scp 逐文件覆盖若中断会留下半新半旧的目录,
+# 服务一旦因故重启就会加载混合版本(与评审「暂存+原子替换」同类的隐患)。
+tar -czf - -C "$RELAY_DIR" \
+  server.js telemetry-service.js package.json package-lock.json web/index.html web/stats.html \
+  | relay_ssh "cat > '$TEST_DIR.staging.tar.gz.tmp' && mv '$TEST_DIR.staging.tar.gz.tmp' '$TEST_DIR.staging.tar.gz'"
 
 STAGE="配置并重启测试 relay 实例(端口 $TEST_PORT,含失败回滚)"
 echo "── 配置并重启测试 relay 实例(端口 $TEST_PORT) ──"
@@ -182,8 +207,16 @@ relay_ssh "bash -s -- $(shq_all "$TEST_DIR" "$TEST_PORT" "$BASE_PATH" "$SERVICE"
 set -euo pipefail
 test_dir="$1"; port="$2"; base_path="$3"; service="$4"; proxy_server="$5"
 proxy_ip="${proxy_server#*@}"
-cd "$test_dir"
-npm ci --omit=dev --no-audit --no-fund > /dev/null
+# 先解包到暂存目录并装依赖:此步失败则现役目录未被触碰,在跑服务不受影响。
+rm -rf "$test_dir.extract"
+mkdir -p "$test_dir.extract"
+tar -xzf "$test_dir.staging.tar.gz" -C "$test_dir.extract"
+rm -f "$test_dir.staging.tar.gz"
+(cd "$test_dir.extract" && npm ci --omit=dev --no-audit --no-fund > /dev/null)
+# 整体替换:旧版保留为 .bak 供回滚。
+rm -rf "$test_dir.bak"
+[ ! -d "$test_dir" ] || mv "$test_dir" "$test_dir.bak"
+mv "$test_dir.extract" "$test_dir"
 mkdir -p /var/lib/pinvou-telemetry-test
 cat > "/etc/systemd/system/$service" <<EOF
 [Unit]
@@ -334,6 +367,13 @@ echo "── 配置前端代理 nginx($BASE_PATH) ──"
 proxy_ssh "bash -s -- $(shq_all "$NGINX_SNIPPET" "$NGINX_SITE" "$TEST_PORT" "$BASE_PATH")" <<'REMOTE'
 set -euo pipefail
 snippet="$1"; site="$2"; port="$3"; base_path="$4"
+# sites-enabled/pinvou 是指向 sites-available 的软链:sed -i 会把软链替换成脱钩的
+# 普通文件(2026-07-21 实测踩坑),一律解析到真实路径再改。
+# 备份统一放 /etc/nginx/pinvou-backups/:sites-enabled/ 下的任何文件都会被 nginx
+# 当作活配置加载,备份放里面会污染配置(同上实测)。
+site="$(sudo readlink -f "$site")"
+backup_dir="/etc/nginx/pinvou-backups"
+sudo install -d -m 755 "$backup_dir"
 # 1) 暂存新 snippet(不影响现役配置)
 sudo tee "$snippet.new" > /dev/null <<EOF
     # PINVOU3 手机远控【测试端点】— 独立 relay 实例,由 deploy-remote-relay-test.sh 管理。
@@ -384,7 +424,7 @@ else
 fi
 site_changed=0
 if ! sudo grep -qF "include $snippet;" "$site"; then
-  sudo cp -a "$site" "$site.bak-$(date +%Y%m%d-%H%M%S)"
+  sudo cp -a "$site" "$backup_dir/pinvou.bak-$(date +%Y%m%d-%H%M%S)"
   sudo sed -i "s|    include /etc/nginx/snippets/pinvou3-remote-relay.conf;|    include /etc/nginx/snippets/pinvou3-remote-relay.conf;\n    include $snippet;|" "$site"
   site_changed=1
 fi
@@ -410,12 +450,41 @@ REMOTE
 
 STAGE="公网验证"
 echo "── 公网验证 ──"
-health="$(curl -fsS --max-time 10 "$PUBLIC_URL/healthz")"
-echo "$health" | node -e 'const h=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!h.ok||!("room_count" in h)) process.exit(1)'
-page="$(curl -fsSL --max-time 10 "$PUBLIC_URL/r/deploy-check")"
-[[ "$page" == *'<title>PINVOU Remote</title>'* ]]
-prod_health="$(curl -fsS --max-time 10 "https://pinvou.com/pinvou3/remote/healthz")"
-echo "$prod_health" | node -e 'const h=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!h.ok) process.exit(1)'
+public_verify() {
+  local health page prod_health
+  health="$(curl -fsS --max-time 10 "$PUBLIC_URL/healthz")" || return 1
+  echo "$health" | node -e 'const h=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!h.ok||!("room_count" in h)) process.exit(1)' || return 1
+  page="$(curl -fsSL --max-time 10 "$PUBLIC_URL/r/deploy-check")" || return 1
+  [[ "$page" == *'<title>PINVOU Remote</title>'* ]] || return 1
+  prod_health="$(curl -fsS --max-time 10 "https://pinvou.com/pinvou3/remote/healthz")" || return 1
+  echo "$prod_health" | node -e 'const h=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!h.ok) process.exit(1)' || return 1
+}
+# 公网验证失败时回滚 relay 侧到上一版并重启(与生产 deploy-remote-relay.sh 同语义);
+# 隧道/nginx 变更有各自的 nginx -t 门控,不在此回退。
+rollback_relay() {
+  echo "── 公网验证失败,回滚 relay 侧到上一版 ──" >&2
+  relay_ssh "bash -s -- $(shq_all "$TEST_DIR" "$TEST_PORT" "$BASE_PATH" "$SERVICE")" <<'REMOTE'
+set -euo pipefail
+test_dir="$1"; port="$2"; base_path="$3"; service="$4"
+if [ ! -d "$test_dir.bak" ]; then
+  echo "⚠ 无历史版本可回滚" >&2
+  exit 1
+fi
+rm -rf "$test_dir.failed"
+mv "$test_dir" "$test_dir.failed"
+mv "$test_dir.bak" "$test_dir"
+systemctl restart "$service"
+sleep 2
+systemctl is-active --quiet "$service" && curl -fsS "http://127.0.0.1:$port$base_path/healthz" > /dev/null \
+  && echo "已恢复上一版并通过健康检查(失败版本保留在 $test_dir.failed)" \
+  || { echo "⚠ 回滚后健康检查仍未通过,请人工检查: journalctl -u $service" >&2; exit 1; }
+REMOTE
+}
+if ! public_verify; then
+  rollback_relay || true
+  echo "✗ 部署后公网验证失败,已回滚 relay 侧;请按上方阶段输出排查隧道/nginx/公网链路" >&2
+  exit 1
+fi
 
 STAGE="完成"
 echo "部署完成: $PUBLIC_URL"

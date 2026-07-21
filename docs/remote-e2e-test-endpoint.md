@@ -70,16 +70,20 @@ telemetry 数据目录独立（`/var/lib/pinvou-telemetry-test`），与生产�
 **安全校验**：在任何远端变更之前，脚本会校验目标 host（`RELAY_SERVER`/`PROXY_SERVER`
 必须等于登记的两台主机）、`TEST_DIR`（必须是 `/opt/pinvou-remote-relay-test` 本身或其
 后缀/子目录）、`TEST_PORT`（1024–65535 且不得为生产端口 8787）、`BASE_PATH`
-（必须以 `/pinvou3/remote-test` 开头）。任一不符直接拒绝执行——包括 `--teardown` 的
+（必须以 `/pinvou3/remote-test` 开头），且 `TEST_DIR`/`BASE_PATH` 只允许
+字母数字与 `. _ / -`（会被拼接进远端命令，排除一切 shell 元字符）。任一不符直接拒绝执行——包括 `--teardown` 的
 `rm -rf` 也依赖这道白名单（远端还会二次校验）。
 
-**失败处理**：远端每处变更都按「暂存文件 → 原子替换 → 失败回滚」执行：
+**失败处理**：远端每处变更都按「暂存 → 原子替换 → 失败回滚」执行：
 
-- relay 代码：先整目录备份再覆盖；健康检查失败自动回滚。
+- relay 代码：打成单个 tarball 流式上传（`.tmp` 落盘后原子 mv），远端先解包到 `.extract`
+  暂存目录并装好依赖才整体替换——解包/`npm ci` 失败时现役目录未被触碰；替换后健康检查
+  失败自动回滚到 `.bak`。
+- **公网验证失败也会回滚 relay 侧**到上一版并重启（与生产 `deploy-remote-relay.sh` 同语义）。
 - nginx：snippet 先写 `.new`、site 先备份，`nginx -t` 不过则恢复旧 snippet 并撤掉本次
   新增的 include，回到变更前的可用配置后才退出。
-- 隧道账号 `authorized_keys`：按 comment 整行原子替换——relay 侧密钥重新生成后旧公钥
-  会被整体换掉（密钥轮换幂等），不会残留失效 key。
+- 隧道账号 `authorized_keys`：`relay-tunnel` 为脚本全权管理的专用账号，每次原子重写为
+  恰好一行——relay 侧密钥重新生成后旧公钥被整体换掉（密钥轮换幂等），不残留失效 key。
 - 中途异常退出时，脚本会打印失败阶段；重跑脚本即可幂等收敛。
 
 ### 桌面 app 指向测试端点
@@ -136,8 +140,12 @@ pinvou3-tauri        # 或 ./pinvou3-app/run-dev.sh 调试构建
    原子重写为恰好一行，旧公钥/历史错位行自动失效。
    （实现细节：ssh 会把命令参数拼接成一个字符串交给远端 shell 重新分词，含空格的参数
    如公钥必须二次引用——脚本用 `shq` 统一处理，否则 authorized_keys 会写入错位行。）
-5. 改代理 nginx 只有 `nginx -t` 通过才 reload；脚本改 `sites-enabled/pinvou` 前会自动备份
-   （`pinvou.bak-*`），snippet 更新走 `.new` 暂存 + 原子替换，验证失败自动恢复旧配置。
+5. **改代理 nginx 的两个坑**（2026-07-21 实测）：① `sites-enabled/` 下的**任何文件**都会被
+   nginx 当活配置加载——备份绝不能放这里，脚本统一放 `/etc/nginx/pinvou-backups/`
+   （曾因此导致 teardown 后 `nginx -t` 报残留备份里的悬空 include）；② `sites-enabled/pinvou`
+   是指向 `sites-available/pinvou` 的软链，`sed -i` 会把软链替换成脱钩普通文件，脚本一律
+   `readlink -f` 解析真实路径再改。改配置只有 `nginx -t` 通过才 reload，snippet 更新走
+   `.new` 暂存 + 原子替换，验证失败自动恢复旧配置。
 6. 测试端点是**公网可达**的，依赖 pairing token 鉴权（与生产同模型）；不要用它挂长期敏感会话，
    测完敏感数据随手 `--teardown` 或换 QR。
 
@@ -147,7 +155,11 @@ pinvou3-tauri        # 或 ./pinvou3-app/run-dev.sh 调试构建
   `pinvou-remote-relay-test.service`、`pinvou-remote-relay-test-tunnel.service`、
   `/root/.ssh/id_ed25519_relay_test_tunnel{,.pub}`、`/var/lib/pinvou-telemetry-test/`
 - `admin@8.218.49.20`：`/etc/nginx/snippets/pinvou3-remote-relay-test.conf`、
-  `sites-enabled/pinvou` 内一行 include、专用隧道账号 `relay-tunnel`
+  `sites-enabled/pinvou`（→ `sites-available/pinvou` 软链）内一行 include、
+  `/etc/nginx/pinvou-backups/`（site 备份目录）、专用隧道账号 `relay-tunnel`
   （`/home/relay-tunnel/.ssh/authorized_keys` 内 `relay-test-tunnel` 条目）。
   注：首版脚本曾把隧道 key 放在 `admin` 自己的 authorized_keys，评审后已收敛到
   `relay-tunnel`；新版脚本部署/teardown 时会自动清理该历史条目。
+  另：首版脚本在 `sites-enabled/` 直接写 `pinvou.bak-*` 备份且 `sed -i` 断开了
+  sites-available 软链，2026-07-21 已手工修复布局（备份移至 `pinvou-backups/`、
+  恢复软链），新版脚本会自动收敛同类残留。
