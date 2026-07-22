@@ -724,6 +724,7 @@ pub fn run() {
             commands::install_marketplace_skill,
             commands::import_skill_package,
             commands::uninstall_marketplace_skill,
+            commands::verify_upload,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

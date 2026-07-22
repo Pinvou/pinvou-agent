@@ -25,6 +25,15 @@ const MAX_WS_CONNECTIONS = boundedInteger(
 const WS_CONNECT_LIMIT = boundedInteger(process.env.WS_CONNECT_LIMIT, 120, 1, 100_000);
 const WS_CONNECT_WINDOW_MS = boundedInteger(process.env.WS_CONNECT_WINDOW_MS, 60_000, 1000, 60 * 60_000);
 const WS_AUTH_TIMEOUT_MS = boundedInteger(process.env.WS_AUTH_TIMEOUT_MS, 10_000, 1000, 60_000);
+// mobile → desktop 上传分片的字节速率窗口(防 mobile 在慢网/抖动下把 desktop 写盘撑爆)。
+// 与其它限额一样支持 env 覆盖,便于单测用小窗口触发限流。
+const MOBILE_UPLOAD_WINDOW_BYTES = boundedInteger(
+  process.env.MOBILE_UPLOAD_WINDOW_BYTES,
+  100 * 1024 * 1024,
+  1024,
+  1024 * 1024 * 1024,
+);
+const MOBILE_UPLOAD_WINDOW_SECS = boundedInteger(process.env.MOBILE_UPLOAD_WINDOW_SECS, 5, 1, 3600);
 const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
 const TRUSTED_PROXY_IPS = parseIpSet(
   process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
@@ -32,6 +41,8 @@ const TRUSTED_PROXY_IPS = parseIpSet(
 const rooms = new Map();
 const roomCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
+// 每个 mobile ws → { bytes, resetAt(ms epoch) };用 WeakMap 让 ws 被 GC 时窗口自动回收。
+const mobileUploadRate = new WeakMap();
 const telemetry = createTelemetryService();
 
 function send(ws, value, onSent) {
@@ -55,6 +66,24 @@ function acknowledgeDownloadChunk(room, payload, error) {
     session_id: room.session_id,
     payload: {
       download_id: payload?.download_id || "",
+      index: payload?.index,
+      ok: !error,
+      message: error ? String(error.message || error) : undefined,
+    },
+  });
+}
+
+// mobile → desktop 的 attach_file_chunk 转发结果(成功或失败)时,relay 主动向 mobile 回一份
+// ack,让 mobile 端的 waitForRelayAck 立即 resolve(成功)或 reject(失败),而不是干等 60s 超时。
+// 镜像 acknowledgeDownloadChunk 的结构,字段名换成 upload_id,事件名换成 attach_file_relay_ack。
+// 方向与下载相反:下载 ack 回 desktop(发送方),上传 ack 回 mobile(发送方)。
+function acknowledgeUploadChunk(room, payload, error) {
+  send(room.mobile, {
+    type: "attach_file_relay_ack",
+    room_id: room.room_id,
+    session_id: room.session_id,
+    payload: {
+      upload_id: payload?.upload_id || "",
       index: payload?.index,
       ok: !error,
       message: error ? String(error.message || error) : undefined,
@@ -133,6 +162,26 @@ function consumeWsConnection(ip, now = Date.now()) {
     WS_CONNECT_WINDOW_MS,
     now,
   );
+}
+
+// 固定窗口(tumbling window):单个 mobile ws 在 MOBILE_UPLOAD_WINDOW_SECS 窗口内累计超过
+// MOBILE_UPLOAD_WINDOW_BYTES 时拒绝转发。窗口到期整体重置为 0(非逐事件滑动)。返回 true 表示
+// 放行(已从预算中扣减 byteLen),false 表示限流(未扣减,调用方需自行向 mobile 发
+// attach_file_rate_limited 通知)。
+// 边界注意:窗口刚好翻转的瞬间最多放行 ~2× 预算(翻转前满载 + 翻转后再次满载);由
+// MAX_PAYLOAD_BYTES(默认 4MiB)与桌面端 single-active-upload 不变量兜底,不影响保护目标。
+function consumeMobileUploadBudget(ws, byteLen, now = Date.now()) {
+  let entry = mobileUploadRate.get(ws);
+  if (!entry || now >= entry.resetAt) {
+    entry = { bytes: 0, resetAt: now + MOBILE_UPLOAD_WINDOW_SECS * 1000 };
+    mobileUploadRate.set(ws, entry);
+  }
+  if (entry.bytes + byteLen > MOBILE_UPLOAD_WINDOW_BYTES) {
+    // 限流:返回窗口还要多久翻转,调用方据此回 retry_after_ms;至少 1s 避免边界反复试探。
+    return { allowed: false, retryAfterMs: Math.max(1000, entry.resetAt - now) };
+  }
+  entry.bytes += byteLen;
+  return { allowed: true, retryAfterMs: 0 };
 }
 
 function rejectSocket(ws, code, message) {
@@ -457,6 +506,47 @@ wss.on("connection", (ws, req) => {
     if (ws.role === "mobile") {
       const payload = msg.type === "mobile_action" ? msg.payload : msg;
       audit(room, `mobile:${payload?.type || "action"}`);
+      if (payload?.type === "attach_file_chunk") {
+        // 上传分片先做字节速率限流:mobile 网络抖动时避免把 desktop 写盘撑爆。
+        // base64 长度 ≈ 4/3 原始字节,粗估即可,精确解码反而消耗 CPU。
+        // data_base64 必须是 string:非 string(数字/对象等)的 .length 为 undefined,
+        // 会让 approxBytes 变 NaN 并把窗口计数器永久污染成 NaN,限流器随之 fail-open。
+        const dataBase64 = typeof payload?.data_base64 === "string" ? payload.data_base64 : "";
+        const approxBytes = Math.ceil(dataBase64.length * 3 / 4);
+        const uploadDecision = consumeMobileUploadBudget(ws, approxBytes);
+        if (!uploadDecision.allowed) {
+          // 超出窗口:直接通知 mobile 限流并停止转发,desktop 不会收到这一块。
+          send(ws, {
+            type: "attach_file_rate_limited",
+            room_id: room.room_id,
+            session_id: room.session_id,
+            payload: {
+              upload_id: payload?.upload_id || "",
+              retry_after_ms: uploadDecision.retryAfterMs,
+            },
+          });
+          return;
+        }
+        // 上传分片的背压贯穿(PR #213 审查 #3):relay 不在「转发给 desktop socket」时
+        // 就向 mobile 回 ok:true ack —— desktop 把帧写进 TCP 缓冲并不意味着桌面应用已把
+        // 数据落盘,这条提前 ack 会让 mobile 在慢盘设备上抢跑发下一块,堆积到 desktop 的
+        // 无界 inbound 通道。正确语义:成功 ack 由桌面端 streaming task 写盘后自己回
+        // `attach_file_relay_ack`(见 manager.rs stream_file_upload),relay 只负责把
+        // 「desktop 不可达 / 转发硬失败」这种**对端异常**立即回 NAK,避免 mobile 干等
+        // 65s 超时。这与下载链路对称:下载的成功 ack 也由 mobile 落盘后回,relay 只补 NAK。
+        const forwarded = send(room.desktop, {
+          type: "mobile_action",
+          room_id: room.room_id,
+          session_id: room.session_id,
+          payload,
+        });
+        if (!forwarded) {
+          // desktop socket 不可写(断开 / 未就绪):立刻 NAK,让 mobile 进入重试或失败,
+          // 不必等 desktop 端那条永远不会来的 ok:true ack。
+          acknowledgeUploadChunk(room, payload, new Error("desktop unreachable"));
+        }
+        return;
+      }
       send(room.desktop, {
         type: "mobile_action",
         room_id: room.room_id,
