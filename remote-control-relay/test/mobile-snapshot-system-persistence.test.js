@@ -150,6 +150,64 @@ test('多条实时 addSystem 跨 snapshot 保留出现顺序', () => {
   }
 });
 
+test('切换 session 后不保留上一 session 的实时提示', () => {
+  const { window, close } = createPage();
+  try {
+    pushSnapshot(window, {
+      chatItems: [{ type: 'assistant', text: 'Session 1 历史' }],
+    });
+    window.addSystem('仅属于 sess1 的附件提示');
+
+    window.enterRemoteSession('sess2');
+    window.handleDesktopEvent({
+      type: 'remote_session_switched',
+      payload: { session: { id: 'sess2', title: 'S2' } },
+    });
+    pushSnapshot(window, {
+      sessionId: 'sess2',
+      title: 'S2',
+      chatItems: [{ type: 'assistant', text: 'Session 2 历史' }],
+    });
+
+    assert.deepEqual(ephemeralSystemTexts(window), [], 'sess1 的实时提示不能串到 sess2');
+  } finally {
+    close();
+  }
+});
+
+test('已过期实时提示不会被后续 snapshot 带回', () => {
+  const { window, close } = createPage();
+  try {
+    window.addSystem('即将过期的提示');
+    const node = window.document.querySelector('#messages > .system[data-ephemeral="true"]');
+    assert.ok(node, '应先创建实时提示');
+    node.dataset.expiresAt = '0';
+
+    pushSnapshot(window, { chatItems: [{ type: 'assistant', text: '新历史' }] });
+
+    assert.deepEqual(ephemeralSystemTexts(window), [], '过期提示应在 snapshot 重建时清理');
+  } finally {
+    close();
+  }
+});
+
+test('同 session 同文案去重且实时提示数量有上限', () => {
+  const { window, close } = createPage();
+  try {
+    window.addSystem('重复提示');
+    window.addSystem('重复提示');
+    assert.deepEqual(ephemeralSystemTexts(window), ['重复提示'], '相同实时提示只保留最新一条');
+
+    for (let i = 0; i < 25; i += 1) window.addSystem(`批量提示 ${i}`);
+    const texts = ephemeralSystemTexts(window);
+    assert.equal(texts.length, 20, '每个 session 最多保留 20 条实时提示');
+    assert.equal(texts[0], '批量提示 5', '超出上限时应移除最早提示');
+    assert.equal(texts.at(-1), '批量提示 24', '最新提示应保留');
+  } finally {
+    close();
+  }
+});
+
 test('空 session 推 snapshot 时,有 ephemeral 提示则不再显示「暂无历史消息」占位', () => {
   const { window, close } = createPage();
   try {
