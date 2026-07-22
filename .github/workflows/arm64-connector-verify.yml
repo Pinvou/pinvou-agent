@@ -8,8 +8,8 @@ on:
     paths:
       - ".github/workflows/arm64-connector-verify.yml"
       - "pinvou3-app/src-tauri/resources/bundle/connectors/**"
-      - "pinvou3-app/src-tauri/src/bridge/paths.rs"
-      - "pinvou3-app/src-tauri/src/connector_cli.rs"
+      - "pinvou3-app/src-tauri/src/app/bridge/paths.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
 
 jobs:
   verify-linux-arm64-connectors:

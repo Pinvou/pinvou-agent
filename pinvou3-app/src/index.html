@@ -154,7 +154,7 @@
   <div id="root"></div>
   <script>__PINVOU_STARTUP__.mark('dom:root_created');</script>
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
-  <script src="/tauri-bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
+  <script src="/platform/tauri/bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
       const isPetWindow = new URLSearchParams(window.location.search).get('window') === 'pet';
@@ -171,8 +171,8 @@
       }
     });
   </script>
-  <script src="/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
-  <script src="/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
-  <script type="module" src="/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
+  <script src="/features/personas/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
+  <script src="/features/updater/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
+  <script type="module" src="/app/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
 </body>
 </html>

@@ -5,9 +5,9 @@ function source(relativePath) {
   return readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8');
 }
 
-const selectedPetRust = source('src-tauri/src/selected_pet.rs');
+const selectedPetRust = source('src-tauri/src/features/pet/selected_pet.rs');
 const rustLib = source('src-tauri/src/lib.rs');
-const bridge = source('src/tauri-bridge.js');
+const bridge = source('src/platform/tauri/bridge.js');
 const petWindow = source('src/features/pet/PetWindow.jsx');
 const manifest = JSON.parse(source('src/features/pet/pet-manifest.json'));
 

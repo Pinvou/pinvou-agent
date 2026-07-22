@@ -11,8 +11,8 @@ const browserGlobals = Object.fromEntries([
 export default defineConfig([
   {
     files: [
-      'src/main.jsx',
-      'src/pet-main.jsx',
+      'src/app/main.jsx',
+      'src/app/pet-main.jsx',
       'src/components/**/*.{js,jsx}',
       'src/features/**/*.{js,jsx}',
       'src/hooks/**/*.{js,jsx}',

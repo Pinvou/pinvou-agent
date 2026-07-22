@@ -8,9 +8,9 @@ const staticExtensions = new Set([
   '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.png', '.svg', '.webp',
 ]);
 const staticScripts = new Set([
-  'personas-i18n.js',
-  'tauri-bridge.js',
-  'update-notice-logic.js',
+  'features/personas/personas-i18n.js',
+  'features/updater/update-notice-logic.js',
+  'platform/tauri/bridge.js',
   'vendor/marked.min.js',
   'vendor/purify.min.js',
   'vendor/tailwind.js',

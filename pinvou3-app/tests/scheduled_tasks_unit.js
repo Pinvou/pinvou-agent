@@ -10,18 +10,18 @@ const path = require('path');
 const vm = require('vm');
 
 const indexHtml = [
-  'main.jsx',
+  'app/main.jsx',
   'shared/i18n.js',
   'shared/model-options.js',
   'components/layout/NavigationComponents.jsx',
   'features/chat/ChatView.jsx',
   'features/scheduled/ScheduledTasksView.jsx'
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
-const tauriBridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'tauri-bridge.js'), 'utf8');
+const tauriBridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
 const modelOptionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'model-options.js'), 'utf8');
 const settingsViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
-const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'scheduled_tasks.rs'), 'utf8');
-const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'engine_pool.rs'), 'utf8');
+const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
+const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
   scheduledTasksRust.indexOf('const SCHEDULED_TASK_CHAT_PROMPT'),
   scheduledTasksRust.indexOf('pub fn scheduled_automation_root')

@@ -31,10 +31,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "deb",
-      "msi"
-    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -44,47 +40,6 @@
     ],
     "resources": {
       "resources/web-template/": "web-template"
-    },
-    "windows": {
-      "wix": {
-        "template": "resources/windows/main.wxs",
-        "fragmentPaths": [
-          "resources/windows/python-node-path.wxs"
-        ],
-        "componentRefs": [
-          "PythonNodeRuntimeEnvironment"
-        ]
-      },
-      "nsis": {
-        "installMode": "perMachine",
-        "template": "resources/windows/nsis/installer-template.nsi",
-        "installerHooks": "resources/windows/nsis/installer-hooks.nsh",
-        "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico",
-        "languages": [
-          "SimpChinese",
-          "English"
-        ],
-        "compression": "lzma"
-      }
-    },
-    "linux": {
-      "deb": {
-        "desktopTemplate": "desktop/pinvou3.desktop",
-        "postInstallScript": "scripts/postinst.sh",
-        "preRemoveScript": "scripts/prerm.sh",
-        "depends": [],
-        "recommends": [
-          "poppler-utils",
-          "tesseract-ocr",
-          "tesseract-ocr-chi-sim",
-          "pandoc",
-          "p7zip-full",
-          "python3",
-          "libreoffice",
-          "libemail-outlook-message-perl"
-        ]
-      }
     }
   }
 }

@@ -1,0 +1,27 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "targets": ["deb"],
+    "resources": {
+      "resources/asr/": "runtime/asr"
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "packaging/linux/desktop/pinvou3.desktop",
+        "postInstallScript": "packaging/linux/scripts/postinst.sh",
+        "preRemoveScript": "packaging/linux/scripts/prerm.sh",
+        "depends": [],
+        "recommends": [
+          "poppler-utils",
+          "tesseract-ocr",
+          "tesseract-ocr-chi-sim",
+          "pandoc",
+          "p7zip-full",
+          "python3",
+          "libreoffice",
+          "libemail-outlook-message-perl"
+        ]
+      }
+    }
+  }
+}

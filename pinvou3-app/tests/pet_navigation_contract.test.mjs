@@ -8,9 +8,9 @@ function source(relativePath) {
 const petWindow = source('src/features/pet/PetWindow.jsx');
 const petCss = source('src/features/pet/pet.css');
 const petInteraction = source('src/features/pet/pet-interaction.js');
-const main = source('src/main.jsx');
+const main = source('src/app/main.jsx');
 const chatView = source('src/features/chat/ChatView.jsx');
-const rustPetWindow = source('src-tauri/src/pet_window.rs');
+const rustPetWindow = source('src-tauri/src/features/pet/pet_window.rs');
 const rustLib = source('src-tauri/src/lib.rs');
 
 assert.match(petWindow, /buildAnimationSequence/);

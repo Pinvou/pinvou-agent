@@ -538,7 +538,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                   <div className="flex-1 flex flex-col justify-between">
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-2">
-                        <img src="./brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
+                        <img src="/assets/brand/brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
                         <h2 className="text-xl font-bold">pinvou3-app</h2>
                       </div>
                     </div>

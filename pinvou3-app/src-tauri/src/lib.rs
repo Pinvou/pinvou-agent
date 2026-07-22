@@ -10,53 +10,97 @@
 
 // bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
 // spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
+#[path = "app/audit.rs"]
 mod audit;
+#[path = "app/bridge/mod.rs"]
 pub mod bridge;
+#[path = "app/commands.rs"]
 mod commands;
+#[path = "platform/credential_store.rs"]
 pub mod credential_store;
+#[path = "features/pet/detach.rs"]
 mod detach;
+#[path = "features/feedback/mod.rs"]
 pub mod feedback;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
+#[path = "features/connectors/connector_cli.rs"]
 mod connector_cli;
+#[path = "features/connectors/connector_visibility.rs"]
 mod connector_visibility;
+#[path = "features/connectors/dingtalk.rs"]
 mod dingtalk;
+#[path = "features/assistant/engine.rs"]
 pub mod engine;
+#[path = "features/assistant/engine_pool.rs"]
 pub mod engine_pool;
+#[path = "features/connectors/eip.rs"]
 mod eip;
+#[path = "features/connectors/feishu.rs"]
 mod feishu;
+#[path = "features/connectors/wecom.rs"]
 mod wecom;
+#[path = "features/files/file_ingest.rs"]
 pub mod file_ingest;
+#[path = "features/files/file_watcher.rs"]
 mod file_watcher;
+#[path = "app/harness.rs"]
 mod harness;
+#[path = "features/knowledge/mod.rs"]
 mod knowledge;
+#[path = "features/llmapi_hub/mod.rs"]
 pub mod llmapi_hub;
+#[path = "features/local_llm/setup.rs"]
 mod local_vllm_setup;
+#[path = "features/memory/mod.rs"]
 pub mod memory;
+#[path = "features/monitor/mod.rs"]
 mod monitor;
+#[path = "features/voice/microphone_permission.rs"]
 mod microphone_permission;
+#[path = "platform/notifications.rs"]
 mod notifications;
+#[path = "platform/os/mod.rs"]
 mod os;
+#[path = "features/personas/mod.rs"]
 pub mod personas;
+#[path = "features/pet/pet_window.rs"]
 mod pet_window;
+#[path = "features/review/mod.rs"]
 mod pinvou_review;
+#[path = "platform/process.rs"]
 mod process;
+#[path = "features/remote_control/mod.rs"]
 mod remote_control;
+#[path = "features/scheduled/executor.rs"]
 mod scheduled_executor;
+#[path = "features/scheduled/tasks.rs"]
 mod scheduled_tasks;
+#[path = "features/pet/selected_pet.rs"]
 mod selected_pet;
+#[path = "platform/super_permission.rs"]
 pub mod super_permission;
+#[path = "app/startup.rs"]
 mod startup;
+#[path = "app/telemetry.rs"]
 mod telemetry;
+#[path = "app/timing.rs"]
 mod timing;
+#[path = "app/ui_cache.rs"]
 mod ui_cache;
+#[path = "features/updater/mod.rs"]
 mod updater;
+#[path = "features/voice/voice_asr.rs"]
 mod voice_asr;
+#[path = "features/workflow/workflow_migrate.rs"]
 mod workflow_migrate;
+#[path = "features/workflow/workflow_registry.rs"]
 pub mod workflow_registry;
+#[path = "features/workflow/workflow_runs.rs"]
 mod workflow_runs;
+#[path = "features/connectors/zhidao.rs"]
 mod zhidao;
 
 use tauri::Manager;

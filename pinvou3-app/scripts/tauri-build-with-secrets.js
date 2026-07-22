@@ -8,6 +8,12 @@ const REQUIRED_SECRET_NAMES = [
   "PINVOU3_BUILTIN_QCC_KEY",
 ];
 
+const PLATFORM_CONFIG_NAMES = {
+  darwin: "tauri.macos.conf.json",
+  linux: "tauri.linux.conf.json",
+  win32: "tauri.windows.conf.json",
+};
+
 function parseEnvFile(content) {
   const values = {};
 
@@ -77,7 +83,15 @@ function stageWindowsRuntime({ environment = process.env } = {}) {
     return null;
   }
 
-  const scriptPath = path.resolve(__dirname, "prepare-windows-runtimes.ps1");
+  const scriptPath = path.resolve(
+    __dirname,
+    "..",
+    "src-tauri",
+    "packaging",
+    "windows",
+    "scripts",
+    "prepare-windows-runtimes.ps1",
+  );
   const child = spawnSync(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
@@ -90,20 +104,31 @@ function stageWindowsRuntime({ environment = process.env } = {}) {
   return path.resolve(__dirname, "..", "src-tauri", "tauri.windows-runtime.generated.conf.json");
 }
 
+function platformConfigPath(platform = process.platform) {
+  const configName = PLATFORM_CONFIG_NAMES[platform];
+  if (!configName) {
+    throw new Error(`当前构建平台没有对应的 Tauri 配置：${platform}`);
+  }
+  return path.resolve(__dirname, "..", "src-tauri", "config", configName);
+}
+
 function main() {
   const args = process.argv.slice(2);
   const validateOnly = args[0] === "--validate-only";
   if (validateOnly) args.shift();
 
-  const result = loadBuiltinSecrets();
-  if (result.missing.length > 0) {
-    console.warn(`[build] 已显式跳过 ${result.missing.length} 项内置 MCP 密钥。`);
-  } else {
-    console.log(`[build] 已加载并校验 ${result.loaded.length} 项内置 MCP 密钥。`);
+  if (process.platform === "win32") {
+    const result = loadBuiltinSecrets();
+    if (result.missing.length > 0) {
+      console.warn(`[build] 已显式跳过 ${result.missing.length} 项内置 MCP 密钥。`);
+    } else {
+      console.log(`[build] 已加载并校验 ${result.loaded.length} 项内置 MCP 密钥。`);
+    }
   }
   if (validateOnly) return;
 
   if (args[0] === "build" || args[0] === "bundle") {
+    args.push("--config", platformConfigPath());
     const runtimeConfig = stageWindowsRuntime();
     if (runtimeConfig) {
       args.push("--config", runtimeConfig);
@@ -129,4 +154,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { REQUIRED_SECRET_NAMES, loadBuiltinSecrets, parseEnvFile, stageWindowsRuntime };
+module.exports = {
+  PLATFORM_CONFIG_NAMES,
+  REQUIRED_SECRET_NAMES,
+  loadBuiltinSecrets,
+  parseEnvFile,
+  platformConfigPath,
+  stageWindowsRuntime,
+};

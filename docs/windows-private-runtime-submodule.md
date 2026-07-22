@@ -27,7 +27,7 @@ VC Runtime 保持独立文件。二进制由 Git LFS 管理。
 113 个 7-Zip/Poppler/Tesseract/ASR 文件的路径、大小和 SHA-256。staging 会先校验 ZIP，
 解压后再逐文件复核内部清单。
 
-主仓库 `pinvou3-app/src-tauri/resources/windows-runtime.lock.json` 再锁定：
+主仓库 `pinvou3-app/src-tauri/config/runtime/windows-x86_64.lock.json` 再锁定：
 
 - submodule URL、路径和 commit；
 - 私有 manifest 路径及 SHA-256；

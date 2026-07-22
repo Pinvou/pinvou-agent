@@ -5,8 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const bridge = readFileSync(path.join(here, '..', 'src', 'tauri-bridge.js'), 'utf8');
-const main = readFileSync(path.join(here, '..', 'src', 'main.jsx'), 'utf8');
+const bridge = readFileSync(path.join(here, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
+const main = readFileSync(path.join(here, '..', 'src', 'app', 'main.jsx'), 'utf8');
 const petWindow = readFileSync(
   path.join(here, '..', 'src', 'features', 'pet', 'PetWindow.jsx'),
   'utf8',

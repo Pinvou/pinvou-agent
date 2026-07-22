@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const petWindow = readFileSync(new URL('../src/features/pet/PetWindow.jsx', import.meta.url), 'utf8');
 const petCss = readFileSync(new URL('../src/features/pet/pet.css', import.meta.url), 'utf8');
-const main = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
-const rust = readFileSync(new URL('../src-tauri/src/pet_window.rs', import.meta.url), 'utf8');
+const main = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
+const rust = readFileSync(new URL('../src-tauri/src/features/pet/pet_window.rs', import.meta.url), 'utf8');
 
 assert.match(petWindow, /isScheduledSessionPayload/);
 assert.match(

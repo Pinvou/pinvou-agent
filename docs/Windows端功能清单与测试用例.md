@@ -10,7 +10,7 @@
 | 核对日期 | 2026-07-20 |
 | 目标架构 | Windows x64（当前随包运行时、VC++ 检测和 NSIS 资源均为 x64） |
 | 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线 |
-| 主要代码依据 | `pinvou3-app/src/`、`pinvou3-app/src-tauri/src/`、`pinvou3-app/src-tauri/resources/windows/`、`pinvou3-app/tests/`、`DeepSeek-TUI/crates/tui/src/` |
+| 主要代码依据 | `pinvou3-app/src/`、`pinvou3-app/src-tauri/src/`、`pinvou3-app/src-tauri/packaging/windows/`、`pinvou3-app/tests/`、`DeepSeek-TUI/crates/tui/src/` |
 
 本文只记录当前仓库中已经存在的代码能力，不把规划文档中的设想直接视为已交付功能。功能状态定义如下：
 
@@ -663,4 +663,4 @@ npm run build:nsis
 | 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `tests/voice_input_error_logic.test.js`、`voice_asr.rs` 内模型校验和状态测试 |
 | 设置、依赖、反馈 | `features/settings/SettingsView.jsx` | `commands.rs`、`file_ingest.rs`、`windows_dependency.rs`、`windows_permission.rs` | 设置/文件解析模块测试 |
 | Windows OTA | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `updater.rs`、`os/windows/windows_update.rs` | `tests/update_notice_logic.test.js`、`tests/update_notice_ui_smoke.js`、OTA 脚本验证 |
-| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`resources/windows/nsis/`、`scripts/prepare-windows-runtimes.ps1`、`scripts/tauri-build-with-secrets.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |
+| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`packaging/windows/nsis/`、`src-tauri/packaging/windows/scripts/prepare-windows-runtimes.ps1`、`scripts/tauri-build-with-secrets.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |
