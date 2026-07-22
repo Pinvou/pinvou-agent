@@ -738,7 +738,8 @@ fn materialize_dispatch_graph(project: &Path) -> Result<(), String> {
         project.to_string_lossy().to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_cmd(python_cmd(), &arg_refs, scripts_dir).map(|_| ())
+    let python = python_cmd();
+    run_cmd(&python, &arg_refs, scripts_dir).map(|_| ())
 }
 
 /// 解析角色 gate 类型。真相源 = agent_registry.json 的 gate 字段(auto / human)。
@@ -805,9 +806,10 @@ pub(crate) fn record_runtime_failure(
 
 // ── Subprocess ──
 
-/// Windows 上 `python3` 命令不存在(exit 9009)，统一用 `python`。
-fn python_cmd() -> &'static str {
-    if cfg!(target_os = "windows") { "python" } else { "python3" }
+/// 复用全局 Python 解析器：Windows 优先安装器配置和应用内置运行时，并跳过
+/// WindowsApps 占位程序；其他平台继续使用系统 Python。
+fn python_cmd() -> String {
+    crate::bridge::paths::python_command()
 }
 
 // [2026-06-04] 30→120s:gate_runner --layer 1 对 23 页 deck 实测 31.8s,30s 差 2 秒
@@ -842,7 +844,11 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("spawn {program} failed: {e}"))?;
+        .map_err(|e| {
+            let message = format!("工作流 Python 启动失败 (interpreter={program}): {e}");
+            eprintln!("[harness] {message}");
+            message
+        })?;
 
     // [2026-06-04 管道死锁修复] 必须边跑边读:旧实现先 try_wait 等退出、后 wait_with_output
     // 读管道——子进程输出超 64KB 管道缓冲即写阻塞、永不退出(scheduler --next 对 23 页
@@ -890,7 +896,14 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
     }
 
     if stdout.trim().is_empty() && !status.success() {
-        return Err(format!("{program} failed (exit {}): {}", status, truncate_on_char_boundary(&stderr, 500)));
+        let detail = if stderr.trim().is_empty() {
+            "无错误输出"
+        } else {
+            truncate_on_char_boundary(&stderr, 500)
+        };
+        return Err(format!(
+            "工作流 Python 执行失败 (interpreter={program}, exit={status}): {detail}"
+        ));
     }
 
     Ok(stdout)
@@ -905,7 +918,8 @@ fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
     let mut full_args = vec![script.to_string_lossy().to_string(), project.to_string_lossy().to_string()];
     full_args.extend(args.iter().map(|s| s.to_string()));
     let arg_refs: Vec<&str> = full_args.iter().map(|s| s.as_str()).collect();
-    run_cmd(python_cmd(), &arg_refs, scripts_dir)
+    let python = python_cmd();
+    run_cmd(&python, &arg_refs, scripts_dir)
 }
 
 fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
@@ -919,7 +933,13 @@ fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
         project.to_string_lossy().to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match run_cmd_with_timeout(python_cmd(), &arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
+    let python = python_cmd();
+    match run_cmd_with_timeout(
+        &python,
+        &arg_refs,
+        scripts_dir,
+        WARMUP_TIMEOUT_SECS,
+    ) {
         Ok(stdout) => match serde_json::from_str(&stdout) {
             Ok(v) => Ok(v),
             Err(_) => read_warmup_report(project),
@@ -955,17 +975,32 @@ fn read_warmup_report(project: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_str(&content).map_err(|e| format!("parse warmup_report.json: {e}"))
 }
 
-/// 从 warmup 报告提取一条适合直接展示给用户的阻断原因。优先返回具体检查项，
-/// 避免把整份 JSON 当错误文本塞进弹窗和工作流卡片。
+/// 从 warmup 报告提取一条适合直接展示给用户的阻断原因。优先返回具体检查项；
+/// 解释器未启动、来不及生成检查项时回退底层错误，避免把整份 JSON 塞进界面。
 pub(crate) fn warmup_block_reason(report: &serde_json::Value) -> Option<String> {
-    let checks = report.get("checks")?.as_object()?;
-    checks
-        .values()
-        .find(|check| check.get("status").and_then(|value| value.as_str()) == Some("blocked"))
+    let check_reason = report
+        .get("checks")
+        .and_then(|checks| checks.as_object())
+        .and_then(|checks| {
+            checks
+                .values()
+                .find(|check| {
+                    check.get("status").and_then(|value| value.as_str()) == Some("blocked")
+                })
+        })
         .and_then(|check| check.get("details").and_then(|value| value.as_str()))
         .map(str::trim)
         .filter(|details| !details.is_empty())
-        .map(String::from)
+        .map(String::from);
+
+    check_reason.or_else(|| {
+        report
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|error| !error.is_empty())
+            .map(String::from)
+    })
 }
 
 /// 识别真实模型请求返回的不可重试鉴权/授权错误。底座会把 HTTP 401/403 格式化为
@@ -1114,7 +1149,8 @@ fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
         "--layer".to_string(), "1".to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_cmd(python_cmd(), &arg_refs, scripts_dir)?;
+    let python = python_cmd();
+    let out = run_cmd(&python, &arg_refs, scripts_dir)?;
     serde_json::from_str(&out).map_err(|e| format!("parse gate_runner: {e}"))
 }
 
@@ -1130,7 +1166,8 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
         role_id.to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_cmd(python_cmd(), &arg_refs, scripts_dir)?;
+    let python = python_cmd();
+    let out = run_cmd(&python, &arg_refs, scripts_dir)?;
     let v: serde_json::Value = serde_json::from_str(&out)
         .map_err(|e| format!("parse deliverable check: {e}"))?;
 
@@ -2545,6 +2582,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workflow_python_command_uses_shared_runtime_resolver() {
+        assert_eq!(python_cmd(), crate::bridge::paths::python_command());
+    }
+
+    #[test]
     fn warmup_block_reason_returns_concrete_failed_check() {
         let report = serde_json::json!({
             "status": "blocked",
@@ -2560,6 +2602,21 @@ mod tests {
         assert_eq!(
             warmup_block_reason(&report).as_deref(),
             Some("missing scripts: scheduler.py")
+        );
+    }
+
+    #[test]
+    fn warmup_block_reason_returns_python_launch_error_without_check_report() {
+        let expected = "工作流 Python 启动失败 (interpreter=C:\\Program Files\\pinvou3\\runtime\\python\\pythonw.exe): 系统找不到指定的文件";
+        let report = serde_json::json!({
+            "status": "blocked",
+            "error": expected,
+            "report_error": "warmup_report.json missing"
+        });
+
+        assert_eq!(
+            warmup_block_reason(&report).as_deref(),
+            Some(expected)
         );
     }
 
