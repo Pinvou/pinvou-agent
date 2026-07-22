@@ -5224,11 +5224,17 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;macOS 下载 dmg 后
+  // hdiutil attach + cp -R 并自动重启(与 Linux 同型);Windows 下载 zip 后解析 MSI,
   // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    // macOS 与 Linux 一样安装后自动重启:app.restart() 按路径 exec,
+    // bundle 被替换后该路径已指向新文件,spawn 新进程即加载新版(inode 语义与 Linux 同)。
+    // Ok(false) 表示「安装完成,进程未退出,由前端决定 restart」,不是「需手动重启」。
+    // 唯一不自动重启的是 Windows(MSI 安装器接管,后端 Ok(true)→app.exit)。
+    var shouldRestartAfterInstall =
+      state.updateInfo.platform === "linux" || state.updateInfo.platform === "macos";
     var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
@@ -5238,7 +5244,9 @@
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {
-        await invoke("install_update", { debPath: downloadResult });
+        // Linux/macOS:download_update 返回纯路径字符串(JSON untagged),走 debPath 分支。
+        // 传 info 让 macOS 后端做安装前 sha256 复验(TOCTOU 纵深防御);Linux 后端目前忽略此参数。
+        await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
       }
       state.updateReady = true;
       installed = true;
