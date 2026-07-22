@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 真实浏览器全链路上传验证驱动:用 pinvou3-app 已有的 puppeteer-core 驱动真实
 // Chrome/Chromium 打开 relay 服务的真实手机端页面,完成「选 session → 选文件 →
-// 等待桌面端 ingest 完成」全流程,验证接近上限(64MiB)文件经真实 mobile web
+// 等待桌面端 ingest 完成」全流程,验证多分块文件经真实 mobile web
 // → 真实 relay → 真实桌面端 streaming task + file_ingest::ingest 全链路;
 //随后覆盖:多分块文本文件、超限拒绝、abort 中止、文件名 XSS 转义、连击拦截。
 // 由 Rust e2e(real_browser_upload_full_stack)拉起,参数来自 params JSON 文件。
@@ -164,7 +164,7 @@ async function main() {
         + ' first.name=' + (f ? f.name : '(no file)'));
     }, true);
     // 同时监听所有 .system 节点的追加(包括错误路径的 addSystem,如「已有附件正在上传」
-    // 「空文件无法上传」「附件超过 64MiB 上限」「附件上传失败」),定位 multi-chunk 卡在哪个分支。
+    // 「空文件无法上传」「附件超过 20MiB 上限」「附件上传失败」),定位 multi-chunk 卡在哪个分支。
     window.__seenSystemAll = [];
     const msgs = document.getElementById('messages');
     if (msgs) {
@@ -189,7 +189,7 @@ async function main() {
   console.log('[real-browser-upload] 已选择 session');
   await waitFor('attachBtn 可用', () => page.$eval('#attachBtn', (el) => !el.disabled), 30_000);
 
-  // 2. 小文本(2 MiB)→ 多分块路径(< 64MiB),验证 base64 多块合并正确
+  // 2. 小文本(2 MiB)→ 多分块路径(< 20MiB),验证 base64 多块合并正确
   console.log('[real-browser-upload] 上传小文本文件…');
   await page.$eval('#fileInput', (el) => { el.value = ''; });
   await (await page.$('#fileInput')).uploadFile(smallFilePath);
@@ -232,6 +232,23 @@ async function main() {
   const largeHits = await seenSystemContaining(page, `附件 ${largeFileName} 已就绪`);
   if (largeHits.length === 0) fail(`多分块文件成功路径未触发 addSystem('附件 ${largeFileName} 已就绪。')`);
   console.log('[real-browser-upload] 多分块全链路上传成功');
+
+  // 纯附件消息也必须进入完整 user_message 链路；桌面端会在这里把 uploads 临时源文件
+  // 暂存进 session workspace 后再清理，避免图片/大文本 path 提前失效。
+  await page.$eval('#input', (el) => { el.value = ''; });
+  await page.click('#actionButton');
+  await waitFor(
+    '纯附件消息提交后清空附件卡片',
+    () => page.$eval('#attachmentPreview', (el) => el.classList.contains('hidden')),
+    30_000,
+  );
+  const attachmentBubble = await page.evaluate(() => {
+    const bubbles = [...document.querySelectorAll('#messages .msg.user .bubble')];
+    return bubbles.length ? bubbles[bubbles.length - 1].textContent : '';
+  });
+  if (!attachmentBubble.includes(smallFileName) || !attachmentBubble.includes(largeFileName)) {
+    fail(`纯附件用户气泡未显示文件名: ${attachmentBubble}`);
+  }
 
   // 4. 超限(20MiB + 1)→ 客户端预检拒绝,不发起 attach_file_start
   console.log('[real-browser-upload] 上传超限文件(20MiB+1),预期客户端拒绝…');
@@ -301,6 +318,22 @@ async function main() {
   // 等待这次上传结束(或 abort 超时),避免污染下一次断言
   await waitForCardDone(abortSlowFileName, 60_000).catch(() => {});
   console.log('[real-browser-upload] 连击拦截已生效');
+
+  // 这次上传已经成功，因此它是待发送附件，不是磁盘泄漏。通过纯附件消息正常消费，
+  // 再由 Rust 侧断言 uploads 临时目录已清空、session workspace 中稳定副本存在。
+  await page.evaluate(() => {
+    // 第一条纯附件消息在本 e2e 的轻量 dispatcher 中不会真正启动 Engine，因而也不会
+    // 自然产生 session_status。补一条真实桌面端完成回合时会发送的 idle 状态。
+    window.handleDesktopEvent({ type: 'session_status', payload: { status: '空闲' } });
+    const input = document.getElementById('input');
+    if (input) input.value = '';
+    window.submitComposer();
+  });
+  await waitFor('连击场景附件已提交', () => page.evaluate((filename) => {
+    return [...document.querySelectorAll('#messages .msg.user .bubble')]
+      .some((node) => node.textContent.includes(filename));
+  }, abortSlowFileName), 10_000);
+  await sleep(250);
 
   console.log('[real-browser-upload] PASS');
 }

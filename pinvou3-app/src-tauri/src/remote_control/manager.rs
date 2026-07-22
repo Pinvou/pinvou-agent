@@ -31,7 +31,7 @@ const DOWNLOAD_CHUNK_BYTES: usize = 768 * 1024;
 // 让 attach_file_start / 累计 gate 直接拒绝(PR #213 审查 #5)。
 // 下载链路不受此约束(DOWNLOAD_LIMIT_BYTES 仍 64MiB):下载是把桌面已有产物原样发回
 // mobile 预览,不经过 file_ingest,没有 20MiB 语义。
-const UPLOAD_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
+const UPLOAD_LIMIT_BYTES: u64 = crate::file_ingest::MAX_FILE_BYTES;
 // 上传分块原始字节数;与下载保持一致(base64 后约 1MiB)。
 const UPLOAD_CHUNK_BYTES: usize = 768 * 1024;
 // 上传 ACK 等待超时:超过即视为中继或对端异常,主动收尾。
@@ -104,8 +104,16 @@ fn sanitize_upload_filename(raw: &str) -> String {
         Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
             format!("{stem}.{}", ext.to_ascii_lowercase())
         }
-        _ => trimmed.to_string(), // 无扩展名,原样保留(file_ingest 会做内容嗅探)。
+        _ => trimmed.to_string(), // 无扩展名原样保留，由既有 file_ingest 规则处理。
     }
+}
+
+fn valid_client_upload_id(upload_id: &str) -> bool {
+    (3..=96).contains(&upload_id.len())
+        && upload_id.starts_with("up_")
+        && upload_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
 /// 收敛 mobile set_disabled_connectors 入参:丢弃非 string 元素与超长 id,数量封顶。
@@ -151,7 +159,7 @@ struct Inner {
     upload_chunk_sender: Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>,
     /// 已完成上传但尚未随消息发走的附件,等待 user_message 取用。key = upload_id。
     pending_attachments: HashMap<String, PendingAttachment>,
-    /// 上传落盘根目录。每个 upload 一个子目录 `<uploads_base>/<upload_id>/data.bin`。
+    /// 上传落盘根目录。每个 upload 一个子目录,文件名保留净化后的原始扩展名。
     uploads_base: PathBuf,
 }
 
@@ -358,19 +366,29 @@ impl RemoteControlManager {
     }
 
     fn close_current(&self, reason: &str) {
-        // 锁内:统一清空 download / upload 全部槽位。
-        // **不删源文件**(spec §5:防 LLM read_file 竞争):仅清 HashMap 项,
-        // streaming task 收 None 后自中止;盘上数据由 mobile_disconnected /
-        // session 切换 / streaming task timeout 后续路径清理。
-        let old = {
+        // 锁内统一摘除 room 和全部上传状态，锁外删除临时目录。已经随消息发出的附件会先
+        // 被复制进 session workspace，不依赖 uploads 临时目录，因此这里不存在 read_file 竞争。
+        let (old, upload_dirs) = {
             let mut inner = self.inner.lock();
             inner.active_download = None;
             inner.download_ack_sender = None;
             inner.active_upload = None;
             inner.upload_chunk_sender = None;
+            let mut upload_ids = inner
+                .pending_attachments
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            upload_ids.sort();
+            upload_ids.dedup();
+            let upload_dirs = upload_ids
+                .into_iter()
+                .map(|id| inner.uploads_base.join(id))
+                .collect::<Vec<_>>();
             inner.pending_attachments.clear();
-            inner.room.take()
+            (inner.room.take(), upload_dirs)
         };
+        Self::remove_upload_dirs(upload_dirs, reason);
         if let Some(room) = old {
             let _ = room.sender.send(RelayOutbound::Close {
                 room_id: room.room_id,
@@ -386,7 +404,7 @@ impl RemoteControlManager {
     ///
     /// 调用方需保证**不在持锁状态**下调用 —— 本方法自己 lock,且 lock 之间无嵌套。
     fn cleanup_active_upload(&self, reason: &str) {
-        let (upload_id, dir_to_remove) = {
+        let dir_to_remove = {
             let mut inner = self.inner.lock();
             let Some(upload_id) = inner.active_upload.take() else {
                 return;
@@ -394,14 +412,66 @@ impl RemoteControlManager {
             inner.upload_chunk_sender = None;
             inner.pending_attachments.remove(&upload_id);
             let dir_to_remove = inner.uploads_base.join(&upload_id);
-            (upload_id, dir_to_remove)
+            dir_to_remove
         };
-        // 锁外做 fs 删除(best-effort):不阻塞 dispatcher,失败只 log。
-        if let Err(e) = std::fs::remove_dir_all(&dir_to_remove) {
-            // 不报错给上层,只在日志留痕 —— 与 attach_file_abort 的删除风格一致。
-            eprintln!(
-                "[remote-control] cleanup_active_upload: remove_dir_all failed for upload_id={upload_id} reason={reason} (likely already gone): {e:#}"
-            );
+        Self::remove_upload_dirs(vec![dir_to_remove], reason);
+    }
+
+    fn cleanup_session_uploads(&self, session_id: &str, reason: &str) {
+        let dirs = {
+            let mut inner = self.inner.lock();
+            let upload_ids = inner
+                .pending_attachments
+                .iter()
+                .filter(|(_, pending)| pending.session_id == session_id)
+                .map(|(upload_id, _)| upload_id.clone())
+                .collect::<Vec<_>>();
+            if inner
+                .active_upload
+                .as_ref()
+                .is_some_and(|active| upload_ids.contains(active))
+            {
+                inner.active_upload = None;
+                inner.upload_chunk_sender = None;
+            }
+            let dirs = upload_ids
+                .iter()
+                .map(|upload_id| inner.uploads_base.join(upload_id))
+                .collect::<Vec<_>>();
+            for upload_id in upload_ids {
+                inner.pending_attachments.remove(&upload_id);
+            }
+            dirs
+        };
+        Self::remove_upload_dirs(dirs, reason);
+    }
+
+    fn cleanup_all_uploads(&self, reason: &str) {
+        let dirs = {
+            let mut inner = self.inner.lock();
+            inner.active_upload = None;
+            inner.upload_chunk_sender = None;
+            let dirs = inner
+                .pending_attachments
+                .keys()
+                .map(|upload_id| inner.uploads_base.join(upload_id))
+                .collect::<Vec<_>>();
+            inner.pending_attachments.clear();
+            dirs
+        };
+        Self::remove_upload_dirs(dirs, reason);
+    }
+
+    fn remove_upload_dirs(dirs: Vec<PathBuf>, reason: &str) {
+        for dir in dirs {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "[remote-control] remove upload dir failed path={} reason={reason}: {error:#}",
+                        dir.display()
+                    );
+                }
+            }
         }
     }
 
@@ -561,50 +631,13 @@ impl RemoteControlManager {
                             .collect()
                     })
                     .unwrap_or_default();
-                if content.is_empty() && attachment_upload_ids.is_empty() {
-                    Err("empty message".to_string())
-                } else {
-                    // 收集 attachments:每个 upload_id 必须有 ingest_result(上传已完成)。
-                    // session_id 校验防 cross-session 取用别人的 pending attachment。
-                    let mut attachments: Vec<crate::file_ingest::IngestResult> = Vec::new();
-                    let mut missing: Vec<String> = Vec::new();
-                    {
-                        let mut inner = self.inner.lock();
-                        for upload_id in &attachment_upload_ids {
-                            match inner.pending_attachments.get_mut(upload_id) {
-                                Some(p) if p.session_id == active_session_id => {
-                                    match p.ingest_result.clone() {
-                                        Some(ir) => attachments.push(ir),
-                                        None => missing.push(upload_id.clone()),
-                                    }
-                                }
-                                _ => missing.push(upload_id.clone()),
-                            }
-                        }
-                        // 消费成功才删;若有 missing 不删,留给 mobile 重试或 abort。
-                        if missing.is_empty() {
-                            for upload_id in &attachment_upload_ids {
-                                inner.pending_attachments.remove(upload_id);
-                            }
-                        }
-                    }
-                    if !missing.is_empty() {
-                        Err(format!("attachments not ready: {}", missing.join(",")))
-                    } else if let Some(app) = &self.app {
-                        app.emit(
-                            "remote_control:mobile_user_message",
-                            json!({
-                                "session_id": active_session_id,
-                                "content": content,
-                                "client_message_id": action.client_message_id,
-                                "attachments": attachments,
-                            }),
-                        )
-                        .map_err(|e| format!("emit mobile_user_message: {e}"))
-                    } else {
-                        Ok(())
-                    }
-                }
+                self.dispatch_mobile_user_message(
+                    &active_session_id,
+                    content,
+                    attachment_upload_ids,
+                    action.client_message_id.clone(),
+                    store,
+                )
             }
             "cancel_generation" => {
                 pool.cancel(&active_session_id).await;
@@ -677,10 +710,7 @@ impl RemoteControlManager {
             "request_chips" => self.send_chips_snapshot(store, &active_session_id),
             "request_artifact_download" => {
                 let artifact_id = action.payload.get("artifact_id").and_then(|v| v.as_str());
-                let artifact_path = action
-                    .payload
-                    .get("artifact_path")
-                    .and_then(|v| v.as_str());
+                let artifact_path = action.payload.get("artifact_path").and_then(|v| v.as_str());
                 if artifact_id.is_none() && artifact_path.is_none() {
                     Err("missing artifact_id".to_string())
                 } else {
@@ -720,7 +750,10 @@ impl RemoteControlManager {
             // --- 知识库 (KB) 分发:list / mount / unmount ---
             "list_kb_collections" => {
                 let Some(app) = &self.app else {
-                    self.send_error("headless_unsupported", "knowledge service needs Tauri runtime");
+                    self.send_error(
+                        "headless_unsupported",
+                        "knowledge service needs Tauri runtime",
+                    );
                     return;
                 };
                 let collections = match app.try_state::<crate::knowledge::KnowledgeService>() {
@@ -748,7 +781,10 @@ impl RemoteControlManager {
             }
             "mount_kb_collection" => {
                 let Some(app) = &self.app else {
-                    self.send_error("headless_unsupported", "knowledge service needs Tauri runtime");
+                    self.send_error(
+                        "headless_unsupported",
+                        "knowledge service needs Tauri runtime",
+                    );
                     return;
                 };
                 let collection_id = action
@@ -775,10 +811,7 @@ impl RemoteControlManager {
                 // 完全门控:embedding 模型未就绪 → 知识库整体不可用,拒绝挂载
                 // (与 commands::session_mount_collection 同源兜底,防远程绕过)。
                 if !knowledge.semantic_ready() {
-                    self.send_error(
-                        "kb_not_ready",
-                        "embedding 模型未就绪,知识库暂不可用",
-                    );
+                    self.send_error("kb_not_ready", "embedding 模型未就绪,知识库暂不可用");
                     return;
                 }
                 // kb_search 工具只在 Plan 模式注册到 turn registry(见 chips_snapshot 里
@@ -823,7 +856,10 @@ impl RemoteControlManager {
             }
             "unmount_kb_collection" => {
                 let Some(app) = &self.app else {
-                    self.send_error("headless_unsupported", "knowledge service needs Tauri runtime");
+                    self.send_error(
+                        "headless_unsupported",
+                        "knowledge service needs Tauri runtime",
+                    );
                     return;
                 };
                 let Some(store) = app.try_state::<SessionStore>() else {
@@ -856,12 +892,11 @@ impl RemoteControlManager {
                 };
                 // list_marketplace_tools 是 sync I/O(扫 manifest 目录),走 spawn_blocking
                 // 避免阻塞 dispatcher 协程。
-                let all = match tokio::task::spawn_blocking(|| {
-                    crate::commands::list_marketplace_tools()
-                })
-                .await
-                {
-                    Ok(Ok(tools)) => tools,
+                let all =
+                    match tokio::task::spawn_blocking(|| crate::commands::list_marketplace_tools())
+                        .await
+                    {
+                        Ok(Ok(tools)) => tools,
                     Ok(Err(e)) => {
                         self.send_error("tools_list_failed", &format!("{e:#}"));
                         return;
@@ -900,11 +935,7 @@ impl RemoteControlManager {
                     Ok(()) => {
                         // apply_disabled_connectors 自身不 emit,这里补一次本地广播。
                         let _ = app.emit("remote_control:tools_changed", ());
-                        self.send_event(
-                            &active_session_id,
-                            "tools_changed",
-                            json!({}),
-                        );
+                        self.send_event(&active_session_id, "tools_changed", json!({}));
                     }
                     Err(e) => self.send_error("set_tools_failed", &format!("{e:#}")),
                 }
@@ -1064,10 +1095,11 @@ impl RemoteControlManager {
         store: &SessionStore,
         target_session_id: &str,
     ) -> Result<(), String> {
-        // 切 session 时,旧 session 的进行中上传失效:清槽位 + 删盘上目录。
-        // 新 session 的快照里不会出现旧 upload,mobile UI 据此自然收尾,
-        // 故不需要向 mobile 发 attach_file_aborted 事件。
-        self.cleanup_active_upload("switch_session");
+        // 切 session 时旧 session 的进行中和已就绪附件都失效。mobile 会清空上传卡片，
+        // 服务端必须同步释放内存中的 markdown 和盘上临时源文件。
+        if let Some(previous_session_id) = self.current_session_id() {
+            self.cleanup_session_uploads(&previous_session_id, "switch_session");
+        }
         let saved = store
             .load(target_session_id)
             .map_err(|e| format!("load target session({target_session_id}): {e:?}"))?;
@@ -1281,7 +1313,10 @@ impl RemoteControlManager {
                 .iter()
                 .find(|a| a.id == id)
                 .ok_or_else(|| format!("artifact not found: {id}"))?;
-            (artifact.storage_path.clone(), Value::String(artifact.id.clone()))
+            (
+                artifact.storage_path.clone(),
+                Value::String(artifact.id.clone()),
+            )
         } else if let Some(requested) = artifact_path {
             (
                 resolve_session_preview_path(store, session_id, requested)?,
@@ -1530,7 +1565,7 @@ impl RemoteControlManager {
         // mobile 断开:旧 upload 必然无法收到后续 chunk,清掉槽位 + 删盘上数据。
         // 锁外调 cleanup(它自己再 lock,且 lock 之间无嵌套)。
         if status == "mobile_disconnected" {
-            self.cleanup_active_upload("mobile_disconnected");
+            self.cleanup_all_uploads("mobile_disconnected");
         }
         self.emit_status();
     }
@@ -1592,7 +1627,89 @@ impl RemoteControlManager {
 
     /// 当前远控 room 绑定的 session_id(若已配对);供桌面命令判断是否需要广播。
     pub fn current_session_id(&self) -> Option<String> {
-        self.inner.lock().room.as_ref().map(|r| r.session_id.clone())
+        self.inner
+            .lock()
+            .room
+            .as_ref()
+            .map(|r| r.session_id.clone())
+    }
+
+    fn dispatch_mobile_user_message(
+        &self,
+        active_session_id: &str,
+        content: String,
+        attachment_upload_ids: Vec<String>,
+        client_message_id: Option<String>,
+        store: &SessionStore,
+    ) -> Result<(), String> {
+        if content.is_empty() && attachment_upload_ids.is_empty() {
+            return Err("empty message".to_string());
+        }
+
+        // 先只读收集，不能在锁内复制文件。任一附件缺失时保留全部 pending，允许重试。
+        let candidates = {
+            let inner = self.inner.lock();
+            attachment_upload_ids
+                .iter()
+                .map(|upload_id| {
+                    inner
+                        .pending_attachments
+                        .get(upload_id)
+                        .filter(|pending| pending.session_id == active_session_id)
+                        .and_then(|pending| pending.ingest_result.clone())
+                        .map(|ingest| (upload_id.clone(), ingest))
+                        .ok_or_else(|| upload_id.clone())
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let candidates =
+            candidates.map_err(|missing| format!("attachments not ready: {missing}"))?;
+
+        // uploads 是短生命周期目录。先把源文件复制进 session workspace，再重写 path，
+        // 图片和超长文本后续按路径读取时就不会与临时目录清理竞争。
+        let workspace = store
+            .execution_workspace(active_session_id)
+            .map_err(|e| format!("resolve attachment workspace: {e:#}"))?;
+        let mut attachments = Vec::with_capacity(candidates.len());
+        for (_, original) in &candidates {
+            let mut ingest = original.clone();
+            let staged = crate::commands::stage_remote_attachment_source(
+                &ingest.path,
+                &ingest.basename,
+                &workspace,
+            )
+            .ok_or_else(|| format!("stage remote attachment failed: {}", ingest.basename))?;
+            ingest.path = staged.to_string_lossy().to_string();
+            attachments.push(ingest);
+        }
+
+        if let Some(app) = &self.app {
+            app.emit(
+                "remote_control:mobile_user_message",
+                json!({
+                    "session_id": active_session_id,
+                    "content": content,
+                    "client_message_id": client_message_id,
+                    "attachments": attachments,
+                }),
+            )
+            .map_err(|e| format!("emit mobile_user_message: {e}"))?;
+        }
+
+        // 事件载荷已经引用稳定副本，可以释放内存 markdown 和 uploads 临时源文件。
+        let dirs = {
+            let mut inner = self.inner.lock();
+            let dirs = candidates
+                .iter()
+                .map(|(upload_id, _)| inner.uploads_base.join(upload_id))
+                .collect::<Vec<_>>();
+            for (upload_id, _) in &candidates {
+                inner.pending_attachments.remove(upload_id);
+            }
+            dirs
+        };
+        Self::remove_upload_dirs(dirs, "attachment_consumed");
+        Ok(())
     }
 
     // ─── 附件上传分发(attach_file_*)───
@@ -1602,12 +1719,37 @@ impl RemoteControlManager {
     /// 处理 `attach_file_start`:校验 → 占用 active_upload 槽位 → 起 streaming task →
     /// 回 `attach_file_start_ack`。streaming task(Group E)负责真正的写盘 + ingest。
     fn handle_attach_file_start(&self, active_session_id: &str, payload: &Value) {
+        let requested_upload_id = payload
+            .get("upload_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !requested_upload_id.is_empty() && !valid_client_upload_id(requested_upload_id) {
+            self.send_error("invalid_upload_id", "upload_id format invalid");
+            return;
+        }
+        // 新客户端在 start 时就生成稳定 ID，使用户在 start_ack 返回前也能取消。旧客户端
+        // 没传 upload_id 时仍由桌面端生成，保持协议向后兼容。
+        let upload_id = if requested_upload_id.is_empty() {
+            format!(
+                "up_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            )
+        } else {
+            requested_upload_id.to_string()
+        };
         let filename = payload
             .get("filename")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let byte_size = payload.get("byte_size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let byte_size = payload
+            .get("byte_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let mime = payload
             .get("mime")
             .and_then(|v| v.as_str())
@@ -1618,20 +1760,30 @@ impl RemoteControlManager {
             return;
         }
         if byte_size > UPLOAD_LIMIT_BYTES {
-            self.send_error("upload_too_large", &format!("max {UPLOAD_LIMIT_BYTES} bytes"));
+            self.send_error(
+                "upload_too_large",
+                &format!("max {UPLOAD_LIMIT_BYTES} bytes"),
+            );
             return;
         }
         // 关键:锁内分支只决定"是否要拒绝",不在锁内调 send_error / send_event
         // (二者都会再 `inner.lock()` → re-entrant 死锁)。锁外再回错。
         // 拒绝信息用 (code, message) 元组传出锁块,避免字符串拼接 + split_once 的脆弱解析。
-        let prepared: Result<(String, tokio::sync::mpsc::Receiver<UploadChunkMsg>), (&str, String)> =
-            {
-                let mut inner = self.inner.lock();
-                if inner.active_upload.is_some() {
-                    Err(("upload_in_progress", "another upload is running".to_string()))
-                } else {
-                    // 防滥用:同一 session 内已就绪(未随 user_message 消费)的附件数有上限。
-                    // 超过即拒绝,避免恶意 client 不发 user_message 无限堆积 IngestResult。
+        let prepared: Result<
+            (String, tokio::sync::mpsc::Receiver<UploadChunkMsg>),
+            (&str, String),
+        > = {
+            let mut inner = self.inner.lock();
+            if inner.active_upload.is_some() {
+                Err((
+                    "upload_in_progress",
+                    "another upload is running".to_string(),
+                ))
+            } else if inner.pending_attachments.contains_key(&upload_id) {
+                Err(("upload_id_conflict", "upload_id already exists".to_string()))
+            } else {
+                // 防滥用:同一 session 内已就绪(未随 user_message 消费)的附件数有上限。
+                // 超过即拒绝,避免恶意 client 不发 user_message 无限堆积 IngestResult。
                     let pending_for_session = inner
                         .pending_attachments
                         .values()
@@ -1643,21 +1795,12 @@ impl RemoteControlManager {
                             format!(
                                 "已就绪附件 {} 达上限 {}(请先发送一条消息消费它们)",
                                 pending_for_session, MAX_PENDING_ATTACHMENTS_PER_SESSION
-                            ),
-                        ))
-                    } else {
-                        // 与 download_id 同源格式:pid + nanos,保持单调,便于日志排查。
-                        let upload_id = format!(
-                            "up_{}_{}",
-                            std::process::id(),
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_nanos())
-                                .unwrap_or(0)
-                        );
-                        let upload_dir = inner.uploads_base.join(&upload_id);
-                        if let Err(e) = std::fs::create_dir_all(&upload_dir) {
-                            // 不在锁内 send_error —— collect 错误,锁外回。
+                        ),
+                    ))
+                } else {
+                    let upload_dir = inner.uploads_base.join(&upload_id);
+                    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+                        // 不在锁内 send_error —— collect 错误,锁外回。
                             Err(("upload_dir_failed", format!("{e:#}")))
                         } else {
                             let (tx, rx) =
@@ -1709,12 +1852,15 @@ impl RemoteControlManager {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let index = payload
-            .get("index")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-        let last = payload.get("last").and_then(|v| v.as_bool()).unwrap_or(false);
-        let data_b64 = payload.get("data_base64").and_then(|v| v.as_str()).unwrap_or("");
+        let index = payload.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let last = payload
+            .get("last")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let data_b64 = payload
+            .get("data_base64")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let data = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
             Ok(d) => d,
             Err(e) => {
@@ -1743,7 +1889,12 @@ impl RemoteControlManager {
         enum ChunkGate {
             Ok(Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>),
             UnknownUpload,
-            SizeExceeded { written: u64, inflight: u64, chunk: usize, declared: u64 },
+            SizeExceeded {
+                written: u64,
+                inflight: u64,
+                chunk: usize,
+                declared: u64,
+            },
         }
         let gate = {
             let mut inner = self.inner.lock();
@@ -1756,8 +1907,10 @@ impl RemoteControlManager {
                 // ② UPLOAD_LIMIT_BYTES 硬上限(无条件,即便 client 声明 64MiB 也不得多写)。
                 // 用 in_flight 预算消掉「cap-4 通道下多块在消费者更新 bytes_written 前都已过 gate」
                 // 的 TOCTOU 窗口:本块过 gate 即刻占用 in_flight,写盘确认后再归还成 bytes_written。
-                let projected =
-                    pending.bytes_written.saturating_add(pending.bytes_in_flight).saturating_add(data.len() as u64);
+                let projected = pending
+                    .bytes_written
+                    .saturating_add(pending.bytes_in_flight)
+                    .saturating_add(data.len() as u64);
                 if projected > declared.saturating_mul(2) || projected > UPLOAD_LIMIT_BYTES {
                     ChunkGate::SizeExceeded {
                         written: pending.bytes_written,
@@ -1767,7 +1920,8 @@ impl RemoteControlManager {
                     }
                 } else {
                     // 预占本块字节,直到 streaming task 写盘后在消费者侧归还。
-                    pending.bytes_in_flight = pending.bytes_in_flight.saturating_add(data.len() as u64);
+                    pending.bytes_in_flight =
+                        pending.bytes_in_flight.saturating_add(data.len() as u64);
                     ChunkGate::Ok(inner.upload_chunk_sender.clone())
                 }
             } else {
@@ -1779,7 +1933,12 @@ impl RemoteControlManager {
                 self.send_error("unknown_upload", "upload_id not active");
                 return;
             }
-            ChunkGate::SizeExceeded { written, inflight, chunk, declared } => {
+            ChunkGate::SizeExceeded {
+                written,
+                inflight,
+                chunk,
+                declared,
+            } => {
                 self.send_error(
                     "upload_size_exceeded",
                     &format!(
@@ -1823,28 +1982,35 @@ impl RemoteControlManager {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let dir_to_remove = {
+        let (known_for_session, dir_to_remove) = {
             let mut inner = self.inner.lock();
-            if inner.active_upload.as_deref() != Some(&upload_id) {
-                drop(inner);
-                self.send_error("unknown_upload", "upload_id not active");
-                return;
+            let known_for_session = inner
+                .pending_attachments
+                .get(&upload_id)
+                .is_some_and(|pending| pending.session_id == active_session_id);
+            if !known_for_session {
+                (false, None)
+            } else {
+                if inner.active_upload.as_deref() == Some(&upload_id) {
+                    // 丢掉 sender 让 streaming task 自然结束(rx 返回 None)。
+                    inner.upload_chunk_sender = None;
+                    inner.active_upload = None;
+                }
+                inner.pending_attachments.remove(&upload_id);
+                (true, Some(inner.uploads_base.join(&upload_id)))
             }
-            // 丢掉 sender 让 streaming task 自然结束(rx 返回 None)。
-            inner.upload_chunk_sender = None;
-            inner.active_upload = None;
-            inner.pending_attachments.remove(&upload_id);
-            Some(inner.uploads_base.join(&upload_id))
         };
         if let Some(dir) = dir_to_remove {
-            let _ = std::fs::remove_dir_all(&dir);
+            Self::remove_upload_dirs(vec![dir], "client_abort");
         }
+        // abort 是幂等操作：取消可能在 start_ack 前后各触发一次。未知或已经清理的同一 ID
+        // 也回 aborted，避免迟到 ACK/重复 catch 把客户端带回错误状态。
         self.send_event(
             active_session_id,
             "attach_file_aborted",
             json!({
                 "upload_id": upload_id,
-                "reason": "client_abort",
+                "reason": if known_for_session { "client_abort" } else { "already_aborted" },
             }),
         );
     }
@@ -2197,7 +2363,8 @@ async fn stream_artifact_download(
         if !ack.ok {
             return Err(format!(
                 "relay could not deliver chunk {index}: {}",
-                ack.message.unwrap_or_else(|| "mobile disconnected".to_string())
+                ack.message
+                    .unwrap_or_else(|| "mobile disconnected".to_string())
             ));
         }
         remaining -= filled;
@@ -2252,7 +2419,7 @@ impl RemoteControlManager {
     /// 上传分块流式任务(Group E 落地真正的写盘 + ingest + 完成事件)。
     ///
     /// 消费 dispatch 端投递的 `UploadChunkMsg`:逐块 base64 解码后已变 Vec<u8>,
-    /// 直接 `write_all` 写 `<uploads_base>/<upload_id>/data.bin`,每块写完发
+    /// 直接 `write_all` 写 `<uploads_base>/<upload_id>/<sanitized_filename>`,每块写完发
     /// `attach_file_relay_ack { index, ok: true }` 让 mobile 推下一块(背压源头)。
     /// 最后一块(`last == true`)触发 flush + close → `file_ingest::ingest`(sync,
     /// 放 `spawn_blocking` 避免阻塞 dispatcher)→ 写 `ingest_result` → emit
@@ -2283,9 +2450,7 @@ impl RemoteControlManager {
             let inner = self.inner.lock();
             let base = inner.uploads_base.join(&upload_id);
             let pending = inner.pending_attachments.get(&upload_id);
-            let session_id = pending
-                .map(|p| p.session_id.clone())
-                .unwrap_or_default();
+            let session_id = pending.map(|p| p.session_id.clone()).unwrap_or_default();
             let declared_byte_size = pending.map(|p| p.byte_size).unwrap_or(0);
             let leaf = pending
                 .map(|p| sanitize_upload_filename(&p.filename))
@@ -2312,7 +2477,7 @@ impl RemoteControlManager {
                     json!({
                         "upload_id": upload_id,
                         "ok": false,
-                        "error": format!("open data.bin: {e:#}"),
+                        "error": format!("open upload file: {e:#}"),
                     }),
                 );
                 self.cleanup_active_upload("stream_open_failed");
@@ -2322,11 +2487,8 @@ impl RemoteControlManager {
 
         let mut index_expected = 0usize;
         loop {
-            let recv = tokio::time::timeout(
-                Duration::from_secs(UPLOAD_ACK_TIMEOUT_SECS),
-                rx.recv(),
-            )
-            .await;
+            let recv =
+                tokio::time::timeout(Duration::from_secs(UPLOAD_ACK_TIMEOUT_SECS), rx.recv()).await;
             let msg = match recv {
                 Err(_) => {
                     // 60s 没收到下一块 → 视为对端 / relay 异常,主动收尾。
@@ -2380,7 +2542,7 @@ impl RemoteControlManager {
                     json!({
                         "upload_id": upload_id,
                         "ok": false,
-                        "error": format!("write data.bin: {e:#}"),
+                        "error": format!("write upload file: {e:#}"),
                     }),
                 );
                 self.cleanup_active_upload("stream_write_failed");
@@ -2420,7 +2582,7 @@ impl RemoteControlManager {
                 json!({
                     "upload_id": upload_id,
                     "ok": false,
-                    "error": format!("flush data.bin: {e:#}"),
+                    "error": format!("flush upload file: {e:#}"),
                 }),
             );
             self.cleanup_active_upload("stream_flush_failed");
@@ -2492,25 +2654,9 @@ impl RemoteControlManager {
             }
         }
 
-        // 删除盘上源文件(PR #213 审查 #2):ingest 已经把内容读进 IngestResult.markdown
-        // (text/pdf/office/image 的 markdown / data-URI 全在内存里),后续 user_message
-        // 只读 pending_attachments.ingest_result,不再碰磁盘。旧实现不删源文件 →
-        // 成功上传的 <pinvou3_home>/uploads/<upload_id>/ 永久残留(每次最多 64MiB),
-        // 因为成功路径已把 active_upload 清空,cleanup_active_upload 的早返回让它成了孤儿。
-        // 这里直接 best-effort remove_dir_all 整个 upload 目录;失败只 log,不阻塞成功回执。
-        {
-            let dir_to_remove = {
-                let inner = self.inner.lock();
-                inner.uploads_base.join(&upload_id)
-            };
-            if let Err(e) = std::fs::remove_dir_all(&dir_to_remove) {
-                // 文件已被并发清理(switch_session / mobile_disconnected)或盘错误,
-                // 不影响成功语义 —— ingest_result 已就绪。只在日志留痕。
-                eprintln!(
-                    "[remote-control] post-ingest remove upload dir failed upload_id={upload_id} (likely already cleaned): {e:#}"
-                );
-            }
-        }
+        // 源文件必须保留到 user_message：图片和超长文本在正常 chat 链路仍会按 path
+        // 读取。user_message 会先复制到 session workspace，再删除这个 uploads 临时目录；
+        // 未发送附件则由 abort / 切 session / 断线 / stop 统一回收。
 
         // spec §4.2:回给 mobile 的只是 ingest_preview(filename + kind + byte_size +
         // token_estimate + warning),**不含 markdown / path**(markdown 走 WS 太重,
@@ -2563,7 +2709,13 @@ mod tests {
         });
         let (ids, truncated) = sanitize_disabled_connector_ids(payload.get("connector_ids"));
         assert!(!truncated, "未超数量上限不应截断");
-        assert_eq!(ids, vec!["good_connector".to_string(), "x".repeat(MAX_CONNECTOR_ID_LEN)]);
+        assert_eq!(
+            ids,
+            vec![
+                "good_connector".to_string(),
+                "x".repeat(MAX_CONNECTOR_ID_LEN)
+            ]
+        );
 
         // 数量超上限:截断到 MAX_DISABLED_CONNECTOR_IDS 且 truncated=true。
         let huge: Vec<String> = (0..MAX_DISABLED_CONNECTOR_IDS + 50)
@@ -2849,10 +3001,10 @@ mod tests {
                 match tokio::time::timeout(Duration::from_secs(5), download_rx.recv()).await {
                     Ok(Some(RelayOutbound::Envelope(env))) => {
                         if env.kind == "artifact_download_chunk" {
-                            let index = env.payload["index"].as_u64().expect("chunk index") as usize;
-                            let download_id = env.payload["download_id"]
-                                .as_str()
-                                .expect("download id");
+                            let index =
+                                env.payload["index"].as_u64().expect("chunk index") as usize;
+                            let download_id =
+                                env.payload["download_id"].as_str().expect("download id");
                             manager.handle_download_relay_ack(
                                 download_id,
                                 DownloadRelayAck {
@@ -3260,12 +3412,14 @@ mod tests {
         }
         // 768KiB 块:小于 UPLOAD_CHUNK_MAX_BYTES(单块硬上限),不触发 chunk_too_large。
         let chunk = vec![0u8; 768 * 1024];
-        let mk_payload = |index: u64| serde_json::json!({
-            "upload_id": "up_inflight",
-            "index": index,
-            "data_base64": base64::engine::general_purpose::STANDARD.encode(&chunk),
-            "last": false,
-        });
+        let mk_payload = |index: u64| {
+            serde_json::json!({
+                "upload_id": "up_inflight",
+                "index": index,
+                "data_base64": base64::engine::general_purpose::STANDARD.encode(&chunk),
+                "last": false,
+            })
+        };
         let manager_clone = manager.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3449,8 +3603,12 @@ mod tests {
             // create_dir_all 必然失败(EEXIST / ENOTDIR)。
             let uploads_base = inner.uploads_base.clone();
             drop(inner);
-            std::fs::create_dir_all(uploads_base.parent().unwrap_or_else(|| std::path::Path::new("/")))
-                .ok();
+            std::fs::create_dir_all(
+                uploads_base
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("/")),
+            )
+            .ok();
             std::fs::write(&uploads_base, b"blocker").expect("seed uploads_base as file");
         }
 
@@ -3539,15 +3697,10 @@ mod tests {
             inner.pending_attachments.is_empty(),
             "close_current must clear pending_attachments"
         );
-        // spec §5:close_current / stop_current / disconnect **不删源文件**
-        // (防 LLM read_file 竞争);源文件由 mobile_disconnected / session 切换 /
-        // streaming task timeout 后续清理。这里断言目录**仍在**,守住这条不变量。
         assert!(
-            upload_dir.exists(),
-            "close_current must NOT remove upload dir (spec: source files survive until mobile_disconnected / switch / timeout)"
+            !upload_dir.exists(),
+            "close_current must remove unfinished upload dir"
         );
-        // 清理本测试自己造的目录,避免污染其他用例。
-        let _ = std::fs::remove_dir_all(&upload_dir);
     }
 
     /// 回归:cleanup_active_upload 在没有进行中 upload 时必须 no-op,既不 panic 也不修改状态。
@@ -3570,11 +3723,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cleanup_session_uploads_removes_active_and_ready_attachments_only_for_that_session() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("cleanup-session-uploads");
+        let manager = RemoteControlManager::new_headless();
+        let uploads_base = {
+            let mut inner = manager.inner.lock();
+            for (upload_id, session_id) in [
+                ("up_s1_active", "s1"),
+                ("up_s1_ready", "s1"),
+                ("up_s2_ready", "s2"),
+            ] {
+                let dir = inner.uploads_base.join(upload_id);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("data.txt"), b"data").unwrap();
+                inner.pending_attachments.insert(
+                    upload_id.to_string(),
+                    PendingAttachment {
+                        session_id: session_id.to_string(),
+                        filename: "data.txt".to_string(),
+                        byte_size: 4,
+                        mime: "text/plain".to_string(),
+                        bytes_written: 4,
+                        bytes_in_flight: 0,
+                        ingest_result: Some(crate::file_ingest::ingest(&dir.join("data.txt"))),
+                    },
+                );
+            }
+            inner.active_upload = Some("up_s1_active".to_string());
+            inner.uploads_base.clone()
+        };
+
+        manager.cleanup_session_uploads("s1", "test_switch");
+        let inner = manager.inner.lock();
+        assert!(inner.active_upload.is_none());
+        assert!(!inner.pending_attachments.contains_key("up_s1_active"));
+        assert!(!inner.pending_attachments.contains_key("up_s1_ready"));
+        assert!(inner.pending_attachments.contains_key("up_s2_ready"));
+        drop(inner);
+        assert!(!uploads_base.join("up_s1_active").exists());
+        assert!(!uploads_base.join("up_s1_ready").exists());
+        assert!(uploads_base.join("up_s2_ready").exists());
+        manager.cleanup_all_uploads("test_end");
+    }
+
     /// 端到端 happy path:dispatch 推两块("hello" + "world",最后一块 last=true)→
     /// stream_file_upload 必须 (1) 拼接写盘成 "helloworld" 并**保留 .txt 扩展名**(PR #213
     /// 审查 #1);(2) 跑 file_ingest::ingest 填 ingest_result,kind 必须是 "text" 而非
     /// binary 兜底;(3) 发 attach_file_result(ok=true);(4) 释放 active_upload 槽位;
-    /// (5) 成功后**删除盘上 upload 目录**(审查 #2,无磁盘泄漏)。
+    /// (5) 成功后保留源文件到 user_message 消费，避免图片/大文本 path 提前失效。
     #[tokio::test]
     async fn stream_file_upload_writes_chunks_and_ingests() {
         let _env_lock = ENV_LOCK
@@ -3624,11 +3824,12 @@ mod tests {
 
         // stream_file_upload 消费 self(manager 是 Clone,Arc<Mutex<Inner>> 共享)。
         // clone 一份调用,原 manager 留给后续断言用。
-        manager.clone().stream_file_upload(upload_id.clone(), rx).await;
+        manager
+            .clone()
+            .stream_file_upload(upload_id.clone(), rx)
+            .await;
 
-        // 审查 #1 + #2:ingest_result 携带了文件被 ingest 时的全部信息(kind / basename /
-        // markdown 正文)。成功上传后盘上源文件已被删(审查 #2),所以正文断言改走
-        // ingest_result.markdown,不再 read 磁盘。
+        // ingest_result 携带文件解析结果，源文件则保留到 user_message 完成稳定暂存。
         let inner = manager.inner.lock();
         let pending = inner
             .pending_attachments
@@ -3661,11 +3862,12 @@ mod tests {
         );
         drop(inner);
 
-        // 审查 #2:成功上传后盘上 upload 目录必须被删除(无磁盘泄漏)。
         assert!(
-            !uploads_base.join(&upload_id).exists(),
-            "successful upload dir must be deleted after ingest (no disk leak, review #2)"
+            uploads_base.join(&upload_id).join("hello.txt").exists(),
+            "successful upload source must survive until user_message consumes it"
         );
+        manager.cleanup_session_uploads(&session_id, "test_cleanup");
+        assert!(!uploads_base.join(&upload_id).exists());
     }
 
     /// 审查 #4 截断拒绝回归:声明 byte_size=1000,只发 800 字节然后 last=true。
@@ -3710,7 +3912,10 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        manager.clone().stream_file_upload(upload_id.clone(), rx).await;
+        manager
+            .clone()
+            .stream_file_upload(upload_id.clone(), rx)
+            .await;
 
         let inner = manager.inner.lock();
         // 必须拒绝:active_upload 释放,cleanup 清掉 pending_attachments(无 ingest_result)。
@@ -3747,27 +3952,46 @@ mod tests {
         assert_eq!(sanitize_upload_filename("报告.pdf"), "报告.pdf");
         assert_eq!(sanitize_upload_filename("データ.xlsx"), "データ.xlsx");
         assert_eq!(sanitize_upload_filename("café.md"), "café.md");
-        assert_eq!(sanitize_upload_filename("季度总结 第一期.docx"), "季度总结 第一期.docx");
+        assert_eq!(
+            sanitize_upload_filename("季度总结 第一期.docx"),
+            "季度总结 第一期.docx"
+        );
         // 防路径穿越:file_name() 剥掉目录成分。
         assert_eq!(sanitize_upload_filename("../evil.txt"), "evil.txt");
         assert_eq!(sanitize_upload_filename("/etc/passwd"), "passwd");
         // Windows 风格反斜杠:在 Linux 上 file_name() 不把它当分隔符(Linux 只认 /),
         // 但反斜杠不在允许字符集 → 被过滤,结果仍无目录穿越(无 / 或 \ 残留)。
-        assert_eq!(sanitize_upload_filename("..\\windows\\x.exe"), "windowsx.exe");
+        assert_eq!(
+            sanitize_upload_filename("..\\windows\\x.exe"),
+            "windowsx.exe"
+        );
         // Windows 保留字符被过滤(: < > | ? *),其余安全标点保留。
         assert_eq!(sanitize_upload_filename("data:v2.txt"), "datav2.txt");
-        assert_eq!(sanitize_upload_filename("report (v2).csv"), "report (v2).csv");
+        assert_eq!(
+            sanitize_upload_filename("report (v2).csv"),
+            "report (v2).csv"
+        );
         assert_eq!(sanitize_upload_filename("a+b&c@d.json"), "a+b&c@d.json");
         // 退化输入回退 data.bin(向后兼容)。
         assert_eq!(sanitize_upload_filename(""), "data.bin");
         assert_eq!(sanitize_upload_filename(".."), "data.bin");
         assert_eq!(sanitize_upload_filename("   "), "data.bin");
-        // 无扩展名原样保留(file_ingest 会做内容嗅探,不再一刀切 binary)。
+        // 无扩展名原样保留，由既有 file_ingest 规则处理。
         assert_eq!(sanitize_upload_filename("README"), "README");
         assert_eq!(sanitize_upload_filename("Dockerfile"), "Dockerfile");
         // 连续空格压缩 + 首尾空白/点去除。
         assert_eq!(sanitize_upload_filename("  a   b.txt  "), "a b.txt");
         assert_eq!(sanitize_upload_filename(".hidden.txt"), "hidden.txt");
+    }
+
+    #[test]
+    fn client_upload_id_is_stable_and_path_safe() {
+        assert!(valid_client_upload_id("up_web_1720000000_ab12cd"));
+        assert!(valid_client_upload_id("up_mobile-1"));
+        assert!(!valid_client_upload_id("upload_1"));
+        assert!(!valid_client_upload_id("up_../escape"));
+        assert!(!valid_client_upload_id("up_含中文"));
+        assert!(!valid_client_upload_id(&format!("up_{}", "a".repeat(94))));
     }
 
     /// 审查 #5 上限对齐:UPLOAD_LIMIT_BYTES 必须等于 file_ingest::MAX_FILE_BYTES(20MiB),
@@ -3814,7 +4038,10 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
         drop(_tx); // 立即关 sender 模拟 mobile abort / disconnect
 
-        manager.clone().stream_file_upload(upload_id.clone(), rx).await;
+        manager
+            .clone()
+            .stream_file_upload(upload_id.clone(), rx)
+            .await;
 
         let inner = manager.inner.lock();
         assert!(
@@ -4006,7 +4233,9 @@ mod e2e_tests {
 
     #[test]
     fn artifact_download_round_trips_through_real_relay() {
-        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../remote-control-relay")
             .canonicalize()
@@ -4054,7 +4283,10 @@ mod e2e_tests {
         };
         let deadline = Instant::now() + Duration::from_secs(15);
         while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "relay did not start on port {port}");
+            assert!(
+                Instant::now() < deadline,
+                "relay did not start on port {port}"
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
 
@@ -4161,11 +4393,7 @@ mod e2e_tests {
                 if value.get("type").and_then(|v| v.as_str()) == Some("mobile_joined") {
                     break 'join (write, read);
                 }
-                assert!(
-                    attempt < 39,
-                    "mobile_join never succeeded: {}",
-                    value
-                );
+                assert!(attempt < 39, "mobile_join never succeeded: {}", value);
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
             unreachable!("join loop must break or assert")
@@ -4180,8 +4408,12 @@ mod e2e_tests {
         );
 
         // mobile 请求下载大文件(2MB,应分 3 块),desktop 经真实 WS 收到 action。
-        send_mobile_action(&mut write, "dl-big", json!({ "artifact_path": "reports/e2e-big.bin" }))
-            .await;
+        send_mobile_action(
+            &mut write,
+            "dl-big",
+            json!({ "artifact_path": "reports/e2e-big.bin" }),
+        )
+        .await;
         let download_action = recv_mobile_action(receiver).await;
         assert_eq!(
             download_action.get("type").and_then(|v| v.as_str()),
@@ -4210,8 +4442,12 @@ mod e2e_tests {
         wait_download_idle(&manager).await;
 
         // 小文本文件:单块 + 正确 MIME。
-        send_mobile_action(&mut write, "dl-text", json!({ "artifact_path": "notes/hello.txt" }))
-            .await;
+        send_mobile_action(
+            &mut write,
+            "dl-text",
+            json!({ "artifact_path": "notes/hello.txt" }),
+        )
+        .await;
         let _ = recv_mobile_action(receiver).await;
         manager
             .send_artifact_download(&store, &session_id, None, Some("notes/hello.txt"))
@@ -4223,8 +4459,12 @@ mod e2e_tests {
         wait_download_idle(&manager).await;
 
         // 越界路径必须被拒绝(不会向 mobile 发任何 download 事件)。
-        let escape = manager.send_artifact_download(&store, &session_id, None, Some("/etc/hostname"));
-        assert!(escape.is_err(), "absolute path outside session must be rejected");
+        let escape =
+            manager.send_artifact_download(&store, &session_id, None, Some("/etc/hostname"));
+        assert!(
+            escape.is_err(),
+            "absolute path outside session must be rejected"
+        );
         let missing = manager.send_artifact_download(&store, &session_id, None, Some("nope.bin"));
         assert!(missing.is_err(), "missing artifact must be rejected");
     }
@@ -4331,7 +4571,10 @@ mod e2e_tests {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    byte_size = payload.get("byte_size").and_then(|v| v.as_u64()).unwrap_or(0);
+                    byte_size = payload
+                        .get("byte_size")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     total_chunks = payload
                         .get("total_chunks")
                         .and_then(|v| v.as_u64())
@@ -4353,10 +4596,11 @@ mod e2e_tests {
                         .to_string();
                     chunks[index] = Some(data);
                     let ack = loop {
-                        let inbound = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
-                            .await
-                            .expect("download ack timeout")
-                            .expect("desktop inbound closed");
+                        let inbound =
+                            tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                                .await
+                                .expect("download ack timeout")
+                                .expect("desktop inbound closed");
                         if let RelayInbound::DownloadAck {
                             download_id,
                             index,
@@ -4458,7 +4702,9 @@ mod e2e_tests {
     fn real_browser_download_full_stack() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../remote-control-relay")
             .canonicalize()
@@ -4501,7 +4747,8 @@ mod e2e_tests {
         ));
         let previous_home = std::env::var_os("PINVOU3_HOME");
         std::env::set_var("PINVOU3_HOME", &home);
-        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> = Arc::new(parking_lot::Mutex::new(None));
+        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> =
+            Arc::new(parking_lot::Mutex::new(None));
         struct Guard {
             home: PathBuf,
             previous_home: Option<OsString>,
@@ -4577,7 +4824,10 @@ mod e2e_tests {
         *relay_child.lock() = Some(child);
         let deadline = Instant::now() + Duration::from_secs(15);
         while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "relay did not start on port {port}");
+            assert!(
+                Instant::now() < deadline,
+                "relay did not start on port {port}"
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
 
@@ -4674,13 +4924,12 @@ mod e2e_tests {
                         "request_session_list" => manager.send_session_list(&store, &sid),
                         "request_chips" => manager.send_chips_snapshot(&store, &sid),
                         "request_artifacts" => manager.send_artifact_list(&store, &sid),
-                        "switch_remote_session" => match action_payload
-                            .get("session_id")
-                            .and_then(|v| v.as_str())
-                        {
-                            Some(id) => manager.switch_remote_session(&store, id),
-                            None => Ok(()),
-                        },
+                        "switch_remote_session" => {
+                            match action_payload.get("session_id").and_then(|v| v.as_str()) {
+                                Some(id) => manager.switch_remote_session(&store, id),
+                                None => Ok(()),
+                            }
+                        }
                         "request_artifact_preview" => {
                             if let Some(id) =
                                 action_payload.get("artifact_id").and_then(|v| v.as_str())
@@ -4697,8 +4946,7 @@ mod e2e_tests {
                         "request_artifact_download" => {
                             download_actions.fetch_add(1, Ordering::SeqCst);
                             let id = action_payload.get("artifact_id").and_then(|v| v.as_str());
-                            let path =
-                                action_payload.get("artifact_path").and_then(|v| v.as_str());
+                            let path = action_payload.get("artifact_path").and_then(|v| v.as_str());
                             manager.send_artifact_download(&store, &sid, id, path)
                         }
                         _ => Ok(()),
@@ -4724,8 +4972,11 @@ mod e2e_tests {
             "expectedSize": DOWNLOAD_LIMIT_BYTES,
             "chromeBin": chrome_bin,
         });
-        std::fs::write(&params_path, serde_json::to_string_pretty(&params).expect("params json"))
-            .expect("write driver params");
+        std::fs::write(
+            &params_path,
+            serde_json::to_string_pretty(&params).expect("params json"),
+        )
+        .expect("write driver params");
 
         let status = Command::new("node")
             .arg(relay_dir.join("test/real-browser-download.driver.mjs"))
@@ -4746,7 +4997,7 @@ mod e2e_tests {
 
     /// 真实浏览器全链路上传:真实 node relay + 真实 manager(分块写盘 +
     /// file_ingest::ingest) + 真实 Chrome/Chromium(puppeteer 驱动真实手机端页面)。
-    /// 覆盖:小文本(2MiB)单路径、近上限(64MiB)多分块全链路、超限(64MiB+1)拒绝、
+    /// 覆盖:小文本(2MiB)、4MiB 多分块全链路、20MiB+1 超限拒绝、
     /// abort 中止、XSS 文件名转义、连击拦截(attachBtn disabled)。
     /// 依赖 node 与 Chrome 二进制,缺失时跳过(与 real_browser_download_full_stack 同策略)。
     /// KB / 工具开关链路需要 Tauri AppHandle,headless 无法构造,留给 jsdom e2e 覆盖。
@@ -4754,7 +5005,9 @@ mod e2e_tests {
     fn real_browser_upload_full_stack() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let relay_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../remote-control-relay")
             .canonicalize()
@@ -4797,7 +5050,8 @@ mod e2e_tests {
         ));
         let previous_home = std::env::var_os("PINVOU3_HOME");
         std::env::set_var("PINVOU3_HOME", &home);
-        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> = Arc::new(parking_lot::Mutex::new(None));
+        let relay_child: Arc<parking_lot::Mutex<Option<Child>>> =
+            Arc::new(parking_lot::Mutex::new(None));
         struct Guard {
             home: PathBuf,
             previous_home: Option<OsString>,
@@ -4837,9 +5091,8 @@ mod e2e_tests {
         std::fs::write(&small_path, &small_bytes).expect("write small file");
 
         // 多分块文件:4 MiB(≈ 6 个 768KiB 分块),用于真实浏览器 + relay + 桌面端
-        // 多分块全链路验证。不取满 64MiB 的原因:64MiB 经真实 puppeteer + base64
-        // + relay ack 全链路在本机稳定耗时 4+ 分钟,超 cargo 默认 5min 桶;且字节级
-        // 一致性已经被 64MiB 下载 e2e(real_browser_download_full_stack)等价证明。
+        // 多分块全链路验证。不取满 20MiB 的原因:满额文件经真实 puppeteer + base64
+        // + relay ack 全链路耗时较长;字节级一致性已有下载 e2e 的大文件场景补充验证。
         // 这里聚焦「多分块合并正确」(6 分块就够覆盖边界)。
         let pattern: Vec<u8> = (0..1024 * 1024u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
@@ -4856,7 +5109,7 @@ mod e2e_tests {
         let abort_slow_path = small_dir.join("abort-slow.bin");
         std::fs::write(&abort_slow_path, &abort_slow_bytes).expect("write abort slow file");
 
-        // 超限文件:64MiB + 1,稀疏。
+        // 超限文件:20MiB + 1,稀疏。
         let oversize_path = small_dir.join("oversize.bin");
         let oversize_file = std::fs::File::create(&oversize_path).expect("create oversize file");
         oversize_file
@@ -4876,7 +5129,7 @@ mod e2e_tests {
             .env("PINVOU_REMOTE_PUBLIC_BASE_PATH", "")
             .env("HEARTBEAT_INTERVAL_MS", "60000")
             // 上传 e2e 不测速率限流(由 server-upload-rate-limit.test.js 专门覆盖),
-            // 把窗口调到极大避免真实浏览器 64MiB 多分块被误限。
+            // 把窗口调到极大避免真实浏览器多分块被误限。
             .env("MOBILE_UPLOAD_WINDOW_BYTES", "1073741824")
             .env("MOBILE_UPLOAD_WINDOW_SECS", "1")
             .stdin(Stdio::null())
@@ -4887,7 +5140,10 @@ mod e2e_tests {
         *relay_child.lock() = Some(child);
         let deadline = Instant::now() + Duration::from_secs(15);
         while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "relay did not start on port {port}");
+            assert!(
+                Instant::now() < deadline,
+                "relay did not start on port {port}"
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
 
@@ -4923,12 +5179,15 @@ mod e2e_tests {
         let start_actions = Arc::new(AtomicUsize::new(0));
         let chunk_actions = Arc::new(AtomicUsize::new(0));
         let abort_actions = Arc::new(AtomicUsize::new(0));
+        let user_message_actions = Arc::new(AtomicUsize::new(0));
         let stop_dispatch = Arc::new(AtomicBool::new(false));
         {
             let manager = manager.clone();
+            let dispatch_store = store.clone();
             let start_actions = start_actions.clone();
             let chunk_actions = chunk_actions.clone();
             let abort_actions = abort_actions.clone();
+            let user_message_actions = user_message_actions.clone();
             let stop_dispatch = stop_dispatch.clone();
             tauri::async_runtime::spawn(async move {
                 while !stop_dispatch.load(Ordering::SeqCst) {
@@ -4969,16 +5228,42 @@ mod e2e_tests {
                             abort_actions.fetch_add(1, Ordering::SeqCst);
                             manager.handle_attach_file_abort(&sid, &action_payload);
                         }
+                        "user_message" => {
+                            user_message_actions.fetch_add(1, Ordering::SeqCst);
+                            let content = action_payload
+                                .get("content")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            let attachment_ids = action_payload
+                                .get("attachment_upload_ids")
+                                .and_then(|value| value.as_array())
+                                .map(|values| {
+                                    values
+                                        .iter()
+                                        .filter_map(|value| value.as_str().map(ToString::to_string))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            let _ = manager.dispatch_mobile_user_message(
+                                &sid,
+                                content,
+                                attachment_ids,
+                                None,
+                                &dispatch_store,
+                            );
+                        }
                         // room 加入后 web 客户端会自动请求 snapshot / session list / chips,
                         // 必须真实响应,否则 session 面板永远为空,后续步骤全部超时。
                         "request_snapshot" | "ping" => {
-                            let _ = manager.send_snapshot_with_live_request(&store, &sid);
+                            let _ = manager.send_snapshot_with_live_request(&dispatch_store, &sid);
                         }
                         "request_session_list" => {
-                            let _ = manager.send_session_list(&store, &sid);
+                            let _ = manager.send_session_list(&dispatch_store, &sid);
                         }
                         "request_chips" => {
-                            let _ = manager.send_chips_snapshot(&store, &sid);
+                            let _ = manager.send_chips_snapshot(&dispatch_store, &sid);
                         }
                         // KB / 工具开关需要 AppHandle,headless 不支持;由 jsdom e2e 覆盖。
                         "list_kb_collections" | "list_tools" => {}
@@ -5003,8 +5288,11 @@ mod e2e_tests {
             "oversizeFilePath": oversize_path.to_string_lossy(),
             "oversizeFileName": "oversize.bin",
         });
-        std::fs::write(&params_path, serde_json::to_string_pretty(&params).expect("params json"))
-            .expect("write driver params");
+        std::fs::write(
+            &params_path,
+            serde_json::to_string_pretty(&params).expect("params json"),
+        )
+        .expect("write driver params");
 
         let status = Command::new("node")
             .arg(relay_dir.join("test/real-browser-upload.driver.mjs"))
@@ -5032,18 +5320,19 @@ mod e2e_tests {
             aborts >= 1,
             "desktop must see at least 1 attach_file_abort, got {aborts}"
         );
+        assert_eq!(
+            user_message_actions.load(Ordering::SeqCst),
+            2,
+            "browser must submit both groups of ready attachments through user_message"
+        );
 
-        // 验证落盘(PR #213 审查 #2):成功上传的 small + large 都必须在 ingest 后**删除**
-        // 盘上目录(无磁盘泄漏)。abort-slow 的目录由 handle_attach_file_abort 删除。
-        // 旧实现成功上传后不删源文件 → 每次最多残留 20MiB;新实现 ingest 完成即删。
+        // user_message 已把源文件复制到 session workspace，uploads 临时目录应全部回收。
         let uploads_root = home.join("uploads");
         let leaked: Vec<_> = if uploads_root.exists() {
             std::fs::read_dir(&uploads_root)
                 .map(|it| {
                     it.filter_map(|e| e.ok())
-                        .filter(|e| {
-                            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                        })
+                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
                         .collect()
                 })
                 .unwrap_or_default()
@@ -5054,6 +5343,22 @@ mod e2e_tests {
             leaked.is_empty(),
             "成功上传 + abort 后 uploads 目录必须清空(无磁盘泄漏,审查 #2),实际残留: {:?}",
             leaked.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+        let stable_dir = store
+            .execution_workspace(&session_id)
+            .expect("session workspace")
+            .join(".pinvou3/remote-attachments");
+        assert_eq!(
+            std::fs::metadata(stable_dir.join("small.txt"))
+                .expect("small stable attachment")
+                .len(),
+            small_bytes.len() as u64
+        );
+        assert_eq!(
+            std::fs::metadata(stable_dir.join("multi-chunk.bin"))
+                .expect("multi-chunk stable attachment")
+                .len(),
+            large_bytes.len() as u64
         );
 
         let _ = &guard;

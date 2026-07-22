@@ -3589,12 +3589,18 @@
       console.warn("remote session hydrate failed", err);
       return;
     }
+    var attachmentNames = attachments.map(function (attachment) {
+      return attachment && attachment.basename;
+    }).filter(Boolean);
+    var displayText = attachmentNames.length
+      ? content + (content ? "\n\n" : "") + "📎 " + attachmentNames.join(" · ")
+      : content;
     if (isBusyFor(sid)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++itemIdSeq,
           text: content,
-          displayText: content,
+          displayText: displayText,
           attachments: attachments,
           meta: { remoteClientMessageId: p.client_message_id || null },
         });
@@ -3602,7 +3608,7 @@
       notify();
       return;
     }
-    doSendFor(sid, content, content, attachments, { remoteClientMessageId: p.client_message_id || null });
+    doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
   });
 
   // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到

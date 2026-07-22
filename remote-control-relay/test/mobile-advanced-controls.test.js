@@ -277,8 +277,8 @@ test('附件上传完整链路:attach_file_start → chunks → result', async (
     '系统消息应提示附件已就绪',
   );
 
-  // 5) 模拟提交:input 文本 + 提交 → user_message 应带 attachment_upload_ids。
-  window.document.getElementById('input').value = '看看这个';
+  // 5) 模拟纯附件提交：user_message 内容可为空，但手机气泡必须显示附件名。
+  window.document.getElementById('input').value = '';
   // 提交前 actionButton 应处于 idle(turn.active=false),直接调用 submitComposer。
   window.submitComposer();
   const userMsg = sent.find(
@@ -286,7 +286,10 @@ test('附件上传完整链路:attach_file_start → chunks → result', async (
   );
   assert.ok(userMsg, '应发送 user_message');
   assert.deepEqual(userMsg.payload.payload.attachment_upload_ids, ['up_1']);
-  assert.equal(userMsg.payload.payload.content, '看看这个');
+  assert.equal(userMsg.payload.payload.content, '');
+  const userBubbles = [...window.document.querySelectorAll('#messages .msg.user .bubble')];
+  const userBubble = userBubbles[userBubbles.length - 1];
+  assert.ok(userBubble && userBubble.textContent.includes('📎 hello.txt'));
 });
 
 test('多块附件上传:多 chunk 串行 + 每块 relay_ack 解锁下一块', async (t) => {
@@ -372,6 +375,54 @@ test('attach_file_aborted 清状态并提示', async (t) => {
     systemTexts(window).some((s) => s.includes('附件上传已中止') && s.includes('user_cancelled')),
     '系统消息应提示附件已中止及原因',
   );
+});
+
+test('start_ack 前点击 × 仍用稳定 upload_id 取消桌面上传', async (t) => {
+  const { window, sent, close } = createPage();
+  t.after(close);
+
+  const file = makeFakeFile({
+    name: 'cancel-before-ack.bin',
+    type: 'application/octet-stream',
+    bytes: Buffer.from('0123456789'),
+  });
+  const uploadP = window.requestAttachFile(file);
+  await sleep(10);
+
+  const start = sent.find(
+    (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_start',
+  );
+  assert.ok(start, '应发送 attach_file_start');
+  const uploadId = start.payload.payload.upload_id;
+  assert.match(uploadId, /^up_[A-Za-z0-9_-]+$/, 'start 必须携带客户端稳定 upload_id');
+
+  const xBtn = window.document.querySelector('#attachmentPreview .att-x');
+  assert.ok(xBtn, '等待 start_ack 时也应允许取消');
+  xBtn.click();
+  await sleep(10);
+
+  const aborts = sent.filter(
+    (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_abort',
+  );
+  assert.ok(aborts.length >= 1, 'ACK 前取消必须发 attach_file_abort');
+  assert.ok(
+    aborts.every((m) => m.payload.payload.upload_id === uploadId),
+    'start 与 abort 必须使用同一个 upload_id',
+  );
+
+  // 迟到 ACK 不得恢复上传，也不得发任何 chunk。
+  window.handleDesktopEvent({
+    type: 'attach_file_start_ack',
+    payload: { upload_id: uploadId, chunk_bytes: 4 },
+  });
+  await sleep(30);
+  assert.equal(
+    sent.filter((m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_chunk').length,
+    0,
+    '取消后的迟到 ACK 不得触发分块上传',
+  );
+  assert.ok(!window.document.querySelector('#attachmentPreview .att-x'));
+  await uploadP;
 });
 
 test('tools_changed 500ms debounce 后触发 list_tools', async (t) => {

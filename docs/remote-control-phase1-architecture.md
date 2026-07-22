@@ -344,18 +344,18 @@ list_tools / set_disabled_connectors
 **Desktop -> Mobile 新增 event**:
 
 ```text
-attach_file_start_ack / attach_file_chunk_ack / attach_file_result / attach_file_error
+attach_file_start_ack / attach_file_relay_ack / attach_file_result / attach_file_aborted
 kb_collections_snapshot / kb_mount_changed
 tools_snapshot / tools_changed
 ```
 
 **附件上传链路**(完全镜像已合并的下载链路 PR #203):
 
-- 上限 64MiB、分块 768KiB、base64 上行。
-- 三层背压:WS TCP 有序 + 有界 mpsc channel(cap 4) + 显式 `attach_file_chunk_ack` + 60s ack 超时。
-- 桌面端落盘到 `<pinvou3_home>/uploads/<upload_id>/data.bin`,`upload_id` 走 `validate_session_id` 字符集校验防路径穿越。
+- 上限与既有 `file_ingest` 对齐为 20MiB、分块 768KiB、base64 上行。
+- 三层背压:WS TCP 有序 + 有界 mpsc channel(cap 4) + 显式 `attach_file_relay_ack` + 60s ack 超时。
+- mobile 在 start 前生成稳定 `upload_id`,因此 `start_ack` 返回前也能取消;桌面端校验字符集和长度后使用。文件落盘到 `<pinvou3_home>/uploads/<upload_id>/<净化后原文件名>`,保留扩展名供既有 `file_ingest` 正确分派。
 - 落盘完成后 `spawn_blocking` 调 `file_ingest::ingest`,产出 `IngestResult`,但只把 `ingest_preview`(kind / byte_size / token_estimate / warning,不含 markdown 与本地路径)回送 mobile;完整 `IngestResult` 在下一条 `user_message` 时本地消费。
-- `close_current` / `stop_current` / `disconnect` **不删源文件**,防止 LLM `read_file` 与清理逻辑竞争;由 `mobile_disconnected` / 切 session / streaming task 自身超时三条后续路径清理。
+- `user_message` 消费附件时先把源文件复制进 session workspace 的 `.pinvou3/remote-attachments/`,再释放内存解析结果和 uploads 临时目录;图片和超长文本后续按稳定路径读取。取消、切 session、mobile 断线、stop/close 和 streaming timeout 都会清理未消费的临时上传。
 
 **知识库挂载开关**(对齐桌面端 `session_mount_collection` / `session_unmount_collection`):
 

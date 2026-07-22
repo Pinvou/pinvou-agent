@@ -450,6 +450,19 @@ fn stage_image_in_workspace(
     Some(format!("{attachment_dir}/{candidate}"))
 }
 
+/// 把远控上传的临时源文件复制进 session workspace，再把稳定绝对路径交给正常附件链路。
+/// 远控上传目录可以在消息进入桌面端后立即清理；图片分析和大文本按路径读取不会再与
+/// 临时目录删除竞争。目录使用隐藏前缀，避免把输入附件误当成用户产出物展示。
+pub(crate) fn stage_remote_attachment_source(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let relative =
+        stage_image_in_workspace(src, basename, workspace, ".pinvou3/remote-attachments")?;
+    Some(workspace.join(relative))
+}
+
 /// 附件内联预算(token 估算)。单文件超过 INLINE_MAX、或多附件累计超过 TOTAL_BUDGET
 /// 的部分,不再全量嵌入 prompt——256K 窗口一条消息就能撑爆(实测 5000 行 xlsx 转
 /// CSV ≈ 237K tokens,直接顶穿 vLLM 262144 上限),且即使不炸窗口,小模型在超长
@@ -992,7 +1005,11 @@ fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, 
     SystemCredentialStore::new()
         .get(reference)
         .map_err(|error| error.user_message())
-        .map(|value| value.map(|key| key.trim().to_string()).filter(|key| !key.is_empty()))
+        .map(|value| {
+            value
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
 }
 
 #[tauri::command]
@@ -6092,7 +6109,9 @@ mod tests {
         let _home = test_pinvou_home("verify-upload-e2e");
         let _e2e = TestE2EFlag::enable();
 
-        let upload_dir = crate::bridge::paths::pinvou3_home().join("uploads").join("up_ok1");
+        let upload_dir = crate::bridge::paths::pinvou3_home()
+            .join("uploads")
+            .join("up_ok1");
         std::fs::create_dir_all(&upload_dir).unwrap();
         let data = b"hello verify_upload";
         std::fs::write(upload_dir.join("data.bin"), data).unwrap();
@@ -6882,6 +6901,42 @@ mod tests {
             "图片应被拷进 workspace 的 attachments/"
         );
         assert!(!prompt.contains("没有视觉能力"), "不应再出现无视觉提示");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remote_attachment_source_survives_upload_temp_cleanup() {
+        let tmp =
+            std::env::temp_dir().join(format!("pinvou3-remote-source-test-{}", std::process::id()));
+        let ws = tmp.join("workspace");
+        std::fs::create_dir_all(&ws).expect("建 workspace");
+
+        let image_src = tmp.join("remote.png");
+        std::fs::write(&image_src, b"\x89PNG\r\n\x1a\nremote-image").unwrap();
+        let mut image = crate::file_ingest::ingest(&image_src);
+        let staged_image =
+            stage_remote_attachment_source(image_src.to_str().unwrap(), &image.basename, &ws)
+                .expect("暂存远控图片");
+        image.path = staged_image.to_string_lossy().to_string();
+        std::fs::remove_file(&image_src).unwrap();
+        let image_prompt = build_message_with_attachments("看图".into(), vec![image], &ws);
+        assert!(image_prompt.contains("image_analyze"));
+        assert!(ws.join("attachments/remote.png").exists());
+
+        let text_src = tmp.join("remote.txt");
+        std::fs::write(&text_src, "远控大文本\n".repeat(20_000)).unwrap();
+        let mut text = crate::file_ingest::ingest(&text_src);
+        assert!(text.token_estimate > ATTACH_INLINE_MAX_TOKENS);
+        let staged_text =
+            stage_remote_attachment_source(text_src.to_str().unwrap(), &text.basename, &ws)
+                .expect("暂存远控大文本");
+        text.path = staged_text.to_string_lossy().to_string();
+        std::fs::remove_file(&text_src).unwrap();
+        let text_prompt = build_message_with_attachments("查全文".into(), vec![text], &ws);
+        assert!(staged_text.exists());
+        assert!(text_prompt.contains(&staged_text.to_string_lossy().to_string()));
+        assert!(!text_prompt.contains("此文件过大无法内嵌,且转换产物落盘失败"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

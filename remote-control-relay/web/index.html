@@ -600,7 +600,7 @@
       toolsSetDebounceTimer: null,
       // 逻辑上属于 Group H,放这里方便单次上传串行控制。
       uploadBusy: false,
-      uploadStartResolvers: Object.create(null), // '__pending__' -> { resolve, reject }(同时只有一个上传在飞)
+      uploadStartResolvers: Object.create(null), // client upload_id -> { resolve, reject }
     };
     const sentClientIds = new Set();
     const toolNodes = new Map();
@@ -1652,7 +1652,9 @@
       }
       state.uploadBusy = true;
       updateChipLabels();
-      const tempUploadId = 'pending-' + Date.now();
+      // start 前生成稳定 ID，并随 attach_file_start 发送。WebSocket 保序保证立即取消时
+      // start 会先于 abort 到达桌面端，不再依赖迟到的 start_ack 才知道该取消谁。
+      const tempUploadId = 'up_web_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
       setUploadState(tempUploadId, {
         filename: file.name,
         byte_size: file.size,
@@ -1660,30 +1662,32 @@
         received: 0,
         status: 'starting',
         busy: true,
+        realUploadId: tempUploadId,
       });
       renderAttachmentPreview();
-      let realUploadId = null;
+      let realUploadId = tempUploadId;
       try {
         // 1. attach_file_start → attach_file_start_ack(由 handler resolve)
         const startAck = await new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
-            if (state.uploadStartResolvers['__pending__']) {
-              delete state.uploadStartResolvers['__pending__'];
+            if (state.uploadStartResolvers[tempUploadId]) {
+              delete state.uploadStartResolvers[tempUploadId];
               reject(new Error('attach_file_start timeout'));
             }
           }, 10000);
-          state.uploadStartResolvers['__pending__'] = {
+          state.uploadStartResolvers[tempUploadId] = {
             resolve: (payload) => { clearTimeout(timer); resolve(payload); },
             reject: (err) => { clearTimeout(timer); reject(err); },
           };
           const sent = sendAction('attach_file_start', {
+            upload_id: tempUploadId,
             filename: file.name,
             byte_size: file.size,
             mime: file.type || 'application/octet-stream',
           });
           if (!sent) {
             clearTimeout(timer);
-            delete state.uploadStartResolvers['__pending__'];
+            delete state.uploadStartResolvers[tempUploadId];
             reject(new Error('ws not open'));
           }
         });
@@ -1764,7 +1768,8 @@
         renderAttachmentPreview();
       } finally {
         // 清理 start resolver(若 reject 前未清)
-        if (state.uploadStartResolvers['__pending__']) delete state.uploadStartResolvers['__pending__'];
+        if (state.uploadStartResolvers[tempUploadId]) delete state.uploadStartResolvers[tempUploadId];
+        if (realUploadId && state.uploadStartResolvers[realUploadId]) delete state.uploadStartResolvers[realUploadId];
         state.uploadBusy = false;
         updateChipLabels();
       }
@@ -2400,10 +2405,10 @@
     //   - uploadBusy 卡 true 导致 attachBtn 永久禁用。
     function clearAllUploadRuntime() {
       Object.keys(state.uploads).forEach(clearUploadState);
-      if (state.uploadStartResolvers && state.uploadStartResolvers['__pending__']) {
-        try { state.uploadStartResolvers['__pending__'].reject(new Error('aborted')); } catch {}
-        delete state.uploadStartResolvers['__pending__'];
-      }
+      Object.keys(state.uploadStartResolvers || {}).forEach(uploadId => {
+        try { state.uploadStartResolvers[uploadId].reject(new Error('aborted')); } catch {}
+        delete state.uploadStartResolvers[uploadId];
+      });
       if (state.toolsDebounceTimer) { clearTimeout(state.toolsDebounceTimer); state.toolsDebounceTimer = null; }
       if (state.toolsSetDebounceTimer) { clearTimeout(state.toolsSetDebounceTimer); state.toolsSetDebounceTimer = null; }
       state.uploadBusy = false;
@@ -2476,7 +2481,7 @@
           x.textContent = '×';
           x.setAttribute('aria-label', '取消上传');
           x.onclick = () => {
-            // 仅在已拿到真实 upload_id 时才向桌面端发 abort;否则只能本地清。
+            // start 前就有稳定 upload_id，因此 ACK 尚未返回也能让桌面端准确取消。
             if (up.realUploadId) sendAction('attach_file_abort', { upload_id: up.realUploadId });
             // 关键:必须同时 reject 在途的 waitForRelayAck(分块阶段)与 start resolver
             // (start 阶段还没拿到 realUploadId)。否则迟到的 ack 一到就会 resolve,
@@ -2485,10 +2490,10 @@
             if (up.realUploadId) {
               rejectAllPendingRelayAcks(up.realUploadId, 'user_aborted');
             }
-            // start 阶段(tempUploadId 还没换成 realUploadId):reject __pending__ resolver。
-            const startResolver = state.uploadStartResolvers['__pending__'];
+            // start 阶段：按客户端 upload_id reject 对应 resolver。
+            const startResolver = state.uploadStartResolvers[up.realUploadId || id];
             if (startResolver) {
-              delete state.uploadStartResolvers['__pending__'];
+              delete state.uploadStartResolvers[up.realUploadId || id];
               startResolver.reject(new Error('user_aborted'));
             }
             clearUploadState(id);
@@ -3096,9 +3101,19 @@
         case 'attach_file_start_ack': {
           // 等待 startAck 的 requestAttachFile 收到真实 upload_id + chunk_bytes
           const sap = msg.payload || {};
-          const slot = state.uploadStartResolvers['__pending__'];
+          let resolverId = sap.upload_id;
+          let slot = resolverId && state.uploadStartResolvers[resolverId];
+          // 兼容旧桌面端生成不同 upload_id，也方便旧测试夹具继续工作；生产新协议
+          // 会直接命中同一个客户端 ID。
+          if (!slot) {
+            const pendingIds = Object.keys(state.uploadStartResolvers);
+            if (pendingIds.length === 1) {
+              resolverId = pendingIds[0];
+              slot = state.uploadStartResolvers[resolverId];
+            }
+          }
           if (slot) {
-            delete state.uploadStartResolvers['__pending__'];
+            delete state.uploadStartResolvers[resolverId];
             slot.resolve(sap);
           }
           break;
@@ -3404,9 +3419,13 @@
       // 已就绪的附件随消息一起发(upload_id 列表)。
       const doneUploadIds = Object.keys(state.uploads).filter(id => state.uploads[id] && state.uploads[id].status === 'done');
       if (!text && doneUploadIds.length === 0) return;
+      const attachmentNames = doneUploadIds.map(id => state.uploads[id] && state.uploads[id].filename).filter(Boolean);
+      const displayText = attachmentNames.length
+        ? text + (text ? '\n\n' : '') + '📎 ' + attachmentNames.join(' · ')
+        : text;
       const id = clientId();
       sentClientIds.add(id);
-      addMessage('user', text);
+      addMessage('user', displayText);
       el.input.value = '';
       setTurnActive(true, 'waiting');
       const sent = sendAction('user_message', { content: text, attachment_upload_ids: doneUploadIds }, id);
