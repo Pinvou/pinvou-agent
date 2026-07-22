@@ -37,7 +37,7 @@ pub fn check_update_platform_support() -> Result<(), String> {
 pub async fn check_for_update_info(
     client: &reqwest::Client,
     current_version: &str,
-) -> Result<crate::updater::UpdateInfo, String> {
+) -> Result<super::super::UpdateInfo, String> {
     let m: LatestManifest = client
         .get(manifest_url())
         .send()
@@ -48,7 +48,7 @@ pub async fn check_for_update_info(
         .json()
         .await
         .map_err(|e| format!("latest.json 解析失败: {e}"))?;
-    Ok(crate::updater::UpdateInfo {
+    Ok(super::super::UpdateInfo {
         // 仅严格大于才提示 → 服务器版本 ≤ 本地时天然降级保护
         available: is_newer(&m.version, current_version),
         current_version: current_version.to_string(),
@@ -77,11 +77,11 @@ fn deb_arch() -> &'static str {
 }
 
 pub async fn download_update_package(
-    info: &crate::updater::UpdateInfo,
+    info: &super::super::UpdateInfo,
     app: AppHandle,
     cancel: &AtomicBool,
     stall_timeout: Duration,
-) -> Result<crate::updater::DownloadUpdateResult, String> {
+) -> Result<super::super::DownloadUpdateResult, String> {
     check_update_platform_support()?;
     let dir = paths::updates_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
@@ -89,7 +89,7 @@ pub async fn download_update_package(
     let expected = info.sha256.to_lowercase();
 
     if dest.exists() && file_sha256(&dest).as_deref() == Some(expected.as_str()) {
-        return Ok(crate::updater::DownloadUpdateResult::Path(
+        return Ok(super::super::DownloadUpdateResult::Path(
             dest.to_string_lossy().into_owned(),
         ));
     }
@@ -177,7 +177,7 @@ pub async fn download_update_package(
             "sha256 校验失败（期望 {expected} 实际 {actual}），已删除下载文件"
         ));
     }
-    Ok(crate::updater::DownloadUpdateResult::Path(
+    Ok(super::super::DownloadUpdateResult::Path(
         dest.to_string_lossy().into_owned(),
     ))
 }
@@ -212,7 +212,7 @@ pub fn install_update_package(path: &Path) -> Result<(), String> {
 pub fn install_downloaded_update(
     deb_path: Option<String>,
     _installer_path: Option<String>,
-    _info: Option<crate::updater::UpdateInfo>,
+    _info: Option<super::super::UpdateInfo>,
 ) -> Result<bool, String> {
     let deb_path = deb_path.ok_or_else(|| "缺少 deb 安装包路径".to_string())?;
     install_update_package(Path::new(&deb_path))?;
@@ -222,8 +222,8 @@ pub fn install_downloaded_update(
 pub async fn report_pending_update_result_info(
     _client: &reqwest::Client,
     _current_version: &str,
-) -> Result<crate::updater::PendingUpdateReportResult, String> {
-    Ok(crate::updater::PendingUpdateReportResult {
+) -> Result<super::super::PendingUpdateReportResult, String> {
+    Ok(super::super::PendingUpdateReportResult {
         had_pending: false,
         reported: false,
         result: String::new(),

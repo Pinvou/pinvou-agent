@@ -22,6 +22,7 @@ pub mod credential_store;
 mod detach;
 #[path = "features/feedback/mod.rs"]
 pub mod feedback;
+mod features;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use commands::build_message_with_attachments;
@@ -90,8 +91,6 @@ mod telemetry;
 mod timing;
 #[path = "app/ui_cache.rs"]
 mod ui_cache;
-#[path = "features/updater/mod.rs"]
-mod updater;
 #[path = "features/voice/voice_asr.rs"]
 mod voice_asr;
 #[path = "features/workflow/workflow_migrate.rs"]
@@ -826,13 +825,13 @@ pub fn run() {
             commands::delete_persona,
             commands::save_session_persona_events,
             commands::get_session_persona_events,
-            updater::get_app_version,
-            updater::check_for_update,
-            updater::download_update,
-            updater::install_update,
-            updater::restart_app,
-            updater::cancel_download,
-            updater::report_pending_update_result,
+            features::updater::get_app_version,
+            features::updater::check_for_update,
+            features::updater::download_update,
+            features::updater::install_update,
+            features::updater::restart_app,
+            features::updater::cancel_download,
+            features::updater::report_pending_update_result,
             file_ingest::check_dependencies,
             file_ingest::install_dependencies,
             commands::list_marketplace_tools,

@@ -5,8 +5,6 @@ mod linux_memory;
 mod linux_path;
 mod linux_permission;
 mod linux_system;
-#[path = "../../../features/updater/platform/linux.rs"]
-mod linux_update;
 
 pub fn cpu_snapshot() -> Option<crate::monitor::CpuSnapshot> {
     None
@@ -36,8 +34,4 @@ pub use linux_system::{
     pdf_tool_path, presentation_pdf_missing_message, show_archive_dependency_check,
     show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
     system_default_open_supported,
-};
-pub use linux_update::{
-    check_for_update_info, download_update_package, install_downloaded_update,
-    report_pending_update_result_info,
 };

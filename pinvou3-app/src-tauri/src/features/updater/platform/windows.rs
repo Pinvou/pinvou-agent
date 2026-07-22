@@ -202,9 +202,9 @@ pub fn check_update_platform_support() -> Result<(), String> {
 pub async fn check_for_update_info(
     client: &reqwest::Client,
     current_version: &str,
-) -> Result<crate::updater::UpdateInfo, String> {
+) -> Result<super::super::UpdateInfo, String> {
     let info = check_for_update(client, current_version).await?;
-    Ok(crate::updater::UpdateInfo {
+    Ok(super::super::UpdateInfo {
         available: info.available,
         current_version: info.current_version,
         latest_version: info.latest_version,
@@ -295,11 +295,11 @@ pub async fn check_for_update(
 }
 
 pub async fn download_update_package(
-    info: &crate::updater::UpdateInfo,
+    info: &super::super::UpdateInfo,
     app: AppHandle,
     cancel: &AtomicBool,
     stall_timeout: Duration,
-) -> Result<crate::updater::DownloadUpdateResult, String> {
+) -> Result<super::super::DownloadUpdateResult, String> {
     check_update_platform_support()?;
     let dir = paths::updates_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
@@ -312,7 +312,7 @@ pub async fn download_update_package(
     {
         let ctx = install_context_from_update_info(info);
         let prepared = prepare_update_package(&dest, &ctx)?;
-        return Ok(crate::updater::DownloadUpdateResult::Prepared(
+        return Ok(super::super::DownloadUpdateResult::Prepared(
             prepared_update_for_tauri(prepared),
         ));
     }
@@ -392,7 +392,7 @@ pub async fn download_update_package(
 
     let ctx = install_context_from_update_info(info);
     let prepared = prepare_update_package(&dest, &ctx)?;
-    Ok(crate::updater::DownloadUpdateResult::Prepared(
+    Ok(super::super::DownloadUpdateResult::Prepared(
         prepared_update_for_tauri(prepared),
     ))
 }
@@ -471,7 +471,7 @@ pub fn install_update_package(path: &Path) -> Result<(), String> {
 
 pub fn install_prepared_update(
     installer_path: &str,
-    info: &crate::updater::UpdateInfo,
+    info: &super::super::UpdateInfo,
 ) -> Result<(), String> {
     let ctx = install_context_from_update_info(info);
     let installer = Path::new(installer_path).to_path_buf();
@@ -482,7 +482,7 @@ pub fn install_prepared_update(
 pub fn install_downloaded_update(
     _deb_path: Option<String>,
     installer_path: Option<String>,
-    info: Option<crate::updater::UpdateInfo>,
+    info: Option<super::super::UpdateInfo>,
 ) -> Result<bool, String> {
     let installer_path = installer_path.ok_or_else(|| "缺少 Windows 安装文件路径".to_string())?;
     let info = info.ok_or_else(|| "缺少 Windows 更新信息，无法写入反馈记录".to_string())?;
@@ -556,9 +556,9 @@ pub async fn report_pending_update_result(
 pub async fn report_pending_update_result_info(
     client: &reqwest::Client,
     current_version: &str,
-) -> Result<crate::updater::PendingUpdateReportResult, String> {
+) -> Result<super::super::PendingUpdateReportResult, String> {
     let r = report_pending_update_result(client, current_version).await?;
-    Ok(crate::updater::PendingUpdateReportResult {
+    Ok(super::super::PendingUpdateReportResult {
         had_pending: r.had_pending,
         reported: r.reported,
         result: r.result,
@@ -566,7 +566,7 @@ pub async fn report_pending_update_result_info(
     })
 }
 
-fn install_context_from_update_info(info: &crate::updater::UpdateInfo) -> WindowsInstallContext {
+fn install_context_from_update_info(info: &super::super::UpdateInfo) -> WindowsInstallContext {
     WindowsInstallContext {
         software_id: if info.software_id.trim().is_empty() {
             DEFAULT_SOFTWARE_ID.to_string()
@@ -580,8 +580,8 @@ fn install_context_from_update_info(info: &crate::updater::UpdateInfo) -> Window
     }
 }
 
-fn prepared_update_for_tauri(value: WindowsPreparedUpdate) -> crate::updater::PreparedUpdate {
-    crate::updater::PreparedUpdate {
+fn prepared_update_for_tauri(value: WindowsPreparedUpdate) -> super::super::PreparedUpdate {
+    super::super::PreparedUpdate {
         package_path: value.package_path,
         installer_path: value.installer_path,
         latest_version: value.latest_version,

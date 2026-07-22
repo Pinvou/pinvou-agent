@@ -4,7 +4,6 @@ mod memory;
 mod path;
 mod permission;
 mod system;
-mod update;
 
 pub use cpu::cpu_snapshot;
 pub use dependency::install_dependencies;
@@ -35,7 +34,3 @@ pub use system::{
 };
 #[cfg(target_os = "windows")]
 pub use system::bios_serial_number;
-pub use update::{
-    check_for_update_info, download_update_package, install_downloaded_update,
-    report_pending_update_result_info,
-};

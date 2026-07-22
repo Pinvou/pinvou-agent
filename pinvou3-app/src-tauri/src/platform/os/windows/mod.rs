@@ -2,15 +2,11 @@
 mod windows_cpu;
 #[path = "../../../features/dependencies/platform/windows.rs"]
 mod windows_dependency;
-#[path = "../../../features/updater/platform/windows_domain_bootstrap.rs"]
-mod windows_domain_bootstrap;
 #[path = "../../../features/monitor/platform/windows_memory.rs"]
 mod windows_memory;
 mod windows_path;
 mod windows_permission;
 mod windows_system;
-#[path = "../../../features/updater/platform/windows.rs"]
-mod windows_update;
 
 pub use windows_cpu::cpu_snapshot;
 pub use windows_dependency::install_dependencies;
@@ -38,8 +34,4 @@ pub use windows_system::{
     pdf_tool_path, presentation_pdf_missing_message, show_archive_dependency_check,
     show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
     system_default_open_supported,
-};
-pub use windows_update::{
-    check_for_update_info, download_update_package, install_downloaded_update,
-    report_pending_update_result_info,
 };

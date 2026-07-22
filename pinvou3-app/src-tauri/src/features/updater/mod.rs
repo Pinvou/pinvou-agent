@@ -19,6 +19,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+mod platform;
+
 /// 下载停滞看门狗阈值：连上后单次等待数据超过此时长即判定挂死。
 /// 用「单 chunk 间隔」而非「总耗时」做超时——慢网持续小流量不会被误杀，
 /// 只有真正长时间收不到任何字节（更新源挂起 / 半开连接）才中断。
@@ -90,7 +92,7 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
-    crate::os::check_for_update_info(&client, current).await
+    platform::check_for_update_info(&client, current).await
 }
 
 /// 下载更新包到 `~/.pinvou3/updates/`，流式写盘 + 校验，进度走
@@ -101,7 +103,7 @@ pub async fn download_update(
     info: UpdateInfo,
     app: AppHandle,
 ) -> Result<DownloadUpdateResult, String> {
-    crate::os::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT).await
+    platform::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT).await
 }
 
 /// 安装下载好的更新包。Linux 走 pkexec apt；Windows 启动 MSI/NSIS 安装器，成功启动后退出进程。
@@ -113,7 +115,7 @@ pub async fn install_update(
     app: AppHandle,
 ) -> Result<(), String> {
     let exit_after_start = tokio::task::spawn_blocking(move || {
-        crate::os::install_downloaded_update(deb_path, installer_path, info)
+        platform::install_downloaded_update(deb_path, installer_path, info)
     })
     .await
     .map_err(|e| format!("安装任务失败: {e}"))??;
@@ -143,5 +145,5 @@ pub async fn report_pending_update_result() -> Result<PendingUpdateReportResult,
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
-    crate::os::report_pending_update_result_info(&client, env!("CARGO_PKG_VERSION")).await
+    platform::report_pending_update_result_info(&client, env!("CARGO_PKG_VERSION")).await
 }
