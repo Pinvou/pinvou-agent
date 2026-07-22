@@ -1,17 +1,10 @@
 #[path = "../../../features/dependencies/platform/linux.rs"]
 mod linux_dependency;
-#[path = "../../../features/monitor/platform/linux_memory.rs"]
-mod linux_memory;
 mod linux_path;
 mod linux_permission;
 mod linux_system;
 
-pub fn cpu_snapshot() -> Option<crate::monitor::CpuSnapshot> {
-    None
-}
-
 pub use linux_dependency::install_dependencies;
-pub use linux_memory::ram_snapshot;
 pub use linux_path::{
     apply_user_npm_prefix, connector_cli_command, kill_pid_tree, path_component_eq,
     platform_compat_path, python_command, user_home_dir, validate_upload_location,

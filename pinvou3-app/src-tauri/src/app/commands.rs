@@ -27,7 +27,7 @@ use crate::credential_store::{
 };
 use crate::engine_pool::EnginePool;
 use crate::knowledge::KnowledgeService;
-use crate::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
+use crate::features::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionListItem {
@@ -1718,10 +1718,10 @@ pub async fn clear_session() -> Result<(), String> {
 pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
 ) -> Result<MonitorSnapshot, String> {
-    let snapshot = crate::monitor::sample_all(
+    let snapshot = crate::features::monitor::sample_all(
         &monitor,
-        &crate::monitor::vllm_base_url(),
-        crate::monitor::vllm_configured_model(),
+        &crate::features::monitor::vllm_base_url(),
+        crate::features::monitor::vllm_configured_model(),
     )
     .await;
     Ok(snapshot)
@@ -1763,7 +1763,7 @@ pub async fn discover_local_vllm(
 
     let mut candidates = Vec::new();
     for base_url in urls {
-        if let Some(snapshot) = crate::monitor::vllm_snapshot(&base_url, None).await {
+        if let Some(snapshot) = crate::features::monitor::vllm_snapshot(&base_url, None).await {
             candidates.push(LocalVllmCandidate {
                 base_url: snapshot.upstream,
                 status: snapshot.status,
@@ -1820,7 +1820,7 @@ pub async fn get_backend_status(
     _monitor: State<'_, MonitorState>,
 ) -> Result<BackendStatus, String> {
     // Lightweight: 只 probe 当前 active model,不跑 nvidia-smi / RAM 采样。
-    let vllm = crate::monitor::active_model_snapshot().await;
+    let vllm = crate::features::monitor::active_model_snapshot().await;
     let vllm_online = vllm.as_ref().is_some_and(|v| {
         v.health_status == "verified" && matches!(v.status, VllmStatus::Ready | VllmStatus::Busy)
     });

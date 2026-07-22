@@ -1,8 +1,6 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::monitor::{CpuSnapshot, RamSnapshot};
-
 pub fn open_target(_target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Err(format!("当前平台不支持系统打开: {label}"))
 }
@@ -195,14 +193,6 @@ pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool {
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     vec!["nvidia-smi"]
-}
-
-pub fn ram_snapshot() -> Option<RamSnapshot> {
-    None
-}
-
-pub fn cpu_snapshot() -> Option<CpuSnapshot> {
-    None
 }
 
 pub fn user_home_dir() -> PathBuf {

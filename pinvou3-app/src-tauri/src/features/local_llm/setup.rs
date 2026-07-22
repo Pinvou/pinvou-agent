@@ -26,7 +26,7 @@ use tauri::Emitter;
 
 use crate::bridge::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::credential_store::CredentialState;
-use crate::monitor::{self, VllmStatus};
+use crate::features::monitor::{self, VllmStatus};
 
 /// 引导阶段事件名(前端 listen 更新步骤指示 + 计时)。
 const PHASE_EVENT: &str = "vllm-setup:phase";

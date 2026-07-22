@@ -1,16 +1,10 @@
-#[path = "../../../features/monitor/platform/windows_cpu.rs"]
-mod windows_cpu;
 #[path = "../../../features/dependencies/platform/windows.rs"]
 mod windows_dependency;
-#[path = "../../../features/monitor/platform/windows_memory.rs"]
-mod windows_memory;
 mod windows_path;
 mod windows_permission;
 mod windows_system;
 
-pub use windows_cpu::cpu_snapshot;
 pub use windows_dependency::install_dependencies;
-pub use windows_memory::ram_snapshot;
 pub use windows_path::{
     apply_user_npm_prefix, bundled_onnxruntime_dylib_path, connector_cli_command, kill_pid_tree,
     path_component_eq, platform_compat_path, python_command, user_home_dir,

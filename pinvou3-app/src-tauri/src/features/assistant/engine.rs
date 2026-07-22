@@ -909,7 +909,7 @@ fn spawn_event_forwarder(
         // app 侧自测推理指标累加器(TTFT/生成速度/累计tokens/KV)。try_state:headless
         // harness / 测试可能没 manage MonitorState,拿不到就整块跳过,不 panic。
         let self_metrics = app
-            .try_state::<crate::monitor::MonitorState>()
+            .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let telemetry = app
             .try_state::<crate::telemetry::TelemetryState>()
@@ -2544,7 +2544,7 @@ mod scheduled_turn_tests {
 mod live_tests {
     use super::*;
     use crate::bridge::mode_state::SerializableMode;
-    use crate::monitor::SelfMetrics;
+    use crate::features::monitor::SelfMetrics;
 
     /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 四臂
     /// 原样喂 SelfMetrics**,证明真实事件流(TurnStarted→MessageDelta→TurnComplete+真

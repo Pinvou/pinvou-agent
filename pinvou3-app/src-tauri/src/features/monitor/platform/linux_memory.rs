@@ -1,4 +1,4 @@
-use crate::monitor::RamSnapshot;
+use super::super::RamSnapshot;
 
 pub fn ram_snapshot() -> Option<RamSnapshot> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;

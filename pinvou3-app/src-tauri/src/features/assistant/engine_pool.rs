@@ -286,7 +286,7 @@ impl EnginePool {
         // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
         if b.provider() == "vllm" {
             log::info!("[engine_pool] fresh_bridge_for vllm probe start sid={}", session_id);
-            let (served, max_len) = crate::monitor::probe_vllm_model_info(&b.base_url()).await;
+            let (served, max_len) = crate::features::monitor::probe_vllm_model_info(&b.base_url()).await;
             log::info!(
                 "[engine_pool] fresh_bridge_for vllm probe done sid={} served={:?} max_len={:?}",
                 session_id,

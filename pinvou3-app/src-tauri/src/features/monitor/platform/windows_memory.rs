@@ -1,4 +1,4 @@
-use crate::monitor::RamSnapshot;
+use super::super::RamSnapshot;
 
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 

@@ -19,6 +19,8 @@ use serde::Serialize;
 use crate::bridge::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::credential_store::{CredentialStore, SystemCredentialStore};
 
+mod platform;
+
 /// 单次完整采样结果。所有字段 `Option`——采集失败就为 None。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MonitorSnapshot {
@@ -350,7 +352,7 @@ pub async fn sample_all(
         state,
         vllm_upstream,
         configured_model,
-        crate::os::cpu_snapshot(),
+        platform::cpu_snapshot(),
     )
     .await
 }
@@ -369,7 +371,7 @@ async fn sample_all_with_cpu(
         generated_at_ms: now_ms,
         gpu: gpu_snapshot(),
         cpu,
-        ram: crate::os::ram_snapshot(),
+        ram: platform::ram_snapshot(),
         vllm: match active_model_snapshot().await {
             Some(snapshot) => Some(snapshot),
             None => vllm_snapshot(vllm_upstream, configured_model).await,
@@ -538,50 +540,6 @@ try {
 
 #[cfg(not(target_os = "windows"))]
 fn platform_gpu_snapshot() -> Option<GpuSnapshot> {
-    None
-}
-
-fn ram_snapshot() -> Option<RamSnapshot> {
-    linux_ram_snapshot().or_else(platform_ram_snapshot)
-}
-
-/// 读 `/proc/meminfo`。Linux 专有，其他 OS → None。
-fn linux_ram_snapshot() -> Option<RamSnapshot> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let mut total = None;
-    let mut available = None;
-    let mut swap_total = None;
-    let mut swap_free = None;
-    for line in text.lines() {
-        let (key, val) = line.split_once(':')?;
-        let kib: u64 = val.trim().trim_end_matches(" kB").parse().ok().unwrap_or(0);
-        match key {
-            "MemTotal" => total = Some(kib),
-            "MemAvailable" => available = Some(kib),
-            "SwapTotal" => swap_total = Some(kib),
-            "SwapFree" => swap_free = Some(kib),
-            _ => {}
-        }
-    }
-    let total = total?;
-    let available = available?;
-    Some(RamSnapshot {
-        total_kib: total,
-        used_kib: total.saturating_sub(available),
-        swap_total_kib: swap_total.unwrap_or(0),
-        swap_used_kib: swap_total
-            .unwrap_or(0)
-            .saturating_sub(swap_free.unwrap_or(0)),
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn platform_ram_snapshot() -> Option<RamSnapshot> {
-    crate::os::platform::ram_snapshot()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn platform_ram_snapshot() -> Option<RamSnapshot> {
     None
 }
 
@@ -1323,9 +1281,10 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn ram_snapshot_succeeds_on_supported_platform() {
-        let s = crate::os::ram_snapshot().expect("RAM snapshot should be readable");
+        let s = platform::ram_snapshot().expect("RAM snapshot should be readable");
         assert!(s.total_kib > 0);
     }
 

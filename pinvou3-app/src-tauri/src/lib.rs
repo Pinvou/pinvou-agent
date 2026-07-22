@@ -57,8 +57,6 @@ pub mod llmapi_hub;
 mod local_vllm_setup;
 #[path = "features/memory/mod.rs"]
 pub mod memory;
-#[path = "features/monitor/mod.rs"]
-mod monitor;
 #[path = "features/voice/microphone_permission.rs"]
 mod microphone_permission;
 #[path = "platform/notifications.rs"]
@@ -106,7 +104,7 @@ use tauri::Manager;
 
 use crate::bridge::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
-use crate::monitor::MonitorState;
+use crate::features::monitor::MonitorState;
 use crate::remote_control::RemoteControlManager;
 
 /// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,

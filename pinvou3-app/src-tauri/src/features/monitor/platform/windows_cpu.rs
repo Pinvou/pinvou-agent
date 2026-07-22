@@ -13,7 +13,7 @@ use windows_sys::Win32::System::Registry::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes};
 
-use crate::monitor::CpuSnapshot;
+use super::super::CpuSnapshot;
 
 static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
 

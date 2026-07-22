@@ -829,7 +829,7 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
             bridge
                 .as_ref()
                 .map(|b| b.base_url())
-                .unwrap_or_else(crate::monitor::vllm_base_url)
+                .unwrap_or_else(crate::features::monitor::vllm_base_url)
         });
     let mut command = HiddenCommand::new(program);
     command
