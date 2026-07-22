@@ -639,7 +639,8 @@ function createBridgeHarness(sharedStorage) {
       core: { invoke: invoke },
       event: {
         listen: function (name, fn) {
-          listeners[name] = fn;
+          if (!listeners[name]) listeners[name] = [];
+          listeners[name].push(fn);
           return Promise.resolve(function () {});
         },
       },
@@ -676,8 +677,9 @@ function createBridgeHarness(sharedStorage) {
     dialogCalls: dialogCalls,
     setDialogResult: function (value) { dialogResult = value; },
     emit: function (name, payload) {
-      assert.ok(listeners[name], "expected listener " + name);
-      return listeners[name]({ payload: payload || {} });
+      assert.ok(listeners[name] && listeners[name].length, "expected listener " + name);
+      var event = { payload: payload || {} };
+      return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
   };
 }
@@ -2949,6 +2951,130 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
   );
 }
 
+async function presentationReconciliationUsesStableEventIdentity() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-presentation-identity";
+  var durable = {
+    metadata: { id: sessionId, title: "Presentation identity", message_count: 0 },
+    messages: [], artifacts: [], transcript_revision: "rev-0",
+  };
+  harness.handlers.load_session = function () { return durable; };
+  harness.handlers.chat = function () { return true; };
+
+  await bridge.switchToSession(sessionId);
+  await bridge.sendMessage("写一个贪吃蛇游戏");
+
+  var writePayload = {
+    session_id: sessionId,
+    id: "tool-write-snake",
+    name: "write_file",
+    args: { path: "snake-game.html", content: "<!doctype html>" },
+  };
+  harness.emit("chat:tool_start", writePayload);
+  harness.emit("chat:tool_start", writePayload);
+  assert.strictEqual(
+    bridge.getState().chatItems.filter(function (item) {
+      return item.type === "tool" && item.toolId === writePayload.id;
+    }).length,
+    1,
+    "a replayed tool_start must not create a second tool card"
+  );
+
+  var absoluteArtifactPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
+    "\\workspace\\snake-game.html";
+  harness.emit("artifact:disk", {
+    session_id: sessionId,
+    path: absoluteArtifactPath,
+    event: "created",
+  });
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: writePayload.id,
+    success: true,
+    output: "Wrote snake-game.html",
+  });
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: writePayload.id,
+    success: true,
+    output: "Wrote snake-game.html",
+  });
+  assert.strictEqual(
+    bridge.getState().messages.filter(function (message) {
+      return (message.content || []).some(function (block) {
+        return block.type === "tool_result" && block.tool_use_id === writePayload.id;
+      });
+    }).length,
+    1,
+    "a replayed tool_end must not persist a second tool result"
+  );
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "游戏已经写好。" });
+  durable = {
+    metadata: { id: sessionId, title: "Presentation identity", message_count: 4 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "写一个贪吃蛇游戏" }] },
+      { role: "assistant", content: [{
+        type: "tool_use", id: writePayload.id, name: "write_file", input: writePayload.args,
+      }] },
+      { role: "user", content: [{
+        type: "tool_result", tool_use_id: writePayload.id, content: "Wrote snake-game.html",
+      }] },
+      { role: "assistant", content: [{ type: "text", text: "游戏已经写好。" }] },
+    ],
+    artifacts: ["snake-game.html"],
+    transcript_revision: "rev-1",
+  };
+  harness.emit("chat:done", { session_id: sessionId });
+  await tick();
+  await tick();
+
+  var reconciled = bridge.getState();
+  var artifactCards = reconciled.chatItems.filter(function (item) {
+    return item.type === "artifact_card" && /snake-game\.html$/.test(item.path || "");
+  });
+  assert.strictEqual(artifactCards.length, 1,
+    "relative durable and absolute live artifact paths must reconcile to one card");
+  assert.strictEqual(artifactCards[0].path, absoluteArtifactPath,
+    "the reconciled artifact card should keep the absolute openable path");
+  assert.strictEqual(
+    reconciled.artifacts.filter(function (item) { return item.basename === "snake-game.html"; }).length,
+    1,
+    "the artifact panel must use the same semantic identity as chat cards"
+  );
+
+  var questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
+  harness.emit("chat:user_input_required", {
+    session_id: sessionId, id: "tool-question", questions: questions,
+  });
+  harness.emit("chat:user_input_required", {
+    session_id: sessionId, id: "tool-question", questions: questions,
+  });
+  assert.strictEqual(
+    bridge.getState().chatItems.filter(function (item) {
+      return item.type === "user_input" && item.toolCallId === "tool-question";
+    }).length,
+    1,
+    "a replayed user-input event must not create a second question card"
+  );
+
+  var planPayload = {
+    session_id: sessionId,
+    plan_id: "plan-stable-1",
+    plan_snapshot: [{ step: "实现游戏", status: "pending" }],
+  };
+  harness.emit("chat:plan_ready", planPayload);
+  harness.emit("chat:plan_ready", planPayload);
+  assert.strictEqual(
+    bridge.getState().chatItems.filter(function (item) {
+      return item.type === "plan_card" && item.planId === planPayload.plan_id;
+    }).length,
+    1,
+    "a replayed plan_ready event must not create a second plan card"
+  );
+}
+
 async function remoteSessionDeletionConvergesPresentationState() {
   var harness = createBridgeHarness();
   var deletedId = "chat-deleted-remotely";
@@ -3003,6 +3129,7 @@ Promise.resolve()
   .then(scheduledOwnerRegistryIsBoundedAndProtectsLive)
   .then(scheduledBufferLruNeverEvictsLive)
   .then(scheduledRunningHydrationRaceBehavior)
+  .then(presentationReconciliationUsesStableEventIdentity)
   .then(scheduledUnreadPollingRaceBehavior)
   .then(scheduledFolderPickerBehavior)
   .then(scheduledTemplateSourcePersistenceBehavior)

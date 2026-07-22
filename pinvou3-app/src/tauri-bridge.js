@@ -1768,6 +1768,39 @@
     item.id = ++itemIdSeq;
     state.chatItems.push(item);
   }
+  function messageHasToolBlock(type, toolCallId) {
+    if (!toolCallId) return false;
+    // Replayed events belong to the current tail in practice. Scan backwards so
+    // long-running Sessions do not pay a full-history walk on every tool frame.
+    for (var i = state.messages.length - 1; i >= 0; i--) {
+      var blocks = state.messages[i] && state.messages[i].content;
+      if (!Array.isArray(blocks)) continue;
+      for (var j = blocks.length - 1; j >= 0; j--) {
+        var block = blocks[j];
+        if (!block || block.type !== type) continue;
+        if ((type === "tool_use" ? block.id : block.tool_use_id) === toolCallId) return true;
+      }
+    }
+    return false;
+  }
+  function toolCallAlreadyStarted(toolCallId) {
+    if (!toolCallId) return false;
+    if ((pendingAssistantBlocks || []).some(function (block) {
+      return block && block.type === "tool_use" && block.id === toolCallId;
+    })) return true;
+    if (state.chatItems.some(function (item) {
+      return item && item.type === "tool" && item.toolId === toolCallId;
+    })) return true;
+    return messageHasToolBlock("tool_use", toolCallId);
+  }
+  function toolCallAlreadyFinished(toolCallId) {
+    return messageHasToolBlock("tool_result", toolCallId);
+  }
+  function hasChatItemForTool(type, toolCallId) {
+    return !!toolCallId && state.chatItems.some(function (item) {
+      return item && item.type === type && item.toolCallId === toolCallId;
+    });
+  }
   // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
   // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
   // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
@@ -2031,9 +2064,20 @@
     var seen = Object.create(null);
     (durableArtifacts || []).concat(liveArtifacts || []).forEach(function (artifact) {
       var path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      if (!path || seen[path]) return;
-      seen[path] = true;
-      merged.push({ path: path, basename: basename(path) });
+      var identity = basename(path);
+      if (!path || !identity) return;
+      if (seen[identity] !== undefined) {
+        // The durable transcript commonly stores a relative write_file path while
+        // artifact:disk has already supplied the absolute path. They are the same
+        // presentation object; retain the path that can actually be opened.
+        var existingIndex = seen[identity];
+        if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
+          merged[existingIndex] = { path: path, basename: identity };
+        }
+        return;
+      }
+      seen[identity] = merged.length;
+      merged.push({ path: path, basename: identity });
     });
     return merged;
   }
@@ -2042,7 +2086,10 @@
     if (!item || !item.type) return "";
     if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
     if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
-    if (item.type === "artifact_card") return "artifact:" + String(item.path || "");
+    if (item.type === "artifact_card") return "artifact:" + basename(item.path);
+    if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;
+    if (item.type === "careful_blocked" && item.toolCallId) return "careful_blocked:" + item.toolCallId;
+    if (item.type === "plan_card" && item.planId) return "plan:" + item.planId;
     if (item.type === "user") return "user:" + String(item.text || item.html || "");
     if (item.type === "system") return "system:" + String(item.text || "");
     var stable = Object.assign({}, item);
@@ -2054,17 +2101,17 @@
 
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
+    var availableByKey = Object.create(null);
+    state.chatItems.forEach(function (item, index) {
+      var key = hydratedChatItemKey(item);
+      if (!key) return;
+      if (!availableByKey[key]) availableByKey[key] = [];
+      availableByKey[key].push(index);
+    });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var existingIndex = -1;
-      if (key) {
-        for (var i = state.chatItems.length - 1; i >= 0; i--) {
-          if (hydratedChatItemKey(state.chatItems[i]) === key) {
-            existingIndex = i;
-            break;
-          }
-        }
-      }
+      var matches = key && availableByKey[key];
+      var existingIndex = matches && matches.length ? matches.shift() : -1;
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
@@ -2643,7 +2690,10 @@
             var blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
               updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
-              addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
+              addChatItem({
+                type: "careful_blocked", toolCallId: c.tool_use_id,
+                args: tm.args, metadata: blockedMd, time: "",
+              });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
               var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
@@ -3740,6 +3790,10 @@
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    // Relay reconnects and the desktop event bridge may replay the last frame.
+    // Tool-call ids are durable identities, so never create a second message/card
+    // for the same call. Normal repeated calls have distinct ids and remain visible.
+    if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     toolMeta[p.id] = { name: p.name, args: p.args };
     thinkingTool(p.name);
@@ -3784,6 +3838,7 @@
 
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (toolCallAlreadyFinished(p.id)) return;
     var meta = toolMeta[p.id];
     thinkingIdle();
     var resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
@@ -3883,7 +3938,12 @@
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
     var md = p.metadata;
     if (md && md.safety_level === "dangerous" && md.blocked) {
-      addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
+      if (!hasChatItemForTool("careful_blocked", p.id)) {
+        addChatItem({
+          type: "careful_blocked", toolCallId: p.id,
+          args: meta && meta.args, metadata: md, time: timeStr(),
+        });
+      }
     }
 
     // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
@@ -4051,6 +4111,7 @@
         state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
+    if (hasChatItemForTool("user_input", p.id)) return;
     addChatItem({
       type: "user_input", toolCallId: p.id, questions: questions,
       resolved: false, cardState: "active", time: timeStr(),
@@ -4122,6 +4183,9 @@
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
     if (readyMode) applyModeFromState(readyMode);
+    if (planId && state.chatItems.some(function (item) {
+      return item && item.type === "plan_card" && String(item.planId || "") === planId;
+    })) return;
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -4383,6 +4447,9 @@
     if (!state.workflow.run.sessionId || p.session_id !== state.workflow.run.sessionId) return;
     if (state.workflow.run.status === "stopped") return;
     var qs = p.questions || []; if (!Array.isArray(qs) || !qs.length) return;
+    if ((state.workflow.run.cards || []).some(function (card) {
+      return card && card.kind === "user_input" && card.toolCallId === p.id;
+    })) return;
     pushRunCard({ kind: "user_input", toolCallId: p.id, questions: qs, resolved: false });
     notify();
   });
