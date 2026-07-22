@@ -26,6 +26,7 @@ const common = readJson("tauri.conf.json");
 const linux = readJson("config/platforms/linux/tauri.conf.json");
 const macos = readJson("config/platforms/macos/tauri.conf.json");
 const windows = readJson("config/platforms/windows/tauri.conf.json");
+const windowsSigning = readJson("config/platforms/windows/signing.wosign.conf.json");
 
 assert.ok(resourceSources(common).length > 0, "common Tauri config must declare shared resources");
 assert.ok(
@@ -52,6 +53,40 @@ assertResourceSourcesExist(windows, "Windows");
 
 for (const legacyPath of ["resources/bundle", "resources/skill-marketplace", "resources/web-template", "resources/asr"]) {
   assert.equal(fs.existsSync(path.join(tauriRoot, legacyPath)), false, `legacy resource root must be removed: ${legacyPath}`);
+}
+
+const packagingPaths = [
+  linux.bundle.linux.deb.desktopTemplate,
+  linux.bundle.linux.deb.postInstallScript,
+  linux.bundle.linux.deb.preRemoveScript,
+  windows.bundle.windows.wix.template,
+  ...windows.bundle.windows.wix.fragmentPaths,
+  windows.bundle.windows.nsis.template,
+  windows.bundle.windows.nsis.installerHooks,
+  windowsSigning.bundle.windows.signCommand.args[
+    windowsSigning.bundle.windows.signCommand.args.indexOf("-File") + 1
+  ],
+];
+for (const packagingPath of packagingPaths) {
+  assert.ok(
+    fs.existsSync(path.join(tauriRoot, packagingPath)),
+    `Tauri packaging reference must exist: ${packagingPath}`,
+  );
+}
+
+for (const legacyPath of [
+  "packaging/linux/desktop/pinvou3.desktop",
+  "packaging/linux/scripts/postinst.sh",
+  "packaging/linux/scripts/prerm.sh",
+  "packaging/windows/scripts/windows-runtime-submodule.ps1",
+  "packaging/windows/scripts/prepare-windows-runtimes.ps1",
+  "packaging/windows/scripts/stage-windows-nsis-resources.ps1",
+  "packaging/windows/scripts/clean-nsis-staging.ps1",
+  "packaging/windows/wosign/sign.ps1",
+  "packaging/windows/main.wxs",
+  "packaging/windows/python-node-path.wxs",
+]) {
+  assert.equal(fs.existsSync(path.join(tauriRoot, legacyPath)), false, `legacy packaging path must be removed: ${legacyPath}`);
 }
 
 console.log("tauri platform layout contract: ok");

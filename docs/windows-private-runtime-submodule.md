@@ -46,7 +46,7 @@ npm run runtime:windows:stage
 npm run build:msi
 ```
 
-`tauri-build-with-secrets.js` 在 Windows 的 `tauri build` / `tauri bundle` 前自动执行
+`scripts/tauri/build.js` 在 Windows 的 `tauri build` / `tauri bundle` 前自动执行
 staging，并把生成的 Tauri config overlay 传给 CLI。
 
 迁移验证阶段可设置 `PINVOU3_WINDOWS_RUNTIME_ROOT` 指向相同 commit 的本地私有仓库；

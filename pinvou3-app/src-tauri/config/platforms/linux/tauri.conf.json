@@ -7,9 +7,9 @@
     },
     "linux": {
       "deb": {
-        "desktopTemplate": "packaging/linux/desktop/pinvou3.desktop",
-        "postInstallScript": "packaging/linux/scripts/postinst.sh",
-        "preRemoveScript": "packaging/linux/scripts/prerm.sh",
+        "desktopTemplate": "packaging/linux/deb/pinvou3.desktop",
+        "postInstallScript": "packaging/linux/deb/scripts/postinst.sh",
+        "preRemoveScript": "packaging/linux/deb/scripts/prerm.sh",
         "depends": [],
         "recommends": [
           "poppler-utils",

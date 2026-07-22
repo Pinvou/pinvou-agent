@@ -663,4 +663,4 @@ npm run build:nsis
 | 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `tests/voice_input_error_logic.test.js`、`voice_asr.rs` 内模型校验和状态测试 |
 | 设置、依赖、反馈 | `features/settings/SettingsView.jsx` | `commands.rs`、`file_ingest.rs`、`windows_dependency.rs`、`windows_permission.rs` | 设置/文件解析模块测试 |
 | Windows OTA | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `updater.rs`、`os/windows/windows_update.rs` | `tests/update_notice_logic.test.js`、`tests/update_notice_ui_smoke.js`、OTA 脚本验证 |
-| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`packaging/windows/nsis/`、`src-tauri/packaging/windows/scripts/prepare-windows-runtimes.ps1`、`scripts/tauri-build-with-secrets.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |
+| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`packaging/windows/nsis/`、`src-tauri/packaging/windows/runtime/scripts/stage-runtime.ps1`、`scripts/tauri/build.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |

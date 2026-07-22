@@ -4,7 +4,15 @@ const path = require("node:path");
 
 const appRoot = path.resolve(__dirname, "..");
 const signScript = fs.readFileSync(
-  path.join(appRoot, "src-tauri", "packaging", "windows", "wosign", "sign.ps1"),
+  path.join(
+    appRoot,
+    "src-tauri",
+    "packaging",
+    "windows",
+    "signing",
+    "wosign",
+    "sign.ps1",
+  ),
   "utf8",
 );
 const signingConfig = JSON.parse(
@@ -53,7 +61,7 @@ assert.equal(
   signingConfig.bundle.windows.signCommand.args[
     signingConfig.bundle.windows.signCommand.args.indexOf("-File") + 1
   ],
-  "packaging/windows/wosign/sign.ps1",
+  "packaging/windows/signing/wosign/sign.ps1",
 );
 
 console.log("wosign signing contract: ok");

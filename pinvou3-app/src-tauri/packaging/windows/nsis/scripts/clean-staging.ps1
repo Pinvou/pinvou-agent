@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+$tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $release = Join-Path $tauriRoot "target\release"
 if (-not (Test-Path -LiteralPath $release)) {
   exit 0

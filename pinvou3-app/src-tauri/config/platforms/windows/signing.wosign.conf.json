@@ -10,7 +10,7 @@
           "-ExecutionPolicy",
           "Bypass",
           "-File",
-          "packaging/windows/wosign/sign.ps1",
+          "packaging/windows/signing/wosign/sign.ps1",
           "-FilePath",
           "%1"
         ]

@@ -6,8 +6,8 @@ const path = require("node:path");
 const {
   loadBuiltinSecrets,
   parseEnvFile,
-  platformConfigPath,
-} = require("../scripts/tauri-build-with-secrets.js");
+} = require("../scripts/tauri/builtin-secrets.js");
+const { platformConfigPath } = require("../scripts/tauri/platform-config.js");
 
 for (const platform of ["win32", "linux", "darwin"]) {
   const configPath = platformConfigPath(platform);

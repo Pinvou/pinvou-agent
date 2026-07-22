@@ -17,4 +17,4 @@ config/
 - `signing.*.conf.json`：发布签名 overlay，仅由对应发布流程显式加载。
 - `runtime/*.lock.json`：锁定私有运行时来源和 manifest，不存放制品本身。
 
-`scripts/tauri-build-with-secrets.js` 根据当前操作系统加载 `platforms/<os>/tauri.conf.json`。公共配置不得引用平台专属安装器模板、签名工具或私有运行时。
+`scripts/tauri/build.js` 根据当前操作系统加载 `platforms/<os>/tauri.conf.json`。公共配置不得引用平台专属安装器模板、签名工具或私有运行时。

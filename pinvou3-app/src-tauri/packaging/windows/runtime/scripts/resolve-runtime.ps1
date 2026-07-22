@@ -10,11 +10,11 @@ $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-$tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+$tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $appRoot = (Resolve-Path (Join-Path $tauriRoot "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $appRoot "..")).Path
 $defaultLockFile = Join-Path $tauriRoot "config\platforms\windows\runtime\x86_64.lock.json"
-$generatedConfigPath = Join-Path $tauriRoot "tauri.windows-runtime.generated.conf.json"
+$generatedConfigPath = Join-Path $tauriRoot "target\windows-runtime\tauri.generated.conf.json"
 
 if ([string]::IsNullOrWhiteSpace($LockFile)) {
   $LockFile = $defaultLockFile

@@ -4,9 +4,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+$tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $configPath = Join-Path $tauriRoot "tauri.conf.json"
-$runtimeConfigPath = Join-Path $tauriRoot "tauri.windows-runtime.generated.conf.json"
+$runtimeConfigPath = Join-Path $tauriRoot "target\windows-runtime\tauri.generated.conf.json"
 $releaseRoot = Join-Path $tauriRoot "target\release"
 $mainBinaryPath = Join-Path $releaseRoot "pinvou3-tauri.exe"
 $stagingRoot = Join-Path $releaseRoot "nsis-stage"
@@ -93,7 +93,7 @@ if (-not (Test-Path -LiteralPath $mainBinaryPath -PathType Leaf)) {
 $configJson = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8)
 $config = ConvertFrom-Json -InputObject $configJson
 if (-not (Test-Path -LiteralPath $runtimeConfigPath -PathType Leaf)) {
-  throw "Windows runtime staging config is missing. Run src-tauri/packaging/windows/scripts/prepare-windows-runtimes.ps1 first: $runtimeConfigPath"
+  throw "Windows runtime staging config is missing. Run src-tauri/packaging/windows/runtime/scripts/stage-runtime.ps1 first: $runtimeConfigPath"
 }
 $runtimeConfigJson = [System.IO.File]::ReadAllText($runtimeConfigPath, [System.Text.Encoding]::UTF8)
 $runtimeConfig = ConvertFrom-Json -InputObject $runtimeConfigJson

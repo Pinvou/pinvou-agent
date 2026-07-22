@@ -48,7 +48,7 @@ function Read-DotEnvValue {
   throw "The private secrets file does not define $Name."
 }
 
-$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../../../.."))
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../../../../.."))
 $SecretsPath = Join-Path $repoRoot "scripts/.builtin-secrets.env"
 $Thumbprint = Read-DotEnvValue -Path $SecretsPath -Name "PINVOU3_WOSIGN_THUMBPRINT"
 $Password = Read-DotEnvValue -Path $SecretsPath -Name "PINVOU3_WOSIGN_PASSWORD"

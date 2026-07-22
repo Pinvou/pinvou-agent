@@ -4,9 +4,9 @@
     "targets": ["msi"],
     "windows": {
       "wix": {
-        "template": "packaging/windows/main.wxs",
+        "template": "packaging/windows/wix/main.wxs",
         "fragmentPaths": [
-          "packaging/windows/python-node-path.wxs"
+          "packaging/windows/wix/python-node-path.wxs"
         ],
         "componentRefs": [
           "PythonNodeRuntimeEnvironment"
