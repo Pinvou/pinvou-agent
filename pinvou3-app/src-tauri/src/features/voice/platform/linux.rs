@@ -67,9 +67,11 @@ pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
             "voice_asr:progress",
             serde_json::json!({ "stage": "ffmpeg", "downloaded": 0, "total": 0 }),
         );
-        tokio::task::spawn_blocking(|| crate::os::install_dependencies(vec!["ffmpeg".to_string()]))
-            .await
-            .map_err(|e| format!("ffmpeg install task failed: {e}"))??;
+        tokio::task::spawn_blocking(|| {
+            crate::features::dependencies::install_dependencies(vec!["ffmpeg".to_string()])
+        })
+        .await
+        .map_err(|e| format!("ffmpeg install task failed: {e}"))??;
     }
     if !voice_asr::model_available() {
         voice_asr::download_current_model(&app).await?;

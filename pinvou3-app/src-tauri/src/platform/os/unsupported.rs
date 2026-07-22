@@ -211,10 +211,6 @@ pub fn super_permission_turn_reminder() -> &'static str {
     "当前系统不支持 Linux sudo 超级权限开关。需要管理员权限时,请使用系统提供的管理员方式执行,不要尝试 sudo/apt/systemctl/pkexec。"
 }
 
-pub fn install_dependencies(_packages: Vec<String>) -> Result<(), String> {
-    Err("当前系统不支持一键安装 Linux 依赖；请按本系统方式手动安装缺失工具".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

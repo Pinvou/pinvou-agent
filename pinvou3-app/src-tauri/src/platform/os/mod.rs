@@ -23,7 +23,7 @@ pub use interface::{
     apply_user_npm_prefix, archive_dependency_packages, archive_tool_exists, archive_tool_path,
     bundled_onnxruntime_dylib_path, command_exists, connector_cli_command,
     disable_super_permission, email_dependency_packages,
-    email_tool_exists, enable_super_permission, install_dependencies,
+    email_tool_exists, enable_super_permission,
     kill_pid_tree, libreoffice_missing_message,
     libreoffice_open_fallback_needed, libreoffice_tool_path, msg_converter_required,
     msg_native_supported, nvidia_smi_candidates, ocr_dependency_packages, ocr_tessdata_dir,

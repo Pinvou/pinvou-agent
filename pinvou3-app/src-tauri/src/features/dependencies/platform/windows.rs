@@ -97,8 +97,8 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         }
     }
 
-    if super::windows_system::command_exists("soffice")
-        || super::windows_system::command_exists("libreoffice")
+    if crate::os::command_exists("soffice")
+        || crate::os::command_exists("libreoffice")
     {
         return Ok(());
     }
@@ -124,8 +124,8 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         ));
     }
 
-    if super::windows_system::command_exists("soffice")
-        || super::windows_system::command_exists("libreoffice")
+    if crate::os::command_exists("soffice")
+        || crate::os::command_exists("libreoffice")
     {
         Ok(())
     } else {

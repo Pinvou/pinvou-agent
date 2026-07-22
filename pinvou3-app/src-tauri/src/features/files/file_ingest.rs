@@ -219,7 +219,9 @@ fn add_ocr_tessdata_arg(command: &mut Command) {
 /// Linux 由 OS 层保留包名白名单和 pkexec/apt 行为；其他系统清晰降级。
 #[tauri::command]
 pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || crate::os::install_dependencies(packages))
+    tokio::task::spawn_blocking(move || {
+        crate::features::dependencies::install_dependencies(packages)
+    })
         .await
         .map_err(|e| format!("安装任务失败: {e}"))?
 }
