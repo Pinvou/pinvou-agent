@@ -21,6 +21,8 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 /// 单文件硬上限 20 MB —— 超大文件就算转 md 后 token 数也炸上下文。
+/// `pub` 供 remote_control 上传链路对齐硬上限(PR #213 审查 #5:mobile upload cap 必须
+/// ≤ 此值,否则 20-64MiB 文件会被 mobile 接受但 file_ingest 静默降级为 oversize 兜底)。
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,7 +310,11 @@ pub fn ingest(path: &Path) -> IngestResult {
         "archive" => ingest_archive(path, basename, path_str, byte_size),
         "email" => ingest_email(path, basename, path_str, byte_size, &ext),
         "media" => media_placeholder(basename, path_str, byte_size),
-        _ => binary_placeholder(basename, path_str, byte_size),
+        // 私钥 / 密钥库:绝不读正文(防泄露给 LLM)。见 classify 的 "secret" 分支。
+        "secret" => secret_placeholder(basename, path_str, byte_size),
+        // 未知扩展名 / 无扩展名:不再一刀切 binary,先内容嗅探。是文本就当文本读
+        // (让模型看到内容 —— 这是「接受任何文件」的根本解),真二进制才降级。
+        _ => sniff_text_or_binary(path, basename, path_str, byte_size),
     }
 }
 
@@ -317,9 +323,33 @@ pub fn ingest(path: &Path) -> IngestResult {
 /// .wps→文字、.et→表格、.dps→演示。
 fn classify(ext: &str) -> &'static str {
     match ext {
-        "txt" | "md" | "markdown" | "json" | "csv" | "yaml" | "yml" | "toml" | "xml" | "rs"
-        | "py" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "log" | "ini" | "conf"
-        | "env" | "tsv" => "text",
+        // 安全硬墙(优先级最高):私钥 / 密钥库类扩展名一律不读正文 —— 防止私钥被读进
+        // markdown、内联进 prompt、进而发给(可能的云端)LLM。validate_path 只挡 5 个
+        // 敏感目录,挡不住 ~/certs/server.key 这类文件,故在此补文件级拒绝。
+        // 走 "secret" 分类 → secret_placeholder(markdown 恒为 None),不进 sniff。
+        // 注意:公钥证书(crt/cer/csr)本身可公开,仍归 text,方便用户问「证书 CN/到期日」。
+        "key" | "pem" | "p12" | "pfx" | "keystore" | "jks" | "kdbx" | "gpg" | "pgp" => {
+            "secret"
+        }
+        // 纯文本:文档 + 结构化数据 + 源码 + Web + 配置 + 公钥证书(均为 UTF-8/文本可读)。
+        // 未列出的扩展名由 ingest 末尾 sniff_text_or_binary 内容嗅探兜底,故这里只列
+        //「确定是文本」的常见格式,不追求穷举 —— 嗅探会接住遗漏(含用户自定义扩展名、
+        // 以及无扩展名的 Makefile/Dockerfile/README —— 这些文件 Path::extension() 返回
+        // None,根本不会进 classify,故不在此列「扩展名」)。
+        "txt" | "md" | "markdown" | "mdx" | "rst" | "org" | "adoc" | "asciidoc" | "tex"
+        | "latex" | "bib" | "text" | "log" | "json" | "jsonl" | "ndjson" | "geojson"
+        | "csv" | "tsv" | "yaml" | "yml" | "toml" | "xml" | "proto" | "graphql" | "gql"
+        | "sql" | "ini" | "conf" | "cfg" | "properties" | "props" | "env" | "editorconfig"
+        | "gradle" | "cmake" | "bazel" | "bzl" | "mk" | "rs" | "py" | "pyi" | "js" | "mjs"
+        | "cjs" | "ts" | "jsx" | "tsx" | "go" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp"
+        | "hh" | "hxx" | "java" | "kt" | "kts" | "scala" | "groovy" | "clj" | "cljs" | "edn"
+        | "el" | "lisp" | "scm" | "rkt" | "r" | "rb" | "php" | "pl" | "pm" | "lua" | "tcl"
+        | "m" | "mm" | "swift" | "dart" | "hs" | "lhs" | "ml" | "mli" | "fs" | "fsx" | "fsi"
+        | "cs" | "vb" | "pas" | "d" | "nim" | "zig" | "v" | "jl" | "ex" | "exs" | "erl"
+        | "hrl" | "f" | "f90" | "f95" | "f03" | "asm" | "s" | "vhdl" | "sv" | "sh" | "bash"
+        | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "html" | "htm" | "xhtml" | "css" | "scss"
+        | "sass" | "less" | "styl" | "vue" | "svelte" | "pug" | "hbs" | "ejs" | "twig"
+        | "crt" | "cer" | "csr" | "wsgi" | "rake" => "text",
         "pdf" => "pdf",
         // 文字：pandoc 原生支持
         "docx" | "odt" => "doc_pandoc",
@@ -330,8 +360,10 @@ fn classify(ext: &str) -> &'static str {
         // 表格：pandoc 不支持 xlsx/ods → LibreOffice csv（含 WPS 表格 .et）
         "xlsx" | "ods" | "xls" | "et" => "spreadsheet",
         // 仅底座 image_analyze 支持的位图格式走视觉(vision/tools.rs detect_mime_type)。
-        // svg(矢量)/tiff 不在支持列表 —— 不归 image,落到 binary 兜底给"不支持"提示,
-        // 避免被当图暂存后 image_analyze 报 "Unsupported image format"。
+        // svg(矢量)/tiff 不在支持列表 → 不归 image(避免被当图暂存后 image_analyze 报
+        // "Unsupported image format")。它们经 `_ =>` 落到 sniff 兜底:SVG 是文本 XML,
+        // 会被读成 text(模型能看懂结构,无害且有用);TIFF 头含 NUL(II*\0 / MM\0*),
+        // sniff 判二进制 → binary_placeholder。
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => "image",
         // 压缩包：解压后递归识别（7z 统一处理 zip/rar/7z）
         "zip" | "rar" | "7z" => "archive",
@@ -345,28 +377,38 @@ fn classify(ext: &str) -> &'static str {
 }
 
 fn ingest_text(path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            let tokens = estimate_tokens(&content);
-            IngestResult {
+    // 先读字节:严格 UTF-8 直接用;非法 UTF-8(如 GBK 中文 .txt)lossy 还原并标 warning,
+    // 而非返回空 markdown —— 中文用户常有非 UTF-8 文本文件,lossy 能保住大部分可读内容。
+    // 读字节本身失败才回「读取失败」。
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            return IngestResult {
                 kind: "text".into(),
                 basename,
                 path: path_str,
-                markdown: Some(content),
-                token_estimate: tokens,
+                markdown: None,
+                token_estimate: 0,
                 byte_size,
-                warning: None,
-            }
+                warning: Some(format!("读取失败(可能不是文本): {e}")),
+            };
         }
-        Err(e) => IngestResult {
-            kind: "text".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some(format!("读取失败(可能不是文本): {e}")),
-        },
+    };
+    // 内容侧安全兜底:已知文本扩展名也可能被塞了私钥(如把 id_rsa 改名 id_rsa.txt),
+    // 这种情况按 secret 拒绝读取,不进 markdown。
+    if looks_like_secret_material(&bytes) {
+        return secret_placeholder(basename, path_str, byte_size);
+    }
+    let (content, warning) = decode_text_bytes(&bytes);
+    let tokens = content.as_ref().map(|c| estimate_tokens(c)).unwrap_or(0);
+    IngestResult {
+        kind: "text".into(),
+        basename,
+        path: path_str,
+        markdown: content,
+        token_estimate: tokens,
+        byte_size,
+        warning,
     }
 }
 
@@ -1900,6 +1942,240 @@ fn binary_placeholder(basename: String, path_str: String, byte_size: u64) -> Ing
     }
 }
 
+/// 私钥 / 密钥库文件的占位:与 binary_placeholder 同为 markdown=None,但文案明确说明
+/// 「为防泄露而拒绝读取」,便于用户理解为什么内容没被读入。kind 用 "binary" 以复用
+/// 前端既有分类展示(无需新增前端分支),靠 warning 区分原因。
+fn secret_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
+    IngestResult {
+        kind: "binary".into(),
+        basename,
+        path: path_str,
+        markdown: None,
+        token_estimate: 0,
+        byte_size,
+        warning: Some("检测到密钥/私钥文件,为防止泄露给 LLM 已拒绝读取内容".into()),
+    }
+}
+
+/// 内容侧私钥检测:捕获改了名 / 无扩展名 / 套了 .txt 外壳的私钥(如 `id_rsa`、
+/// `server-key`、`backup.txt` 里贴了 PEM)。PEM 私钥头和 OpenSSH magic 都在文件开头,
+/// 故只看前 8 KiB 即可。**不**匹配 `-----BEGIN CERTIFICATE-----`(证书可公开)。
+fn looks_like_secret_material(bytes: &[u8]) -> bool {
+    const MARKERS: &[&[u8]] = &[
+        b"-----BEGIN PRIVATE KEY-----",
+        b"-----BEGIN RSA PRIVATE KEY-----",
+        b"-----BEGIN DSA PRIVATE KEY-----",
+        b"-----BEGIN EC PRIVATE KEY-----",
+        b"-----BEGIN OPENSSH PRIVATE KEY-----",
+        b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        b"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        b"openssh-key-v1",
+    ];
+    let head = &bytes[..bytes.len().min(8192)];
+    MARKERS
+        .iter()
+        .any(|m| head.windows(m.len()).any(|w| w == *m))
+}
+
+/// 对字节内容做嗅探,判定是文本还是二进制。只看前 `SNIFF_BYTES` 字节即可下结论
+/// (NUL / 控制字符都在头部就能判定),**但调用方仍会 `std::fs::read` 整个文件** ——
+/// 因为判定为文本时还需要全部字节做解码。`ingest` 入口已用 MAX_FILE_BYTES(20MiB)
+/// 挡住超大文件,故整文件读取的内存上界就是 20MiB,安全。
+///
+/// 算法(业界标准,`file` / `grep -I` / vim 同源):
+/// 1. 含 NUL 字节(0x00)→ 二进制(确定性最强,文本文件几乎不会含 NUL);
+/// 2. 控制字符(除 `\t \n \r \f`)占比 > 30% → 二进制;
+/// 3. 否则 → 文本。
+fn looks_like_binary_sample(bytes: &[u8]) -> bool {
+    const SNIFF_BYTES: usize = 8192;
+    let sample = if bytes.len() > SNIFF_BYTES {
+        &bytes[..SNIFF_BYTES]
+    } else {
+        bytes
+    };
+    if sample.is_empty() {
+        return false; // 空文件不当二进制(此处的 sample.is_empty() 判定兜底)
+    }
+    // NUL 字节 → 二进制(强信号)。
+    if sample.contains(&0u8) {
+        return true;
+    }
+    // 控制字符占比:除 \t(0x09) \n(0x0A) \r(0x0D) \f(0x0C) 外的 0x01..=0x1F。
+    // > 30% 视为二进制(纯文本通常 < 5%,二进制常 > 50%)。
+    let ctrl = sample
+        .iter()
+        .filter(|&&b| b < 0x20 && !matches!(b, 0x09 | 0x0A | 0x0D | 0x0C))
+        .count();
+    ctrl * 10 > sample.len() * 3 // ctrl/sample > 0.3,用整数乘法避浮点
+}
+
+/// 未知扩展名 / 无扩展名文件的兜底:先嗅探,是文本就当文本读(让模型看到内容),
+/// 真二进制才回 binary_placeholder。
+///
+/// 非 UTF-8 文本优先按 GB18030(兼容 GBK)解码；只有 GB18030 也不合法时才 lossy。
+fn sniff_text_or_binary(
+    path: &Path,
+    basename: String,
+    path_str: String,
+    byte_size: u64,
+) -> IngestResult {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        // 读失败(权限/TOCTOU 等)如实上报,不要误报成「不支持的二进制类型」。
+        Err(e) => {
+            return IngestResult {
+                kind: "binary".into(),
+                basename,
+                path: path_str,
+                markdown: None,
+                token_estimate: 0,
+                byte_size,
+                warning: Some(format!("文件读取失败: {e}")),
+            };
+        }
+    };
+    // 内容侧安全兜底:无扩展名 / 改名的私钥(id_rsa、server-key 等)在此拦截。
+    if looks_like_secret_material(&bytes) {
+        return secret_placeholder(basename, path_str, byte_size);
+    }
+    // UTF-16 无 BOM 的 ASCII/混合文本含大量 NUL，本来会被二进制嗅探拒绝；先识别
+    // 奇偶字节 NUL 分布的强信号，确认不是 UTF-16 后再执行二进制降级。
+    if detect_utf16(&bytes).is_none() && looks_like_binary_sample(&bytes) {
+        return binary_placeholder(basename, path_str, byte_size);
+    }
+    // 判定为文本:统一解码(UTF-8 / UTF-16 / GB18030 / 最终 lossy 兜底)。
+    let (content, encoding_warning) = decode_text_bytes(&bytes);
+    let tokens = content.as_ref().map(|c| estimate_tokens(c)).unwrap_or(0);
+    IngestResult {
+        kind: "text".into(),
+        basename,
+        path: path_str,
+        markdown: content,
+        token_estimate: tokens,
+        byte_size,
+        warning: encoding_warning,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Utf16Endian {
+    Little,
+    Big,
+}
+
+/// 识别 UTF-16 编码并返回 `(字节序, BOM 长度)`。
+///
+/// 有 BOM 时是确定性判断；无 BOM 时只接受强信号：至少两个 code unit 的同一侧为 NUL、
+/// 覆盖至少一半采样对，且另一侧 NUL 数不到其四分之一。这能接住常见 ASCII/中文混合
+/// UTF-16，同时避免仅凭单个 NUL 把普通二进制误判成文本。
+fn detect_utf16(bytes: &[u8]) -> Option<(Utf16Endian, usize)> {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return Some((Utf16Endian::Little, 2));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return Some((Utf16Endian::Big, 2));
+    }
+    if bytes.len() < 4 || bytes.len() % 2 != 0 {
+        return None;
+    }
+
+    let sample_len = bytes.len().min(8192) & !1;
+    let sample = &bytes[..sample_len];
+    let pairs = sample.len() / 2;
+    let even_nuls = sample.iter().step_by(2).filter(|&&b| b == 0).count();
+    let odd_nuls = sample
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|&&b| b == 0)
+        .count();
+    let strong = |dominant: usize, other: usize| {
+        dominant >= 2 && dominant * 2 >= pairs && dominant > other.saturating_mul(4)
+    };
+
+    if strong(odd_nuls, even_nuls) {
+        Some((Utf16Endian::Little, 0))
+    } else if strong(even_nuls, odd_nuls) {
+        Some((Utf16Endian::Big, 0))
+    } else {
+        None
+    }
+}
+
+fn decode_utf16(
+    bytes: &[u8],
+    endian: Utf16Endian,
+    bom_len: usize,
+) -> (Option<String>, Option<String>) {
+    let payload = &bytes[bom_len..];
+    let label = match endian {
+        Utf16Endian::Little => "UTF-16 LE",
+        Utf16Endian::Big => "UTF-16 BE",
+    };
+    if payload.len() % 2 != 0 {
+        return (
+            None,
+            Some(format!("检测到 {label} 编码,但文件字节数不完整,未读取内容")),
+        );
+    }
+    let units: Vec<u16> = payload
+        .chunks_exact(2)
+        .map(|pair| match endian {
+            Utf16Endian::Little => u16::from_le_bytes([pair[0], pair[1]]),
+            Utf16Endian::Big => u16::from_be_bytes([pair[0], pair[1]]),
+        })
+        .collect();
+    match String::from_utf16(&units) {
+        Ok(text) => {
+            let bom = if bom_len == 0 { "无 BOM " } else { "" };
+            (
+                Some(text.trim_start_matches('\u{feff}').to_string()),
+                Some(format!("检测到 {bom}{label} 编码,已转换为 UTF-8")),
+            )
+        }
+        Err(_) => (
+            None,
+            Some(format!("检测到 {label} 编码,但内容损坏,未读取内容")),
+        ),
+    }
+}
+
+/// 把已读到的字节统一解码成文本内容,供 `ingest_text` 与 `sniff_text_or_binary` 复用。
+/// 返回 `(内容, 警告)`:
+/// - **UTF-16 LE / BE**:BOM 确定识别；无 BOM 仅按强 NUL 分布信号识别并转 UTF-8；
+/// - **UTF-8 BOM**(`EF BB BF` → U+FEFF):去掉开头 BOM,与 `ingest_office_text`
+///   的 `s.trim_start_matches('\u{feff}')` 处理一致,避免污染正文开头。
+/// - **严格 UTF-8**:直接用,无 warning。
+/// - **GB18030 / GBK**:严格解码成 Unicode,标 warning 说明发生了编码转换；
+/// - **其他非 UTF-8**:最后才 `from_utf8_lossy`,并明确提示可能有替换符。
+fn decode_text_bytes(bytes: &[u8]) -> (Option<String>, Option<String>) {
+    if let Some((endian, bom_len)) = detect_utf16(bytes) {
+        return decode_utf16(bytes, endian, bom_len);
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => {
+            let s = s.strip_prefix('\u{feff}').unwrap_or(s);
+            (Some(s.to_string()), None)
+        }
+        Err(_) => {
+            if let Some(decoded) = encoding_rs::GB18030
+                .decode_without_bom_handling_and_without_replacement(bytes)
+            {
+                return (
+                    Some(decoded.into_owned()),
+                    Some("文件非 UTF-8 编码,已按 GB18030/GBK 转换为 UTF-8".into()),
+                );
+            }
+            let lossy = String::from_utf8_lossy(bytes);
+            let s = lossy.strip_prefix('\u{feff}').unwrap_or(&lossy);
+            (
+                Some(s.to_string()),
+                Some("文件非 UTF-8 编码,已尽力还原(部分字符可能为替换符)".into()),
+            )
+        }
+    }
+}
+
 /// 粗算 token：中英混合按 `chars / 1.6` —— 比较保守，偏向高估避免炸上下文。
 /// 实测 cl100k_base 中文 1.0-1.5 char/token、英文 3-4 char/token。
 fn estimate_tokens(text: &str) -> u32 {
@@ -1931,10 +2207,7 @@ pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String>
 
 /// 把文件名做 sanitize：去掉路径分隔符、控制字符；保留中英文 + 常见标点。
 fn sanitize_filename(raw: &str) -> String {
-    let trimmed = raw
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or("file");
+    let trimmed = raw.rsplit(['/', '\\']).next().unwrap_or("file");
     let cleaned: String = trimmed
         .chars()
         .map(|c| {
@@ -2019,6 +2292,42 @@ mod tests {
         assert_eq!(classify("mp3"), "media");
         assert_eq!(classify(""), "binary");
         assert_eq!(classify("exe"), "binary");
+        // Fix B:扩充的纯文本格式(源码 / Web / 配置 / 数据 / 公钥证书)必须归 text。
+        // 未列出扩展名由 sniff_text_or_binary 兜底,但列出的必须直接走 text(不嗅探,
+        // 因为扩展名已明确是文本)。注意:Dockerfile/Makefile/.gitignore 是**文件名**而非
+        // 扩展名(Path::extension 对它们返回 None),不在此列 —— 它们走 sniff 兜底,
+        // 见 ingest_no_extension_text_is_read_via_sniff。
+        assert_eq!(classify("java"), "text");
+        assert_eq!(classify("kt"), "text");
+        assert_eq!(classify("rb"), "text");
+        assert_eq!(classify("php"), "text");
+        assert_eq!(classify("swift"), "text");
+        assert_eq!(classify("sql"), "text");
+        assert_eq!(classify("html"), "text");
+        assert_eq!(classify("css"), "text");
+        assert_eq!(classify("scss"), "text");
+        assert_eq!(classify("vue"), "text");
+        assert_eq!(classify("svelte"), "text");
+        assert_eq!(classify("jsx"), "text");
+        assert_eq!(classify("tsx"), "text");
+        assert_eq!(classify("proto"), "text");
+        assert_eq!(classify("graphql"), "text");
+        assert_eq!(classify("gradle"), "text");
+        assert_eq!(classify("cmake"), "text");
+        assert_eq!(classify("jsonl"), "text");
+        assert_eq!(classify("mdx"), "text");
+        assert_eq!(classify("tex"), "text");
+        // 公钥证书可公开 → text;私钥 / 密钥库 → secret(绝不读正文)。
+        assert_eq!(classify("crt"), "text");
+        assert_eq!(classify("cer"), "text");
+        assert_eq!(classify("csr"), "text");
+        assert_eq!(classify("pem"), "secret");
+        assert_eq!(classify("key"), "secret");
+        assert_eq!(classify("p12"), "secret");
+        assert_eq!(classify("gpg"), "secret");
+        // 仍然未知 → binary 分类(但 ingest 会再嗅探,见 sniff 测试)。
+        assert_eq!(classify("customxyz"), "binary");
+        assert_eq!(classify("webp"), "image");
     }
 
     #[test]
@@ -2029,6 +2338,270 @@ mod tests {
         assert!(big < 1000); // 不应大于字符数
     }
 
+    // ── Fix C:内容嗅探(接受任何文件)回归 ──
+    // 旧实现:未知 / 无扩展名 → binary_placeholder → markdown:None,模型完全读不到。
+    // 新实现:先嗅探,文本就当文本读,真二进制才降级。这满足「用户应能上传任何文件」。
+    fn write_tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "pinvou3-sniff-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn looks_like_binary_detects_nul_and_control_chars() {
+        // NUL 字节 → 二进制(强信号)。
+        assert!(looks_like_binary_sample(b"abc\x00def"));
+        // 纯文本(含 UTF-8 多字节中文)→ 非二进制。
+        assert!(!looks_like_binary_sample("hello world\n中文测试".as_bytes()));
+        // 大量控制字符 → 二进制。
+        let mut ctrl = vec![0x01u8; 1000];
+        ctrl.extend_from_slice(b"text");
+        assert!(looks_like_binary_sample(&ctrl));
+        // 正常含 \t \n \r → 非二进制。
+        assert!(!looks_like_binary_sample(b"col1\tcol2\nrow1\r\nrow2"));
+        // 空文件 → 非二进制(上层 byte_size==0 已挡)。
+        assert!(!looks_like_binary_sample(b""));
+    }
+
+    #[test]
+    fn ingest_unknown_extension_text_falls_back_to_text_via_sniff() {
+        // 自定义扩展名 .myfmt:不在 classify 表 → binary 分类 → 嗅探后当文本读。
+        let marker = "PINVOU3-SNIFF-UNKNOWN-EXT-a1b2";
+        let p = write_tmp("notes.myfmt", format!("{marker}\n第二行中文").as_bytes());
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(
+            r.kind, "text",
+            "未知扩展名的纯文本应被嗅探成 text,而非 binary"
+        );
+        assert!(
+            r.markdown.as_deref().unwrap_or("").contains(marker),
+            "嗅探成文本后 markdown 必须含正文 marker"
+        );
+        assert!(
+            r.warning.is_none(),
+            "合法 UTF-8 文本不应有 warning,实际={:?}",
+            r.warning
+        );
+    }
+
+    #[test]
+    fn ingest_no_extension_text_is_read_via_sniff() {
+        // 无扩展名(Makefile / Dockerfile / README 风格):file_name 无 ext。
+        let marker = "PINVOU3-NOEXT-MARKER-c3d4";
+        let p = write_tmp("Makefile", format!("build:\n\t{marker}\n").as_bytes());
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(r.kind, "text", "无扩展名文本应被嗅探成 text");
+        assert!(r.markdown.as_deref().unwrap_or("").contains(marker));
+    }
+
+    #[test]
+    fn ingest_real_binary_with_unknown_ext_falls_to_binary() {
+        // 真二进制内容(含 NUL)+ 未知扩展名:必须降级 binary,不强行 lossy。
+        let mut bin = vec![0u8; 512];
+        for (i, b) in bin.iter_mut().enumerate() {
+            *b = (i % 256) as u8; // 含 NUL + 全字节范围
+        }
+        let p = write_tmp("blob.dat", &bin);
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(r.kind, "binary", "含 NUL 的二进制文件应降级 binary");
+        assert!(
+            r.markdown.is_none(),
+            "二进制不得强行 lossy 还原成文本"
+        );
+    }
+
+    #[test]
+    fn ingest_gbk_text_is_decoded_to_real_chinese_with_warning() {
+        // GBK 编码中文必须真正转成 Unicode，不能用 lossy 把正文变成 U+FFFD。
+        let mut bytes = b"GBK-tail: ".to_vec();
+        // "中文测试" 的 GBK 编码:D6 D0 CE C4 B2 E2 CA D4(均非合法 UTF-8 续位)
+        bytes.extend_from_slice(&[0xD6, 0xD0, 0xCE, 0xC4, 0xB2, 0xE2, 0xCA, 0xD4]);
+        for name in ["gbk_notes.txt", "gbk_notes.custom"] {
+            let p = write_tmp(name, &bytes);
+            let r = ingest(&p);
+            std::fs::remove_file(&p).ok();
+            assert_eq!(r.kind, "text", "{name} 应解码成 text");
+            let md = r.markdown.expect("GBK 文本应解码出正文");
+            assert!(
+                md.contains("GBK-tail: 中文测试"),
+                "{name} 的 GBK 中文必须完整还原,实际={md:?}"
+            );
+            assert!(!md.contains('\u{fffd}'), "GBK 解码不应产生替换符");
+            assert!(
+                r.warning.as_deref().unwrap_or("").contains("GB18030/GBK"),
+                "{name} 应标编码转换 warning,实际={:?}",
+                r.warning
+            );
+        }
+    }
+
+    // ── 私钥安全硬墙回归 ──
+    // 私钥扩展名走 secret 分类(绝不读正文),改名/无扩展名的私钥由内容侧
+    // looks_like_secret_material 拦截;公钥不被误伤。
+    #[test]
+    fn ingest_secret_extension_key_is_blocked() {
+        let body = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANB\n-----END PRIVATE KEY-----\n";
+        let p = write_tmp("server.key", body);
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(
+            r.kind, "binary",
+            ".key 必须走 secret(=binary)分类,不得读正文"
+        );
+        assert!(
+            r.markdown.is_none(),
+            "私钥正文绝不能进 markdown,实际={:?}",
+            r.markdown
+        );
+        assert!(
+            r.warning.as_deref().unwrap_or("").contains("私钥"),
+            "应给出「拒绝读取私钥」类提示,实际={:?}",
+            r.warning
+        );
+    }
+
+    #[test]
+    fn ingest_renamed_private_key_blocked_by_content() {
+        // 无扩展名 + OpenSSH 私钥头:走 sniff → 内容侧拦截。
+        let openssh = b"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----\n";
+        let p1 = write_tmp("id_rsa_test", openssh);
+        let r1 = ingest(&p1);
+        std::fs::remove_file(&p1).ok();
+        assert_eq!(r1.kind, "binary", "无扩展名私钥应由内容嗅探拦截");
+        assert!(r1.markdown.is_none(), "私钥正文不得进 markdown");
+
+        // 套了 .txt 外壳的 RSA 私钥:走 ingest_text → 内容侧拦截。
+        let rsa = b"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n";
+        let p2 = write_tmp("backup.txt", rsa);
+        let r2 = ingest(&p2);
+        std::fs::remove_file(&p2).ok();
+        assert_eq!(r2.kind, "binary", ".txt 套壳私钥应由内容嗅探拦截");
+        assert!(r2.markdown.is_none(), "私钥正文不得进 markdown");
+
+        // 公钥(id_rsa.pub 内容 / 纯 ssh-ed25519 ASCII)不得被误伤 —— 仍可读。
+        let pub_key = b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey user@host\n";
+        let p3 = write_tmp("id_ed25519.pub", pub_key);
+        let r3 = ingest(&p3);
+        std::fs::remove_file(&p3).ok();
+        assert_eq!(r3.kind, "text", "公钥不是私钥,应正常读取");
+        assert!(
+            r3.markdown.as_deref().unwrap_or("").contains("ssh-ed25519"),
+            "公钥正文应被读出"
+        );
+    }
+
+    // ── Fix E:编码兜底(BOM / UTF-16)回归 ──
+    #[test]
+    fn decode_strips_utf8_bom_and_reads_content() {
+        // UTF-8 BOM(EF BB BF → U+FEFF)不应污染正文开头。
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"BOM-should-be-stripped");
+        let p = write_tmp("with_bom.txt", &bytes);
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(r.kind, "text");
+        let md = r.markdown.expect("BOM 文件应读出文本");
+        assert!(
+            !md.starts_with('\u{feff}'),
+            "开头 BOM 必须去掉,实际首字符={:?}",
+            md.chars().next()
+        );
+        assert!(md.contains("BOM-should-be-stripped"));
+    }
+
+    #[test]
+    fn decode_utf16_bom_converts_content_instead_of_nul_garbage() {
+        // UTF-16 LE 的 ASCII「hi」= 68 00 69 00:每字节 <0x80 恰为合法 UTF-8,
+        // from_utf8 会成功产出 "h\0i\0"(含 NUL 的垃圾)。修复后见 BOM 转成 UTF-8。
+        let bytes = [0xFFu8, 0xFE, 0x68, 0x00, 0x69, 0x00];
+        let p = write_tmp("utf16le.txt", &bytes);
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(r.kind, "text", "UTF-16 文件仍归 text 分类");
+        assert_eq!(r.markdown.as_deref(), Some("hi"));
+        assert!(
+            r.warning.as_deref().unwrap_or("").contains("UTF-16"),
+            "应明确提示发生 UTF-16 转换,实际={:?}",
+            r.warning
+        );
+    }
+
+    #[test]
+    fn decode_utf16_without_bom_uses_strong_nul_signal_for_both_endians() {
+        let cases: [(&str, &[u8]); 2] = [
+            (
+                "utf16le-no-bom.txt",
+                &[0x68, 0x00, 0x69, 0x00, 0x2D, 0x4E, 0x87, 0x65],
+            ),
+            // 未知扩展名也必须在 binary 嗅探前识别 UTF-16 BE。
+            (
+                "utf16be-no-bom.custom",
+                &[0x00, 0x68, 0x00, 0x69, 0x4E, 0x2D, 0x65, 0x87],
+            ),
+        ];
+        for (name, bytes) in cases {
+            let p = write_tmp(name, bytes);
+            let r = ingest(&p);
+            std::fs::remove_file(&p).ok();
+            assert_eq!(r.kind, "text", "{name} 应识别为 UTF-16 文本");
+            assert_eq!(
+                r.markdown.as_deref(),
+                Some("hi中文"),
+                "{name} 应完整解码中英文"
+            );
+            assert!(
+                r.warning.as_deref().unwrap_or("").contains("无 BOM UTF-16"),
+                "{name} 应提示无 BOM UTF-16 转换,实际={:?}",
+                r.warning
+            );
+        }
+    }
+
+    #[test]
+    fn sniff_reads_svg_xml_as_text() {
+        // SVG 是文本 XML:经 `_ =>` sniff → 非二进制 → 读成 text(模型能看懂结构)。
+        // 这是 PR 通用化的有意行为(classify 仍返回 binary,但 dispatch 末尾 sniff 兜底)。
+        // 锁定该行为,防回归。
+        let svg = b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"><rect/></svg>\n";
+        let p = write_tmp("icon.svg", svg);
+        let r = ingest(&p);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(r.kind, "text", "SVG(XML)应被嗅探成 text");
+        assert!(r.markdown.as_deref().unwrap_or("").contains("<svg"));
+    }
+
+    #[test]
+    fn looks_like_binary_30_percent_boundary() {
+        // 控制字符占比阈值:严格 > 30% 才判二进制(ctrl*10 > len*3)。
+        // 30/100 = 30% → 非二进制(边界外);31/100 > 30% → 二进制。
+        let text_byte = b'x';
+        let ctrl_byte = 0x01u8;
+        let make = |ctrl: usize, total: usize| {
+            let mut v = vec![text_byte; total];
+            for b in v.iter_mut().take(ctrl) {
+                *b = ctrl_byte;
+            }
+            v
+        };
+        assert!(
+            !looks_like_binary_sample(&make(30, 100)),
+            "恰好 30% 控制字符应为文本(严格大于才判二进制)"
+        );
+        assert!(
+            looks_like_binary_sample(&make(31, 100)),
+            "31% 控制字符应为二进制"
+        );
+        // 8192 采样边界:8192 全采,8193 截断到 8192 —— 只要前 8192 判定一致即可。
+        let mut big_text = vec![text_byte; 8193];
+        big_text[0] = 0x00; // 头部一个 NUL → 二进制(采样必命中)
+        assert!(looks_like_binary_sample(&big_text));
+    }
     #[test]
     fn ingest_text_reads_md() {
         // 写一个临时文件，调 ingest
@@ -2678,3 +3251,155 @@ mod visual_preview_smoke {
     }
 }
 
+#[cfg(test)]
+mod multi_type_dispatch_e2e {
+    use super::*;
+
+    // PR #213 审查 #1 端到端回归:验证 file_ingest::ingest 按磁盘路径扩展名把
+    // txt/pdf/docx/xlsx/png 分别派发到正确处理路径,而不是全部落到 binary 兜底。
+    // 旧实现把上传文件统一落盘成 data.bin(扩展名 bin),所有类型都进 binary →
+    // "不支持的文件类型";Fix #1 保留原始扩展名后,ingest 必须对每个类型识别成功。
+    //
+    // 每种类型用唯一标记字符串,断言它出现在 ingest 结果里(text/markdown 正文、
+    // pdf 的 markdown、docx 的 pandoc markdown、xlsx 的 calamine 表格、png 的
+    // image data-URI kind)。工具缺失时跳过(不 FAIL),与 visual_preview_smoke 同策略。
+    // 这是评审要求的「真实文件类型不被丢失」等价证据 —— 不经过浏览器,直接证明
+    // ingest 分派层对真实扩展名生效(浏览器层经 real_browser_upload_full_stack 已覆盖
+    // small.txt 全链路 → "已就绪")。
+    #[test]
+    #[ignore = "需要 pandoc + pdftotext + libreoffice + tesseract(本机齐全时跑)"]
+    fn ingest_dispatches_each_real_type_by_extension_not_binary() {
+        let tools = system_tools();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-multi-type-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = "PINVOU3-MULTITYPE-MARKER-9f3a";
+
+        // ── txt:text 分派,正文含 marker ──
+        let txt = dir.join("note.txt");
+        std::fs::write(&txt, format!("{marker} 文本正文")).unwrap();
+        let ir = ingest(&txt);
+        assert_eq!(ir.kind, "text", "txt 必须走 text 分派");
+        assert!(ir.markdown.as_deref().unwrap_or("").contains(marker), "txt 正文必须含 marker");
+
+        // ── docx:pandoc 分派,正文含 marker(需 pandoc) ──
+        if tools.pandoc {
+            let md = dir.join("src.md");
+            std::fs::write(&md, format!("# {marker}\n\ndocx 正文段落。")).unwrap();
+            let docx = dir.join("src.docx");
+            let ok = std::process::Command::new("pandoc")
+                .arg(&md)
+                .arg("-o")
+                .arg(&docx)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok && docx.exists() {
+                let ir = ingest(&docx);
+                // doc_pandoc 分派把 kind 设为扩展名标签(ingest_pandoc 的 label=ext),
+                // 所以 kind 应是 "docx"(不是 binary 也不是 "doc_pandoc" 类别名)。
+                assert_ne!(
+                    ir.kind, "binary",
+                    "docx 不得落到 binary 兜底(扩展名保留生效的证明)"
+                );
+                assert!(
+                    ir.markdown.as_deref().unwrap_or("").contains(marker),
+                    "docx markdown 必须含 marker,实际 kind={} warning={:?}",
+                    ir.kind,
+                    ir.warning
+                );
+            }
+        }
+
+        // ── xlsx:spreadsheet(calamine)分派,单元格含 marker ──
+        // 用 csv → soffice 转 xlsx 造真实表格文件。
+        if tools.libreoffice {
+            let csv = dir.join("sheet.csv");
+            std::fs::write(&csv, format!("A,B\n{marker},2\n")).unwrap();
+            let _ = std::process::Command::new("soffice")
+                .arg(format!("-env:UserInstallation=file://{}/lo", dir.display()))
+                .args(["--headless", "--convert-to", "xlsx", "--outdir"])
+                .arg(&dir)
+                .arg(&csv)
+                .status();
+            let xlsx = dir.join("sheet.xlsx");
+            if xlsx.exists() {
+                let ir = ingest(&xlsx);
+                // spreadsheet 分派把 kind 设为扩展名标签(ingest_spreadsheet 的 kind=ext)。
+                assert_ne!(
+                    ir.kind, "binary",
+                    "xlsx 不得落到 binary 兜底(扩展名保留生效的证明)"
+                );
+                assert!(
+                    ir.markdown.as_deref().unwrap_or("").contains(marker),
+                    "xlsx 表格抽取必须含 marker,实际 kind={} warning={:?}",
+                    ir.kind,
+                    ir.warning
+                );
+            }
+        }
+
+        // ── pdf:pdf 分派,正文含 marker(用 soffice 把含 marker 的文档转 pdf) ──
+        if tools.pdftotext && tools.libreoffice {
+            let md = dir.join("pdfsrc.md");
+            std::fs::write(&md, format!("# {marker}\n\nPDF 正文。")).unwrap();
+            // md → docx → pdf
+            let docx = dir.join("pdfsrc.docx");
+            let _ = std::process::Command::new("pandoc")
+                .arg(&md)
+                .arg("-o")
+                .arg(&docx)
+                .status();
+            if docx.exists() {
+                let _ = std::process::Command::new("soffice")
+                    .arg(format!("-env:UserInstallation=file://{}/lo2", dir.display()))
+                    .args(["--headless", "--convert-to", "pdf", "--outdir"])
+                    .arg(&dir)
+                    .arg(&docx)
+                    .status();
+                let pdf = dir.join("pdfsrc.pdf");
+                if pdf.exists() {
+                    let ir = ingest(&pdf);
+                    assert_eq!(ir.kind, "pdf", "pdf 必须走 pdf 分派");
+                    assert!(
+                        ir.markdown.as_deref().unwrap_or("").contains(marker),
+                        "pdf 抽取文本必须含 marker,实际 kind={} warning={:?}",
+                        ir.kind,
+                        ir.warning
+                    );
+                }
+            }
+        }
+
+        // ── png:image 分派 ──
+        // 对话附件图片走视觉(image_analyze),ingest_image 只登记元数据(kind="image",
+        // markdown=None),不产 data-URI(见 ingest_image 注释)。所以这里只断言
+        // kind=="image" —— 关键是它**没**被降级成 binary 兜底(旧 data.bin 的结果)。
+        // PNG 分派不依赖任何外部工具,无条件运行(故不走 `if tools.xxx` 守卫)。
+        // 1x1 灰度 PNG(像素值 0xAA),67 字节:签名 + IHDR + IDAT + IEND,
+        // CRC/IDAT 均由 zlib 正确生成,PIL 实测可解码。
+        let min_png: Vec<u8> = [
+            0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
+            0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00,
+            0x00, 0x00, 0x3A, 0x7E, 0x9B, 0x55, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54,
+            0x78, 0xDA, 0x63, 0x58, 0x05, 0x00, 0x00, 0xAC, 0x00, 0xAB, 0xCB, 0x83, 0x9E, 0xE6,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ]
+        .to_vec();
+        let png = dir.join("pixel.png");
+        std::fs::write(&png, &min_png).unwrap();
+        let ir = ingest(&png);
+        assert_eq!(
+            ir.kind, "image",
+            "png 必须走 image 分派(未被降级成 binary)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
