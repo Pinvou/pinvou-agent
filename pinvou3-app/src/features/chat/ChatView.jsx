@@ -8,6 +8,7 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 
@@ -1586,7 +1587,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   const href = a.getAttribute('href') || '';
                   if (/^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    window.__TAURI__.core.invoke('open_external_url', { url: href }).catch(() => {});
+                    invokeTauri('open_external_url', { url: href }).catch(() => {});
                   }
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,8 +9,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dragSrc = path.join(here, '..', 'src', 'features', 'pet', 'pet-interaction.js');
 assert.ok(existsSync(dragSrc), 'pet-interaction.js must exist');
 
-const dragTmp = path.join(mkdtempSync(path.join(tmpdir(), 'pet-interaction-')), 'pet-interaction.mjs');
-copyFileSync(dragSrc, dragTmp);
+const tempRoot = mkdtempSync(path.join(tmpdir(), 'pet-interaction-'));
+const dragTmp = path.join(tempRoot, 'pet-interaction.mjs');
+const clientSrc = path.join(here, '..', 'src', 'platform', 'tauri', 'client.js');
+const clientTmp = path.join(tempRoot, 'tauri-client.mjs');
+copyFileSync(clientSrc, clientTmp);
+writeFileSync(
+  dragTmp,
+  readFileSync(dragSrc, 'utf8').replace('../../platform/tauri/client.js', './tauri-client.mjs'),
+  'utf8',
+);
 const drag = await import(pathToFileURL(dragTmp));
 
 assert.strictEqual(typeof drag.readPetDragContext, 'function');
@@ -81,7 +89,7 @@ assert.strictEqual(typeof drag.rebasePetDragForVerticalAlignment, 'function');
     },
   };
 
-  const context = await drag.readPetDragContext(T);
+  const context = await drag.readPetDragContext(T.window);
   assert.strictEqual(context.win, win);
   assert.strictEqual(context.position, position);
   assert.strictEqual(context.size, size);
@@ -92,24 +100,24 @@ assert.strictEqual(typeof drag.rebasePetDragForVerticalAlignment, 'function');
   assert.strictEqual(instanceMonitorCalls, 0);
   assert.strictEqual(outerPositionCalls, 0, 'decorless pet drag must not mix stale outer/client origins');
 
-  await drag.setPetWindowPosition(T, win, 10.6, -2.4);
+  await drag.setPetWindowPosition(win, 10.6, -2.4, (x, y) => new PhysicalPosition(x, y));
   assert.ok(receivedPosition instanceof PhysicalPosition);
   assert.deepStrictEqual({ x: receivedPosition.x, y: receivedPosition.y }, { x: 11, y: -2 });
 }
 
 {
   const T = { window: { getCurrentWindow: () => ({}) } };
-  await assert.rejects(() => drag.readPetDragContext(T), /currentMonitor/);
+  await assert.rejects(() => drag.readPetDragContext(T.window), /currentMonitor/);
 }
 
 {
-  const T = {
-    window: {
-      PhysicalPosition: class PhysicalPosition {},
-    },
-  };
   await assert.rejects(
-    () => drag.setPetWindowPosition(T, { setPosition: () => { throw new Error('move failed'); } }, 1, 2),
+    () => drag.setPetWindowPosition(
+      { setPosition: () => { throw new Error('move failed'); } },
+      1,
+      2,
+      (x, y) => ({ x, y }),
+    ),
     /move failed/,
   );
 }
@@ -1078,7 +1086,7 @@ assert.match(
   /useState\(startupScale\)/,
   'the first pet render must match the configured startup window',
 );
-assert.match(viewCode, /readPetDragContext\(T\)/);
+assert.match(viewCode, /readPetDragContext\(\)/);
 assert.match(viewCode, /Promise\.resolve\(win\.innerPosition\(\)\)/);
 assert.doesNotMatch(
   viewCode,
@@ -1102,7 +1110,7 @@ assert.match(
 );
 assert.match(viewCode, /Number\.isFinite\(configuredScale\)/);
 assert.match(viewCode, /useState\(startupScale\)/);
-assert.match(viewCode, /invoke\('set_pet_scale',[\s\S]{0,120}?scale:\s*startupScale/);
+assert.match(viewCode, /invokeTauri\('set_pet_scale',[\s\S]{0,120}?scale:\s*startupScale/);
 assert.match(viewCode, /\{allowResize && \(\s*<div\s+className="pet-resize-grip"/);
 // 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:GB10/WebKitGTK 下
 // 新起第二个透明窗口会 malloc 堆损坏闪退)。

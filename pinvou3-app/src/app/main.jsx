@@ -13,6 +13,14 @@ import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { RemoteControlModal, SettingsView } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
+import {
+  emitTauri,
+  invokeTauri,
+  isTauriAvailable,
+  tauriCommands,
+  tauriEvents,
+  tryGetCurrentTauriWindow,
+} from '../platform/tauri/client.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
@@ -35,9 +43,7 @@ let appFirstRenderMarked = false;
 /* ==========================================
        Lucide icon replacements (inline SVG)
        ========================================== */
-    const appWindow = (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow)
-      ? window.__TAURI__.window.getCurrentWindow()
-      : null;
+    const appWindow = tryGetCurrentTauriWindow();
     const TitleBar = ({ theme, t }) => {
       const isDark = theme === 'dark';
       const hoverBg = isDark ? 'hover:bg-white/10' : 'hover:bg-black/10';
@@ -446,7 +452,7 @@ let appFirstRenderMarked = false;
       const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
       const dragOffsetRef = useRef({ dx: 0, dy: 0 });
       const beginTearOff = (kind, id, label, info) => {
-        const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        const inv = isTauriAvailable() ? invokeTauri : null;
         if (!inv || !info) return;
         inv('begin_detach_drag', { kind, id: id != null ? id : null });
         dragOffsetRef.current = { dx: info.dx, dy: info.dy };
@@ -475,9 +481,9 @@ let appFirstRenderMarked = false;
       }, [!!dragAvatar]);
       // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
-        if (!window.__TAURI__ || !window.__TAURI__.event) return;
+        if (!isTauriAvailable()) return;
         let un;
-        window.__TAURI__.event.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
+        tauriEvents.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
         return () => { if (un) un(); };
       }, []);
 
@@ -800,7 +806,7 @@ let appFirstRenderMarked = false;
         working: chat.working,
       }));
       useEffect(() => {
-        const ev = window.__TAURI__ && window.__TAURI__.event;
+        const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev) return undefined;
         let disposed = false;
         let unlisten = null;
@@ -894,8 +900,7 @@ let appFirstRenderMarked = false;
       // 完成瞬间若该会话正处于前台聊天视图且窗口有焦点，直接标记已读，
       // 卡片自动消失，不需要用户再去点。
       useEffect(() => {
-        const tauri = window.__TAURI__;
-        const ev = tauri && tauri.event;
+        const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev) return undefined;
         let disposed = false;
         const unlisteners = [];
@@ -930,7 +935,7 @@ let appFirstRenderMarked = false;
       // 运行中的卡不会被 markSessionViewed 删除；等它完成时，上面的
       // chat:done 监听会再次确认当前画面并完成收尾。
       useEffect(() => {
-        const ev = window.__TAURI__ && window.__TAURI__.event;
+        const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev || currentView !== 'chat' || !activeChat) return;
         if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
         const emit = typeof ev.emitTo === 'function'
@@ -942,9 +947,8 @@ let appFirstRenderMarked = false;
       }, [currentView, activeChat]);
 
       useEffect(() => {
-        const tauri = window.__TAURI__;
-        const ev = tauri && tauri.event;
-        const core = tauri && tauri.core;
+        const ev = isTauriAvailable() ? tauriEvents : null;
+        const core = isTauriAvailable() ? tauriCommands : null;
         if (!ev || !core) return undefined;
         const emitToPet = (name, payload) => (
           typeof ev.emitTo === 'function'
@@ -1040,9 +1044,8 @@ let appFirstRenderMarked = false;
       }, []);
 
       useEffect(() => {
-        const tauri = window.__TAURI__;
-        const ev = tauri && tauri.event;
-        const core = tauri && tauri.core;
+        const ev = isTauriAvailable() ? tauriEvents : null;
+        const core = isTauriAvailable() ? tauriCommands : null;
         if (!ev || !core || !bridge.available || !bridge.chat.sendMessageToSession) return undefined;
         let disposed = false;
         let consuming = false;
@@ -1300,7 +1303,7 @@ let appFirstRenderMarked = false;
         if (!bridge.available) return;
         // 单一路径:set_pet_enabled 负责持久化 + 窗口显隐 + 广播
         // pet:enabled_changed(bridge 听到后刷新 settings 副本,防旧值回写)。
-        window.__TAURI__.core.invoke('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
+        invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
       async function handleSetTaskCompletedNotif(enabled) {
@@ -1713,7 +1716,7 @@ let appFirstRenderMarked = false;
                 )}
                 {showMegacubeSite && (
                   <button
-                    onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
+                    onClick={() => invokeTauri('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
                     title={t.megacubeSite}
                     className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
                   >
@@ -2187,7 +2190,7 @@ let appFirstRenderMarked = false;
       // 关闭时通知主窗口回坞(去角标)。
       useEffect(() => {
         const key = kind + ':' + (id || '');
-        const onUnload = () => { try { window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit('detach:closed', key); } catch (_) {} };
+        const onUnload = () => { if (isTauriAvailable()) void emitTauri('detach:closed', key).catch(() => {}); };
         window.addEventListener('beforeunload', onUnload);
         return () => window.removeEventListener('beforeunload', onUnload);
       }, [kind, id]);

@@ -18,6 +18,7 @@ import mimoIcon from '../../brand-icons/mimo.svg';
 import minimaxIcon from '../../brand-icons/minimax.svg';
 import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
+import { invokeTauri } from '../../platform/tauri/client.js';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -945,35 +946,35 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
-          const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+          const list = await invokeTauri('list_marketplace_tools');
           if (isAlive()) setMarketplaceTools(Array.isArray(list) ? list : []);
         } catch (e) { /* ignore */ }
         try {
-          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          const skills = await invokeTauri('list_marketplace_skills');
           if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch (e) { /* ignore */ }
         try {
-          const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
+          const dis = await invokeTauri('get_disabled_connectors');
           if (isAlive()) setDisabled(new Set(dis || []));
         } catch (e) { /* ignore */ }
         try {
-          const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
+          const fs = await invokeTauri('feishu_skills_state');
           if (isAlive()) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
-          const ws = await window.__TAURI__.core.invoke('wecom_skills_state');
+          const ws = await invokeTauri('wecom_skills_state');
           if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
-          const ds = await window.__TAURI__.core.invoke('dingtalk_skills_state');
+          const ds = await invokeTauri('dingtalk_skills_state');
           if (isAlive()) { setDingtalkOn(!!(ds && ds.connected)); setDingtalkEnabled(!ds || ds.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
-          const es = await window.__TAURI__.core.invoke('eip_status');
+          const es = await invokeTauri('eip_status');
           if (isAlive()) setEipOn(!!(es && es.connected));
         } catch (e) { /* ignore */ }
         try {
-          const zs = await window.__TAURI__.core.invoke('zhidao_status');
+          const zs = await invokeTauri('zhidao_status');
           if (isAlive()) setZhidaoOn(!!(zs && zs.connected));
         } catch (e) { /* ignore */ }
       }
@@ -991,7 +992,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setDisabled(next);
         // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
         if (bridge.available) {
-          window.__TAURI__.core.invoke('set_disabled_connectors',
+          invokeTauri('set_disabled_connectors',
             { connectorIds: Array.from(next) }).catch(() => {});
         }
       }

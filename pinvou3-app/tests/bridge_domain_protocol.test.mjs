@@ -179,9 +179,58 @@ function sourceFiles(directory) {
 for (const file of sourceFiles(path.join(root, 'src'))) {
   if (file.startsWith(bridgeRoot)) continue;
   const source = fs.readFileSync(file, 'utf8');
+  if (file.startsWith(path.join(root, 'src', 'features'))) {
+    assert.doesNotMatch(
+      source,
+      /\b(?:window|globalThis)\s*\.\s*__TAURI__\b/,
+      `${path.relative(root, file)} must use the platform Tauri client`,
+    );
+  }
   for (const match of source.matchAll(/\bbridge\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)) {
     const [, domain, method] = match;
     assert.equal(typeof api[domain]?.[method], 'function', `${path.relative(root, file)} uses unknown bridge API ${domain}.${method}`);
   }
+}
+
+const clientSource = read('client.js');
+const client = await import(`data:text/javascript;base64,${Buffer.from(clientSource).toString('base64')}`);
+const previousTauri = globalThis.__TAURI__;
+const nativeCalls = [];
+class PhysicalPosition {
+  constructor(x, y) { this.x = x; this.y = y; }
+}
+const currentWindow = { label: 'main' };
+globalThis.__TAURI__ = {
+  core: { invoke: async (command, payload) => { nativeCalls.push(['invoke', command, payload]); return 'ok'; } },
+  event: {
+    listen: async (name, handler) => { nativeCalls.push(['listen', name, handler]); return () => {}; },
+    emit: async (name, payload) => { nativeCalls.push(['emit', name, payload]); },
+  },
+  window: {
+    getCurrentWindow: () => currentWindow,
+    currentMonitor: async () => ({ name: 'primary' }),
+    availableMonitors: async () => [{ name: 'primary' }],
+    PhysicalPosition,
+  },
+};
+try {
+  assert.equal(client.isTauriAvailable(), true);
+  assert.equal(await client.invokeTauri('protocol_probe', { value: 1 }), 'ok');
+  await client.listenTauri('protocol:event', () => {});
+  await client.emitTauri('protocol:emit', { value: 2 });
+  assert.equal(client.getCurrentTauriWindow(), currentWindow);
+  assert.deepEqual(await client.currentTauriMonitor(), { name: 'primary' });
+  assert.deepEqual(await client.availableTauriMonitors(), [{ name: 'primary' }]);
+  const position = client.createPhysicalPosition(10.6, -2.4);
+  assert.equal(position.x, 11);
+  assert.equal(position.y, -2);
+  assert.deepEqual(nativeCalls.slice(0, 3).map(call => call.slice(0, 2)), [
+    ['invoke', 'protocol_probe'],
+    ['listen', 'protocol:event'],
+    ['emit', 'protocol:emit'],
+  ]);
+} finally {
+  if (previousTauri === undefined) delete globalThis.__TAURI__;
+  else globalThis.__TAURI__ = previousTauri;
 }
 console.log('bridge domain API and protocol contracts passed');

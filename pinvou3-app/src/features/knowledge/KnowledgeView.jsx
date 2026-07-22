@@ -3,16 +3,14 @@ import { AlertTriangle, AppWindow, Archive, BookOpen, Check, Database, Download,
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
+import { invokeTauri } from '../../platform/tauri/client.js';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
       const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
-      const inv = (cmd, args) =>
-        (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
-          ? window.__TAURI__.core.invoke(cmd, args)
-          : Promise.reject('no-tauri');
+      const inv = invokeTauri;
 
       const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 
