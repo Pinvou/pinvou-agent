@@ -18,7 +18,7 @@ const indexHtml = [
   'features/scheduled/ScheduledTasksView.jsx'
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
-  'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
+  'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
   'remote-control', 'dependencies', 'voice', 'knowledge-model', 'workflow'
 ];
 const tauriBridge = tauriBridgeFeatureNames
