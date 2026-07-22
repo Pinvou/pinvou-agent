@@ -26,6 +26,7 @@ pub async fn chat(
     session_id: Option<String>,
     restrict_tools: Option<bool>,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, crate::acp_runtime::AcpPool>,
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -38,6 +39,9 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    if acp_pool.is_codex(&sid) {
+        return Err("Codex ACP 会话必须通过独立 Codex 页面发送".to_string());
+    }
     let reservation = pool
         .reserve_turn(&sid)
         .map_err(|error| format!("reserve chat turn: {error:#}"))?;

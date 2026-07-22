@@ -48,7 +48,18 @@ tauri-plugin-notification = "2"
 anyhow = "1.0"
 async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
 tokio = { version = "1.49", features = ["full"] }
-tokio-util = "0.7.16"
+tokio-util = { version = "0.7.16", features = ["compat"] }
+
+# Codex ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
+# @agentclientprotocol/codex-acp 提供，pinvou3 不复制其会话/工具循环。
+agent-client-protocol = { version = "0.11.1", features = [
+    "unstable_session_model",
+    "unstable_session_close",
+    "unstable_session_usage",
+    "unstable_session_fork",
+    "unstable_session_additional_directories",
+    "unstable_session_resume",
+] }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`

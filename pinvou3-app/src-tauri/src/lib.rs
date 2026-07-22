@@ -9,6 +9,7 @@
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
 mod app;
+pub mod acp_runtime;
 mod core;
 pub mod features;
 pub mod platform;
@@ -322,6 +323,15 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
+            match acp_runtime::AcpPool::new(handle.clone(), store_for_engine.clone()) {
+                Ok(pool) => {
+                    handle.manage(pool);
+                    eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
+                }
+                Err(error) => {
+                    panic!("failed to init Codex ACP pool: {error:#}");
+                }
+            }
             startup::mark("engine_pool:start");
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
                 std::sync::Arc::new(|app, session_id| {
@@ -543,6 +553,20 @@ pub fn run() {
             commands::settings::set_active_model,
             commands::settings::set_session_model,
             commands::settings::get_session_model_id,
+            commands::codex::get_codex_acp_status,
+            commands::codex::prepare_codex_acp,
+            commands::codex::login_codex_acp,
+            commands::codex::get_codex_acp_session_info,
+            commands::codex::set_codex_acp_model,
+            commands::codex::set_codex_acp_mode,
+            commands::codex::set_codex_acp_config_option,
+            commands::codex::codex_acp_prompt,
+            commands::codex::cancel_codex_acp,
+            commands::codex::get_codex_acp_timeline,
+            commands::codex::get_codex_acp_pending_permissions,
+            commands::codex::respond_codex_acp_permission,
+            commands::codex::list_codex_acp_sessions,
+            commands::codex::create_codex_acp_session,
             commands::settings::test_model_connection,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
