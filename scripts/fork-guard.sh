@@ -77,7 +77,7 @@ fingerprints=(
   "APP|兼容引擎显式 limits 结果式回归     |pinvou3-app/src-tauri/src/app/bridge/mod.rs|fn forkguard_openai_compatible_route_uses_declared_limits"
   "APP|手动压缩携带同源 route             |pinvou3-app/src-tauri/src/features/assistant/engine.rs|send(Op::CompactContext {"
   "APP|定时任务使用 shared run API        |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
-  "APP|敏感目录 hard deny 为 exit 2       |pinvou3-app/src-tauri/resources/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
+  "APP|敏感目录 hard deny 为 exit 2       |pinvou3-app/src-tauri/resources/common/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
   "APP|静态层 composer 仍由 app 安装      |pinvou3-app/src-tauri/src/app/bridge/bundle.rs|set_static_prompt_composer_override"
   "APP|内置技能写入 bundle 单一来源        |pinvou3-app/src-tauri/src/app/bridge/bundle.rs|fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name"
   "APP|前端终端跨分片解析状态             |pinvou3-app/src/platform/tauri/bridge.js|function terminalParserState(item, stream)"

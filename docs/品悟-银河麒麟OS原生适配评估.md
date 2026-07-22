@@ -178,7 +178,7 @@ XMODIFIERS=@im=fcitx
 
 品悟不仅包含主 Rust ELF，还包含或调用其他本地二进制。当前已发现：
 
-- `resources/asr/sense-voice-main` 是 ARM64 ELF；
+- `resources/platforms/linux/asr/sense-voice-main` 是 ARM64 ELF；
 - 历史 x86_64 包中的 `web-template` 曾混入 ARM64 esbuild；
 - fastembed/ONNX Runtime 需要逐架构确认可用性；
 - ffmpeg、pandoc、poppler、tesseract、LibreOffice 等系统包需要确认目标架构的软件源支持。

@@ -3,7 +3,7 @@
   "bundle": {
     "targets": ["deb"],
     "resources": {
-      "resources/asr/": "runtime/asr"
+      "resources/platforms/linux/asr/": "runtime/asr"
     },
     "linux": {
       "deb": {

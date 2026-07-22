@@ -89,7 +89,7 @@ fn device_id() -> String {
 }
 
 fn zhidao_bin_path() -> Result<PathBuf, String> {
-    // Windows ships a native reimplementation (zhidao-cli.exe, see resources/bundle/
+    // Windows ships a native reimplementation (zhidao-cli.exe, see resources/common/bundle/
     // zhidao/win-src); Unix runs the CLI binary directly so architecture errors
     // surface before the wrapper hides them as a generic connection failure.
     let name = if cfg!(windows) {

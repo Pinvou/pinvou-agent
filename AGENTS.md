@@ -95,7 +95,7 @@ DeepSeek-TUI 已有：Engine / ToolRegistry / 流式 SSE / Session / SkillRegist
 - `pinvou3-app/` — 🟢 Tauri 2.0 + EngineHandle wrapper（主线）
 - `DeepSeek-TUI/` — submodule（h3c-hexin/DeepSeek-TUI fork），改动遵循约束 2
 - 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge）
-- 扩展物（instructions.md / skills / mcp-servers / personas）源码在 `pinvou3-app/.../resources/bundle/`，**编译进 app**，启动释放到 `~/.pinvou3/bundle/`
+- 扩展物（instructions.md / skills / mcp-servers / personas）源码在 `pinvou3-app/src-tauri/resources/common/bundle/`，**编译进 app**，启动释放到 `~/.pinvou3/bundle/`
 
 启动：`./pinvou3-app/run-dev.sh`
 

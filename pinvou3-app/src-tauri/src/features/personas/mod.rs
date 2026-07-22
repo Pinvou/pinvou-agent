@@ -10,14 +10,14 @@
 //! **加持机制**: 正文太长不能每 turn 灌。加持时一次性注入完整 body
 //! ([`equip_body_injection`]) + 每 turn 轻锚点 ([`equip_anchor`])。
 //!
-//! License: agency-agents.json 数据 MIT，见 resources/bundle/personas/AGENCY-AGENTS-LICENSE。
+//! License: agency-agents.json 数据 MIT，见 resources/common/bundle/personas/AGENCY-AGENTS-LICENSE。
 
 use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 编译期内嵌的 agency-agents-zh 数据(含完整 body)。
-const PERSONAS_JSON: &str = include_str!("../../../resources/bundle/personas/agency-agents.json");
+const PERSONAS_JSON: &str = include_str!("../../../resources/common/bundle/personas/agency-agents.json");
 
 fn default_source() -> String {
     "builtin".to_string()

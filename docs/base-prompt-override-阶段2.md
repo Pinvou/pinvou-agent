@@ -16,7 +16,7 @@
 - 全量测试 **3349 passed / 0 failed**；hook（3 个 `set_*_override`）完好
 
 **pinvou3-app（working tree，待父仓 commit）**
-- `resources/bundle/base.md` = pinvou3 版 base.md（249 行）
+- `resources/common/bundle/base.md` = pinvou3 版 base.md（249 行）
 - `bridge/bundle.rs` 3 常量（`BASE_PROMPT_MD` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP`）+ `install_prompt_overrides()` + 3 个新 forkguard 测试（内容锚点 + override 端到端生效）
 - `bridge/mod.rs` `boot()` 调 `install_prompt_overrides()`（早于 ensure_dirs；dump_system_prompt bin 同经此 boot）
 - forkguard 测试 **4 passed / 0 failed**
@@ -77,7 +77,7 @@
 
 ### B. pinvou3-app 侧（承载 pinvou3 prompt 内容 + 启动注入）
 
-1. **新建 `pinvou3-app/src-tauri/resources/bundle/base.md`** = 当前 pinvou3 版 base.md（249 行，
+1. **新建 `pinvou3-app/src-tauri/resources/common/bundle/base.md`** = 当前 pinvou3 版 base.md（249 行，
    含 CONSTITUTION OF PINVOU3 / running inside pinvou3 / embedder-aware 改写 / 删 RLM·Toolbox·V4 段）。
    取自 commit `5f847284^` 的 `crates/tui/src/prompts/base.md`（即回退前的版本）：
    `git show 5f847284:crates/tui/src/prompts/base.md`（阶段1未动 base.md，所以 5f847284 的 base.md = pinvou3 版）。
@@ -104,7 +104,7 @@
 1. **fork-guard.sh 指纹**：base.md/prompts.rs 品牌指纹（`#28/#32/#33/#36/#37/#38`，
    grep "CONSTITUTION OF PINVOU3" / "running inside pinvou3" / "Match the embedder's render target" /
    "concurrent cap is embedder-configured" / "你正在 pinvou3 中运行" / "Constitution of pinvou3 (Articles I-VII)"）
-   **目标文件改** `DeepSeek-TUI/crates/tui/src/prompts/base.md` → `pinvou3-app/src-tauri/resources/bundle/base.md`
+   **目标文件改** `DeepSeek-TUI/crates/tui/src/prompts/base.md` → `pinvou3-app/src-tauri/resources/common/bundle/base.md`
    （locale/authority 改到其 override 内容所在文件）。
    **新增 1 条**：grep `set_base_prompt_override` 在 `prompts.rs` —— 防 sync 时 hook 被冲掉、
    override 静默失效退回上游 base（这正是 fork-modifications.md 记录过的"merge 静默丢失"坑）。

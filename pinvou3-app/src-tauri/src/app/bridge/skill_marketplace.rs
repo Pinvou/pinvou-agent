@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::paths;
 
 /// 预置技能资源:编译进二进制。每个子目录(pua/ nuwa/)是一个含 SKILL.md 的 skill。
-static MARKETPLACE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources/skill-marketplace");
+static MARKETPLACE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
 /// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
 const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;

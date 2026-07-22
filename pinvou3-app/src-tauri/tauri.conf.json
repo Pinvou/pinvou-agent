@@ -39,7 +39,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/web-template/": "web-template"
+      "resources/common/web-template/": "web-template"
     }
   }
 }

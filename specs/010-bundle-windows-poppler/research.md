@@ -9,7 +9,7 @@
 **Alternatives considered**：
 - 继续要求用户手动安装 Poppler：被拒绝，无法满足开箱可用。
 - 只下载构建时外部资源：被拒绝，会引入构建环境不稳定和外部网络依赖。
-- 放入通用 `resources/bundle`：被拒绝，该目录用于应用内 bundle 解包到用户数据目录，不等同于 Windows 安装目录运行时。
+- 放入通用 `resources/common/bundle`：被拒绝，该目录用于应用内 bundle 解包到用户数据目录，不等同于 Windows 安装目录运行时。
 
 ## 决策 2：Windows 运行时优先使用安装目录内置 Poppler
 
