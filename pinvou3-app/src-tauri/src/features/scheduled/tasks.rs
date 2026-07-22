@@ -15,9 +15,9 @@ use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConf
 use parking_lot::{Mutex as ParkingMutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::bridge::prefs::UserPrefs;
-use crate::bridge::sessions::SessionStore;
-use crate::bridge::Pinvou3Bridge;
+use crate::platform::prefs::UserPrefs;
+use crate::features::sessions::SessionStore;
+use crate::platform::engine_bridge::Pinvou3Bridge;
 use crate::engine_pool::EnginePool;
 use crate::scheduled_executor::ScheduledChatExecutor;
 
@@ -803,7 +803,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 输出代码块后不要继续提问，也不要假装自己调用了创建命令；前端会负责创建任务。"#;
 
 pub fn scheduled_automation_root() -> std::path::PathBuf {
-    crate::bridge::paths::pinvou3_home().join("automations")
+    crate::platform::paths::pinvou3_home().join("automations")
 }
 
 fn scheduled_model_bindings_path() -> std::path::PathBuf {
@@ -820,7 +820,7 @@ fn open_scheduled_automation_manager(root: PathBuf) -> Result<AutomationManager>
 
 #[allow(dead_code)]
 pub fn scheduled_task_data_root() -> std::path::PathBuf {
-    crate::bridge::paths::pinvou3_home().join("tasks")
+    crate::platform::paths::pinvou3_home().join("tasks")
 }
 
 impl ScheduledTaskState {
@@ -829,7 +829,7 @@ impl ScheduledTaskState {
         let sessions = SessionStore::boot()?;
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
-            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())?;
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
         let manager = open_scheduled_automation_manager(scheduled_automation_root())?;
@@ -857,7 +857,7 @@ impl ScheduledTaskState {
     ) -> Result<Self> {
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
-            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())?;
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
         let fallback_model = default_automation_model(Some(bridge));
@@ -867,7 +867,7 @@ impl ScheduledTaskState {
         let task_cfg = TaskManagerConfig {
             data_dir: scheduled_task_data_root(),
             worker_count: 1,
-            default_workspace: crate::bridge::paths::scheduled_tasks_root(),
+            default_workspace: crate::platform::paths::scheduled_tasks_root(),
             default_model: fallback_model.clone(),
             default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
             allow_shell,
@@ -1612,7 +1612,7 @@ fn map_scheduled_task_with_run_state(
 }
 
 fn scheduled_task_internal_workspace(id: &str) -> PathBuf {
-    crate::bridge::paths::scheduled_task_workspace_dir(id)
+    crate::platform::paths::scheduled_task_workspace_dir(id)
 }
 
 fn ensure_automation_workspace(
@@ -2264,7 +2264,7 @@ mod tests {
 
     #[test]
     fn scheduled_task_root_uses_pinvou_home() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2315,7 +2315,7 @@ mod tests {
             >,
             _cancel: CancellationToken,
         ) -> deepseek_tui::task_manager::TaskExecutionResult {
-            use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+            use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
             let automation_id = task
                 .conversation_key()
                 .unwrap_or_else(|| task.id())
@@ -2415,7 +2415,7 @@ mod tests {
     async fn cascade_fixture(hold: Option<Arc<tokio::sync::Notify>>) -> CascadeFixture {
         let sessions = SessionStore::boot().expect("session store");
         let read_state =
-            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
@@ -2428,7 +2428,7 @@ mod tests {
             TaskManagerConfig {
                 data_dir: scheduled_task_data_root(),
                 worker_count: 1,
-                default_workspace: crate::bridge::paths::scheduled_tasks_root(),
+                default_workspace: crate::platform::paths::scheduled_tasks_root(),
                 default_model: "cascade-model".to_string(),
                 default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
                 allow_shell: false,
@@ -2505,7 +2505,7 @@ mod tests {
     /// 和其它运行必须原样保留。这是本次改动里唯一的破坏性路径。
     #[tokio::test]
     async fn deleting_one_run_removes_its_session_run_and_task_only() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2520,7 +2520,7 @@ mod tests {
         assert_ne!(doomed_session, survivor_session, "每次运行是独立对话");
         let doomed_task = doomed.task_id.clone().expect("doomed task");
         let survivor_task = survivor.task_id.clone().expect("survivor task");
-        let workspace = crate::bridge::paths::scheduled_task_workspace_dir(&fixture.automation_id);
+        let workspace = crate::platform::paths::scheduled_task_workspace_dir(&fixture.automation_id);
         assert!(workspace.is_dir(), "fixture 应已建出共享工作间");
 
         fixture
@@ -2588,7 +2588,7 @@ mod tests {
     /// 正在排队/运行的记录不允许删除——拒绝发生在任何破坏性动作之前。
     #[tokio::test]
     async fn deleting_an_active_run_is_refused_before_anything_is_removed() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2692,7 +2692,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_pause_delete_round_trip() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2747,7 +2747,7 @@ mod tests {
 
     #[tokio::test]
     async fn tasks_run_without_a_workspace_like_ordinary_chats() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2782,7 +2782,7 @@ mod tests {
             .expect("persisted automation");
         assert_eq!(
             persisted.cwds,
-            vec![crate::bridge::paths::scheduled_task_workspace_dir(
+            vec![crate::platform::paths::scheduled_task_workspace_dir(
                 &created.id
             )],
             "backend must persist the internally assigned task workspace"
@@ -2812,7 +2812,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_update_delete_scheduled_task_model_binding() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2897,7 +2897,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduled_task_ui_metadata_pin_unpin_and_delete_cleanup() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2969,7 +2969,7 @@ mod tests {
 
     #[test]
     fn owned_session_delete_reports_id_only_after_successful_removal() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -2978,12 +2978,12 @@ mod tests {
         let sessions = SessionStore::boot().expect("sessions");
         let create_session = |task_id: &str| {
             sessions
-                .create_scheduled_run(crate::bridge::sessions::ScheduledRunProfile {
+                .create_scheduled_run(crate::features::sessions::ScheduledRunProfile {
                     task_id: task_id.to_string(),
                     model: "model-1".to_string(),
                     model_id: None,
                     workspace: dir.join("workspace"),
-                    mode: crate::bridge::sessions::ScheduledRunMode::Agent,
+                    mode: crate::features::sessions::ScheduledRunMode::Agent,
                     allow_shell: false,
                     trust_mode: false,
                     auto_approve: false,
@@ -3016,7 +3016,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_and_resume_round_trip() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -3186,7 +3186,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_noncanonical_mode_before_persisting() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -3228,7 +3228,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_rejects_noncanonical_mode_before_persisting() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -3293,7 +3293,7 @@ mod tests {
 
     #[test]
     fn run_dto_exposes_session_only_for_the_owning_task() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -3302,12 +3302,12 @@ mod tests {
 
         let store = SessionStore::boot().expect("open test sessions");
         let saved = store
-            .create_scheduled_run(crate::bridge::sessions::ScheduledRunProfile {
+            .create_scheduled_run(crate::features::sessions::ScheduledRunProfile {
                 task_id: "automation-1".to_string(),
                 model: "model-1".to_string(),
                 model_id: None,
                 workspace: dir.join("workspace"),
-                mode: crate::bridge::sessions::ScheduledRunMode::Agent,
+                mode: crate::features::sessions::ScheduledRunMode::Agent,
                 allow_shell: false,
                 trust_mode: false,
                 auto_approve: false,
@@ -3315,7 +3315,7 @@ mod tests {
             .expect("create scheduled session");
         let now = chrono::Utc::now();
         let read_state =
-            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
                 .expect("open read state");
         let mut session_titles = scheduled_session_titles(&store).expect("list scheduled titles");
         let owned_run = AutomationRunRecord {
@@ -3374,7 +3374,7 @@ mod tests {
         );
 
         std::fs::remove_file(
-            crate::bridge::paths::sessions_root().join(format!("{}.json", saved.metadata.id)),
+            crate::platform::paths::sessions_root().join(format!("{}.json", saved.metadata.id)),
         )
         .expect("remove scheduled session payload");
         session_titles.remove(&saved.metadata.id);
@@ -3398,7 +3398,7 @@ mod tests {
 
     #[test]
     fn scheduled_run_conversations_are_viewable_once_their_owned_session_exists() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -3408,12 +3408,12 @@ mod tests {
         let sessions = SessionStore::boot().expect("open test sessions");
         let make_session = || {
             sessions
-                .create_scheduled_run(crate::bridge::sessions::ScheduledRunProfile {
+                .create_scheduled_run(crate::features::sessions::ScheduledRunProfile {
                     task_id: "automation-1".to_string(),
                     model: "model-1".to_string(),
                     model_id: None,
                     workspace: dir.join("ignored-workspace"),
-                    mode: crate::bridge::sessions::ScheduledRunMode::Agent,
+                    mode: crate::features::sessions::ScheduledRunMode::Agent,
                     allow_shell: false,
                     trust_mode: false,
                     auto_approve: false,
@@ -3442,7 +3442,7 @@ mod tests {
         let run_1 = make_run("run-1", "execution-task-1", &session_1);
         let run_2 = make_run("run-2", "execution-task-2", &session_2);
         let read_state =
-            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
                 .expect("open read state");
 
         assert!(scheduled_run_is_unread(&run_1, &sessions, &read_state));
@@ -3477,7 +3477,7 @@ mod tests {
         ));
 
         let reopened =
-            ScheduledRunReadStore::open(crate::bridge::paths::scheduled_run_read_state_path())
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
                 .expect("reopen read state");
         assert!(!scheduled_run_is_unread(&run_1, &sessions, &reopened));
         assert!(scheduled_run_is_unread(&run_2, &sessions, &reopened));
@@ -3599,7 +3599,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_serializes_followup_operations_and_waiters_observe_not_found() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
@@ -3653,7 +3653,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_success_is_not_reverted_by_read_state_cleanup_failure() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();

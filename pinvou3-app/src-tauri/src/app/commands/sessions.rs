@@ -276,7 +276,7 @@ fn list_workspace_files_for_session(
     let mut out = Vec::new();
     for dir in [
         execution_workspace,
-        crate::bridge::paths::session_artifacts_dir(session_id),
+        crate::platform::paths::session_artifacts_dir(session_id),
     ] {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {

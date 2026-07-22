@@ -4,15 +4,32 @@
 //! 安装状态持久化在 `~/.pinvou3/marketplace/installed.json`。
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
+pub mod skill_marketplace;
+
 use std::path::PathBuf;
 
 use deepseek_tui::mcp::{McpConfig, McpPool, McpServerConfig, McpTimeouts};
 use serde::{Deserialize, Serialize};
 
-use super::paths;
+use crate::platform::paths;
 use crate::credential_store::{
     redact_secret, CredentialError, CredentialReference, CredentialStore, SystemCredentialStore,
 };
+
+/// Persist connector visibility and refresh the skill catalogue.
+///
+/// Refreshing live engines is an application orchestration concern and is
+/// deliberately left to the caller, keeping marketplace independent from the
+/// assistant runtime.
+pub async fn apply_disabled_connectors(connector_ids: Vec<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        save_disabled_connectors(&connector_ids);
+        skill_marketplace::refresh_disabled_skills();
+    })
+    .await
+    .map_err(|error| format!("apply_disabled_connectors join: {error}"))?;
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Manifest — 每个 MCP 工具的元数据
@@ -1376,7 +1393,7 @@ fn default_mcp_json() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
     use crate::credential_store::{CredentialStore, MemoryCredentialStore};
     use std::future::Future;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1714,13 +1731,13 @@ mod tests {
     }
 
     fn write_tool_manifest(tool_id: &str, manifest: &str) {
-        let dir = crate::bridge::paths::bundle_mcp_servers_dir().join(tool_id);
+        let dir = crate::platform::paths::bundle_mcp_servers_dir().join(tool_id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
     fn read_mcp_json() -> serde_json::Value {
-        let content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
+        let content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
         serde_json::from_str(&content).unwrap()
     }
 
@@ -1740,14 +1757,14 @@ mod tests {
                     "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
                 }"#,
             );
-            let mcp_path = crate::bridge::paths::mcp_config_path();
+            let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             std::fs::write(
                 &mcp_path,
                 r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::bridge::paths::pinvou3_home()
+            let installed_path = crate::platform::paths::pinvou3_home()
                 .join("marketplace")
                 .join("installed.json");
             std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
@@ -1777,7 +1794,7 @@ mod tests {
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
-            let dir = crate::bridge::paths::bundle_mcp_servers_dir().join("demo");
+            let dir = crate::platform::paths::bundle_mcp_servers_dir().join("demo");
             std::fs::create_dir_all(&dir).unwrap();
             let manifest = r#"{
                 "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
@@ -1806,7 +1823,7 @@ mod tests {
     #[test]
     fn model_tool_names_generates_prefix_rules_for_remote_servers() {
         with_temp_home(|| {
-            let dir = crate::bridge::paths::bundle_mcp_servers_dir().join("qcc");
+            let dir = crate::platform::paths::bundle_mcp_servers_dir().join("qcc");
             std::fs::create_dir_all(&dir).unwrap();
             let manifest = r#"{
                 "id":"qcc","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
@@ -1925,7 +1942,7 @@ mod tests {
 
             // 禁用公文 MCP → 联动刷新 → 关联技能进底座停用集
             save_disabled_connectors(&["gongwen".to_string()]);
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             assert!(
                 deepseek_tui::skills::is_skill_disabled("government-writing"),
                 "禁用公文 MCP 后关联技能应被停用"
@@ -1933,7 +1950,7 @@ mod tests {
 
             // 开回来 → 移出停用集
             save_disabled_connectors(&[]);
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             assert!(
                 !deepseek_tui::skills::is_skill_disabled("government-writing"),
                 "启用公文 MCP 后关联技能应恢复"
@@ -1946,19 +1963,19 @@ mod tests {
     #[test]
     fn disabling_direct_skill_id_hides_skill() {
         with_temp_home(|| {
-            crate::bridge::skill_marketplace::SkillMarketplaceManager::new()
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                 .install("visualizer")
                 .unwrap();
 
             save_disabled_connectors(&["skill:visualizer".to_string()]);
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             assert!(
                 deepseek_tui::skills::is_skill_disabled("visualizer"),
                 "禁用独立 namespaced skill id 后该 skill 应被停用"
             );
 
             save_disabled_connectors(&[]);
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             assert!(
                 !deepseek_tui::skills::is_skill_disabled("visualizer"),
                 "启用独立 skill id 后该 skill 应恢复"
@@ -1975,7 +1992,7 @@ mod tests {
                 "weather",
                 r#"{"id":"weather","name":"天气","description":"d","version":"1.0.0","icon":"cloud","category":"查询","mcp_tools":["mcp_weather_query"],"command":"python","args":["server.py"]}"#,
             );
-            let skill_dir = crate::bridge::paths::bundle_skills_dir().join("weather");
+            let skill_dir = crate::platform::paths::bundle_skills_dir().join("weather");
             std::fs::create_dir_all(&skill_dir).unwrap();
             std::fs::write(
                 skill_dir.join("SKILL.md"),
@@ -1985,14 +2002,14 @@ mod tests {
             std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
 
             save_disabled_connectors(&["weather".to_string()]);
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             assert!(
                 !deepseek_tui::skills::is_skill_disabled("weather"),
                 "禁用同名 connector 不应误停用用户上传 skill"
             );
 
             save_disabled_connectors(&["skill:weather".to_string()]);
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             assert!(
                 deepseek_tui::skills::is_skill_disabled("weather"),
                 "禁用 namespaced skill id 才应停用用户上传 skill"
@@ -2437,7 +2454,7 @@ mod tests {
                 .unwrap();
             assert_eq!(stored.as_deref(), Some(secret.as_str()));
             let content = std::fs::read_to_string(
-                crate::bridge::paths::bundle_mcp_servers_dir()
+                crate::platform::paths::bundle_mcp_servers_dir()
                     .join("weather")
                     .join("manifest.json"),
             )
@@ -2451,7 +2468,7 @@ mod tests {
     fn migrate_legacy_qcc_bearer_header_uses_env_and_stores_secret() {
         with_temp_home(|| {
             let secret = secret_value("legacy-qcc");
-            let mcp_path = crate::bridge::paths::mcp_config_path();
+            let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             std::fs::write(
                 &mcp_path,
@@ -2490,7 +2507,7 @@ mod tests {
         with_temp_home(|| {
             let old_secret = secret_value("old-qcc");
             let kept_secret = secret_value("kept-qcc");
-            let mcp_path = crate::bridge::paths::mcp_config_path();
+            let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             std::fs::write(
                 &mcp_path,

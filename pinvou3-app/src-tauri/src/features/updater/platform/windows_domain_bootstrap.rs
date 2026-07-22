@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
-use crate::bridge::paths;
+use crate::platform::paths;
 
 #[allow(dead_code)]
 pub(crate) const FORMAL_BOOTSTRAP_HOST: &str = "https://bootstrap.magic.h3c.com";
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn bootstrap_config_path_respects_home_override() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn bootstrap_config_defaults_when_file_missing_empty_invalid_or_bad_url() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn bootstrap_config_uses_valid_custom_host_without_overwriting_file() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();

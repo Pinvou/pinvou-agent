@@ -4,8 +4,8 @@
 
 #[tauri::command]
 pub fn list_marketplace_tools(
-) -> Result<Vec<crate::bridge::marketplace::MarketplaceToolInfo>, String> {
-    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+) -> Result<Vec<crate::features::marketplace::MarketplaceToolInfo>, String> {
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
     let tools = mgr.list_tools();
     Ok(tools)
 }
@@ -154,25 +154,25 @@ pub async fn install_marketplace_tool(
     let user_config = config.unwrap_or_default();
     let install_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
-        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
         mgr.install(&install_tool_id, &user_config)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
 
     let should_validate = {
-        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
         mgr.requires_remote_connection_validation(&tool_id)
     };
     if should_validate {
         let validation_result = {
-            let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+            let mgr = crate::features::marketplace::MarketplaceManager::new();
             mgr.validate_remote_connection(&tool_id).await
         };
         if let Err(err) = validation_result {
             let rollback_tool_id = tool_id.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+                let mgr = crate::features::marketplace::MarketplaceManager::new();
                 mgr.uninstall(&rollback_tool_id)
             })
             .await;
@@ -181,12 +181,12 @@ pub async fn install_marketplace_tool(
     }
 
     tokio::task::spawn_blocking(move || {
-        let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         for sid in mgr.companion_skills(&tool_id) {
             if let Err(e) =
-                crate::bridge::skill_marketplace::SkillMarketplaceManager::new().install(&sid)
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().install(&sid)
             {
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
             }
@@ -238,7 +238,7 @@ fn marketplace_oauth_error_result(
 fn marketplace_oauth_server_from_mcp_config(
     server_name: &str,
 ) -> Result<Option<deepseek_tui::mcp::McpServerConfig>, String> {
-    let mcp_path = crate::bridge::paths::mcp_config_path();
+    let mcp_path = crate::platform::paths::mcp_config_path();
     if !mcp_path.is_file() {
         return Ok(None);
     }
@@ -292,7 +292,7 @@ fn marketplace_auth_status_fields(
 pub async fn get_marketplace_tool_auth_status(
     tool_id: String,
 ) -> Result<MarketplaceAuthStatus, String> {
-    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
     let installed = mgr.installed_ids().iter().any(|id| id == &tool_id);
     let server_name = mgr.oauth_remote_server_name(&tool_id);
     let oauth_required = server_name.is_some();
@@ -334,11 +334,11 @@ pub async fn start_marketplace_tool_oauth_login(
     tool_id: String,
     request_id: String,
 ) -> Result<MarketplaceOAuthLoginResult, String> {
-    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
     let server_name = mgr
         .oauth_remote_server_name(&tool_id)
         .ok_or_else(|| format!("工具 '{tool_id}' 未声明远程 MCP OAuth 登录"))?;
-    let mcp_path = crate::bridge::paths::mcp_config_path();
+    let mcp_path = crate::platform::paths::mcp_config_path();
     let content =
         std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
     let config: deepseek_tui::mcp::McpConfig =
@@ -402,7 +402,7 @@ pub async fn cancel_marketplace_tool_oauth_login(
 
 #[tauri::command]
 pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
-    let mgr = crate::bridge::marketplace::MarketplaceManager::new();
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
     let companions = mgr.companion_skills(&tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
     if let Some(server_name) = mgr.oauth_remote_server_name(&tool_id) {
         match marketplace_oauth_server_from_mcp_config(&server_name)? {
@@ -420,7 +420,7 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
     mgr.uninstall(&tool_id)?;
     // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
     for sid in companions {
-        let _ = crate::bridge::skill_marketplace::SkillMarketplaceManager::new().uninstall(&sid);
+        let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().uninstall(&sid);
     }
     Ok(())
 }
@@ -430,8 +430,8 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_marketplace_skills(
-) -> Result<Vec<crate::bridge::skill_marketplace::MarketplaceSkillInfo>, String> {
-    Ok(crate::bridge::skill_marketplace::SkillMarketplaceManager::new().list_skills())
+) -> Result<Vec<crate::features::marketplace::skill_marketplace::MarketplaceSkillInfo>, String> {
+    Ok(crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().list_skills())
 }
 
 #[tauri::command]
@@ -442,11 +442,11 @@ pub async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
 }
 
 fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
-    crate::bridge::skill_marketplace::SkillMarketplaceManager::new().install(skill_id)?;
+    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().install(skill_id)?;
     // disabled_connectors.json 会保留 `skill:<id>` 的用户选择。技能卸载后启动时，
     // refresh 会因未安装而从底座运行态过滤掉；重装成功后必须立即再推一次，避免
     // composer 显示“已关闭”但模型实际仍能 load_skill。
-    crate::bridge::skill_marketplace::refresh_disabled_skills();
+    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     Ok(())
 }
 
@@ -467,9 +467,9 @@ pub fn import_skill_package(app: tauri::AppHandle) -> Result<bool, String> {
     let path = picked
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
-    crate::bridge::skill_marketplace::SkillMarketplaceManager::new()
+    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .import_package(&path.to_string_lossy())?;
-    crate::bridge::skill_marketplace::refresh_disabled_skills();
+    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     Ok(true)
 }
 
@@ -479,7 +479,7 @@ pub fn uninstall_marketplace_skill(skill_id: String) -> Result<(), String> {
 }
 
 fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
-    crate::bridge::skill_marketplace::SkillMarketplaceManager::new().uninstall(skill_id)?;
-    crate::bridge::skill_marketplace::refresh_disabled_skills();
+    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().uninstall(skill_id)?;
+    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     Ok(())
 }

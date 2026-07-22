@@ -13,9 +13,9 @@ use super::protocol::{
 };
 use super::relay_client::{self, DownloadSender, RelayInbound, RelayOutbound, RelaySender};
 use super::snapshot;
-use crate::bridge::mode_state::SerializableMode;
-use crate::bridge::prefs::{SavedModel, UserPrefs};
-use crate::bridge::{paths, sessions::SessionStore};
+use crate::core::mode_state::SerializableMode;
+use crate::platform::prefs::{SavedModel, UserPrefs};
+use crate::platform::engine_bridge::{paths, sessions::SessionStore};
 use crate::connector_cli;
 use crate::engine_pool::EnginePool;
 
@@ -145,7 +145,11 @@ pub struct RemoteControlManager {
     // 仅测试构造(new_headless)时为 None:headless 场景没有 Tauri runtime,emit 全部降级为 no-op。
     app: Option<AppHandle>,
     inner: Arc<Mutex<Inner>>,
+    attachment_stager: Arc<AttachmentStager>,
 }
+
+type AttachmentStager =
+    dyn Fn(&str, &str, &Path) -> Option<PathBuf> + Send + Sync + 'static;
 
 struct Inner {
     room: Option<ActiveRoom>,
@@ -173,7 +177,7 @@ impl Default for Inner {
             active_upload: None,
             upload_chunk_sender: None,
             pending_attachments: HashMap::new(),
-            uploads_base: crate::bridge::paths::pinvou3_home().join("uploads"),
+            uploads_base: crate::platform::paths::pinvou3_home().join("uploads"),
         }
     }
 }
@@ -258,10 +262,17 @@ impl Dedup {
 }
 
 impl RemoteControlManager {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new_with_attachment_stager(
+        app: AppHandle,
+        attachment_stager: impl Fn(&str, &str, &Path) -> Option<PathBuf>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
         Self {
             app: Some(app),
             inner: Arc::new(Mutex::new(Inner::default())),
+            attachment_stager: Arc::new(attachment_stager),
         }
     }
 
@@ -271,6 +282,16 @@ impl RemoteControlManager {
         Self {
             app: None,
             inner: Arc::new(Mutex::new(Inner::default())),
+            attachment_stager: Arc::new(|src, basename, workspace| {
+                let safe_name = Path::new(basename)
+                    .file_name()
+                    .filter(|name| Path::new(name).as_os_str() == Path::new(basename).as_os_str())?;
+                let directory = workspace.join(".pinvou3/remote-attachments");
+                std::fs::create_dir_all(&directory).ok()?;
+                let destination = directory.join(safe_name);
+                std::fs::copy(src, &destination).ok()?;
+                Some(destination)
+            }),
         }
     }
 
@@ -892,21 +913,18 @@ impl RemoteControlManager {
                 };
                 // list_marketplace_tools 是 sync I/O(扫 manifest 目录),走 spawn_blocking
                 // 避免阻塞 dispatcher 协程。
-                let all =
-                    match tokio::task::spawn_blocking(|| crate::commands::list_marketplace_tools())
-                        .await
-                    {
-                        Ok(Ok(tools)) => tools,
-                    Ok(Err(e)) => {
-                        self.send_error("tools_list_failed", &format!("{e:#}"));
-                        return;
-                    }
+                let all = match tokio::task::spawn_blocking(|| {
+                    crate::features::marketplace::MarketplaceManager::new().list_tools()
+                })
+                .await
+                {
+                    Ok(tools) => tools,
                     Err(e) => {
                         self.send_error("tools_list_failed", &format!("join: {e:#}"));
                         return;
                     }
                 };
-                let disabled_ids = crate::bridge::marketplace::load_disabled_connectors();
+                let disabled_ids = crate::features::marketplace::load_disabled_connectors();
                 self.send_event(
                     &active_session_id,
                     "tools_snapshot",
@@ -931,8 +949,9 @@ impl RemoteControlManager {
                         &format!("截断到 {MAX_DISABLED_CONNECTOR_IDS} 个"),
                     );
                 }
-                match crate::commands::apply_disabled_connectors(Some(app), pool, ids).await {
+                match crate::features::marketplace::apply_disabled_connectors(ids).await {
                     Ok(()) => {
+                        pool.refresh_disallowed_tools().await;
                         // apply_disabled_connectors 自身不 emit,这里补一次本地广播。
                         let _ = app.emit("remote_control:tools_changed", ());
                         self.send_event(&active_session_id, "tools_changed", json!({}));
@@ -1673,11 +1692,7 @@ impl RemoteControlManager {
         let mut attachments = Vec::with_capacity(candidates.len());
         for (_, original) in &candidates {
             let mut ingest = original.clone();
-            let staged = crate::commands::stage_remote_attachment_source(
-                &ingest.path,
-                &ingest.basename,
-                &workspace,
-            )
+            let staged = (self.attachment_stager)(&ingest.path, &ingest.basename, &workspace)
             .ok_or_else(|| format!("stage remote attachment failed: {}", ingest.basename))?;
             ingest.path = staged.to_string_lossy().to_string();
             attachments.push(ingest);
@@ -2691,7 +2706,7 @@ impl RemoteControlManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
     use std::ffi::OsString;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4069,11 +4084,11 @@ fn tail_path(path: &str) -> String {
 #[cfg(test)]
 mod scheduled_tests {
     use super::*;
-    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+    use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
 
     #[test]
     fn preview_paths_follow_execution_workspace_without_exposing_shared_home() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::temp_dir().join(format!(
@@ -4135,7 +4150,7 @@ mod scheduled_tests {
         let chat = store
             .create_new("test-model".to_string(), None, root.join("ignored"))
             .expect("create ordinary conversation");
-        let chat_workspace = crate::bridge::paths::session_workspace_dir(&chat.metadata.id);
+        let chat_workspace = crate::platform::paths::session_workspace_dir(&chat.metadata.id);
         std::fs::create_dir_all(&chat_workspace).expect("create chat workspace");
         let chat_artifact = chat_workspace.join("chat-report.md");
         std::fs::write(&chat_artifact, "chat report").expect("write chat artifact");
@@ -4189,7 +4204,7 @@ mod scheduled_tests {
 mod e2e_tests {
     use super::relay_client::RelayReceiver;
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
     use futures_util::{SinkExt, StreamExt};
     use std::ffi::OsString;
     use std::net::TcpListener;

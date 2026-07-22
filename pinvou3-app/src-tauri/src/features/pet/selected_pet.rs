@@ -38,7 +38,7 @@ pub struct SelectedPetStore {
 
 impl SelectedPetStore {
     pub fn load() -> Self {
-        let path = crate::bridge::paths::pinvou3_home().join("selected_pet.json");
+        let path = crate::platform::paths::pinvou3_home().join("selected_pet.json");
         let selected_pet = load_selected_pet(&path);
         Self {
             path,
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn missing_file_falls_back_to_default_without_writing() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempHome::enter("missing");
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn invalid_payloads_fall_back_without_rewriting() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempHome::enter("invalid");
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn notify_failure_rolls_back_disk_and_memory() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempHome::enter("notify-failure");
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn stale_compensating_write_is_rejected_without_side_effects() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempHome::enter("stale-cas");
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn unknown_id_is_rejected_without_writing_or_notifying() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempHome::enter("unknown");

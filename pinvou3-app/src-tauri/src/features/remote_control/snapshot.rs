@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use crate::bridge::sessions::SessionStore;
+use crate::features::sessions::SessionStore;
 
 pub fn build_session_snapshot(store: &SessionStore, session_id: &str) -> Result<Value, String> {
     let saved = store
@@ -98,9 +98,9 @@ fn tail_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::mode_state::SerializableMode;
-    use crate::bridge::paths;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::core::mode_state::SerializableMode;
+    use crate::platform::paths;
+    use crate::platform::paths::tests::ENV_LOCK;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::ffi::OsString;
     use std::path::PathBuf;

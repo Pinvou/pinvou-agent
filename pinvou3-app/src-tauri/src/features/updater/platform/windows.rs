@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use zip::ZipArchive;
 
 use super::windows_domain_bootstrap;
-use crate::bridge::paths;
+use crate::platform::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowsInstallerKind {
@@ -1419,7 +1419,7 @@ mod tests {
 
     #[test]
     fn prepare_update_package_accepts_direct_full_pack_zip() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
@@ -1468,7 +1468,7 @@ mod tests {
 
     #[test]
     fn prepare_update_package_accepts_nsis_full_pack_zip() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();

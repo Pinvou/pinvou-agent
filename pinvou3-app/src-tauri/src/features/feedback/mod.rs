@@ -282,7 +282,7 @@ pub fn build_app_context(request: &FeedbackSubmitRequest) -> BTreeMap<String, se
     );
     context.insert(
         "language".to_string(),
-        serde_json::json!(crate::bridge::prefs::UserPrefs::load()
+        serde_json::json!(crate::platform::prefs::UserPrefs::load()
             .language
             .locale_tag()),
     );
@@ -302,10 +302,10 @@ fn prepare_feedback_package(
     request: &FeedbackSubmitRequest,
 ) -> Result<PreparedFeedbackPackage, FeedbackError> {
     let feedback_id = new_feedback_id();
-    let package_dir = crate::bridge::paths::feedback_pending_dir().join(&feedback_id);
+    let package_dir = crate::platform::paths::feedback_pending_dir().join(&feedback_id);
     let attachments_dir = package_dir.join("attachments");
     fs::create_dir_all(&attachments_dir)?;
-    fs::create_dir_all(crate::bridge::paths::feedback_receipts_dir())?;
+    fs::create_dir_all(crate::platform::paths::feedback_receipts_dir())?;
 
     let mut attachment_manifest = Vec::new();
     for (idx, attachment) in request.attachments.iter().enumerate() {
@@ -354,7 +354,7 @@ fn prepare_feedback_package(
     )?;
 
     Ok(PreparedFeedbackPackage {
-        receipt_path: crate::bridge::paths::feedback_receipts_dir()
+        receipt_path: crate::platform::paths::feedback_receipts_dir()
             .join(format!("{feedback_id}.receipt.json")),
         tar_gz_path: package_dir.with_extension("tar.gz"),
         dbg_path: package_dir.with_extension("dbg"),

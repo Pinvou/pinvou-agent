@@ -116,7 +116,7 @@ pub async fn chat(
     // 若 kb_search 当前仍不可用,不要注入“必须调用 kb_search”的提示,避免模型把提示/sudo
     // 状态当普通文本复述给用户。
     if let Some(cid) = store.mounted_collection(&sid) {
-        let disallowed = compute_disallowed_tools(&app);
+        let disallowed = pool.compute_disallowed_tools();
         let kb_search_hidden = disallowed
             .iter()
             .any(|t| t.eq_ignore_ascii_case("kb_search"));

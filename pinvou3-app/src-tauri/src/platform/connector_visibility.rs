@@ -45,7 +45,7 @@ fn state() -> &'static Mutex<VisibilityState> {
 }
 
 fn apply(kind: ConnectorKind, visible: bool) {
-    let paths = crate::bridge::bundle::Pinvou3Bundle::paths();
+    let paths = crate::platform::bundle::Pinvou3Bundle::paths();
     let result = match kind {
         ConnectorKind::Eip => paths.apply_eip_skill_visibility(visible),
         ConnectorKind::Zhidao => paths.apply_zhidao_skill_visibility(visible),

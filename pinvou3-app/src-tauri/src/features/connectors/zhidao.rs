@@ -53,7 +53,7 @@ fn make_qr(url: &str) -> Option<String> {
 }
 
 fn zhidao_home() -> PathBuf {
-    crate::bridge::paths::pinvou3_home().join("zhidao")
+    crate::platform::paths::pinvou3_home().join("zhidao")
 }
 
 fn credentials_dir() -> PathBuf {
@@ -99,7 +99,7 @@ fn zhidao_bin_path() -> Result<PathBuf, String> {
     } else {
         "zhidao-cli"
     };
-    let p = crate::bridge::paths::bundle_skills_dir()
+    let p = crate::platform::paths::bundle_skills_dir()
         .join("zhidao")
         .join("bin")
         .join(name);
@@ -228,14 +228,14 @@ fn set_connected(v: bool) -> bool {
             let _ = std::fs::remove_file(&p);
         }
     }
-    let skill_visible = crate::bridge::bundle::Pinvou3Bundle::paths()
+    let skill_visible = crate::platform::bundle::Pinvou3Bundle::paths()
         .skills_dir
         .join("zhidao")
         .join("SKILL.md")
         .is_file();
     let deferred = (previous != v || skill_visible != v)
-        && crate::connector_visibility::request(
-            crate::connector_visibility::ConnectorKind::Zhidao,
+        && crate::platform::connector_visibility::request(
+            crate::platform::connector_visibility::ConnectorKind::Zhidao,
             v,
         );
     if deferred {

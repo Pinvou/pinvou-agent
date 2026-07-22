@@ -10,10 +10,11 @@
 
 // bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
 // spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
-#[path = "app/audit.rs"]
+#[path = "features/assistant/audit.rs"]
 mod audit;
-#[path = "app/bridge/mod.rs"]
-pub mod bridge;
+mod core;
+pub mod platform;
+pub use platform::engine_bridge as bridge;
 #[path = "app/commands.rs"]
 mod commands;
 #[path = "platform/credential_store.rs"]
@@ -29,8 +30,6 @@ pub use commands::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
 #[path = "features/connectors/connector_cli.rs"]
 mod connector_cli;
-#[path = "features/connectors/connector_visibility.rs"]
-mod connector_visibility;
 #[path = "features/connectors/dingtalk.rs"]
 mod dingtalk;
 #[path = "features/assistant/engine.rs"]
@@ -47,7 +46,7 @@ mod wecom;
 pub mod file_ingest;
 #[path = "features/files/file_watcher.rs"]
 mod file_watcher;
-#[path = "app/harness.rs"]
+#[path = "features/assistant/harness.rs"]
 mod harness;
 #[path = "features/knowledge/mod.rs"]
 mod knowledge;
@@ -79,13 +78,13 @@ mod scheduled_tasks;
 mod selected_pet;
 #[path = "platform/super_permission.rs"]
 pub mod super_permission;
-#[path = "app/startup.rs"]
+#[path = "platform/startup.rs"]
 mod startup;
-#[path = "app/telemetry.rs"]
+#[path = "platform/telemetry.rs"]
 mod telemetry;
-#[path = "app/timing.rs"]
+#[path = "features/assistant/timing.rs"]
 mod timing;
-#[path = "app/ui_cache.rs"]
+#[path = "platform/ui_cache.rs"]
 mod ui_cache;
 #[path = "features/workflow/workflow_migrate.rs"]
 mod workflow_migrate;
@@ -98,7 +97,7 @@ mod zhidao;
 
 use tauri::Manager;
 
-use crate::bridge::sessions::SessionStore;
+use crate::features::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 use crate::features::monitor::MonitorState;
 use crate::remote_control::RemoteControlManager;
@@ -108,7 +107,7 @@ use crate::remote_control::RemoteControlManager;
 /// 已就位则跳过；用「临时目录 + 原子 rename」防半截复制留下残缺模板。失败只警告——网页类差事
 /// 不可用,但不连累其余工作流。
 fn seed_web_template(src: Option<std::path::PathBuf>) {
-    let dst = crate::bridge::paths::web_template_dir();
+    let dst = crate::platform::paths::web_template_dir();
     if dst.join("package.json").exists() {
         return; // 已就位
     }
@@ -254,13 +253,13 @@ fn ensure_release_env() {
     // 故把 `~/.pinvou3/bundle/skills/{eip,zhidao}/bin` 前插进程 PATH,模型即可像 lark-cli 一样
     // 直接调用。目录此刻可能尚未解包,但 PATH 含不存在目录无害。
     {
-        let skills_dir = crate::bridge::paths::bundle_skills_dir();
+        let skills_dir = crate::platform::paths::bundle_skills_dir();
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = vec![
                 skills_dir.join("eip").join("bin"),
                 skills_dir.join("zhidao").join("bin"),
             ];
-            if let Some(connector_bin) = crate::bridge::paths::bundle_connector_bin_dir() {
+            if let Some(connector_bin) = crate::platform::paths::bundle_connector_bin_dir() {
                 dirs.push(connector_bin);
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
@@ -456,8 +455,15 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
-            app.handle()
-                .manage(RemoteControlManager::new(app.handle().clone()));
+            let remote_control = RemoteControlManager::new_with_attachment_stager(
+                app.handle().clone(),
+                commands::stage_remote_attachment_source,
+            );
+            let remote_event_transport = remote_control.clone();
+            app.handle().manage(platform::app_events::AppEventBus::new(
+                move |event, payload| remote_event_transport.forward_local_event(event, payload),
+            ));
+            app.handle().manage(remote_control);
             // 匿名设备遥测：独立于 UI/Engine，失败只写日志；先 manage 再建 EnginePool，
             // 让每个 session forwarder 都能在 TurnStarted/TurnComplete 取到状态。
             match telemetry::TelemetryState::boot(env!("CARGO_PKG_VERSION")) {
@@ -480,7 +486,31 @@ pub fn run() {
                 SessionStore::boot().expect("session store boot fallback")
             });
             startup::mark("engine_pool:start");
-            match EnginePool::new(handle.clone(), store_for_engine.clone()) {
+            let tool_factory: crate::engine_pool::EngineToolFactory = std::sync::Arc::new(
+                |app, session_id| {
+                    vec![std::sync::Arc::new(knowledge::KbSearchTool::new(
+                        app.clone(),
+                        session_id.to_string(),
+                    ))]
+                },
+            );
+            let tool_policy: crate::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
+                let mut tools = crate::features::marketplace::disabled_tool_names();
+                let kb_usable = app
+                    .try_state::<knowledge::KnowledgeService>()
+                    .map(|service| service.has_indexed_content() && service.semantic_ready())
+                    .unwrap_or(false);
+                if !kb_usable {
+                    tools.push("kb_search".to_string());
+                }
+                tools
+            });
+            match EnginePool::new_with_dependencies(
+                handle.clone(),
+                store_for_engine.clone(),
+                tool_factory,
+                tool_policy,
+            ) {
                 Ok(pool) => {
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
@@ -510,7 +540,7 @@ pub fn run() {
             // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
             // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
             startup::mark("disabled_skills:start");
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -995,6 +1025,6 @@ mod web_template_seed {
 
     #[test]
     fn web_template_dir_named_web_template() {
-        assert!(crate::bridge::paths::web_template_dir().ends_with("web-template"));
+        assert!(crate::platform::paths::web_template_dir().ends_with("web-template"));
     }
 }

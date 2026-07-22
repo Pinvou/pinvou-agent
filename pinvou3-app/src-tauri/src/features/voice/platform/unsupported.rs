@@ -18,7 +18,7 @@ pub fn asr_model_spec() -> AsrModelSpec {
 }
 
 pub fn asr_model_path() -> PathBuf {
-    crate::bridge::paths::pinvou3_home()
+    crate::platform::paths::pinvou3_home()
         .join("asr")
         .join(asr_model_spec().filename)
 }

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 
-use super::paths;
+use crate::platform::paths;
 
 /// 预置技能资源:编译进二进制。每个子目录(pua/ nuwa/)是一个含 SKILL.md 的 skill。
 static MARKETPLACE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
@@ -106,8 +106,8 @@ pub struct MarketplaceSkillInfo {
 /// 启动时 + 每次 `set_disabled_connectors` 调用;空集 = 全开。下一轮 prompt 构建即生效
 /// (一次 prefix-cache miss 后稳定)。
 pub fn refresh_disabled_skills() {
-    let market = crate::bridge::marketplace::MarketplaceManager::new();
-    let disabled_ids = crate::bridge::marketplace::load_disabled_connectors();
+    let market = crate::features::marketplace::MarketplaceManager::new();
+    let disabled_ids = crate::features::marketplace::load_disabled_connectors();
     let mut skill_ids: Vec<String> = disabled_ids
         .iter()
         .flat_map(|cid| market.companion_skills(cid))

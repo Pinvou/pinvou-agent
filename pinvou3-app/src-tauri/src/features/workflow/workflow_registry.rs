@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::bridge::paths;
+use crate::platform::paths;
 
 #[derive(Debug, Clone)]
 pub struct WorkflowInfo {

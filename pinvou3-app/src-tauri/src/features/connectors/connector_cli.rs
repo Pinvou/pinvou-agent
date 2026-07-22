@@ -97,7 +97,7 @@ pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
 /// 2. **stdout/stderr 落日志文件**(不再 `null` 丢弃),失败可诊断:
 ///    `~/.pinvou3/cli-install.log`。写文件不是管道、无写满死锁之虞。
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
-    let log_path = crate::bridge::paths::pinvou3_home().join("cli-install.log");
+    let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -261,21 +261,21 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
 
     let feishu = tokio::task::spawn_blocking(|| {
         let show = crate::feishu::feishu_skills_should_show();
-        crate::bridge::bundle::Pinvou3Bundle::paths()
+        crate::platform::bundle::Pinvou3Bundle::paths()
             .apply_feishu_skills(show)
             .map_err(|e| format!("刷新飞书技能门控失败: {e}"))?;
         Ok::<bool, String>(show)
     });
     let wecom = tokio::task::spawn_blocking(|| {
         let show = crate::wecom::wecom_skills_should_show();
-        crate::bridge::bundle::Pinvou3Bundle::paths()
+        crate::platform::bundle::Pinvou3Bundle::paths()
             .apply_wecom_skills(show)
             .map_err(|e| format!("刷新企微技能门控失败: {e}"))?;
         Ok::<bool, String>(show)
     });
     let dingtalk = tokio::task::spawn_blocking(|| {
         let show = crate::dingtalk::dingtalk_skills_should_show();
-        crate::bridge::bundle::Pinvou3Bundle::paths()
+        crate::platform::bundle::Pinvou3Bundle::paths()
             .apply_dingtalk_skills(show)
             .map_err(|e| format!("刷新钉钉技能门控失败: {e}"))?;
         Ok::<bool, String>(show)

@@ -160,19 +160,19 @@ mod tests {
             }]
         });
         write_json(
-            &crate::bridge::paths::bundle_mcp_servers_dir()
+            &crate::platform::paths::bundle_mcp_servers_dir()
                 .join("yuandian-mcp")
                 .join("manifest.json"),
             manifest,
         );
         write_json(
-            &crate::bridge::paths::pinvou3_home()
+            &crate::platform::paths::pinvou3_home()
                 .join("marketplace")
                 .join("installed.json"),
             serde_json::json!(["yuandian-mcp"]),
         );
         write_json(
-            &crate::bridge::paths::mcp_config_path(),
+            &crate::platform::paths::mcp_config_path(),
             serde_json::json!({ "servers": { server_name: mcp_server } }),
         );
     }
@@ -210,7 +210,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn marketplace_auth_status_does_not_treat_missing_or_corrupt_token_as_connected() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let _home = TempPinvou3Home::new("oauth-status");
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn uninstall_marketplace_tool_deletes_oauth_token_before_mcp_config() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let _home = TempPinvou3Home::new("oauth-uninstall");
@@ -358,17 +358,17 @@ mod tests {
         uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap();
 
         assert!(!test_oauth_token_exists(&key));
-        assert!(!crate::bridge::marketplace::MarketplaceManager::new()
+        assert!(!crate::features::marketplace::MarketplaceManager::new()
             .installed_ids()
             .contains(&"yuandian-mcp".to_string()));
-        let mcp_content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
+        let mcp_content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
         let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
         assert!(mcp["servers"].get(server_name).is_none());
     }
 
     #[test]
     fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let _home = TempPinvou3Home::new("oauth-uninstall-error");
@@ -383,10 +383,10 @@ mod tests {
 
         let err = uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap_err();
         assert!(err.contains("删除 MCP OAuth token 失败"));
-        assert!(crate::bridge::marketplace::MarketplaceManager::new()
+        assert!(crate::features::marketplace::MarketplaceManager::new()
             .installed_ids()
             .contains(&"yuandian-mcp".to_string()));
-        let mcp_content = std::fs::read_to_string(crate::bridge::paths::mcp_config_path()).unwrap();
+        let mcp_content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
         let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
         assert!(mcp["servers"].get(server_name).is_some());
     }
@@ -408,7 +408,7 @@ mod tests {
     }
 
     fn test_pinvou_home(tag: &str) -> TestPinvouHome {
-        let guard = crate::bridge::paths::tests::ENV_LOCK
+        let guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let root = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
@@ -467,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_upload_refuses_in_production_env() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _restore = RemoveE2EOnDrop::clear();
@@ -480,7 +480,7 @@ mod tests {
     async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
         let _home = test_pinvou_home("verify-upload-e2e");
         let _e2e = TestE2EFlag::enable();
-        let upload_dir = crate::bridge::paths::pinvou3_home()
+        let upload_dir = crate::platform::paths::pinvou3_home()
             .join("uploads")
             .join("up_ok1");
         std::fs::create_dir_all(&upload_dir).unwrap();
@@ -504,14 +504,14 @@ mod tests {
     }
 
     fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
-        let dir = crate::bridge::paths::session_artifacts_dir(session_id);
+        let dir = crate::platform::paths::session_artifacts_dir(session_id);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
     }
 
     #[test]
     fn direct_skill_reinstall_reapplies_persisted_disable() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let root = std::env::temp_dir().join(format!(
@@ -523,7 +523,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::env::set_var("PINVOU3_HOME", &root);
 
-        crate::bridge::marketplace::save_disabled_connectors(&["skill:visualizer".to_string()]);
+        crate::features::marketplace::save_disabled_connectors(&["skill:visualizer".to_string()]);
         install_marketplace_skill_sync("visualizer").unwrap();
         assert!(deepseek_tui::skills::is_skill_disabled("visualizer"));
 
@@ -541,8 +541,8 @@ mod tests {
             "重装后 UI 的关闭状态必须与底座运行态一致"
         );
 
-        crate::bridge::marketplace::save_disabled_connectors(&[]);
-        crate::bridge::skill_marketplace::refresh_disabled_skills();
+        crate::features::marketplace::save_disabled_connectors(&[]);
+        crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
         match previous {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),
             None => std::env::remove_var("PINVOU3_HOME"),
@@ -806,7 +806,7 @@ mod tests {
     /// 否则 `validate_user_path` 直接拒「path must be absolute」。
     #[test]
     fn resolve_artifact_path_relative_joins_active_workspace() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test");
@@ -820,7 +820,7 @@ mod tests {
 
         // 有 active session、无显式 session → 回退 active 的 workspace
         store.set_active(Some("sess-1".into()));
-        let want = crate::bridge::paths::session_workspace_dir("sess-1")
+        let want = crate::platform::paths::session_workspace_dir("sess-1")
             .join("snake-game.html")
             .to_string_lossy()
             .into_owned();
@@ -831,7 +831,7 @@ mod tests {
 
         // 显式 session **优先**于 active:卡片自带 session 才能跨会话切换稳定解析
         // (active 停在切走时去的会话也不影响)。这是本次跨 session「打不开」的修复点。
-        let want_explicit = crate::bridge::paths::session_workspace_dir("sess-owner")
+        let want_explicit = crate::platform::paths::session_workspace_dir("sess-owner")
             .join("snake-game.html")
             .to_string_lossy()
             .into_owned();
@@ -856,9 +856,9 @@ mod tests {
 
     #[test]
     fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
-        use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+        use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
 
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::temp_dir().join(format!(
@@ -953,9 +953,9 @@ mod tests {
     /// 而删除仍然只能走 automation 联动，不允许把 sched-* 当普通会话直删。
     #[test]
     fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
-        use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+        use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
 
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::temp_dir().join(format!(
@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn ordinary_execution_workspace_behavior_is_unchanged() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::temp_dir().join(format!(
@@ -1048,7 +1048,7 @@ mod tests {
                 root.join("legacy-metadata-workspace"),
             )
             .expect("ordinary chat");
-        let expected = crate::bridge::paths::session_workspace_dir(&chat.metadata.id);
+        let expected = crate::platform::paths::session_workspace_dir(&chat.metadata.id);
 
         assert_eq!(
             store

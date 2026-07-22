@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 use deepseek_tui::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
 use super::ChunkHit;
-use crate::bridge::sessions::SessionStore;
+use crate::features::sessions::SessionStore;
 use crate::knowledge::KnowledgeService;
 
 /// 工具单次检索 top-K(精排;太多稀释小模型注意力)。

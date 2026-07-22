@@ -122,7 +122,7 @@ impl TelemetryState {
         ) {
             return Ok(None);
         }
-        let root = crate::bridge::paths::pinvou3_home().join("telemetry");
+        let root = crate::platform::paths::pinvou3_home().join("telemetry");
         fs::create_dir_all(&root)
             .with_context(|| format!("create telemetry dir {}", root.display()))?;
         let identity_path = root.join("identity.json");

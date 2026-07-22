@@ -31,8 +31,8 @@ use deepseek_tui::tui::app::AppMode;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use super::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
-use super::paths;
+use crate::core::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
+use crate::platform::paths;
 
 const SCHEDULED_PROFILE_SCHEMA_VERSION: u32 = 1;
 const MAX_SESSIONS_PER_KIND: usize = 50;
@@ -1108,9 +1108,9 @@ impl SessionStore {
 
     /// 持久化所有 skill binding 到磁盘。
     pub fn save_skill_bindings(&self) {
-        let bindings_file = super::paths::sessions_root().join("_skill_bindings.json");
+        let bindings_file = crate::platform::paths::sessions_root().join("_skill_bindings.json");
         let m = self.mode_states.read();
-        let bindings: std::collections::HashMap<String, &super::mode_state::ActiveSkillBinding> = m
+        let bindings: std::collections::HashMap<String, &crate::core::mode_state::ActiveSkillBinding> = m
             .iter()
             .filter_map(|(id, state)| state.active_skill.as_ref().map(|s| (id.clone(), s)))
             .collect();
@@ -1125,7 +1125,7 @@ impl SessionStore {
 
     /// 从磁盘恢复 skill bindings（启动时调用）。
     pub fn load_skill_bindings(&self) {
-        let bindings_file = super::paths::sessions_root().join("_skill_bindings.json");
+        let bindings_file = crate::platform::paths::sessions_root().join("_skill_bindings.json");
         if !bindings_file.exists() {
             return;
         }
@@ -1133,7 +1133,7 @@ impl SessionStore {
             Ok(c) => c,
             Err(_) => return,
         };
-        let bindings: std::collections::HashMap<String, super::mode_state::ActiveSkillBinding> =
+        let bindings: std::collections::HashMap<String, crate::core::mode_state::ActiveSkillBinding> =
             match serde_json::from_str(&content) {
                 Ok(b) => b,
                 Err(e) => {
@@ -1183,7 +1183,7 @@ impl SessionStore {
 
     /// 持久化 per-session 模型绑定到 `~/.pinvou3/sessions/_session_models.json`。
     pub fn save_session_models(&self) {
-        let file = super::paths::sessions_root().join("_session_models.json");
+        let file = crate::platform::paths::sessions_root().join("_session_models.json");
         let m = self.session_models.read();
         if m.is_empty() {
             let _ = std::fs::remove_file(&file);
@@ -1196,7 +1196,7 @@ impl SessionStore {
 
     /// 启动时从磁盘恢复 per-session 模型绑定。
     pub fn load_session_models(&self) {
-        let file = super::paths::sessions_root().join("_session_models.json");
+        let file = crate::platform::paths::sessions_root().join("_session_models.json");
         if !file.exists() {
             return;
         }
@@ -1235,7 +1235,7 @@ impl SessionStore {
     }
 
     pub fn save_pinned_sessions(&self) {
-        let file = super::paths::sessions_root().join("_pinned_sessions.json");
+        let file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
         let pins = self.pinned_sessions.read();
         if pins.is_empty() {
             let _ = std::fs::remove_file(&file);
@@ -1261,7 +1261,7 @@ impl SessionStore {
     }
 
     pub fn load_pinned_sessions(&self) {
-        let file = super::paths::sessions_root().join("_pinned_sessions.json");
+        let file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
         if !file.exists() {
             return;
         }
@@ -1325,7 +1325,7 @@ impl SessionStore {
     }
 
     pub fn save_hidden_sessions(&self) {
-        let file = super::paths::sessions_root().join("_hidden_sessions.json");
+        let file = crate::platform::paths::sessions_root().join("_hidden_sessions.json");
         let hidden_sessions = self.hidden_sessions.read();
         if hidden_sessions.is_empty() {
             let _ = std::fs::remove_file(&file);
@@ -1351,7 +1351,7 @@ impl SessionStore {
     }
 
     pub fn load_hidden_sessions(&self) {
-        let file = super::paths::sessions_root().join("_hidden_sessions.json");
+        let file = crate::platform::paths::sessions_root().join("_hidden_sessions.json");
         if !file.exists() {
             return;
         }
@@ -1513,7 +1513,7 @@ fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
     use deepseek_tui::models::{ContentBlock, SystemPrompt};
 
     /// 借用 paths 模块的进程级 env 锁——避免与其他 mutate PINVOU3_HOME
@@ -2681,8 +2681,8 @@ mod tests {
     #[test]
     fn pinned_sessions_loads_legacy_id_array() {
         let (_store, _g) = isolated_store();
-        let file = super::paths::sessions_root().join("_pinned_sessions.json");
-        std::fs::create_dir_all(super::paths::sessions_root()).expect("mkdir");
+        let file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+        std::fs::create_dir_all(crate::platform::paths::sessions_root()).expect("mkdir");
         std::fs::write(&file, r#"["legacy-session"]"#).expect("write legacy pins");
 
         let reloaded = SessionStore::boot().expect("reboot");
@@ -2729,8 +2729,8 @@ mod tests {
     #[test]
     fn hidden_sessions_loads_legacy_id_array() {
         let (_store, _g) = isolated_store();
-        let file = super::paths::sessions_root().join("_hidden_sessions.json");
-        std::fs::create_dir_all(super::paths::sessions_root()).expect("mkdir");
+        let file = crate::platform::paths::sessions_root().join("_hidden_sessions.json");
+        std::fs::create_dir_all(crate::platform::paths::sessions_root()).expect("mkdir");
         std::fs::write(&file, r#"["legacy-hidden-session"]"#).expect("write legacy hidden");
 
         let reloaded = SessionStore::boot().expect("reboot");
@@ -2793,13 +2793,13 @@ mod tests {
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
         store
-            .set_mode("s1", super::super::mode_state::SerializableMode::Yolo)
+            .set_mode("s1", crate::core::mode_state::SerializableMode::Yolo)
             .expect("set chat mode");
         let state = store.mode_state("s1");
         assert!(state.pinvou_review_enabled);
         assert!(matches!(
             state.mode,
-            super::super::mode_state::SerializableMode::Yolo
+            crate::core::mode_state::SerializableMode::Yolo
         ));
     }
 
@@ -2811,7 +2811,7 @@ mod tests {
     /// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
     #[test]
     fn mode_switch_loop_preserves_orthogonal_state() {
-        use super::super::mode_state::SerializableMode;
+        use crate::core::mode_state::SerializableMode;
         let (store, _g) = isolated_store();
         let sid = "s-loop";
 
@@ -2908,7 +2908,7 @@ mod tests {
         let (store, _g) = isolated_store();
         store.set_pinvou_review("s1", true);
         store
-            .set_mode("s1", super::super::mode_state::SerializableMode::Plan)
+            .set_mode("s1", crate::core::mode_state::SerializableMode::Plan)
             .expect("set chat plan mode");
         store.bind_skill(
             "s1",
@@ -2923,14 +2923,14 @@ mod tests {
         assert!(state.pinvou_review_enabled);
         assert!(matches!(
             state.mode,
-            super::super::mode_state::SerializableMode::Plan
+            crate::core::mode_state::SerializableMode::Plan
         ));
         store.unbind_skill("s1");
         let state2 = store.mode_state("s1");
         assert!(state2.pinvou_review_enabled);
         assert!(matches!(
             state2.mode,
-            super::super::mode_state::SerializableMode::Plan
+            crate::core::mode_state::SerializableMode::Plan
         ));
     }
 }

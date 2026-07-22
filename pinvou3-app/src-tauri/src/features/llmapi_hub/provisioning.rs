@@ -913,7 +913,7 @@ fn clear_deleted_backend_user_artifacts<C>(
         }
     }
 
-    let mut prefs = crate::bridge::prefs::UserPrefs::load();
+    let mut prefs = crate::platform::prefs::UserPrefs::load();
     prefs.advanced.builtin_llmapi_available_models.clear();
     prefs.advanced.builtin_llmapi_default_model = None;
     prefs.ensure_builtin_llmapi_model();
@@ -971,7 +971,7 @@ pub fn set_default_model_system(model: &str) -> Result<BuiltinLlmApiModelsRespon
             false,
         ));
     }
-    let mut prefs = crate::bridge::prefs::UserPrefs::load();
+    let mut prefs = crate::platform::prefs::UserPrefs::load();
     if !prefs
         .advanced
         .builtin_llmapi_available_models
@@ -1027,7 +1027,7 @@ fn apply_user_self_quota(binding: &mut LlmApiBinding, remaining_quota: u64, used
 }
 
 fn selected_model_from_binding(binding: &LlmApiBinding) -> String {
-    let prefs = crate::bridge::prefs::UserPrefs::load();
+    let prefs = crate::platform::prefs::UserPrefs::load();
     let available_models = if prefs.advanced.builtin_llmapi_available_models.is_empty() {
         binding.policy.allowed_models.clone()
     } else {
@@ -1040,7 +1040,7 @@ fn selected_model_from_binding(binding: &LlmApiBinding) -> String {
 }
 
 fn local_builtin_models_response() -> BuiltinLlmApiModelsResponse {
-    let prefs = crate::bridge::prefs::UserPrefs::load();
+    let prefs = crate::platform::prefs::UserPrefs::load();
     let available_models = prefs.advanced.builtin_llmapi_available_models.clone();
     let default_model = crate::llmapi_hub::select_model(
         &available_models,
@@ -1065,7 +1065,7 @@ fn sync_available_models(
     );
     match adapter.available_models(token) {
         Ok(models) => {
-            let mut prefs = crate::bridge::prefs::UserPrefs::load();
+            let mut prefs = crate::platform::prefs::UserPrefs::load();
             let selected = crate::llmapi_hub::select_model(
                 &models,
                 prefs.advanced.builtin_llmapi_default_model.as_deref(),
@@ -1553,7 +1553,7 @@ pub fn ready_saved_model<S, C, I>(
     store: &S,
     credentials: &C,
     identity_resolver: &I,
-) -> Result<crate::bridge::prefs::SavedModel, LlmApiError>
+) -> Result<crate::platform::prefs::SavedModel, LlmApiError>
 where
     S: LlmApiBindingStore,
     C: CredentialStore,
@@ -1566,10 +1566,10 @@ where
         config.base_url,
         config.model
     );
-    Ok(crate::bridge::prefs::SavedModel {
-        id: crate::bridge::prefs::BUILTIN_LLMAPI_MODEL_ID.to_string(),
-        name: crate::bridge::prefs::BUILTIN_LLMAPI_MODEL_NAME.to_string(),
-        preset: crate::bridge::prefs::ModelPreset::OpenaiCompatible,
+    Ok(crate::platform::prefs::SavedModel {
+        id: crate::platform::prefs::BUILTIN_LLMAPI_MODEL_ID.to_string(),
+        name: crate::platform::prefs::BUILTIN_LLMAPI_MODEL_NAME.to_string(),
+        preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
         model: config.model,
         base_url: config.base_url,
         context_window_tokens: None,
@@ -1582,7 +1582,7 @@ where
     })
 }
 
-pub fn ready_saved_model_system() -> Result<crate::bridge::prefs::SavedModel, LlmApiError> {
+pub fn ready_saved_model_system() -> Result<crate::platform::prefs::SavedModel, LlmApiError> {
     let started_at = Instant::now();
     log::info!("[llmapi_hub][provisioning] ready_saved_model_system start");
     let store = FileLlmApiBindingStore::default();
@@ -1626,7 +1626,7 @@ pub fn ready_saved_model_system() -> Result<crate::bridge::prefs::SavedModel, Ll
 }
 
 pub fn ready_saved_model_from_local_binding_system(
-) -> Result<crate::bridge::prefs::SavedModel, LlmApiError> {
+) -> Result<crate::platform::prefs::SavedModel, LlmApiError> {
     let started_at = Instant::now();
     log::info!("[llmapi_hub][provisioning] ready_saved_model_local start");
     let store = FileLlmApiBindingStore::default();
@@ -1684,10 +1684,10 @@ pub fn ready_saved_model_from_local_binding_system(
         identity.pinvou_user_id,
         model
     );
-    Ok(crate::bridge::prefs::SavedModel {
-        id: crate::bridge::prefs::BUILTIN_LLMAPI_MODEL_ID.to_string(),
-        name: crate::bridge::prefs::BUILTIN_LLMAPI_MODEL_NAME.to_string(),
-        preset: crate::bridge::prefs::ModelPreset::OpenaiCompatible,
+    Ok(crate::platform::prefs::SavedModel {
+        id: crate::platform::prefs::BUILTIN_LLMAPI_MODEL_ID.to_string(),
+        name: crate::platform::prefs::BUILTIN_LLMAPI_MODEL_NAME.to_string(),
+        preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
         model,
         base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
         context_window_tokens: None,
@@ -2182,7 +2182,7 @@ mod tests {
         let model = ready_saved_model(&store, &credentials, &identity()).unwrap();
         assert_eq!(
             model.preset,
-            crate::bridge::prefs::ModelPreset::OpenaiCompatible
+            crate::platform::prefs::ModelPreset::OpenaiCompatible
         );
         assert_eq!(model.base_url, crate::llmapi_hub::DEFAULT_CHAT_BASE_URL);
         assert!(model.credential_ref.is_some());

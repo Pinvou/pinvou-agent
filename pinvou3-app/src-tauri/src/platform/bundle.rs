@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use include_dir::{include_dir, Dir};
 
-use super::paths;
+use crate::platform::paths;
 
 /// 三省六部工作流：编译期内嵌整个目录树（roles/*.md + scripts/*.py + json）。
 static SANSHENG_LIUBU_DIR: Dir<'_> =
@@ -17,7 +17,8 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 /// 飞书官方域技能（lark-*，MIT，sync 自 github.com/larksuite/cli `skills/`）：
 /// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
 /// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
-static LARK_SKILLS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
+static LARK_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
 
 /// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本与二进制)。独立于 lark skills 的
 /// include_dir(故放在 `bundle/eip/` 而非 `bundle/skills/`,避免被 LARK_SKILLS_DIR
@@ -28,7 +29,8 @@ static EIP_SKILL_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/comm
 
 /// H3C 知道知识库技能(SKILL.md + zhidao CLI)。与 EIP 同属 IT 内部 CLI 连接器,
 /// 独立内嵌并解包到 `skills_dir/zhidao`,用连接标记门控 SKILL.md 可见性。
-static ZHIDAO_SKILL_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/zhidao");
+static ZHIDAO_SKILL_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/zhidao");
 
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
@@ -57,7 +59,8 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/dingtalk-skills");
 
 #[cfg(not(windows))]
-static CONNECTOR_CLI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/connectors");
+static CONNECTOR_CLI_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/connectors");
 
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
@@ -103,20 +106,20 @@ pub const BUNDLE_VERSION: &str = concat!(
 );
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
-pub const INSTRUCTIONS_MD: &str = include_str!("../../../resources/common/bundle/instructions.md");
+pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/common/bundle/instructions.md");
 
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
 /// 目录。目录名与 frontmatter 均使用 v0.9 要求的安全命令名 `visual-design`；中文触发词
 /// 继续由 description / 正文承载。
 const VISUAL_DESIGN_SKILL_MD: &str =
-    include_str!("../../../resources/common/bundle/skills/visual-design/SKILL.md");
+    include_str!("../../resources/common/bundle/skills/visual-design/SKILL.md");
 
 /// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
 /// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
 /// `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,DeepSeek-TUI submodule 的
 /// base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
-pub const BASE_PROMPT_MD: &str = include_str!("../../../resources/common/bundle/base.md");
+pub const BASE_PROMPT_MD: &str = include_str!("../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
 /// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
@@ -223,40 +226,40 @@ pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {\n    \"pinvou3\": {\n   
 /// present_artifact MCP server 脚本(零依赖 python stdio),编译期内嵌,解包到
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
-    include_str!("../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
+    include_str!("../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-const WEATHER_SERVER_PY: &str = include_str!("../../../../resources/mcp-servers/weather/server.py");
+const WEATHER_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/weather/server.py");
 const WEATHER_MANIFEST_JSON: &str =
-    include_str!("../../../../resources/mcp-servers/weather/manifest.json");
-const IWENCAI_SERVER_PY: &str = include_str!("../../../../resources/mcp-servers/iwencai/server.py");
+    include_str!("../../../resources/mcp-servers/weather/manifest.json");
+const IWENCAI_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/iwencai/server.py");
 const IWENCAI_MANIFEST_JSON: &str =
-    include_str!("../../../../resources/mcp-servers/iwencai/manifest.json");
-const QCC_MANIFEST_JSON: &str = include_str!("../../../../resources/mcp-servers/qcc/manifest.json");
+    include_str!("../../../resources/mcp-servers/iwencai/manifest.json");
+const QCC_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/qcc/manifest.json");
 const YUANDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../../resources/mcp-servers/yuandian-mcp/manifest.json");
+    include_str!("../../../resources/mcp-servers/yuandian-mcp/manifest.json");
 const PATSNAP_SEARCH_MANIFEST_JSON: &str =
-    include_str!("../../../../resources/mcp-servers/patsnap-search/manifest.json");
-const OBSIDIAN_SERVER_PY: &str = include_str!("../../../../resources/mcp-servers/obsidian/server.py");
+    include_str!("../../../resources/mcp-servers/patsnap-search/manifest.json");
+const OBSIDIAN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../../resources/mcp-servers/obsidian/manifest.json");
-const PPTX_SERVER_PY: &str = include_str!("../../../../resources/mcp-servers/pptx/server.py");
-const PPTX_MANIFEST_JSON: &str = include_str!("../../../../resources/mcp-servers/pptx/manifest.json");
-const GONGWEN_SERVER_PY: &str = include_str!("../../../../resources/mcp-servers/gongwen/server.py");
+    include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
+const PPTX_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/pptx/server.py");
+const PPTX_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/pptx/manifest.json");
+const GONGWEN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/gongwen/server.py");
 const GONGWEN_MANIFEST_JSON: &str =
-    include_str!("../../../../resources/mcp-servers/gongwen/manifest.json");
+    include_str!("../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =
-    include_str!("../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
+    include_str!("../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
 pub const DENY_SENSITIVE_PATHS_SH: &str =
-    include_str!("../../../resources/common/bundle/deny_sensitive_paths.sh");
+    include_str!("../../resources/common/bundle/deny_sensitive_paths.sh");
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
-    include_str!("../../../resources/common/bundle/deny_sensitive_paths.ps1");
+    include_str!("../../resources/common/bundle/deny_sensitive_paths.ps1");
 
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
-pub const SHELL_ENV_SH: &str = include_str!("../../../resources/common/bundle/shell_env.sh");
+pub const SHELL_ENV_SH: &str = include_str!("../../resources/common/bundle/shell_env.sh");
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
@@ -319,7 +322,7 @@ impl Pinvou3Bundle {
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
         crate::startup::mark("bundle_extract:migrate_mcp_secrets:start");
-        let mcp_secret_migration_ok = match crate::bridge::marketplace::MarketplaceManager::new()
+        let mcp_secret_migration_ok = match crate::features::marketplace::MarketplaceManager::new()
             .migrate_mcp_plaintext_secrets()
         {
             Ok(_) => true,
@@ -381,7 +384,7 @@ impl Pinvou3Bundle {
         // EIP 技能门控:仅"已连接"用户(本机有连接标记)才放 SKILL.md(模型可见);
         // 未连接 / 非 EIP 用户删 SKILL.md(留 bin/ 供连接用),不背 EIP prompt
         //(§八.4 装了才启用,同飞书 apply_feishu_skills)。
-        self.apply_eip_skill_visibility(crate::eip::eip_skills_should_show())?;
+        self.apply_eip_skill_visibility(crate::platform::connector_state::eip_skills_visible())?;
         // 自愈按**当前平台实际要跑的**二进制判缺失(同上方 EIP):Windows 跑 zhidao-cli.exe
         // (Rust 直调 + 模型 shell 经 zhidao.cmd),Unix 跑 zhidao 包装脚本 exec 对应架构的 zhidao-cli。
         // 旧实现在所有平台只查 Linux 的 zhidao/zhidao-cli,Windows 下若 zhidao-cli.exe 被
@@ -397,7 +400,9 @@ impl Pinvou3Bundle {
         if !zhidao_healthy {
             self.write_zhidao_skill()?;
         }
-        self.apply_zhidao_skill_visibility(crate::zhidao::zhidao_skills_should_show())?;
+        self.apply_zhidao_skill_visibility(
+            crate::platform::connector_state::zhidao_skills_visible(),
+        )?;
         crate::startup::mark("bundle_extract:internal_skills_ready");
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
@@ -509,13 +514,13 @@ impl Pinvou3Bundle {
     /// 现在源码资源已经移除的 marketplace 工具。
     fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
         for tool_id in ["data_analysis"] {
-            let _ = crate::bridge::marketplace::MarketplaceManager::new().uninstall(tool_id);
+            let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
 
-            let mut disabled = crate::bridge::marketplace::load_disabled_connectors();
+            let mut disabled = crate::features::marketplace::load_disabled_connectors();
             let before = disabled.len();
             disabled.retain(|id| id != tool_id);
             if disabled.len() != before {
-                crate::bridge::marketplace::save_disabled_connectors(&disabled);
+                crate::features::marketplace::save_disabled_connectors(&disabled);
             }
 
             let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
@@ -594,7 +599,7 @@ impl Pinvou3Bundle {
     /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
     /// 半套目录却被 SkillRegistry 当成已连接。实时真相在首屏后的 CLI 探测中刷新。
     fn cached_feishu_skills_visible(&self) -> bool {
-        !crate::feishu::is_feishu_disabled()
+        crate::platform::connector_state::feishu_skills_visible()
             && LARK_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
@@ -620,7 +625,7 @@ impl Pinvou3Bundle {
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的企微技能目录作为启动缓存。
     fn cached_wecom_skills_visible(&self) -> bool {
-        !crate::wecom::is_wecom_disabled()
+        crate::platform::connector_state::wecom_skills_visible()
             && WECOM_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
@@ -642,7 +647,7 @@ impl Pinvou3Bundle {
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的钉钉技能目录作为启动缓存。
     fn cached_dingtalk_skills_visible(&self) -> bool {
-        !crate::dingtalk::is_dingtalk_disabled()
+        crate::platform::connector_state::dingtalk_skills_visible()
             && DINGTALK_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
@@ -897,7 +902,7 @@ impl Pinvou3Bundle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
     /// 借 paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
@@ -1221,7 +1226,7 @@ mod tests {
             r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
         )
         .unwrap();
-        crate::bridge::marketplace::save_disabled_connectors(&[
+        crate::features::marketplace::save_disabled_connectors(&[
             "data_analysis".to_string(),
             "weather".to_string(),
         ]);
@@ -1239,7 +1244,7 @@ mod tests {
             !mcp.contains("data_analysis"),
             "mcp.json 不应残留 data_analysis server"
         );
-        let disabled = crate::bridge::marketplace::load_disabled_connectors();
+        let disabled = crate::features::marketplace::load_disabled_connectors();
         assert!(
             !disabled.contains(&"data_analysis".to_string()),
             "disabled_connectors 不应残留 data_analysis"

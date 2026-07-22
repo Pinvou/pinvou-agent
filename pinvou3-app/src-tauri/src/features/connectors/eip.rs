@@ -66,7 +66,7 @@ fn make_qr(url: &str) -> Option<String> {
 
 /// `~/.pinvou3/eip/` —— EIP 的 device-id 与凭证根目录(与 bundle 里的二进制分开)。
 fn eip_home() -> PathBuf {
-    crate::bridge::paths::pinvou3_home().join("eip")
+    crate::platform::paths::pinvou3_home().join("eip")
 }
 
 /// 凭证目录,传给 CLI 的 `AGENT_CREDENTIALS_DIR`。CLI 在此加密存 token/ait。
@@ -113,14 +113,14 @@ fn eip_bin_path() -> Result<PathBuf, String> {
     } else {
         "eip-cli"
     };
-    let p = crate::bridge::paths::bundle_skills_dir()
+    let p = crate::platform::paths::bundle_skills_dir()
         .join("eip")
         .join("bin")
         .join(name);
     if !p.is_file() {
         #[cfg(unix)]
         if std::env::consts::ARCH == "aarch64"
-            && crate::bridge::paths::bundle_skills_dir()
+            && crate::platform::paths::bundle_skills_dir()
                 .join("eip")
                 .join("bin")
                 .join("eip-cli")
@@ -132,7 +132,7 @@ fn eip_bin_path() -> Result<PathBuf, String> {
             ));
         }
         #[cfg(unix)]
-        if crate::bridge::paths::bundle_skills_dir()
+        if crate::platform::paths::bundle_skills_dir()
             .join("eip")
             .join("bin")
             .join("eip-cli.exe")
@@ -298,13 +298,16 @@ fn set_connected(v: bool) -> bool {
             let _ = std::fs::remove_file(&p);
         }
     }
-    let skill_visible = crate::bridge::bundle::Pinvou3Bundle::paths()
+    let skill_visible = crate::platform::bundle::Pinvou3Bundle::paths()
         .skills_dir
         .join("eip")
         .join("SKILL.md")
         .is_file();
     let deferred = (previous != v || skill_visible != v)
-        && crate::connector_visibility::request(crate::connector_visibility::ConnectorKind::Eip, v);
+        && crate::platform::connector_visibility::request(
+            crate::platform::connector_visibility::ConnectorKind::Eip,
+            v,
+        );
     if deferred {
         log::info!("[eip] skill visibility queued for the next turn connected={v}");
     }

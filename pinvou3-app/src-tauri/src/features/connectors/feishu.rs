@@ -290,7 +290,7 @@ pub async fn feishu_logout() -> Result<Value, String> {
 // 手动停用标志:`~/.pinvou3/feishu_disabled` 文件存在 = 停用。与连接状态正交。
 
 fn feishu_disabled_path() -> std::path::PathBuf {
-    crate::bridge::paths::pinvou3_home().join("feishu_disabled")
+    crate::platform::paths::pinvou3_home().join("feishu_disabled")
 }
 
 /// 用户是否手动停用了飞书技能。
@@ -319,7 +319,7 @@ pub fn feishu_skills_should_show() -> bool {
 pub async fn feishu_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = feishu_skills_should_show();
-        let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_feishu_skills(show);
+        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_feishu_skills(show);
         show
     })
     .await
@@ -335,7 +335,7 @@ pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_feishu_disabled_flag(!enabled);
         let show = feishu_skills_should_show();
-        let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_feishu_skills(show);
+        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_feishu_skills(show);
         show
     })
     .await

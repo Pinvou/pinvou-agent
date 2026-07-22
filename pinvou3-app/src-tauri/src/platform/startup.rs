@@ -101,7 +101,7 @@ pub fn init() {
         started_utc.format("%Y%m%dT%H%M%S%.3fZ"),
         std::process::id()
     ));
-    let path = crate::bridge::paths::pinvou3_home()
+    let path = crate::platform::paths::pinvou3_home()
         .join("logs")
         .join("startup.log");
     if let Some(parent) = path.parent() {

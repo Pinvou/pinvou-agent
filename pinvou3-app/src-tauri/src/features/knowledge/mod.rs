@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::State;
 use walkdir::WalkDir;
 
 use store::{SearchQuery, Store};
@@ -309,7 +309,7 @@ impl KnowledgeService {
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {
-    crate::bridge::paths::pinvou3_home()
+    crate::platform::paths::pinvou3_home()
         .join("knowledge")
         .join("index.db")
 }
@@ -318,7 +318,7 @@ pub fn default_db_path() -> PathBuf {
 /// 模型不再随 deb 打包（deb 瘦 ~559MB）；用户在知识库页主动下载部署到此目录后才启用语义检索。
 /// dev 仍可用 env `PINVOU3_KB_EMBED_MODEL_DIR` 覆盖（见 embed::from_env_or_dir）。
 pub fn model_dir() -> PathBuf {
-    crate::bridge::paths::pinvou3_home()
+    crate::platform::paths::pinvou3_home()
         .join("knowledge")
         .join("models")
         .join("bge-m3")
@@ -380,7 +380,7 @@ pub fn kb_start_scan(
     let roots = roots
         .filter(|v| !v.is_empty())
         .map(|v| v.into_iter().map(PathBuf::from).collect())
-        .unwrap_or_else(|| vec![crate::bridge::paths::user_home_dir()]);
+        .unwrap_or_else(|| vec![crate::platform::paths::user_home_dir()]);
     state.start_scan(roots)
 }
 
@@ -444,21 +444,19 @@ pub async fn kb_collection_update(
 #[tauri::command]
 pub async fn kb_collection_delete(
     state: State<'_, KnowledgeService>,
-    app: AppHandle,
     pool: State<'_, crate::engine_pool::EnginePool>,
     id: i64,
 ) -> Result<(), String> {
     let l1 = state.l1().clone();
     spawn_db(move || l1.delete_collection(id).map_err(|e| e.to_string())).await?;
-    refresh_kb_tool_gate(&app, &pool).await;
+    refresh_kb_tool_gate(&pool).await;
     Ok(())
 }
 
 /// 删文档/知识集后重算工具门控:若库已空,kb_search 进 disallowed 并广播给所有在跑会话 →
 /// 实时从模型目录消失。加文件后重新出现走新会话即可(老会话实时性次要)。
-async fn refresh_kb_tool_gate(app: &AppHandle, pool: &crate::engine_pool::EnginePool) {
-    let disallowed = crate::commands::compute_disallowed_tools(app);
-    pool.set_disallowed_all(disallowed).await;
+async fn refresh_kb_tool_gate(pool: &crate::engine_pool::EnginePool) {
+    pool.refresh_disallowed_tools().await;
 }
 
 /// 把文件/目录加入知识集，后台解析+切块+入库。进度走 kb_index_status。
@@ -500,13 +498,12 @@ pub async fn kb_documents(
 #[tauri::command]
 pub async fn kb_remove_document(
     state: State<'_, KnowledgeService>,
-    app: AppHandle,
     pool: State<'_, crate::engine_pool::EnginePool>,
     doc_id: i64,
 ) -> Result<(), String> {
     let l1 = state.l1().clone();
     spawn_db(move || l1.remove_document(doc_id).map_err(|e| e.to_string())).await?;
-    refresh_kb_tool_gate(&app, &pool).await;
+    refresh_kb_tool_gate(&pool).await;
     Ok(())
 }
 

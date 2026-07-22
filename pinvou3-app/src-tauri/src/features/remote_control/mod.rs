@@ -9,9 +9,9 @@ pub use protocol::{RemoteControlStatus, RemotePairingInfo};
 use rand::distr::Alphanumeric;
 use rand::Rng;
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
-use crate::bridge::sessions::SessionStore;
+use crate::features::sessions::SessionStore;
 use crate::engine_pool::EnginePool;
 
 pub(crate) fn short_token(len: usize) -> String {
@@ -20,12 +20,6 @@ pub(crate) fn short_token(len: usize) -> String {
         .take(len)
         .map(char::from)
         .collect()
-}
-
-pub(crate) fn forward_app_event(app: &AppHandle, event: &str, payload: Value) {
-    if let Some(manager) = app.try_state::<RemoteControlManager>() {
-        manager.forward_local_event(event, payload);
-    }
 }
 
 #[tauri::command]

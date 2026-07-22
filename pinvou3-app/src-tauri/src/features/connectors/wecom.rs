@@ -218,7 +218,7 @@ pub async fn wecom_logout() -> Result<Value, String> {
 // 手动停用标志:`~/.pinvou3/wecom_disabled` 文件存在 = 停用。与连接状态正交。
 
 fn wecom_disabled_path() -> std::path::PathBuf {
-    crate::bridge::paths::pinvou3_home().join("wecom_disabled")
+    crate::platform::paths::pinvou3_home().join("wecom_disabled")
 }
 
 pub fn is_wecom_disabled() -> bool {
@@ -245,7 +245,7 @@ pub fn wecom_skills_should_show() -> bool {
 pub async fn wecom_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = wecom_skills_should_show();
-        let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_wecom_skills(show);
+        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_wecom_skills(show);
         show
     })
     .await
@@ -259,7 +259,7 @@ pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_wecom_disabled_flag(!enabled);
         let show = wecom_skills_should_show();
-        let _ = crate::bridge::bundle::Pinvou3Bundle::paths().apply_wecom_skills(show);
+        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_wecom_skills(show);
         show
     })
     .await
@@ -286,7 +286,7 @@ pub async fn wecom_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     /// `auth show` 输出 → 已授权判定。空 id 不能被回退子串匹配误判为已连接。
     #[test]
@@ -316,7 +316,7 @@ mod tests {
                 .unwrap_or(0)
         );
         std::env::set_var("PINVOU3_HOME", &tmp);
-        let _ = std::fs::create_dir_all(crate::bridge::paths::pinvou3_home());
+        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
 
         // 默认(无文件)= 未停用
         set_wecom_disabled_flag(false);

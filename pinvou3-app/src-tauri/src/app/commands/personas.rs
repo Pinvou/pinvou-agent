@@ -103,7 +103,7 @@ pub async fn save_session_persona_events(
     session_id: String,
     events: serde_json::Value,
 ) -> Result<(), String> {
-    let path = crate::bridge::paths::session_persona_events(&session_id);
+    let path = crate::platform::paths::session_persona_events(&session_id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
     }
@@ -114,7 +114,7 @@ pub async fn save_session_persona_events(
 /// 读某 session 的卡牌事件时间线(无则返回空数组)。
 #[tauri::command]
 pub async fn get_session_persona_events(session_id: String) -> Result<serde_json::Value, String> {
-    let path = crate::bridge::paths::session_persona_events(&session_id);
+    let path = crate::platform::paths::session_persona_events(&session_id);
     match std::fs::read_to_string(&path) {
         Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
         Err(_) => Ok(serde_json::json!([])),
@@ -187,7 +187,7 @@ pub async fn save_session_pinvou_reviews(
     session_id: String,
     reviews: serde_json::Value,
 ) -> Result<(), String> {
-    let path = crate::bridge::paths::session_pinvou_reviews(&session_id);
+    let path = crate::platform::paths::session_pinvou_reviews(&session_id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建 session 目录失败: {e}"))?;
     }
@@ -199,7 +199,7 @@ pub async fn save_session_pinvou_reviews(
 /// 读某 session 的 Pinvou 审查时间线（无则返回空数组）。
 #[tauri::command]
 pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json::Value, String> {
-    let path = crate::bridge::paths::session_pinvou_reviews(&session_id);
+    let path = crate::platform::paths::session_pinvou_reviews(&session_id);
     match std::fs::read_to_string(&path) {
         Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
         Err(_) => Ok(serde_json::json!([])),

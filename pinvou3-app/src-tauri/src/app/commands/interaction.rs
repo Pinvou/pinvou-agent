@@ -123,7 +123,7 @@ pub async fn set_super_permission(
 /// 设计依据:docs/Pinvou-品悟设计.md §10.5 (即将补)
 #[tauri::command]
 pub async fn read_skill_body(name: String) -> Result<String, String> {
-    use crate::bridge::paths;
+    use crate::platform::paths;
     let safe_name: String = name
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
@@ -317,61 +317,5 @@ pub async fn summon_pinvou(
 /// 拦截两类位置：(1) 用户凭据目录/文件，避免 AI 误把私钥/.env 内容读进
 /// LLM context 传给外部 vLLM；(2) 系统级敏感文件如 /etc/shadow。
 pub(crate) fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
-    use std::path::PathBuf;
-    let p = PathBuf::from(raw);
-    if !p.is_absolute() {
-        return Err(format!("path must be absolute: {raw}"));
-    }
-    let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-    let canon_str = canon.to_string_lossy();
-
-    // 凭据/配置类组件名拦截（任意路径深度，命中目录名或文件名即拒绝）
-    const BLOCKED_COMPONENTS: &[&str] = &[
-        ".ssh",
-        ".gnupg",
-        ".aws",
-        ".docker",
-        ".kube",
-        ".password-store",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "credentials.json",
-        ".env",
-    ];
-    for blocked in BLOCKED_COMPONENTS {
-        if canon
-            .components()
-            .any(|c| c.as_os_str() == std::ffi::OsStr::new(blocked))
-        {
-            return Err(format!(
-                "path {} crosses sensitive component {}",
-                canon.display(),
-                blocked
-            ));
-        }
-    }
-
-    // 系统级敏感路径前缀拦截
-    const BLOCKED_PREFIXES: &[&str] = &[
-        "/etc/shadow",
-        "/etc/gshadow",
-        "/etc/sudoers",
-        "/etc/ssh/",
-        "/root/",
-        "/var/log/auth",
-        "/proc/",
-        "/sys/",
-    ];
-    for prefix in BLOCKED_PREFIXES {
-        if canon_str.starts_with(prefix) {
-            return Err(format!(
-                "path {} is in system-sensitive area",
-                canon.display()
-            ));
-        }
-    }
-
-    Ok(canon)
+    crate::platform::path_policy::validate_user_path(raw)
 }

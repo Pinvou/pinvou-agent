@@ -926,8 +926,8 @@ impl UserPrefs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
     use crate::credential_store::MemoryCredentialStore;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {

@@ -198,7 +198,7 @@ fn auth_status_message() -> String {
 /// `~/.agents/.codex/.claude/...`。安装时给它一个隔离 HOME，避免绕过 Pinvou3 的
 /// “已连接且未停用才展示 skill”门控；CLI 本体仍安装到 npm 的用户级全局 prefix。
 fn isolated_npm_install_command() -> Result<(std::process::Command, std::path::PathBuf), String> {
-    let install_home = crate::bridge::paths::pinvou3_home()
+    let install_home = crate::platform::paths::pinvou3_home()
         .join("tmp")
         .join("dingtalk-npm-install-home");
     if install_home.exists() {
@@ -215,7 +215,7 @@ fn isolated_npm_install_command() -> Result<(std::process::Command, std::path::P
     if std::env::var_os("NPM_CONFIG_USERCONFIG").is_none()
         && std::env::var_os("npm_config_userconfig").is_none()
     {
-        let user_config = crate::bridge::paths::user_home_dir().join(".npmrc");
+        let user_config = crate::platform::paths::user_home_dir().join(".npmrc");
         if user_config.is_file() {
             command.env("NPM_CONFIG_USERCONFIG", user_config);
         }
@@ -449,7 +449,7 @@ pub async fn dingtalk_logout() -> Result<Value, String> {
 // ─────────────────────── 钉钉 skill 门控(对齐飞书 / 企微)───────────────────────
 
 fn dingtalk_disabled_path() -> std::path::PathBuf {
-    crate::bridge::paths::pinvou3_home().join("dingtalk_disabled")
+    crate::platform::paths::pinvou3_home().join("dingtalk_disabled")
 }
 
 pub fn is_dingtalk_disabled() -> bool {
@@ -474,7 +474,7 @@ pub fn dingtalk_skills_should_show() -> bool {
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = dingtalk_skills_should_show();
-        crate::bridge::bundle::Pinvou3Bundle::paths()
+        crate::platform::bundle::Pinvou3Bundle::paths()
             .apply_dingtalk_skills(show)
             .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
         Ok(show)
@@ -489,7 +489,7 @@ pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_dingtalk_disabled_flag(!enabled)?;
         let show = dingtalk_skills_should_show();
-        crate::bridge::bundle::Pinvou3Bundle::paths()
+        crate::platform::bundle::Pinvou3Bundle::paths()
             .apply_dingtalk_skills(show)
             .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
         Ok(show)
@@ -517,7 +517,7 @@ pub async fn dingtalk_skills_state() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn auth_status_detects_authenticated() {
@@ -571,7 +571,7 @@ mod tests {
         );
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &tmp);
-        let _ = std::fs::create_dir_all(crate::bridge::paths::pinvou3_home());
+        let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
 
         set_dingtalk_disabled_flag(false).unwrap();
         assert!(!is_dingtalk_disabled());
@@ -616,7 +616,7 @@ mod tests {
             envs.get(std::ffi::OsStr::new("USERPROFILE")),
             Some(&install_home.clone().into_os_string())
         );
-        let user_config = crate::bridge::paths::user_home_dir().join(".npmrc");
+        let user_config = crate::platform::paths::user_home_dir().join(".npmrc");
         if user_config.is_file()
             && std::env::var_os("NPM_CONFIG_USERCONFIG").is_none()
             && std::env::var_os("npm_config_userconfig").is_none()

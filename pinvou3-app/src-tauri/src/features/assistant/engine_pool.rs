@@ -29,6 +29,7 @@ use deepseek_tui::models::{ContentBlock, Message};
 use deepseek_tui::tools::shell::{
     new_shared_shell_manager, SharedShellManager, ShellJobSnapshot, ShellResult,
 };
+use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
@@ -37,9 +38,9 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::bridge::prefs::{SavedModel, UserPrefs};
-use crate::bridge::sessions::{ScheduledRunProfile, SessionStore};
-use crate::bridge::Pinvou3Bridge;
+use crate::platform::prefs::{SavedModel, UserPrefs};
+use crate::features::sessions::{ScheduledRunProfile, SessionStore};
+use crate::platform::engine_bridge::Pinvou3Bridge;
 use crate::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +177,10 @@ struct EngineEntry {
     forwarder: JoinHandle<()>,
 }
 
+pub type EngineToolFactory =
+    Arc<dyn Fn(&AppHandle, &str) -> Vec<Arc<dyn ToolSpec>> + Send + Sync + 'static>;
+pub type ToolPolicy = Arc<dyn Fn(&AppHandle) -> Vec<String> + Send + Sync + 'static>;
+
 fn should_sync_session(is_scheduled: bool, has_messages: bool) -> bool {
     is_scheduled || has_messages
 }
@@ -189,6 +194,8 @@ pub struct EnginePool {
     shell_managers: SessionShellManagers,
     app: AppHandle,
     store: SessionStore,
+    tool_factory: EngineToolFactory,
+    tool_policy: ToolPolicy,
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
     /// commands 读 model / workspace 也走这里。
     pub bridge: Pinvou3Bridge,
@@ -197,6 +204,20 @@ pub struct EnginePool {
 impl EnginePool {
     /// boot bridge(一次)并建空池。不预热任何 engine(lazy)。
     pub fn new(app: AppHandle, store: SessionStore) -> Result<Self> {
+        Self::new_with_dependencies(
+            app,
+            store,
+            Arc::new(|_, _| Vec::new()),
+            Arc::new(|_| Vec::new()),
+        )
+    }
+
+    pub fn new_with_dependencies(
+        app: AppHandle,
+        store: SessionStore,
+        tool_factory: EngineToolFactory,
+        tool_policy: ToolPolicy,
+    ) -> Result<Self> {
         let bridge = Pinvou3Bridge::boot()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
@@ -205,8 +226,20 @@ impl EnginePool {
             shell_managers: SessionShellManagers::default(),
             app,
             store,
+            tool_factory,
+            tool_policy,
             bridge,
         })
+    }
+
+    pub fn compute_disallowed_tools(&self) -> Vec<String> {
+        (self.tool_policy)(&self.app)
+    }
+
+    pub async fn refresh_disallowed_tools(&self) -> Vec<String> {
+        let tools = self.compute_disallowed_tools();
+        self.set_disallowed_all(tools.clone()).await;
+        tools
     }
 
     /// 为 spawn 构造该 session 的 bridge:从 disk 读最新 prefs(模型列表/默认可能刚被
@@ -367,6 +400,8 @@ impl EnginePool {
             self.store.clone(),
             bridge,
             session_id,
+            (self.tool_factory)(&self.app, session_id),
+            self.compute_disallowed_tools(),
             self.turn_lifecycles.for_session(session_id),
             shell_manager,
         )
@@ -955,8 +990,8 @@ mod scheduled_model_tests {
         scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
         SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
     };
-    use crate::bridge::prefs::{ModelPreset, SavedModel};
-    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
+    use crate::platform::prefs::{ModelPreset, SavedModel};
+    use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::credential_store::{CredentialEditAction, CredentialState};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1118,7 +1153,7 @@ mod scheduled_model_tests {
 
     #[tokio::test]
     async fn scheduled_delete_wins_over_waiting_followup_without_resurrecting_state() {
-        let _env_guard = crate::bridge::paths::tests::ENV_LOCK
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = std::env::temp_dir().join(format!(

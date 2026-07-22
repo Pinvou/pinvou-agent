@@ -48,7 +48,7 @@ fn new_turn_id(session_id: &str) -> String {
 }
 
 fn append_event(session_id: &str, entry: serde_json::Value) {
-    let path = crate::bridge::paths::session_timing_events(session_id);
+    let path = crate::platform::paths::session_timing_events(session_id);
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("[timing] create dir failed ({}): {e}", parent.display());
@@ -180,7 +180,7 @@ pub struct TimelineEvent {
 /// 文件不存在 / 解析失败的行被静默跳过(append-only jsonl 的单行损坏不应让整个 timeline 崩)。
 /// 空文件 / 文件不存在 → 空向量。
 pub fn read_timeline(session_id: &str) -> std::io::Result<Vec<TimelineEvent>> {
-    let path = crate::bridge::paths::session_timing_events(session_id);
+    let path = crate::platform::paths::session_timing_events(session_id);
     let file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -375,7 +375,7 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn timing_events_append_and_pair_turn_id() {
@@ -394,7 +394,7 @@ mod tests {
         finish_turn(sid, "completed", None);
 
         let content =
-            std::fs::read_to_string(crate::bridge::paths::session_timing_events(sid)).unwrap();
+            std::fs::read_to_string(crate::platform::paths::session_timing_events(sid)).unwrap();
         let lines: Vec<_> = content.lines().collect();
         assert_eq!(lines.len(), 2);
         let start: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -477,7 +477,7 @@ mod tests {
         let sid = "session-corrupt";
         start_turn(sid);
         // 注入一行坏 JSON
-        let path = crate::bridge::paths::session_timing_events(sid);
+        let path = crate::platform::paths::session_timing_events(sid);
         std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -644,7 +644,7 @@ mod tests {
         let sid = "session-bad-identity";
         start_turn(sid);
         finish_turn(sid, "Completed", None);
-        let path = crate::bridge::paths::session_timing_events(sid);
+        let path = crate::platform::paths::session_timing_events(sid);
         std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -677,7 +677,7 @@ mod tests {
         ));
         std::env::set_var("PINVOU3_HOME", &tmp);
 
-        let path = crate::bridge::paths::session_timing_events("session-io-error");
+        let path = crate::platform::paths::session_timing_events("session-io-error");
         std::fs::create_dir_all(&path).unwrap();
         assert!(read_timeline("session-io-error").is_err());
         assert!(compute_stats("session-io-error").is_err());
@@ -697,7 +697,7 @@ mod tests {
         ));
         std::env::set_var("PINVOU3_HOME", &tmp);
 
-        let path = crate::bridge::paths::session_timing_events("session-too-large");
+        let path = crate::platform::paths::session_timing_events("session-too-large");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_TIMING_FILE_BYTES + 1).unwrap();
@@ -728,7 +728,7 @@ mod tests {
         finish_turn(sid, "completed", None);
 
         // 注入两条脏事件:一条完全缺 timestamp,一条 timestamp 类型错(string 而非 int)
-        let path = crate::bridge::paths::session_timing_events(sid);
+        let path = crate::platform::paths::session_timing_events(sid);
         std::fs::OpenOptions::new()
             .append(true)
             .open(&path)

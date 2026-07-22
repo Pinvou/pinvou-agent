@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use crate::bridge::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::credential_store::{CredentialStore, SystemCredentialStore};
 
 mod platform;
@@ -1126,7 +1126,7 @@ pub fn vllm_base_url() -> String {
     if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
         return v;
     }
-    let prefs = crate::bridge::prefs::UserPrefs::load();
+    let prefs = crate::platform::prefs::UserPrefs::load();
     prefs
         .active_model()
         .map(|m| m.base_url.clone())
@@ -1139,11 +1139,11 @@ pub fn vllm_configured_model() -> Option<String> {
     if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
         return Some(v);
     }
-    let prefs = crate::bridge::prefs::UserPrefs::load();
+    let prefs = crate::platform::prefs::UserPrefs::load();
     match prefs.active_model() {
         // 本地 vLLM 动态跟随实际 served name(见 EnginePool::fresh_bridge_for),
         // 不声明固定配置目标 → 监控不做 mismatch 误报,只显示 vLLM 实际名字。
-        Some(m) if m.preset == crate::bridge::prefs::ModelPreset::LocalVllm => None,
+        Some(m) if m.preset == crate::platform::prefs::ModelPreset::LocalVllm => None,
         Some(m) => Some(m.model.clone()),
         None => None,
     }

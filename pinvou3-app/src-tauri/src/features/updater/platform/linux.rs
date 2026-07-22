@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tokio::time::timeout;
 
-use crate::bridge::paths;
+use crate::platform::paths;
 
 const UPDATE_MANIFEST_URL: &str = "https://pinvou.com/pinvou3/latest.json";
 
@@ -272,7 +272,7 @@ fn validate_deb_path(path: &Path) -> Result<PathBuf, String> {
     let canon = path
         .canonicalize()
         .map_err(|e| format!("deb 文件不存在: {e}"))?;
-    let dir = crate::bridge::paths::updates_dir()
+    let dir = crate::platform::paths::updates_dir()
         .canonicalize()
         .map_err(|e| format!("更新目录不存在: {e}"))?;
     if !canon.starts_with(&dir) {
@@ -345,14 +345,14 @@ mod tests {
 
     #[test]
     fn validate_deb_path_whitelist() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         let root = std::env::temp_dir().join("pinvou3-updater-test");
         std::env::set_var("PINVOU3_HOME", &root);
 
-        let updates = crate::bridge::paths::updates_dir();
+        let updates = crate::platform::paths::updates_dir();
         std::fs::create_dir_all(&updates).unwrap();
         let good = updates.join("pinvou3_9.9.9_amd64.deb");
         std::fs::write(&good, b"fake").unwrap();

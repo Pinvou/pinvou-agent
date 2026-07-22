@@ -21,11 +21,11 @@ impl NotificationState {
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 struct NotificationPrefsOnly {
-    notifications: crate::bridge::prefs::NotificationPrefs,
+    notifications: crate::platform::prefs::NotificationPrefs,
 }
 
 pub fn task_completion_enabled() -> bool {
-    let prefs = std::fs::read_to_string(crate::bridge::paths::settings_path())
+    let prefs = std::fs::read_to_string(crate::platform::paths::settings_path())
         .ok()
         .and_then(|raw| serde_json::from_str::<NotificationPrefsOnly>(&raw).ok())
         .unwrap_or_default();

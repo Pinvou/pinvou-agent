@@ -11,13 +11,13 @@
 //! 用户层面看不到这一层；这层只服务 GUI 与 deepseek-tui engine 之间的
 //! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
 
-pub mod bundle;
-pub mod marketplace;
-pub mod mode_state;
-pub mod paths;
-pub mod prefs;
-pub mod sessions;
-pub mod skill_marketplace;
+pub use crate::core::mode_state;
+pub use crate::features::marketplace;
+pub use crate::features::marketplace::skill_marketplace;
+pub use crate::features::sessions;
+pub use crate::platform::bundle;
+pub use crate::platform::paths;
+pub use crate::platform::prefs;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -121,11 +121,7 @@ impl Pinvou3Bridge {
         crate::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
             eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
-            crate::startup::mark_with_detail(
-                "rust",
-                "bridge_boot:mcp_secret_sync:error",
-                &err,
-            );
+            crate::startup::mark_with_detail("rust", "bridge_boot:mcp_secret_sync:error", &err);
         }
         crate::startup::mark("bridge_boot:mcp_secret_sync:done");
         crate::startup::mark("bridge_boot:prefs_load:start");
@@ -878,7 +874,7 @@ impl Pinvou3Bridge {
             // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
             // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
             disallowed_tools: {
-                let n = crate::bridge::marketplace::disabled_tool_names();
+                let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() {
                     None
                 } else {
@@ -1528,14 +1524,13 @@ mod tests {
     #[test]
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
-        let content_of =
-            |mode| match bridge
-                .build_send_message_op("用户消息".to_string(), mode, None, false)
-                .expect("resolve test route")
-            {
-                Op::SendMessage { content, .. } => content,
-                other => panic!("期望 SendMessage,得到 {other:?}"),
-            };
+        let content_of = |mode| match bridge
+            .build_send_message_op("用户消息".to_string(), mode, None, false)
+            .expect("resolve test route")
+        {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
         let yolo = content_of(AppMode::Yolo);
         assert!(
             yolo.contains("<system-reminder>") && yolo.contains("超级权限"),
@@ -1554,13 +1549,14 @@ mod tests {
     fn build_send_message_op_injects_persona_reminder_when_present() {
         let bridge = fixture_bridge();
         let persona = "你现在戴着【数据库架构师】专家面具。".to_string();
-        let op = bridge.build_send_message_op(
-            "用户消息".to_string(),
-            AppMode::Yolo,
-            Some(persona.clone()),
-            false,
-        )
-        .expect("resolve test route");
+        let op = bridge
+            .build_send_message_op(
+                "用户消息".to_string(),
+                AppMode::Yolo,
+                Some(persona.clone()),
+                false,
+            )
+            .expect("resolve test route");
         let content = match op {
             Op::SendMessage { content, .. } => content,
             other => panic!("期望 SendMessage,得到 {other:?}"),
@@ -1584,13 +1580,9 @@ mod tests {
     #[test]
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
-        let allowed = |restrict| match bridge.build_send_message_op(
-            "hi".to_string(),
-            AppMode::Yolo,
-            None,
-            restrict,
-        )
-        .expect("resolve test route")
+        let allowed = |restrict| match bridge
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict)
+            .expect("resolve test route")
         {
             Op::SendMessage { allowed_tools, .. } => allowed_tools,
             other => panic!("期望 SendMessage,得到 {other:?}"),
@@ -1745,7 +1737,6 @@ mod tests {
             let t = b.build_engine_config().compaction.token_threshold; // 不得 panic
             assert_eq!(t, 4_096, "极端小窗口 W={w} 应 clamp 到 floor 4096,实得 {t}");
         }
-
     }
 
     /// probed_context_tokens=Some → 必须填进 active_route_limits.context_tokens

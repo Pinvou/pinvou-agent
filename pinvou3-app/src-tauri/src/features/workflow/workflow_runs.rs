@@ -7,7 +7,7 @@
 // P0 Task6 接线（commands/forwarder 调用）后删：当前 pub API 暂无调用方。
 #![allow(dead_code)]
 
-use crate::bridge::paths;
+use crate::platform::paths;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn create_then_list_roundtrip() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-wfruns-{}", std::process::id());
@@ -235,7 +235,7 @@ mod tests {
 
         let meta = create_run("solution_deck", "测试标题").unwrap();
         assert!(meta.run_id.starts_with("wf-"));
-        assert!(crate::bridge::paths::workflow_run_dir(&meta.run_id)
+        assert!(crate::platform::paths::workflow_run_dir(&meta.run_id)
             .join("run.json")
             .exists());
 
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(listed[0].status, "running");
 
         // 台账可重建：删 index.json 后 list_runs 仍能列出（扫 run.json 重建）
-        std::fs::remove_file(crate::bridge::paths::workflows_index_path()).unwrap();
+        std::fs::remove_file(crate::platform::paths::workflows_index_path()).unwrap();
         assert_eq!(list_runs().unwrap().len(), 1);
         std::env::remove_var("PINVOU3_HOME");
     }
@@ -288,7 +288,7 @@ mod tests {
     // I-3: 外部 run_id 路径穿越必须被挡（后续暴露给前端 invoke + cli_server HTTP）
     #[test]
     fn read_run_rejects_path_traversal() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-wfruns-trav-{}", std::process::id());
@@ -296,7 +296,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
 
         // workflows/ 必须真实存在，".." 才能在内核层被逐段解析穿出去（否则 ENOENT 假绿）
-        std::fs::create_dir_all(crate::bridge::paths::workflows_root()).unwrap();
+        std::fs::create_dir_all(crate::platform::paths::workflows_root()).unwrap();
         // 在 workflows/ 外造一个能被穿越读到的 run.json
         let evil_dir = std::path::Path::new(&tmp).join("sessions").join("evil");
         std::fs::create_dir_all(&evil_dir).unwrap();
@@ -317,7 +317,7 @@ mod tests {
     // M-3①: abandoned 是用户手动态，reconcile 不被 _state 派生覆盖
     #[test]
     fn reconcile_keeps_abandoned_over_state() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-wfruns-abd-{}", std::process::id());
@@ -327,7 +327,7 @@ mod tests {
         let meta = create_run("solution_deck", "弃用测试").unwrap();
         update_run_status(&meta.run_id, "abandoned").unwrap();
         // _state 全 completed，但 abandoned 短路
-        let state_dir = crate::bridge::paths::workflow_project_dir(&meta.run_id).join("_state");
+        let state_dir = crate::platform::paths::workflow_project_dir(&meta.run_id).join("_state");
         std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
             state_dir.join("workflow_progress.json"),
@@ -343,7 +343,7 @@ mod tests {
     // M-3②: _state 全完成（含 skipped）而 run.json 落后 → reconcile 后 completed 且 index 同步
     #[test]
     fn reconcile_syncs_completed_from_state_and_index() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-wfruns-rec-{}", std::process::id());
@@ -352,7 +352,7 @@ mod tests {
 
         let meta = create_run("solution_deck", "互证测试").unwrap();
         assert_eq!(meta.status, "running");
-        let state_dir = crate::bridge::paths::workflow_project_dir(&meta.run_id).join("_state");
+        let state_dir = crate::platform::paths::workflow_project_dir(&meta.run_id).join("_state");
         std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
             state_dir.join("workflow_progress.json"),
@@ -399,7 +399,7 @@ mod tests {
     // M-1: run_id 碰撞（目录已存在）→ 重 gen，最多 8 次仍撞 → Err 不静默覆盖
     #[test]
     fn create_run_retries_on_collision() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-wfruns-col-{}", std::process::id());
@@ -408,7 +408,7 @@ mod tests {
 
         // 预占一个 id 的目录，注入"先撞后让"的 gen → 第二次拿到新 id
         let taken = "wf-20260610-1200-aaaa";
-        std::fs::create_dir_all(crate::bridge::paths::workflow_run_dir(taken)).unwrap();
+        std::fs::create_dir_all(crate::platform::paths::workflow_run_dir(taken)).unwrap();
         let mut calls = 0;
         let meta = create_run_locked("solution_deck", "撞后重试", &mut || {
             calls += 1;
@@ -430,7 +430,7 @@ mod tests {
     // M-3③: 单个坏 run.json 不炸 list_runs（台账纯缓存，跳过坏项）
     #[test]
     fn list_runs_skips_broken_run_json() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-wfruns-bad-{}", std::process::id());
@@ -438,12 +438,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
 
         let meta = create_run("solution_deck", "好的").unwrap();
-        let bad_dir = crate::bridge::paths::workflows_root().join("wf-20990101-0000-dead");
+        let bad_dir = crate::platform::paths::workflows_root().join("wf-20990101-0000-dead");
         std::fs::create_dir_all(&bad_dir).unwrap();
         std::fs::write(bad_dir.join("run.json"), "{not json!!").unwrap();
 
         // 删 index 强制走 rebuild 扫描路径
-        let _ = std::fs::remove_file(crate::bridge::paths::workflows_index_path());
+        let _ = std::fs::remove_file(crate::platform::paths::workflows_index_path());
         let listed = list_runs().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].run_id, meta.run_id);

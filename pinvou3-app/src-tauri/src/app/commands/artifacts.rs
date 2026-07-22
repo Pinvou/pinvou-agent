@@ -44,7 +44,7 @@ pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), 
 fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
     let canonical = std::fs::canonicalize(path)
         .map_err(|e| format!("resolve artifact path({}): {e}", path.display()))?;
-    let sessions_root = crate::bridge::paths::sessions_root();
+    let sessions_root = crate::platform::paths::sessions_root();
     let sessions_root = std::fs::canonicalize(&sessions_root).map_err(|e| {
         format!(
             "markdown artifact is outside session storage: cannot resolve sessions root({}): {e}",
@@ -338,7 +338,7 @@ fn deliverable_category(ext: &str) -> &'static str {
 
 #[tauri::command]
 pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
-    let sessions_dir = crate::bridge::paths::sessions_root();
+    let sessions_dir = crate::platform::paths::sessions_root();
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(e) => e,
         Err(_) => return Ok(Vec::new()),
@@ -1135,11 +1135,7 @@ fn resolve_artifact_path(
 }
 
 pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &std::path::Path) -> String {
-    if std::path::Path::new(raw).is_absolute() {
-        raw.to_string()
-    } else {
-        workspace.join(raw).to_string_lossy().into_owned()
-    }
+    crate::platform::path_policy::resolve_artifact_path_in_workspace(raw, workspace)
 }
 
 /// 用系统默认应用打开文件（跨平台：Win `start` / mac `open` / Linux `xdg-open`）；
@@ -1196,7 +1192,7 @@ pub async fn reveal_session_folder(
             .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
         return shell_open(&strip_verbatim(&dir));
     }
-    let dir = crate::bridge::paths::sessions_root().join(&session_id);
+    let dir = crate::platform::paths::sessions_root().join(&session_id);
     if !dir.is_dir() {
         return Err(format!("session folder not found: {}", dir.display()));
     }
@@ -1210,7 +1206,7 @@ pub async fn open_scheduled_task_folder(automation_id: String) -> Result<(), Str
     if !valid_session_id(&automation_id) {
         return Err("invalid automation id".into());
     }
-    let dir = crate::bridge::paths::scheduled_task_workspace_dir(&automation_id);
+    let dir = crate::platform::paths::scheduled_task_workspace_dir(&automation_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
     shell_open(&strip_verbatim(&dir))

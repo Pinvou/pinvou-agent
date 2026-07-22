@@ -33,11 +33,11 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-use crate::bridge::mode_state::SerializableMode;
-use crate::bridge::sessions::{
+use crate::core::mode_state::SerializableMode;
+use crate::features::sessions::{
     ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting, SessionStore,
 };
-use crate::bridge::Pinvou3Bridge;
+use crate::platform::engine_bridge::Pinvou3Bridge;
 
 /// 定时任务无人值守首轮的唯一附加约束。任务 prompt 原文已作为用户消息传入，
 /// 这一句只防模型把目标改写成别的事，不再堆叠更长的提示词。
@@ -96,7 +96,7 @@ pub(crate) fn emit_chat_terminal(
         "error": error,
     });
     let _ = app.emit("chat:done", payload.clone());
-    crate::remote_control::forward_app_event(app, "chat:done", payload);
+    crate::platform::app_events::forward_app_event(app, "chat:done", payload);
 }
 
 impl TurnLifecycle {
@@ -107,7 +107,7 @@ impl TurnLifecycle {
             state.turn_id = None;
             state.terminal_emitted = false;
             state.reclaimed = false;
-            crate::connector_visibility::turn_submitted();
+            crate::platform::connector_visibility::turn_submitted();
             true
         } else {
             false
@@ -122,7 +122,7 @@ impl TurnLifecycle {
         if state.turn_id.is_none() && !state.terminal_emitted {
             state.active = false;
             drop(state);
-            crate::connector_visibility::turn_finished();
+            crate::platform::connector_visibility::turn_finished();
         }
     }
 
@@ -132,7 +132,7 @@ impl TurnLifecycle {
             return;
         }
         if !state.active {
-            crate::connector_visibility::turn_submitted();
+            crate::platform::connector_visibility::turn_submitted();
         }
         state.active = true;
         state.turn_id = Some(turn_id);
@@ -150,7 +150,7 @@ impl TurnLifecycle {
             turn_id: state.turn_id.take(),
         };
         drop(state);
-        crate::connector_visibility::turn_finished();
+        crate::platform::connector_visibility::turn_finished();
         Some(emitted)
     }
 
@@ -186,7 +186,7 @@ impl TurnLifecycle {
             turn_id: state.turn_id.take(),
         };
         drop(state);
-        crate::connector_visibility::turn_finished();
+        crate::platform::connector_visibility::turn_finished();
         emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None);
         Some(emitted)
     }
@@ -201,13 +201,15 @@ impl AppEngine {
     /// 调用方(EnginePool)负责复用同一份已 boot 的 `bridge`,避免每个 session 重 boot
     /// (boot 会写盘 / 设 env)。
     ///
-    /// [`build_engine_config_for_session`]: crate::bridge::Pinvou3Bridge::build_engine_config_for_session
+    /// [`build_engine_config_for_session`]: crate::platform::engine_bridge::Pinvou3Bridge::build_engine_config_for_session
     /// [`EnginePool`]: crate::engine_pool::EnginePool
     pub(crate) async fn spawn_for_session(
         app: AppHandle,
         store: SessionStore,
         bridge: Pinvou3Bridge,
         session_id: &str,
+        extra_tools: Vec<std::sync::Arc<dyn deepseek_tui::tools::spec::ToolSpec>>,
+        disallowed: Vec<String>,
         turn_lifecycle: Arc<TurnLifecycle>,
         shell_manager: SharedShellManager,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
@@ -231,17 +233,10 @@ impl AppEngine {
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search 工具(持 session_id,execute 时
         // 查该会话挂载的知识集)。工具常驻所有会话,挂没挂集由其运行时判断。
-        engine_config
-            .extra_tools
-            .0
-            .push(std::sync::Arc::new(crate::knowledge::KbSearchTool::new(
-                app.clone(),
-                session_id.to_string(),
-            )));
+        engine_config.extra_tools.0.extend(extra_tools);
         // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search。compute 返回**完整**列表
         // (已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,让新会话天生正确
         // ——空知识库就看不到 kb_search,不会宣称能本地检索。
-        let disallowed = crate::commands::compute_disallowed_tools(&app);
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can
         // enqueue autonomous continuation turns after TurnComplete. Apply this
@@ -794,7 +789,7 @@ fn emit_shell_task_status(
         "stderr_tail": stderr_tail,
     });
     let _ = app.emit("chat:shell_task_status", payload.clone());
-    crate::remote_control::forward_app_event(app, "chat:shell_task_status", payload);
+    crate::platform::app_events::forward_app_event(app, "chat:shell_task_status", payload);
 }
 
 /// Observe a detached process independently from the Engine turn. A weak
@@ -937,7 +932,7 @@ fn spawn_event_forwarder(
                     crate::memory::append_turn_assistant(&session_id, &content);
                     let payload = json!({ "session_id": session_id, "text": content });
                     let _ = app.emit("chat:delta", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:delta", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:delta", payload);
                 }
                 Event::ThinkingDelta { .. } => {
                     // Qwen3 已用 reasoning_effort=off 关 thinking，丢这段
@@ -951,7 +946,7 @@ fn spawn_event_forwarder(
                     let payload =
                         json!({ "session_id": session_id, "id": id, "name": name, "args": input });
                     let _ = app.emit("chat:tool_start", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:tool_start", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:tool_start", payload);
                 }
                 Event::ToolCallOutput {
                     id,
@@ -969,7 +964,7 @@ fn spawn_event_forwarder(
                         "content": content,
                     });
                     let _ = app.emit("chat:tool_delta", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:tool_delta", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:tool_delta", payload);
                 }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
@@ -1065,7 +1060,7 @@ fn spawn_event_forwarder(
                             "todos_snapshot": todos_emit,
                         });
                         let _ = app.emit("chat:plan_snapshot", payload.clone());
-                        crate::remote_control::forward_app_event(
+                        crate::platform::app_events::forward_app_event(
                             &app,
                             "chat:plan_snapshot",
                             payload,
@@ -1080,7 +1075,7 @@ fn spawn_event_forwarder(
                         "metadata": metadata,
                     });
                     let _ = app.emit("chat:tool_end", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:tool_end", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:tool_end", payload);
                     if let Some(task_id) = background_task_id {
                         watch_background_shell(
                             app.clone(),
@@ -1110,7 +1105,7 @@ fn spawn_event_forwarder(
                             "questions": request.questions,
                         });
                         let _ = app.emit("chat:user_input_required", payload.clone());
-                        crate::remote_control::forward_app_event(
+                        crate::platform::app_events::forward_app_event(
                             &app,
                             "chat:user_input_required",
                             payload,
@@ -1660,7 +1655,7 @@ fn spawn_event_forwarder(
                         "output_tokens": usage.output_tokens,
                     });
                     let _ = app.emit("chat:usage", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:usage", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:usage", payload);
                     // app 侧自测:用精确 usage 收尾本轮。部分远端模型会流式返回文本,
                     // 但最终 usage.output_tokens 为 0,因此不能用 output_tokens 门控收尾。
                     if let Some(m) = &self_metrics {
@@ -1709,7 +1704,7 @@ fn spawn_event_forwarder(
                                 "todos_snapshot": todos_snapshot.clone(),
                             });
                             let _ = app.emit("chat:plan_ready", payload.clone());
-                            crate::remote_control::forward_app_event(
+                            crate::platform::app_events::forward_app_event(
                                 &app,
                                 "chat:plan_ready",
                                 payload,
@@ -1925,7 +1920,7 @@ fn spawn_event_forwarder(
                 } => {
                     let payload = json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:compaction", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:compaction", payload);
                 }
                 Event::CompactionCompleted {
                     id,
@@ -1945,12 +1940,12 @@ fn spawn_event_forwarder(
                         "messages_after": messages_after,
                     });
                     let _ = app.emit("chat:compaction", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:compaction", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:compaction", payload);
                 }
                 Event::CompactionFailed { message, auto, .. } => {
                     let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
-                    crate::remote_control::forward_app_event(&app, "chat:compaction", payload);
+                    crate::platform::app_events::forward_app_event(&app, "chat:compaction", payload);
                 }
                 Event::Error { envelope, .. } => {
                     // 可恢复错误(如 SSE idle timeout、瞬态工具失败)turn 不会结束——
@@ -1962,7 +1957,7 @@ fn spawn_event_forwarder(
                         let payload =
                             json!({ "session_id": session_id, "error": envelope.message });
                         let _ = app.emit("chat:transient_error", payload.clone());
-                        crate::remote_control::forward_app_event(
+                        crate::platform::app_events::forward_app_event(
                             &app,
                             "chat:transient_error",
                             payload,
@@ -2072,9 +2067,10 @@ fn persist_successful_tool_artifact(
     let Some(raw_path) = output_path.or(input_path) else {
         return Ok(None);
     };
-    let resolved = crate::commands::resolve_artifact_path_in_workspace(&raw_path, workspace);
-    let path =
-        crate::commands::validate_user_path(&resolved).map_err(|error| anyhow::anyhow!(error))?;
+    let resolved =
+        crate::platform::path_policy::resolve_artifact_path_in_workspace(&raw_path, workspace);
+    let path = crate::platform::path_policy::validate_user_path(&resolved)
+        .map_err(|error| anyhow::anyhow!(error))?;
     if !path.is_file() {
         anyhow::bail!("tool artifact is not an existing file: {}", path.display());
     }
@@ -2300,7 +2296,7 @@ mod scheduled_turn_tests {
         apply_scheduled_turn_policy, persist_successful_tool_artifact,
         scheduled_tool_should_auto_approve, EngineTurnSignal, TurnCompletionTracker,
     };
-    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+    use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
     use deepseek_tui::compaction::CompactionConfig;
     use deepseek_tui::config::Config;
     use deepseek_tui::core::events::TurnOutcomeStatus;
@@ -2476,7 +2472,7 @@ mod scheduled_turn_tests {
 
     #[test]
     fn scheduled_tool_artifacts_persist_without_a_webview_listener_and_reopen() {
-        let _guard = crate::bridge::paths::tests::ENV_LOCK
+        let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::temp_dir().join(format!(
@@ -2492,7 +2488,7 @@ mod scheduled_turn_tests {
         std::fs::create_dir_all(&workspace).expect("workspace");
         let report = workspace.join("report.md");
         std::fs::write(&report, "durable report").expect("artifact file");
-        let store = crate::bridge::sessions::SessionStore::boot().expect("session store");
+        let store = crate::features::sessions::SessionStore::boot().expect("session store");
         let scheduled = store
             .create_scheduled_run(ScheduledRunProfile {
                 task_id: "artifact-task".to_string(),
@@ -2522,7 +2518,7 @@ mod scheduled_turn_tests {
         );
 
         drop(store);
-        let reopened = crate::bridge::sessions::SessionStore::boot().expect("reopen store");
+        let reopened = crate::features::sessions::SessionStore::boot().expect("reopen store");
         let paths: Vec<_> = reopened
             .load(&scheduled.metadata.id)
             .expect("reopen scheduled session")
@@ -2543,7 +2539,7 @@ mod scheduled_turn_tests {
 #[cfg(test)]
 mod live_tests {
     use super::*;
-    use crate::bridge::mode_state::SerializableMode;
+    use crate::core::mode_state::SerializableMode;
     use crate::features::monitor::SelfMetrics;
 
     /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 四臂

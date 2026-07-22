@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::Emitter;
 
-use crate::bridge::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::credential_store::CredentialState;
 use crate::features::monitor::{self, VllmStatus};
 

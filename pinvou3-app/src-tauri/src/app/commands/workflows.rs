@@ -39,7 +39,7 @@ pub struct DemoSummary {
 /// (它们不应出现在工作流卡片入口里)。
 #[tauri::command]
 pub async fn list_skills_v2() -> Result<Vec<SkillSummary>, String> {
-    use crate::bridge::paths;
+    use crate::platform::paths;
     use deepseek_tui::skills::SkillRegistry;
 
     let dir = paths::bundle_workflow_dir();
@@ -121,8 +121,8 @@ pub async fn start_skill_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<StartSkillSessionResult, String> {
-    use crate::bridge::mode_state::ActiveSkillBinding;
-    use crate::bridge::paths;
+    use crate::core::mode_state::ActiveSkillBinding;
+    use crate::platform::paths;
     use deepseek_tui::skills::SkillRegistry;
 
     if WORKFLOW_HIDDEN_SKILLS.contains(&name.as_str()) {
@@ -229,7 +229,7 @@ pub async fn start_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<StartWorkflowResult, String> {
-    use crate::bridge::mode_state::ActiveSkillBinding;
+    use crate::core::mode_state::ActiveSkillBinding;
 
     // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
     //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。

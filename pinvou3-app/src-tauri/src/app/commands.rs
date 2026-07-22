@@ -19,9 +19,9 @@ use deepseek_tui::tools::user_input::{UserInputAnswer, UserInputResponse};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::bridge::mode_state::{SerializableMode, SessionModeState};
-use crate::bridge::prefs::{SavedModel, SearchProvider, UserPrefs};
-use crate::bridge::sessions::{SessionKind, SessionStore};
+use crate::core::mode_state::{SerializableMode, SessionModeState};
+use crate::platform::prefs::{SavedModel, SearchProvider, UserPrefs};
+use crate::features::sessions::{SessionKind, SessionStore};
 use crate::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };

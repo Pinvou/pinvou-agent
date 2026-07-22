@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::bridge::{prefs::ModelPreset, Pinvou3Bridge};
+use crate::platform::engine_bridge::{prefs::ModelPreset, Pinvou3Bridge};
 
 const PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问，召之即来。
 
@@ -307,7 +307,7 @@ fn read_prior_ledger(
     artifact_path: &str,
     current_pos: u64,
 ) -> Option<Vec<PinvouIssue>> {
-    let path = crate::bridge::paths::session_pinvou_reviews(session_id);
+    let path = crate::platform::paths::session_pinvou_reviews(session_id);
     let txt = std::fs::read_to_string(path).ok()?;
     let arr: Vec<Value> = serde_json::from_str(&txt).ok()?;
     ledger_from_entries(&arr, artifact_path, current_pos)

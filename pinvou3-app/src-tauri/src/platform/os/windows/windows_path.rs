@@ -437,7 +437,7 @@ pub fn bundled_asr_model_path() -> Option<PathBuf> {
 }
 
 pub fn user_asr_model_path() -> PathBuf {
-    crate::bridge::paths::pinvou3_home()
+    crate::platform::paths::pinvou3_home()
         .join("asr")
         .join(asr_q8_model_filename())
 }
@@ -451,7 +451,7 @@ pub fn asr_model_path() -> PathBuf {
     std::env::current_exe()
         .ok()
         .map(|exe| {
-            asr_model_path_for_exe_and_user_home(&exe, &crate::bridge::paths::pinvou3_home())
+            asr_model_path_for_exe_and_user_home(&exe, &crate::platform::paths::pinvou3_home())
         })
         .unwrap_or_else(user_asr_model_path)
 }

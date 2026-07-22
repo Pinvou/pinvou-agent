@@ -105,7 +105,7 @@ pub async fn kb_model_load_after_first_frame(
     }
     let ready = service.semantic_ready();
     if ready {
-        super::refresh_kb_tool_gate(&app, &pool).await;
+        super::refresh_kb_tool_gate(&pool).await;
     }
     crate::startup::mark_with_detail(
         "rust",
@@ -213,7 +213,7 @@ pub async fn kb_model_download(
 
     // ── 4. 热加载 + 刷新工具门控（免重启）─────────────────────────
     let ready = service.reload_embedder();
-    super::refresh_kb_tool_gate(&app, &pool).await;
+    super::refresh_kb_tool_gate(&pool).await;
     let _ = app.emit("kb_model:progress", serde_json::json!({ "stage": "done", "ready": ready }));
     Ok(current_status())
 }

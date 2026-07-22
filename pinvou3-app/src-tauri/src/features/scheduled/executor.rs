@@ -11,9 +11,9 @@ use deepseek_tui::task_manager::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bridge::prefs::{SavedModel, UserPrefs};
-use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
-use crate::bridge::Pinvou3Bridge;
+use crate::platform::prefs::{SavedModel, UserPrefs};
+use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
+use crate::platform::engine_bridge::Pinvou3Bridge;
 use crate::engine_pool::{EnginePool, ScheduledTurnCompletion};
 
 type StartedCallback =
@@ -276,8 +276,8 @@ mod tests {
     use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
 
-    use crate::bridge::prefs::{ModelPreset, SavedModel};
-    use crate::bridge::sessions::{ScheduledRunMode, ScheduledRunProfile};
+    use crate::platform::prefs::{ModelPreset, SavedModel};
+    use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
     use crate::credential_store::{CredentialEditAction, CredentialState};
     use crate::engine_pool::ScheduledTurnCompletion;
 

@@ -13,7 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::Emitter;
 
-use crate::bridge::paths;
+use crate::platform::paths;
 
 static ASR_INSTALLING: AtomicBool = AtomicBool::new(false);
 static ASR_CANCEL: AtomicBool = AtomicBool::new(false);

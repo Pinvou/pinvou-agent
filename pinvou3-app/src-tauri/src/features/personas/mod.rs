@@ -104,7 +104,7 @@ fn user_lock() -> &'static RwLock<Vec<PersonaCard>> {
 
 /// 扫 `~/.pinvou3/user/personas/<id>.json`,解析成卡(source 强制 "user")。
 fn load_user_cards() -> Vec<PersonaCard> {
-    let dir = crate::bridge::paths::user_personas_dir();
+    let dir = crate::platform::paths::user_personas_dir();
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return out;
@@ -187,7 +187,7 @@ fn write_card(card: &PersonaCard) -> Result<(), String> {
     if !id_is_safe(&card.id) {
         return Err(format!("非法卡 id: {}", card.id));
     }
-    let dir = crate::bridge::paths::user_personas_dir();
+    let dir = crate::platform::paths::user_personas_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("建目录失败: {e}"))?;
     let path = dir.join(format!("{}.json", card.id));
     let json = serde_json::to_string_pretty(card).map_err(|e| format!("序列化失败: {e}"))?;
@@ -217,7 +217,7 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     if card.name.trim().is_empty() {
         return Err("卡牌名称不能为空".to_string());
     }
-    let path = crate::bridge::paths::user_personas_dir().join(format!("{}.json", card.id));
+    let path = crate::platform::paths::user_personas_dir().join(format!("{}.json", card.id));
     if !path.exists() {
         return Err("卡牌不存在".to_string());
     }
@@ -235,7 +235,7 @@ pub fn delete_user_persona(id: &str) -> Result<(), String> {
     if !id.starts_with("user-") || !id_is_safe(id) {
         return Err("只能删除自制卡".to_string());
     }
-    let path = crate::bridge::paths::user_personas_dir().join(format!("{id}.json"));
+    let path = crate::platform::paths::user_personas_dir().join(format!("{id}.json"));
     let _ = std::fs::remove_file(&path);
     reload_user();
     Ok(())
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn user_persona_crud_roundtrip() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();

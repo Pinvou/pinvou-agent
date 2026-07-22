@@ -30,7 +30,7 @@
 //! ⚠️ ship gate：本迁移与 T6（start_workflow 切新布局）必须同版发布——marker 一次性，
 //! 旧布局写入方还活着时先跑迁移会让新项目滞留旧布局。
 
-use crate::bridge::paths;
+use crate::platform::paths;
 use crate::workflow_runs;
 use std::path::{Path, PathBuf};
 
@@ -418,14 +418,14 @@ mod tests {
 
     #[test]
     fn migrates_legacy_projects_and_cleans_bindings() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-{}", std::process::id());
         std::env::set_var("PINVOU3_HOME", &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
         // 旧布局: sessions/s1/workspace/ppt-20260601-120000-solution_deck/_state/workflow_progress.json
-        let proj = crate::bridge::paths::sessions_root()
+        let proj = crate::platform::paths::sessions_root()
             .join("s1/workspace/ppt-20260601-120000-solution_deck/_state");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(
@@ -435,12 +435,12 @@ mod tests {
         .unwrap();
         // 宿主 session: 空消息 s1.json + binding
         std::fs::write(
-            crate::bridge::paths::sessions_root().join("s1.json"),
+            crate::platform::paths::sessions_root().join("s1.json"),
             r#"{"metadata":{"id":"s1","title":"PPT · 完整方案型"},"messages":[]}"#,
         )
         .unwrap();
         std::fs::write(
-            crate::bridge::paths::sessions_root().join("_skill_bindings.json"),
+            crate::platform::paths::sessions_root().join("_skill_bindings.json"),
             r#"{"s1":{"name":"h3c-ppt","phases":[],"project_dir":"/old/path"}}"#,
         )
         .unwrap();
@@ -459,27 +459,27 @@ mod tests {
         );
         assert!(crate::workflow_runs::is_valid_run_id(&runs[0].run_id));
         assert_eq!(runs[0].scenario, "solution_deck");
-        assert!(crate::bridge::paths::workflow_project_dir(&runs[0].run_id)
+        assert!(crate::platform::paths::workflow_project_dir(&runs[0].run_id)
             .join("_state/workflow_progress.json")
             .exists());
         // binding 清掉、宿主**归档**（一律归档不删除——"聊天为空"推不出"目录无价值"）、标记文件存在
         let b = std::fs::read_to_string(
-            crate::bridge::paths::sessions_root().join("_skill_bindings.json"),
+            crate::platform::paths::sessions_root().join("_skill_bindings.json"),
         )
         .unwrap();
         assert!(!b.contains("project_dir"));
-        assert!(!crate::bridge::paths::sessions_root().join("s1.json").exists());
-        assert!(!crate::bridge::paths::sessions_root().join("s1").exists());
-        let arch = crate::bridge::paths::sessions_root().join("_archived_workflow_hosts");
+        assert!(!crate::platform::paths::sessions_root().join("s1.json").exists());
+        assert!(!crate::platform::paths::sessions_root().join("s1").exists());
+        let arch = crate::platform::paths::sessions_root().join("_archived_workflow_hosts");
         assert!(arch.join("s1.json").exists(), "空聊天宿主也必须归档而非删除");
         assert!(arch.join("s1").is_dir(), "宿主目录（含 workspace 残留物）必须归档");
-        assert!(crate::bridge::paths::workflows_root()
+        assert!(crate::platform::paths::workflows_root()
             .join(".migration_done")
             .exists());
         // marker 内容是审计摘要 JSON：deleted_hosts 字段已废弃（C1），统一计 archived
         let marker: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(
-                crate::bridge::paths::workflows_root().join(".migration_done"),
+                crate::platform::paths::workflows_root().join(".migration_done"),
             )
             .unwrap(),
         )
@@ -497,13 +497,13 @@ mod tests {
     // title 优先 brief.json 的 user_request_raw 前 16 字（按字符，中文安全）。
     #[test]
     fn archives_host_with_user_messages_instead_of_deleting() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-arch-{}", std::process::id());
         std::env::set_var("PINVOU3_HOME", &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
-        let state = crate::bridge::paths::sessions_root()
+        let state = crate::platform::paths::sessions_root()
             .join("s2/workspace/ppt-20260602-090000-internal_quick/_state");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(
@@ -518,12 +518,12 @@ mod tests {
         .unwrap();
         // 宿主带真实用户消息（system 注入不算，所以混入一条 system 验证判据）
         std::fs::write(
-            crate::bridge::paths::sessions_root().join("s2.json"),
+            crate::platform::paths::sessions_root().join("s2.json"),
             r#"{"metadata":{"id":"s2"},"messages":[{"role":"system","content":"注入"},{"role":"user","content":"开始做PPT"}]}"#,
         )
         .unwrap();
         std::fs::write(
-            crate::bridge::paths::sessions_root().join("_skill_bindings.json"),
+            crate::platform::paths::sessions_root().join("_skill_bindings.json"),
             r#"{"s2":{"name":"h3c-ppt","phases":[],"project_dir":"/old/p2"},"chat1":{"name":"deep-research","phases":[],"project_dir":null}}"#,
         )
         .unwrap();
@@ -536,13 +536,13 @@ mod tests {
         assert_eq!(runs[0].scenario, "internal_quick");
         assert_eq!(runs[0].title, "做一份AI智慧教室解决方案汇报材"); // 前 16 字符（含 A/I）
         // 宿主归档而非删除
-        let arch = crate::bridge::paths::sessions_root().join("_archived_workflow_hosts");
+        let arch = crate::platform::paths::sessions_root().join("_archived_workflow_hosts");
         assert!(arch.join("s2.json").exists());
         assert!(arch.join("s2").is_dir());
-        assert!(!crate::bridge::paths::sessions_root().join("s2.json").exists());
+        assert!(!crate::platform::paths::sessions_root().join("s2.json").exists());
         // project_dir 为 null 的普通聊天 binding 必须保留
         let b = std::fs::read_to_string(
-            crate::bridge::paths::sessions_root().join("_skill_bindings.json"),
+            crate::platform::paths::sessions_root().join("_skill_bindings.json"),
         )
         .unwrap();
         assert!(b.contains("chat1"));
@@ -555,14 +555,14 @@ mod tests {
     // 否则永久跳过 → 项目滞留旧址，宿主清理时被连带删除。
     #[test]
     fn resumes_rename_when_run_dir_exists_but_target_missing() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-resume-{}", std::process::id());
         std::env::set_var("PINVOU3_HOME", &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
         let dir_name = "ppt-20260603-100000-internal_quick";
-        let old_proj = crate::bridge::paths::sessions_root()
+        let old_proj = crate::platform::paths::sessions_root()
             .join("s3/workspace")
             .join(dir_name);
         std::fs::create_dir_all(old_proj.join("_state")).unwrap();
@@ -573,13 +573,13 @@ mod tests {
         .unwrap();
         // 模拟半途崩：run_dir 已建出来（空壳），project/ 没搬进去
         let run_id = derive_run_id(dir_name).unwrap();
-        std::fs::create_dir_all(crate::bridge::paths::workflow_run_dir(&run_id)).unwrap();
+        std::fs::create_dir_all(crate::platform::paths::workflow_run_dir(&run_id)).unwrap();
 
         migrate_if_needed().unwrap();
 
         // 项目真的搬进去了，而不是被"目标 run 已存在"误跳过
         assert!(
-            crate::bridge::paths::workflow_project_dir(&run_id)
+            crate::platform::paths::workflow_project_dir(&run_id)
                 .join("_state/workflow_progress.json")
                 .exists(),
             "续跑必须重试 rename 把项目搬进 target"
@@ -612,7 +612,7 @@ mod tests {
     // 必须对 "<dirname>#<n>" 重新散列去重，两个 run 都迁移成功。
     #[test]
     fn dedups_run_id_when_same_dir_name_in_two_sessions() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-dedup-{}", std::process::id());
@@ -620,7 +620,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let dir_name = "ppt-20260604-110000-solution_deck";
         for (sid, tag) in [("sA", "A"), ("sB", "B")] {
-            let proj = crate::bridge::paths::sessions_root()
+            let proj = crate::platform::paths::sessions_root()
                 .join(sid)
                 .join("workspace")
                 .join(dir_name);
@@ -644,7 +644,7 @@ mod tests {
             .map(|r| {
                 assert!(crate::workflow_runs::is_valid_run_id(&r.run_id));
                 std::fs::read_to_string(
-                    crate::bridge::paths::workflow_project_dir(&r.run_id).join("who.txt"),
+                    crate::platform::paths::workflow_project_dir(&r.run_id).join("who.txt"),
                 )
                 .unwrap()
             })
@@ -660,13 +660,13 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn host_archive_failure_returns_err_and_resumes_from_pending_file() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-pending-{}", std::process::id());
         std::env::set_var("PINVOU3_HOME", &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
-        let sessions = crate::bridge::paths::sessions_root();
+        let sessions = crate::platform::paths::sessions_root();
         // 宿主 s9：带用户消息（要归档）+ 有 s9/ 目录
         std::fs::create_dir_all(sessions.join("s9/workspace")).unwrap();
         std::fs::write(sessions.join("s9/workspace/note.txt"), "残留").unwrap();
@@ -687,9 +687,9 @@ mod tests {
 
         let err = migrate_if_needed();
         assert!(err.is_err(), "归档失败必须上报 Err，不能吞错");
-        let marker = crate::bridge::paths::workflows_root().join(".migration_done");
+        let marker = crate::platform::paths::workflows_root().join(".migration_done");
         assert!(!marker.exists(), "失败不写 marker（与模块头注释自洽）");
-        let pending = crate::bridge::paths::workflows_root().join(".pending_hosts.json");
+        let pending = crate::platform::paths::workflows_root().join(".pending_hosts.json");
         let pending_s = std::fs::read_to_string(&pending)
             .expect(".pending_hosts.json 必须残留供续跑");
         assert!(pending_s.contains("s9"));
@@ -711,7 +711,7 @@ mod tests {
     // 跑修复扫描：按目录名（即 run_id）+ project 内 progress 推导补写 run.json。
     #[test]
     fn repair_scan_rewrites_missing_run_json_before_rebuild_index() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-repair-{}", std::process::id());
@@ -719,21 +719,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         // 手工造"半截 run"：合法 run_id 目录 + project/_state/progress，无 run.json
         let run_id = "wf-20260605-1300-abcd";
-        let state = crate::bridge::paths::workflow_project_dir(run_id).join("_state");
+        let state = crate::platform::paths::workflow_project_dir(run_id).join("_state");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(
             state.join("workflow_progress.json"),
             r#"{"scenario":"internal_quick","roles":{"pm":{"status":"completed"}}}"#,
         )
         .unwrap();
-        assert!(!crate::bridge::paths::workflow_run_dir(run_id)
+        assert!(!crate::platform::paths::workflow_run_dir(run_id)
             .join("run.json")
             .exists());
 
         migrate_if_needed().unwrap();
 
         // run.json 补写到位，台账含该条且状态/场景派生自 progress
-        assert!(crate::bridge::paths::workflow_run_dir(run_id)
+        assert!(crate::platform::paths::workflow_run_dir(run_id)
             .join("run.json")
             .exists());
         let runs = crate::workflow_runs::list_runs().unwrap();
@@ -748,17 +748,17 @@ mod tests {
     // 但要在 marker 摘要里留下 skipped_unsafe_sids 计数（审计可见）。
     #[test]
     fn unsafe_sids_skipped_and_counted_in_summary() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let tmp = format!("/tmp/pinvou3-migrate-unsafe-{}", std::process::id());
         std::env::set_var("PINVOU3_HOME", &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(crate::bridge::paths::workflows_root()).unwrap();
-        std::fs::create_dir_all(crate::bridge::paths::sessions_root()).unwrap();
+        std::fs::create_dir_all(crate::platform::paths::workflows_root()).unwrap();
+        std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
         // 上一轮残留的 pending 文件里混入路径穿越形态 sid
         std::fs::write(
-            crate::bridge::paths::workflows_root().join(".pending_hosts.json"),
+            crate::platform::paths::workflows_root().join(".pending_hosts.json"),
             r#"["../evil", "..\\evil2"]"#,
         )
         .unwrap();
@@ -767,14 +767,14 @@ mod tests {
 
         let marker: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(
-                crate::bridge::paths::workflows_root().join(".migration_done"),
+                crate::platform::paths::workflows_root().join(".migration_done"),
             )
             .unwrap(),
         )
         .unwrap();
         assert_eq!(marker["skipped_unsafe_sids"], 2);
         // 可疑 sid 不算 failed：迁移正常完成、pending 文件撤掉
-        assert!(!crate::bridge::paths::workflows_root()
+        assert!(!crate::platform::paths::workflows_root()
             .join(".pending_hosts.json")
             .exists());
         std::env::remove_var("PINVOU3_HOME");

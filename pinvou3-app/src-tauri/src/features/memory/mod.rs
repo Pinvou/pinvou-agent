@@ -18,8 +18,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::bridge::paths;
-use crate::bridge::{
+use crate::platform::paths;
+use crate::platform::engine_bridge::{
     prefs::{ModelPreset, UserPrefs},
     Pinvou3Bridge,
 };
@@ -3938,7 +3938,7 @@ mod tests {
 
     impl IsolatedPinvouHome {
         fn new(name: &str) -> Self {
-            let guard = crate::bridge::paths::tests::ENV_LOCK
+            let guard = crate::platform::paths::tests::ENV_LOCK
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let prev = std::env::var("PINVOU3_HOME").ok();

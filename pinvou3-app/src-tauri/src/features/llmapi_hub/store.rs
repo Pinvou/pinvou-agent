@@ -223,7 +223,7 @@ struct BindingDb {
 }
 
 pub fn default_bindings_path() -> PathBuf {
-    crate::bridge::paths::pinvou3_home()
+    crate::platform::paths::pinvou3_home()
         .join("llmapi-hub")
         .join("bindings.json")
 }

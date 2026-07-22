@@ -248,7 +248,7 @@ fn clamp_scale_to_character_work_area(
 /// `~/.pinvou3/pet_window.json` —— 桌宠 client 原点(全局物理像素)+ 缩放 + 竖向靠边。
 /// 见 prefs::PetPrefs 注释:刻意不进 settings.json,避免前端整份回写覆盖。
 fn state_path() -> std::path::PathBuf {
-    crate::bridge::paths::pinvou3_home().join("pet_window.json")
+    crate::platform::paths::pinvou3_home().join("pet_window.json")
 }
 
 fn default_scale() -> f64 {
@@ -505,7 +505,7 @@ fn position_window(win: &tauri::WebviewWindow) {
 
 /// 启动时按 settings.json 决定是否拉起桌宠(setup 钩子里调)。
 pub fn spawn_if_enabled(app: &AppHandle) {
-    if crate::bridge::prefs::UserPrefs::load().pet.enabled {
+    if crate::platform::prefs::UserPrefs::load().pet.enabled {
         if let Err(e) = create_or_show(app) {
             eprintln!("[pinvou3-app] pet window create failed: {e}");
         }
@@ -528,7 +528,7 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
     if enabled {
         create_or_show(&app)?;
     }
-    let mut prefs = crate::bridge::prefs::UserPrefs::load();
+    let mut prefs = crate::platform::prefs::UserPrefs::load();
     let was_enabled = prefs.pet.enabled;
     prefs.pet.enabled = enabled;
     if let Err(error) = prefs.save() {
@@ -1362,14 +1362,14 @@ mod tests {
     /// 位置文件路径必须落在 ~/.pinvou3/ 下(跟随 PINVOU3_HOME 重定位)。
     #[test]
     fn state_path_under_pinvou3_home() {
-        let _g = crate::bridge::paths::tests::ENV_LOCK
+        let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-pet-path-test");
         assert_eq!(
             state_path(),
-            crate::bridge::paths::pinvou3_home().join("pet_window.json")
+            crate::platform::paths::pinvou3_home().join("pet_window.json")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),

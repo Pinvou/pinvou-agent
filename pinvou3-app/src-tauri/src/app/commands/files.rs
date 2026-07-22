@@ -30,9 +30,9 @@ pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, Stri
     if !matches!(std::env::var("PINVOU3_E2E").as_deref(), Ok("1")) {
         return Err("verify_upload is disabled: e2e-only command (set PINVOU3_E2E=1)".to_string());
     }
-    crate::bridge::sessions::validate_session_id(&upload_id)
+    crate::features::sessions::validate_session_id(&upload_id)
         .map_err(|_| "invalid upload_id".to_string())?;
-    let upload_dir = crate::bridge::paths::pinvou3_home()
+    let upload_dir = crate::platform::paths::pinvou3_home()
         .join("uploads")
         .join(&upload_id);
     let file_path = match std::fs::read_dir(&upload_dir).ok().and_then(|entries| {

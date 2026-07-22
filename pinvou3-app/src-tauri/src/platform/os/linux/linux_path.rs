@@ -48,7 +48,7 @@ pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
 
 fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
     if program == cli_bin {
-        if let Some(bin_dir) = crate::bridge::paths::bundle_connector_bin_dir() {
+        if let Some(bin_dir) = crate::platform::paths::bundle_connector_bin_dir() {
             let bundled = bin_dir.join(cli_bin);
             if bundled.is_file() {
                 return bundled.into_os_string();
