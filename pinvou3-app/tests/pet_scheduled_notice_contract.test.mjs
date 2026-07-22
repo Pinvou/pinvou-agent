@@ -24,7 +24,7 @@ assert.match(rust, /pub scheduled_run:\s*Option<PetScheduledRunNavigation>/);
 assert.match(rust, /scheduled_run:\s*Option<PetScheduledRunNavigation>/);
 
 assert.match(main, /request\.scheduled_run\s*\|\|\s*request\.scheduledRun/);
-assert.match(main, /bridge\.openScheduledRunChat/);
+assert.match(main, /bridge\.scheduled\.openScheduledRunChat/);
 assert.match(main, /setCurrentView\(['"]scheduled['"]\)/);
 assert.match(main, /pet:scheduled_notice_opened/);
 assert.match(main, /pet:scheduled_notice_open_failed/);

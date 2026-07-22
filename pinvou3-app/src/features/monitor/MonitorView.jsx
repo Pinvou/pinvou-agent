@@ -293,19 +293,19 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
       const monitorError = bs && bs.monitorError;
-      const monitorBridgeReady = !!(window.TauriBridge && typeof window.TauriBridge.startMonitorPolling === 'function');
+      const monitorBridgeReady = !!(window.TauriBridge?.monitor && typeof window.TauriBridge.monitor.startMonitorPolling === 'function');
       const loadingValue = !monitorBridgeReady ? '桥接未就绪' : (monitorError ? '读取失败' : '正在读取');
 
       // Start/stop polling when view mounts/unmounts
       useEffect(() => {
         const liveBridge = window.TauriBridge || bridge;
-        if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') {
-          liveBridge.startMonitorPolling();
+        if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') {
+          liveBridge.monitor.startMonitorPolling();
         } else {
           console.warn('[monitor] TauriBridge polling API unavailable');
         }
         return () => {
-          if (liveBridge && typeof liveBridge.stopMonitorPolling === 'function') liveBridge.stopMonitorPolling();
+          if (liveBridge?.monitor && typeof liveBridge.monitor.stopMonitorPolling === 'function') liveBridge.monitor.stopMonitorPolling();
         };
       }, []);
 
@@ -362,7 +362,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         return String(Math.round(n));
       };
       const doClear = useCallback(() => {
-        const reallyClear = () => { if (bridge.available && bridge.clearMonitorStats) bridge.clearMonitorStats(); };
+        const reallyClear = () => { if (bridge.available && bridge.monitor.clearMonitorStats) bridge.monitor.clearMonitorStats(); };
         const raw = vllmRaw;
         if (!raw || reduceMotionRef.current) { reallyClear(); return; }
         const from = { kv: raw.kvPct, ttftS: raw.ttftS, tps: raw.tps, gen: raw.gen || 0, prompt: raw.prompt || 0 };

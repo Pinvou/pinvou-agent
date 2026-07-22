@@ -5,7 +5,7 @@ import '../styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
-import { bridge, useBridge } from '../hooks/useBridge.js';
+import { bridge, useBridgeState } from '../hooks/useBridge.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate } from '../shared/date-utils.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
@@ -299,7 +299,7 @@ let appFirstRenderMarked = false;
         appFirstRenderMarked = true;
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
-      const bs = useBridge();
+      const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor', 'settings', 'models', 'llmapi', 'vllm', 'interaction', 'personas', 'workflow', 'memory', 'remoteControl', 'updater', 'dependencies']);
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
@@ -315,16 +315,16 @@ let appFirstRenderMarked = false;
           secondFrame = window.requestAnimationFrame(() => {
             window.__PINVOU_STARTUP__.mark('react:first_frame_presented');
             window.__PINVOU_STARTUP__.flush();
-            if (bridge.available && bridge.loadKnowledgeEmbedderAfterFirstFrame) {
-              bridge.loadKnowledgeEmbedderAfterFirstFrame();
+            if (bridge.available && bridge.knowledge.loadKnowledgeEmbedderAfterFirstFrame) {
+              bridge.knowledge.loadKnowledgeEmbedderAfterFirstFrame();
             }
           });
         });
         // 让首帧先交给 WebView 绘制，再异步校验飞书/企微实时鉴权状态。
         // 后端并行跑两个 CLI；结果只刷新技能目录，不阻塞主界面。
         const authTimer = window.setTimeout(() => {
-          if (bridge.available && bridge.refreshConnectorAuthGates) {
-            bridge.refreshConnectorAuthGates().catch(error => {
+          if (bridge.available && bridge.platform.refreshConnectorAuthGates) {
+            bridge.platform.refreshConnectorAuthGates().catch(error => {
               console.warn('[startup] connector auth refresh failed', error);
             });
           }
@@ -350,16 +350,16 @@ let appFirstRenderMarked = false;
       currentViewRef.current = currentView;
       useEffect(() => {
         const liveBridge = window.TauriBridge || bridge;
-        if (!liveBridge || typeof liveBridge.startMonitorPolling !== 'function') return;
+        if (!liveBridge?.monitor || typeof liveBridge.monitor.startMonitorPolling !== 'function') return;
         if (currentView === 'monitor') {
-          liveBridge.startMonitorPolling();
-          return () => { if (typeof liveBridge.stopMonitorPolling === 'function') liveBridge.stopMonitorPolling(); };
+          liveBridge.monitor.startMonitorPolling();
+          return () => { if (typeof liveBridge.monitor.stopMonitorPolling === 'function') liveBridge.monitor.stopMonitorPolling(); };
         }
       }, [currentView]);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
-      useEffect(() => { if (bridge.available) bridge.detectLocalVllmSetup(); }, []);
+      useEffect(() => { if (bridge.available) bridge.vllm.detectLocalVllmSetup(); }, []);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
@@ -490,11 +490,11 @@ let appFirstRenderMarked = false;
       const llmAccountDisplayName = llmAccountStatus && llmAccountStatus.backend_display_name;
       const llmAccountName = shortBackendUsername(llmAccountDisplayName || llmAccountUsername);
       const refreshLlmApiStatus = useCallback(async () => {
-        if (!bridge.available || !bridge.getLlmApiStatus) return;
+        if (!bridge.available || !bridge.llmapi.getLlmApiStatus) return;
         setLlmApiLoading(true);
         setLlmApiError(null);
         try {
-          await bridge.getLlmApiStatus();
+          await bridge.llmapi.getLlmApiStatus();
         } catch (e) {
           setLlmApiError(e && e.message ? e.message : String(e || '额度同步失败'));
         } finally {
@@ -502,12 +502,12 @@ let appFirstRenderMarked = false;
         }
       }, []);
       const loginLlmApiUser = useCallback(async (username, password) => {
-        if (!bridge.available || !bridge.loginLlmApiUser) throw new Error('内置模型登录不可用');
+        if (!bridge.available || !bridge.llmapi.loginLlmApiUser) throw new Error('内置模型登录不可用');
         setLlmApiLoading(true);
         setLlmApiError(null);
         try {
-          await bridge.loginLlmApiUser(username, password);
-          if (bridge.getLlmApiStatus) await bridge.getLlmApiStatus();
+          await bridge.llmapi.loginLlmApiUser(username, password);
+          if (bridge.llmapi.getLlmApiStatus) await bridge.llmapi.getLlmApiStatus();
         } catch (e) {
           const message = e && e.message ? e.message : String(e || '内置模型登录失败');
           setLlmApiError(message);
@@ -823,8 +823,8 @@ let appFirstRenderMarked = false;
       }, [bs && bs.sessions, bs && bs.sessionBusy, language]);
 
       async function navigateFromScheduledRun(nextView, beforeNavigate) {
-        if (bs && bs.scheduledRunContext && bridge.available && bridge.exitScheduledRunChat) {
-          const exited = await bridge.exitScheduledRunChat();
+        if (bs && bs.scheduledRunContext && bridge.available && bridge.scheduled.exitScheduledRunChat) {
+          const exited = await bridge.scheduled.exitScheduledRunChat();
           if (!exited) return false;
         }
         if (beforeNavigate) beforeNavigate();
@@ -849,7 +849,7 @@ let appFirstRenderMarked = false;
 
       async function handleOpenScheduledRunShortcut(run) {
         if (!run || !run.sessionId) return;
-        if (!bridge.available || !bridge.openScheduledRunChat) {
+        if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
           setCurrentView('scheduled');
           return;
         }
@@ -858,7 +858,7 @@ let appFirstRenderMarked = false;
           name: run.taskName || t.scheduledPlans,
           model: run.taskModel || null,
         };
-        const opened = await bridge.openScheduledRunChat(run, task);
+        const opened = await bridge.scheduled.openScheduledRunChat(run, task);
         if (opened) setCurrentView('scheduled');
       }
 
@@ -870,7 +870,7 @@ let appFirstRenderMarked = false;
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
-        if (bridge.available) bridge.createNewSession();
+        if (bridge.available) bridge.sessions.createNewSession();
         setCurrentView('chat');
       }
 
@@ -878,13 +878,13 @@ let appFirstRenderMarked = false;
       async function startAICard() {
         handleNewChat();
         if (!bridge.available) return;
-        await bridge.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
-        bridge.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
+        await bridge.personas.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
+        bridge.personas.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
       }
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
-        const switched = await bridge.switchToSession(id);
+        const switched = await bridge.sessions.switchToSession(id);
         if (!switched) return;
         setActiveChat(id);
         setCurrentView('chat');
@@ -967,13 +967,13 @@ let appFirstRenderMarked = false;
               const sessionId = scheduledRun.sessionId || scheduledRun.session_id;
               const taskName = scheduledRun.taskName || scheduledRun.task_name;
               const endedAt = scheduledRun.endedAt || scheduledRun.ended_at;
-              if (!bridge.available || !bridge.openScheduledRunChat) {
+              if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
                 emitToPet('pet:scheduled_notice_open_failed', { run_id: runId }).catch(() => {});
                 return;
               }
               let opened = false;
               try {
-                opened = await bridge.openScheduledRunChat({
+                opened = await bridge.scheduled.openScheduledRunChat({
                   id: runId,
                   automationId,
                   sessionId,
@@ -1010,7 +1010,7 @@ let appFirstRenderMarked = false;
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               return;
             }
-            const switched = await bridge.switchToSession(sid);
+            const switched = await bridge.sessions.switchToSession(sid);
             if (!switched) {
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               return;
@@ -1043,7 +1043,7 @@ let appFirstRenderMarked = false;
         const tauri = window.__TAURI__;
         const ev = tauri && tauri.event;
         const core = tauri && tauri.core;
-        if (!ev || !core || !bridge.available || !bridge.sendMessageToSession) return undefined;
+        if (!ev || !core || !bridge.available || !bridge.chat.sendMessageToSession) return undefined;
         let disposed = false;
         let consuming = false;
         let rerun = false;
@@ -1061,15 +1061,15 @@ let appFirstRenderMarked = false;
           }
           consuming = true;
           try {
-            if (typeof bridge.init === 'function') await bridge.init();
+            if (typeof bridge.lifecycle.init === 'function') await bridge.lifecycle.init();
             while (!disposed) {
               const request = await core.invoke('take_pet_reply');
               if (!request) break;
               const requestId = request.request_id || request.requestId;
               const sid = request.session_id || request.sessionId;
               const text = String(request.text || '').trim();
-              const liveSessions = typeof bridge.getState === 'function'
-                ? (bridge.getState().sessions || [])
+              const liveSessions = bridge.state
+                ? (bridge.state.get('sessions').sessions || [])
                 : [];
               const sessionExists = petSnapshotRef.current.some(
                 session => String(session.id) === String(sid),
@@ -1084,7 +1084,7 @@ let appFirstRenderMarked = false;
                 continue;
               }
               try {
-                const result = await bridge.sendMessageToSession(sid, text);
+                const result = await bridge.chat.sendMessageToSession(sid, text);
                 await emitToPet('pet:reply_accepted', {
                   request_id: requestId,
                   session_id: sid,
@@ -1129,15 +1129,15 @@ let appFirstRenderMarked = false;
       }, []);
 
       function handleDeleteSession(id) {
-        if (bridge.available) bridge.deleteSession(id);
+        if (bridge.available) bridge.sessions.deleteSession(id);
       }
 
       function handleRenameSession(id, title) {
-        if (bridge.available) bridge.renameSession(id, title);
+        if (bridge.available) bridge.sessions.renameSession(id, title);
       }
 
       function handleToggleSessionPinned(id, pinned) {
-        if (bridge.available) bridge.toggleSessionPinned(id, pinned);
+        if (bridge.available) bridge.sessions.toggleSessionPinned(id, pinned);
       }
 
       function handleArchiveSession(id) {
@@ -1149,13 +1149,13 @@ let appFirstRenderMarked = false;
         const id = archiveConfirm && archiveConfirm.id;
         setArchiveConfirm(null);
         if (id && bridge.available) {
-          bridge.archiveSession(id);
+          bridge.sessions.archiveSession(id);
           setArchiveToast(true);
         }
       }
 
       function handleRestoreArchivedSession(id) {
-        if (bridge.available) bridge.restoreArchivedSession(id);
+        if (bridge.available) bridge.sessions.restoreArchivedSession(id);
       }
 
       useEffect(() => {
@@ -1178,7 +1178,7 @@ let appFirstRenderMarked = false;
         }
         setSuperPerm(target);
         try {
-          const result = await bridge.toggleSuperPerm();
+          const result = await bridge.interaction.toggleSuperPerm();
           if (!result || result.ok === false) {
             setSuperPerm(!!(result && result.enabled));
             setSettingsToast((result && result.error) || '无法开启高级执行权限');
@@ -1221,7 +1221,7 @@ let appFirstRenderMarked = false;
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (bridge.available) {
-          bridge.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' }));
+          bridge.settings.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' }));
         }
       }
 
@@ -1249,10 +1249,10 @@ let appFirstRenderMarked = false;
       }
 
       function handleTestSearchProvider(p) {
-        if (!bridge.available || !bridge.testSearchProvider) return Promise.resolve('当前环境不可测试搜索源');
+        if (!bridge.available || !bridge.settings.testSearchProvider) return Promise.resolve('当前环境不可测试搜索源');
         const action = searchProviderKeyAction(p);
         const draft = searchKeyDrafts[p] || '';
-        return bridge.testSearchProvider(p, action === 'replace' ? draft : '');
+        return bridge.settings.testSearchProvider(p, action === 'replace' ? draft : '');
       }
 
       function handleSetSearchApiKey(k, providerOverride) {
@@ -1264,7 +1264,7 @@ let appFirstRenderMarked = false;
 
       function handleConfirmSearchConfig() {
         if (bridge.available) {
-          bridge.saveSettingsAndRestart(buildFullSettings({
+          bridge.settings.saveSettingsAndRestart(buildFullSettings({
             search: buildSearchSettingsPayload(),
           }));
         }
@@ -1272,7 +1272,7 @@ let appFirstRenderMarked = false;
 
       async function handleSaveSearchConfig() {
         if (!bridge.available) return true;
-        const saved = await bridge.saveSettings(buildFullSettings({
+        const saved = await bridge.settings.saveSettings(buildFullSettings({
           search: buildSearchSettingsPayload(),
         }));
         if (saved === false) {
@@ -1285,14 +1285,14 @@ let appFirstRenderMarked = false;
       function handleSetLanguage(lang) {
         setLanguage(lang);
         if (bridge.available) {
-          bridge.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
+          bridge.settings.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
         }
       }
 
       function handleSetMemoryEnabled(enabled) {
         if (bridge.available) {
           const memoryAvailable = (LANG_TO_TAG[language] || 'zh-Hans') === 'zh-Hans';
-          bridge.saveSettings(buildFullSettings({ memory_enabled: memoryAvailable && !!enabled }));
+          bridge.settings.saveSettings(buildFullSettings({ memory_enabled: memoryAvailable && !!enabled }));
         }
       }
 
@@ -1308,7 +1308,7 @@ let appFirstRenderMarked = false;
         const previousEnabled = taskCompletedNotif;
         setTaskCompletedNotif(nextEnabled);
         if (bridge.available) {
-          const saved = await bridge.saveSettings(buildFullSettings({
+          const saved = await bridge.settings.saveSettings(buildFullSettings({
             notifications: { enabled: nextEnabled, task_completed: nextEnabled },
           }));
           if (saved === false) {
@@ -1370,7 +1370,7 @@ let appFirstRenderMarked = false;
       }
       function handleConfirmModelConfig() {
         if (bridge.available) {
-          bridge.saveSettingsAndRestart(buildFullSettings({
+          bridge.settings.saveSettingsAndRestart(buildFullSettings({
             advanced: {
               model_preset: modelPreset,
               custom_model_name: customModelName || null,
@@ -1480,7 +1480,7 @@ let appFirstRenderMarked = false;
                 onClick={() => {
                   navigateFromScheduledRun('monitor', () => {
                     const liveBridge = window.TauriBridge || bridge;
-                    if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
+                    if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
                   });
                 }}
                 dragKind="monitor" dragging={!!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
@@ -1566,7 +1566,7 @@ let appFirstRenderMarked = false;
                                 onRename={handleRenameSession}
                                 onDelete={handleDeleteSession}
                                 onTogglePinned={handleToggleSessionPinned}
-                                onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                                onOpenFolder={(id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)}
                                 onArchive={handleArchiveSession}
                                 dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
                                 onPickUp={(geom) => beginTearOff('session', chat.id, item.title, geom)}
@@ -1600,7 +1600,7 @@ let appFirstRenderMarked = false;
                             onRename={handleRenameSession}
                             onDelete={handleDeleteSession}
                             onTogglePinned={handleToggleSessionPinned}
-                            onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                            onOpenFolder={(id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)}
                             onArchive={handleArchiveSession}
                             dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
                             onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
@@ -1633,7 +1633,7 @@ let appFirstRenderMarked = false;
                               onRename={handleRenameSession}
                               onDelete={handleDeleteSession}
                               onTogglePinned={handleToggleSessionPinned}
-                              onOpenFolder={(id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)}
+                              onOpenFolder={(id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)}
                               onArchive={handleArchiveSession}
                               dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
                               onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
@@ -1784,9 +1784,9 @@ let appFirstRenderMarked = false;
                   searchHasSavedKey={searchHasSavedKey(searchProvider)}
                   savedModels={(bs && bs.savedModels) || []}
                   activeModelId={bs && bs.activeModelId}
-                  onSaveModel={(m) => bridge.available && bridge.saveModel(m)}
-                  onDeleteModel={(m) => { if (bridge.available) bridge.deleteModel(m.id); }}
-                  onSetActiveModel={(id) => bridge.available && bridge.setActiveModel(id)}
+                  onSaveModel={(m) => bridge.available && bridge.models.saveModel(m)}
+                  onDeleteModel={(m) => { if (bridge.available) bridge.models.deleteModel(m.id); }}
+                  onSetActiveModel={(id) => bridge.available && bridge.models.setActiveModel(id)}
                   onSaveSearchConfig={handleSaveSearchConfig}
                   onConfirmSearchConfig={handleConfirmSearchConfig}
                   onMemoryEnabledChange={handleSetMemoryEnabled}
@@ -1818,7 +1818,7 @@ let appFirstRenderMarked = false;
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
             {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && bs && (
               <Lanyard persona={bs.activeSessionId ? (bs.activePersona || null) : null} isDark={activeTheme === 'dark'} t={t}
-                onRemove={() => bridge.available && bridge.unequipPersona()}
+                onRemove={() => bridge.available && bridge.personas.unequipPersona()}
                 onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
             )}
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
@@ -1857,7 +1857,7 @@ let appFirstRenderMarked = false;
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
-                   onClick={() => { if (!bs.vllmBootstrapping) bridge.dismissVllmSetup(); }}>
+                   onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
                 <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
                   <div className="flex items-center gap-2 mb-3">
@@ -1870,7 +1870,7 @@ let appFirstRenderMarked = false;
                     <div>
                       <div className="text-[14px] leading-relaxed mb-4">{t.vllmSetupDone}</div>
                       <div className="flex justify-end">
-                        <button onClick={() => bridge.available && bridge.restartApp()}
+                        <button onClick={() => bridge.available && bridge.updater.restartApp()}
                           className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
                       </div>
                     </div>
@@ -1879,9 +1879,9 @@ let appFirstRenderMarked = false;
                       <div className="text-[14px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
                       <div className="text-[13px] leading-relaxed mb-4 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
                       <div className="flex justify-end gap-2">
-                        <button onClick={() => bridge.dismissVllmSetup()}
+                        <button onClick={() => bridge.vllm.dismissVllmSetup()}
                           className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
-                        <button onClick={() => bridge.bootstrapLocalVllm()}
+                        <button onClick={() => bridge.vllm.bootstrapLocalVllm()}
                           className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
                       </div>
                     </div>
@@ -1891,7 +1891,7 @@ let appFirstRenderMarked = false;
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setVllmDeclineConfirm(false)}
                           className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmDeclineReconsider}</button>
-                        <button onClick={() => { setVllmDeclineConfirm(false); bridge.declineVllmSetup(); }}
+                        <button onClick={() => { setVllmDeclineConfirm(false); bridge.vllm.declineVllmSetup(); }}
                           className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#E5484D' }}>{t.vllmDeclineConfirm}</button>
                       </div>
                     </div>
@@ -1902,9 +1902,9 @@ let appFirstRenderMarked = false;
                         <button onClick={() => setVllmDeclineConfirm(true)}
                           className="h-9 px-3 rounded-lg text-[13px] hover:underline" style={{ color: activeTheme === 'dark' ? '#8E8E8E' : '#757575' }}>{t.vllmSetupNever}</button>
                         <div className="flex gap-2">
-                          <button onClick={() => bridge.dismissVllmSetup()}
+                          <button onClick={() => bridge.vllm.dismissVllmSetup()}
                             className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
-                          <button onClick={() => bridge.bootstrapLocalVllm()}
+                          <button onClick={() => bridge.vllm.bootstrapLocalVllm()}
                             className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
                         </div>
                       </div>
@@ -1918,7 +1918,7 @@ let appFirstRenderMarked = false;
             {bs && bs.pinvouModal && (
               <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
                    style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
-                   onClick={() => { if (!bs.pinvouModal.loading) bridge.dismissPinvouReview(); }}>
+                   onClick={() => { if (!bs.pinvouModal.loading) bridge.interaction.dismissPinvouReview(); }}>
                 {/* loading 期间禁止背景点击关窗:召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held,
                     点背景误关会表现为"闪一下没反应、要等一会才能再点"。锁住后 spinner 全程可见,
                     出结果/错误后才可点背景关。 */}
@@ -1926,7 +1926,7 @@ let appFirstRenderMarked = false;
                      onClick={(e) => e.stopPropagation()}
                      style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   {/* 关闭按钮：所有状态(含 loading)常驻;loading 时点它=取消等待并关窗,in-flight 结果由守卫丢弃 */}
-                  <button onClick={() => bridge.available && bridge.dismissPinvouReview()} aria-label={t.pvSkip}
+                  <button onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
                     className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
                     <X size={16} />
                   </button>
@@ -1979,8 +1979,8 @@ let appFirstRenderMarked = false;
           return;
         }
         if (!bridge.available) return;
-        if (vm.action === 'restart') bridge.restartApp();
-        else if (vm.action === 'download') bridge.downloadAndInstallUpdate();
+        if (vm.action === 'restart') bridge.updater.restartApp();
+        else if (vm.action === 'download') bridge.updater.downloadAndInstallUpdate();
       };
 
       const handleShowChangelog = () => {
@@ -2134,7 +2134,7 @@ let appFirstRenderMarked = false;
     // 一下"还没建立索引"空状态再加载。模块级缓存上次拉到的 L0/L1 数据:remount 时初始 state
     // 直接用缓存(切回秒显),后台 refresh 更新。loaded=false 时显示加载中而非误判空状态。
     const useDetachedBase = () => {
-      const bs = useBridge();
+      const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'settings', 'workflow']);
       const [language, setLanguage] = useState('zh');
       const [activeTheme, setActiveTheme] = useState('dark');
       const initRef = useRef(false);
@@ -2177,12 +2177,12 @@ let appFirstRenderMarked = false;
       const { bs, activeTheme, t } = useDetachedBase();
       // session 窗口:boot 时把该 session 切为 active,让 ChatView 显示它。
       useEffect(() => {
-        if (kind === 'session' && id && bridge.available && bridge.switchToSession) bridge.switchToSession(id);
+        if (kind === 'session' && id && bridge.available && bridge.sessions.switchToSession) bridge.sessions.switchToSession(id);
       }, [kind, id]);
       useEffect(() => {
         if (kind !== 'monitor' || !bridge.available) return;
-        bridge.startMonitorPolling();
-        return () => { if (bridge.stopMonitorPolling) bridge.stopMonitorPolling(); };
+        bridge.monitor.startMonitorPolling();
+        return () => { if (bridge.monitor.stopMonitorPolling) bridge.monitor.stopMonitorPolling(); };
       }, [kind]);
       // 关闭时通知主窗口回坞(去角标)。
       useEffect(() => {

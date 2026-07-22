@@ -815,7 +815,7 @@ fn stat_output(path: &std::path::Path) -> Option<OutputFile> {
     })
 }
 
-fn read_role_logs_from_project(
+pub(super) fn read_role_logs_from_project(
     project_dir: &std::path::Path,
     role_id: &str,
     tail: usize,
@@ -1394,3 +1394,4 @@ pub async fn list_session_skill_bindings(
     }
     Ok(out)
 }
+use super::prelude::*;

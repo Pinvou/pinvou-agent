@@ -305,7 +305,7 @@ async function modalWidth(page, headingText) {
       notes: '设置页更新按钮测试',
       platform: 'windows',
     });
-    await window.TauriBridge.checkForUpdate();
+    await window.TauriBridge.updater.checkForUpdate();
   });
   await sleep(500);
   const beforeDownloadCalls = await callCount(page, 'download_update');
@@ -557,7 +557,7 @@ async function modalWidth(page, headingText) {
   });
   await sleep(600);
   const permToast = await page.evaluate(() => ({
-    showSuperPermissionSettings: !!(window.TauriBridge.getState().platformCapabilities || {}).showSuperPermissionSettings,
+    showSuperPermissionSettings: !!(window.TauriBridge.state.get('platform').platformCapabilities || {}).showSuperPermissionSettings,
     setCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'set_super_permission'),
     toast: document.body.innerText.includes('pkexec unavailable') || document.body.innerText.includes('无法开启高级执行权限'),
     checked: document.querySelector('[role="switch"]')?.getAttribute('aria-checked'),
@@ -640,7 +640,7 @@ async function modalWidth(page, headingText) {
 
   await page.mouse.click(8, 8);
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat', { timeout: 8000 });
-  await page.evaluate(() => window.TauriBridge && window.TauriBridge.createNewSession && window.TauriBridge.createNewSession());
+  await page.evaluate(() => window.TauriBridge && window.TauriBridge.sessions.createNewSession && window.TauriBridge.sessions.createNewSession());
   await sleep(600);
   const responsiveGreeting = await page.evaluate(() => {
     const greeting = [...document.querySelectorAll('h1')].find(node => {

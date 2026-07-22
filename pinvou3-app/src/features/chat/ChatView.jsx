@@ -81,7 +81,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     // 输入框底栏:知识库挂载选择器(与 ComposerModelSelector/ComposerToolMenu 同款 pill,
     // class 暗色策略)。给当前对话挂一个知识集(会话级粘连),挂上后每条消息发送前后端自动
-    // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.mountCollection 先物化 session。
+    // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.knowledge.mountCollection 先物化 session。
     const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const [collections, setCollections] = useState(null); // null=未加载
@@ -89,13 +89,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
 
       const loadList = async () => {
-        if (!bridge.available || !bridge.listCollections) { setCollections([]); return; }
-        try { setCollections((await bridge.listCollections()) || []); }
+        if (!bridge.available || !bridge.knowledge.listCollections) { setCollections([]); return; }
+        try { setCollections((await bridge.knowledge.listCollections()) || []); }
         catch (e) { setCollections([]); }
       };
       const refreshInstalled = async () => {
-        if (!bridge.available || !bridge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
-        try { const m = await bridge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
+        if (!bridge.available || !bridge.knowledge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
+        try { const m = await bridge.knowledge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
         catch (e) { setInstalled(true); }
       };
       useEffect(() => { refreshInstalled(); }, []);
@@ -113,8 +113,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
 
       function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
-      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
-      function unmount() { setOpen(false); if (bridge.available) bridge.unmountCollection(); }
+      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.knowledge.mountCollection(id); }
+      function unmount() { setOpen(false); if (bridge.available) bridge.knowledge.unmountCollection(); }
 
       return (
         <div className="relative">
@@ -178,10 +178,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         setOpen(false);
         if (!bridge.available) return;
         if (target === 'plan' && !isPlan) {
-          await bridge.setPlanModeNext();
+          await bridge.interaction.setPlanModeNext();
         } else if (target === 'yolo' && isPlan) {
-          if (bs && bs.busy) await bridge.cancelGeneration();
-          await bridge.exitPlanToYolo();
+          if (bs && bs.busy) await bridge.chat.cancelGeneration();
+          await bridge.interaction.exitPlanToYolo();
         }
       }
       const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
@@ -537,18 +537,18 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
       useEffect(() => {
-        if (bridge.available) bridge.loadSessionModel(activeSessionId);
+        if (bridge.available) bridge.models.loadSessionModel(activeSessionId);
       }, [activeSessionId]);
 
       function handleSend() {
-        // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
+        // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (!canSend) return;
         const constrained = constrainChatInput(inputText);
         if (constrained.truncated) {
           setInputText(constrained.text);
           return;
         }
-        if (bridge.available) bridge.sendMessage(constrained.text.trim());
+        if (bridge.available) bridge.chat.sendMessage(constrained.text.trim());
         setInputText('');
       }
 
@@ -560,7 +560,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handleCancel() {
-        if (bridge.available) bridge.cancelGeneration();
+        if (bridge.available) bridge.chat.cancelGeneration();
       }
 
       function handleVoiceClick() {
@@ -570,15 +570,15 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         }
         if (!bridge.available) return;
         if (voiceInput.status === 'requesting_permission') {
-          bridge.cancelVoiceInput();
+          bridge.voice.cancelVoiceInput();
           return;
         }
         if (voiceBusy) return;
         if (voiceInput.status === 'recording') {
-          bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+          bridge.voice.startVoiceInput(inputText, (text) => setInputText(prev => bridge.voice.appendVoiceText(prev, text)));
           return;
         }
-        bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+        bridge.voice.startVoiceInput(inputText, (text) => setInputText(prev => bridge.voice.appendVoiceText(prev, text)));
       }
 
       function handleFloatingVoicePointerDown(e) {
@@ -644,11 +644,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handleVoiceCancel() {
-        if (bridge.available) bridge.cancelVoiceInput();
+        if (bridge.available) bridge.voice.cancelVoiceInput();
       }
 
       function handleVoiceClose() {
-        if (bridge.available) bridge.clearVoiceInput();
+        if (bridge.available) bridge.voice.clearVoiceInput();
       }
 
       function handlePaste(e) {
@@ -662,7 +662,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             reader.onload = () => {
               const bytes = Array.from(new Uint8Array(reader.result));
               const ext = (file.type.split('/')[1] || 'png');
-              if (bridge.available) bridge.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
+              if (bridge.available) bridge.attachments.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
             };
             reader.readAsArrayBuffer(file);
           }
@@ -718,7 +718,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   theme={theme}
                   onSend={(q) => {
                     setWelcomeToolId(null);
-                    if (bridge.available) bridge.sendMessage(q);
+                    if (bridge.available) bridge.chat.sendMessage(q);
                   }}
                 />
               </div>
@@ -736,7 +736,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   return chatItems
                     .filter((item) => !(item.type === 'memory_candidate' && !item.resolved))
                     .map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
+                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
@@ -772,7 +772,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
@@ -832,7 +832,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${isDark ? 'bg-[#2A2B2D] text-[#C4C7C5]' : 'bg-[#EAEDF1] text-[#444746]'}`}>
                     <span className="opacity-60">{t.queuedTag}</span>
                     <span className="max-w-[480px] truncate">{q.displayText}</span>
-                    <button onClick={() => bridge.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                    <button onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -853,7 +853,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                         ：{formatAttachmentError(a.error)}
                       </span>
                     )}
-                    <button onClick={() => bridge.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                    <button onClick={() => bridge.attachments.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -898,7 +898,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               const modelSizeText = (su.status && su.status.engine && needModel && !needFfmpeg) ? '约 254MB' : '约 174-254MB';
               return (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
-                  onClick={() => { if (!su.installing) bridge.closeVoiceAsrSetup(); }}>
+                  onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
                   <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
                     onClick={e => e.stopPropagation()}>
                     <h3 className="text-[16px] font-semibold mb-2">
@@ -930,11 +930,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     )}
                     {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => bridge.cancelVoiceAsrSetup()} disabled={su.cancelling}
+                      <button onClick={() => bridge.voice.cancelVoiceAsrSetup()} disabled={su.cancelling}
                         className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.cancelling ? 'opacity-50' : ''}`}>
                         {su.installing ? (su.cancelling ? '正在取消…' : '取消下载') : '取消'}</button>
                       {!su.installing && (
-                        <button onClick={() => bridge.installVoiceAsr()} disabled={!su.status?.installable}
+                        <button onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
                           className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
                           {!su.status?.installable ? '需要修复安装' : (needModel ? '下载模型' : '安装')}</button>
                       )}
@@ -964,7 +964,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               )}
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
+                  <button onClick={() => bridge.available && bridge.attachments.pickAndAttach()} title={t.attachAdd}
                     className={COMPOSER_ICON_BUTTON_CLASS}>
                     <Paperclip size={18} />
                   </button>
@@ -1318,7 +1318,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
+      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(tx); }
       function copyText() {
         const tx = item.text || '';
         copyClipboardText(tx).then(function (ok) {
@@ -1571,8 +1571,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
-        const draftSaved = pd.draft && bridge.available && bridge.getPersonas
-          && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
+        const draftSaved = pd.draft && bridge.available && bridge.personas.getPersonas
+          && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
             <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
@@ -1770,7 +1770,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                       className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
                       title="这次忽略"
                       data-testid="memory-candidate-dismiss"
-                      onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}
+                      onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}
                     >
                       <X size={13} />
                     </button>
@@ -1783,9 +1783,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
               {!resolved && (
                 <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
-                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.confirmMemoryCandidate && bridge.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
-                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.ignoreMemoryCandidate && bridge.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
-                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.neverMemoryCandidate && bridge.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
+                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
+                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
+                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
                 </div>
               )}
             </div>

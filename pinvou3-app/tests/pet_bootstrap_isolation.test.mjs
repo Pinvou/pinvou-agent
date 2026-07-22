@@ -41,8 +41,8 @@ vm.runInNewContext(bridgeSource, {
 
 assert.deepEqual(calls, { invoke: 0, listen: 0 });
 assert.equal(window.TauriBridge?.available, false);
-assert.equal(typeof window.TauriBridge?.renderMarkdown, 'function');
-assert.equal(window.TauriBridge?.init, undefined);
+assert.equal(typeof window.TauriBridge?.rendering?.renderMarkdown, 'function');
+assert.equal(window.TauriBridge?.lifecycle, undefined);
 assert.match(
   indexSource,
   /const isPetWindow = new URLSearchParams\(window\.location\.search\)\.get\('window'\) === 'pet';[\s\S]*?if \(isPetWindow\) return;/,

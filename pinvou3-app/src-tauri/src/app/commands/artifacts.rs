@@ -1,3 +1,15 @@
+use super::prelude::*;
+use crate::platform::path_policy::validate_user_path;
+
+/// 产物文件元数据。前端右栏 list 用。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ArtifactInfo {
+    pub size: u64,
+    pub kind: String,
+    pub exists: bool,
+    pub modified: i64,
+}
+
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
 /// 路径必须在用户家目录下（防 ../../../etc/passwd 之类逃逸）。
 #[tauri::command]
@@ -10,7 +22,7 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
-const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
+pub(super) const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
 /// 写回 Markdown artifact。只允许覆盖已存在的 .md/.markdown 文件。
 #[tauri::command]
@@ -77,7 +89,7 @@ fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
 
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -201,7 +213,7 @@ fn parse_product_manifest(report_text: &str) -> Vec<String> {
 ///   (质检节内的成品词描述被审对象,绝不归审核者——天真就近归因实测翻车);
 /// ③ 对账表「交付」达成行点名的部。
 /// 返回 (bu_id, 得分);得分 <8(单一信号)不可信,调用方回退。
-fn infer_product_bu(report: &str) -> Option<(String, i32)> {
+pub(super) fn infer_product_bu(report: &str) -> Option<(String, i32)> {
     const BU: &[(&str, &str)] = &[
         ("兵部", "bingbu"),
         ("户部", "hubu"),
@@ -973,7 +985,7 @@ fn strip_verbatim(p: &std::path::Path) -> String {
     s.to_string()
 }
 
-fn file_url_from_path(p: &std::path::Path) -> Result<tauri::Url, String> {
+pub(super) fn file_url_from_path(p: &std::path::Path) -> Result<tauri::Url, String> {
     let normal_path = std::path::PathBuf::from(strip_verbatim(p));
     tauri::Url::from_file_path(&normal_path)
         .map_err(|_| format!("convert file url: {}", p.display()))
@@ -1003,7 +1015,7 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
 ];
 
 /// URL 是否命中外部链接白名单(纯函数,便于单测)。
-fn url_in_external_allowlist(url: &str) -> bool {
+pub(super) fn url_in_external_allowlist(url: &str) -> bool {
     EXTERNAL_URL_ALLOWLIST.iter().any(|p| url.starts_with(p))
 }
 
@@ -1051,7 +1063,7 @@ fn obsidian_config_path() -> Option<std::path::PathBuf> {
 
 /// 从 obsidian.json 文本里挑出当前库路径:优先 `open:true`,否则 `ts` 最大。
 /// 与 `mcp-servers/obsidian/server.py` 的 `_autodiscover_vault` 同规则,需保持一致。
-fn pick_vault_path(text: &str) -> Option<String> {
+pub(super) fn pick_vault_path(text: &str) -> Option<String> {
     let text = text.trim_start_matches('\u{feff}'); // 剥 BOM
     let json: serde_json::Value = serde_json::from_str(text).ok()?;
     let vaults = json.get("vaults")?.as_object()?;
@@ -1114,7 +1126,7 @@ pub fn detect_obsidian() -> ObsidianStatus {
 /// 后端 active_id 不更新 → 仍指向切走时去的那个 session → 相对路径被拼到错的
 /// workspace(报「not a file」)。卡片自带 session 才能跨会话切换稳定解析。
 /// None 时(老卡无此字段 / 绝对路径)回退 active_id,行为同旧版。
-fn resolve_artifact_path(
+pub(super) fn resolve_artifact_path(
     raw: &str,
     session_id: Option<&str>,
     store: &SessionStore,

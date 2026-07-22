@@ -92,7 +92,7 @@ vm.runInContext(
   assert.match(chatSource, /const voiceBusy = voiceInput\.status === 'transcribing'/);
   assert.match(
     chatSource,
-    /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?bridge\.cancelVoiceInput\(\);[\s\S]*?return;/,
+    /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?bridge\.voice\.cancelVoiceInput\(\);[\s\S]*?return;/,
   );
 
   const startVoiceInputAt = source.indexOf("  async function startVoiceInput(");

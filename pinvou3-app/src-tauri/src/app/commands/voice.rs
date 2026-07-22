@@ -1,3 +1,5 @@
+use super::prelude::*;
+
 #[derive(Debug, Deserialize)]
 pub struct VoiceTranscriptionRequest {
     /// WAV bytes captured by the WebView.
@@ -55,7 +57,7 @@ fn local_asr_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-fn apply_local_asr_model_env(
+pub(super) fn apply_local_asr_model_env(
     command: &mut std::process::Command,
     model_path: Option<std::path::PathBuf>,
 ) {
@@ -106,7 +108,7 @@ fn compact_process_output(stdout: &str, stderr: &str) -> String {
     format!("...{tail}")
 }
 
-fn parse_local_asr_text(stdout: &str, stderr: &str) -> Option<String> {
+pub(super) fn parse_local_asr_text(stdout: &str, stderr: &str) -> Option<String> {
     let combined = format!("{stdout}\n{stderr}");
     let result_prefixes = [
         "result:",

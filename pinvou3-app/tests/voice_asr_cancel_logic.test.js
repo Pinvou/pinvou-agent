@@ -46,7 +46,7 @@ vm.runInContext(
 
   const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
   const chatSource = fs.readFileSync(chatPath, "utf8");
-  assert.match(chatSource, /onClick=\{\(\) => bridge\.cancelVoiceAsrSetup\(\)\}/);
+  assert.match(chatSource, /onClick=\{\(\) => bridge\.voice\.cancelVoiceAsrSetup\(\)\}/);
   assert.match(chatSource, /disabled=\{su\.cancelling\}/);
   assert.match(chatSource, /'取消下载'/);
   assert.match(chatSource, /su\.installing \? '下载语音识别模型' : '启用本地语音识别'/);

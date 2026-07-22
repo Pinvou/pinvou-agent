@@ -140,7 +140,7 @@ fn preserve_resolutions(path: &std::path::Path, new: serde_json::Value) -> serde
 }
 
 /// 纯合并逻辑（抽出便于单测）：new 缺 resolution 的条目继承 old 同下标的。
-fn merge_resolutions(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
+pub(super) fn merge_resolutions(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     let old_arr = match old.as_array() {
         Some(a) => a,
@@ -228,3 +228,4 @@ pub async fn get_active_persona(
         .active_persona_id(&session_id)
         .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
 }
+use super::prelude::*;

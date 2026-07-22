@@ -1,3 +1,9 @@
+use super::attachments::{
+    build_message_with_attachments_in_dir, validate_staged_attachment_basename,
+};
+use super::knowledge::build_kb_agentic_guide;
+use super::prelude::*;
+
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///

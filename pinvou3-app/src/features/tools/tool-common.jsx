@@ -20,7 +20,7 @@ const AcFmtIcon = ({ kind, className }) => (
       const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
       const basename = (String(path).split(/[\\/]/).pop()) || '';
       const title = item.title || basename || t.artifactLabel;
-      const open = () => { if (bridge.available && path) bridge.openArtifactExternal(path, item.sessionId); };
+      const open = () => { if (bridge.available && path) bridge.artifacts.openArtifactExternal(path, item.sessionId); };
 
       // 封面缩略图：仅 pptx 异步抽取（Rust read_artifact_thumbnail 读 docProps/thumbnail.jpeg → data URL）。
       // 拿不到则 hasCover=false，走紧凑态。本地数据、无外链。
@@ -28,8 +28,8 @@ const AcFmtIcon = ({ kind, className }) => (
       useEffect(() => {
         let alive = true;
         setCoverUrl(null);
-        if (kind === 'pptx' && bridge.available && bridge.readArtifactThumbnail && path) {
-          bridge.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
+        if (kind === 'pptx' && bridge.available && bridge.artifacts.readArtifactThumbnail && path) {
+          bridge.artifacts.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
         }
         return () => { alive = false; };
       }, [path, kind]);
@@ -73,13 +73,13 @@ const AcFmtIcon = ({ kind, className }) => (
             {/* 智能操作区：品 / 悟，横排单行、无副标题；仅最新产物显示 */}
             {isLatest && (
               <div className="grid grid-cols-2 gap-3 mb-4 px-3">
-                <button onClick={() => bridge.available && bridge.summonPinvou(path)} title={t.pvBtnPinTitle}
+                <button onClick={() => bridge.available && bridge.interaction.summonPinvou(path)} title={t.pvBtnPinTitle}
                   className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
                   <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2 shrink-0" />
                   <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnPinLabel}</span>
                 </button>
 
-                <button onClick={() => bridge.available && bridge.inspectPinvou(path)} title={t.pvBtnWuTitle}
+                <button onClick={() => bridge.available && bridge.interaction.inspectPinvou(path)} title={t.pvBtnWuTitle}
                   className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
                   <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2 shrink-0" />
                   <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnWuLabel}</span>

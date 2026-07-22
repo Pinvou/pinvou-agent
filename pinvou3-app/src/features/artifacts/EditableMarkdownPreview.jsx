@@ -85,7 +85,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     const el = editableRef.current;
     if (!el) return;
     applyingHtmlRef.current = true;
-    el.innerHTML = bridge.renderMarkdown(markdown || '');
+    el.innerHTML = bridge.rendering.renderMarkdown(markdown || '');
     requestAnimationFrame(() => {
       applyingHtmlRef.current = false;
     });
@@ -106,7 +106,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
 
   const saveNow = useCallback(async () => {
     if (!artifact?.path) return true;
-    if (!bridge.writeArtifactText) return false;
+    if (!bridge.artifacts.writeArtifactText) return false;
 
     if (savingPromiseRef.current) {
       pendingSaveRef.current = true;
@@ -124,9 +124,9 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     setSaveState('saving');
     setErrorText('');
     const promise = (async () => {
-      await bridge.writeArtifactText(artifact.path, content);
+      await bridge.artifacts.writeArtifactText(artifact.path, content);
       let info = initialInfo || null;
-      try { info = await bridge.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
       lastSavedRef.current = content;
       setSaveState('saved');
       onSaved?.(content, info);
@@ -152,12 +152,12 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   }, [saveNow]);
 
   const reloadFromDisk = useCallback(async ({ force = false } = {}) => {
-    if (!artifact?.path || !bridge.readArtifactText) return false;
+    if (!artifact?.path || !bridge.artifacts.readArtifactText) return false;
     if (!force && latestDraftRef.current !== lastSavedRef.current) return false;
     try {
-      const text = await bridge.readArtifactText(artifact.path);
+      const text = await bridge.artifacts.readArtifactText(artifact.path);
       let info = initialInfo || null;
-      try { info = await bridge.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
       latestDraftRef.current = text || '';
       lastSavedRef.current = text || '';
       setDraft(text || '');
@@ -317,7 +317,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     if (!ok) return;
     const confirmText = t.apMdComposerReplaceConfirm || 'This will fill the chat input with the AI edit instruction. Continue?';
     if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
-    bridge.prefillComposer?.(buildAiPrompt({
+    bridge.chat.prefillComposer?.(buildAiPrompt({
       t,
       artifact,
       selectedText: selectionUi.selectedText,

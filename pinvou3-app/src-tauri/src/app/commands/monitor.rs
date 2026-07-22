@@ -1,3 +1,4 @@
+use super::prelude::*;
 
 /// Monitor 视图完整数据。**按需采样**——前端只在监控页面 mount 时启 1s
 /// interval 调本 command，每次都重新跑 sample_all。GPU util 瞬时易错过推理

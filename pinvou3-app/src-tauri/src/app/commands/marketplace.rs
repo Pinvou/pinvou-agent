@@ -36,7 +36,7 @@ struct ActiveMarketplaceOAuthLogin {
 }
 
 #[derive(Default)]
-struct MarketplaceOAuthLoginCoordinator {
+pub(super) struct MarketplaceOAuthLoginCoordinator {
     state: tokio::sync::Mutex<MarketplaceOAuthLoginCoordinatorState>,
 }
 
@@ -46,14 +46,14 @@ struct MarketplaceOAuthLoginCoordinatorState {
     pending_cancellations: std::collections::HashMap<String, String>,
 }
 
-struct MarketplaceOAuthLoginRegistration {
-    cancellation_token: tokio_util::sync::CancellationToken,
-    completion_sender: tokio::sync::watch::Sender<bool>,
-    previous_completion: Option<tokio::sync::watch::Receiver<bool>>,
+pub(super) struct MarketplaceOAuthLoginRegistration {
+    pub(super) cancellation_token: tokio_util::sync::CancellationToken,
+    pub(super) completion_sender: tokio::sync::watch::Sender<bool>,
+    pub(super) previous_completion: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl MarketplaceOAuthLoginCoordinator {
-    async fn register(&self, tool_id: &str, request_id: &str) -> MarketplaceOAuthLoginRegistration {
+    pub(super) async fn register(&self, tool_id: &str, request_id: &str) -> MarketplaceOAuthLoginRegistration {
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         let (completion_sender, completion) = tokio::sync::watch::channel(false);
         let mut state = self.state.lock().await;
@@ -82,7 +82,7 @@ impl MarketplaceOAuthLoginCoordinator {
         }
     }
 
-    async fn is_current(&self, tool_id: &str, request_id: &str) -> bool {
+    pub(super) async fn is_current(&self, tool_id: &str, request_id: &str) -> bool {
         self.state
             .lock()
             .await
@@ -91,7 +91,7 @@ impl MarketplaceOAuthLoginCoordinator {
             .is_some_and(|active| active.request_id == request_id)
     }
 
-    async fn finish(
+    pub(super) async fn finish(
         &self,
         tool_id: &str,
         request_id: &str,
@@ -109,7 +109,7 @@ impl MarketplaceOAuthLoginCoordinator {
         let _ = completion_sender.send(true);
     }
 
-    async fn cancel(&self, tool_id: &str, request_id: &str) -> bool {
+    pub(super) async fn cancel(&self, tool_id: &str, request_id: &str) -> bool {
         let completion = {
             let mut state = self.state.lock().await;
             let Some(active) = state
@@ -133,7 +133,7 @@ impl MarketplaceOAuthLoginCoordinator {
     }
 }
 
-async fn wait_for_oauth_completion(mut completion: tokio::sync::watch::Receiver<bool>) {
+pub(super) async fn wait_for_oauth_completion(mut completion: tokio::sync::watch::Receiver<bool>) {
     if *completion.borrow() {
         return;
     }
@@ -249,7 +249,7 @@ fn marketplace_oauth_server_from_mcp_config(
     Ok(config.servers.get(server_name).cloned())
 }
 
-fn marketplace_auth_status_fields(
+pub(super) fn marketplace_auth_status_fields(
     installed: bool,
     oauth_required: bool,
     mcp_configured: bool,
@@ -441,7 +441,7 @@ pub async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
         .map_err(|e| format!("任务执行失败: {e}"))?
 }
 
-fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().install(skill_id)?;
     // disabled_connectors.json 会保留 `skill:<id>` 的用户选择。技能卸载后启动时，
     // refresh 会因未安装而从底座运行态过滤掉；重装成功后必须立即再推一次，避免
@@ -478,8 +478,9 @@ pub fn uninstall_marketplace_skill(skill_id: String) -> Result<(), String> {
     uninstall_marketplace_skill_sync(&skill_id)
 }
 
-fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().uninstall(skill_id)?;
     crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     Ok(())
 }
+use super::prelude::*;

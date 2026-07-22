@@ -1,3 +1,5 @@
+use super::prelude::*;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryProfileState {
     pub profile: crate::memory::MemoryProfile,
@@ -543,19 +545,4 @@ pub async fn edit_last_turn(
     pool.edit_last_turn(&sid, new_message)
         .await
         .map_err(|e| format!("edit_last_turn: {e:?}"))
-}
-
-// ===================== 阶段 C: 产物面板 =====================
-
-/// 产物文件元数据。前端右栏 list 用。
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct ArtifactInfo {
-    /// 文件大小（字节）
-    pub size: u64,
-    /// 文件 mime-ish 分类：md / html / image / pdf / text / binary
-    pub kind: String,
-    /// 文件存在标记（前端跟踪的路径可能被外部删了）
-    pub exists: bool,
-    /// 最后修改时间（epoch 秒）。取不到给 0。前端列表「最后修改」/ 详情「修改时间」用。
-    pub modified: i64,
 }

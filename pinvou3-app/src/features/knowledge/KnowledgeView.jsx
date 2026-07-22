@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, Search, TableIcon, Trash2, X } from '../../components/icons.jsx';
-import { bridge, useBridge } from '../../hooks/useBridge.js';
+import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
 
@@ -8,7 +8,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
-      const bs = useBridge(); // 取 kbModelSetup 的实时下载进度
+      const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
       const inv = (cmd, args) =>
         (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
           ? window.__TAURI__.core.invoke(cmd, args)
@@ -105,8 +105,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       ];
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
       const refreshOutputs = useCallback(async () => {
-        const list = bridge && bridge.listDeliverableIndex
-          ? await bridge.listDeliverableIndex().catch(() => [])
+        const list = bridge && bridge.artifacts.listDeliverableIndex
+          ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
           : await inv('list_deliverable_index').catch(() => []);
         const nextList = list || [];
         const nextSig = outputListSig(nextList);
@@ -172,20 +172,20 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         return groups.filter((g) => g.rows.length > 0);
       };
       const openOutputChat = async (o) => {
-        if (bridge && bridge.switchToSession && o.sessionId) {
-          await bridge.switchToSession(o.sessionId);
+        if (bridge && bridge.sessions.switchToSession && o.sessionId) {
+          await bridge.sessions.switchToSession(o.sessionId);
         }
       };
       const continueOutput = async (o) => {
         await openOutputChat(o);
-        if (bridge && bridge.prefillComposer) {
-          bridge.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+        if (bridge && bridge.chat.prefillComposer) {
+          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
       };
       const newOutputProject = async (o) => {
-        if (bridge && bridge.createNewSession) await bridge.createNewSession();
-        if (bridge && bridge.prefillComposer) {
-          bridge.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+        if (bridge && bridge.sessions.createNewSession) await bridge.sessions.createNewSession();
+        if (bridge && bridge.chat.prefillComposer) {
+          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
       };
       const OutputLivePreview = ({ o, onOpen }) => {
@@ -222,23 +222,23 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             if (freshHit) return freshHit;
             try {
               let next = null;
-              if (o.category === 'img' && bridge.readArtifactImageB64) {
-                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path) };
-              } else if (ext === 'pptx' && bridge.readArtifactThumbnail) {
-                const thumb = await bridge.readArtifactThumbnail(o.path);
+              if (o.category === 'img' && bridge.artifacts.readArtifactImageB64) {
+                next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(o.path) };
+              } else if (ext === 'pptx' && bridge.artifacts.readArtifactThumbnail) {
+                const thumb = await bridge.artifacts.readArtifactThumbnail(o.path);
                 next = thumb ? { kind: 'image', url: thumb } : null;
               }
-              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.readArtifactText) {
-                next = { kind: 'html', html: await bridge.readArtifactText(o.path) };
+              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.artifacts.readArtifactText) {
+                next = { kind: 'html', html: await bridge.artifacts.readArtifactText(o.path) };
               }
-              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.renderArtifactVisual) {
-                const visual = await bridge.renderArtifactVisual(o.path);
+              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
+                const visual = await bridge.artifacts.renderArtifactVisual(o.path);
                 if (visual && visual.mode === 'html' && visual.html) {
                   next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                 }
               }
-              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.readArtifactText) {
-                const text = await bridge.readArtifactText(o.path);
+              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.artifacts.readArtifactText) {
+                const text = await bridge.artifacts.readArtifactText(o.path);
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
@@ -339,11 +339,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
               if (freshHit) return freshHit;
               try {
                 let next = null;
-                if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext) && bridge.readArtifactImageB64) {
-                  next = { kind: 'image', url: await bridge.readArtifactImageB64(f.path) };
+                if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext) && bridge.artifacts.readArtifactImageB64) {
+                  next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(f.path) };
                 }
-                if (!next && ['html','htm'].includes(ext) && bridge.readArtifactText) {
-                  const html = await bridge.readArtifactText(f.path);
+                if (!next && ['html','htm'].includes(ext) && bridge.artifacts.readArtifactText) {
+                  const html = await bridge.artifacts.readArtifactText(f.path);
                   let bodyText = '';
                   try {
                     const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
@@ -354,13 +354,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     ? { kind: 'text', text: html.slice(0, 1200) }
                     : { kind: 'html', html };
                 }
-                if (!next && ['docx','doc','odt','rtf','xlsx','xls','pptx','ppt','pdf'].includes(ext) && bridge.renderArtifactVisual) {
-                  const visual = await bridge.renderArtifactVisual(f.path);
+                if (!next && ['docx','doc','odt','rtf','xlsx','xls','pptx','ppt','pdf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
+                  const visual = await bridge.artifacts.renderArtifactVisual(f.path);
                   if (visual && visual.mode === 'html' && visual.html) next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                   else if (visual && visual.mode === 'images' && visual.images && visual.images.length) next = { kind: 'image', url: visual.images[0] };
                 }
-                if (!next && ['md','markdown','txt','csv','json','log'].includes(ext) && bridge.readArtifactText) {
-                  const text = await bridge.readArtifactText(f.path);
+                if (!next && ['md','markdown','txt','csv','json','log'].includes(ext) && bridge.artifacts.readArtifactText) {
+                  const text = await bridge.artifacts.readArtifactText(f.path);
                   next = { kind: 'text', text: text.slice(0, 1200) };
                 }
                 if (!next) next = { kind: 'fallback' };
@@ -553,7 +553,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         : t.kbModelStageDownload;
       const startModelDownload = async () => {
         try {
-          const st = await bridge.downloadKbModel();
+          const st = await bridge.knowledge.downloadKbModel();
           if (st) { setKbModel(st); kbCache.model = st; }
           loadColls(); // 模型就绪后刷新语义徽标/列表
         } catch (e) {}
@@ -598,14 +598,14 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
       const addSources = async (cid) => {
         let paths = [];
-        try { paths = (bridge && bridge.pickFiles) ? await bridge.pickFiles() : []; } catch (e) { paths = []; }
+        try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
         try { setIdx(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch (e) {}
       };
       // 知识库页底部入口：选文件 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
       const dzPick = async () => {
         let paths = [];
-        try { paths = (bridge && bridge.pickFiles) ? await bridge.pickFiles() : []; } catch (e) { paths = []; }
+        try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
         if (colls.length === 1) { try { setIdx(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch (e) {} }
         else { setAddToKb(paths); }

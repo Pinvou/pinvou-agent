@@ -1,3 +1,5 @@
+use super::prelude::*;
+
 /// 手动触发上下文压缩。用户点 token 进度条 → 立即压缩当前对话历史。
 /// 触发后 engine 会发 CompactionStarted / Completed / Failed 事件，
 /// 通过 chat:compaction 系列 event 通知前端。
@@ -59,7 +61,7 @@ pub async fn exit_plan_to_yolo(
 
 /// `accept_plan` 切 Yolo 后注入的执行指令文本。抽成函数供单测钉契约:
 /// 必须裹住方案全文 + 带明确"立即执行"信号,否则切了 Yolo 但 AI 收到空指令不知道干嘛。
-fn accept_plan_instruction(plan_markdown: &str) -> String {
+pub(super) fn accept_plan_instruction(plan_markdown: &str) -> String {
     format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}")
 }
 
@@ -308,14 +310,4 @@ pub async fn summon_pinvou(
     )
     .await
     .map_err(|e| format!("summon_pinvou: {e:?}"))
-}
-
-/// 路径校验：必须是绝对路径 + 路径解析后无 `..` 逃逸 + 不命中敏感清单。
-///
-/// pinvou3 是本地单用户工具，不像 web 服务有跨用户边界，所以不强制 $HOME
-/// 限制（允许 AI 在 /tmp / /opt / /mnt 等用户授权位置产出文件）。仅黑名单
-/// 拦截两类位置：(1) 用户凭据目录/文件，避免 AI 误把私钥/.env 内容读进
-/// LLM context 传给外部 vLLM；(2) 系统级敏感文件如 /etc/shadow。
-pub(crate) fn validate_user_path(raw: &str) -> Result<std::path::PathBuf, String> {
-    crate::platform::path_policy::validate_user_path(raw)
 }

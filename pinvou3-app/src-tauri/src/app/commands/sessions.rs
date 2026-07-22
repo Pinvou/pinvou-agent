@@ -17,7 +17,7 @@ pub struct HiddenSessionListItem {
 
 /// 仅普通 chat 会话可用的命令守卫（transcript/产物由前端覆盖持久化的路径）。
 /// 重命名/置顶/归档/删除等元数据操作按 SessionKind 分发，不走这个守卫。
-fn ensure_chat_session(store: &SessionStore, id: &str, action: &str) -> Result<(), String> {
+pub(super) fn ensure_chat_session(store: &SessionStore, id: &str, action: &str) -> Result<(), String> {
     match store
         .session_kind(id)
         .map_err(|error| format!("{action}({id}): {error:?}"))?
@@ -266,7 +266,7 @@ pub async fn list_workspace_files(
     list_workspace_files_for_session(&session_id, &store)
 }
 
-fn list_workspace_files_for_session(
+pub(super) fn list_workspace_files_for_session(
     session_id: &str,
     store: &SessionStore,
 ) -> Result<Vec<String>, String> {
@@ -303,3 +303,4 @@ fn list_workspace_files_for_session(
     out.sort();
     Ok(out)
 }
+use super::prelude::*;

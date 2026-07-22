@@ -1,7 +1,10 @@
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::{Path, PathBuf};
+use super::{
+    artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,
+    personas::*, sessions::*, voice::*, workflows::*,
+};
+use super::prelude::*;
+use crate::platform::path_policy::validate_user_path;
+use std::path::{Path, PathBuf};
 
     #[test]
     fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {
@@ -1759,4 +1762,3 @@ mod tests {
             std::fs::write(out, prompt).expect("写 prompt");
         }
     }
-}

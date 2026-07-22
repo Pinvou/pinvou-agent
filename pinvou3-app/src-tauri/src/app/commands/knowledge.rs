@@ -1,4 +1,4 @@
-fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
+pub(super) fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
     let title = collection_name.unwrap_or("本地知识集");
     format!(
         "<system-reminder>\n\
@@ -70,3 +70,4 @@ pub fn session_mounted_collection(
 ) -> Option<i64> {
     store.mounted_collection(&session_id)
 }
+use super::prelude::*;

@@ -81,7 +81,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         let cancelled = false;
         (async () => {
           const entries = await Promise.all(artifacts.map(async (a) => {
-            try { return [a.path, await bridge.artifactInfo(a.path)]; }
+            try { return [a.path, await bridge.artifacts.artifactInfo(a.path)]; }
             catch (_) { return [a.path, null]; }
           }));
           if (cancelled) return;
@@ -130,14 +130,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         setPv({ loading: true });
         setExternalUpdateBlocked(false);
         try {
-          const info = await bridge.artifactInfo(a.path);
+          const info = await bridge.artifacts.artifactInfo(a.path);
           if (!info || !info.exists) { setPv({ missing: true, info }); return; }
           if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-            const text = await bridge.readArtifactText(a.path);
+            const text = await bridge.artifacts.readArtifactText(a.path);
             setPv({ kind: info.kind, text, info });
           } else {
             // image / pdf / docx / xlsx / legacy_office / binary → 后端可视化转换
-            const visual = await bridge.renderArtifactVisual(a.path);
+            const visual = await bridge.artifacts.renderArtifactVisual(a.path);
             setPv({ kind: info.kind, visual, info });
           }
         } catch (e) { setPv({ error: String(e) }); }
@@ -275,7 +275,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
-            <button onClick={() => sel && bridge.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
+            <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
               {t.apBtnOpen}
             </button>
           </div>
@@ -314,7 +314,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
-                        <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }}
+                        <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
                           className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#1E1F20] text-[#C4C7C5]' : 'hover:bg-white text-[#444746]'}`}><FolderOpen size={16} /></button>
                       </div>
                     );
@@ -344,11 +344,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       </div>
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
-                      <button onClick={() => bridge.openArtifactExternal(sel.path)}
+                      <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
                         className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark, 'primary')}`}>
                         <ExternalLink size={15} /> {t.apBtnOpen}
                       </button>
-                      <button onClick={() => bridge.openContainingFolder(sel.path)}
+                      <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
                         className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark)}`}>
                         <FolderOpen size={15} /> {t.apBtnLocate}
                       </button>

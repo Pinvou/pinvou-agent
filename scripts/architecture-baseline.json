@@ -16,8 +16,7 @@
     "rust_cyclic_feature_dependencies": {},
     "rust_feature_depends_on_app": {},
     "rust_legacy_module_indirection": {
-      "pinvou3-app/src-tauri/src/app/commands.rs:include!": 19,
-      "pinvou3-app/src-tauri/src/lib.rs:#[path]": 38
+      "pinvou3-app/src-tauri/src/lib.rs:#[path]": 37
     },
     "rust_target_cfg_outside_adapter": {
       "pinvou3-app/src-tauri/src/app/commands/artifacts.rs": 11,

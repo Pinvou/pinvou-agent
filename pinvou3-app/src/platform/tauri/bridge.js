@@ -12,7 +12,14 @@
     console.warn("[TauriBridge] Tauri not available — browser preview mode");
     window.TauriBridge = {
       available: false,
-      getState: function () { return {}; },
+      lifecycle: { init: function () { return Promise.resolve(); } },
+      state: {
+        get: function () { return {}; },
+        getMany: function () { return {}; },
+        subscribe: function () { return function () {}; },
+        subscribeMany: function () { return function () {}; },
+      },
+      rendering: { renderMarkdown: function (text) { return String(text || ""); } },
     };
     return;
   }
@@ -123,7 +130,7 @@
   if (isPetWindow) {
     window.TauriBridge = {
       available: false,
-      renderMarkdown: renderMarkdown,
+      rendering: { renderMarkdown: renderMarkdown },
     };
     return;
   }
@@ -666,6 +673,44 @@
     }
     return JSON.parse(JSON.stringify(state));
   }
+  var STATE_SLICE_FIELDS = {
+    platform: ["appVersion", "backendOnline", "platformCapabilities"],
+    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts"],
+    voice: ["voiceInput", "voiceAsrSetup"],
+    knowledge: ["kbModelSetup", "mountedCollection"],
+    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
+    monitor: ["monitor", "monitorError"],
+    settings: ["settings", "selectedPet"],
+    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
+    llmapi: ["llmApiModels", "llmApiStatus"],
+    vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
+    interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
+    personas: ["activePersona", "personaEvents", "personaPool"],
+    workflow: ["workflow"],
+    memory: ["memory"],
+    remoteControl: ["remoteControl"],
+    updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
+    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"],
+  };
+  function snapshotStateSlice(domain) {
+    var fields = STATE_SLICE_FIELDS[domain];
+    if (!fields) throw new Error("Unknown Tauri bridge state slice: " + domain);
+    var slice = {};
+    for (var i = 0; i < fields.length; i++) slice[fields[i]] = state[fields[i]];
+    if (typeof structuredClone === "function") {
+      try { return structuredClone(slice); } catch (_) {}
+    }
+    return JSON.parse(JSON.stringify(slice));
+  }
+  function snapshotStateSlices(domains) {
+    if (!Array.isArray(domains) || domains.length === 0) {
+      throw new Error("Tauri bridge state.getMany requires at least one domain");
+    }
+    var result = {};
+    for (var i = 0; i < domains.length; i++) Object.assign(result, snapshotStateSlice(domains[i]));
+    return result;
+  }
   function cloneJson(value, fallback) {
     try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
     catch (_) { return fallback; }
@@ -752,6 +797,13 @@
     return function () {
       subscribers = subscribers.filter(function (f) { return f !== fn; });
     };
+  }
+  function subscribeStateSlice(domain, fn) {
+    return subscribe(function () { fn(snapshotStateSlice(domain)); });
+  }
+  function subscribeStateSlices(domains, fn) {
+    snapshotStateSlices(domains);
+    return subscribe(function () { fn(snapshotStateSlices(domains)); });
   }
 
   var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });
@@ -1437,94 +1489,119 @@
   // ── Expose API ───────────────────────────────────────────────────
   window.TauriBridge = {
     available: true,
-    subscribe: subscribe,
-    getState: function () { return snapshotState(); },
-    init: init,
-    refreshConnectorAuthGates: refreshConnectorAuthGates,
-    loadPlatformCapabilities: loadPlatformCapabilities,
-    loadKnowledgeEmbedderAfterFirstFrame: loadKnowledgeEmbedderAfterFirstFrame,
-    sendMessage: sendMessage,
-    sendMessageToSession: sendMessageToSession,
-    prefillComposer: prefillComposer,
-    removeQueued: removeQueued,
-    startVoiceInput: startVoiceInput,
-    installVoiceAsr: installVoiceAsr,
-    cancelVoiceAsrSetup: cancelVoiceAsrSetup,
-    closeVoiceAsrSetup: closeVoiceAsrSetup,
-    downloadKbModel: downloadKbModel,
-    cancelKbModel: cancelKbModel,
-    cancelVoiceInput: cancelVoiceInput,
-    clearVoiceInput: clearVoiceInput,
-    appendVoiceText: appendVoiceText,
-    runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
-    loadScheduledTasks: loadScheduledTasks,
-    readScheduledTask: readScheduledTask,
-    loadScheduledTaskRuns: loadScheduledTaskRuns,
-    loadScheduledTaskRecentRuns: loadScheduledTaskRecentRuns,
-    selectScheduledTask: selectScheduledTask,
-    refreshScheduledTaskData: refreshScheduledTaskData,
-    clearScheduledTaskSelection: clearScheduledTaskSelection,
-    dismissScheduledTaskError: dismissScheduledTaskError,
-    createScheduledTask: createScheduledTask,
-    updateScheduledTask: updateScheduledTask,
-    pauseScheduledTask: pauseScheduledTask,
-    resumeScheduledTask: resumeScheduledTask,
-    toggleScheduledTaskPinned: toggleScheduledTaskPinned,
-    deleteScheduledTask: deleteScheduledTask,
-    runScheduledTaskNow: runScheduledTaskNow,
-    pickFolder: pickFolder,
-    startScheduledTaskChat: startScheduledTaskChat,
-    confirmScheduledTaskDraft: confirmScheduledTaskDraft,
-    clearScheduledTaskDraft: clearScheduledTaskDraft,
-    cancelGeneration: cancelGeneration,
-    cancelShellTask: cancelShellTask,
-    createNewSession: createNewSession,
-    switchToSession: switchToSession,
-    openScheduledRunChat: openScheduledRunChat,
-    exitScheduledRunChat: exitScheduledRunChat,
-    deleteSession: deleteSession,
-    renameSession: renameSession,
-    toggleSessionPinned: toggleSessionPinned,
-    archiveSession: archiveSession,
-    restoreArchivedSession: restoreArchivedSession,
-    startMonitorPolling: startMonitorPolling,
-    stopMonitorPolling: stopMonitorPolling,
-    clearMonitorStats: clearMonitorStats,
-    setSelectedPet: setSelectedPet,
-    saveSettings: saveSettings,
-    saveSettingsAndRestart: saveSettingsAndRestart,
-    submitFeedback: submitFeedback,
-    discoverLocalVllm: discoverLocalVllm,
-    getLlmApiStatus: getLlmApiStatus,
-    getLlmApiModels: getLlmApiModels,
-    setLlmApiDefaultModel: setLlmApiDefaultModel,
-    ensureLlmApiBinding: ensureLlmApiBinding,
-    loginLlmApiUser: loginLlmApiUser,
-    saveLlmApiUserSession: saveLlmApiUserSession,
-    retryLlmApiProvisioning: retryLlmApiProvisioning,
-    setLlmApiUserEnabled: setLlmApiUserEnabled,
-    getLlmApiAdminOverview: getLlmApiAdminOverview,
-    detectLocalVllmSetup: detectLocalVllmSetup,
-    bootstrapLocalVllm: bootstrapLocalVllm,
-    dismissVllmSetup: dismissVllmSetup,
-    declineVllmSetup: declineVllmSetup,
-    getEffectiveModelConfig: getEffectiveModelConfig,
-   loadModels: loadModels,
-   saveModel: saveModel,
-   revealModelApiKey: revealModelApiKey,
-   deleteModel: deleteModel,
-    setActiveModel: setActiveModel,
-    loadSessionModel: loadSessionModel,
-    switchModel: switchModel,
-    testModelConnection: testModelConnection,
-    testSearchProvider: testSearchProvider,
-    toggleSuperPerm: toggleSuperPerm,
-    renderMarkdown: renderMarkdown,
-    startRemoteControl: startRemoteControl,
-    stopRemoteControl: stopRemoteControl,
-    refreshRemoteControlQr: refreshRemoteControlQr,
-    refreshRemoteControlStatus: refreshRemoteControlStatus,
-    // Plan/YOLO
+    lifecycle: { init: init },
+    state: {
+      get: snapshotStateSlice,
+      getMany: snapshotStateSlices,
+      subscribe: subscribeStateSlice,
+      subscribeMany: subscribeStateSlices,
+    },
+    platform: {
+      refreshConnectorAuthGates: refreshConnectorAuthGates,
+      loadPlatformCapabilities: loadPlatformCapabilities,
+    },
+    chat: {
+      sendMessage: sendMessage,
+      sendMessageToSession: sendMessageToSession,
+      prefillComposer: prefillComposer,
+      removeQueued: removeQueued,
+      cancelGeneration: cancelGeneration,
+      cancelShellTask: cancelShellTask,
+    },
+    voice: {
+      startVoiceInput: startVoiceInput,
+      installVoiceAsr: installVoiceAsr,
+      cancelVoiceAsrSetup: cancelVoiceAsrSetup,
+      closeVoiceAsrSetup: closeVoiceAsrSetup,
+      cancelVoiceInput: cancelVoiceInput,
+      clearVoiceInput: clearVoiceInput,
+      appendVoiceText: appendVoiceText,
+      runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
+    },
+    knowledge: {
+      loadKnowledgeEmbedderAfterFirstFrame: loadKnowledgeEmbedderAfterFirstFrame,
+      downloadKbModel: downloadKbModel,
+      cancelKbModel: cancelKbModel,
+      mountCollection: mountCollection,
+      unmountCollection: unmountCollection,
+      listCollections: function () { return invoke("kb_collection_list"); },
+      kbModelStatus: function () { return invoke("kb_model_status"); },
+    },
+    scheduled: {
+      loadScheduledTasks: loadScheduledTasks,
+      readScheduledTask: readScheduledTask,
+      loadScheduledTaskRuns: loadScheduledTaskRuns,
+      loadScheduledTaskRecentRuns: loadScheduledTaskRecentRuns,
+      selectScheduledTask: selectScheduledTask,
+      refreshScheduledTaskData: refreshScheduledTaskData,
+      clearScheduledTaskSelection: clearScheduledTaskSelection,
+      dismissScheduledTaskError: dismissScheduledTaskError,
+      createScheduledTask: createScheduledTask,
+      updateScheduledTask: updateScheduledTask,
+      pauseScheduledTask: pauseScheduledTask,
+      resumeScheduledTask: resumeScheduledTask,
+      toggleScheduledTaskPinned: toggleScheduledTaskPinned,
+      deleteScheduledTask: deleteScheduledTask,
+      runScheduledTaskNow: runScheduledTaskNow,
+      pickFolder: pickFolder,
+      startScheduledTaskChat: startScheduledTaskChat,
+      confirmScheduledTaskDraft: confirmScheduledTaskDraft,
+      clearScheduledTaskDraft: clearScheduledTaskDraft,
+      openScheduledRunChat: openScheduledRunChat,
+      exitScheduledRunChat: exitScheduledRunChat,
+    },
+    sessions: {
+      createNewSession: createNewSession,
+      switchToSession: switchToSession,
+      deleteSession: deleteSession,
+      renameSession: renameSession,
+      toggleSessionPinned: toggleSessionPinned,
+      archiveSession: archiveSession,
+      restoreArchivedSession: restoreArchivedSession,
+    },
+    monitor: {
+      startMonitorPolling: startMonitorPolling,
+      stopMonitorPolling: stopMonitorPolling,
+      clearMonitorStats: clearMonitorStats,
+    },
+    settings: {
+      setSelectedPet: setSelectedPet,
+      saveSettings: saveSettings,
+      saveSettingsAndRestart: saveSettingsAndRestart,
+      testSearchProvider: testSearchProvider,
+    },
+    feedback: { submitFeedback: submitFeedback },
+    llmapi: {
+      getLlmApiStatus: getLlmApiStatus,
+      getLlmApiModels: getLlmApiModels,
+      setLlmApiDefaultModel: setLlmApiDefaultModel,
+      ensureLlmApiBinding: ensureLlmApiBinding,
+      loginLlmApiUser: loginLlmApiUser,
+      saveLlmApiUserSession: saveLlmApiUserSession,
+      retryLlmApiProvisioning: retryLlmApiProvisioning,
+      setLlmApiUserEnabled: setLlmApiUserEnabled,
+      getLlmApiAdminOverview: getLlmApiAdminOverview,
+    },
+    vllm: {
+      discoverLocalVllm: discoverLocalVllm,
+      detectLocalVllmSetup: detectLocalVllmSetup,
+      bootstrapLocalVllm: bootstrapLocalVllm,
+      dismissVllmSetup: dismissVllmSetup,
+      declineVllmSetup: declineVllmSetup,
+    },
+    models: {
+      getEffectiveModelConfig: getEffectiveModelConfig,
+      loadModels: loadModels,
+      saveModel: saveModel,
+      revealModelApiKey: revealModelApiKey,
+      deleteModel: deleteModel,
+      setActiveModel: setActiveModel,
+      loadSessionModel: loadSessionModel,
+      switchModel: switchModel,
+      testModelConnection: testModelConnection,
+    },
+    interaction: { toggleSuperPerm: toggleSuperPerm,
+      // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
@@ -1540,91 +1617,101 @@
     dismissPinvouReview: dismissPinvouReview,
     // 编辑/压缩
     editLastTurn: editLastTurn,
-    compactNow: compactNow,
-    // 产物
-    artifactInfo: artifactInfo,
-    readArtifactText: readArtifactText,
-    writeArtifactText: writeArtifactText,
-    readArtifactImageB64: readArtifactImageB64,
-    readArtifactThumbnail: readArtifactThumbnail,
-    renderArtifactVisual: renderArtifactVisual,
-    openContainingFolder: openContainingFolder,
-    revealSessionFolder: revealSessionFolder,
-    openScheduledTaskFolder: openScheduledTaskFolder,
-    openInSystem: openInSystem,
-    openArtifactExternal: openArtifactExternal,
-    listDeliverables: listDeliverables,
-    listDeliverableIndex: listDeliverableIndex,
-    openExternalUrl: openExternalUrl,
-    // 附件
-    addAttachmentByPath: addAttachmentByPath,
-    addPasteImage: addPasteImage,
-    removeAttachment: removeAttachment,
-    clearAttachments: clearAttachments,
-    pickAndAttach: pickAndAttach,
-    markResolved: markResolved,
-    // 工作流
-    loadSkills: loadSkills,
-    activateSkill: activateSkill,
-    deactivateSkill: deactivateSkill,
-    openDemo: openDemo,
-    closeDemo: closeDemo,
-    setCurrentPhase: setCurrentPhase,
-    // 卡片流工作流
-    startWorkflowTask: startWorkflowTask,
-    stopWorkflowTask: stopWorkflowTask,
-    listWorkflows: listWorkflows,
-    resetWorkflowRun: resetWorkflowRun,
-    selectWorkflowRole: selectWorkflowRole,
-    closeWorkflowDrawer: closeWorkflowDrawer,
-    getRolePrompt: getRolePrompt,
-    getRoleOutputs: getRoleOutputs,
-    getGateReport: getGateReport,
-    getRoleLogs: getRoleLogs,
-    submitWorkflowUserInput: submitWorkflowUserInput,
-    pickAndAddMaterials: pickAndAddMaterials,
-    pickFiles: pickFiles,
-    pickFeedbackFiles: pickFeedbackFiles,
-    addMaterialsToSession: addMaterialsToSession,
-    attachRun: attachRun,
-    resumeWorkflowOnBoot: resumeWorkflowOnBoot,
-    approveWorkflowGate: approveWorkflowGate,
-    rejectWorkflowGate: rejectWorkflowGate,
-    retryWorkflowRole: retryWorkflowRole,
-    // 卡片池: 专家面具
-    loadPersonas: loadPersonas,
-    getPersonas: getPersonas, // 返回引用(只读),不进 notify 快照
-    readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
-    equipPersona: equipPersona,
-    unequipPersona: unequipPersona,
-    // 知识库挂载(会话级)
-    mountCollection: mountCollection,
-    unmountCollection: unmountCollection,
-    listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
-    kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
-    loadMemoryOverview: loadMemoryOverview,
-    saveMemoryProfilePatch: saveMemoryProfilePatch,
-    deleteMemoryPreference: deleteMemoryPreference,
-    updateMemoryItem: updateMemoryItem,
-    deleteMemoryItem: deleteMemoryItem,
-    archiveRecentWorkMemory: archiveRecentWorkMemory,
-    confirmMemoryCandidate: confirmMemoryCandidate,
-    ignoreMemoryCandidate: ignoreMemoryCandidate,
-    neverMemoryCandidate: neverMemoryCandidate,
-    // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
-    // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
-    postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
-    // 用户自创卡
-    createPersona: createPersona,
-    updatePersona: updatePersona,
-    deletePersona: deletePersona,
-    // 应用内升级
-    checkForUpdate: checkForUpdate,
-    downloadAndInstallUpdate: downloadAndInstallUpdate,
-    cancelUpdate: cancelUpdate,
-    restartApp: restartApp,
-    checkDependencies: checkDependencies,
-    installDependencies: installDependencies,
+      compactNow: compactNow,
+    },
+    rendering: { renderMarkdown: renderMarkdown },
+    remoteControl: {
+      startRemoteControl: startRemoteControl,
+      stopRemoteControl: stopRemoteControl,
+      refreshRemoteControlQr: refreshRemoteControlQr,
+      refreshRemoteControlStatus: refreshRemoteControlStatus,
+    },
+    artifacts: {
+      artifactInfo: artifactInfo,
+      readArtifactText: readArtifactText,
+      writeArtifactText: writeArtifactText,
+      readArtifactImageB64: readArtifactImageB64,
+      readArtifactThumbnail: readArtifactThumbnail,
+      renderArtifactVisual: renderArtifactVisual,
+      openContainingFolder: openContainingFolder,
+      revealSessionFolder: revealSessionFolder,
+      openScheduledTaskFolder: openScheduledTaskFolder,
+      openInSystem: openInSystem,
+      openArtifactExternal: openArtifactExternal,
+      listDeliverables: listDeliverables,
+      listDeliverableIndex: listDeliverableIndex,
+      openExternalUrl: openExternalUrl,
+    },
+    attachments: {
+      addAttachmentByPath: addAttachmentByPath,
+      addPasteImage: addPasteImage,
+      removeAttachment: removeAttachment,
+      clearAttachments: clearAttachments,
+      pickAndAttach: pickAndAttach,
+    },
+    resolutions: { markResolved: markResolved },
+    workflow: {
+      loadSkills: loadSkills,
+      activateSkill: activateSkill,
+      deactivateSkill: deactivateSkill,
+      openDemo: openDemo,
+      closeDemo: closeDemo,
+      setCurrentPhase: setCurrentPhase,
+      startWorkflowTask: startWorkflowTask,
+      stopWorkflowTask: stopWorkflowTask,
+      listWorkflows: listWorkflows,
+      resetWorkflowRun: resetWorkflowRun,
+      selectWorkflowRole: selectWorkflowRole,
+      closeWorkflowDrawer: closeWorkflowDrawer,
+      getRolePrompt: getRolePrompt,
+      getRoleOutputs: getRoleOutputs,
+      getGateReport: getGateReport,
+      getRoleLogs: getRoleLogs,
+      submitWorkflowUserInput: submitWorkflowUserInput,
+      pickAndAddMaterials: pickAndAddMaterials,
+      addMaterialsToSession: addMaterialsToSession,
+      attachRun: attachRun,
+      resumeWorkflowOnBoot: resumeWorkflowOnBoot,
+      approveWorkflowGate: approveWorkflowGate,
+      rejectWorkflowGate: rejectWorkflowGate,
+      retryWorkflowRole: retryWorkflowRole,
+    },
+    files: {
+      pickFiles: pickFiles,
+      pickFeedbackFiles: pickFeedbackFiles,
+    },
+    personas: {
+      loadPersonas: loadPersonas,
+      getPersonas: getPersonas,
+      readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); },
+      equipPersona: equipPersona,
+      unequipPersona: unequipPersona,
+      postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
+      createPersona: createPersona,
+      updatePersona: updatePersona,
+      deletePersona: deletePersona,
+    },
+    memory: {
+      loadMemoryOverview: loadMemoryOverview,
+      saveMemoryProfilePatch: saveMemoryProfilePatch,
+      deleteMemoryPreference: deleteMemoryPreference,
+      updateMemoryItem: updateMemoryItem,
+      deleteMemoryItem: deleteMemoryItem,
+      archiveRecentWorkMemory: archiveRecentWorkMemory,
+      confirmMemoryCandidate: confirmMemoryCandidate,
+      ignoreMemoryCandidate: ignoreMemoryCandidate,
+      neverMemoryCandidate: neverMemoryCandidate,
+    },
+    updater: {
+      checkForUpdate: checkForUpdate,
+      downloadAndInstallUpdate: downloadAndInstallUpdate,
+      cancelUpdate: cancelUpdate,
+      restartApp: restartApp,
+    },
+    dependencies: {
+      checkDependencies: checkDependencies,
+      installDependencies: installDependencies,
+    },
   };
 
   // Auto-init after DOM ready

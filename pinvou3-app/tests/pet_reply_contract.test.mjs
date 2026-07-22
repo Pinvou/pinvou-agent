@@ -29,7 +29,7 @@ assert.match(bridgeImplementation, /doSendFor\(sid, content, content, \[\]/);
 assert.match(bridge, /sendMessageToSession:\s*sendMessageToSession/);
 assert.match(main, /listen\(['"]pet:reply_pending['"]/);
 assert.match(main, /invoke\(['"]take_pet_reply['"]\)/);
-assert.match(main, /bridge\.sendMessageToSession\(sid, text\)/);
+assert.match(main, /bridge\.chat\.sendMessageToSession\(sid, text\)/);
 assert.match(main, /result\.completion\.then/);
 assert.match(main, /pet:reply_accepted/);
 assert.match(main, /pet:reply_failed/);

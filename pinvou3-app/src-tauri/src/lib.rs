@@ -15,33 +15,30 @@ mod audit;
 mod core;
 pub mod platform;
 pub use platform::engine_bridge as bridge;
-#[path = "app/commands.rs"]
-mod commands;
+mod app;
 #[path = "platform/credential_store.rs"]
 pub mod credential_store;
 #[path = "features/pet/detach.rs"]
 mod detach;
+mod features;
 #[path = "features/feedback/mod.rs"]
 pub mod feedback;
-mod features;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
-pub use commands::build_message_with_attachments;
+pub use app::commands::attachments::build_message_with_attachments;
 // CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
 #[path = "features/connectors/connector_cli.rs"]
 mod connector_cli;
 #[path = "features/connectors/dingtalk.rs"]
 mod dingtalk;
+#[path = "features/connectors/eip.rs"]
+mod eip;
 #[path = "features/assistant/engine.rs"]
 pub mod engine;
 #[path = "features/assistant/engine_pool.rs"]
 pub mod engine_pool;
-#[path = "features/connectors/eip.rs"]
-mod eip;
 #[path = "features/connectors/feishu.rs"]
 mod feishu;
-#[path = "features/connectors/wecom.rs"]
-mod wecom;
 #[path = "features/files/file_ingest.rs"]
 pub mod file_ingest;
 #[path = "features/files/file_watcher.rs"]
@@ -76,16 +73,18 @@ mod scheduled_executor;
 mod scheduled_tasks;
 #[path = "features/pet/selected_pet.rs"]
 mod selected_pet;
-#[path = "platform/super_permission.rs"]
-pub mod super_permission;
 #[path = "platform/startup.rs"]
 mod startup;
+#[path = "platform/super_permission.rs"]
+pub mod super_permission;
 #[path = "platform/telemetry.rs"]
 mod telemetry;
 #[path = "features/assistant/timing.rs"]
 mod timing;
 #[path = "platform/ui_cache.rs"]
 mod ui_cache;
+#[path = "features/connectors/wecom.rs"]
+mod wecom;
 #[path = "features/workflow/workflow_migrate.rs"]
 mod workflow_migrate;
 #[path = "features/workflow/workflow_registry.rs"]
@@ -97,9 +96,10 @@ mod zhidao;
 
 use tauri::Manager;
 
-use crate::features::sessions::SessionStore;
+use crate::app::commands;
 use crate::engine_pool::EnginePool;
 use crate::features::monitor::MonitorState;
+use crate::features::sessions::SessionStore;
 use crate::remote_control::RemoteControlManager;
 
 /// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
@@ -213,10 +213,7 @@ fn configure_webkit_rendering_env() {
     let is_linux_arm64_nvidia = cfg!(all(target_os = "linux", target_arch = "aarch64"))
         && std::path::Path::new("/proc/driver/nvidia/version").is_file();
 
-    if should_force_webkit_dmabuf_shm(
-        is_linux_arm64_nvidia,
-        has_explicit_rendering_override,
-    ) {
+    if should_force_webkit_dmabuf_shm(is_linux_arm64_nvidia, has_explicit_rendering_override) {
         // GB10/NVIDIA + WebKitGTK 2.52 会在 DMA-BUF/GBM 路径调用
         // DRM_IOCTL_MODE_CREATE_DUMB 并被驱动拒绝。FORCE_SHM 仅把 WebKit
         // renderer buffer 传输改为共享内存，不关闭 compositing，因此透明
@@ -457,7 +454,7 @@ pub fn run() {
             }
             let remote_control = RemoteControlManager::new_with_attachment_stager(
                 app.handle().clone(),
-                commands::stage_remote_attachment_source,
+                commands::attachments::stage_remote_attachment_source,
             );
             let remote_event_transport = remote_control.clone();
             app.handle().manage(platform::app_events::AppEventBus::new(
@@ -486,14 +483,13 @@ pub fn run() {
                 SessionStore::boot().expect("session store boot fallback")
             });
             startup::mark("engine_pool:start");
-            let tool_factory: crate::engine_pool::EngineToolFactory = std::sync::Arc::new(
-                |app, session_id| {
+            let tool_factory: crate::engine_pool::EngineToolFactory =
+                std::sync::Arc::new(|app, session_id| {
                     vec![std::sync::Arc::new(knowledge::KbSearchTool::new(
                         app.clone(),
                         session_id.to_string(),
                     ))]
-                },
-            );
+                });
             let tool_policy: crate::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
                 let mut tools = crate::features::marketplace::disabled_tool_names();
                 let kb_usable = app
@@ -586,8 +582,8 @@ pub fn run() {
                     res.join("runtime").join("asr"),
                     res.join("resources").join("runtime").join("asr"),
                 ]
-                    .into_iter()
-                    .find(|d| d.join("sense-voice-main").exists())
+                .into_iter()
+                .find(|d| d.join("sense-voice-main").exists())
             }) {
                 features::voice::set_bundled_engine_dir(asr_res);
             }
@@ -643,7 +639,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::chat,
+            commands::chat::chat,
             startup::report_frontend_startup,
             connector_cli::refresh_connector_auth_gates,
             feishu::feishu_ensure_cli,
@@ -678,52 +674,52 @@ pub fn run() {
             zhidao::zhidao_connect_begin,
             zhidao::zhidao_cancel,
             zhidao::zhidao_logout,
-            commands::get_settings,
-            commands::get_platform_capabilities,
-            commands::submit_feedback,
-            commands::get_effective_model_config,
-            commands::update_settings,
-            commands::save_settings_and_restart,
-            commands::clear_session,
-            commands::get_monitor_snapshot,
-            commands::get_backend_status,
-            commands::ensure_llmapi_binding,
-            commands::login_llmapi_user,
-            commands::save_llmapi_user_session,
-            commands::get_llmapi_status,
-            commands::get_llmapi_models,
-            commands::set_llmapi_default_model,
-            commands::retry_llmapi_provisioning,
-            commands::set_llmapi_user_enabled,
-            commands::get_llmapi_admin_overview,
-            commands::discover_local_vllm,
+            commands::settings::get_settings,
+            commands::runtime::get_platform_capabilities,
+            commands::settings::submit_feedback,
+            commands::settings::get_effective_model_config,
+            commands::settings::update_settings,
+            commands::settings::save_settings_and_restart,
+            commands::sessions::clear_session,
+            commands::monitor::get_monitor_snapshot,
+            commands::monitor::get_backend_status,
+            commands::llmapi::ensure_llmapi_binding,
+            commands::llmapi::login_llmapi_user,
+            commands::llmapi::save_llmapi_user_session,
+            commands::llmapi::get_llmapi_status,
+            commands::llmapi::get_llmapi_models,
+            commands::llmapi::set_llmapi_default_model,
+            commands::llmapi::retry_llmapi_provisioning,
+            commands::llmapi::set_llmapi_user_enabled,
+            commands::llmapi::get_llmapi_admin_overview,
+            commands::monitor::discover_local_vllm,
             local_vllm_setup::detect_local_vllm_setup,
             local_vllm_setup::bootstrap_local_vllm,
             local_vllm_setup::decline_local_vllm_setup,
-           commands::list_models,
-           commands::reveal_model_api_key,
-           commands::save_model,
-            commands::delete_model,
-            commands::set_active_model,
-            commands::set_session_model,
-            commands::get_session_model_id,
-            commands::test_model_connection,
-            commands::test_search_provider,
-            commands::transcribe_voice_audio,
+            commands::settings::list_models,
+            commands::settings::reveal_model_api_key,
+            commands::settings::save_model,
+            commands::settings::delete_model,
+            commands::settings::set_active_model,
+            commands::settings::set_session_model,
+            commands::settings::get_session_model_id,
+            commands::settings::test_model_connection,
+            commands::settings::test_search_provider,
+            commands::voice::transcribe_voice_audio,
             features::voice::microphone_permission::reset_microphone_permission,
             features::voice::voice_asr::voice_asr_status,
             features::voice::voice_asr::install_voice_asr,
             features::voice::voice_asr::cancel_voice_asr,
-            commands::list_sessions,
-            commands::create_session,
-            commands::load_session,
-            commands::delete_session,
-            commands::rename_session,
-            commands::set_session_pinned,
-            commands::list_archived_sessions,
-            commands::set_session_archived,
-            commands::get_session_timeline,
-            commands::get_session_stats,
+            commands::sessions::list_sessions,
+            commands::sessions::create_session,
+            commands::sessions::load_session,
+            commands::sessions::delete_session,
+            commands::sessions::rename_session,
+            commands::sessions::set_session_pinned,
+            commands::sessions::list_archived_sessions,
+            commands::sessions::set_session_archived,
+            commands::timeline::get_session_timeline,
+            commands::timeline::get_session_stats,
             scheduled_tasks::list_scheduled_tasks,
             scheduled_tasks::read_scheduled_task,
             scheduled_tasks::list_scheduled_task_runs,
@@ -737,53 +733,53 @@ pub fn run() {
             scheduled_tasks::run_scheduled_task_now,
             scheduled_tasks::mark_scheduled_run_viewed,
             scheduled_tasks::scheduled_task_chat_prompt,
-            commands::get_active_session,
-            commands::save_session_messages,
-            commands::save_session_artifacts,
-            commands::list_workspace_files,
-            commands::cancel_generation,
-            commands::list_shell_tasks,
-            commands::cancel_shell_task,
+            commands::sessions::get_active_session,
+            commands::sessions::save_session_messages,
+            commands::sessions::save_session_artifacts,
+            commands::sessions::list_workspace_files,
+            commands::runtime::cancel_generation,
+            commands::runtime::list_shell_tasks,
+            commands::runtime::cancel_shell_task,
             remote_control::remote_control_start,
             remote_control::remote_control_stop,
             remote_control::remote_control_status,
             remote_control::remote_control_refresh_qr,
             remote_control::remote_control_publish_user_message,
             remote_control::remote_control_publish_event,
-            commands::set_disabled_connectors,
-            commands::get_disabled_connectors,
-            commands::get_memory_profile,
-            commands::update_memory_profile,
-            commands::clear_memory_profile,
-            commands::get_memory_overview,
-            commands::list_pending_memory,
-            commands::suggest_memory,
-            commands::confirm_pending_memory,
-            commands::ignore_pending_memory,
-            commands::never_pending_memory,
-            commands::list_recent_work_memory,
-            commands::upsert_recent_work_memory,
-            commands::archive_recent_work_memory,
-            commands::delete_memory_preference,
-            commands::update_memory_preference,
-            commands::update_work_context_memory,
-            commands::delete_work_context_memory,
-            commands::update_timed_memory,
-            commands::delete_timed_memory,
-            commands::edit_last_turn,
-            commands::read_artifact_text,
-            commands::write_artifact_text,
-            commands::list_deliverables,
-            commands::list_deliverable_index,
-            commands::artifact_info,
-            commands::render_artifact_visual,
-            commands::read_artifact_image_b64,
-            commands::read_artifact_thumbnail,
-            commands::open_in_system,
-            commands::open_containing_folder,
-            commands::reveal_session_folder,
-            commands::open_scheduled_task_folder,
-            commands::open_artifact_window,
+            commands::connectors::set_disabled_connectors,
+            commands::connectors::get_disabled_connectors,
+            commands::memory::get_memory_profile,
+            commands::memory::update_memory_profile,
+            commands::memory::clear_memory_profile,
+            commands::memory::get_memory_overview,
+            commands::memory::list_pending_memory,
+            commands::memory::suggest_memory,
+            commands::memory::confirm_pending_memory,
+            commands::memory::ignore_pending_memory,
+            commands::memory::never_pending_memory,
+            commands::memory::list_recent_work_memory,
+            commands::memory::upsert_recent_work_memory,
+            commands::memory::archive_recent_work_memory,
+            commands::memory::delete_memory_preference,
+            commands::memory::update_memory_preference,
+            commands::memory::update_work_context_memory,
+            commands::memory::delete_work_context_memory,
+            commands::memory::update_timed_memory,
+            commands::memory::delete_timed_memory,
+            commands::memory::edit_last_turn,
+            commands::artifacts::read_artifact_text,
+            commands::artifacts::write_artifact_text,
+            commands::artifacts::list_deliverables,
+            commands::artifacts::list_deliverable_index,
+            commands::artifacts::artifact_info,
+            commands::artifacts::render_artifact_visual,
+            commands::artifacts::read_artifact_image_b64,
+            commands::artifacts::read_artifact_thumbnail,
+            commands::artifacts::open_in_system,
+            commands::artifacts::open_containing_folder,
+            commands::artifacts::reveal_session_folder,
+            commands::artifacts::open_scheduled_task_folder,
+            commands::artifacts::open_artifact_window,
             detach::open_detached_window,
             detach::begin_detach_drag,
             pet_window::set_pet_enabled,
@@ -798,58 +794,58 @@ pub fn run() {
             pet_window::take_pet_reply,
             selected_pet::get_selected_pet,
             selected_pet::set_selected_pet,
-            commands::open_external_url,
-            commands::ingest_file,
-            commands::detect_system_tools,
-            commands::save_paste_image,
-            commands::compact_now,
-            commands::get_mode_state,
-            commands::set_plan_mode_next,
-            commands::exit_plan_to_yolo,
-            commands::accept_plan,
-            commands::discard_plan,
-            commands::read_skill_body,
-            commands::list_skills_v2,
-            commands::read_skill_demo,
-            commands::start_skill_session,
-            commands::unbind_session_skill,
-            commands::list_workflows,
-            commands::start_workflow,
-            commands::kick_workflow,
-            commands::retry_workflow_role,
-            commands::get_role_prompt,
-            commands::get_role_outputs,
-            commands::get_role_logs,
-            commands::get_gate_report,
-            commands::save_project_config,
-            commands::save_agent_overrides,
-            commands::cancel_workflow_role,
-            commands::stop_workflow,
-            commands::approve_workflow_gate,
-            commands::reject_workflow_gate,
-            commands::get_workflow_state,
-            commands::find_resumable_run,
-            commands::get_session_active_skill,
-            commands::list_session_skill_bindings,
-            commands::submit_user_input,
-            commands::add_run_materials,
-            commands::cancel_user_input,
-            commands::restart_engine,
-            commands::summon_pinvou,
-            commands::save_session_pinvou_reviews,
-            commands::get_session_pinvou_reviews,
-            commands::get_super_permission_status,
-            commands::set_super_permission,
-            commands::list_personas,
-            commands::read_persona_body,
-            commands::equip_persona,
-            commands::unequip_persona,
-            commands::get_active_persona,
-            commands::create_persona,
-            commands::update_persona,
-            commands::delete_persona,
-            commands::save_session_persona_events,
-            commands::get_session_persona_events,
+            commands::artifacts::open_external_url,
+            commands::files::ingest_file,
+            commands::files::detect_system_tools,
+            commands::files::save_paste_image,
+            commands::interaction::compact_now,
+            commands::interaction::get_mode_state,
+            commands::interaction::set_plan_mode_next,
+            commands::interaction::exit_plan_to_yolo,
+            commands::interaction::accept_plan,
+            commands::interaction::discard_plan,
+            commands::interaction::read_skill_body,
+            commands::workflows::list_skills_v2,
+            commands::workflows::read_skill_demo,
+            commands::workflows::start_skill_session,
+            commands::workflows::unbind_session_skill,
+            commands::workflows::list_workflows,
+            commands::workflows::start_workflow,
+            commands::workflows::kick_workflow,
+            commands::workflows::retry_workflow_role,
+            commands::workflows::get_role_prompt,
+            commands::workflows::get_role_outputs,
+            commands::workflows::get_role_logs,
+            commands::workflows::get_gate_report,
+            commands::workflows::save_project_config,
+            commands::workflows::save_agent_overrides,
+            commands::workflows::cancel_workflow_role,
+            commands::workflows::stop_workflow,
+            commands::workflows::approve_workflow_gate,
+            commands::workflows::reject_workflow_gate,
+            commands::workflows::get_workflow_state,
+            commands::workflows::find_resumable_run,
+            commands::workflows::get_session_active_skill,
+            commands::workflows::list_session_skill_bindings,
+            commands::interaction::submit_user_input,
+            commands::interaction::add_run_materials,
+            commands::interaction::cancel_user_input,
+            commands::interaction::restart_engine,
+            commands::interaction::summon_pinvou,
+            commands::personas::save_session_pinvou_reviews,
+            commands::personas::get_session_pinvou_reviews,
+            commands::interaction::get_super_permission_status,
+            commands::interaction::set_super_permission,
+            commands::personas::list_personas,
+            commands::personas::read_persona_body,
+            commands::personas::equip_persona,
+            commands::personas::unequip_persona,
+            commands::personas::get_active_persona,
+            commands::personas::create_persona,
+            commands::personas::update_persona,
+            commands::personas::delete_persona,
+            commands::personas::save_session_persona_events,
+            commands::personas::get_session_persona_events,
             features::updater::get_app_version,
             features::updater::check_for_update,
             features::updater::download_update,
@@ -859,13 +855,13 @@ pub fn run() {
             features::updater::report_pending_update_result,
             file_ingest::check_dependencies,
             file_ingest::install_dependencies,
-            commands::list_marketplace_tools,
-            commands::install_marketplace_tool,
-            commands::get_marketplace_tool_auth_status,
-            commands::start_marketplace_tool_oauth_login,
-            commands::cancel_marketplace_tool_oauth_login,
-            commands::uninstall_marketplace_tool,
-            commands::detect_obsidian,
+            commands::marketplace::list_marketplace_tools,
+            commands::marketplace::install_marketplace_tool,
+            commands::marketplace::get_marketplace_tool_auth_status,
+            commands::marketplace::start_marketplace_tool_oauth_login,
+            commands::marketplace::cancel_marketplace_tool_oauth_login,
+            commands::marketplace::uninstall_marketplace_tool,
+            commands::artifacts::detect_obsidian,
             knowledge::kb_start_scan,
             knowledge::kb_scan_status,
             knowledge::kb_cancel_scan,
@@ -886,14 +882,14 @@ pub fn run() {
             knowledge::model_download::kb_model_load_after_first_frame,
             knowledge::model_download::kb_model_download,
             knowledge::model_download::kb_model_cancel,
-            commands::session_mount_collection,
-            commands::session_unmount_collection,
-            commands::session_mounted_collection,
-            commands::list_marketplace_skills,
-            commands::install_marketplace_skill,
-            commands::import_skill_package,
-            commands::uninstall_marketplace_skill,
-            commands::verify_upload,
+            commands::knowledge::session_mount_collection,
+            commands::knowledge::session_unmount_collection,
+            commands::knowledge::session_mounted_collection,
+            commands::marketplace::list_marketplace_skills,
+            commands::marketplace::install_marketplace_skill,
+            commands::marketplace::import_skill_package,
+            commands::marketplace::uninstall_marketplace_skill,
+            commands::files::verify_upload,
         ]);
 
     startup::mark("tauri:builder_configured");
@@ -1012,13 +1008,20 @@ mod web_template_seed {
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
         assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"world");
         let meta = fs::symlink_metadata(dst.join("link")).unwrap();
-        assert!(meta.file_type().is_symlink(), "symlink 必须保留为 symlink,不能解引用");
+        assert!(
+            meta.file_type().is_symlink(),
+            "symlink 必须保留为 symlink,不能解引用"
+        );
         assert_eq!(
             fs::read_link(dst.join("link")).unwrap(),
             PathBuf::from("sub/b.txt"),
             "symlink target 不变"
         );
-        assert_eq!(fs::read(dst.join("link")).unwrap(), b"world", "跟随 symlink 仍读到内容");
+        assert_eq!(
+            fs::read(dst.join("link")).unwrap(),
+            b"world",
+            "跟随 symlink 仍读到内容"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -1,7 +1,7 @@
 /// 把图片附件拷进 session workspace 的 `attachments/` 子目录,返回供 `image_analyze`
 /// 使用的 **workspace 相对路径**(image_analyze 只接受不逃逸 workspace 的相对路径)。
 /// 失败返回 None,上层降级为提示无法读图。
-fn validate_staged_attachment_basename(basename: &str) -> Result<(), String> {
+pub(super) fn validate_staged_attachment_basename(basename: &str) -> Result<(), String> {
     if basename.is_empty() {
         return Err("basename is empty".to_string());
     }
@@ -139,7 +139,7 @@ fn staged_target_is_safe(
             .is_ok_and(|resolved| resolved.starts_with(canonical_workspace))
 }
 
-fn stage_image_in_workspace(
+pub(super) fn stage_image_in_workspace(
     src: &str,
     basename: &str,
     workspace: &std::path::Path,
@@ -184,7 +184,7 @@ pub(crate) fn stage_remote_attachment_source(
 /// CSV ≈ 237K tokens,直接顶穿 vLLM 262144 上限),且即使不炸窗口,小模型在超长
 /// 内联里的注意力质量也差。超限附件改注入「落盘路径 + 预览」,引导模型按需
 /// read_file 分页 / exec_shell 聚合(底座 read_file 原生支持 start_line/max_lines)。
-const ATTACH_INLINE_MAX_TOKENS: u32 = 8_000;
+pub(super) const ATTACH_INLINE_MAX_TOKENS: u32 = 8_000;
 const ATTACH_TOTAL_BUDGET_TOKENS: u32 = 16_000;
 /// 路径模式的开头预览:行数与字符双上限,先到为准。
 const ATTACH_PREVIEW_LINES: usize = 20;
@@ -193,7 +193,7 @@ const ATTACH_PREVIEW_MAX_CHARS: usize = 1_500;
 /// 把超限附件的转换产物写进指定的 workspace 相对目录(防重名递增),返回
 /// workspace 相对路径。普通对话的 text 仍直接使用原路径；scheduled 对话会复制
 /// 到 run 专属目录，避免无人值守引擎依赖 workspace 外路径。
-fn stage_text_in_workspace(
+pub(super) fn stage_text_in_workspace(
     content: &str,
     basename: &str,
     ext: &str,
@@ -210,7 +210,7 @@ fn stage_text_in_workspace(
     )
 }
 
-fn stage_text_in_workspace_with_writer<F>(
+pub(super) fn stage_text_in_workspace_with_writer<F>(
     basename: &str,
     ext: &str,
     workspace: &std::path::Path,
@@ -314,7 +314,7 @@ fn push_large_attachment_section(
 /// 按指定 workspace 相对目录拼接 user 文本 + 附件 markdown。
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
-fn build_message_with_attachments_in_dir(
+pub(super) fn build_message_with_attachments_in_dir(
     text: String,
     attachments: Vec<crate::file_ingest::IngestResult>,
     workspace: &std::path::Path,
