@@ -1163,7 +1163,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   data-testid={`scheduled-template-${template.id}`}
                   aria-label={`使用${template.name}模板`}
                   title={`使用${template.name}模板`}
-                  className={`group relative h-[260px] w-full overflow-hidden rounded-[20px] text-left shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] transition-all duration-300 active:scale-[0.99] ${activeTemplate ? 'ring-2 ring-[#0A84FF]/45' : ''} ${
+                  className={`group relative h-[260px] max-sm:h-[210px] w-full overflow-hidden rounded-[20px] text-left shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] transition-all duration-300 active:scale-[0.99] ${activeTemplate ? 'ring-2 ring-[#0A84FF]/45' : ''} ${
                     activeTemplate
                       ? ''
                       : 'hover:-translate-y-1 hover:shadow-[0_12px_32px_rgba(0,0,0,0.08),0_4px_12px_rgba(0,0,0,0.04)]'

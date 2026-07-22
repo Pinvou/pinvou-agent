@@ -8,7 +8,7 @@ import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
-import { can } from '../../shared/platform.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
 import { notifyComposerToolsChanged } from '../tools/tool-events.js';
 import deepseekIcon from '../../brand-icons/deepseek.svg';
@@ -19,6 +19,7 @@ import mimoIcon from '../../brand-icons/mimo.svg';
 import minimaxIcon from '../../brand-icons/minimax.svg';
 import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
+import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 
 const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
@@ -638,6 +639,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
       const [open, setOpen] = useState(false);
+      const triggerRef = useRef(null);
       const canManageModels = can('modelManagement');
       const canSwitchModels = can('sessionModelSwitch');
       const savedModels = visibleUserModels((bs && bs.savedModels) || []);
@@ -651,7 +653,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
       return (
         <div className="relative min-w-0">
-          <button onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
+          <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
             title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
             className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
             {compact ? (
@@ -667,10 +669,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </>
             )}
           </button>
-          {open && canSwitchModels && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+          <ComposerPopover open={open && canSwitchModels} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {savedModels.map(m => (
                   <button key={m.id} onClick={() => pick(m.id)}
                     className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
@@ -691,9 +691,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     </button>
                   </>
                 )}
-              </div>
-            </>
-          )}
+          </ComposerPopover>
         </div>
       );
     };
@@ -703,6 +701,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const canManageWebAccess = can('webAccessAdmin');
       const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
       const [actionBusy, setActionBusy] = useState(false);
+      // 自定义 Relay 服务器：地址来自后端规范化结果，保存/恢复会触发链接刷新
+      const [relayInfo, setRelayInfo] = useState(null);
+      const [relayEditOpen, setRelayEditOpen] = useState(false);
+      const [relayDraft, setRelayDraft] = useState('');
+      const [relayBusy, setRelayBusy] = useState(false);
+      const [relayError, setRelayError] = useState(null);
       const webAccess = (bs && bs.webAccess) || {};
       const webAccessActive = !!webAccess.active;
       const statusKey = webAccess.starting ? 'starting' : (webAccess.status || 'idle');
@@ -755,6 +759,45 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         finally { setActionBusy(false); }
       }
 
+      useEffect(() => {
+        if (!bridge.available || !bridge.getWebRelaySettings) return undefined;
+        let alive = true;
+        bridge.getWebRelaySettings().then(info => { if (alive) setRelayInfo(info); }).catch(() => {});
+        return () => { alive = false; };
+      }, []);
+
+      async function handleSaveRelay() {
+        if (!bridge.available || !relayDraft.trim()) return;
+        setRelayBusy(true);
+        setRelayError(null);
+        try {
+          const info = await bridge.setWebRelayAddress(relayDraft.trim());
+          setRelayInfo(info);
+          setRelayEditOpen(false);
+          setRelayDraft('');
+        } catch (e) {
+          setRelayError(String(e));
+        } finally {
+          setRelayBusy(false);
+        }
+      }
+
+      async function handleResetRelay() {
+        if (!bridge.available) return;
+        setRelayBusy(true);
+        setRelayError(null);
+        try {
+          const info = await bridge.resetWebRelayAddress();
+          setRelayInfo(info);
+          setRelayEditOpen(false);
+          setRelayDraft('');
+        } catch (e) {
+          setRelayError(String(e));
+        } finally {
+          setRelayBusy(false);
+        }
+      }
+
       if (!canManageWebAccess) return null;
 
       return (
@@ -786,14 +829,52 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
             </div>
             {webAccess.url ? (
-              <div className={`w-full rounded-[14px] border px-4 py-3 ${isDark ? 'border-white/10 bg-white/5' : 'border-black/10 bg-[#F8F9FA]'}`}>
+              <div className={`w-full rounded-[14px] border px-4 py-4 ${isDark ? 'border-white/10 bg-white/5' : 'border-black/10 bg-[#F8F9FA]'}`}>
+                {webAccess.qr_data_url && (
+                  <div className="flex flex-col items-center mb-4">
+                    <div className="p-3 rounded-[16px] bg-white shadow-sm">
+                      <img src={webAccess.qr_data_url} alt="WebUI 访问二维码" className="block w-[220px] h-[220px]" />
+                    </div>
+                    <div className={`mt-2 text-[12px] ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>手机扫码，或在电脑浏览器中复制下方链接</div>
+                  </div>
+                )}
                 <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>完整 WebUI 链接</div>
                 <div className={`select-all break-all text-[12px] leading-relaxed ${isDark ? 'text-[#D2E3FC]' : 'text-[#174EA6]'}`}>{webAccess.url}</div>
-                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>链接会在桌面端重启后继续有效；刷新链接或停止访问会立即撤销旧链接。</div>
+                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>二维码与链接完全相同，并会在桌面端重启后继续有效；刷新链接或停止访问会立即撤销旧链接。</div>
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
                 {webAccess.starting ? '正在生成 WebUI 链接…' : (webAccess.last_error || 'WebUI 访问尚未开启。')}
+              </div>
+            )}
+            {relayInfo && (
+              <div className={`mt-3 rounded-[14px] border px-4 py-3 ${isDark ? 'border-white/10 bg-white/[0.035]' : 'border-black/10 bg-[#F8F9FA]'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className={`text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>Relay 服务器{relayInfo.custom ? '（自定义）' : '（默认）'}</div>
+                    <div className={`truncate text-[12px] mt-0.5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#3C4043]'}`}>{relayInfo.relay_url}</div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {relayInfo.custom && <button disabled={relayBusy} onClick={handleResetRelay}
+                      className={`px-2.5 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>恢复默认</button>}
+                    <button disabled={relayBusy} onClick={() => { setRelayEditOpen(v => !v); setRelayDraft(''); setRelayError(null); }}
+                      className={`px-2.5 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>{relayEditOpen ? '收起' : '修改'}</button>
+                  </div>
+                </div>
+                {relayEditOpen && (
+                  <div className="mt-3">
+                    <input value={relayDraft} onChange={e => setRelayDraft(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleSaveRelay(); }}
+                      placeholder="域名或 IP，如 relay.example.com 或 ws://192.168.1.20:8080"
+                      className={`w-full h-9 px-3 rounded-lg text-[12px] outline-none border ${isDark ? 'bg-black/20 border-white/10 text-[#E3E3E3] placeholder:text-[#6F7378]' : 'bg-white border-black/10 text-[#1F1F1F] placeholder:text-[#9AA0A6]'}`} />
+                    <div className={`mt-1.5 text-[11px] leading-relaxed ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>默认按 HTTPS/WSS 连接；服务器没有 TLS 证书时请显式写 ws:// 前缀。保存后立即刷新链接，旧链接与二维码作废。</div>
+                    {relayError && <div className="mt-1.5 text-[11px] text-[#EA4335] break-all">{relayError}</div>}
+                    <div className="mt-2 flex justify-end">
+                      <button disabled={relayBusy || !relayDraft.trim()} onClick={handleSaveRelay}
+                        className="px-3 py-1.5 rounded-lg text-[12px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">保存并刷新链接</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
@@ -921,6 +1002,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill }) => {
       const [open, setOpen] = useState(false);
+      const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
       const [marketplaceTools, setMarketplaceTools] = useState([]);
       const [marketplaceSkills, setMarketplaceSkills] = useState([]);
@@ -1028,7 +1110,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       return (
         <div className="relative shrink-0">
-          <button onClick={() => setOpen(o => !o)} title={t.composerTools}
+          <button ref={triggerRef} data-testid="composer-tool-menu-trigger" onClick={() => setOpen(o => !o)} title={t.composerTools}
             className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
             <Wrench size={compact ? 18 : 14} className="opacity-80" />
             {!compact && t.composerTools}
@@ -1037,10 +1119,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>)}
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
           </button>
-          {open && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-72 max-h-[420px] overflow-y-auto custom-scrollbar bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
+            menuProps={{ 'data-testid': 'composer-tool-menu' }}
+            desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
                 {toolRows.map(switchRow)}
                 {skillRows.length === 0 ? (
@@ -1054,9 +1135,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <Store size={15} className="text-gray-400 group-hover:text-white/90" />
                   {t.composerManageTools}
                 </button>
-              </div>
-            </>
-          )}
+          </ComposerPopover>
         </div>
       );
     };
@@ -1430,6 +1509,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const canInstallDependencies = can('dependencyInstall');
       const canConfigureDesktopNotifications = can('desktopNotifications');
       const canManageModels = can('modelManagement');
+      const canPickHostFiles = can('hostFilePicker');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
       const [editingSearch, setEditingSearch] = useState(null);
@@ -2138,7 +2218,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
             </main>
           </div>
-          {editingModel && (
+          {canManageModels && editingModel && (
             <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
               onCancel={() => setEditingModel(null)}
               onSave={m => { onSaveModel(m); setEditingModel(null); }} />
@@ -2277,7 +2357,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                             {feedbackDraft.attachments.length > 0 ? `${feedbackDraft.attachments.length}/5` : t.feedbackNoAttachments}
                           </div>
                         </div>
-                        <button onClick={pickFeedbackAttachments} className="shrink-0 text-[14px] text-[#007AFF]">{t.feedbackAddAttachment}</button>
+                        {canPickHostFiles && <button onClick={pickFeedbackAttachments} className="shrink-0 text-[14px] text-[#007AFF]">{t.feedbackAddAttachment}</button>}
                       </div>
                       {feedbackDraft.attachments.length > 0 && (
                         <div>

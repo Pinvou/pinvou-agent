@@ -1594,7 +1594,7 @@ const FEISHU_STEPS = [
                       {visibleInternalTools.length > 0 && (
                         <div
                           onClick={() => setShowH3cModal(true)}
-                          className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
+                          className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
                         >
                           <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
@@ -1629,7 +1629,7 @@ const FEISHU_STEPS = [
                           <div
                             key={collection.id}
                             onClick={() => setSelectedTool(featTool)}
-                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
+                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
                           >
                             {collection.img
                               ? <img src={collection.img} alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
@@ -1714,7 +1714,7 @@ const FEISHU_STEPS = [
                           </div>
                         );
                         return (
-                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
+                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
                             {v === 'light' ? (
                               <>
                                 <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>

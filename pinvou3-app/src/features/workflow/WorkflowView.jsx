@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
+import { useCompactViewport } from '../../hooks/useViewport.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
@@ -346,6 +347,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const cardRefs = useRef({});
       const [edges, setEdges] = useState([]);
       const [dims, setDims] = useState({ w: 0, h: 0 });
+      const compactViewport = useCompactViewport();
 
       // 渲染出的卡片 id → 所在层
       const rendered = {};
@@ -393,6 +395,36 @@ const WidgetCard = ({ title, children, theme }) => {
       }, [JSON.stringify((ui && ui.lanes) || null), JSON.stringify(agentStates), JSON.stringify(agentDeps)]);
 
       const lineColor = isDark ? 'rgba(168,199,250,0.40)' : 'rgba(11,87,208,0.30)';
+      // 紧凑视口：画布式连线在手机上放不下也看不清，降级为按层纵向列表
+      //（卡片全宽、不画 SVG）；层标题保留，执行顺序仍然自上而下可读。
+      if (compactViewport) {
+        return (
+          <div data-testid="workflow-pipeline-compact" className="flex flex-col gap-5 py-1">
+            {lanes.map((lane, i) => (
+              <div key={i}>
+                <div className={`text-[10px] uppercase tracking-wider mb-1.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#9AA0A6]'}`}>{lane.title}</div>
+                <div className="flex flex-col gap-3">
+                  {lane.agents.map(rid => {
+                    const agent = defs.find(a => a.id === rid);
+                    if (!agent) return null;
+                    return (
+                      <div key={rid} className="w-full">
+                        <AgentCard agent={agent}
+                          status={(agentStates || {})[rid]}
+                          waitingFor={(agentDeps || {})[rid]}
+                          fanout={(fanout || {})[rid]}
+                          progress={(progress || {})[rid]}
+                          tokens={(tokens || {})[rid]}
+                          theme={theme} onApprove={onApprove} onRetry={onRetry} onClick={onCardClick} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      }
       return (
         <div ref={containerRef} className="relative flex flex-col gap-6 items-stretch py-1">
           <svg className="absolute inset-0 pointer-events-none" width={dims.w} height={dims.h} style={{ zIndex: 0, overflow: 'visible' }}>
@@ -1161,12 +1193,12 @@ const WidgetCard = ({ title, children, theme }) => {
       if (!inBoard) {
         return (
           <div className={containerCls}>
-            <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-8 pb-4">
+            <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 pt-8 pb-4">
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择一个工作流模板开始</p>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
-              <div className="grid gap-4 max-w-7xl mx-auto px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+              <div className="grid gap-4 max-w-7xl mx-auto px-4 sm:px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
                 {/* [工作流分离 Stage D] 模板卡 = 后端 list_workflows(各 workflow.json 的
                     ui.template)。点开:当前 run 属于该工作流(scenario 命中它认领的场景)
                     → 续看板;否则弹该工作流自己的新建表单。 */}
@@ -1247,7 +1279,7 @@ const WidgetCard = ({ title, children, theme }) => {
 
       return (
         <div className={containerCls}>
-          <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
+          <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 md:px-10 pt-8 pb-4">
             <div>
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
@@ -1269,12 +1301,12 @@ const WidgetCard = ({ title, children, theme }) => {
               <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>+ 新建任务</button>
             </div>
           </div>
-          <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
+          <div className="flex-1 overflow-auto custom-scrollbar px-4 sm:px-6 md:px-10 pb-4">
             <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme}
               onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.selectWorkflowRole(rid)} />
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
-            <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
+            <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
               <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} />
             </div>
           )}

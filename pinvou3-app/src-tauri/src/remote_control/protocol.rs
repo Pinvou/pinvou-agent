@@ -20,6 +20,7 @@ pub struct WebAccessConfig {
 pub struct WebAccessInfo {
     pub endpoint_id: String,
     pub url: String,
+    pub qr_data_url: Option<String>,
     pub status: WebAccessStatusKind,
 }
 
@@ -28,6 +29,7 @@ pub struct WebAccessStatus {
     pub active: bool,
     pub endpoint_id: Option<String>,
     pub url: Option<String>,
+    pub qr_data_url: Option<String>,
     pub status: WebAccessStatusKind,
     pub relay_url: String,
     pub web_client_connected: bool,

@@ -180,6 +180,7 @@
       active: false,
       endpoint_id: null,
       url: null,
+      qr_data_url: null,
       status: "idle",
       relay_url: "",
       web_client_connected: false,
@@ -5916,7 +5917,7 @@
       notify();
       throw e;
     }
-    state.webAccess = Object.assign({}, state.webAccess, { active: false, endpoint_id: null, url: null, status: "stopped" });
+    state.webAccess = Object.assign({}, state.webAccess, { active: false, endpoint_id: null, url: null, qr_data_url: null, status: "stopped" });
     notify();
   }
   async function rotateWebAccessLink() {
@@ -5930,6 +5931,21 @@
       notify();
       throw e;
     }
+  }
+  // 自定义 Relay 服务器：查询/保存/恢复默认。保存与恢复在已启用时会触发后端
+  // refresh（旧链接失效、新链接换服务器），所以随后同步一次 webAccess 状态。
+  async function getWebRelaySettings() {
+    return invoke("web_access_relay_settings");
+  }
+  async function setWebRelayAddress(address) {
+    var info = await invoke("web_access_set_relay", { address: address });
+    await refreshWebAccessStatus();
+    return info;
+  }
+  async function resetWebRelayAddress() {
+    var info = await invoke("web_access_reset_relay");
+    await refreshWebAccessStatus();
+    return info;
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -6884,6 +6900,9 @@
     disableWebAccess: disableWebAccess,
     rotateWebAccessLink: rotateWebAccessLink,
     refreshWebAccessStatus: refreshWebAccessStatus,
+    getWebRelaySettings: getWebRelaySettings,
+    setWebRelayAddress: setWebRelayAddress,
+    resetWebRelayAddress: resetWebRelayAddress,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,

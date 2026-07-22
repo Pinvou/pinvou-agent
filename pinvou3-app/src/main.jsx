@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import './styles/base.css';
-import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from './components/icons.jsx';
+import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from './components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from './components/layout/NavigationComponents.jsx';
+import { MobileMoreSheet, MobileTabBar, MobileTopBar } from './components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from './components/VllmSetupProgress.jsx';
 import { bridge, useBridge } from './hooks/useBridge.js';
+import { useCompactViewport } from './hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from './shared/i18n.js';
 import { formatSessionDate } from './shared/date-utils.js';
 import { can, isWeb } from './shared/platform.js';
@@ -215,6 +217,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         };
       }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+      // 移动壳层只作用于 Web 端紧凑视口：底部 Tab + 顶栏，侧栏只保留抽屉形态。
+      const compactViewport = useCompactViewport();
+      const isCompactShell = isWeb && compactViewport;
+      const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
       const canDetachWindows = can('detachWindows');
       const [chatPrefill, setChatPrefill] = useState('');
       const composerPrefillSeenRef = useRef(0);
@@ -1162,6 +1168,20 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         }
       }
 
+      // 移动壳层派生数据：顶栏标题跟随当前视图（对话态显示会话标题）；
+      // 未读红点与侧栏入口同源，避免两套提醒逻辑漂移。
+      const scheduledUnread = !!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns));
+      const mobileTitle = currentView === 'chat'
+        ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+      const mobileNavigate = (view, beforeNavigate) => {
+        setMobileMoreOpen(false);
+        navigateFromScheduledRun(view, beforeNavigate);
+      };
+      const mobileMoreViews = ['search', 'cardpool', 'toolStore', 'monitor', 'settings'];
+      const mobileMoreActive = mobileMoreViews.includes(currentView)
+        || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
+
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
@@ -1218,6 +1238,12 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
           {can('desktopChrome') && <TitleBar theme={activeTheme} t={t} />}
 
+          {isCompactShell && (
+            <MobileTopBar theme={activeTheme} t={t} title={mobileTitle}
+              onMenu={() => setIsSidebarOpen(true)}
+              onNewChat={currentView === 'chat' ? () => handleNewChat() : undefined} />
+          )}
+
           <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
           {isWeb && isSidebarOpen && (
@@ -1230,7 +1256,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           )}
 
           {/* ================= Sidebar (Gemini Style) ================= */}
-          <div data-testid="app-sidebar" className={`${isSidebarOpen ? 'w-[280px] max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:w-[min(84vw,280px)] max-sm:shadow-2xl' : 'w-[68px] max-sm:w-[56px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+          <div data-testid="app-sidebar" className={`${isSidebarOpen ? 'w-[280px] max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:w-[min(84vw,280px)] max-sm:shadow-2xl' : (isCompactShell ? 'hidden' : 'w-[68px] max-sm:w-[56px]')} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
             {/* Header / Logo */}
             <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
@@ -1453,10 +1479,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 <>
                   {can('webAccessAdmin') && <button
                     onClick={handleOpenWebAccess}
-                    title="WebUI 访问"
+                    title="WebUI 访问（扫码或链接）"
                     className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                   >
-                    <Globe size={18} />
+                    <Smartphone size={18} />
                     {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                   </button>}
                   {can('pet') && <button
@@ -1490,10 +1516,10 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 <div className="flex items-center gap-1">
                   {can('webAccessAdmin') && <button
                     onClick={handleOpenWebAccess}
-                    title="WebUI 访问"
+                    title="WebUI 访问（扫码或链接）"
                     className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                   >
-                    <Globe size={18} />
+                    <Smartphone size={18} />
                     {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                   </button>}
                   {can('pet') && <button
@@ -1517,7 +1543,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           </div>
 
           {/* ================= Main Content ================= */}
-          <div data-testid="app-main" className={`flex-1 flex flex-col relative min-w-0 overflow-hidden rounded-tl-[24px] max-sm:rounded-tl-[18px] ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'}`}>
+          <div data-testid="app-main" className={`flex-1 flex flex-col relative min-w-0 overflow-hidden ${isCompactShell ? '' : 'rounded-tl-[24px] max-sm:rounded-tl-[18px]'} ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'}`}>
 
             {/* Gemini Style Background Glow */}
             {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
@@ -1700,6 +1726,43 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
           </div>
           </div>
+
+          {isCompactShell && (
+            <MobileTabBar theme={activeTheme} tabs={[
+              { key: 'chat', label: t.currentChat, icon: <MessageSquare size={18} />,
+                active: currentView === 'chat' || !!(currentView === 'scheduled' && bs && bs.scheduledRunContext),
+                onClick: () => mobileNavigate('chat') },
+              { key: 'workflow', label: t.workflow, icon: <ClipboardList size={18} />,
+                active: currentView === 'workflow', onClick: () => mobileNavigate('workflow') },
+              { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
+                active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
+              { key: 'more', label: t.mobileMore, icon: <MoreHorizontal size={18} />,
+                active: mobileMoreActive, dot: hasUpdate || scheduledUnread,
+                onClick: () => setMobileMoreOpen(true) },
+            ]} />
+          )}
+
+          {isCompactShell && mobileMoreOpen && (
+            <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
+              { key: 'search', label: t.searchChats, icon: <Search size={18} />,
+                active: currentView === 'search', onClick: () => mobileNavigate('search') },
+              ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
+                active: currentView === 'scheduled', dot: scheduledUnread,
+                onClick: () => mobileNavigate('scheduled') }] : []),
+              { key: 'monitor', label: t.monitor, icon: <BarChart2 size={18} />,
+                active: currentView === 'monitor',
+                onClick: () => mobileNavigate('monitor', () => {
+                  const liveBridge = window.TauriBridge || bridge;
+                  if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
+                }) },
+              { key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
+                active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
+              { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
+                active: currentView === 'toolStore', onClick: () => mobileNavigate('toolStore') },
+              { key: 'settings', label: t.settings, icon: <Settings size={18} />,
+                active: currentView === 'settings', dot: hasUpdate, onClick: () => mobileNavigate('settings') },
+            ]} />
+          )}
 
           <UpdateNoticeButton
             theme={activeTheme}

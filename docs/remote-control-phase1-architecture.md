@@ -20,6 +20,11 @@ WebUI 当前刻意隐藏以下仅适合桌面环境的入口：
 记忆、定时任务、监控、每 Session 模型选择及 Session 产物仍属于 WebUI 业务面。全局模型
 增删改/测试、连接器开关及工具/技能安装卸载当前在 Web 隐藏，避免显示无法执行的入口。
 
+Web 端在 <640px 紧凑视口启用移动壳层：隐藏侧栏窄轨，改为顶部栏（会话抽屉入口 + 标题 +
+新对话）与底部主导航 Tab（对话 / 工作流 / 知识库 / 更多），其余视图入口收进「更多」底部
+面板，会话列表复用侧栏抽屉。这是 ADR-0001 允许的"必要平台与响应式差异"，同一套 React
+源码，不是第二套前端；桌面窗口与 ≥640px 浏览器布局不受影响。
+
 ## 2. 组件关系
 
 ```text
@@ -73,6 +78,13 @@ Web 构建以 `/pinvou3/remote/` 为默认 base path。Relay 对 HTML 禁止缓�
 链接；配置删除或替换后，独立于 active endpoint 的 worker 持续重试。Relay 离线或应用在 ACK
 前退出时，下次启动继续重放；只有收到 `desktop_endpoint_revoked`、明确的
 `endpoint_not_found` 或 endpoint 已被替换的终态后才清除记录。
+
+Relay 地址可在桌面「WebUI 访问」面板中自定义：填域名或 IP（无 TLS 的环境显式写
+`ws://` 前缀，不做静默降级），后端规范化为 WebSocket 地址 + 页面基址一对并保存在
+`~/.pinvou3/web-relay.json`。已启用时保存即触发凭据刷新——旧 endpoint 的撤销意图
+仍指向旧 relay，新凭据注册到新 relay。非默认 relay 的分享链接自动携带 `&relay=`
+参数，浏览器端优先使用该地址建连。生效优先级：运行时 env 覆盖 > `PINVOU_REMOTE_*`
+env > 用户设置 > 内置默认。
 
 用户粘贴的链接形如：
 

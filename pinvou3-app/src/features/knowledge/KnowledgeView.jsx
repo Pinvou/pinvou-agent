@@ -632,12 +632,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
           {/* Header */}
-          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-3">
+          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 pt-12 pb-3">
             <h1 className="text-[32px] font-normal tracking-tight mb-1.5">{t.kbPageTitle}</h1>
             <p className={`text-[14px] ${muted}`}>{sub === 'files' ? t.kbFilesSub : sub === 'kb' ? t.kbKbSub : t.kbOutSub}</p>
           </div>
           {/* Sub-tabs */}
-          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 flex items-center gap-7 border-b border-gray-400/15">
+          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 flex items-center gap-7 border-b border-gray-400/15">
             <SubTab k="output" label={t.kbSubOutput} count={outputs.length || null} />
             <SubTab k="files" label={t.kbSubFiles} count={total ? total.toLocaleString() : null} />
             <SubTab k="kb" label={t.kbSubKb} count={modelInstalled ? (colls.length || null) : null} />
@@ -647,7 +647,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
             {/* ============ 文件管理 ============ */}
             {sub === 'files' && (
-              <div className="max-w-7xl mx-auto px-6 md:px-10">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-10">
                 {!loaded ? (
                   // 加载骨架:页面壳即时呈现(搜索栏+真实类型卡,数字/文件用灰条占位),数据 async 填,
                   // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
@@ -789,7 +789,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
             {/* ============ 产出物 ============ */}
             {sub === 'output' && (
-              <div className="max-w-7xl mx-auto px-6 md:px-10">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-10">
                 <div className="flex flex-col lg:flex-row lg:items-center gap-3 mb-5">
                   <div className={`flex-1 flex items-center gap-3 px-5 py-3 rounded-[16px] ${isDark ? 'bg-[#1f2124] border border-white/[0.06]' : 'bg-white border border-[#ececf1]'}`} style={panelShadow}>
                     <Search size={18} className={muted} />
@@ -1010,7 +1010,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
             {/* ============ 知识库 列表（模型已就绪）============ */}
             {sub === 'kb' && modelInstalled && (
-              <div className="max-w-7xl mx-auto px-6 md:px-10">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-10">
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
                   <div className="flex-1 min-w-0">
                     <h2 className={`text-[20px] font-bold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#211f33]'}`}>{t.kbBannerTitle}</h2>

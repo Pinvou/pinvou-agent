@@ -2,7 +2,7 @@ mod manager;
 mod protocol;
 mod relay_client;
 
-pub use manager::RemoteControlManager;
+pub use manager::{RelaySettingsInfo, RemoteControlManager};
 pub use protocol::{WebAccessInfo, WebAccessStatus};
 
 use base64::Engine as _;
@@ -69,6 +69,30 @@ pub fn web_access_rotate(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
     manager.refresh()
+}
+
+/// 桌面专属：查询/设置自定义 Relay 地址。均不进 Web 命令白名单——Relay 指向
+/// 哪台服务器只能由桌面端决定。
+#[tauri::command]
+pub fn web_access_relay_settings(
+    manager: State<'_, RemoteControlManager>,
+) -> RelaySettingsInfo {
+    manager.relay_settings()
+}
+
+#[tauri::command]
+pub fn web_access_set_relay(
+    address: String,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<RelaySettingsInfo, String> {
+    manager.set_relay_address(&address)
+}
+
+#[tauri::command]
+pub fn web_access_reset_relay(
+    manager: State<'_, RemoteControlManager>,
+) -> Result<RelaySettingsInfo, String> {
+    manager.reset_relay_address()
 }
 
 /// Desktop-only readiness handshake. It is intentionally absent from the Web

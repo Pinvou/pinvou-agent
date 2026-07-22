@@ -603,6 +603,7 @@ impl RemoteControlManager {
         let Some(config) = load_config()? else {
             return Ok(false);
         };
+        let config = apply_runtime_relay_override(config);
         validate_config(&config)?;
         self.activate(config)?;
         Ok(true)
@@ -621,6 +622,7 @@ impl RemoteControlManager {
 
         let config = match load_config()? {
             Some(config) => {
+                let config = apply_runtime_relay_override(config);
                 validate_config(&config)?;
                 config
             }
@@ -630,7 +632,7 @@ impl RemoteControlManager {
                 config
             }
         };
-        self.activate(config)?;
+        self.activate(apply_runtime_relay_override(config))?;
         let inner = self.inner.lock();
         let endpoint = inner
             .endpoint
@@ -676,11 +678,44 @@ impl RemoteControlManager {
             let _ = previous.sender.try_send(RelayOutbound::Shutdown);
         }
         self.replay_pending_revocations()?;
-        self.activate(config)?;
+        self.activate(apply_runtime_relay_override(config))?;
         let inner = self.inner.lock();
         Ok(pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
             "Web access endpoint failed to rotate".to_string()
         })?))
+    }
+
+    pub fn relay_settings(&self) -> RelaySettingsInfo {
+        RelaySettingsInfo {
+            relay_url: remote_relay_ws_url(),
+            public_base_url: remote_public_base_url(),
+            custom: load_relay_settings().is_some(),
+            default_relay_url: DEFAULT_RELAY_WS_URL.to_string(),
+            default_public_base_url: DEFAULT_PUBLIC_BASE_URL.to_string(),
+        }
+    }
+
+    /// 设置自定义 Relay 地址（域名/IP，见 `normalize_relay_address`）。
+    /// 已有 endpoint 时走完整 refresh：旧 endpoint 的撤销意图先落盘（指向旧
+    /// relay），新凭据注册到新 relay，分享链接与二维码随之更新。
+    pub fn set_relay_address(&self, input: &str) -> Result<RelaySettingsInfo, String> {
+        let settings = normalize_relay_address(input)?;
+        atomic_write_private_json(&relay_settings_path(), &settings, "Web relay settings")?;
+        let has_endpoint = self.inner.lock().endpoint.is_some();
+        if has_endpoint || load_config()?.is_some() {
+            self.refresh()?;
+        }
+        Ok(self.relay_settings())
+    }
+
+    /// 恢复内置默认 Relay。语义与 `set_relay_address` 对称。
+    pub fn reset_relay_address(&self) -> Result<RelaySettingsInfo, String> {
+        remove_private_file(&relay_settings_path())?;
+        let has_endpoint = self.inner.lock().endpoint.is_some();
+        if has_endpoint || load_config()?.is_some() {
+            self.refresh()?;
+        }
+        Ok(self.relay_settings())
     }
 
     pub fn stop_current(&self) -> Result<(), String> {
@@ -1226,6 +1261,7 @@ impl RemoteControlManager {
                 active: true,
                 endpoint_id: Some(endpoint.config.endpoint_id.clone()),
                 url: Some(endpoint.url.clone()),
+                qr_data_url: crate::connector_cli::make_qr(&endpoint.url),
                 status: endpoint.status,
                 relay_url: endpoint.config.relay_url.clone(),
                 web_client_connected: endpoint.web_client_connected,
@@ -1236,6 +1272,7 @@ impl RemoteControlManager {
                 active: false,
                 endpoint_id: None,
                 url: None,
+                qr_data_url: None,
                 status: inner.idle_status,
                 relay_url: remote_relay_ws_url(),
                 web_client_connected: false,
@@ -2987,6 +3024,7 @@ fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
     WebAccessInfo {
         endpoint_id: endpoint.config.endpoint_id.clone(),
         url: endpoint.url.clone(),
+        qr_data_url: crate::connector_cli::make_qr(&endpoint.url),
         status: endpoint.status,
     }
 }
@@ -3105,6 +3143,116 @@ fn persist_config(config: &WebAccessConfig) -> Result<(), String> {
 
 fn remove_config() -> Result<(), String> {
     remove_private_file(&config_path())
+}
+
+// ── 用户自定义 Relay 地址 ─────────────────────────────────────────────
+// 设置页填写的域名/IP 规范化为「WebSocket 地址 + 页面基址」一对后持久化；
+// 生效优先级：运行时 env 覆盖 > PINVOU_REMOTE_* env > 本设置 > 内置默认。
+
+const RELAY_DEFAULT_BASE_PATH: &str = "/pinvou3/remote";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelaySettings {
+    pub relay_url: String,
+    pub public_base_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelaySettingsInfo {
+    pub relay_url: String,
+    pub public_base_url: String,
+    pub custom: bool,
+    pub default_relay_url: String,
+    pub default_public_base_url: String,
+}
+
+fn relay_settings_path() -> PathBuf {
+    paths::pinvou3_home().join("web-relay.json")
+}
+
+fn validate_relay_settings(settings: &RelaySettings) -> Result<(), String> {
+    if settings.relay_url.len() > 2_048
+        || !(settings.relay_url.starts_with("ws://") || settings.relay_url.starts_with("wss://"))
+        || settings.relay_url.chars().any(char::is_whitespace)
+    {
+        return Err("relay address does not normalize to a valid ws(s) URL".to_string());
+    }
+    if settings.public_base_url.len() > 2_048
+        || !(settings.public_base_url.starts_with("http://")
+            || settings.public_base_url.starts_with("https://"))
+        || settings.public_base_url.chars().any(char::is_whitespace)
+    {
+        return Err("relay address does not normalize to a valid http(s) base".to_string());
+    }
+    Ok(())
+}
+
+/// 把用户填写的 Relay 地址规范化。接受裸域名/IP（默认按 TLS 处理成 wss/https）、
+/// `ws(s)://`、`http(s)://` 前缀以及可选自定义路径；无 TLS 证书的环境需要显式
+/// 写 `ws://` 或 `http://` 前缀，不做静默降级。
+fn normalize_relay_address(input: &str) -> Result<RelaySettings, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("relay address is empty".to_string());
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err("relay address must not contain whitespace".to_string());
+    }
+    if trimmed.len() > 1_024 {
+        return Err("relay address is too long".to_string());
+    }
+    let (ws_scheme, http_scheme, rest) = if let Some(rest) = trimmed.strip_prefix("wss://") {
+        ("wss", "https", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        ("ws", "http", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("https://") {
+        ("wss", "https", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        ("ws", "http", rest)
+    } else if trimmed.contains("://") {
+        return Err("relay address only supports ws/wss/http/https".to_string());
+    } else {
+        ("wss", "https", trimmed)
+    };
+    if rest.contains('?') || rest.contains('#') || rest.contains('@') {
+        return Err("relay address must not contain userinfo, query or fragment".to_string());
+    }
+    let (host, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], rest[index..].trim_end_matches('/')),
+        None => (rest, ""),
+    };
+    if host.is_empty() {
+        return Err("relay address is missing a host".to_string());
+    }
+    // 路径规则：不填 → 内置 /pinvou3/remote；填了 → 尊重自定义（容忍粘贴完整
+    // ws 地址时结尾多出的 /ws，避免「复制现有 relay_url 再保存」变成 /ws/ws）。
+    let base_path = if path.is_empty() {
+        RELAY_DEFAULT_BASE_PATH.to_string()
+    } else {
+        path.strip_suffix("/ws").unwrap_or(path).to_string()
+    };
+    let settings = RelaySettings {
+        relay_url: format!("{ws_scheme}://{host}{base_path}/ws"),
+        public_base_url: format!("{http_scheme}://{host}{base_path}"),
+    };
+    validate_relay_settings(&settings)?;
+    Ok(settings)
+}
+
+/// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可
+/// 降级也不把「启用 Web 访问」整个卡死；重新保存会原子覆盖坏文件。
+fn load_relay_settings() -> Option<RelaySettings> {
+    let file = File::open(relay_settings_path()).ok()?;
+    let mut text = String::new();
+    file.take((MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() > MAX_WEB_ACCESS_CONFIG_BYTES {
+        return None;
+    }
+    let settings: RelaySettings = serde_json::from_str(&text).ok()?;
+    validate_relay_settings(&settings).ok()?;
+    Some(settings)
 }
 
 fn pending_revocation_key(pending: &PendingRevocation) -> String {
@@ -3472,12 +3620,35 @@ fn sync_parent_directory(_parent: &Path) -> std::io::Result<()> {
 }
 
 fn remote_public_base_url() -> String {
-    std::env::var("PINVOU_REMOTE_PUBLIC_URL")
-        .unwrap_or_else(|_| DEFAULT_PUBLIC_BASE_URL.to_string())
+    if let Ok(url) = std::env::var("PINVOU_REMOTE_PUBLIC_URL") {
+        return url;
+    }
+    if let Some(settings) = load_relay_settings() {
+        return settings.public_base_url;
+    }
+    DEFAULT_PUBLIC_BASE_URL.to_string()
 }
 
 fn remote_relay_ws_url() -> String {
-    std::env::var("PINVOU_REMOTE_RELAY_WS_URL").unwrap_or_else(|_| DEFAULT_RELAY_WS_URL.to_string())
+    if let Ok(url) = std::env::var("PINVOU_REMOTE_RELAY_WS_URL") {
+        return url;
+    }
+    if let Some(settings) = load_relay_settings() {
+        return settings.relay_url;
+    }
+    DEFAULT_RELAY_WS_URL.to_string()
+}
+
+/// Development/manual-test override for the active connection only. Unlike
+/// `PINVOU_REMOTE_RELAY_WS_URL`, this value is never written to the persistent
+/// Web access config, so testing a local relay cannot strand the normal link.
+fn apply_runtime_relay_override(mut config: WebAccessConfig) -> WebAccessConfig {
+    if let Ok(relay_url) = std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL") {
+        if !relay_url.trim().is_empty() {
+            config.relay_url = relay_url;
+        }
+    }
+    config
 }
 
 fn public_url(config: &WebAccessConfig) -> String {
@@ -3766,6 +3937,60 @@ mod tests {
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
     const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
+
+    #[test]
+    fn normalize_relay_address_accepts_bare_domain_as_tls() {
+        let settings = normalize_relay_address("relay.example.com").expect("bare domain");
+        assert_eq!(settings.relay_url, "wss://relay.example.com/pinvou3/remote/ws");
+        assert_eq!(settings.public_base_url, "https://relay.example.com/pinvou3/remote");
+    }
+
+    #[test]
+    fn normalize_relay_address_accepts_ip_with_port_and_explicit_ws() {
+        let settings = normalize_relay_address("ws://192.168.1.20:8080").expect("plain ip");
+        assert_eq!(settings.relay_url, "ws://192.168.1.20:8080/pinvou3/remote/ws");
+        assert_eq!(settings.public_base_url, "http://192.168.1.20:8080/pinvou3/remote");
+    }
+
+    #[test]
+    fn normalize_relay_address_bare_ip_defaults_to_tls_without_downgrade() {
+        let settings = normalize_relay_address("203.0.113.7").expect("bare ip");
+        assert_eq!(settings.relay_url, "wss://203.0.113.7/pinvou3/remote/ws");
+    }
+
+    #[test]
+    fn normalize_relay_address_roundtrips_pasted_full_ws_url() {
+        let settings =
+            normalize_relay_address("wss://pinvou.com/pinvou3/remote/ws").expect("full ws url");
+        assert_eq!(settings.relay_url, "wss://pinvou.com/pinvou3/remote/ws");
+        assert_eq!(settings.public_base_url, "https://pinvou.com/pinvou3/remote");
+    }
+
+    #[test]
+    fn normalize_relay_address_respects_custom_path_and_trailing_slash() {
+        let settings = normalize_relay_address("https://cdn.example.com/proxy/").expect("custom");
+        assert_eq!(settings.relay_url, "wss://cdn.example.com/proxy/ws");
+        assert_eq!(settings.public_base_url, "https://cdn.example.com/proxy");
+    }
+
+    #[test]
+    fn normalize_relay_address_rejects_garbage() {
+        for input in [
+            "",
+            "   ",
+            "ftp://x.example.com",
+            "wss://",
+            "https://user:pw@host/x",
+            "host/path?query=1",
+            "host/#frag",
+            "has space.example.com",
+        ] {
+            assert!(
+                normalize_relay_address(input).is_err(),
+                "should reject {input:?}"
+            );
+        }
+    }
 
     fn record_stream_event(stream: &mut StreamState, event: &str, payload: Value) {
         stream

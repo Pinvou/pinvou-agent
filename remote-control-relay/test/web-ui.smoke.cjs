@@ -479,6 +479,84 @@ async function main() {
   );
   const mobileLayout = await waitForSharedUi(mobilePage, 390, 844);
   record('同一共享 WebUI 在 390x844 手机浏览器无横向溢出', mobileLayout.scrollWidth <= 394);
+
+  // 移动壳层：紧凑视口应呈现顶栏 + 4 个底部 Tab，侧栏窄轨完全让出横向空间。
+  const mobileShell = await mobilePage.evaluate(() => {
+    const rect = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      const r = node.getBoundingClientRect();
+      return { bottom: r.bottom, visible: r.height > 0 && r.width > 0 };
+    };
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    return {
+      topBar: rect('[data-testid="mobile-top-bar"]'),
+      tabBar: rect('[data-testid="mobile-tab-bar"]'),
+      tabCount: document.querySelectorAll('[data-testid="mobile-tab-bar"] button').length,
+      sidebarHidden: !sidebar || sidebar.getBoundingClientRect().width === 0,
+    };
+  });
+  record('390x844 呈现移动壳层：顶栏 + 底部 Tab，侧栏窄轨隐藏',
+    !!(mobileShell.topBar && mobileShell.topBar.visible)
+      && !!(mobileShell.tabBar && mobileShell.tabBar.visible)
+      && mobileShell.tabBar.bottom <= 845
+      && mobileShell.tabCount === 4
+      && mobileShell.sidebarHidden,
+    JSON.stringify(mobileShell));
+
+  await mobilePage.click('[data-testid="mobile-tab-more"]');
+  await mobilePage.waitForSelector('[data-testid="mobile-more-sheet"]', { timeout: 5_000 });
+  const moreItems = await mobilePage.evaluate(() => (
+    Array.from(document.querySelectorAll('[data-testid="mobile-more-sheet"] button'))
+      .map(node => node.getAttribute('data-testid'))
+  ));
+  record('「更多」底部面板承载设置/搜索等次级入口',
+    moreItems.includes('mobile-more-settings') && moreItems.includes('mobile-more-search'),
+    moreItems.join(','));
+  await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-more-sheet"]').click());
+  await mobilePage.waitForFunction(
+    () => !document.querySelector('[data-testid="mobile-more-sheet"]'),
+    { timeout: 5_000 },
+  );
+
+  const compactGreeting = await mobilePage.evaluate(() => {
+    const node = document.querySelector('[data-testid="chat-greeting"]');
+    if (!node) return null;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return { fontSize: parseFloat(style.fontSize), height: rect.height };
+  });
+  record('手机欢迎语使用紧凑字号且不会产生桌面字号的孤行',
+    !!compactGreeting && compactGreeting.fontSize <= 32 && compactGreeting.height < 90,
+    JSON.stringify(compactGreeting));
+
+  await mobilePage.click('[data-testid="composer-tool-menu-trigger"]');
+  await mobilePage.waitForSelector('[data-testid="composer-tool-menu"]', { timeout: 5_000 });
+  const toolMenuBounds = await mobilePage.evaluate(() => {
+    const node = document.querySelector('[data-testid="composer-tool-menu"]');
+    const trigger = document.querySelector('[data-testid="composer-tool-menu-trigger"]');
+    const rect = node.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    return {
+      left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width,
+      parent: node.parentElement === document.body,
+      triggerTop: triggerRect.top,
+      viewport: document.documentElement.clientWidth,
+      viewportH: document.documentElement.clientHeight,
+    };
+  });
+  record('手机工具菜单始终完整落在视口安全边距内',
+    toolMenuBounds.left >= 11 && toolMenuBounds.right <= toolMenuBounds.viewport - 11,
+    JSON.stringify(toolMenuBounds));
+  // 垂直锚定回归：菜单必须 portal 到 <body>（脱离 composer 的 backdrop-filter 包含块），
+  // 底边紧贴触发按钮上方（约 8px 间距）、整体落在视口内，防止「跳得太高」重现。
+  record('手机工具菜单 portal 到 body 并锚定在触发按钮上方',
+    toolMenuBounds.parent === true
+      && toolMenuBounds.top >= 11
+      && toolMenuBounds.bottom <= toolMenuBounds.triggerTop
+      && toolMenuBounds.triggerTop - toolMenuBounds.bottom <= 16,
+    JSON.stringify(toolMenuBounds));
+  await mobilePage.evaluate(() => document.querySelector('[data-testid="composer-tool-menu-trigger"]').click());
   await desktopPage.waitForFunction(() => (
     window.PinvouPlatform?.getConnectionState?.().status === 'replaced'
   ), { timeout: 8_000 });
