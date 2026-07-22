@@ -29,6 +29,17 @@ import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/P
 import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
 
+// 当前平台是否支持本地 vLLM。macOS/Windows 后端已 cfg 掉本地 vLLM 命令(discover_local_vllm /
+// detect_local_vllm_setup 等),前端默认预设与探测入口都据此守卫,避免新用户首启落在
+// 127.0.0.1:8000 永远连不上、或调用不存在的后端命令报错。与 bridge prefs::ModelPreset::default() 对齐。
+function isLocalVllmPlatform() {
+  return /linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
+}
+// 平台感知默认预设:Linux→local_vllm,其它→deepseek。
+function defaultModelPresetForPlatform() {
+  return isLocalVllmPlatform() ? 'local_vllm' : 'deepseek';
+}
+
 /* ==========================================
        Lucide icon replacements (inline SVG)
        ========================================== */
@@ -121,7 +132,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
-      useEffect(() => { if (bridge.available) bridge.detectLocalVllmSetup(); }, []);
+      // 开机探测本地大模型预装:仅 Linux 有该后端命令(discover/detect_local_vllm_setup 已 cfg linux)。
+      // macOS/Windows 上 invoke 不存在的命令会 reject,白白污染控制台 —— 非 Linux 跳过。
+      useEffect(() => { if (bridge.available && isLocalVllmPlatform()) bridge.detectLocalVllmSetup(); }, []);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
@@ -135,7 +148,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
       const [searchKeyActions, setSearchKeyActions] = useState({});
       // 模型配置（动态适配）——草稿模式，确认后才保存
-      const [modelPreset, setModelPreset] = useState('local_vllm');
+      // 默认预设平台感知:macOS/Windows 无本地 vLLM(后端命令已 cfg 掉),默认 DeepSeek;
+      // Linux 保持 local_vllm(麒麟环境默认有本地大模型)。与 bridge prefs::ModelPreset::default() 对齐。
+      const [modelPreset, setModelPreset] = useState(isLocalVllmPlatform() ? 'local_vllm' : 'deepseek');
       const [customModelName, setCustomModelName] = useState('');
       const [customBaseUrl, setCustomBaseUrl] = useState('');
       const [customApiKey, setCustomApiKey] = useState('');
@@ -174,7 +189,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         };
       }
       function modelDraftForPreset(preset, profiles, fallback) {
-        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
+        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS[defaultModelPresetForPlatform()];
         const profile = (profiles && profiles[preset]) || {};
         return {
           preset,
@@ -328,7 +343,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         if (!modelConfigInitRef.current && bs.settings) {
           const adv = bs.settings.advanced || {};
           const effective = bs.effectiveModelConfig || {};
-          const preset = effective.preset || adv.model_preset || 'local_vllm';
+          const preset = effective.preset || adv.model_preset || defaultModelPresetForPlatform();
           const profiles = { ...(adv.model_profiles || {}) };
           const fallback = {
             name: effective.model || adv.custom_model_name || '',

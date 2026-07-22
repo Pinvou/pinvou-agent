@@ -25,15 +25,38 @@ pub fn asr_dir() -> PathBuf {
     paths::pinvou3_home().join("asr")
 }
 
+/// 引擎二进制名：各平台不同（Linux 是 sense-voice-main，Mac 是
+/// sense-voice-darwin-arm64，Windows 是 pinvou-asr.exe）。Mac 二进制由
+/// Phase 3 Task 3.1 编译，在此之前 engine_path() 返回的路径不会 is_file，
+/// 前端会显示 ASR 不可用 —— 这是预期行为。
+#[cfg(target_os = "linux")]
+pub fn engine_binary_name() -> &'static str {
+    "sense-voice-main"
+}
+
+/// 注意:PR #212 仅打包 arm64 (Apple Silicon) 二进制。Intel Mac (x86_64) 无对应
+/// 入库引擎,engine_path() 返回的路径不会 is_file → ASR 不可用(前端显示"不可用",
+/// 不会崩溃)。如需 Intel Mac 支持需另行编译 sense-voice-darwin-x86_64 入库。
+#[cfg(target_os = "macos")]
+pub fn engine_binary_name() -> &'static str {
+    "sense-voice-darwin-arm64"
+}
+
+#[cfg(target_os = "windows")]
+pub fn engine_binary_name() -> &'static str {
+    "pinvou-asr.exe"
+}
+
 /// 引擎可执行：优先 `~/.pinvou3/asr/`（按需/手动装的），回退打包资源目录。
 /// 打包资源目录由 [`set_bundled_engine_dir`] 在启动时注入（需要 AppHandle）。
 pub fn engine_path() -> PathBuf {
-    let local = asr_dir().join("sense-voice-main");
+    let name = engine_binary_name();
+    let local = asr_dir().join(name);
     if local.is_file() {
         return local;
     }
     if let Some(dir) = bundled_engine_dir() {
-        let bundled = dir.join("sense-voice-main");
+        let bundled = dir.join(name);
         if bundled.is_file() {
             return bundled;
         }
@@ -284,4 +307,20 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
         serde_json::json!({ "stage": "done", "ready": st.ready }),
     );
     Ok(st)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_binary_name_matches_platform() {
+        let name = engine_binary_name();
+        #[cfg(target_os = "linux")]
+        assert_eq!(name, "sense-voice-main");
+        #[cfg(target_os = "macos")]
+        assert_eq!(name, "sense-voice-darwin-arm64");
+        #[cfg(target_os = "windows")]
+        assert_eq!(name, "pinvou-asr.exe");
+    }
 }

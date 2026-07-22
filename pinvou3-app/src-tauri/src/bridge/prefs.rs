@@ -123,8 +123,18 @@ pub enum ModelPreset {
     Mimo,
 }
 impl Default for ModelPreset {
+    /// 平台感知默认预设:macOS/Windows 无本地 vLLM 支持(相关后端命令已 cfg 掉),
+    /// 默认到 DeepSeek 远程 API,否则新用户首启即落在 127.0.0.1:8000 永远连不上。
+    /// Linux 保持 LocalVllm(麒麟环境默认有本地大模型)。
     fn default() -> Self {
-        ModelPreset::LocalVllm
+        #[cfg(target_os = "linux")]
+        {
+            ModelPreset::LocalVllm
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            ModelPreset::Deepseek
+        }
     }
 }
 impl ModelPreset {
@@ -861,10 +871,11 @@ mod tests {
         prefs.migrate_models();
         assert_eq!(prefs.advanced.saved_models.len(), 1);
         let m = &prefs.advanced.saved_models[0];
-        assert_eq!(m.preset, ModelPreset::LocalVllm);
-        assert_eq!(m.model, "qwen36_35b_256k");
-        assert_eq!(m.context_window_tokens, Some(262_144));
-        assert_eq!(m.max_output_tokens, Some(24_576));
+        // 默认预设平台感知(Linux→LocalVllm,macOS/Windows→Deepseek),见 ModelPreset::default()。
+        // 各平台默认模型/上下文随之不同,这里按平台分别断言。
+        let expected_preset = ModelPreset::default();
+        assert_eq!(m.preset, expected_preset);
+        assert_eq!(m.model, expected_preset.default_model());
         assert_eq!(prefs.advanced.active_model_id.as_deref(), Some("default"));
         assert_eq!(prefs.active_model().map(|m| m.id.as_str()), Some("default"));
     }

@@ -1367,7 +1367,27 @@ pub async fn transcribe_voice_audio(
                 .map(|text| LocalAsrOutput { text })
                 .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
         } else {
-            run_local_asr_cli(&wav_path)
+            // macOS 特判:引擎就位但模型未下载(用户刚装好的正常窗口)。此前直接走
+            // run_local_asr_cli,它用 pinvou-asr shim 协议(asr --model ... --input)spawn
+            // sense-voice 引擎本体 —— 引擎不认这个参数 → 非零退出 → 用户看到困惑的 "ASR
+            // failed (exit N)"。改为返回明确的"模型未下载"错误。
+            #[cfg(target_os = "macos")]
+            if crate::os::asr_bundled_runtime_status().is_none()
+                && crate::voice_asr::engine_path().is_file()
+                && !crate::voice_asr::model_path().is_file()
+            {
+                Err(VoiceCommandError::new(
+                    "recognition_failed",
+                    "transcribing",
+                    "本地语音识别模型未下载。请在设置页下载语音模型后重试。".to_string(),
+                ))
+            } else {
+                run_local_asr_cli(&wav_path)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                run_local_asr_cli(&wav_path)
+            }
         };
         let _ = std::fs::remove_file(&wav_path);
         result
@@ -1446,12 +1466,14 @@ pub async fn get_monitor_snapshot(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(target_os = "linux")]
 pub struct DiscoverLocalVllmRequest {
     pub current_base_url: Option<String>,
     pub saved_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg(target_os = "linux")]
 pub struct LocalVllmCandidate {
     pub base_url: String,
     pub status: VllmStatus,
@@ -1460,11 +1482,13 @@ pub struct LocalVllmCandidate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg(target_os = "linux")]
 pub struct LocalVllmDiscovery {
     pub candidates: Vec<LocalVllmCandidate>,
 }
 
 /// 手动探测本机 vLLM。只探小白名单候选地址；不做端口扫描,不探局域网。
+#[cfg(target_os = "linux")]
 #[tauri::command]
 pub async fn discover_local_vllm(
     request: Option<DiscoverLocalVllmRequest>,
@@ -1492,6 +1516,7 @@ pub async fn discover_local_vllm(
     Ok(LocalVllmDiscovery { candidates })
 }
 
+#[cfg(target_os = "linux")]
 fn push_local_vllm_candidate(out: &mut Vec<String>, raw: Option<&str>) {
     let Some(raw) = raw else {
         return;
@@ -1504,6 +1529,7 @@ fn push_local_vllm_candidate(out: &mut Vec<String>, raw: Option<&str>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {

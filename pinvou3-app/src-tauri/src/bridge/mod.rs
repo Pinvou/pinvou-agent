@@ -1252,7 +1252,15 @@ mod tests {
         // 检查,env 被其它测试污染时不覆盖)。生产由 Bridge::boot → wire_max_output_tokens_env 保证。
         std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
         // A. 真实 128K 部署:探测拿到 131072
+        // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测 128K vLLM compaction。
         let mut a = fixture_bridge();
+        set_active_model(
+            &mut a,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
         a.probed_context_tokens = Some(131_072);
         let cfg_a = a.build_engine_config();
         let t_a = cfg_a.compaction.token_threshold;
@@ -1318,7 +1326,9 @@ mod tests {
         );
 
         // C. Pinvou 默认健康部署:SavedModel 明确 262144/24576，不依赖 wire alias。
+        // 默认预设已平台感知,显式设 LocalVllm 后 migrate 才得到 262144/24576 profile。
         let mut c = fixture_bridge();
+        c.prefs.advanced.model_preset = Some(ModelPreset::LocalVllm);
         c.prefs.migrate_models();
         let cfg_c = c.build_engine_config();
         let t_c = cfg_c.compaction.token_threshold;
@@ -1419,7 +1429,16 @@ mod tests {
     /// 高优 finding)。后缀 `_256k` 由 fork B1 `_Nk` hint 解析。
     #[test]
     fn default_model_window_recognized_by_engine() {
-        let bridge = fixture_bridge();
+        // 本测试钉死 LocalVllm 的 256K 窗口识别(默认预设已平台感知:macOS/Windows 默认
+        // Deepseek),故显式设 LocalVllm preset 再断言其窗口派生。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
         let model = bridge.model();
         let window = deepseek_tui::models::context_window_for_model(&model);
         assert!(
@@ -1557,7 +1576,16 @@ mod tests {
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。
     #[test]
     fn engine_config_locks_critical_fields() {
-        let cfg = fixture_bridge().build_engine_config();
+        // reasoning_effort=off 断言钉的是 LocalVllm 行为(默认预设已平台感知),显式设 LocalVllm。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
+        let cfg = bridge.build_engine_config();
         assert!(cfg.trust_mode, "trust_mode 必须 true（pinvou3 是 yolo）");
         assert!(
             !cfg.strict_tool_mode,
@@ -1666,7 +1694,15 @@ mod tests {
     /// 本测试立刻报错。
     #[test]
     fn forkguard_probed_window_fills_route_limits() {
+        // 本测试钉死本地 vLLM 的 route_limits 行为(默认预设已平台感知),两处 fixture 都显式设 LocalVllm。
         let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
         bridge.probed_context_tokens = Some(262_144);
         let cfg = bridge.build_engine_config();
         assert_eq!(
@@ -1675,7 +1711,14 @@ mod tests {
             "probed_context_tokens=Some 必须填进 active_route_limits.context_tokens"
         );
 
-        let no_probe = fixture_bridge();
+        let mut no_probe = fixture_bridge();
+        set_active_model(
+            &mut no_probe,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
         let expected_context =
             deepseek_tui::models::context_window_for_model(&no_probe.model()).unwrap_or(128_000);
         let cfg_none = no_probe.build_engine_config();
@@ -2380,7 +2423,15 @@ mod tests {
             "DEEPSEEK_BASE_URL",
             "DEEPSEEK_API_KEY",
         ]);
-        let bridge = fixture_bridge();
+        // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测其 reasoning_effort=off。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
     }

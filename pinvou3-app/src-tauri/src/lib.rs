@@ -31,6 +31,7 @@ pub mod file_ingest;
 mod file_watcher;
 mod harness;
 mod knowledge;
+#[cfg(target_os = "linux")]
 mod local_vllm_setup;
 pub mod memory;
 mod monitor;
@@ -122,6 +123,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
     // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
@@ -150,6 +152,23 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     ("XMODIFIERS", "@im=fcitx"),
 ];
 
+/// macOS / Windows 精简：只保留与平台无关的 DEEPSEEK_* 项。
+/// Mac/Windows 不需要 webkit/fcitx/X11,但仍可能需要局域网明文 HTTP 模型后端。
+#[cfg(not(target_os = "linux"))]
+const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
+    ("DEEPSEEK_REASONING_EFFORT", "off"),
+    // 允许非环回明文 HTTP:macOS/Windows 用户可能把模型后端指向局域网私有 IP 的
+    // 明文 HTTP 服务(如 http://192.168.x.x:8000 的 Ollama/LM Studio)。底座
+    // client.rs::validate_base_url 仅自动放行 loopback/https,非环回明文 HTTP
+    // 需显式设此 env,否则首条消息即 bail!。
+    ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
+    ("DEEPSEEK_FORCE_HTTP1", "1"),
+    ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
+    ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
+    ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
+];
+
+#[cfg(target_os = "linux")]
 const WEBKIT_RENDERING_OVERRIDE_KEYS: &[&str] = &[
     "WEBKIT_DISABLE_COMPOSITING_MODE",
     "WEBKIT_DISABLE_DMABUF_RENDERER",
@@ -158,6 +177,7 @@ const WEBKIT_RENDERING_OVERRIDE_KEYS: &[&str] = &[
     "WEBKIT_WEB_RENDER_DEVICE_FILE",
 ];
 
+#[cfg(target_os = "linux")]
 fn should_force_webkit_dmabuf_shm(
     is_linux_arm64_nvidia: bool,
     has_explicit_rendering_override: bool,
@@ -165,6 +185,7 @@ fn should_force_webkit_dmabuf_shm(
     is_linux_arm64_nvidia && !has_explicit_rendering_override
 }
 
+#[cfg(target_os = "linux")]
 fn configure_webkit_rendering_env() {
     use std::env;
 
@@ -201,6 +222,7 @@ fn ensure_release_env() {
             env::set_var("HOME", profile);
         }
     }
+    #[cfg(target_os = "linux")]
     configure_webkit_rendering_env();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
@@ -231,6 +253,26 @@ fn ensure_release_env() {
                 dirs.push(home.join(".npm-global").join("bin"));
                 dirs.push(home.join(".local").join("bin"));
             }
+            // macOS:从 dmg/Finder 启动的 GUI 进程 PATH 仅为 /usr/bin:/bin:/usr/sbin:/sbin,
+            // 不含 Homebrew 目录。pandoc/poppler/tesseract/ffmpeg 等 brew 工具虽然
+            // command_exists 能通过补查检测到,但实际 Command::new(裸名) spawn 会 NotFound。
+            // 在这里前插 /opt/homebrew/bin(Apple Silicon) 和 /usr/local/bin(Intel)。
+            // 同时补 cask 应用路径(LibreOffice 的 soffice):command_exists 补查了该目录
+            // 但 PATH 不含它 → file_ingest.rs 的 Command::new("soffice") 同样 NotFound,
+            // 导致依赖体检绿勾但实际文档转换全失败。
+            #[cfg(target_os = "macos")]
+            {
+                for d in [
+                    "/opt/homebrew/bin",
+                    "/usr/local/bin",
+                    "/Applications/LibreOffice.app/Contents/MacOS",
+                ] {
+                    let p = std::path::Path::new(d);
+                    if p.is_dir() {
+                        dirs.push(p.to_path_buf());
+                    }
+                }
+            }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
                 env::set_var("PATH", joined);
@@ -239,7 +281,7 @@ fn ensure_release_env() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod release_env_contract {
     #[test]
     fn arm64_nvidia_uses_shm_without_disabling_compositing() {
@@ -428,8 +470,12 @@ pub fn run() {
             // embed::from_env_or_dir 内部保留。模型没装 → 加载失败 → embedder=None → 知识库走
             // 完全门控(前端 gate),不阻断启动;用户在知识库页下载后 reload_embedder 热加载。
             let kb_model_dir = knowledge::model_dir();
-            // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
-            // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
+            // 语音识别引擎随包打包(Linux 是 sense-voice-main,Mac 是 sense-voice-darwin-arm64,
+            // Windows 是 pinvou-asr.exe),容错同 bge-m3 的资源布局,注入给 voice_asr 作为
+            // ~/.pinvou3/asr/ 之外的回退查找目录。按当前平台的二进制名探测资源目录:
+            // 此前只认 sense-voice-main(Linux 名),Mac 上即便资源已打包也命中失败 →
+            // bundled 引擎目录不注入 → engine_path 回退到 ~/.pinvou3/asr/(空)→ ASR 不可用。
+            let asr_bin_name = voice_asr::engine_binary_name();
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
                 [
                     res.join("asr"),
@@ -437,7 +483,7 @@ pub fn run() {
                     res.join("resources").join("asr"),
                 ]
                 .into_iter()
-                .find(|d| d.join("sense-voice-main").exists())
+                .find(|d| d.join(asr_bin_name).exists())
             }) {
                 voice_asr::set_bundled_engine_dir(asr_res);
             }
@@ -477,6 +523,10 @@ pub fn run() {
 
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
+
+            // macOS:清理上次 OTA 升级残留的旧 app 备份(此时旧进程必然已退出)。
+            #[cfg(target_os = "macos")]
+            crate::os::platform::cleanup_stale_backup();
 
             Ok(())
         })
@@ -530,9 +580,13 @@ pub fn run() {
             commands::clear_session,
             commands::get_monitor_snapshot,
             commands::get_backend_status,
+            #[cfg(target_os = "linux")]
             commands::discover_local_vllm,
+            #[cfg(target_os = "linux")]
             local_vllm_setup::detect_local_vllm_setup,
+            #[cfg(target_os = "linux")]
             local_vllm_setup::bootstrap_local_vllm,
+            #[cfg(target_os = "linux")]
             local_vllm_setup::decline_local_vllm_setup,
            commands::list_models,
            commands::reveal_model_api_key,
