@@ -2949,7 +2949,33 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
   );
 }
 
+async function remoteSessionDeletionConvergesPresentationState() {
+  var harness = createBridgeHarness();
+  var deletedId = "chat-deleted-remotely";
+  var retainedId = "chat-retained-locally";
+  harness.handlers.list_sessions = function () {
+    return [
+      { id: deletedId, title: "Delete me" },
+      { id: retainedId, title: "Keep me" },
+    ];
+  };
+  harness.handlers.list_archived_sessions = function () {
+    return [{ id: deletedId, title: "Archived duplicate" }];
+  };
+
+  await harness.bridge.init();
+  assert.strictEqual(await harness.bridge.switchToSession(deletedId), true);
+  await harness.emit("session:deleted", { id: deletedId });
+
+  var state = harness.bridge.getState();
+  assert.strictEqual(state.activeSessionId, null,
+    "a remotely deleted active session must return the other client to draft state");
+  assert.deepStrictEqual(Array.from(state.sessions, function (session) { return session.id; }), [retainedId]);
+  assert.strictEqual(state.archivedSessions.some(function (session) { return session.id === deletedId; }), false);
+}
+
 Promise.resolve()
+  .then(remoteSessionDeletionConvergesPresentationState)
   .then(sessionSwitchCriticalPathBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)

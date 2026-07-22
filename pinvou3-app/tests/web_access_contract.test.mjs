@@ -65,6 +65,11 @@ assert.match(bridge, /if \(!IS_WEB && !isDetachedWindow\) registerWebAccessDeskt
 assert.match(bridge, /eventForwardersReady/);
 assert.match(bridge, /listen\("chat:user_message"/);
 assert.match(bridge, /listen\("chat:transcript_committed"/);
+assert.equal(allowedEvents.has('session:deleted'), true,
+  'committed session deletion must reach every WebUI client');
+assert.match(bridge, /listen\("session:deleted"/);
+assert.match(commands, /app\.emit\("session:deleted"/);
+assert.match(commands, /forward_app_event\(&app, "session:deleted"/);
 assert.match(bridge, /Transcript persistence is authoritative in Rust/);
 assert.doesNotMatch(bridge, /saveSessionMessagesForClient/);
 assert.match(bridge, /session_turn_in_progress/);

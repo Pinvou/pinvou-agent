@@ -69,6 +69,7 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:user_message",
     "chat:user_input_required",
     "scheduled_task:run_updated",
+    "session:deleted",
 ];
 
 #[derive(Clone)]
@@ -4077,6 +4078,8 @@ mod tests {
         assert!(policy.events.contains("chat:plan_resolved"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:plan_resolved"));
         assert!(policy.events.contains("chat:transcript_committed"));
+        assert!(policy.events.contains("session:deleted"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"session:deleted"));
     }
 
     #[test]

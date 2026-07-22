@@ -2327,23 +2327,35 @@
     loadWorkingSetFrom(freshBuffer());
   }
 
+  // Session storage is authoritative in Rust, but every desktop/Web frontend
+  // owns a separate presentation index. Apply the committed deletion event
+  // idempotently in either client so a remote delete cannot leave an ENOENT
+  // sidebar row behind in the other one.
+  function applyDeletedSession(id) {
+    if (typeof id !== "string" || !id) return false;
+    invalidateScheduledRecentRunsForSession(id);
+    purgeSessionBuffer(id);
+    state.sessions = state.sessions.filter(function (session) { return session.id !== id; });
+    state.archivedSessions = (state.archivedSessions || []).filter(function (session) {
+      return session.id !== id;
+    });
+    state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    notify();
+    return true;
+  }
+
   async function deleteSession(id) {
     invalidateScheduledRecentRunsForSession(id);
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id: id });
-      // 统一清理工作集、实时状态、定时创建上下文与当前视图，避免手写字段漂移。
-      purgeSessionBuffer(id);
-      state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
-      state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
-      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      notify();
+      applyDeletedSession(id);
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
     }
@@ -3526,6 +3538,10 @@
   }
 
   // ── Event listeners ──────────────────────────────────────────────
+  listen("session:deleted", function (e) {
+    applyDeletedSession(e && e.payload && e.payload.id);
+  });
+
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,

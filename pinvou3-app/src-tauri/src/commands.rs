@@ -1722,7 +1722,16 @@ pub async fn delete_session(
                 .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
             scheduled.delete_run_for_session(&id).await
         }
-    }
+    }?;
+
+    // The session file is shared authority for the desktop and WebUI, while
+    // each frontend keeps its own in-memory sidebar index. Broadcast the
+    // committed deletion to both views so the non-initiating client cannot
+    // retain a stale row that now fails with ENOENT when opened.
+    let payload = serde_json::json!({ "id": &id });
+    let _ = app.emit("session:deleted", payload.clone());
+    crate::remote_control::forward_app_event(&app, "session:deleted", payload);
+    Ok(())
 }
 
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。

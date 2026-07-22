@@ -153,6 +153,7 @@
     "chat:user_message",
     "chat:user_input_required",
     "scheduled_task:run_updated",
+    "session:deleted",
     "workflow:agent_progress",
     "workflow:agent_state_changed",
     "workflow:blocked",
