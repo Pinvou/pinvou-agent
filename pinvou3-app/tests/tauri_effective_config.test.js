@@ -14,6 +14,7 @@ const {
 } = require("../scripts/tauri/build.js");
 const {
   APP_ROOT,
+  platformArchitectureConfigPath,
   platformConfigPath,
 } = require("../scripts/tauri/platform-config.js");
 const { requireWrapper, WRAPPER_ENV } = require("../scripts/tauri/require-wrapper.js");
@@ -29,6 +30,14 @@ const buildArgs = prepareTauriArgs(
 );
 assert.equal(tauriCommandIndex(buildArgs), 1, "build command may follow global options");
 assert.equal(configSpecs(buildArgs)[0], platformConfigPath("linux"));
+const linuxArmArgs = prepareTauriArgs(
+  ["build", "--bundles", "deb"],
+  { platform: "linux", architecture: "arm64", stageRuntime: noRuntime },
+);
+assert.deepEqual(configSpecs(linuxArmArgs), [
+  platformConfigPath("linux"),
+  platformArchitectureConfigPath("linux", "arm64"),
+]);
 
 const explicitOverlay = "src-tauri/config/platforms/windows/signing.wosign.conf.json";
 const bundleArgs = prepareTauriArgs(
@@ -56,6 +65,17 @@ const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("web-template/")));
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));
+
+const linuxAarch64 = composeEffectiveConfig([
+  platformConfigPath("linux"),
+  platformArchitectureConfigPath("linux", "arm64"),
+]).effectiveConfig;
+const linuxAarch64Manifest = buildResourceManifest(linuxAarch64, { platform: "linux" });
+assert.ok(
+  linuxAarch64Manifest.files.some(
+    (file) => file.destination === "web-template/node_modules/esbuild/bin/esbuild",
+  ),
+);
 
 const macos = composeEffectiveConfig([platformConfigPath("darwin")]).effectiveConfig;
 assert.deepEqual(macos.bundle.targets, ["dmg"]);

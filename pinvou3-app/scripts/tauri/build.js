@@ -1,7 +1,11 @@
 const { spawnSync } = require("node:child_process");
 const { loadBuiltinSecrets } = require("./builtin-secrets.js");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
-const { APP_ROOT, platformConfigPath } = require("./platform-config.js");
+const {
+  APP_ROOT,
+  platformArchitectureConfigPath,
+  platformConfigPath,
+} = require("./platform-config.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { stageWindowsRuntime } = require("./windows-runtime.js");
 
@@ -23,12 +27,21 @@ function configSpecs(args) {
   return specs;
 }
 
-function prepareTauriArgs(args, { platform = process.platform, stageRuntime = stageWindowsRuntime } = {}) {
+function prepareTauriArgs(
+  args,
+  {
+    platform = process.platform,
+    architecture = process.arch,
+    stageRuntime = stageWindowsRuntime,
+  } = {},
+) {
   const prepared = [...args];
   const commandIndex = tauriCommandIndex(prepared);
   if (commandIndex < 0) return prepared;
 
   const automaticConfigs = [platformConfigPath(platform)];
+  const architectureConfig = platformArchitectureConfigPath(platform, architecture);
+  if (architectureConfig) automaticConfigs.push(architectureConfig);
   const runtimeConfig = stageRuntime();
   if (runtimeConfig) automaticConfigs.push(runtimeConfig);
   const injected = automaticConfigs.flatMap((configPath) => ["--config", configPath]);

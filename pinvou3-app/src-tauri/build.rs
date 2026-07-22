@@ -33,10 +33,18 @@ fn main() {
     // (h3c-ppt 已下线存档 2026-06-11,恢复时在此加回一行 hash_dir)
     let sansheng_workflow_hash = hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
     println!("cargo:rustc-env=BUNDLE_WORKFLOW_HASH_SANSHENG={sansheng_workflow_hash:016x}");
-    let connector_cli_hash = hash_dir(Path::new("resources/common/bundle/connectors"));
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("target OS is set by Cargo");
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("target arch is set by Cargo");
+    let platform_bundle = PathBuf::from("resources/platforms")
+        .join(target_os)
+        .join(target_arch)
+        .join("bundle");
+    let connector_cli_hash = hash_dir(&platform_bundle.join("connectors"));
     println!("cargo:rustc-env=BUNDLE_CONNECTOR_CLI_HASH={connector_cli_hash:016x}");
     let h3c_cli_hash = hash_dir(Path::new("resources/common/bundle/eip"))
-        ^ hash_dir(Path::new("resources/common/bundle/zhidao"));
+        ^ hash_dir(Path::new("resources/common/bundle/zhidao"))
+        ^ hash_dir(&platform_bundle.join("eip"))
+        ^ hash_dir(&platform_bundle.join("zhidao"));
     println!("cargo:rustc-env=BUNDLE_H3C_CLI_HASH={h3c_cli_hash:016x}");
     tauri_build::build();
 }

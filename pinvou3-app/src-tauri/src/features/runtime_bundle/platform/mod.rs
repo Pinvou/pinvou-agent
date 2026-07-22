@@ -20,17 +20,40 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 static LARK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
 
-/// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本与二进制)。独立于 lark skills 的
+/// H3C EIP 员工门户技能(SKILL.md + bin/ 包装脚本)。独立于 lark skills 的
 /// include_dir(故放在 `bundle/eip/` 而非 `bundle/skills/`,避免被 LARK_SKILLS_DIR
 /// 卷入、跟飞书门控耦合)。启动解包到 `skills_dir/eip`,见 `write_eip_skill`。
-/// 注:`bin/eip-cli`/`bin/eip-cli-aarch64`/`eip-cli.exe` 是 IT 内部二进制,本地 gitignore、不进 git;
-/// 但编译期 include_dir 仍会嵌进 app(发布形态 A/C 待与 IT 定,见接入方案)。
 static EIP_SKILL_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/eip");
 
 /// H3C 知道知识库技能(SKILL.md + zhidao CLI)。与 EIP 同属 IT 内部 CLI 连接器,
 /// 独立内嵌并解包到 `skills_dir/zhidao`,用连接标记门控 SKILL.md 可见性。
 static ZHIDAO_SKILL_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/zhidao");
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+static EIP_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
+    "$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/eip/bin"
+);
+#[cfg(all(windows, target_arch = "x86_64"))]
+static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
+    "$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/zhidao/bin"
+);
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+static EIP_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
+    "$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/eip/bin"
+);
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
+    "$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/zhidao/bin"
+);
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+static EIP_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
+    "$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/eip/bin"
+);
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
+    "$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/zhidao/bin"
+);
 
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
@@ -58,9 +81,9 @@ static WECOM_SKILLS_DIR: Dir<'_> =
 static DINGTALK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/dingtalk-skills");
 
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 static CONNECTOR_CLI_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/connectors");
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/connectors");
 
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
@@ -549,7 +572,7 @@ impl Pinvou3Bundle {
     }
 
     fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
-        #[cfg(unix)]
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         {
             let root = paths::bundle_connectors_dir();
             let bin = root.join("linux-arm64").join("bin");
@@ -572,7 +595,7 @@ impl Pinvou3Bundle {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
         let _ = force;
         Ok(())
     }
@@ -653,12 +676,13 @@ impl Pinvou3Bundle {
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
     }
 
-    /// 解包内嵌的 EIP 员工门户技能到 `skills_dir/eip`(SKILL.md + bin/ 包装脚本&二进制)。
-    /// Linux 下给包装脚本 `eip` 和二进制 `eip-cli*` 补执行位(include_dir 不保留权限,
+    /// 解包内嵌的 EIP 员工门户技能与当前目标平台二进制到 `skills_dir/eip`。
+    /// Linux 下给包装脚本 `eip` 和当前架构二进制补执行位(include_dir 不保留权限,
     /// 缺执行位则模型 shell 跑 `eip` / 包装内 exec CLI 都会 Permission denied)。
     fn write_eip_skill(&self) -> std::io::Result<()> {
         let dest = self.skills_dir.join("eip");
         Self::extract_dir(&EIP_SKILL_DIR, &dest)?;
+        Self::extract_dir(&EIP_PLATFORM_BIN_DIR, &dest.join("bin"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -672,10 +696,11 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 解包内嵌的 H3C 知道技能到 `skills_dir/zhidao`。Linux 下给 CLI 补执行位。
+    /// 解包内嵌的 H3C 知道技能与当前目标平台二进制到 `skills_dir/zhidao`。
     fn write_zhidao_skill(&self) -> std::io::Result<()> {
         let dest = self.skills_dir.join("zhidao");
         Self::extract_dir(&ZHIDAO_SKILL_DIR, &dest)?;
+        Self::extract_dir(&ZHIDAO_PLATFORM_BIN_DIR, &dest.join("bin"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

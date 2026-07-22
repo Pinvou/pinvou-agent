@@ -6,6 +6,11 @@ const PLATFORM_CONFIG_NAMES = {
   linux: path.join("platforms", "linux", "tauri.conf.json"),
   win32: path.join("platforms", "windows", "tauri.conf.json"),
 };
+const ARCHITECTURE_CONFIG_NAMES = {
+  linux: {
+    arm64: path.join("platforms", "linux", "aarch64.tauri.conf.json"),
+  },
+};
 
 function platformConfigPath(platform = process.platform) {
   const configName = PLATFORM_CONFIG_NAMES[platform];
@@ -15,8 +20,20 @@ function platformConfigPath(platform = process.platform) {
   return path.resolve(APP_ROOT, "src-tauri", "config", configName);
 }
 
+function platformArchitectureConfigPath(
+  platform = process.platform,
+  architecture = process.arch,
+) {
+  const configName = ARCHITECTURE_CONFIG_NAMES[platform]?.[architecture];
+  return configName
+    ? path.resolve(APP_ROOT, "src-tauri", "config", configName)
+    : null;
+}
+
 module.exports = {
   APP_ROOT,
+  ARCHITECTURE_CONFIG_NAMES,
   PLATFORM_CONFIG_NAMES,
+  platformArchitectureConfigPath,
   platformConfigPath,
 };

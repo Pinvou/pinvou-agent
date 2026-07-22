@@ -385,10 +385,28 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
     return rules, cycles, warnings
 
 
+def scan_resources(root: Path) -> dict[str, Counter[str]]:
+    rules = {"common_platform_binaries": Counter()}
+    common_root = root / "pinvou3-app/src-tauri/resources/common"
+    if not common_root.exists():
+        return rules
+    for path in common_root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            magic = path.read_bytes()[:4]
+        except OSError:
+            continue
+        if magic.startswith(b"MZ") or magic == b"\x7fELF":
+            rules["common_platform_binaries"][normalize(path, root)] += 1
+    return rules
+
+
 def current_state(root: Path) -> tuple[dict, list[str]]:
     frontend_rules, frontend_warnings = scan_frontend(root)
     rust_rules, cycles, rust_warnings = scan_rust(root)
-    rules = {**frontend_rules, **rust_rules}
+    resource_rules = scan_resources(root)
+    rules = {**frontend_rules, **rust_rules, **resource_rules}
     serializable_rules = {
         name: dict(sorted(counts.items())) for name, counts in sorted(rules.items())
     }

@@ -2,6 +2,7 @@
   "schema_version": 1,
   "generated_from": "cc600dc0072809415236b0deb2247d1adac6119c",
   "rules": {
+    "common_platform_binaries": {},
     "frontend_feature_imports_app": {},
     "frontend_tauri_global_outside_platform": {
       "pinvou3-app/src/app/main.jsx": 22,

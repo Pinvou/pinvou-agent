@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "resources": {
+      "resources/platforms/linux/aarch64/web-template/node_modules/": "web-template/node_modules"
+    }
+  }
+}

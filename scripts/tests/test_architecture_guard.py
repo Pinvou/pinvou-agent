@@ -175,6 +175,21 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 ],
             )
 
+    def test_resource_scanner_rejects_platform_binaries_in_common(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            common = root / "pinvou3-app/src-tauri/resources/common/bundle/bin"
+            common.mkdir(parents=True)
+            (common / "tool.exe").write_bytes(b"MZ\x00\x00")
+            (common / "tool").write_bytes(b"\x7fELF")
+            platform = root / "pinvou3-app/src-tauri/resources/platforms/linux/x86_64"
+            platform.mkdir(parents=True)
+            (platform / "allowed").write_bytes(b"\x7fELF")
+
+            rules = self.guard.scan_resources(root)
+
+            self.assertEqual(2, sum(rules["common_platform_binaries"].values()))
+
 
 class ArchitectureGuardRepositoryTests(unittest.TestCase):
     def test_checked_in_baseline_passes(self):
