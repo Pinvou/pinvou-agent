@@ -508,6 +508,7 @@ pub fn session_mount_collection(
     collection_id: i64,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
+    app: AppHandle,
 ) -> Result<(), String> {
     // 完全门控:embedding 模型没就绪 → 知识库整体不可用,拒绝挂载。前端会置灰入口,
     // 这里是防绕过兜底(草稿态直调 / 旧前端 / 命令注入)。
@@ -515,13 +516,43 @@ pub fn session_mount_collection(
         return Err("embedding 模型未就绪,知识库暂不可用".to_string());
     }
     store.set_mounted_collection(&session_id, Some(collection_id));
+    // 挂载已落盘成功,emit 失败不应让命令失败(只影响远程客户端的同步提示)。
+    let _ = app.emit(
+        "remote_control:kb_mount_changed",
+        serde_json::json!({ "session_id": session_id, "collection_id": collection_id }),
+    );
+    // 同时把变更同步给正在远控的 mobile 端(若该 session 正在被远控),避免 mobile UI 陈旧。
+    // 与 set_disabled_connectors 的双向广播对称:桌面本地变更也必须通知 mobile。
+    broadcast_kb_mount_to_mobile(&app, &session_id, Some(collection_id));
     Ok(())
 }
 
 /// 摘下会话的知识集挂载。
 #[tauri::command]
-pub fn session_unmount_collection(session_id: String, store: State<'_, SessionStore>) {
+pub fn session_unmount_collection(
+    session_id: String,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) {
     store.set_mounted_collection(&session_id, None);
+    let _ = app.emit(
+        "remote_control:kb_mount_changed",
+        serde_json::json!({ "session_id": session_id, "collection_id": null }),
+    );
+    broadcast_kb_mount_to_mobile(&app, &session_id, None);
+}
+
+/// 桌面本地 KB 挂载/摘挂变更 → 推给 mobile(若 session 正在被远控)。
+/// payload 形状与 manager.rs dispatch 内 emit 的 kb_mount_changed 一致,确保
+/// mobile handleDesktopEvent 单一 case 能同时处理 mobile-triggered 和 desktop-triggered。
+fn broadcast_kb_mount_to_mobile(app: &AppHandle, session_id: &str, collection_id: Option<i64>) {
+    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "collection_id": collection_id,
+        });
+        manager.broadcast_to_mobile(session_id, "kb_mount_changed", payload);
+    }
 }
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。
@@ -700,6 +731,19 @@ fn stage_image_in_workspace(
         return None;
     }
     Some(format!("{attachment_dir}/{candidate}"))
+}
+
+/// 把远控上传的临时源文件复制进 session workspace，再把稳定绝对路径交给正常附件链路。
+/// 远控上传目录可以在消息进入桌面端后立即清理；图片分析和大文本按路径读取不会再与
+/// 临时目录删除竞争。目录使用隐藏前缀，避免把输入附件误当成用户产出物展示。
+pub(crate) fn stage_remote_attachment_source(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let relative =
+        stage_image_in_workspace(src, basename, workspace, ".pinvou3/remote-attachments")?;
+    Some(workspace.join(relative))
 }
 
 /// 附件内联预算(token 估算)。单文件超过 INLINE_MAX、或多附件累计超过 TOTAL_BUDGET
@@ -1282,7 +1326,11 @@ fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, 
     SystemCredentialStore::new()
         .get(reference)
         .map_err(|error| error.user_message())
-        .map(|value| value.map(|key| key.trim().to_string()).filter(|key| !key.is_empty()))
+        .map(|value| {
+            value
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
 }
 
 #[tauri::command]
@@ -2144,6 +2192,31 @@ pub async fn cancel_shell_task(
         .map_err(|error| format!("cancel_shell_task({session_id}, {task_id}): {error:#}"))
 }
 
+/// 落盘连接器开关 → 联动技能 → 重算完整禁用工具列表 → 广播到所有在跑引擎。
+///
+/// 抽出 `set_disabled_connectors` 的 4 步副作用序列,让 web 远程指令管理器可在
+/// 非 Tauri 命令上下文复用。`app` 为 `None` 时(无 AppHandle)退化为只读
+/// `disabled_tool_names()`,不补 `kb_search` gate(远程指令调用方已自行管控)。
+pub async fn apply_disabled_connectors(
+    app: Option<&AppHandle>,
+    pool: &EnginePool,
+    connector_ids: Vec<String>,
+) -> Result<(), String> {
+    let app_clone = app.cloned();
+    let disallowed = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        crate::bridge::skill_marketplace::refresh_disabled_skills();
+        Ok(match &app_clone {
+            Some(a) => compute_disallowed_tools(a),
+            None => crate::bridge::marketplace::disabled_tool_names(),
+        })
+    })
+    .await
+    .map_err(|e| format!("apply_disabled_connectors join: {e}"))??;
+    pool.set_disallowed_all(disallowed).await;
+    Ok(())
+}
+
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
 ///
 /// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
@@ -2166,25 +2239,25 @@ pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
 /// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
 /// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
+///
+/// 同时 emit `remote_control:tools_changed`,让桌面 chip 即时刷新;并通过 manager
+/// 把 tools_changed 推给正在远控的 mobile 端(若 session 正在被远控),避免 mobile UI 陈旧。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    // 落盘后用 compute_disallowed_tools 重算**完整**禁用列表(含连接器禁用 + kb gate),否则
-    // 切连接器开关的全量替换会冲掉知识库为空时的 kb_search 隐藏。
-    let app2 = app.clone();
-    let tools = tokio::task::spawn_blocking(move || {
-        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
-        // 联动:被禁用连接器的 companion 技能一并从 ## Skills 隐藏(如公文 MCP 关掉 →
-        // government-writing 隐藏)。开回来时同理恢复。
-        crate::bridge::skill_marketplace::refresh_disabled_skills();
-        compute_disallowed_tools(&app2)
-    })
-    .await
-    .map_err(|e| format!("compute disabled tools: {e}"))?;
-    pool.set_disallowed_all(tools).await;
+    apply_disabled_connectors(Some(&app), &pool, connector_ids).await?;
+    // emit 失败不应让命令失败:disabled_connectors.json 已落盘,engine pool 已生效,
+    // emit 失败只影响 UI 即时刷新(下次 reload 自愈)。与 kb_mount_changed emit 同步策略。
+    let _ = app.emit("remote_control:tools_changed", ());
+    // 推给正在远控的 mobile(若该 session 正在被远控)。
+    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+        if let Some(sid) = manager.current_session_id() {
+            manager.broadcast_to_mobile(&sid, "tools_changed", serde_json::json!({}));
+        }
+    }
     Ok(())
 }
 
@@ -6467,6 +6540,106 @@ mod tests {
         }
     }
 
+    /// 管理一个测试期间临时设置的 PINVOU3_E2E 环境变量,drop 时还原。
+    /// verify_upload 是 e2e 专用命令,生产构建(env 未置 1)必须直接拒绝,不得读盘。
+    struct TestE2EFlag {
+        previous: Option<String>,
+    }
+    impl TestE2EFlag {
+        fn enable() -> Self {
+            let previous = std::env::var("PINVOU3_E2E").ok();
+            std::env::set_var("PINVOU3_E2E", "1");
+            Self { previous }
+        }
+    }
+    impl Drop for TestE2EFlag {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("PINVOU3_E2E", value),
+                None => std::env::remove_var("PINVOU3_E2E"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_upload_refuses_in_production_env() {
+        // 生产路径:PINVOU3_E2E 未置。即使文件真的落盘也必须拒绝,且错误里
+        // 不得出现 home 路径(防止向 webview 泄露用户名/目录布局)。
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // 显式清空 PINVOU3_E2E 模拟生产构建,RAII 保证测试结束后还原。
+        let _restore = RemoveE2EOnDrop::clear();
+
+        let err = verify_upload("up_testprod".to_string()).await.unwrap_err();
+        assert!(
+            !err.contains(".pinvou3") && !err.contains('/') && !err.contains('\\'),
+            "生产环境错误不得泄露 home 路径,实际={err}"
+        );
+        assert!(
+            err.contains("e2e") || err.contains("E2E") || err.contains("disabled"),
+            "应明确说明未启用,实际={err}"
+        );
+    }
+
+    struct RemoveE2EOnDrop {
+        previous: Option<String>,
+    }
+    impl RemoveE2EOnDrop {
+        fn clear() -> Self {
+            let previous = std::env::var("PINVOU3_E2E").ok();
+            std::env::remove_var("PINVOU3_E2E");
+            Self { previous }
+        }
+    }
+    impl Drop for RemoveE2EOnDrop {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var("PINVOU3_E2E", v),
+                None => std::env::remove_var("PINVOU3_E2E"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
+        let _home = test_pinvou_home("verify-upload-e2e");
+        let _e2e = TestE2EFlag::enable();
+
+        let upload_dir = crate::bridge::paths::pinvou3_home()
+            .join("uploads")
+            .join("up_ok1");
+        std::fs::create_dir_all(&upload_dir).unwrap();
+        let data = b"hello verify_upload";
+        std::fs::write(upload_dir.join("data.bin"), data).unwrap();
+
+        let out = verify_upload("up_ok1".to_string()).await.unwrap();
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(data);
+        let expected = format!("{:x}", h.finalize());
+        assert_eq!(out.sha256, expected);
+        assert_eq!(out.byte_size, data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn verify_upload_missing_file_does_not_leak_path_or_distinguish_errors() {
+        let _home = test_pinvou_home("verify-upload-missing");
+        let _e2e = TestE2EFlag::enable();
+
+        // 文件不存在:错误消息必须收敛为单一不透明文案,不得回显绝对路径,也不得
+        // 把 NotFound 等 io::ErrorKind 暴露给调用方(存在性 oracle)。
+        let err = verify_upload("up_missing1".to_string()).await.unwrap_err();
+        assert!(
+            !err.contains(".pinvou3") && !err.contains('/') && !err.contains('\\'),
+            "缺失文件错误不得泄露 home 路径,实际={err}"
+        );
+        assert!(
+            !err.contains("No such file") && !err.to_lowercase().contains("not found"),
+            "不得区分 NotFound 与其它 io 错误(存在性 oracle),实际={err}"
+        );
+    }
+
     fn test_pinvou_home(tag: &str) -> TestPinvouHome {
         let guard = crate::bridge::paths::tests::ENV_LOCK
             .lock()
@@ -7244,6 +7417,42 @@ mod tests {
             "图片应被拷进 workspace 的 attachments/"
         );
         assert!(!prompt.contains("没有视觉能力"), "不应再出现无视觉提示");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remote_attachment_source_survives_upload_temp_cleanup() {
+        let tmp =
+            std::env::temp_dir().join(format!("pinvou3-remote-source-test-{}", std::process::id()));
+        let ws = tmp.join("workspace");
+        std::fs::create_dir_all(&ws).expect("建 workspace");
+
+        let image_src = tmp.join("remote.png");
+        std::fs::write(&image_src, b"\x89PNG\r\n\x1a\nremote-image").unwrap();
+        let mut image = crate::file_ingest::ingest(&image_src);
+        let staged_image =
+            stage_remote_attachment_source(image_src.to_str().unwrap(), &image.basename, &ws)
+                .expect("暂存远控图片");
+        image.path = staged_image.to_string_lossy().to_string();
+        std::fs::remove_file(&image_src).unwrap();
+        let image_prompt = build_message_with_attachments("看图".into(), vec![image], &ws);
+        assert!(image_prompt.contains("image_analyze"));
+        assert!(ws.join("attachments/remote.png").exists());
+
+        let text_src = tmp.join("remote.txt");
+        std::fs::write(&text_src, "远控大文本\n".repeat(20_000)).unwrap();
+        let mut text = crate::file_ingest::ingest(&text_src);
+        assert!(text.token_estimate > ATTACH_INLINE_MAX_TOKENS);
+        let staged_text =
+            stage_remote_attachment_source(text_src.to_str().unwrap(), &text.basename, &ws)
+                .expect("暂存远控大文本");
+        text.path = staged_text.to_string_lossy().to_string();
+        std::fs::remove_file(&text_src).unwrap();
+        let text_prompt = build_message_with_attachments("查全文".into(), vec![text], &ws);
+        assert!(staged_text.exists());
+        assert!(text_prompt.contains(&staged_text.to_string_lossy().to_string()));
+        assert!(!text_prompt.contains("此文件过大无法内嵌,且转换产物落盘失败"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -8220,4 +8429,72 @@ pub async fn get_session_stats(
         .await
         .map_err(|error| format!("统计 session timeline 任务失败: {error}"))?
         .map_err(|error| format!("统计 session timeline 失败: {error}"))
+}
+
+/// web 远程 e2e 专用:校验 mobile 上传的文件已落盘且 sha256 匹配。生产代码不调用。
+///
+/// 路径布局与 web-remote manager 落盘约定对齐:
+/// `<pinvou3_home>/uploads/<upload_id>/data.bin`(`<pinvou3_home>` 默认 `~/.pinvou3`,
+/// 测试可用 `PINVOU3_HOME` 重定位)。返回 sha256(小写 hex)+ 字节数,e2e 比对客户端已知值。
+#[tauri::command]
+pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, String> {
+    // 该命令仅供 web 远控 e2e 校验落盘文件 sha256,生产构建(PINVOU3_E2E 未置 "1")
+    // 必须直接拒绝:它仍是已注册的 Tauri command,webview 内任意 JS(XSS / 注入)都能
+    // invoke 它,没有 env 守卫就会变成一个未鉴权的「读任意 upload 文件 + 泄露 sha256/
+    // 字节数」oracle。守卫只放行测试机显式开启的 e2e 场景。
+    let e2e_enabled = matches!(std::env::var("PINVOU3_E2E").as_deref(), Ok("1"));
+    if !e2e_enabled {
+        return Err("verify_upload is disabled: e2e-only command (set PINVOU3_E2E=1)".to_string());
+    }
+    // 防 upload_id 路径穿越:只允许 [A-Za-z0-9_-],与 session_id 校验一致。
+    crate::bridge::sessions::validate_session_id(&upload_id)
+        .map_err(|_| "invalid upload_id".to_string())?;
+    // 落盘文件名保留原始扩展名(PR #213 审查 #1),不再是固定 data.bin。verify_upload
+    // 用目录里唯一的普通文件定位(e2e 场景目录下只有一个落盘文件),避免对扩展名硬编码。
+    let upload_dir = crate::bridge::paths::pinvou3_home()
+        .join("uploads")
+        .join(&upload_id);
+    let file_path = match std::fs::read_dir(&upload_dir).ok().and_then(|it| {
+        it.filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .next()
+            .map(|e| e.path())
+    }) {
+        Some(p) => p,
+        None => return Err("upload not available".to_string()),
+    };
+    // 有界读取:上限 20MiB(与上传单文件上限 UPLOAD_LIMIT_BYTES 对齐),防止超大/异常
+    // 文件把内存撑爆。所有读失败统一收敛为不透明文案,既不回显绝对路径(泄露 home /
+    // 用户名),也不把 io::ErrorKind 暴露出去(避免 NotFound vs PermissionDenied 的存在性 oracle)。
+    const VERIFY_UPLOAD_MAX_BYTES: usize = 20 * 1024 * 1024;
+    let mut file = tokio::fs::File::open(&file_path)
+        .await
+        .map_err(|_| "upload not available".to_string())?;
+    // 先按 metadata 长度预检,避免无界 read_to_end 把超大残留文件全读进内存。
+    let meta_len = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .unwrap_or(VERIFY_UPLOAD_MAX_BYTES as u64);
+    if meta_len as usize > VERIFY_UPLOAD_MAX_BYTES {
+        return Err("upload not available".to_string());
+    }
+    let mut bytes = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
+        .await
+        .map_err(|_| "upload not available".to_string())?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let sha256 = format!("{:x}", hasher.finalize());
+    Ok(VerifyUploadOutput {
+        sha256,
+        byte_size: bytes.len() as u64,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct VerifyUploadOutput {
+    pub sha256: String,
+    pub byte_size: u64,
 }

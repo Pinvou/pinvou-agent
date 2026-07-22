@@ -825,6 +825,7 @@ pub fn run() {
             commands::install_marketplace_skill,
             commands::import_skill_package,
             commands::uninstall_marketplace_skill,
+            commands::verify_upload,
         ]);
 
     startup::mark("tauri:builder_configured");

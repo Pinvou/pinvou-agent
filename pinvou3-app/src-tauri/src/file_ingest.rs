@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 /// 单文件硬上限 20 MB —— 超大文件就算转 md 后 token 数也炸上下文。
-const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestResult {
