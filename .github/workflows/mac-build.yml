@@ -1,0 +1,118 @@
+name: mac-build
+
+# macOS arm64 编译验证工作流(独立于 pr-check.yml 的秒级 fast-gate,不挤 ubuntu runner)。
+# 触发:push main 或 PR 改 Rust/资源/tauri.conf/os macos/Info.plist/entitlements/脚本。
+# runner:macos-14(GitHub-hosted Apple Silicon,M Series)。
+#
+# 与 pr-check.yml 的 rust-test 关系:
+# - rust-test 在 ubuntu 上跑完整 lib tests(含 Linux-only eip/zhidao 等),是主线 gate。
+# - mac-build 在 macos-14 上只跑 cargo check + cargo test --lib + cargo build --release,
+#   验证 macOS 平台目标零回归。
+# - mac-build 不跑 relay e2e(那需要 remote-control-relay 的 node_modules,mac-build 不装
+#   该依赖)。因此不设 PINVOU_REQUIRE_REMOTE_E2E,让 e2e 测试在缺依赖时静默跳过而非 panic。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pinvou3-app/src-tauri/**'
+      - 'pinvou3-app/src/**'
+      - 'pinvou3-app/package.json'
+      - 'pinvou3-app/package-lock.json'
+      - 'DeepSeek-TUI'
+      - '.github/workflows/mac-build.yml'
+      - 'scripts/run-mac-verify.sh'
+      - 'scripts/release-macos.sh'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pinvou3-app/src-tauri/**'
+      - 'pinvou3-app/src/**'
+      - 'pinvou3-app/package.json'
+      - 'pinvou3-app/package-lock.json'
+      - 'DeepSeek-TUI'
+      - '.github/workflows/mac-build.yml'
+      - 'scripts/run-mac-verify.sh'
+      - 'scripts/release-macos.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 50
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        # save-if 仅 main:PR 侧只读不写(与 pr-check.yml 同款策略,防 10GB 限额 LRU 驱逐)。
+        # 副作用:feat 分支 PR 期间 mac-build 恒冷编译(~10min),属设计取舍。
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: mac-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它,
+      # 而 tauri_build::build() 会校验 tauri.conf resources 路径存在。
+      # 造空占位文件骗过资源校验即可(同 pr-check.yml 的 linux rust-test)。
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Cargo check (aarch64-apple-darwin)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo check --target aarch64-apple-darwin --lib
+
+      - name: Cargo test (Mac native, lib)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo test --target aarch64-apple-darwin --lib -- --test-threads=1
+
+      - name: Cargo build release
+        working-directory: pinvou3-app/src-tauri
+        run: cargo build --release --target aarch64-apple-darwin --lib
+
+      # tauri bundle smoke:验证 dmg/app 实际打包链路(Info.plist/entitlements/资源打包)。
+      # 只在 main push 跑(不阻塞 PR;PR 只验 Rust 编译),且 continue-on-error:
+      # 产物本身在 release-macos.sh 发版时才用到,smoke 失败不应挡主线合并。
+      - name: Tauri bundle smoke (验证 dmg/app 打包,仅 main push)
+        if: github.ref == 'refs/heads/main'
+        working-directory: pinvou3-app
+        run: npx tauri build --target aarch64-apple-darwin
+        continue-on-error: true
+
+      # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(sha256/plist/bundle targets)。
+      # 核心校验失败会 exit 1,挡 build(此前 continue-on-error 让 sha256/plist 失败也变绿)。
+      - name: Verify 脚本 (sha256/plist/bundle targets 校验)
+        run: ./scripts/run-mac-verify.sh

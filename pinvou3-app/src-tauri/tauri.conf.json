@@ -32,7 +32,9 @@
   "bundle": {
     "active": true,
     "targets": [
-      "deb"
+      "deb",
+      "app",
+      "dmg"
     ],
     "resources": [
       "resources/web-template",
@@ -45,6 +47,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "-",
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist"
+    },
     "linux": {
       "deb": {
         "desktopTemplate": "desktop/pinvou3.desktop",
