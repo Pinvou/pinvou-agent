@@ -20,3 +20,37 @@ export function useCompactViewport() {
 
   return compact;
 }
+
+/**
+ * 真实可见视口高度（px）。iOS Safari 上 `100dvh` 会把动态工具栏/安全区算进去，
+ * 导致整页比可见区更高、底部（Tab 栏、聊天区尾部）被挤出屏幕、内部滚动失效。
+ * visualViewport.height 可靠反映当前可见高度，随工具栏收合、旋转、软键盘弹出实时更新。
+ * 不支持 visualViewport 时返回 0，调用方回退到 CSS 的 100dvh。
+ */
+export function useVisualViewportHeight() {
+  const read = () => (
+    typeof window !== 'undefined' && window.visualViewport
+      ? Math.round(window.visualViewport.height)
+      : 0
+  );
+  const [height, setHeight] = useState(read);
+
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!vv) return undefined;
+    const onChange = () => setHeight(Math.round(vv.height));
+    vv.addEventListener('resize', onChange);
+    vv.addEventListener('scroll', onChange);
+    window.addEventListener('resize', onChange);
+    window.addEventListener('orientationchange', onChange);
+    onChange();
+    return () => {
+      vv.removeEventListener('resize', onChange);
+      vv.removeEventListener('scroll', onChange);
+      window.removeEventListener('resize', onChange);
+      window.removeEventListener('orientationchange', onChange);
+    };
+  }, []);
+
+  return height;
+}

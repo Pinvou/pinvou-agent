@@ -7,7 +7,7 @@ import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavIte
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from './components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from './components/VllmSetupProgress.jsx';
 import { bridge, useBridge } from './hooks/useBridge.js';
-import { useCompactViewport } from './hooks/useViewport.js';
+import { useCompactViewport, useVisualViewportHeight } from './hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from './shared/i18n.js';
 import { formatSessionDate } from './shared/date-utils.js';
 import { can, isWeb } from './shared/platform.js';
@@ -220,6 +220,8 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       // 移动壳层只作用于 Web 端紧凑视口：底部 Tab + 顶栏，侧栏只保留抽屉形态。
       const compactViewport = useCompactViewport();
       const isCompactShell = isWeb && compactViewport;
+      // iOS Safari 上 100dvh 不等于真实可见高度（动态工具栏/安全区），用 visualViewport 兜底。
+      const visualViewportHeight = useVisualViewportHeight();
       const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
       const canDetachWindows = can('detachWindows');
       const [chatPrefill, setChatPrefill] = useState('');
@@ -1186,7 +1188,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
           style={isWeb ? {
-            height: '100dvh',
+            height: visualViewportHeight ? `${visualViewportHeight}px` : '100dvh',
             paddingTop: 'env(safe-area-inset-top)',
             paddingRight: 'env(safe-area-inset-right)',
             paddingBottom: 'env(safe-area-inset-bottom)',
