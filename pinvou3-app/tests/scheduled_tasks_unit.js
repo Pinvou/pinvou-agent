@@ -19,7 +19,7 @@ const indexHtml = [
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
-  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'workflow-runtime', 'workflow'
+  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow'
 ];
 const tauriBridge = tauriBridgeFeatureNames
   .map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8'))
