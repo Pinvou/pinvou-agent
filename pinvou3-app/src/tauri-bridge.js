@@ -845,12 +845,30 @@
     if (!buf || (!buf.remoteTurnActive && !buf.remoteTerminalSeen)) return true;
     if (!buf.remoteTerminalSeen && isBusyFor(sid)) return false;
     if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
+    // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
+    // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
+    // 已完整显示的流式 assistant 气泡一闪覆盖掉。以终态前的本地工作集作为
+    // authority barrier：消息数不能倒退，且最后一条 assistant 必须已进入快照。
+    var expectedAssistantKey = buf.remoteTerminalSeen
+      ? String(buf.remoteExpectedAssistantKey || "")
+      : "";
+    var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
+      ? buf.messages.length
+      : 0;
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
         try {
           var saved = await loadSessionForClient(sid, false);
           if (!saved || !Array.isArray(saved.messages)) continue;
+          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          if (expectedAssistantKey) {
+            var hasExpectedAssistant = saved.messages.some(function (message) {
+              return message && message.role === "assistant" &&
+                hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
+            });
+            if (!hasExpectedAssistant) continue;
+          }
           runSyncOnSession(sid, function () {
             // The durable transcript already reconstructs user/assistant/tool
             // items. Preserve only presentation-side cards; otherwise a client
@@ -1911,6 +1929,65 @@
     addSystemItem(bt("loadChatFailed") + error);
   }
 
+  function invokeOutcome(command, args) {
+    return invoke(command, args).then(function (value) {
+      return { ok: true, value: value };
+    }, function (error) {
+      return { ok: false, error: error };
+    });
+  }
+
+  // The transcript is the only navigation-critical payload. Fetch the four
+  // presentation-only states in parallel and commit them once, guarded by the
+  // switch token so a slow response cannot leak into a newer active Session.
+  async function syncSessionPresentationState(sessionId, requestToken) {
+    var results = await Promise.all([
+      invokeOutcome("get_mode_state", { sessionId: sessionId }),
+      invokeOutcome("get_active_persona", { sessionId: sessionId }),
+      invokeOutcome("session_mounted_collection", { sessionId: sessionId }),
+      invokeOutcome("get_memory_overview", { sessionId: sessionId }),
+    ]);
+    if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return false;
+
+    var mode = results[0];
+    var persona = results[1];
+    var collection = results[2];
+    var memory = results[3];
+    state.modeState = mode.ok && mode.value
+      ? { mode: mode.value.mode || "yolo" }
+      : { mode: "yolo" };
+    state.activePersona = persona.ok ? (persona.value || null) : null;
+    state.mountedCollection = collection.ok && collection.value != null ? collection.value : null;
+    if (memory.ok) {
+      applyMemoryOverview(memory.value);
+      rehydratePendingMemoryCandidates(memory.value);
+    } else {
+      state.memory = Object.assign({}, state.memory, {
+        loading: false,
+        error: String(memory.error || "memory overview unavailable"),
+      });
+    }
+    notify();
+    return true;
+  }
+
+  function beginSessionPresentationSync(sessionId, requestToken) {
+    state.memory = Object.assign({}, state.memory, { loading: true, error: null });
+    return syncSessionPresentationState(sessionId, requestToken).catch(function (error) {
+      if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return;
+      state.memory = Object.assign({}, state.memory, { loading: false, error: String(error) });
+      notify();
+      return false;
+    });
+  }
+
+  function publishSessionTranscriptReady(options) {
+    if (options && typeof options.onTranscriptReady === "function") {
+      options.onTranscriptReady();
+    }
+    notify();
+  }
+
   function hydratedMessageKey(message, hideInternalEnvelope) {
     var blocks = message && Array.isArray(message.content) ? message.content : [];
     if (message && message.role === "user") {
@@ -2035,18 +2112,25 @@
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态
       switchActiveTo(id, null);
-      await syncModeState();
-      await syncActivePersona();
-      await syncMountedCollection();
-      await loadMemoryOverview({ rehydratePending: true });
+      var cachedPresentationSync = beginSessionPresentationSync(id, requestToken);
+      publishSessionTranscriptReady(options);
+      await cachedPresentationSync;
       if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== id) return false;
-      notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return true;
     }
     var saved;
+    var personaEvents;
+    var pinvouReviews;
     try {
-      saved = await loadSessionForClient(id, !IS_WEB);
+      var primary = await Promise.all([
+        loadSessionForClient(id, !IS_WEB),
+        invoke("get_session_persona_events", { sessionId: id }).catch(function () { return []; }),
+        invoke("get_session_pinvou_reviews", { sessionId: id }).catch(function () { return []; }),
+      ]);
+      saved = primary[0];
+      personaEvents = primary[1] || [];
+      pinvouReviews = primary[2] || [];
     } catch (e) {
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
@@ -2056,12 +2140,6 @@
       reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
       return false;
     }
-
-    var personaEvents = [];
-    var pinvouReviews = [];
-    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
-    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
-    if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
@@ -2114,12 +2192,10 @@
     // selected. Start Shell reconciliation only after that rebuild; polling
     // earlier can attach task ids to a transient card which hydration replaces.
     scheduleShellPoll(id, true);
-    await syncModeState();
-    await syncActivePersona();
-    await syncMountedCollection();
-    await loadMemoryOverview({ rehydratePending: true });
+    var presentationSync = beginSessionPresentationSync(id, requestToken);
+    publishSessionTranscriptReady(options);
+    await presentationSync;
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
-    notify();
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     return true;
   }
@@ -2147,6 +2223,17 @@
     var returnSessionId = state.scheduledRunContext
       ? state.scheduledRunContext.returnSessionId
       : state.activeSessionId;
+    var automationId = (run && run.automationId) || (task && task.id) || null;
+    var runId = (run && (run.runId || run.id)) || null;
+    var scheduledContext = {
+      sessionId: sessionId,
+      returnSessionId: returnSessionId,
+      automationId: automationId,
+      runId: runId,
+      taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
+      model: (task && task.model) || null,
+      mode: "yolo",
+    };
     var liveBuffer = sessionStates[sessionId];
     var hasLiveTurn = !!(liveBuffer && (
       liveBuffer.busy ||
@@ -2159,6 +2246,9 @@
     var switched = await switchToSessionInternal(sessionId, true, "scheduled", {
       forceDurableLoad: forceDurableLoad,
       hydrateLiveSession: !isTerminalRun,
+      onTranscriptReady: function () {
+        state.scheduledRunContext = scheduledContext;
+      },
     });
     if (!switched) {
       rollbackScheduledOpenActivation(openActivation);
@@ -2167,17 +2257,6 @@
     }
     if (forceDurableLoad) markScheduledInitialTurnTerminal(sessionId);
     else scheduledRunBuffer(sessionId);
-    var automationId = (run && run.automationId) || (task && task.id) || null;
-    var runId = (run && (run.runId || run.id)) || null;
-    state.scheduledRunContext = {
-      sessionId: sessionId,
-      returnSessionId: returnSessionId,
-      automationId: automationId,
-      runId: runId,
-      taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
-      model: (task && task.model) || null,
-      mode: "yolo",
-    };
     // 先发布完整会话视图；只有已完成的运行才持久化为已查看。
     notify();
     if (automationId && runId && runStatus === "completed") {
@@ -3881,6 +3960,16 @@
     if (doneBuffer) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
+      var finalAssistantMessage = null;
+      for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
+        if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
+          finalAssistantMessage = doneBuffer.messages[doneMessageIndex];
+          break;
+        }
+      }
+      doneBuffer.remoteExpectedAssistantKey = finalAssistantMessage
+        ? hydratedMessageKey(finalAssistantMessage, isScheduledRunSession(sid))
+        : "";
       if (doneBuffer.localTurnOwned) doneBuffer.deferredRemoteUserEvent = null;
       doneBuffer.localTurnOwned = false;
       doneBuffer.remoteTurnActive = true;

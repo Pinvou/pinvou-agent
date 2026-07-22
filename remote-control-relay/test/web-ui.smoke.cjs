@@ -504,6 +504,73 @@ async function main() {
       && mobileShell.sidebarHidden,
     JSON.stringify(mobileShell));
 
+  const mobileComposerGap = await mobilePage.evaluate(() => {
+    const disclaimer = document.querySelector('[data-testid="chat-disclaimer"]')?.getBoundingClientRect();
+    const tabBar = document.querySelector('[data-testid="mobile-tab-bar"]')?.getBoundingClientRect();
+    return disclaimer && tabBar ? {
+      disclaimerBottom: disclaimer.bottom,
+      tabTop: tabBar.top,
+      gap: tabBar.top - disclaimer.bottom,
+    } : null;
+  });
+  record('手机输入区免责声明紧邻底部 Tab，不重复保留桌面端大底距',
+    !!mobileComposerGap && mobileComposerGap.gap >= 0 && mobileComposerGap.gap <= 24,
+    JSON.stringify(mobileComposerGap));
+
+  const compactViewportLock = await mobilePage.evaluate(async () => {
+    const root = document.querySelector('[data-testid="app-root"]');
+    const composer = document.querySelector('[data-testid="chat-composer-wrap"] textarea');
+    composer.focus();
+    document.documentElement.scrollTop = 320;
+    document.body.scrollTop = 320;
+    await new Promise(resolve => setTimeout(resolve, 180));
+    const rootRect = root.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    return {
+      rootPosition: getComputedStyle(root).position,
+      rootTop: rootRect.top,
+      rootBottom: rootRect.bottom,
+      composerBottom: composerRect.bottom,
+      scrollY: window.scrollY,
+      documentOverflow: getComputedStyle(document.documentElement).overflow,
+      bodyPosition: getComputedStyle(document.body).position,
+    };
+  });
+  // Chromium 不会弹出真机软键盘，用缩短 visual viewport 模拟键盘占据屏幕下半部。
+  await mobilePage.setViewport({ width: 390, height: 520, deviceScaleFactor: 1 });
+  await mobilePage.waitForFunction(() => (
+    document.querySelector('[data-testid="app-root"]')?.getBoundingClientRect().bottom <= 521
+  ), { timeout: 5_000 });
+  const compactKeyboardViewport = await mobilePage.evaluate(() => {
+    const rootRect = document.querySelector('[data-testid="app-root"]').getBoundingClientRect();
+    const composerRect = document.querySelector('[data-testid="chat-composer-wrap"]').getBoundingClientRect();
+    return {
+      rootTop: rootRect.top,
+      rootBottom: rootRect.bottom,
+      composerTop: composerRect.top,
+      composerBottom: composerRect.bottom,
+      scrollY: window.scrollY,
+    };
+  });
+  await mobilePage.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await mobilePage.waitForFunction(() => (
+    document.querySelector('[data-testid="app-root"]')?.getBoundingClientRect().bottom >= 843
+  ), { timeout: 5_000 });
+  record('手机输入框聚焦时锁定文档滚动，应用与输入框不会被 Safari 推出可视区',
+    compactViewportLock.rootPosition === 'fixed'
+      && compactViewportLock.rootTop >= -1
+      && compactViewportLock.rootBottom <= 845
+      && compactViewportLock.composerBottom <= compactViewportLock.rootBottom
+      && compactViewportLock.scrollY === 0
+      && compactViewportLock.documentOverflow === 'hidden'
+      && compactViewportLock.bodyPosition === 'fixed'
+      && compactKeyboardViewport.rootTop >= -1
+      && compactKeyboardViewport.rootBottom <= 521
+      && compactKeyboardViewport.composerTop >= 0
+      && compactKeyboardViewport.composerBottom <= compactKeyboardViewport.rootBottom
+      && compactKeyboardViewport.scrollY === 0,
+    JSON.stringify({ initial: compactViewportLock, keyboard: compactKeyboardViewport }));
+
   await mobilePage.click('[data-testid="mobile-tab-more"]');
   await mobilePage.waitForSelector('[data-testid="mobile-more-sheet"]', { timeout: 5_000 });
   const moreItems = await mobilePage.evaluate(() => (
@@ -513,11 +580,84 @@ async function main() {
   record('「更多」底部面板承载设置/搜索等次级入口',
     moreItems.includes('mobile-more-settings') && moreItems.includes('mobile-more-search'),
     moreItems.join(','));
-  await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-more-sheet"]').click());
+  await mobilePage.click('[data-testid="mobile-more-settings"]');
+  await mobilePage.waitForSelector('[data-testid="settings-dialog"]', { timeout: 5_000 });
+  const mobileSettingsLayout = await mobilePage.evaluate(() => {
+    const bounds = (selector) => {
+      const node = document.querySelector(selector);
+      const rect = node && node.getBoundingClientRect();
+      return rect && { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
+    };
+    const segment = document.querySelector('[data-testid="settings-segmented"]');
+    const segmentButtons = segment ? Array.from(segment.querySelectorAll('button')).map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, width: rect.width };
+    }) : [];
+    return {
+      viewport: document.documentElement.clientWidth,
+      dialog: bounds('[data-testid="settings-dialog"]'),
+      nav: bounds('[data-testid="settings-nav"]'),
+      content: bounds('[data-testid="settings-content"]'),
+      segment: bounds('[data-testid="settings-segmented"]'),
+      segmentButtons,
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  record('手机设置页使用顶部分类 + 单列正文，分段选项同排且不溢出',
+    !!mobileSettingsLayout.dialog
+      && !!mobileSettingsLayout.nav
+      && !!mobileSettingsLayout.content
+      && mobileSettingsLayout.nav.bottom <= mobileSettingsLayout.content.top + 1
+      && mobileSettingsLayout.content.width >= mobileSettingsLayout.dialog.width - 2
+      && mobileSettingsLayout.segmentButtons.length >= 2
+      && mobileSettingsLayout.segmentButtons.every(button => button.width >= 60)
+      && mobileSettingsLayout.segmentButtons.every(button => button.right <= mobileSettingsLayout.viewport)
+      && mobileSettingsLayout.scrollWidth <= mobileSettingsLayout.viewport + 4,
+    JSON.stringify(mobileSettingsLayout));
+  await mobilePage.click('[data-testid="settings-close"]');
   await mobilePage.waitForFunction(
-    () => !document.querySelector('[data-testid="mobile-more-sheet"]'),
+    () => !document.querySelector('[data-testid="settings-dialog"]'),
     { timeout: 5_000 },
   );
+
+  await mobilePage.click('[data-testid="mobile-top-bar"] button[aria-label="打开导航"]');
+  await mobilePage.waitForFunction(
+    () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width > 0,
+    { timeout: 5_000 },
+  );
+  const mobileSidebarLayout = await mobilePage.evaluate(() => {
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    const rect = sidebar.getBoundingClientRect();
+    const primaryNav = document.querySelector('[data-testid="sidebar-primary-nav"]');
+    const primaryRect = primaryNav && primaryNav.getBoundingClientRect();
+    const navButtons = primaryNav ? Array.from(primaryNav.querySelectorAll(':scope > div')).map((node) => {
+      const buttonRect = node.getBoundingClientRect();
+      return { top: buttonRect.top, bottom: buttonRect.bottom, height: buttonRect.height };
+    }) : [];
+    const recents = document.querySelector('[data-testid="sidebar-recents"]');
+    const recentsRect = recents && recents.getBoundingClientRect();
+    return {
+      viewport: document.documentElement.clientWidth,
+      width: rect.width,
+      rightGap: document.documentElement.clientWidth - rect.right,
+      primaryBottom: primaryRect ? primaryRect.bottom : null,
+      recentsTop: recentsRect ? recentsRect.top : null,
+      navButtons,
+    };
+  });
+  record('手机会话抽屉压缩顶部导航高度，为任务列表留出纵向空间',
+    mobileSidebarLayout.width <= 281
+      && mobileSidebarLayout.navButtons.length >= 7
+      && mobileSidebarLayout.navButtons.every(button => button.height <= 41)
+      && mobileSidebarLayout.primaryBottom <= 400
+      && mobileSidebarLayout.recentsTop <= 405,
+    JSON.stringify(mobileSidebarLayout));
+  await mobilePage.evaluate(() => document.querySelector('button[aria-label="关闭导航"]').click());
+  await mobilePage.waitForFunction(
+    () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width === 0,
+    { timeout: 5_000 },
+  );
+  await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
 
   const compactGreeting = await mobilePage.evaluate(() => {
     const node = document.querySelector('[data-testid="chat-greeting"]');

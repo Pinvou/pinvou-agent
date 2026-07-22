@@ -222,6 +222,45 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const isCompactShell = isWeb && compactViewport;
       // iOS Safari 上 100dvh 不等于真实可见高度（动态工具栏/安全区），用 visualViewport 兜底。
       const visualViewportHeight = useVisualViewportHeight();
+      // iOS Safari 聚焦输入框时会尝试滚动整个文档。紧凑 Web 壳层本身已经按
+      // visualViewport 缩高，若再允许文档级平移，整个应用会被推到键盘上方，只剩白屏。
+      useEffect(() => {
+        if (!isCompactShell) return undefined;
+
+        const html = document.documentElement;
+        const body = document.body;
+        html.classList.add('compact-web-viewport');
+
+        let frame = 0;
+        let settleTimer = 0;
+        const resetDocumentScroll = () => {
+          window.cancelAnimationFrame(frame);
+          window.clearTimeout(settleTimer);
+          const reset = () => {
+            window.scrollTo(0, 0);
+            html.scrollTop = 0;
+            body.scrollTop = 0;
+          };
+          frame = window.requestAnimationFrame(reset);
+          // Safari 的自动聚焦平移可能晚于 focusin/viewport resize，再收敛一次。
+          settleTimer = window.setTimeout(reset, 120);
+        };
+
+        const viewport = window.visualViewport;
+        document.addEventListener('focusin', resetDocumentScroll);
+        viewport?.addEventListener('resize', resetDocumentScroll);
+        viewport?.addEventListener('scroll', resetDocumentScroll);
+        resetDocumentScroll();
+
+        return () => {
+          html.classList.remove('compact-web-viewport');
+          document.removeEventListener('focusin', resetDocumentScroll);
+          viewport?.removeEventListener('resize', resetDocumentScroll);
+          viewport?.removeEventListener('scroll', resetDocumentScroll);
+          window.cancelAnimationFrame(frame);
+          window.clearTimeout(settleTimer);
+        };
+      }, [isCompactShell]);
       const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
       const canDetachWindows = can('detachWindows');
       const [chatPrefill, setChatPrefill] = useState('');
@@ -628,11 +667,11 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           name: run.taskName || t.scheduledPlans,
           model: run.taskModel || null,
         };
+        // Commit navigation feedback before the remote Session RPC completes.
+        setCurrentView('scheduled');
+        closeMobileSidebar();
         const opened = await bridge.openScheduledRunChat(run, task);
-        if (opened) {
-          setCurrentView('scheduled');
-          closeMobileSidebar();
-        }
+        if (!opened) return;
       }
 
       function handleNewChat(installedToolId) {
@@ -658,11 +697,13 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
+        // Web RPC can cross a public Relay. Close the drawer and enter the chat
+        // route immediately instead of freezing the old list until every read finishes.
+        setCurrentView('chat');
+        closeMobileSidebar();
         const switched = await bridge.switchToSession(id);
         if (!switched) return;
         setActiveChat(id);
-        setCurrentView('chat');
-        closeMobileSidebar();
       }
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
@@ -1188,6 +1229,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
           style={isWeb ? {
+            ...(isCompactShell ? { position: 'fixed', inset: 0, width: '100%' } : {}),
             height: visualViewportHeight ? `${visualViewportHeight}px` : '100dvh',
             paddingTop: 'env(safe-area-inset-top)',
             paddingRight: 'env(safe-area-inset-right)',
@@ -1261,7 +1303,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
           <div data-testid="app-sidebar" className={`${isSidebarOpen ? 'w-[280px] max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:w-[min(84vw,280px)] max-sm:shadow-2xl' : (isCompactShell ? 'hidden' : 'w-[68px] max-sm:w-[56px]')} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'dark' ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
 
             {/* Header / Logo */}
-            <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
+            <div className={`px-4 py-4 max-sm:px-3 max-sm:py-2 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
               <button
                 data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -1276,7 +1318,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
             </div>
 
             {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
-            <div className={`shrink-0 flex flex-col gap-1 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
+            <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-1 mt-3 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
@@ -1364,7 +1406,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
-                <div className="pt-5 pb-2 space-y-4">
+                <div data-testid="sidebar-recents" className="pt-5 pb-2 space-y-4 max-sm:pt-2 max-sm:space-y-2">
                   {pinnedHistory.length > 0 && (
                     <div>
                       <button

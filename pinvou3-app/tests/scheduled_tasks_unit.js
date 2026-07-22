@@ -129,8 +129,8 @@ assert.ok(
   'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
 );
 assert.ok(
-  /async function handleSwitchSession\(id\)[\s\S]{0,260}await bridge\.switchToSession\(id\)[\s\S]{0,180}if \(!switched\) return;[\s\S]{0,180}setCurrentView\('chat'\)/.test(indexHtml),
-  'ordinary session navigation must await a successful load before committing the chat route'
+  /async function handleSwitchSession\(id\)[\s\S]{0,320}setCurrentView\('chat'\)[\s\S]{0,120}closeMobileSidebar\(\)[\s\S]{0,180}await bridge\.switchToSession\(id\)/.test(indexHtml),
+  'ordinary session navigation must acknowledge the click before waiting for remote Session data'
 );
 assert.ok(
   /async function navigateFromScheduledRun\(nextView[\s\S]{0,480}await bridge\.exitScheduledRunChat\(\)[\s\S]{0,160}if \(!exited\) return false;[\s\S]{0,200}setCurrentView\(nextView\)/.test(indexHtml),
@@ -455,9 +455,9 @@ assert.ok(
   'scheduled creation dialogs should be able to create without immediately opening the edit sheet'
 );
 assert.ok(
-  /fn should_sync_session\([\s\S]{0,120}is_scheduled \|\| has_messages/.test(enginePoolRust) &&
+  /fn should_sync_session\(_is_scheduled: bool, _has_messages: bool\)[\s\S]{0,520}\n\s*true\s*\n}/.test(enginePoolRust) &&
     /should_sync_session\(is_scheduled, !saved\.messages\.is_empty\(\)\)/.test(enginePoolRust),
-  'scheduled sessions must SyncSession even when their durable message list is empty'
+  'every Session must SyncSession even when its durable message list is empty'
 );
 assert.ok(
   /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\./.test(scheduledTaskPromptRust) &&
@@ -957,6 +957,14 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     unread: false,
   }, { id: "automation-followup", name: "Follow-up task" }), true);
   harness.emit("chat:delta", { session_id: "sched-followup", text: "initial scheduled output" });
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: "sched-followup", title: "Follow-up task", message_count: 1 },
+      messages: [{ role: "assistant", content: [{ type: "text", text: "initial scheduled output" }] }],
+      artifacts: [],
+      transcript_revision: "scheduled-initial-final",
+    };
+  };
   var initialAssistantCount = bridge.getState().chatItems.filter(function (item) {
     return item.type === "assistant";
   }).length;
@@ -1165,6 +1173,62 @@ async function authoritativeHydrateDropsReplayedAssistantTail() {
     (JSON.stringify(assistantItems).match(/answer tail/g) || []).length,
     1,
     "the mid-turn replay tail must not be appended after the authoritative full answer"
+  );
+}
+
+async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-created-authority-barrier";
+  var authorityLoads = 0;
+  harness.handlers.create_session = function () {
+    return { id: sessionId, title: "New chat", transcript_revision: "empty" };
+  };
+  harness.handlers.list_sessions = function () {
+    return [{ id: sessionId, title: "New chat", message_count: 2 }];
+  };
+  harness.handlers.load_session = function () {
+    authorityLoads += 1;
+    if (authorityLoads === 1) {
+      return {
+        metadata: { id: sessionId, title: "Question", message_count: 1 },
+        messages: [{ role: "user", content: [{ type: "text", text: "question" }] }],
+        artifacts: [],
+        transcript_revision: "user-only-stale",
+      };
+    }
+    return {
+      metadata: { id: sessionId, title: "Question", message_count: 2 },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "question" }] },
+        { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+      ],
+      artifacts: [],
+      transcript_revision: "turn-final",
+    };
+  };
+
+  await bridge.createNewSession();
+  await bridge.sendMessage("question");
+  harness.emit("chat:delta", { session_id: sessionId, text: "final answer" });
+  harness.emit("chat:done", { session_id: sessionId });
+  await tick();
+  await tick();
+
+  assert.ok(
+    bridge.getState().chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("final answer");
+    }),
+    "a stale user-only snapshot must not erase the completed streaming assistant bubble"
+  );
+  await new Promise(function (resolve) { setTimeout(resolve, 300); });
+  await tick();
+  assert.ok(authorityLoads >= 2, "authority reconciliation should retry until the assistant is durable");
+  assert.ok(
+    bridge.getState().chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("final answer");
+    }),
+    "the durable assistant snapshot must converge without a visible reply disappearing"
   );
 }
 
@@ -2679,6 +2743,108 @@ async function scheduledCreateListRefreshBehavior() {
 // main.jsx 只按 scheduledRunContext 的真值决定渲染 ChatView 还是 ScheduledTasksView,
 // 而 ChatView 内部还要求 sessionId===activeSessionId 才渲染返回按钮 —— 只清
 // activeSessionId 会卡在「定时路由下的空白页且没有返回按钮」。
+async function sessionSwitchCriticalPathBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var load = deferred();
+  var personaEvents = deferred();
+  var reviews = deferred();
+  var mode = deferred();
+  var persona = deferred();
+  var collection = deferred();
+  var memory = deferred();
+  harness.handlers.load_session = function () { return load.promise; };
+  harness.handlers.get_session_persona_events = function () { return personaEvents.promise; };
+  harness.handlers.get_session_pinvou_reviews = function () { return reviews.promise; };
+  harness.handlers.get_mode_state = function () { return mode.promise; };
+  harness.handlers.get_active_persona = function () { return persona.promise; };
+  harness.handlers.session_mounted_collection = function () { return collection.promise; };
+  harness.handlers.get_memory_overview = function () { return memory.promise; };
+
+  var switching = bridge.switchToSession("chat-fast-path");
+  await tick();
+  assert.ok(
+    ["load_session", "get_session_persona_events", "get_session_pinvou_reviews"].every(function (command) {
+      return harness.calls.some(function (call) { return call.cmd === command; });
+    }),
+    "transcript, persona events and review records must start in parallel"
+  );
+  load.resolve({
+    metadata: { id: "chat-fast-path", title: "Fast path" },
+    messages: [{ role: "user", content: [{ type: "text", text: "render me first" }] }],
+    artifacts: [],
+  });
+  personaEvents.resolve([]);
+  reviews.resolve([]);
+  var switchingSettled = false;
+  switching.then(function () { switchingSettled = true; });
+  await tick();
+  await tick();
+  assert.strictEqual(bridge.getState().activeSessionId, "chat-fast-path");
+  assert.ok(JSON.stringify(bridge.getState().chatItems).includes("render me first"));
+  assert.strictEqual(switchingSettled, false, "the bridge may finish its guarded state sync after publishing the transcript");
+  assert.strictEqual(
+    bridge.getState().memory.loading,
+    true,
+    "presentation-only RPCs must not block the first rendered Session snapshot"
+  );
+
+  mode.resolve({ mode: "plan" });
+  persona.resolve({ id: "persona-fast" });
+  collection.resolve("collection-fast");
+  memory.resolve({ profile: { summary: "fast" }, preferences: [] });
+  assert.strictEqual(await switching, true, "the guarded switch completes after parallel presentation state settles");
+  await tick();
+  await tick();
+  var completed = bridge.getState();
+  assert.strictEqual(completed.modeState.mode, "plan");
+  assert.strictEqual(completed.activePersona.id, "persona-fast");
+  assert.strictEqual(completed.mountedCollection, "collection-fast");
+  assert.strictEqual(completed.memory.loading, false);
+
+  var staleMode = deferred();
+  var stalePersona = deferred();
+  var staleCollection = deferred();
+  var staleMemory = deferred();
+  harness.handlers.load_session = function (args) {
+    return { metadata: { id: args.id, title: args.id }, messages: [], artifacts: [] };
+  };
+  harness.handlers.get_session_persona_events = function () { return []; };
+  harness.handlers.get_session_pinvou_reviews = function () { return []; };
+  harness.handlers.get_mode_state = function (args) {
+    return args.sessionId === "chat-stale" ? staleMode.promise : { mode: "agent" };
+  };
+  harness.handlers.get_active_persona = function (args) {
+    return args.sessionId === "chat-stale" ? stalePersona.promise : { id: "persona-current" };
+  };
+  harness.handlers.session_mounted_collection = function (args) {
+    return args.sessionId === "chat-stale" ? staleCollection.promise : "collection-current";
+  };
+  harness.handlers.get_memory_overview = function (args) {
+    return args.sessionId === "chat-stale" ? staleMemory.promise : { profile: { summary: "current" } };
+  };
+  var staleSwitch = bridge.switchToSession("chat-stale");
+  await tick();
+  await tick();
+  assert.strictEqual(bridge.getState().activeSessionId, "chat-stale");
+  assert.strictEqual(await bridge.switchToSession("chat-current"), true);
+  await tick();
+  await tick();
+  staleMode.resolve({ mode: "plan" });
+  stalePersona.resolve({ id: "persona-stale" });
+  staleCollection.resolve("collection-stale");
+  staleMemory.resolve({ profile: { summary: "stale" } });
+  assert.strictEqual(await staleSwitch, false, "a superseded switch must report that it did not finish committing");
+  await tick();
+  await tick();
+  var current = bridge.getState();
+  assert.strictEqual(current.activeSessionId, "chat-current");
+  assert.strictEqual(current.modeState.mode, "agent");
+  assert.strictEqual(current.activePersona.id, "persona-current");
+  assert.strictEqual(current.mountedCollection, "collection-current");
+  assert.strictEqual(current.memory.profile.summary, "current");
+}
+
 async function scheduledRunViewExitBehavior() {
   var task = { id: "automation-exit", name: "Exit task" };
   var run = {
@@ -2784,6 +2950,7 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
 }
 
 Promise.resolve()
+  .then(sessionSwitchCriticalPathBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
   .then(scheduledRunNowSidebarLinkBehavior)
@@ -2798,6 +2965,7 @@ Promise.resolve()
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
   .then(authoritativeTurnSyncDoesNotCrossSessions)
   .then(authoritativeHydrateDropsReplayedAssistantTail)
+  .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)

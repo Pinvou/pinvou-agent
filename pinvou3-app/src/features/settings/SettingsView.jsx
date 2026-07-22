@@ -55,12 +55,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     );
 
     const SSegmented = ({ isDark, options, value, onChange }) => (
-      <div className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+      <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
         {options.map(o => (
           <button
             key={o.key}
             onClick={() => onChange(o.key)}
-            className={`min-w-[72px] px-4 py-2 rounded-full text-[14px] font-medium transition-colors ${
+            className={`min-w-[72px] px-4 py-2 rounded-full text-[14px] font-medium transition-colors max-sm:min-w-0 max-sm:flex-1 max-sm:px-2 ${
               value === o.key ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''
             }`}
           >{o.label}</button>
@@ -1661,11 +1661,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <RowTag
           type={onClick ? 'button' : undefined}
           onClick={onClick}
-          className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${
+          className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 max-sm:flex-col max-sm:items-stretch ${
             isDark ? 'border-white/[0.10] text-[#F2F2F7]' : 'border-black/[0.12] text-[#1C1C1E]'
           } ${onClick ? (isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.035]') : ''}`}
         >
-          <div className="flex-1 min-w-[120px]">
+          <div className="flex-1 min-w-[120px] max-sm:min-w-0">
             <div className={`text-[15px] leading-5 font-normal whitespace-nowrap ${danger ? 'text-[#FF3B30]' : ''}`}>{label}</div>
             {desc && <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{desc}</div>}
           </div>
@@ -1689,7 +1689,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <button
           type="button"
           onClick={() => setActiveSection(id)}
-          className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors ${
+          className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors max-sm:w-auto max-sm:shrink-0 ${
             activeSection === id
               ? (isDark ? 'bg-[#173A5E] text-[#64B5F6]' : 'bg-[#D8EAFE] text-[#007AFF]')
               : (isDark ? 'text-[#F2F2F7] hover:bg-white/[0.06]' : 'text-[#1C1C1E] hover:bg-black/[0.04]')
@@ -2181,38 +2181,43 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           }}
         >
           <div
+            data-testid="settings-dialog"
             style={{ width: 'min(920px, calc(100vw - 24px))', height: 'min(620px, calc(100vh - 24px))' }}
             onClick={(event) => event.stopPropagation()}
-            className={`relative flex overflow-hidden rounded-[24px] border shadow-[0_22px_58px_rgba(0,0,0,0.34)] ${isDark ? 'border-white/[0.14] bg-[#1C1C1E] text-[#F2F2F7]' : 'border-white/70 bg-[#F2F2F7] text-[#1C1C1E]'}`}
+            className={`relative flex flex-col sm:flex-row overflow-hidden rounded-[24px] border shadow-[0_22px_58px_rgba(0,0,0,0.34)] ${isDark ? 'border-white/[0.14] bg-[#1C1C1E] text-[#F2F2F7]' : 'border-white/70 bg-[#F2F2F7] text-[#1C1C1E]'}`}
           >
-            {onCloseSettings && (
-              <button onClick={onCloseSettings} className={`absolute right-5 top-5 z-20 h-9 w-9 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
-                <X size={18} />
-              </button>
-            )}
+            {/* 窄屏:Tab 条与关闭键同排,X 在滚动区外侧,Tab 滚动不会穿到它底下;
+                桌面:包裹层 display:contents 不参与布局,维持左栏 + 悬浮 X 不变 */}
+            <div className={`sm:contents max-sm:flex max-sm:items-center max-sm:shrink-0 max-sm:border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
             <aside
-              style={{ width: 'clamp(150px, 24vw, 210px)' }}
-              className={`shrink-0 overflow-y-auto custom-scrollbar border-r px-3 sm:px-4 py-5 sm:py-7 ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}
+              data-testid="settings-nav"
+              className={`w-full sm:w-[clamp(150px,24vw,210px)] shrink-0 max-sm:flex-1 max-sm:min-w-0 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto custom-scrollbar max-sm-hide-scrollbar sm:border-r px-3 sm:px-4 py-3 sm:py-7 max-sm:flex max-sm:items-center max-sm:gap-2 ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}
             >
-              <div className={`mb-4 px-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>常用</div>
-              <div className="space-y-2">
+              <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>常用</div>
+              <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
                 <SectionButton id="general" icon={<Sparkles size={17} />} label="通用" />
                 <SectionButton id="model" icon={<Cpu size={17} />} label="模型" />
                 <SectionButton id="search" icon={<Search size={17} />} label="搜索" />
                 {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label="记忆" />}
               </div>
-              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>系统</div>
-              <div className="space-y-2">
+              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>系统</div>
+              <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label="权限与环境" />}
                 <SectionButton id="data" icon={<Archive size={17} />} label="数据管理" />
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label="更新" dot={hasUpdate} />}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label="帮助反馈" />
               </div>
             </aside>
-            <main className="flex-1 min-w-0 overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-8 py-5 sm:py-7">
+            {onCloseSettings && (
+              <button data-testid="settings-close" onClick={onCloseSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
+                <X size={18} />
+              </button>
+            )}
+            </div>
+            <main data-testid="settings-content" className="w-full flex-1 min-w-0 min-h-0 overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-8 py-4 sm:py-7">
               <div className="max-w-[680px]">
-                <div className="mb-6 pr-12">
-                  <h1 className="text-[24px] leading-tight font-semibold tracking-normal">{sectionTitle}</h1>
+                <div className="mb-5 sm:mb-6">
+                  <h1 className="text-[22px] sm:text-[24px] leading-tight font-semibold tracking-normal">{sectionTitle}</h1>
                 </div>
                 {renderContent()}
               </div>

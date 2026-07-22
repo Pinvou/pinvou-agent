@@ -4,6 +4,24 @@
     .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.5); }
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    /* 移动 Web 的应用自身负责滚动。禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
+    html.compact-web-viewport,
+    html.compact-web-viewport body,
+    html.compact-web-viewport #root {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    html.compact-web-viewport body {
+      position: fixed;
+      inset: 0;
+    }
+    /* 与 Tailwind max-sm 同断点:触屏横滑容器(如设置页 Tab 条)不显示滚动条 */
+    @media (max-width: 639.98px) {
+      .max-sm-hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      .max-sm-hide-scrollbar::-webkit-scrollbar { display: none; }
+    }
 
     /* Chat message styles */
     .msg-md h1,.msg-md h2,.msg-md h3,.msg-md h4 { font-weight:600; margin:0.6em 0 0.3em; }

@@ -213,8 +213,14 @@ struct EngineEntry {
     forwarder: JoinHandle<()>,
 }
 
-fn should_sync_session(is_scheduled: bool, has_messages: bool) -> bool {
-    is_scheduled || has_messages
+fn should_sync_session(_is_scheduled: bool, _has_messages: bool) -> bool {
+    // SyncSession carries both transcript history and the authoritative Session
+    // identity. An empty ordinary Session still needs it: otherwise the freshly
+    // spawned Engine keeps its generated internal id, and every SessionUpdated
+    // snapshot is rejected by the outer forwarder as belonging to another
+    // Session. That leaves only the admitted user fallback durable while the
+    // streamed assistant reply exists in memory alone.
+    true
 }
 
 /// 多 session engine 池。Tauri State 持有,`Clone` 廉价(内部全是 Arc)。
@@ -328,8 +334,9 @@ impl EnginePool {
         )
         .await?;
 
-        // 普通新会话没有历史时可跳过；scheduled session 即使为空也必须先同步，
-        // 让底座 Engine 的内部 session id 与预创建的持久化会话一致。
+        // 即使 messages 为空也必须同步：SyncSession 不只注入历史，还把底层 Engine
+        // 的内部 session id 对齐到预创建的持久化会话。跳过会让首轮 SessionUpdated
+        // 因 id mismatch 被拒绝，最终只落盘 user 而丢失 assistant。
         match self.store.load(session_id) {
             Ok(saved) if should_sync_session(is_scheduled, !saved.messages.is_empty()) => {
                 if let Err(error) = engine
@@ -1068,11 +1075,11 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn scheduled_empty_session_is_synchronized_before_its_first_turn() {
+    fn every_empty_session_is_synchronized_before_its_first_turn() {
         assert!(should_sync_session(true, false));
         assert!(should_sync_session(true, true));
         assert!(should_sync_session(false, true));
-        assert!(!should_sync_session(false, false));
+        assert!(should_sync_session(false, false));
     }
 
     #[test]

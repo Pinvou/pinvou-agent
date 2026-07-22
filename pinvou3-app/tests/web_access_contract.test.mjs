@@ -15,6 +15,7 @@ const workflowView = fs.readFileSync(path.join(root, 'src', 'features', 'workflo
 const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
 const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
 const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
+const chatView = fs.readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'web-access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
@@ -128,5 +129,9 @@ assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);
 assert.match(connectionStatus, /BLOCKING[\s\S]*incompatible_desktop/);
+assert.match(chatView, /data-testid="chat-bottom-spacer"[\s\S]{0,180}className="w-full shrink-0"/,
+  'WebUI must use a real flex item for composer clearance because iOS Safari may omit trailing overflow padding');
+assert.match(chatView, /style=\{\(isWeb && hasMessages\) \? undefined : \{ paddingBottom:/,
+  'WebUI messages must use the real spacer while the non-scrolling empty state retains centering clearance');
 
 console.log('web access contract tests passed');

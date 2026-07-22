@@ -544,12 +544,16 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          {/* Web 有消息时底部留白由列表内的 spacer 承担(WebKit 不把尾部 padding 计入 scrollHeight);
+              空态不滚动无此问题,仍需 paddingBottom 让 justify-center 的欢迎语在悬浮输入框上方居中 */}
+          <div ref={scrollRef} data-testid="chat-scroll"
+            style={(isWeb && hasMessages) ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
               <div className="w-full max-w-[760px] px-4 text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
-                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[32px] leading-[1.3] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
                   {t.chatGreeting}
                 </h1>
               </div>
@@ -584,6 +588,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
+                {/* WebKit does not reliably include trailing padding on an overflow flex
+                    container in scrollHeight. Use a real, non-shrinking flex item so the
+                    final message can always scroll fully above the floating composer. */}
+                {isWeb && (
+                  <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
+                    style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
+                )}
               </div>
             )}
 
@@ -623,7 +634,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
           )}
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} className={`absolute bottom-8 inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
+          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
@@ -795,7 +806,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               </div>
             )}
             <div className="flex items-center justify-center mt-3">
-               <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+               <p data-testid="chat-disclaimer" className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
             </div>
             </div>
           </div>
