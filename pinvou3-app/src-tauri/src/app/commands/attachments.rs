@@ -167,6 +167,18 @@ fn stage_image_in_workspace(
     Some(format!("{attachment_dir}/{candidate}"))
 }
 
+/// Copy a remote-control upload into the session workspace before the
+/// temporary upload directory is removed.
+pub(crate) fn stage_remote_attachment_source(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let relative =
+        stage_image_in_workspace(src, basename, workspace, ".pinvou3/remote-attachments")?;
+    Some(workspace.join(relative))
+}
+
 /// 附件内联预算(token 估算)。单文件超过 INLINE_MAX、或多附件累计超过 TOTAL_BUDGET
 /// 的部分,不再全量嵌入 prompt——256K 窗口一条消息就能撑爆(实测 5000 行 xlsx 转
 /// CSV ≈ 237K tokens,直接顶穿 vLLM 262144 上限),且即使不炸窗口,小模型在超长

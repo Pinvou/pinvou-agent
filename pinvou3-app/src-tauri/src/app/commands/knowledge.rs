@@ -17,6 +17,7 @@ pub fn session_mount_collection(
     collection_id: i64,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
+    app: AppHandle,
 ) -> Result<(), String> {
     // 完全门控:embedding 模型没就绪 → 知识库整体不可用,拒绝挂载。前端会置灰入口,
     // 这里是防绕过兜底(草稿态直调 / 旧前端 / 命令注入)。
@@ -24,13 +25,41 @@ pub fn session_mount_collection(
         return Err("embedding 模型未就绪,知识库暂不可用".to_string());
     }
     store.set_mounted_collection(&session_id, Some(collection_id));
+    let _ = app.emit(
+        "remote_control:kb_mount_changed",
+        serde_json::json!({ "session_id": session_id, "collection_id": collection_id }),
+    );
+    broadcast_kb_mount_to_mobile(&app, &session_id, Some(collection_id));
     Ok(())
 }
 
 /// 摘下会话的知识集挂载。
 #[tauri::command]
-pub fn session_unmount_collection(session_id: String, store: State<'_, SessionStore>) {
+pub fn session_unmount_collection(
+    session_id: String,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) {
     store.set_mounted_collection(&session_id, None);
+    let _ = app.emit(
+        "remote_control:kb_mount_changed",
+        serde_json::json!({ "session_id": session_id, "collection_id": null }),
+    );
+    broadcast_kb_mount_to_mobile(&app, &session_id, None);
+}
+
+fn broadcast_kb_mount_to_mobile(
+    app: &AppHandle,
+    session_id: &str,
+    collection_id: Option<i64>,
+) {
+    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "collection_id": collection_id,
+        });
+        manager.broadcast_to_mobile(session_id, "kb_mount_changed", payload);
+    }
 }
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。

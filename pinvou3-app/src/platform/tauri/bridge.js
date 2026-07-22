@@ -3948,26 +3948,56 @@
     var p = e.payload || {};
     var sid = p.session_id;
     var content = (p.content || "").trim();
-    if (!sid || !content) return;
+    var attachments = p.attachments || [];
+    // 允许纯附件消息(content 为空但 attachments 非空),对齐 Group E user_message 改造。
+    if (!sid || (!content && !attachments.length)) return;
     try { await ensureSessionBufferLoaded(sid); }
     catch (err) {
       console.warn("remote session hydrate failed", err);
       return;
     }
+    var attachmentNames = attachments.map(function (attachment) {
+      return attachment && attachment.basename;
+    }).filter(Boolean);
+    var displayText = attachmentNames.length
+      ? content + (content ? "\n\n" : "") + "📎 " + attachmentNames.join(" · ")
+      : content;
     if (isBusyFor(sid)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++itemIdSeq,
           text: content,
-          displayText: content,
-          attachments: [],
+          displayText: displayText,
+          attachments: attachments,
           meta: { remoteClientMessageId: p.client_message_id || null },
         });
       });
       notify();
       return;
     }
-    doSendFor(sid, content, content, [], { remoteClientMessageId: p.client_message_id || null });
+    doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
+  });
+
+  // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到
+  // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
+  // 让 chip 上的工具开关计数立即同步。
+  listen("remote_control:tools_changed", function () {
+    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
+  });
+
+  // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
+  // 桌面前端 state.mountedCollection(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
+  // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
+  // payload 形状:{ session_id, collection_id } 或 { session_id, collection_id: null }。
+  // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
+  listen("remote_control:kb_mount_changed", function (e) {
+    var p = e && e.payload;
+    if (!p || !state.activeSessionId) return;
+    if (p.session_id !== state.activeSessionId) return;
+    var cid = (p.collection_id == null) ? null : p.collection_id;
+    if (state.mountedCollection === cid) return;
+    state.mountedCollection = cid;
+    notify();
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）

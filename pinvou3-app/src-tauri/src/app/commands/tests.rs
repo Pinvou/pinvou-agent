@@ -423,6 +423,86 @@ mod tests {
         }
     }
 
+    struct TestE2EFlag {
+        previous: Option<String>,
+    }
+
+    impl TestE2EFlag {
+        fn enable() -> Self {
+            let previous = std::env::var("PINVOU3_E2E").ok();
+            std::env::set_var("PINVOU3_E2E", "1");
+            Self { previous }
+        }
+    }
+
+    impl Drop for TestE2EFlag {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("PINVOU3_E2E", value),
+                None => std::env::remove_var("PINVOU3_E2E"),
+            }
+        }
+    }
+
+    struct RemoveE2EOnDrop {
+        previous: Option<String>,
+    }
+
+    impl RemoveE2EOnDrop {
+        fn clear() -> Self {
+            let previous = std::env::var("PINVOU3_E2E").ok();
+            std::env::remove_var("PINVOU3_E2E");
+            Self { previous }
+        }
+    }
+
+    impl Drop for RemoveE2EOnDrop {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("PINVOU3_E2E", value),
+                None => std::env::remove_var("PINVOU3_E2E"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_upload_refuses_in_production_env() {
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = RemoveE2EOnDrop::clear();
+        let error = verify_upload("up_testprod".to_string()).await.unwrap_err();
+        assert!(!error.contains(".pinvou3") && !error.contains('/') && !error.contains('\\'));
+        assert!(error.contains("e2e") || error.contains("E2E") || error.contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
+        let _home = test_pinvou_home("verify-upload-e2e");
+        let _e2e = TestE2EFlag::enable();
+        let upload_dir = crate::bridge::paths::pinvou3_home()
+            .join("uploads")
+            .join("up_ok1");
+        std::fs::create_dir_all(&upload_dir).unwrap();
+        let data = b"hello verify_upload";
+        std::fs::write(upload_dir.join("data.bin"), data).unwrap();
+        let output = verify_upload("up_ok1".to_string()).await.unwrap();
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        assert_eq!(output.sha256, format!("{:x}", hasher.finalize()));
+        assert_eq!(output.byte_size, data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn verify_upload_missing_file_does_not_leak_path_or_distinguish_errors() {
+        let _home = test_pinvou_home("verify-upload-missing");
+        let _e2e = TestE2EFlag::enable();
+        let error = verify_upload("up_missing1".to_string()).await.unwrap_err();
+        assert!(!error.contains(".pinvou3") && !error.contains('/') && !error.contains('\\'));
+        assert!(!error.contains("No such file") && !error.to_lowercase().contains("not found"));
+    }
+
     fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
         let dir = crate::bridge::paths::session_artifacts_dir(session_id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1434,6 +1514,50 @@ mod tests {
             "text bytes"
         );
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn remote_attachment_source_survives_upload_temp_cleanup() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-remote-source-test-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let image_source = root.join("remote.png");
+        std::fs::write(&image_source, b"\x89PNG\r\n\x1a\nremote-image").unwrap();
+        let mut image = crate::file_ingest::ingest(&image_source);
+        let staged_image = stage_remote_attachment_source(
+            image_source.to_str().unwrap(),
+            &image.basename,
+            &workspace,
+        )
+        .expect("stage remote image");
+        image.path = staged_image.to_string_lossy().to_string();
+        std::fs::remove_file(&image_source).unwrap();
+        let image_prompt = build_message_with_attachments("看图".into(), vec![image], &workspace);
+        assert!(image_prompt.contains("image_analyze"));
+        assert!(workspace.join("attachments/remote.png").exists());
+
+        let text_source = root.join("remote.txt");
+        std::fs::write(&text_source, "远控大文本\n".repeat(20_000)).unwrap();
+        let mut text = crate::file_ingest::ingest(&text_source);
+        assert!(text.token_estimate > ATTACH_INLINE_MAX_TOKENS);
+        let staged_text = stage_remote_attachment_source(
+            text_source.to_str().unwrap(),
+            &text.basename,
+            &workspace,
+        )
+        .expect("stage remote text");
+        text.path = staged_text.to_string_lossy().to_string();
+        std::fs::remove_file(&text_source).unwrap();
+        let text_prompt = build_message_with_attachments("查全文".into(), vec![text], &workspace);
+        assert!(staged_text.exists());
+        assert!(text_prompt.contains(&staged_text.to_string_lossy().to_string()));
+        assert!(!text_prompt.contains("此文件过大无法内嵌,且转换产物落盘失败"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

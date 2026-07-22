@@ -18,6 +18,26 @@ pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
     tools
 }
 
+pub async fn apply_disabled_connectors(
+    app: Option<&AppHandle>,
+    pool: &EnginePool,
+    connector_ids: Vec<String>,
+) -> Result<(), String> {
+    let app_clone = app.cloned();
+    let disallowed = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
+        crate::bridge::skill_marketplace::refresh_disabled_skills();
+        Ok(match &app_clone {
+            Some(app) => compute_disallowed_tools(app),
+            None => crate::bridge::marketplace::disabled_tool_names(),
+        })
+    })
+    .await
+    .map_err(|error| format!("apply_disabled_connectors join: {error}"))??;
+    pool.set_disallowed_all(disallowed).await;
+    Ok(())
+}
+
 /// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
 /// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
@@ -27,19 +47,13 @@ pub async fn set_disabled_connectors(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    // 落盘后用 compute_disallowed_tools 重算**完整**禁用列表(含连接器禁用 + kb gate),否则
-    // 切连接器开关的全量替换会冲掉知识库为空时的 kb_search 隐藏。
-    let app2 = app.clone();
-    let tools = tokio::task::spawn_blocking(move || {
-        crate::bridge::marketplace::save_disabled_connectors(&connector_ids);
-        // 联动:被禁用连接器的 companion 技能一并从 ## Skills 隐藏(如公文 MCP 关掉 →
-        // government-writing 隐藏)。开回来时同理恢复。
-        crate::bridge::skill_marketplace::refresh_disabled_skills();
-        compute_disallowed_tools(&app2)
-    })
-    .await
-    .map_err(|e| format!("compute disabled tools: {e}"))?;
-    pool.set_disallowed_all(tools).await;
+    apply_disabled_connectors(Some(&app), &pool, connector_ids).await?;
+    let _ = app.emit("remote_control:tools_changed", ());
+    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+        if let Some(session_id) = manager.current_session_id() {
+            manager.broadcast_to_mobile(&session_id, "tools_changed", serde_json::json!({}));
+        }
+    }
     Ok(())
 }
 
