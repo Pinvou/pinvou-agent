@@ -5,8 +5,8 @@ name: PR Check
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust/依赖、L1 harness 或前端改动,给编译/前端 job 做 paths filter。
 # - frontend-test:前端逻辑、构建及拆分后的 Bridge 浏览器 smoke。
-# - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
-#   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
+# - rust-test / windows-rust-test:**仅当改了 Rust/Cargo/submodule 才跑**，分别在
+#   Linux 与 Windows 原生 runner 编译，形成双平台目标门禁。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
@@ -81,6 +81,7 @@ jobs:
               - '**/tauri.conf.json'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
+              - 'pinvou3-app/src-tauri/resources/**'
               - 'DeepSeek-TUI'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
@@ -429,3 +430,51 @@ jobs:
           cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib automation_manager -- --test-threads=1
           cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib task_manager -- --test-threads=1
           cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --test task_executor_contract -- --test-threads=1
+
+  windows-rust-test:
+    name: windows-rust-test
+    needs: changes
+    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- DeepSeek-TUI
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端构建依赖
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: windows-rust-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Windows 架构与 Tauri 资源契约
+        run: |
+          python scripts/architecture-guard.py
+          npm --prefix pinvou3-app run test:tauri-layout
+          npm --prefix pinvou3-app run test:tauri-effective-config
+
+      - name: Windows Rust 全目标检查
+        run: cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --all-targets
+
+      - name: Windows Rust 单元测试链接检查
+        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
