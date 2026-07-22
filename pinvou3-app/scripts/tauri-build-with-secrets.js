@@ -9,9 +9,9 @@ const REQUIRED_SECRET_NAMES = [
 ];
 
 const PLATFORM_CONFIG_NAMES = {
-  darwin: "tauri.macos.conf.json",
-  linux: "tauri.linux.conf.json",
-  win32: "tauri.windows.conf.json",
+  darwin: path.join("platforms", "macos", "tauri.conf.json"),
+  linux: path.join("platforms", "linux", "tauri.conf.json"),
+  win32: path.join("platforms", "windows", "tauri.conf.json"),
 };
 
 function parseEnvFile(content) {

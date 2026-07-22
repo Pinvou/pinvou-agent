@@ -2,7 +2,7 @@
 
 Windows 私有运行时不存放在主仓库的 `packaging/windows/` 中。主仓库只保留：
 
-- `../../config/runtime/windows-x86_64.lock.json`：锁定私有 submodule commit 和 manifest SHA-256；
+- `../../config/platforms/windows/runtime/x86_64.lock.json`：锁定私有 submodule commit 和 manifest SHA-256；
 - `main.wxs`、`python-node-path.wxs`、`nsis/`：可审查、可合并的安装器配置；
 - `src-tauri/packaging/windows/scripts/windows-runtime-submodule.ps1`：逐文件校验与原子 staging 入口。
 

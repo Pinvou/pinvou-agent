@@ -8,7 +8,17 @@ const signScript = fs.readFileSync(
   "utf8",
 );
 const signingConfig = JSON.parse(
-  fs.readFileSync(path.join(appRoot, "src-tauri", "config", "tauri.wosign.conf.json"), "utf8"),
+  fs.readFileSync(
+    path.join(
+      appRoot,
+      "src-tauri",
+      "config",
+      "platforms",
+      "windows",
+      "signing.wosign.conf.json",
+    ),
+    "utf8",
+  ),
 );
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const secretsExample = fs.readFileSync(

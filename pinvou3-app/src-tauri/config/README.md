@@ -1,11 +1,20 @@
 # Tauri 平台配置
 
-`tauri.conf.json` 只保存跨平台公共配置。本目录保存平台 overlay：
+`../tauri.conf.json` 是所有平台共享的唯一基础配置。本目录只保存按目标平台叠加的 overlay 和构建锁：
 
-- `tauri.windows.conf.json`：Windows MSI/NSIS 安装器配置。
-- `tauri.linux.conf.json`：Linux DEB 和系统依赖配置。
-- `tauri.macos.conf.json`：macOS DMG 配置入口。
-- `tauri.wosign.conf.json`：Windows 发布签名 overlay。
-- `runtime/`：按目标平台锁定私有运行时版本，不存放制品本身。
+```text
+config/
+└─ platforms/
+   ├─ linux/tauri.conf.json
+   ├─ macos/tauri.conf.json
+   └─ windows/
+      ├─ tauri.conf.json
+      ├─ signing.wosign.conf.json
+      └─ runtime/x86_64.lock.json
+```
 
-`scripts/tauri-build-with-secrets.js` 根据当前操作系统显式加载对应 overlay，禁止在公共配置中增加平台专属安装器路径。
+- `tauri.conf.json`：对应平台的安装包目标、资源映射和安装器参数。
+- `signing.*.conf.json`：发布签名 overlay，仅由对应发布流程显式加载。
+- `runtime/*.lock.json`：锁定私有运行时来源和 manifest，不存放制品本身。
+
+`scripts/tauri-build-with-secrets.js` 根据当前操作系统加载 `platforms/<os>/tauri.conf.json`。公共配置不得引用平台专属安装器模板、签名工具或私有运行时。
