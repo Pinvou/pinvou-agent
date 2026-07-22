@@ -19,10 +19,10 @@ use super::protocol::{
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 use crate::bridge::{paths, sessions::SessionStore};
 
-// full-webui 分支的组内联调默认端点。仍可通过环境变量或已保存的 Relay
-// 设置覆盖；正式合入前应切回受 TLS 保护的生产域名。
-const DEFAULT_PUBLIC_BASE_URL: &str = "http://24.199.124.150:8788/pinvou3/remote";
-const DEFAULT_RELAY_WS_URL: &str = "ws://24.199.124.150:8788/pinvou3/remote/ws";
+// full-webui 分支的组内联调默认端点。测试实例与生产 8787 完全隔离；仍可通过
+// 环境变量或已保存的 Relay 设置覆盖。正式合入前应切回生产 /pinvou3/remote。
+const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote-test";
+const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote-test/ws";
 const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
 const JOURNAL_CAPACITY: usize = 1_024;
 const JOURNAL_BYTES_CAPACITY: usize = 16 * 1024 * 1024;

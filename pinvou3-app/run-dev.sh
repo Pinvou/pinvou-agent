@@ -45,11 +45,11 @@ export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bg
 export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-template}"
 
 # ── 完整 WebUI v2 relay ──────────────────────────────────────────
-# full-webui 分支 dev 默认走组内测试中继，电脑/手机浏览器均可直接粘贴完整链接。外部覆盖时
+# full-webui 分支 dev 默认走组内 remote-test 中继，电脑/手机浏览器均可直接粘贴完整链接。外部覆盖时
 # public 页面和 WebSocket 都必须保留 Relay 的公开 base path：
 #   PINVOU_REMOTE_PUBLIC_URL=http://10.x.x.x:8787/pinvou3/remote
 #   PINVOU_REMOTE_RELAY_WS_URL=ws://10.x.x.x:8787/pinvou3/remote/ws
-export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-http://24.199.124.150:8788/pinvou3/remote}"
-export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://24.199.124.150:8788/pinvou3/remote/ws}"
+export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://pinvou.com/pinvou3/remote-test}"
+export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-wss://pinvou.com/pinvou3/remote-test/ws}"
 
 exec npx tauri dev "$@"
