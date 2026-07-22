@@ -19,10 +19,10 @@ use super::protocol::{
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 use crate::bridge::{paths, sessions::SessionStore};
 
-// full-webui 分支的组内联调默认端点。测试实例与生产 8787 完全隔离；仍可通过
-// 环境变量或已保存的 Relay 设置覆盖。正式合入前应切回生产 /pinvou3/remote。
-const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote-test";
-const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote-test/ws";
+// 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
+// remote-test 端点。用户保存的自定义 Relay 设置仍具有最高优先级。
+const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
+const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote/ws";
 const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
 const JOURNAL_CAPACITY: usize = 1_024;
 const JOURNAL_BYTES_CAPACITY: usize = 16 * 1024 * 1024;
@@ -3940,6 +3940,15 @@ mod tests {
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
     const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
+
+    #[test]
+    fn packaged_defaults_target_the_production_remote_endpoint() {
+        assert_eq!(DEFAULT_PUBLIC_BASE_URL, "https://pinvou.com/pinvou3/remote");
+        assert_eq!(
+            DEFAULT_RELAY_WS_URL,
+            "wss://pinvou.com/pinvou3/remote/ws"
+        );
+    }
 
     #[test]
     fn normalize_relay_address_accepts_bare_domain_as_tls() {

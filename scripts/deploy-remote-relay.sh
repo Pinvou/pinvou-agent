@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# LEGACY：仅把已经退役的 v1 页面临时放入 Relay 当前实际服务的 web/dist/index.html。
-# 完整 WebUI 的正式发布方案尚待项目发起者确认；在此之前不要用本脚本发布 WebUI。
-# 旧流程：公网基线 → 本地验证 → 远端备份/原子替换 → 公网验证/失败回滚。
+# 部署 PINVOU 完整 WebUI v2 与 Relay 到生产端点。
+# 流程：公网基线 → 构建/测试共享 WebUI → 远端暂存/完整备份/整体替换
+#      → 服务与公网验证 → 失败自动回滚。脚本不修改 Nginx 配置。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [[ "${PINVOU_ALLOW_LEGACY_REMOTE_DEPLOY:-0}" != "1" ]]; then
-  echo "Refusing to deploy the retired v1 remote page." >&2
-  echo "The WebUI v2 production release plan is intentionally not enabled yet." >&2
-  echo "Set PINVOU_ALLOW_LEGACY_REMOTE_DEPLOY=1 only for an explicitly approved legacy rollback." >&2
+if [[ "${PINVOU_CONFIRM_PRODUCTION_DEPLOY:-0}" != "1" ]]; then
+  echo "拒绝修改生产 Relay：请在确认发布窗口和回滚负责人后设置 PINVOU_CONFIRM_PRODUCTION_DEPLOY=1。" >&2
   exit 64
 fi
 
@@ -19,10 +17,11 @@ REMOTE_DIR="${PINVOU_REMOTE_DEPLOY_DIR:-/opt/pinvou-remote-relay}"
 SERVICE="${PINVOU_REMOTE_DEPLOY_SERVICE:-pinvou-remote-relay.service}"
 PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://pinvou.com/pinvou3/remote}"
 DIRECT_URL="${PINVOU_REMOTE_DIRECT_URL:-http://47.120.8.237:8787/pinvou3/remote}"
+BASE_PATH="${PINVOU_REMOTE_PUBLIC_BASE_PATH:-/pinvou3/remote}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 REMOTE_SERVER_TMP="/tmp/pinvou-remote-server-$STAMP.js"
 REMOTE_TELEMETRY_TMP="/tmp/pinvou-telemetry-service-$STAMP.js"
-REMOTE_WEB_TMP="/tmp/pinvou-remote-web-$STAMP.html"
+REMOTE_WEB_TMP="/tmp/pinvou-remote-web-$STAMP.tar.gz"
 REMOTE_STATS_TMP="/tmp/pinvou-stats-$STAMP.html"
 REMOTE_HARDENING_TMP="/tmp/pinvou-remote-hardening-$STAMP.conf"
 REMOTE_PACKAGE_TMP="/tmp/pinvou-remote-package-$STAMP.json"
@@ -38,6 +37,11 @@ IPV4_DB_SHA256="6307a9696f5711f84bcb8b25f07894de68a64a0ed4a1cc7e990562dd3084f210
 IPV6_DB_SHA256="5b93da35ac28bc316dccc54a758381f7a874ae0461dd51ff5df5e34815586f11"
 VERIFY_ERROR=""
 LAST_HEALTH=""
+
+if [[ "$BASE_PATH" != "/pinvou3/remote" ]]; then
+  echo "拒绝执行：生产部署 BASE_PATH 必须是 /pinvou3/remote，当前为 $BASE_PATH" >&2
+  exit 64
+fi
 
 ensure_cached_db() {
   local path="$1"
@@ -70,12 +74,14 @@ verify_public() {
     return 1
   fi
   if [[ "$expected" == "release" ]]; then
-    if [[ "$page" != *'<meta name="pinvou-remote-client" content="1" />'* ]]; then
-      VERIFY_ERROR="手机页面未命中新版本标识"
+    if [[ "$page" != *'<title>PINVOU 智能助手</title>'* \
+      || "$page" != *'<base href="/pinvou3/remote/">'* \
+      || "$page" != *'/pinvou3/remote/tauri-bridge.js'* ]]; then
+      VERIFY_ERROR="公网页面未命中完整 WebUI v2 或生产 base path"
       return 1
     fi
-  elif [[ "$page" != *'<title>PINVOU Remote</title>'* ]]; then
-    VERIFY_ERROR="手机页面未命中基础页面标识"
+  elif [[ -z "$page" ]]; then
+    VERIFY_ERROR="部署前公网页面为空"
     return 1
   fi
   if curl --noproxy '*' -fsS --max-time 3 "$DIRECT_URL/healthz" >/dev/null 2>&1; then
@@ -92,13 +98,27 @@ if ! verify_public baseline; then
 fi
 
 node --check "$RELAY_DIR/server.js"
-(cd "$RELAY_DIR" && npm test)
+node --check "$RELAY_DIR/telemetry-service.js"
+if [[ "${SKIP_WEB_BUILD:-0}" != "1" ]]; then
+  echo "构建生产 base path 的共享 WebUI"
+  (cd "$ROOT/pinvou3-app" && PINVOU_REMOTE_PUBLIC_BASE_PATH="$BASE_PATH" npm run build:web)
+else
+  echo "使用已构建并验证的共享 WebUI 产物"
+fi
+test -f "$RELAY_DIR/web/dist/index.html"
+test -f "$RELAY_DIR/web/dist/tauri-bridge.js"
+grep -Fq '<base href="/pinvou3/remote/">' "$RELAY_DIR/web/dist/index.html"
+grep -Fq '/pinvou3/remote/tauri-bridge.js' "$RELAY_DIR/web/dist/index.html"
+if [[ "${SKIP_LOCAL_TESTS:-0}" != "1" ]]; then
+  (cd "$RELAY_DIR" && npm test)
+fi
 ensure_cached_db "$IPV4_DB_CACHE" "$IPV4_DB_URL" "$IPV4_DB_SHA256"
 ensure_cached_db "$IPV6_DB_CACHE" "$IPV6_DB_URL" "$IPV6_DB_SHA256"
 
 scp "$RELAY_DIR/server.js" "$SERVER:$REMOTE_SERVER_TMP"
 scp "$RELAY_DIR/telemetry-service.js" "$SERVER:$REMOTE_TELEMETRY_TMP"
-scp "$RELAY_DIR/web/index.html" "$SERVER:$REMOTE_WEB_TMP"
+# dist 内包含带哈希的 JS/CSS、桥接脚本和本地 vendor，必须作为一个版本整体上传。
+tar -czf - -C "$RELAY_DIR/web/dist" . | ssh "$SERVER" "cat > '$REMOTE_WEB_TMP'"
 scp "$RELAY_DIR/web/stats.html" "$SERVER:$REMOTE_STATS_TMP"
 scp "$RELAY_DIR/10-hardening.conf" "$SERVER:$REMOTE_HARDENING_TMP"
 scp "$RELAY_DIR/package.json" "$SERVER:$REMOTE_PACKAGE_TMP"
@@ -121,6 +141,7 @@ lock_tmp="${10}"
 ipv4_tmp="${11}"
 ipv6_tmp="${12}"
 backup="$remote_dir/backups/$stamp"
+web_stage="$remote_dir/web/dist.next-$stamp"
 dropin_dir="/etc/systemd/system/${service}.d"
 dropin="$dropin_dir/10-hardening.conf"
 telemetry_data_dir="/var/lib/pinvou-telemetry"
@@ -131,11 +152,20 @@ ipv6_sha256="5b93da35ac28bc316dccc54a758381f7a874ae0461dd51ff5df5e34815586f11"
 
 node --check "$server_tmp"
 node --check "$telemetry_tmp"
+mkdir -p "$remote_dir/web"
+rm -rf "$web_stage"
+mkdir -p "$web_stage"
+tar -xzf "$web_tmp" -C "$web_stage"
+rm -f "$web_tmp"
+test -f "$web_stage/index.html"
+test -f "$web_stage/tauri-bridge.js"
+grep -Fq '<base href="/pinvou3/remote/">' "$web_stage/index.html"
+grep -Fq '/pinvou3/remote/tauri-bridge.js' "$web_stage/index.html"
 mkdir -p "$backup"
-cp -a "$remote_dir/server.js" "$backup/server.js"
-cp -a "$remote_dir/web/dist/index.html" "$backup/index.html"
-cp -a "$remote_dir/package.json" "$backup/package.json"
-cp -a "$remote_dir/package-lock.json" "$backup/package-lock.json"
+if [[ -f "$remote_dir/server.js" ]]; then cp -a "$remote_dir/server.js" "$backup/server.js"; else touch "$backup/no-server"; fi
+if [[ -d "$remote_dir/web/dist" ]]; then cp -a "$remote_dir/web/dist" "$backup/web-dist"; else touch "$backup/no-web-dist"; fi
+if [[ -f "$remote_dir/package.json" ]]; then cp -a "$remote_dir/package.json" "$backup/package.json"; else touch "$backup/no-package"; fi
+if [[ -f "$remote_dir/package-lock.json" ]]; then cp -a "$remote_dir/package-lock.json" "$backup/package-lock.json"; else touch "$backup/no-package-lock"; fi
 if [[ -f "$remote_dir/telemetry-service.js" ]]; then
   cp -a "$remote_dir/telemetry-service.js" "$backup/telemetry-service.js"
 else
@@ -154,11 +184,12 @@ else
 fi
 
 rollback() {
-  cp -a "$backup/server.js" "$remote_dir/server.js"
-  cp -a "$backup/index.html" "$remote_dir/web/dist/index.html"
-  cp -a "$backup/package.json" "$remote_dir/package.json"
-  cp -a "$backup/package-lock.json" "$remote_dir/package-lock.json"
-  (cd "$remote_dir" && npm ci --omit=dev)
+  if [[ -f "$backup/no-server" ]]; then rm -f "$remote_dir/server.js"; else cp -a "$backup/server.js" "$remote_dir/server.js"; fi
+  rm -rf "$remote_dir/web/dist"
+  if [[ ! -f "$backup/no-web-dist" ]]; then cp -a "$backup/web-dist" "$remote_dir/web/dist"; fi
+  if [[ -f "$backup/no-package" ]]; then rm -f "$remote_dir/package.json"; else cp -a "$backup/package.json" "$remote_dir/package.json"; fi
+  if [[ -f "$backup/no-package-lock" ]]; then rm -f "$remote_dir/package-lock.json"; else cp -a "$backup/package-lock.json" "$remote_dir/package-lock.json"; fi
+  if [[ -f "$remote_dir/package.json" ]]; then (cd "$remote_dir" && npm ci --omit=dev); fi
   if [[ -f "$backup/no-telemetry-service" ]]; then rm -f "$remote_dir/telemetry-service.js"; else cp -a "$backup/telemetry-service.js" "$remote_dir/telemetry-service.js"; fi
   if [[ -f "$backup/no-stats-html" ]]; then rm -f "$remote_dir/web/stats.html"; else cp -a "$backup/stats.html" "$remote_dir/web/stats.html"; fi
   if [[ -f "$backup/no-hardening-dropin" ]]; then
@@ -169,6 +200,17 @@ rollback() {
   systemctl daemon-reload
   systemctl restart "$service"
 }
+
+rollback_on_error() {
+  local status=$?
+  trap - ERR
+  echo "部署步骤失败，开始从 $backup 回滚" >&2
+  if ! rollback; then
+    echo "严重：自动回滚失败，请立即检查 $service（备份：$backup）" >&2
+  fi
+  exit "$status"
+}
+trap rollback_on_error ERR
 
 install_db() {
   local path="$1"
@@ -190,20 +232,21 @@ chmod 700 "$telemetry_data_dir"
 install_db "$ipv4_db" "$ipv4_tmp" "$ipv4_sha256"
 install_db "$ipv6_db" "$ipv6_tmp" "$ipv6_sha256"
 
-chown root:root "$server_tmp" "$telemetry_tmp" "$web_tmp" "$stats_tmp" "$hardening_tmp" "$package_tmp" "$lock_tmp"
-chmod 644 "$server_tmp" "$telemetry_tmp" "$web_tmp" "$stats_tmp" "$hardening_tmp" "$package_tmp" "$lock_tmp"
+chown root:root "$server_tmp" "$telemetry_tmp" "$stats_tmp" "$hardening_tmp" "$package_tmp" "$lock_tmp"
+chmod 644 "$server_tmp" "$telemetry_tmp" "$stats_tmp" "$hardening_tmp" "$package_tmp" "$lock_tmp"
 mv "$package_tmp" "$remote_dir/package.json"
 mv "$lock_tmp" "$remote_dir/package-lock.json"
 (cd "$remote_dir" && npm ci --omit=dev)
 mv "$server_tmp" "$remote_dir/server.js"
 mv "$telemetry_tmp" "$remote_dir/telemetry-service.js"
-mkdir -p "$remote_dir/web/dist"
-mv "$web_tmp" "$remote_dir/web/dist/index.html"
+rm -rf "$remote_dir/web/dist"
+mv "$web_stage" "$remote_dir/web/dist"
 mv "$stats_tmp" "$remote_dir/web/stats.html"
 mv "$hardening_tmp" "$dropin"
 systemctl daemon-reload
 
 if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
+  trap - ERR
   rollback
   echo "部署失败，已从 $backup 回滚" >&2
   exit 1
@@ -212,10 +255,12 @@ fi
 sleep 1
 if ! curl -fsS http://127.0.0.1:8787/pinvou3/remote/healthz >/dev/null \
   || ! curl -fsS http://127.0.0.1:8787/pinvou3/telemetry/healthz >/dev/null; then
+  trap - ERR
   rollback
   echo "健康检查失败，已从 $backup 回滚" >&2
   exit 1
 fi
+trap - ERR
 echo "backup=$backup"
 REMOTE
 )"
@@ -234,14 +279,13 @@ case "$backup" in
   "$remote_dir"/backups/*) ;;
   *) echo "拒绝未知备份目录：$backup" >&2; exit 1 ;;
 esac
-test -f "$backup/server.js"
-test -f "$backup/index.html"
-cp -a "$backup/server.js" "$remote_dir/server.js"
-mkdir -p "$remote_dir/web/dist"
-cp -a "$backup/index.html" "$remote_dir/web/dist/index.html"
-cp -a "$backup/package.json" "$remote_dir/package.json"
-cp -a "$backup/package-lock.json" "$remote_dir/package-lock.json"
-(cd "$remote_dir" && npm ci --omit=dev)
+test -d "$backup"
+if [[ -f "$backup/no-server" ]]; then rm -f "$remote_dir/server.js"; else test -f "$backup/server.js"; cp -a "$backup/server.js" "$remote_dir/server.js"; fi
+rm -rf "$remote_dir/web/dist"
+if [[ ! -f "$backup/no-web-dist" ]]; then test -d "$backup/web-dist"; cp -a "$backup/web-dist" "$remote_dir/web/dist"; fi
+if [[ -f "$backup/no-package" ]]; then rm -f "$remote_dir/package.json"; else test -f "$backup/package.json"; cp -a "$backup/package.json" "$remote_dir/package.json"; fi
+if [[ -f "$backup/no-package-lock" ]]; then rm -f "$remote_dir/package-lock.json"; else test -f "$backup/package-lock.json"; cp -a "$backup/package-lock.json" "$remote_dir/package-lock.json"; fi
+if [[ -f "$remote_dir/package.json" ]]; then (cd "$remote_dir" && npm ci --omit=dev); fi
 if [[ -f "$backup/no-telemetry-service" ]]; then rm -f "$remote_dir/telemetry-service.js"; else cp -a "$backup/telemetry-service.js" "$remote_dir/telemetry-service.js"; fi
 if [[ -f "$backup/no-stats-html" ]]; then rm -f "$remote_dir/web/stats.html"; else cp -a "$backup/stats.html" "$remote_dir/web/stats.html"; fi
 if [[ -f "$backup/no-hardening-dropin" ]]; then

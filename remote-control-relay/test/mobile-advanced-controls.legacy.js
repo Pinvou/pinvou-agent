@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
+// 历史 v1 页面回归；完整 WebUI v2 由 web-ui.smoke.cjs 覆盖。
 // 用 jsdom 加载真实 web/index.html(远控手机端页面),驱动其中真实的
 // handleDesktopEvent / renderKnowledgeSheet / renderToolsSheet / requestAttachFile
 // / submitComposer / enterRemoteSession 代码,覆盖 KB 挂载、工具开关、附件上传

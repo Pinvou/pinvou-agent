@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
+// 历史 v1 页面回归；完整 WebUI v2 由 web-ui.smoke.cjs 覆盖。
 // 复现 + 验证 applySessionSnapshot 的 pre-existing bug 修复:
 //   原 bug:renderSnapshot 用 messages.innerHTML='' 整体重建历史,会把刚发生
 //   的实时 addSystem 提示(附件已就绪 / 下载失败 / 连接恢复等)一并擦掉,用户
@@ -10,7 +11,7 @@ import { JSDOM } from 'jsdom';
 //   修复:addSystem 在非 snapshot 渲染期给节点打 data-ephemeral 标记,
 //   renderSnapshot 在 wipe 前抽出这些节点,历史渲染完后再追加回去。
 //
-// 该文件镜像 mobile-download.test.js / mobile-advanced-controls.test.js 的
+// 该文件沿用早期 v1 jsdom 页面测试的
 // jsdom + 真实 web/index.html 模式,DOM 与页面代码全部真实执行。
 
 const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
