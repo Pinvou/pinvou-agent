@@ -256,8 +256,6 @@ fn emit(app: &AppHandle, event: &str, payload: Value) {
 fn is_cancelled(app: &AppHandle) -> bool {
     app.state::<ZhidaoConn>().cancelled.load(Ordering::SeqCst)
 }
-
-#[tauri::command]
 pub async fn zhidao_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["load"])?;
@@ -271,8 +269,6 @@ pub async fn zhidao_status() -> Result<Value, String> {
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
-
-#[tauri::command]
 pub async fn zhidao_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ZhidaoConn>()
         .cancelled
@@ -375,16 +371,12 @@ fn get_sso_login() -> Result<SsoLogin, String> {
         session_id,
     })
 }
-
-#[tauri::command]
 pub async fn zhidao_cancel(app: AppHandle) -> Result<Value, String> {
     app.state::<ZhidaoConn>()
         .cancelled
         .store(true, Ordering::SeqCst);
     Ok(json!({ "ok": true }))
 }
-
-#[tauri::command]
 pub async fn zhidao_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let cmd = zhidao(&["clear"])?;

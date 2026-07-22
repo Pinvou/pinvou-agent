@@ -240,7 +240,6 @@ fn install_dws_cli() -> Result<bool, String> {
 }
 
 /// 引导:确保 dws 装好。Linux ARM64 优先使用内置二进制;Windows 走 npm 全局 shim。
-#[tauri::command]
 pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if dws_cli_present() {
@@ -259,7 +258,6 @@ pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前钉钉连接状态。只返回布尔,不把身份信息带进 webview。
-#[tauri::command]
 pub async fn dingtalk_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if !dws_cli_present() {
@@ -278,7 +276,6 @@ pub async fn dingtalk_status() -> Result<Value, String> {
 }
 
 /// 开始连接钉钉(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
-#[tauri::command]
 pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ConnectorConn>().reset(ID);
     let app2 = app.clone();
@@ -419,8 +416,6 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
     }
 }
-
-#[tauri::command]
 pub async fn dingtalk_cancel(app: AppHandle) -> Result<Value, String> {
     let pid = app.state::<ConnectorConn>().cancel(ID);
     if let Some(pid) = pid {
@@ -430,7 +425,6 @@ pub async fn dingtalk_cancel(app: AppHandle) -> Result<Value, String> {
 }
 
 /// 断开钉钉:`dws auth logout`。未安装时也视为已断开。
-#[tauri::command]
 pub async fn dingtalk_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if !dws_cli_present() {
@@ -469,8 +463,6 @@ fn set_dingtalk_disabled_flag(disabled: bool) -> Result<(), String> {
 pub fn dingtalk_skills_should_show() -> bool {
     !is_dingtalk_disabled() && is_authenticated()
 }
-
-#[tauri::command]
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = dingtalk_skills_should_show();
@@ -483,8 +475,6 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "visible": show }))
 }
-
-#[tauri::command]
 pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_dingtalk_disabled_flag(!enabled)?;
@@ -498,8 +488,6 @@ pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "ok": true, "visible": show }))
 }
-
-#[tauri::command]
 pub async fn dingtalk_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let disabled = is_dingtalk_disabled();

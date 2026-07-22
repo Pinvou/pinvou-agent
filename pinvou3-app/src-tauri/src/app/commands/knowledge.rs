@@ -48,12 +48,9 @@ pub fn session_unmount_collection(
     broadcast_kb_mount_to_mobile(&app, &session_id, None);
 }
 
-fn broadcast_kb_mount_to_mobile(
-    app: &AppHandle,
-    session_id: &str,
-    collection_id: Option<i64>,
-) {
-    if let Some(manager) = app.try_state::<crate::features::remote_control::RemoteControlManager>() {
+fn broadcast_kb_mount_to_mobile(app: &AppHandle, session_id: &str, collection_id: Option<i64>) {
+    if let Some(manager) = app.try_state::<crate::features::remote_control::RemoteControlManager>()
+    {
         let payload = serde_json::json!({
             "session_id": session_id,
             "collection_id": collection_id,
@@ -70,4 +67,31 @@ pub fn session_mounted_collection(
 ) -> Option<i64> {
     store.mounted_collection(&session_id)
 }
+
+use crate::features::knowledge as knowledge_domain;
+use crate::features::knowledge::model_download as model_domain;
+use knowledge_domain::*;
+use model_domain::*;
+
+sync_command_passthrough!(knowledge_domain, kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState);
+sync_command_passthrough!(knowledge_domain, kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState);
+sync_command_passthrough!(knowledge_domain, kb_cancel_scan(state: State<'_, KnowledgeService>));
+async_command_passthrough!(knowledge_domain, kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String>);
+async_command_passthrough!(knowledge_domain, kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String>);
+async_command_passthrough!(knowledge_domain, kb_collection_create(state: State<'_, KnowledgeService>, name: String, category: Option<String>, description: Option<String>) -> Result<i64, String>);
+async_command_passthrough!(knowledge_domain, kb_collection_update(state: State<'_, KnowledgeService>, id: i64, name: String, category: Option<String>, description: Option<String>) -> Result<(), String>);
+async_command_passthrough!(knowledge_domain, kb_collection_delete(state: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, id: i64) -> Result<(), String>);
+sync_command_passthrough!(knowledge_domain, kb_collection_add_sources(state: State<'_, KnowledgeService>, collection_id: i64, paths: Vec<String>) -> IndexState);
+sync_command_passthrough!(knowledge_domain, kb_index_status(state: State<'_, KnowledgeService>) -> IndexState);
+sync_command_passthrough!(knowledge_domain, kb_index_cancel(state: State<'_, KnowledgeService>));
+async_command_passthrough!(knowledge_domain, kb_documents(state: State<'_, KnowledgeService>, collection_id: i64, limit: Option<usize>) -> Result<Vec<Document>, String>);
+async_command_passthrough!(knowledge_domain, kb_remove_document(state: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, doc_id: i64) -> Result<(), String>);
+sync_command_passthrough!(knowledge_domain, kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo);
+async_command_passthrough!(knowledge_domain, kb_search(state: State<'_, KnowledgeService>, query: SearchQueryDto) -> Result<Vec<FileHit>, String>);
+async_command_passthrough!(knowledge_domain, kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String>);
+
+sync_command_passthrough!(model_domain, kb_model_status() -> KbModelStatus);
+sync_command_passthrough!(model_domain, kb_model_cancel());
+async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
+async_command_passthrough!(model_domain, kb_model_download(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<KbModelStatus, String>);
 use super::prelude::*;

@@ -3,6 +3,20 @@ fn command_names(source: &str) -> Vec<&str> {
     let mut command_attribute_seen = false;
     for line in source.lines() {
         let line = line.trim();
+        if line.starts_with("async_command_passthrough!(")
+            || line.starts_with("sync_command_passthrough!(")
+        {
+            let name = line
+                .split_once(',')
+                .expect("passthrough domain")
+                .1
+                .trim()
+                .split('(')
+                .next()
+                .expect("passthrough command name");
+            commands.push(name);
+            continue;
+        }
         if line.starts_with("#[tauri::command") {
             command_attribute_seen = true;
             continue;
@@ -59,7 +73,48 @@ command_protocol!(chat_protocol, "chat.rs", ["chat"]);
 command_protocol!(
     connectors_protocol,
     "connectors.rs",
-    ["set_disabled_connectors", "get_disabled_connectors"]
+    [
+        "set_disabled_connectors",
+        "get_disabled_connectors",
+        "refresh_connector_auth_gates",
+        "feishu_ensure_cli",
+        "feishu_status",
+        "feishu_connect_begin",
+        "feishu_cancel",
+        "feishu_logout",
+        "feishu_apply_skills",
+        "set_feishu_enabled",
+        "feishu_skills_state",
+        "wecom_ensure_cli",
+        "wecom_status",
+        "wecom_connect_begin",
+        "wecom_cancel",
+        "wecom_logout",
+        "wecom_apply_skills",
+        "set_wecom_enabled",
+        "wecom_skills_state",
+        "dingtalk_ensure_cli",
+        "dingtalk_status",
+        "dingtalk_connect_begin",
+        "dingtalk_cancel",
+        "dingtalk_logout",
+        "dingtalk_apply_skills",
+        "set_dingtalk_enabled",
+        "dingtalk_skills_state",
+        "eip_status",
+        "eip_connect_begin",
+        "eip_cancel",
+        "eip_logout",
+        "zhidao_status",
+        "zhidao_connect_begin",
+        "zhidao_cancel",
+        "zhidao_logout"
+    ]
+);
+command_protocol!(
+    dependencies_protocol,
+    "dependencies.rs",
+    ["check_dependencies", "install_dependencies"]
 );
 command_protocol!(
     files_protocol,
@@ -97,7 +152,36 @@ command_protocol!(
     [
         "session_mount_collection",
         "session_unmount_collection",
-        "session_mounted_collection"
+        "session_mounted_collection",
+        "kb_start_scan",
+        "kb_scan_status",
+        "kb_cancel_scan",
+        "kb_type_counts",
+        "kb_collection_list",
+        "kb_collection_create",
+        "kb_collection_update",
+        "kb_collection_delete",
+        "kb_collection_add_sources",
+        "kb_index_status",
+        "kb_index_cancel",
+        "kb_documents",
+        "kb_remove_document",
+        "kb_embed_info",
+        "kb_search",
+        "kb_stats",
+        "kb_model_status",
+        "kb_model_cancel",
+        "kb_model_load_after_first_frame",
+        "kb_model_download"
+    ]
+);
+command_protocol!(
+    local_llm_protocol,
+    "local_llm.rs",
+    [
+        "detect_local_vllm_setup",
+        "decline_local_vllm_setup",
+        "bootstrap_local_vllm"
     ]
 );
 command_protocol!(
@@ -166,6 +250,26 @@ command_protocol!(
     ]
 );
 command_protocol!(
+    pet_protocol,
+    "pet.rs",
+    [
+        "open_detached_window",
+        "begin_detach_drag",
+        "set_pet_enabled",
+        "get_pet_scale",
+        "set_pet_scale",
+        "set_pet_activity_visible",
+        "save_pet_position",
+        "save_pet_vertical_alignment",
+        "open_main_from_pet",
+        "take_pet_navigation",
+        "queue_pet_reply",
+        "take_pet_reply",
+        "get_selected_pet",
+        "set_selected_pet"
+    ]
+);
+command_protocol!(
     personas_protocol,
     "personas.rs",
     [
@@ -191,6 +295,37 @@ command_protocol!(
         "get_platform_capabilities",
         "list_shell_tasks",
         "cancel_shell_task"
+    ]
+);
+command_protocol!(
+    remote_control_protocol,
+    "remote_control.rs",
+    [
+        "remote_control_start",
+        "remote_control_stop",
+        "remote_control_status",
+        "remote_control_refresh_qr",
+        "remote_control_publish_user_message",
+        "remote_control_publish_event"
+    ]
+);
+command_protocol!(
+    scheduled_protocol,
+    "scheduled.rs",
+    [
+        "list_scheduled_tasks",
+        "read_scheduled_task",
+        "list_scheduled_task_runs",
+        "list_scheduled_runs",
+        "create_scheduled_task",
+        "update_scheduled_task",
+        "pause_scheduled_task",
+        "resume_scheduled_task",
+        "set_scheduled_task_pinned",
+        "delete_scheduled_task",
+        "run_scheduled_task_now",
+        "mark_scheduled_run_viewed",
+        "scheduled_task_chat_prompt"
     ]
 );
 command_protocol!(
@@ -237,7 +372,31 @@ command_protocol!(
     "timeline.rs",
     ["get_session_timeline", "get_session_stats"]
 );
-command_protocol!(voice_protocol, "voice.rs", ["transcribe_voice_audio"]);
+command_protocol!(startup_protocol, "startup.rs", ["report_frontend_startup"]);
+command_protocol!(
+    updater_protocol,
+    "updater.rs",
+    [
+        "get_app_version",
+        "check_for_update",
+        "download_update",
+        "install_update",
+        "restart_app",
+        "cancel_download",
+        "report_pending_update_result"
+    ]
+);
+command_protocol!(
+    voice_protocol,
+    "voice.rs",
+    [
+        "transcribe_voice_audio",
+        "reset_microphone_permission",
+        "voice_asr_status",
+        "install_voice_asr",
+        "cancel_voice_asr"
+    ]
+);
 command_protocol!(
     workflows_protocol,
     "workflows.rs",

@@ -95,7 +95,6 @@ pub fn create_detached_at(
 }
 
 /// 建/聚焦某菜单项的撕离窗口(按钮触发,默认位置)。
-#[tauri::command]
 pub async fn open_detached_window(
     kind: String,
     id: Option<String>,
@@ -117,7 +116,6 @@ fn main_window_contains(app: &AppHandle, px: i32, py: i32) -> bool {
 /// 撕离拖拽起手:原生层只负责"读全局光标+左键、判松手落点"。视觉跟随由前端 DOM avatar 完成
 /// (在主窗内丝滑跟手,WM 无关、无文字选中)。本函数松手时按全局落点决定建窗(主窗外那一屏
 /// 最大化)或取消,并广播 detach:drag-ended 让前端收起 avatar。
-#[tauri::command]
 pub async fn begin_detach_drag(
     kind: String,
     id: Option<String>,

@@ -324,3 +324,13 @@ pub async fn transcribe_voice_audio(
         source: "pinvou-webview-sensevoice-local".to_string(),
     })
 }
+
+use crate::features::voice::{
+    microphone_permission as microphone_domain, voice_asr as voice_asr_domain,
+};
+use voice_asr_domain::*;
+
+async_command_passthrough!(microphone_domain, reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String>);
+async_command_passthrough!(voice_asr_domain, voice_asr_status() -> VoiceAsrStatus);
+async_command_passthrough!(voice_asr_domain, install_voice_asr(app: AppHandle) -> Result<VoiceAsrStatus, String>);
+sync_command_passthrough!(voice_asr_domain, cancel_voice_asr());

@@ -372,7 +372,6 @@ where
 }
 
 /// 启动/续跑全盘扫描。`roots` 省略时默认用户家目录。
-#[tauri::command]
 pub fn kb_start_scan(
     state: State<'_, KnowledgeService>,
     roots: Option<Vec<String>>,
@@ -383,34 +382,25 @@ pub fn kb_start_scan(
         .unwrap_or_else(|| vec![crate::platform::paths::user_home_dir()]);
     state.start_scan(roots)
 }
-
-#[tauri::command]
 pub fn kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState {
     state.status()
 }
-
-#[tauri::command]
 pub fn kb_cancel_scan(state: State<'_, KnowledgeService>) {
     state.cancel_scan();
 }
 
 
 /// L0：按扩展名分类计数（文件管理「按类型浏览」用）。
-#[tauri::command]
 pub async fn kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String> {
     let store = state.store.clone();
     spawn_db(move || store.type_counts().map_err(|e| e.to_string())).await
 }
 
 // ───────────────────────── L1 知识库命令 ─────────────────────────
-
-#[tauri::command]
 pub async fn kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String> {
     let l1 = state.l1().clone();
     spawn_db(move || l1.list_collections().map_err(|e| e.to_string())).await
 }
-
-#[tauri::command]
 pub async fn kb_collection_create(
     state: State<'_, KnowledgeService>,
     name: String,
@@ -424,8 +414,6 @@ pub async fn kb_collection_create(
     })
     .await
 }
-
-#[tauri::command]
 pub async fn kb_collection_update(
     state: State<'_, KnowledgeService>,
     id: i64,
@@ -440,8 +428,6 @@ pub async fn kb_collection_update(
     })
     .await
 }
-
-#[tauri::command]
 pub async fn kb_collection_delete(
     state: State<'_, KnowledgeService>,
     pool: State<'_, crate::features::assistant::engine_pool::EnginePool>,
@@ -460,7 +446,6 @@ async fn refresh_kb_tool_gate(pool: &crate::features::assistant::engine_pool::En
 }
 
 /// 把文件/目录加入知识集，后台解析+切块+入库。进度走 kb_index_status。
-#[tauri::command]
 pub fn kb_collection_add_sources(
     state: State<'_, KnowledgeService>,
     collection_id: i64,
@@ -469,19 +454,14 @@ pub fn kb_collection_add_sources(
     let roots = paths.into_iter().map(PathBuf::from).collect();
     state.start_index(collection_id, roots)
 }
-
-#[tauri::command]
 pub fn kb_index_status(state: State<'_, KnowledgeService>) -> IndexState {
     state.index_status()
 }
-
-#[tauri::command]
 pub fn kb_index_cancel(state: State<'_, KnowledgeService>) {
     state.cancel_index();
 }
 
 /// 列出知识集文档（collectionId<=0 列出全部知识集，给「知识库内文件」表）。
-#[tauri::command]
 pub async fn kb_documents(
     state: State<'_, KnowledgeService>,
     collection_id: i64,
@@ -494,8 +474,6 @@ pub async fn kb_documents(
     })
     .await
 }
-
-#[tauri::command]
 pub async fn kb_remove_document(
     state: State<'_, KnowledgeService>,
     pool: State<'_, crate::features::assistant::engine_pool::EnginePool>,
@@ -515,8 +493,6 @@ pub struct EmbedInfo {
     pub base_url: String,
     pub model: String,
 }
-
-#[tauri::command]
 pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
     match state.l1().embed_info() {
         Some((base_url, model)) => EmbedInfo { enabled: true, base_url, model },
@@ -526,7 +502,6 @@ pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
 
 /// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
 /// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
-#[tauri::command]
 pub async fn kb_search(
     state: State<'_, KnowledgeService>,
     query: SearchQueryDto,
@@ -554,8 +529,6 @@ pub async fn kb_search(
     let store = state.store.clone();
     spawn_db(move || store.search(&sq).map_err(|e| e.to_string())).await
 }
-
-#[tauri::command]
 pub async fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String> {
     let store = state.store.clone();
     spawn_db(move || store.stats().map_err(|e| e.to_string())).await

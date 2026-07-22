@@ -61,7 +61,6 @@ fn is_user_ready() -> bool {
 
 /// 引导:确保 lark-cli 装好(全局 shim 在 PATH 上),幂等。
 /// `npx -y @larksuite/cli@latest install` —— 已装则跳过。需要 Node。
-#[tauri::command]
 pub async fn feishu_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let t = std::time::Instant::now();
@@ -100,7 +99,6 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
 /// 查询当前飞书连接状态:`lark-cli auth status --json`。
 /// 返回 lark-cli 的原始 JSON(含 appId / identities.user.status 等);未配置 app
 /// 或未登录则 connected=false。
-#[tauri::command]
 pub async fn feishu_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let (ok, so, se) = cc::run(lark(&["auth", "status", "--json"]))?;
@@ -134,7 +132,6 @@ pub async fn feishu_status() -> Result<Value, String> {
 /// 段② `auth login --recommend` → 二维码(emit phase=authorize)→ 轮询 device-code → user:ready。
 /// 进度全程走事件:`feishu:qr` / `feishu:phase` / `feishu:connected` / `feishu:error`。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
-#[tauri::command]
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ConnectorConn>().reset(ID);
     let app2 = app.clone();
@@ -263,7 +260,6 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
 }
 
 /// 取消连接:置取消标志 + tree-kill 当前长驻子进程(关二维码弹窗 / 超时时调)。
-#[tauri::command]
 pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
     let pid = app.state::<ConnectorConn>().cancel(ID);
     if let Some(pid) = pid {
@@ -273,7 +269,6 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
 }
 
 /// 断开飞书:`lark-cli auth logout`(清 token)。
-#[tauri::command]
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
@@ -315,7 +310,6 @@ pub fn feishu_skills_should_show() -> bool {
 
 /// 按当前"应否可见"状态写 / 删技能文件,并广播刷新在跑会话(当前对话即时生效)。
 /// 前端在 **连接成功 / 断开 / 切开关** 后调,统一收口。
-#[tauri::command]
 pub async fn feishu_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = feishu_skills_should_show();
@@ -330,7 +324,6 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
 }
 
 /// composer 飞书开关:`enabled` → 写停用标志 → 按规则增删技能 → 广播刷新。
-#[tauri::command]
 pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_feishu_disabled_flag(!enabled);
@@ -344,7 +337,6 @@ pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
 }
 
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible(=connected&&enabled)}`。
-#[tauri::command]
 pub async fn feishu_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let disabled = is_feishu_disabled();

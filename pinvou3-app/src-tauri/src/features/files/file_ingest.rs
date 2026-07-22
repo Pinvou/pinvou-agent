@@ -89,7 +89,6 @@ pub struct DependencyCheckItem {
 /// 体检各项可选依赖的安装状态。**实时检测（不走 `system_tools` 的 OnceLock 缓存）**——
 /// 用户照提示装完依赖后重新体检要能立刻反映，不能被首次缓存钉死。命名/分组与
 /// `ingest` 内各格式分支的 warning 文案同源，缺啥装啥一致。
-#[tauri::command]
 pub fn check_dependencies() -> Vec<DependencyCheckItem> {
     let item = |key: &str, installed: bool, apt: &str| DependencyCheckItem {
         key: key.into(),
@@ -175,7 +174,6 @@ fn add_ocr_tessdata_arg(command: &mut Command) {
 
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
 /// Linux 由 OS 层保留包名白名单和 pkexec/apt 行为；其他系统清晰降级。
-#[tauri::command]
 pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         crate::features::dependencies::install_dependencies(packages)

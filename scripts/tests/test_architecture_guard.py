@@ -105,11 +105,13 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             (rust_root / "lib.rs").write_text(
                 '#[path = "app/bridge/mod.rs"]\nmod bridge;\n'
                 '#[path = "features/a/mod.rs"]\nmod feature_a;\n'
-                '#[path = "features/b/mod.rs"]\nmod feature_b;\n',
+                '#[path = "features/b/mod.rs"]\nmod feature_b;\n'
+                'fn handler() { tauri::generate_handler![commands::ok, features::a::leak,]; }\n',
                 encoding="utf-8",
             )
             feature_a.write_text(
                 '#[cfg(target_os = "windows")]\n'
+                '#[tauri::command]\n'
                 '#[cfg(any(windows, target_arch = "aarch64"))]\n'
                 '#[cfg_attr(all(unix, target_family = "unix"), allow(dead_code))]\n'
                 'fn cfg_macro() { if cfg!(target_env = "msvc") {} }\n'
@@ -137,6 +139,12 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 1,
                 rules["rust_platform_depends_on_upper_layer"][
                     "pinvou3-app/src-tauri/src/platform/service.rs->features::a"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_tauri_handler_outside_app"][
+                    "pinvou3-app/src-tauri/src/lib.rs:features::a::leak"
                 ],
             )
             self.assertEqual([["a", "b"]], cycles)
@@ -172,6 +180,12 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 3,
                 rules["rust_legacy_module_indirection"][
                     "pinvou3-app/src-tauri/src/lib.rs:#[path]"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_tauri_commands_outside_app"][
+                    "pinvou3-app/src-tauri/src/features/a/mod.rs"
                 ],
             )
 

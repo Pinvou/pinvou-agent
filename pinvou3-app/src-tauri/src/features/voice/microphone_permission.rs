@@ -1,4 +1,3 @@
-#[tauri::command]
 pub async fn reset_microphone_permission(
     window: tauri::WebviewWindow,
 ) -> Result<bool, String> {

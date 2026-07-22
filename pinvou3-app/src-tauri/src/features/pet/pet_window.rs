@@ -522,7 +522,6 @@ pub fn close_with_main(app: &AppHandle) {
 /// 开关桌宠:持久化 settings.json + 窗口即时显隐 + 广播给主窗口同步其 settings
 /// 副本(否则主窗口下次整份保存会用旧值把开关翻回去)。
 /// 设置页开关和宠物右键"隐藏"都走这一个命令,单一路径。
-#[tauri::command]
 pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String> {
     let window_existed = app.get_webview_window(PET_LABEL).is_some();
     if enabled {
@@ -556,7 +555,6 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
 }
 
 /// 前端初始化取缩放。
-#[tauri::command]
 pub async fn get_pet_scale() -> Result<f64, String> {
     Ok(load_state().scale)
 }
@@ -774,7 +772,6 @@ fn resize_pet_window_at_character_anchor(
 
 /// 缩放桌宠:右下角拉伸保持人物可见区域左上角不动;右键菜单缩放保持底边中点不动。
 /// 两种路径都会钳制在当前显示器工作区内。返回 clamp 后的实际值。
-#[tauri::command]
 pub async fn set_pet_scale(
     scale: f64,
     anchor: Option<String>,
@@ -854,8 +851,6 @@ pub async fn set_pet_scale(
     }
     Ok(scale)
 }
-
-#[tauri::command]
 pub async fn set_pet_activity_visible(
     visible: bool,
     activity_height: Option<f64>,
@@ -895,7 +890,6 @@ pub async fn set_pet_activity_visible(
 }
 
 /// 桌宠窗口拖动落定后保存 client 原点(前端 onMoved 防抖后重新读取,全局物理像素)。
-#[tauri::command]
 pub async fn save_pet_position(
     x: i32,
     y: i32,
@@ -910,8 +904,6 @@ pub async fn save_pet_position(
     }
     save_state(st)
 }
-
-#[tauri::command]
 pub async fn save_pet_vertical_alignment(alignment: String) -> Result<(), String> {
     let mut st = load_state();
     let alignment = PetVerticalAlignment::from_str(&alignment);
@@ -924,7 +916,6 @@ pub async fn save_pet_vertical_alignment(alignment: String) -> Result<(), String
 
 /// 点击宠物时唤醒主窗口；点击活动时额外把目标 session 路由给主窗口。
 /// 会话切换仍由现有 TauriBridge/Session 实现，这里只负责原生窗口与导航消息。
-#[tauri::command]
 pub async fn open_main_from_pet(
     session_id: Option<String>,
     scheduled_run: Option<PetScheduledRunNavigation>,
@@ -986,15 +977,11 @@ pub async fn open_main_from_pet(
     eprintln!("[pet nav] open_main_from_pet ok");
     Ok(())
 }
-
-#[tauri::command]
 pub async fn take_pet_navigation(
     navigation: State<'_, PetNavigationState>,
 ) -> Result<Option<PetNavigationRequest>, String> {
     navigation.take()
 }
-
-#[tauri::command]
 pub async fn queue_pet_reply(
     request_id: String,
     session_id: String,
@@ -1008,8 +995,6 @@ pub async fn queue_pet_reply(
     let _ = app.emit_to("main", "pet:reply_pending", ());
     Ok(())
 }
-
-#[tauri::command]
 pub async fn take_pet_reply(
     replies: State<'_, PetReplyState>,
 ) -> Result<Option<PetReplyRequest>, String> {

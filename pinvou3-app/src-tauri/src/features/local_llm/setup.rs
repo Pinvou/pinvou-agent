@@ -435,7 +435,6 @@ fn run_pkexec_capture(args: &[&str]) -> Result<(), String> {
 /// product_name 可靠(同型号不同批次 DMI 串都不一样)。`is_megacube` 仍回填供诊断。
 /// 端口探测只在预装齐全、没跑过引导、没婉拒时才做——普通机(无预装)直接短路,不白等 3 个端口各 3s 超时。
 /// 注:`declined` 只压住**开机自动弹框**;设置页「检测本机 vLLM」仍据 `has_packages` 提供手动启用入口。
-#[tauri::command]
 pub async fn detect_local_vllm_setup() -> Result<LocalVllmSetupStatus, String> {
     let is_megacube = is_megacube();
     let has_packages = has_packages();
@@ -469,7 +468,6 @@ pub async fn detect_local_vllm_setup() -> Result<LocalVllmSetupStatus, String> {
 
 /// 用户在引导框点「不再提醒 → 确认」:持久置 declined,开机引导框不再自动弹。
 /// 不影响设置页「检测本机 vLLM」的手动启用入口(那条按 has_packages 提供,与 declined 无关)。
-#[tauri::command]
 pub fn decline_local_vllm_setup() -> Result<(), String> {
     let mut prefs = UserPrefs::load();
     prefs.advanced.local_vllm_setup_declined = true;
@@ -483,7 +481,6 @@ pub fn decline_local_vllm_setup() -> Result<(), String> {
 ///
 /// 全程发 `vllm-setup:phase` 事件(authorizing → waiting{attempt} → ready),
 /// 前端据此显示步骤指示;计时由前端自跑(pkexec 阻塞期间也能看到秒数在涨)。
-#[tauri::command]
 pub async fn bootstrap_local_vllm(app: tauri::AppHandle) -> Result<BootstrapResult, String> {
     // 1. 重校验(detect 与点击之间状态可能变)。机型不卡,只认预装齐全。
     if !has_packages() {

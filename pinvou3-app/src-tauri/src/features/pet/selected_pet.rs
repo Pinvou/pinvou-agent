@@ -115,13 +115,9 @@ impl SelectedPetStore {
         Ok(())
     }
 }
-
-#[tauri::command]
 pub fn get_selected_pet(store: State<'_, SelectedPetStore>) -> String {
     store.get()
 }
-
-#[tauri::command]
 pub fn set_selected_pet(
     id: String,
     expected_current: Option<String>,

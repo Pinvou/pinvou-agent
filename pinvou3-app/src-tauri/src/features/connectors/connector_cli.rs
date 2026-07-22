@@ -254,7 +254,6 @@ pub struct ConnectorAuthGateRefresh {
 
 /// 首屏提交后刷新飞书 / 企微 / 钉钉鉴权门控。三个外部 CLI 在 blocking 线程池并行执行，
 /// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。
-#[tauri::command]
 pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
     let started = Instant::now();
     crate::platform::startup::mark("connector_auth_refresh:start");

@@ -514,7 +514,6 @@ fn strip_control_markers(s: &str) -> String {
 }
 
 /// 前端查询本地语音识别各组件就绪状态。
-#[tauri::command]
 pub async fn voice_asr_status() -> VoiceAsrStatus {
     tokio::task::spawn_blocking(status)
         .await
@@ -523,7 +522,6 @@ pub async fn voice_asr_status() -> VoiceAsrStatus {
 
 /// 一键安装本地语音识别依赖：缺 ffmpeg 走 pkexec apt，缺模型则下载（带进度）。
 /// Install local ASR runtime through the current platform implementation.
-#[tauri::command]
 pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, String> {
     if !super::platform::asr_dependency_installable() {
         let _ = app;
@@ -548,8 +546,6 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
     );
     Ok(st)
 }
-
-#[tauri::command]
 pub fn cancel_voice_asr() {
     ASR_CANCEL.store(true, Ordering::Release);
 }

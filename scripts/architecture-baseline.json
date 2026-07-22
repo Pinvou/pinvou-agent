@@ -36,7 +36,9 @@
       "pinvou3-app/src-tauri/src/features/remote_control/manager.rs": 1,
       "pinvou3-app/src-tauri/src/features/voice/asr/pinvou_asr.rs": 8,
       "pinvou3-app/src-tauri/src/features/workflow/workflow_migrate.rs": 1
-    }
+    },
+    "rust_tauri_commands_outside_app": {},
+    "rust_tauri_handler_outside_app": {}
   },
   "rust_feature_cycles": []
 }

@@ -315,6 +315,8 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
         "rust_target_cfg_outside_adapter": Counter(),
         "rust_platform_details_outside_adapter": Counter(),
         "rust_legacy_module_indirection": Counter(),
+        "rust_tauri_commands_outside_app": Counter(),
+        "rust_tauri_handler_outside_app": Counter(),
     }
     warnings: list[str] = []
     aliases = rust_aliases(root)
@@ -325,6 +327,8 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
     feature_edge_counts: Counter[tuple[str, str]] = Counter()
     include_pattern = re.compile(r"\binclude\s*!\s*\(")
     path_pattern = re.compile(r"#\s*\[\s*path\s*=")
+    tauri_command_pattern = re.compile(r"#\s*\[\s*tauri\s*::\s*command\b")
+    tauri_handler_pattern = re.compile(r"generate_handler\s*!\s*\[(.*?)\]", re.DOTALL)
     platform_detail_patterns = [
         re.compile(r"\bpowershell(?:\.exe)?\b", re.IGNORECASE),
         re.compile(r"\bxdg-open\b"),
@@ -371,6 +375,17 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
         path_count = len(path_pattern.findall(text))
         if path_count:
             rules["rust_legacy_module_indirection"][f"{relative}:#[path]"] += path_count
+        command_count = len(tauri_command_pattern.findall(text))
+        if command_count and "/app/commands/" not in f"/{relative}":
+            rules["rust_tauri_commands_outside_app"][relative] += command_count
+        for handler in tauri_handler_pattern.findall(text):
+            for entry in re.findall(
+                r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_:]*)\s*(?=,|$)", handler
+            ):
+                if not entry.startswith("commands::") and not entry.startswith(
+                    "crate::app::commands::"
+                ):
+                    rules["rust_tauri_handler_outside_app"][f"{relative}:{entry}"] += 1
         lines = count_lines(path)
         if lines > RUST_LARGE_FILE_LINES:
             warnings.append(

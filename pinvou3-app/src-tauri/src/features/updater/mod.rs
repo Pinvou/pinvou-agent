@@ -77,15 +77,12 @@ pub struct PendingUpdateReportResult {
     pub result: String,
     pub message: String,
 }
-
-#[tauri::command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
 /// 手动检查才展示错误。
-#[tauri::command]
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION");
     let client = reqwest::Client::builder()
@@ -98,7 +95,6 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 /// 下载更新包到 `~/.pinvou3/updates/`，流式写盘 + 校验，进度走
 /// `update:progress` 事件。Linux 返回 deb 路径字符串；Windows 返回
 /// 已解析出的 zip/Windows 安装器信息对象。
-#[tauri::command]
 pub async fn download_update(
     info: UpdateInfo,
     app: AppHandle,
@@ -107,7 +103,6 @@ pub async fn download_update(
 }
 
 /// 安装下载好的更新包。Linux 走 pkexec apt；Windows 启动 MSI/NSIS 安装器，成功启动后退出进程。
-#[tauri::command]
 pub async fn install_update(
     deb_path: Option<String>,
     installer_path: Option<String>,
@@ -126,20 +121,17 @@ pub async fn install_update(
 }
 
 /// 重启应用使新版本生效（exec 新 inode）。
-#[tauri::command]
 pub async fn restart_app(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
 /// 置位取消标志，让正在跑的 `download_update` 循环下一轮自行退出并清理半成品。
 /// 仅对下载阶段有效；install 阶段(pkexec/apt)已交给系统，不在此中断。
-#[tauri::command]
 pub fn cancel_download() {
     DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
 }
 
 /// Windows OTA 安装后反馈升级结果；其他平台无待反馈记录时静默成功。
-#[tauri::command]
 pub async fn report_pending_update_result() -> Result<PendingUpdateReportResult, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))

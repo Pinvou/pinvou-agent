@@ -66,20 +66,17 @@ fn current_status() -> KbModelStatus {
 }
 
 /// 前端查询模型状态（offline，不联网）。
-#[tauri::command]
 pub fn kb_model_status() -> KbModelStatus {
     current_status()
 }
 
 /// 取消进行中的下载（下次 chunk / 解压前生效）。
-#[tauri::command]
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
 
 /// React 首帧提交后调用：在 blocking 线程池读取并构建 embedding 模型，完成后原子换入
 /// KnowledgeService。模型未安装/加载失败时保持纯全文降级，不影响主界面。
-#[tauri::command]
 pub async fn kb_model_load_after_first_frame(
     app: tauri::AppHandle,
     service: tauri::State<'_, KnowledgeService>,
@@ -116,7 +113,6 @@ pub async fn kb_model_load_after_first_frame(
 }
 
 /// 按需下载 + 校验 + 解压部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
-#[tauri::command]
 pub async fn kb_model_download(
     app: tauri::AppHandle,
     service: tauri::State<'_, KnowledgeService>,

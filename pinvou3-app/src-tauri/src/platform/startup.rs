@@ -162,7 +162,6 @@ pub struct FrontendStartupEntry {
 /// Receive batched WebView performance marks.  The frontend supplies offsets
 /// from `performance.timeOrigin`; keeping that clock separate from the Rust
 /// process clock makes WebView/Babel stalls immediately visible.
-#[tauri::command]
 pub fn report_frontend_startup(entries: Vec<FrontendStartupEntry>) {
     for entry in entries {
         write_line(

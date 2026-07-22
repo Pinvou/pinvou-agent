@@ -63,7 +63,6 @@ fn is_ready() -> bool {
 
 /// 引导:确保 wecom-cli 装好(全局 shim 在 PATH 上),幂等。已装则秒返回。
 /// 未装则 `npm install -g @wecom/cli`,带 180s 超时防卡死(网络 / 代理)。需要 Node。
-#[tauri::command]
 pub async fn wecom_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if wecom_cli_present() {
@@ -83,7 +82,6 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前企微连接状态:`wecom-cli auth show`。未装则 `installed:false`。
-#[tauri::command]
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程。
@@ -104,7 +102,6 @@ pub async fn wecom_status() -> Result<Value, String> {
 }
 
 /// 开始连接企微(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
-#[tauri::command]
 pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ConnectorConn>().reset(ID);
     let app2 = app.clone();
@@ -181,7 +178,6 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
 }
 
 /// 取消连接:置取消标志 + tree-kill 当前长驻子进程。
-#[tauri::command]
 pub async fn wecom_cancel(app: AppHandle) -> Result<Value, String> {
     let pid = app.state::<ConnectorConn>().cancel(ID);
     if let Some(pid) = pid {
@@ -199,7 +195,6 @@ fn wecom_config_dir() -> std::path::PathBuf {
 }
 
 /// 断开企微:删凭证目录 `~/.config/wecom`(飞书是 `auth logout`,企微无 logout 子命令)。
-#[tauri::command]
 pub async fn wecom_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let dir = wecom_config_dir();
@@ -241,7 +236,6 @@ pub fn wecom_skills_should_show() -> bool {
 }
 
 /// 按当前"应否可见"状态写 / 删技能文件。前端在连接成功 / 断开 / 切开关后调。
-#[tauri::command]
 pub async fn wecom_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = wecom_skills_should_show();
@@ -254,7 +248,6 @@ pub async fn wecom_apply_skills() -> Result<Value, String> {
 }
 
 /// composer 企微开关:写停用标志 → 按规则增删技能。
-#[tauri::command]
 pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_wecom_disabled_flag(!enabled);
@@ -268,7 +261,6 @@ pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
 }
 
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible}`。
-#[tauri::command]
 pub async fn wecom_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let disabled = is_wecom_disabled();

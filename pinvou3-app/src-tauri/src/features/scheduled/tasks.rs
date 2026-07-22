@@ -1998,8 +1998,6 @@ pub fn humanize_rrule(rrule: &str) -> String {
         Err(_) => rrule.to_string(),
     }
 }
-
-#[tauri::command]
 pub async fn list_scheduled_tasks(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledTaskDto>, String> {
@@ -2041,8 +2039,6 @@ pub async fn list_scheduled_tasks(
         .collect::<Result<Vec<_>>>()
         .map_err(|err| format!("Failed to read scheduled task runs: {err}"))
 }
-
-#[tauri::command]
 pub async fn read_scheduled_task(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
@@ -2066,8 +2062,6 @@ pub async fn read_scheduled_task(
     )
     .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
 }
-
-#[tauri::command]
 pub async fn list_scheduled_task_runs(
     id: String,
     limit: Option<usize>,
@@ -2102,7 +2096,6 @@ pub async fn list_scheduled_task_runs(
 /// Return every retained scheduled run with a single reconciliation and a single
 /// metadata scan. The frontend uses this for the global Scheduled Runs sidebar;
 /// task-detail reads keep using `list_scheduled_task_runs`.
-#[tauri::command]
 pub async fn list_scheduled_runs(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledRunDto>, String> {
@@ -2135,16 +2128,12 @@ pub async fn list_scheduled_runs(
         })
         .collect())
 }
-
-#[tauri::command]
 pub async fn create_scheduled_task(
     input: CreateScheduledTaskInput,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledTaskDto, String> {
     state.create_task(input).await
 }
-
-#[tauri::command]
 pub async fn update_scheduled_task(
     id: String,
     input: UpdateScheduledTaskInput,
@@ -2152,24 +2141,18 @@ pub async fn update_scheduled_task(
 ) -> Result<ScheduledTaskDto, String> {
     state.update_task(id, input).await
 }
-
-#[tauri::command]
 pub async fn pause_scheduled_task(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledTaskDto, String> {
     state.pause_task(id).await
 }
-
-#[tauri::command]
 pub async fn resume_scheduled_task(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledTaskDto, String> {
     state.resume_task(id).await
 }
-
-#[tauri::command]
 pub async fn set_scheduled_task_pinned(
     id: String,
     pinned: bool,
@@ -2177,24 +2160,18 @@ pub async fn set_scheduled_task_pinned(
 ) -> Result<ScheduledTaskDto, String> {
     state.set_task_pinned(id, pinned).await
 }
-
-#[tauri::command]
 pub async fn delete_scheduled_task(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<DeletedScheduledTaskDto, String> {
     state.delete_task(id).await
 }
-
-#[tauri::command]
 pub async fn run_scheduled_task_now(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledRunDto, String> {
     state.run_task_now(id).await
 }
-
-#[tauri::command]
 pub async fn mark_scheduled_run_viewed(
     automation_id: String,
     run_id: String,
@@ -2202,8 +2179,6 @@ pub async fn mark_scheduled_run_viewed(
 ) -> Result<ScheduledRunViewedDto, String> {
     state.mark_run_viewed(automation_id, run_id).await
 }
-
-#[tauri::command]
 pub fn scheduled_task_chat_prompt() -> Result<String, String> {
     Ok(SCHEDULED_TASK_CHAT_PROMPT.to_string())
 }

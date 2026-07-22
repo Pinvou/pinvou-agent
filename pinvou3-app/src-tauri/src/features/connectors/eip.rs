@@ -334,7 +334,6 @@ fn is_cancelled(app: &AppHandle) -> bool {
 
 /// 查询 EIP 连接状态:`auth status --output json`。connected = 有有效 token。
 /// 纯查询：不写连接标记、不改技能目录、不回收 Engine。
-#[tauri::command]
 pub async fn eip_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let cmd = eip(&["auth", "status", "--output", "json"])?;
@@ -359,7 +358,6 @@ pub async fn eip_status() -> Result<Value, String> {
 /// ① `auth login --no-poll --output json` 拿 SSO URL → emit `eip:sso`(前端引导浏览器登录)。
 /// ② 循环 `auth poll` 直到认证成功 / 超时(5min)/ 取消 → emit `eip:connected` / `eip:error`。
 /// 立即返回 `{started:true}`,前端 listen 事件驱动 UI。
-#[tauri::command]
 pub async fn eip_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<EipConn>()
         .cancelled
@@ -430,7 +428,6 @@ fn get_sso_url() -> Result<String, String> {
 }
 
 /// 取消连接:置取消标志(登录轮询下一拍自停)。
-#[tauri::command]
 pub async fn eip_cancel(app: AppHandle) -> Result<Value, String> {
     app.state::<EipConn>()
         .cancelled
@@ -439,7 +436,6 @@ pub async fn eip_cancel(app: AppHandle) -> Result<Value, String> {
 }
 
 /// 断开 EIP:`auth logout`(清凭证)。
-#[tauri::command]
 pub async fn eip_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let cmd = eip(&["auth", "logout"])?;

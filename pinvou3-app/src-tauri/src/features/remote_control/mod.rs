@@ -21,8 +21,6 @@ pub(crate) fn short_token(len: usize) -> String {
         .map(char::from)
         .collect()
 }
-
-#[tauri::command]
 pub fn remote_control_start(
     session_id: Option<String>,
     manager: State<'_, RemoteControlManager>,
@@ -38,21 +36,15 @@ pub fn remote_control_start(
     }
     Ok(info)
 }
-
-#[tauri::command]
 pub fn remote_control_stop(manager: State<'_, RemoteControlManager>) -> Result<(), String> {
     manager.stop_current();
     Ok(())
 }
-
-#[tauri::command]
 pub fn remote_control_status(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<RemoteControlStatus, String> {
     Ok(manager.status())
 }
-
-#[tauri::command]
 pub fn remote_control_refresh_qr(
     session_id: Option<String>,
     manager: State<'_, RemoteControlManager>,
@@ -61,8 +53,6 @@ pub fn remote_control_refresh_qr(
 ) -> Result<RemotePairingInfo, String> {
     remote_control_start(session_id, manager, store, pool)
 }
-
-#[tauri::command]
 pub fn remote_control_publish_user_message(
     session_id: String,
     content: String,
@@ -71,8 +61,6 @@ pub fn remote_control_publish_user_message(
 ) -> Result<(), String> {
     manager.publish_user_message(&session_id, content, client_message_id)
 }
-
-#[tauri::command]
 pub fn remote_control_publish_event(
     session_id: String,
     kind: String,
