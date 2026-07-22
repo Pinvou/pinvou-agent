@@ -35,22 +35,6 @@ pub fn ocr_tessdata_dir() -> Option<PathBuf> {
     super::super::platform::ocr_tessdata_dir()
 }
 
-pub fn asr_tool_path() -> PathBuf {
-    super::super::platform::asr_tool_path()
-}
-
-pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
-    super::super::platform::asr_model_spec()
-}
-
-pub fn asr_model_path() -> PathBuf {
-    super::super::platform::asr_model_path()
-}
-
-pub fn asr_model_exists() -> bool {
-    super::super::platform::asr_model_exists()
-}
-
 pub fn archive_tool_path() -> PathBuf {
     super::super::platform::archive_tool_path()
 }
@@ -61,26 +45,6 @@ pub fn pandoc_tool_exists() -> bool {
 
 pub fn ocr_tool_exists() -> bool {
     super::super::platform::ocr_tool_exists()
-}
-
-pub fn asr_tool_exists() -> bool {
-    super::super::platform::asr_tool_exists()
-}
-
-pub fn asr_bundled_runtime_status() -> Option<bool> {
-    super::super::platform::asr_bundled_runtime_status()
-}
-
-pub fn asr_dependency_installable() -> bool {
-    super::super::platform::asr_dependency_installable()
-}
-
-pub fn asr_install_unavailable_message() -> &'static str {
-    super::super::platform::asr_install_unavailable_message()
-}
-
-pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
-    super::super::platform::install_asr_runtime(app).await
 }
 
 pub fn archive_tool_exists() -> bool {
@@ -115,10 +79,6 @@ pub fn pandoc_dependency_packages() -> &'static str {
     super::super::platform::pandoc_dependency_packages()
 }
 
-pub fn asr_dependency_packages() -> &'static str {
-    super::super::platform::asr_dependency_packages()
-}
-
 pub fn archive_dependency_packages() -> &'static str {
     super::super::platform::archive_dependency_packages()
 }
@@ -129,10 +89,6 @@ pub fn email_dependency_packages() -> &'static str {
 
 pub fn pandoc_missing_message() -> &'static str {
     super::super::platform::pandoc_missing_message()
-}
-
-pub fn asr_missing_message() -> &'static str {
-    super::super::platform::asr_missing_message()
 }
 
 pub fn pdf_tool_path(command: &str) -> PathBuf {
@@ -213,11 +169,6 @@ mod tests {
     #[test]
     fn ocr_tool_path_returns_non_empty_program() {
         assert!(!ocr_tool_path().as_os_str().is_empty());
-    }
-
-    #[test]
-    fn asr_tool_path_returns_non_empty_program() {
-        assert!(!asr_tool_path().as_os_str().is_empty());
     }
 
     #[test]

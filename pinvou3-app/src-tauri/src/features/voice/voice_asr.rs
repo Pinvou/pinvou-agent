@@ -1,7 +1,7 @@
 //! Shared local ASR orchestration.
 //!
-//! Runtime layout, dependency installation, and model download policy are owned by `crate::os`.
-//! This module keeps platform-neutral status, transcription, and Tauri command glue.
+//! Platform runtime policy is owned by the sibling `platform` module. This module keeps
+//! platform-neutral status, transcription, model download, and Tauri command glue.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -46,7 +46,7 @@ pub fn asr_dir() -> PathBuf {
 }
 
 pub fn current_model_spec() -> AsrModelSpec {
-    crate::os::asr_model_spec()
+    super::platform::asr_model_spec()
 }
 
 /// 引擎可执行：优先 `~/.pinvou3/asr/`（按需/手动装的），回退打包资源目录。
@@ -67,7 +67,7 @@ pub fn engine_path() -> PathBuf {
 
 /// 当前可用模型路径：Windows 优先用户目录，兼容旧内置模型；Linux 为用户目录。
 pub fn model_path() -> PathBuf {
-    crate::os::asr_model_path()
+    super::platform::asr_model_path()
 }
 
 /// 按需下载的目标路径，始终落在用户目录，避免写安装目录。
@@ -114,13 +114,13 @@ pub struct VoiceAsrStatus {
 }
 
 pub fn status() -> VoiceAsrStatus {
-    let model = crate::os::asr_model_exists();
-    if let Some(runtime) = crate::os::asr_bundled_runtime_status() {
+    let model = super::platform::asr_model_exists();
+    if let Some(runtime) = super::platform::asr_bundled_runtime_status() {
         return compose_status(
             runtime,
             true,
             model,
-            crate::os::asr_dependency_installable(),
+            super::platform::asr_dependency_installable(),
         );
     }
 
@@ -130,7 +130,7 @@ pub fn status() -> VoiceAsrStatus {
         engine,
         ffmpeg,
         model,
-        crate::os::asr_dependency_installable(),
+        super::platform::asr_dependency_installable(),
     )
 }
 
@@ -525,9 +525,9 @@ pub async fn voice_asr_status() -> VoiceAsrStatus {
 /// Install local ASR runtime through the current platform implementation.
 #[tauri::command]
 pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, String> {
-    if !crate::os::asr_dependency_installable() {
+    if !super::platform::asr_dependency_installable() {
         let _ = app;
-        return Err(crate::os::asr_install_unavailable_message().to_string());
+        return Err(super::platform::asr_install_unavailable_message().to_string());
     }
 
     if ASR_INSTALLING.swap(true, Ordering::SeqCst) {
@@ -539,7 +539,7 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
         "voice_asr:progress",
         serde_json::json!({ "stage": "start" }),
     );
-    crate::os::install_asr_runtime(app.clone()).await?;
+    super::platform::install_asr_runtime(app.clone()).await?;
 
     let st = status();
     let _ = app.emit(

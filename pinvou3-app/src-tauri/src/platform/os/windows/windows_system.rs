@@ -10,13 +10,6 @@ use windows_sys::Win32::System::Registry::{
     KEY_READ, REG_EXPAND_SZ, REG_SZ,
 };
 
-const ASR_MODEL_URL: &str =
-    "https://www.modelscope.cn/models/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/master/sensevoice-small-q8.gguf";
-const ASR_MODEL_MIRROR_URL: &str =
-    "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf";
-const ASR_MODEL_SIZE: u64 = 254_208_320;
-const ASR_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
-
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])
@@ -109,51 +102,6 @@ pub fn ocr_tessdata_dir() -> Option<PathBuf> {
     windows_path::bundled_tessdata_dir()
 }
 
-pub fn asr_tool_path() -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
-        if !path.trim().is_empty() {
-            return std::path::PathBuf::from(path);
-        }
-    }
-    if let Ok(path) = std::env::var("PINVOU3_DEEPSPEECH2_CMD") {
-        if !path.trim().is_empty() {
-            return std::path::PathBuf::from(path);
-        }
-    }
-    if let Ok(path) = std::env::var("PADDLESPEECH_BIN") {
-        if !path.trim().is_empty() {
-            return std::path::PathBuf::from(path);
-        }
-    }
-    if let Some(path) = windows_path::bundled_asr_tool_path() {
-        return path;
-    }
-    std::path::PathBuf::from("pinvou-asr")
-}
-
-pub fn asr_model_filename() -> &'static str {
-    "sensevoice-small-q8.gguf"
-}
-
-pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
-    crate::voice_asr::AsrModelSpec {
-        id: "sensevoice-q8",
-        filename: asr_model_filename(),
-        expected_size: ASR_MODEL_SIZE,
-        sha256: ASR_MODEL_SHA256,
-        primary_url: ASR_MODEL_URL,
-        mirror_url: ASR_MODEL_MIRROR_URL,
-    }
-}
-
-pub fn asr_model_path() -> PathBuf {
-    windows_path::asr_model_path()
-}
-
-pub fn asr_model_exists() -> bool {
-    crate::voice_asr::model_available()
-}
-
 pub fn archive_tool_path() -> PathBuf {
     windows_path::archive_tool_path()
 }
@@ -172,48 +120,6 @@ pub fn ocr_tool_exists() -> bool {
             && windows_path::bundled_tessdata_has_required_languages();
     }
     command_exists("tesseract")
-}
-
-pub fn asr_tool_exists() -> bool {
-    if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
-        if !path.trim().is_empty() {
-            return command_exists(&path);
-        }
-    }
-    if let Ok(path) = std::env::var("PINVOU3_DEEPSPEECH2_CMD") {
-        if !path.trim().is_empty() {
-            return command_exists(&path);
-        }
-    }
-    if let Ok(path) = std::env::var("PADDLESPEECH_BIN") {
-        if !path.trim().is_empty() {
-            return command_exists(&path);
-        }
-    }
-    windows_path::bundled_asr_tool_path().is_some()
-        && windows_path::bundled_asr_backend_path().is_some()
-}
-
-pub fn asr_bundled_runtime_status() -> Option<bool> {
-    Some(asr_tool_exists())
-}
-
-pub fn asr_dependency_installable() -> bool {
-    asr_tool_exists()
-}
-
-pub fn asr_install_unavailable_message() -> &'static str {
-    "本地语音识别运行时缺失，请修复或重新安装 pinvou。"
-}
-
-pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
-    if !asr_tool_exists() {
-        return Err(asr_install_unavailable_message().to_string());
-    }
-    if !crate::voice_asr::model_available() {
-        crate::voice_asr::download_current_model(&app).await?;
-    }
-    Ok(())
 }
 
 pub fn archive_tool_exists() -> bool {
@@ -256,10 +162,6 @@ pub fn pandoc_dependency_packages() -> &'static str {
     ""
 }
 
-pub fn asr_dependency_packages() -> &'static str {
-    "下载 SenseVoice q8 ASR 模型到用户目录"
-}
-
 pub fn archive_dependency_packages() -> &'static str {
     ""
 }
@@ -270,10 +172,6 @@ pub fn email_dependency_packages() -> &'static str {
 
 pub fn ocr_dependency_packages() -> &'static str {
     ""
-}
-
-pub fn asr_missing_message() -> &'static str {
-    "本地语音识别组件缺失或不可用：运行时缺失时请修复或重新安装 pinvou；仅缺 ASR 模型时可在应用内下载。"
 }
 
 pub fn pandoc_missing_message() -> &'static str {

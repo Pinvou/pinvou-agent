@@ -29,36 +29,6 @@ pub fn ocr_tessdata_dir() -> Option<PathBuf> {
     None
 }
 
-pub fn asr_tool_path() -> PathBuf {
-    PathBuf::from("paddlespeech")
-}
-
-pub fn asr_model_filename() -> &'static str {
-    "sense-voice-small-q4_k.gguf"
-}
-
-pub fn asr_model_spec() -> crate::voice_asr::AsrModelSpec {
-    crate::voice_asr::AsrModelSpec {
-        id: "unsupported",
-        filename: asr_model_filename(),
-        expected_size: 0,
-        sha256: "",
-        primary_url: "",
-        mirror_url: "",
-    }
-}
-
-pub fn asr_model_path() -> PathBuf {
-    user_home_dir()
-        .join(".pinvou3")
-        .join("asr")
-        .join(asr_model_filename())
-}
-
-pub fn asr_model_exists() -> bool {
-    false
-}
-
 pub fn archive_tool_path() -> PathBuf {
     PathBuf::from("7z")
 }
@@ -69,26 +39,6 @@ pub fn pandoc_tool_exists() -> bool {
 
 pub fn ocr_tool_exists() -> bool {
     false
-}
-
-pub fn asr_tool_exists() -> bool {
-    false
-}
-
-pub fn asr_bundled_runtime_status() -> Option<bool> {
-    None
-}
-
-pub fn asr_dependency_installable() -> bool {
-    false
-}
-
-pub fn asr_install_unavailable_message() -> &'static str {
-    "ASR runtime installation is not supported on this platform."
-}
-
-pub async fn install_asr_runtime(_app: tauri::AppHandle) -> Result<(), String> {
-    Err(asr_install_unavailable_message().to_string())
 }
 
 pub fn archive_tool_exists() -> bool {
@@ -123,10 +73,6 @@ pub fn pandoc_dependency_packages() -> &'static str {
     ""
 }
 
-pub fn asr_dependency_packages() -> &'static str {
-    ""
-}
-
 pub fn archive_dependency_packages() -> &'static str {
     ""
 }
@@ -137,10 +83,6 @@ pub fn pandoc_missing_message() -> &'static str {
 
 pub fn libreoffice_missing_message() -> &'static str {
     "当前平台缺少可用的 Office 文档预览组件。"
-}
-
-pub fn asr_missing_message() -> &'static str {
-    "当前平台缺少可用的本地语音识别组件。"
 }
 
 pub fn email_dependency_packages() -> &'static str {

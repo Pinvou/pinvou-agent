@@ -1,7 +1,7 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
 //! 模型不再随 deb 打包（deb 瘦 ~559MB）；用户在知识库页主动下载到 [`super::model_dir`]
-//! （`~/.pinvou3/knowledge/models/bge-m3`）。下载范式照搬 [`crate::voice_asr`]：流式 reqwest +
+//! （`~/.pinvou3/knowledge/models/bge-m3`）。下载范式照搬语音 ASR：流式 reqwest +
 //! `.part` 临时文件 + 进度事件；额外做 sha256 校验 + tar.gz 解压。完成后 `reload_embedder`
 //! 热加载 embedding + 刷新工具门控，**免重启**即可建库/入库/检索。
 //!

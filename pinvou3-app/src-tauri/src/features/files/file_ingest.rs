@@ -112,8 +112,8 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
     }
     items.push(item(
         "voice_asr",
-        crate::os::asr_tool_exists(),
-        crate::os::asr_dependency_packages(),
+        crate::features::voice::asr_tool_exists(),
+        crate::features::voice::asr_dependency_packages(),
     ));
     items.push(item("office_legacy", libreoffice, "libreoffice"));
     if crate::os::show_ocr_dependency_check() {

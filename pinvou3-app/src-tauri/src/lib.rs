@@ -57,8 +57,6 @@ pub mod llmapi_hub;
 mod local_vllm_setup;
 #[path = "features/memory/mod.rs"]
 pub mod memory;
-#[path = "features/voice/microphone_permission.rs"]
-mod microphone_permission;
 #[path = "platform/notifications.rs"]
 mod notifications;
 #[path = "platform/os/mod.rs"]
@@ -89,8 +87,6 @@ mod telemetry;
 mod timing;
 #[path = "app/ui_cache.rs"]
 mod ui_cache;
-#[path = "features/voice/voice_asr.rs"]
-mod voice_asr;
 #[path = "features/workflow/workflow_migrate.rs"]
 mod workflow_migrate;
 #[path = "features/workflow/workflow_registry.rs"]
@@ -563,7 +559,7 @@ pub fn run() {
                     .into_iter()
                     .find(|d| d.join("sense-voice-main").exists())
             }) {
-                voice_asr::set_bundled_engine_dir(asr_res);
+                features::voice::set_bundled_engine_dir(asr_res);
             }
 
             startup::mark("knowledge_service:start");
@@ -683,10 +679,10 @@ pub fn run() {
             commands::test_model_connection,
             commands::test_search_provider,
             commands::transcribe_voice_audio,
-            microphone_permission::reset_microphone_permission,
-            voice_asr::voice_asr_status,
-            voice_asr::install_voice_asr,
-            voice_asr::cancel_voice_asr,
+            features::voice::microphone_permission::reset_microphone_permission,
+            features::voice::voice_asr::voice_asr_status,
+            features::voice::voice_asr::install_voice_asr,
+            features::voice::voice_asr::cancel_voice_asr,
             commands::list_sessions,
             commands::create_session,
             commands::load_session,

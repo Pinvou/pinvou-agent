@@ -1380,7 +1380,9 @@ impl VoiceCommandError {
 }
 
 fn local_asr_command_name() -> String {
-    crate::os::asr_tool_path().to_string_lossy().into_owned()
+    crate::features::voice::asr_tool_path()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn local_asr_model_name() -> String {
@@ -1525,7 +1527,10 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
     let timeout = local_asr_timeout();
 
     let mut command = std::process::Command::new(&executable);
-    apply_local_asr_model_env(&mut command, Some(crate::voice_asr::model_path()));
+    apply_local_asr_model_env(
+        &mut command,
+        Some(crate::features::voice::voice_asr::model_path()),
+    );
     command
         .arg("asr")
         .arg("--model")
@@ -1541,7 +1546,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 
     let mut child = command.spawn().map_err(|e| {
         let message = if e.kind() == std::io::ErrorKind::NotFound {
-            crate::os::asr_missing_message().to_string()
+            crate::features::voice::asr_missing_message().to_string()
         } else {
             format!("Failed to start local SenseVoice/FunASR ASR: {e}")
         };
@@ -1642,11 +1647,11 @@ pub async fn transcribe_voice_audio(
         })?;
         // 优先用内置 SenseVoice 引擎（转码+识别+清洗全在 Rust，无需 shim/环境变量）；
         // 引擎或模型未就绪时回退原 CLI 路径（PINVOU3_ASR_CMD / pinvou-asr）。
-        let result = if crate::os::asr_bundled_runtime_status().is_none()
-            && crate::voice_asr::engine_path().is_file()
-            && crate::voice_asr::model_path().is_file()
+        let result = if crate::features::voice::asr_bundled_runtime_status().is_none()
+            && crate::features::voice::voice_asr::engine_path().is_file()
+            && crate::features::voice::voice_asr::model_path().is_file()
         {
-            crate::voice_asr::transcribe(&wav_path)
+            crate::features::voice::voice_asr::transcribe(&wav_path)
                 .map(|text| LocalAsrOutput { text })
                 .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
         } else {
