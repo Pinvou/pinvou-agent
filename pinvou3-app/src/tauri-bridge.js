@@ -3462,6 +3462,8 @@
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
+      // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+      if (error && /401|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
@@ -3558,6 +3560,9 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) addSystemItem("⚠️ " + error);
+    // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+    // 兜底启动检测被绕过/中途删 key 的场景。
+    if (error && /401|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。

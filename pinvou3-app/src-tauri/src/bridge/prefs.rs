@@ -596,12 +596,11 @@ impl UserPrefs {
         for model in &mut self.advanced.saved_models {
             let key = model.api_key.trim().to_string();
             if key.is_empty() {
-                if model.credential_ref.is_some() {
-                    model.has_secret = true;
-                    if model.credential_state == CredentialState::Missing {
-                        model.credential_state = CredentialState::Configured;
-                    }
-                } else {
+                // 明文 key 为空(keep_existing 场景):不盲改 credential_state。
+                // 凭据是否真的存在由后续 refresh_credential_states_with_store 真实
+                // 回读存储判定——此前这里"只看 credential_ref 存在就标 Configured"
+                // 会导致存储里是空值却显示"已配置"(假阳性 → 401)。
+                if model.credential_ref.is_none() {
                     result.skipped_count += 1;
                 }
                 model.clear_plaintext_key();
@@ -691,12 +690,7 @@ impl UserPrefs {
             });
             match action {
                 CredentialEditAction::KeepExisting => {
-                    if credential.credential_ref.is_some() {
-                        credential.has_secret = true;
-                        if credential.credential_state == CredentialState::Missing {
-                            credential.credential_state = CredentialState::Configured;
-                        }
-                    }
+                    // keep_existing:不盲改 credential_state,留给 refresh 真实回读判定。
                     credential.clear_plaintext_key();
                 }
                 CredentialEditAction::Replace => {
@@ -755,24 +749,18 @@ impl UserPrefs {
     }
 
     pub fn sanitize_plaintext_api_keys(&mut self) {
+        // 只清空内存里的明文 key 字段。credential_state / has_secret 的权威判定
+        // 交给 `refresh_credential_states_with_store`(它真实回读存储校验非空)。
+        // 此前这里会"只看 credential_ref 存在就把 Missing 盲改回 Configured",
+        // 导致 refresh 刚校准出的 Missing 被覆盖 → 假阳性(Keychain 存空值却显示
+        // "已配置") → 云端调用拿空 key → 401。
         self.search.api_key = None;
         for credential in self.search.credentials.values_mut() {
             credential.clear_plaintext_key();
-            if credential.credential_ref.is_some()
-                && credential.credential_state == CredentialState::Missing
-            {
-                credential.credential_state = CredentialState::Configured;
-                credential.has_secret = true;
-            }
         }
         self.advanced.custom_api_key = None;
         for model in &mut self.advanced.saved_models {
             model.clear_plaintext_key();
-            if model.credential_ref.is_some() && model.credential_state == CredentialState::Missing
-            {
-                model.credential_state = CredentialState::Configured;
-                model.has_secret = true;
-            }
         }
     }
 
@@ -1233,5 +1221,38 @@ mod tests {
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.search.provider, SearchProvider::Bing);
         assert!(prefs.search.api_key.is_none());
+    }
+
+    /// 回归:credential_ref 存在但存储里是空值时,credential_state 必须是 Missing,
+    /// 不能被假阳性地标成 Configured(根因:macOS Keychain 存空值 + 旧 sanitize 盲置)。
+    #[test]
+    fn refresh_does_not_mark_configured_when_store_value_is_empty() {
+        use crate::credential_store::{CredentialReference, MemoryCredentialStore};
+
+        // 存储里有 credential_ref 指向的条目,但值为空字符串。
+        let store = MemoryCredentialStore::default();
+        let reference = CredentialReference::for_model("default");
+        store.set(&reference, "").unwrap(); // 空值!
+
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        // 模拟"之前保存过 key"的状态:有 ref + state 曾被标 Configured。
+        let model = &mut prefs.advanced.saved_models[0];
+        model.credential_ref = Some(reference);
+        model.credential_state = CredentialState::Configured;
+        model.has_secret = true;
+
+        // refresh 真实回读 → 发现空值 → 标 Missing。
+        prefs.refresh_credential_states_with_store(&store);
+        // sanitize 不应再把 Missing 盲改回 Configured(这是之前的 bug)。
+        prefs.sanitize_plaintext_api_keys();
+
+        let model = &prefs.advanced.saved_models[0];
+        assert_eq!(
+            model.credential_state,
+            CredentialState::Missing,
+            "空值存储不应被标为 Configured(假阳性会导致云端调用拿空 key → 401)"
+        );
+        assert!(!model.has_secret);
     }
 }

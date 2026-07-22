@@ -719,6 +719,9 @@ fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     prefs.sanitize_plaintext_api_keys();
+    // migrate/sanitize 后补一次真实回读,确保写盘的 credential_state 反映存储实际内容
+    // (避免 keep_existing 时 credential_ref 存在但存储为空 → 写入假阳性 Configured)。
+    prefs.refresh_credential_states_with_store(&store);
     Ok(prefs)
 }
 
@@ -4307,6 +4310,12 @@ pub async fn summon_pinvou(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    // preflight:云端模型但 API Key 缺失 → 直接返回友好错误,而不是让空 key 打到
+    // 云端变 401(根因:macOS Keychain 存空值 + 假阳性,详见 credential_store.rs)。
+    // 本地 vllm 走 LOCAL_VLLM_API_KEY 兜底,放行。
+    if pool.bridge.provider() != "vllm" && pool.bridge.api_key().trim().is_empty() {
+        return Err("未配置 API Key，请先在「设置 → 模型」中配置。".to_string());
+    }
     let session = store
         .load(&sid)
         .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;

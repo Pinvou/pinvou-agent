@@ -1408,16 +1408,18 @@ function defaultModelPresetForPlatform() {
                   </button>
                 </>
               )}
-              <button
-                onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
-                title={t.megacubeSite}
-                className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
-              >
-                <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
-                {isSidebarOpen && (
-                  <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
-                )}
-              </button>
+              {isLocalVllmPlatform() && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
+                  title={t.megacubeSite}
+                  className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
+                >
+                  <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
+                  {isSidebarOpen && (
+                    <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
+                  )}
+                </button>
+              )}
               {isSidebarOpen && (
                 <div className="flex items-center gap-1">
                   <button
@@ -1542,6 +1544,28 @@ function defaultModelPresetForPlatform() {
                     <button onClick={() => setSavedConfirm(null)} className="flex-1 h-11 text-[17px]" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedLater}</button>
                     <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
                     <button onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* API Key 拦截遮罩 —— 云端模型未配 key 时盖住聊天界面,强制先配置。
+                根因:此前前后端都无 key gate,空 key 打云端 → 401 静默无回应。
+                条件:credential_state=missing 且非本地 vllm 模型(后者走 LOCAL_VLLM_API_KEY 免鉴权)。 */}
+            {bridge.available && bs && bs.effectiveModelConfig
+              && bs.effectiveModelConfig.credential_state === 'missing'
+              && bs.effectiveModelConfig.preset !== 'local_vllm' && (
+              <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
+                <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
+                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <img src="brand-blue.png" width={22} height={22} alt="" className="select-none" />
+                    <div className="text-[17px] font-semibold">{t.apiKeyGateTitle}</div>
+                  </div>
+                  <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.apiKeyGateDesc}</div>
+                  <div className="flex justify-end">
+                    <button onClick={() => openSettingsSection('model')}
+                      className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.apiKeyGateBtn}</button>
                   </div>
                 </div>
               </div>

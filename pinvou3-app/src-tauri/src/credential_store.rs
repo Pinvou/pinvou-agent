@@ -1,4 +1,4 @@
-use codewhale_secrets::{DefaultKeyringStore, Secrets, SecretsError};
+use codewhale_secrets::{DefaultKeyringStore, FileKeyringStore, Secrets, SecretsError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -126,19 +126,40 @@ impl SystemCredentialStore {
     }
 
     /// 取(或惰性构造 + 缓存)某 keyring service 对应的 Secrets 后端。
+    ///
+    /// **平台分流**:
+    /// - macOS:强制走 `FileKeyringStore` 明文旁路(`~/.pinvou3/secrets/<service>.json`,
+    ///   0600/0700 权限)。原因是 pinvou3 采用 ad-hoc 签名(signingIdentity "-"),
+    ///   每次重建代码签名哈希都变,macOS Keychain 的 ACL 不匹配 → 频繁弹"想访问机密
+    ///   钥匙库"。明文旁路彻底绕开 Keychain,不再弹窗。Windows/Linux 维持原逻辑。
     fn secrets_for(&self, service: &str) -> Arc<Secrets> {
         let mut cache = self.cache.lock().expect("credential store cache lock");
         if let Some(existing) = cache.get(service) {
             return existing.clone();
         }
-        let store = DefaultKeyringStore::new(service);
-        let secrets = match store.probe() {
-            Ok(()) => Secrets::new(Arc::new(store)),
-            Err(err) => {
-                log::warn!("OS keyring 不可用({err}),改用文件回退凭证存储");
-                Secrets::file_backed()
+
+        // macOS:明文文件旁路,绕开 Keychain 弹窗。FileKeyringStore 首次写入时会
+        // create_dir_all 建 ~/.pinvou3/secrets/ 并 chmod 0700,文件 chmod 0600。
+        #[cfg(target_os = "macos")]
+        let secrets = {
+            let path = crate::bridge::paths::pinvou3_home()
+                .join("secrets")
+                .join(format!("{service}.json"));
+            Secrets::new(Arc::new(FileKeyringStore::new(path)))
+        };
+        // Windows/Linux:OS keyring 优先,不可用(无 D-Bus / headless)回退 File。
+        #[cfg(not(target_os = "macos"))]
+        let secrets = {
+            let store = DefaultKeyringStore::new(service);
+            match store.probe() {
+                Ok(()) => Secrets::new(Arc::new(store)),
+                Err(err) => {
+                    log::warn!("OS keyring 不可用({err}),改用文件回退凭证存储");
+                    Secrets::file_backed()
+                }
             }
         };
+
         let arc = Arc::new(secrets);
         cache.insert(service.to_string(), arc.clone());
         arc
