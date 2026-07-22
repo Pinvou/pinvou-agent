@@ -93,7 +93,7 @@ function Test-LfsPointer {
 
 function Get-VerifiedManifest {
   if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
-    throw "Windows runtime submodule is not initialized: $RuntimeRoot. Run 'git submodule update --init -- private-runtimes/windows'."
+    throw "Windows runtime submodule is not initialized: $RuntimeRoot. Run 'npm run runtime:windows:init' from pinvou3-app."
   }
 
   $actualCommit = Get-GitOutput -Arguments @("rev-parse", "HEAD")

@@ -5,3 +5,4 @@
 [submodule "private-runtimes/windows"]
 	path = private-runtimes/windows
 	url = https://github.com/Pinvou/pinvou3-windows-runtime.git
+	update = none

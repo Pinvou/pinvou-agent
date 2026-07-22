@@ -1,25 +1,9 @@
 use std::process::Command;
 
-const KNOWN_DEP_PACKAGES: &[&str] = &[
-    "poppler-utils",
-    "pandoc",
-    "libreoffice",
-    "tesseract-ocr",
-    "tesseract-ocr-chi-sim",
-    "p7zip-full",
-    "python3",
-    "libemail-outlook-message-perl",
-];
+use super::super::linux_packages::validate_packages;
 
 pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
-    if packages.is_empty() {
-        return Err("没有需要安装的依赖".into());
-    }
-    for p in &packages {
-        if !KNOWN_DEP_PACKAGES.contains(&p.as_str()) {
-            return Err(format!("非法包名（不在依赖白名单内）: {p}"));
-        }
-    }
+    validate_packages(&packages)?;
     let script = format!(
         "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
         packages.join(" ")

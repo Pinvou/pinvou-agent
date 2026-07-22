@@ -4,7 +4,7 @@ name: PR Check
 # - commit-message:强制校验 PR/push 的 Git commit 信息规范。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust/依赖、L1 harness 或前端改动,给编译/前端 job 做 paths filter。
-# - frontend-test(暂时关闭):保留 npm/lint/build/test/smoke 定义，恢复前不执行。
+# - frontend-test:前端逻辑、构建及拆分后的 Bridge 浏览器 smoke。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
 #   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
@@ -82,6 +82,7 @@ jobs:
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'DeepSeek-TUI'
+              - '.gitmodules'
               - '.github/workflows/pr-check.yml'
             l1:
               - 'pinvou3-app/src-tauri/tests/l1_dialog_harness.rs'
@@ -121,6 +122,9 @@ jobs:
             frontend:
               - 'pinvou3-app/src/**'
               - 'pinvou3-app/tests/**'
+              - 'pinvou3-app/scripts/tauri/**'
+              - 'pinvou3-app/src-tauri/config/**'
+              - 'pinvou3-app/src-tauri/packaging/**'
               - 'remote-control-relay/**'
               - 'scripts/run-user-journey-tests.sh'
               - 'scripts/mcp-server-contract-smoke.py'
@@ -129,6 +133,7 @@ jobs:
               - 'pinvou3-app/vite.config.js'
               - 'pinvou3-app/eslint.config.mjs'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
+              - '.gitmodules'
               - '.github/workflows/pr-check.yml'
             diff_viewer:
               - 'pinvou3-app/src/features/tools/tool-common.jsx'
@@ -194,8 +199,7 @@ jobs:
   frontend-test:
     name: frontend-test
     needs: changes
-    # 暂时关闭前端 CI；待入口与 smoke 基线重新对齐后再恢复 paths 条件。
-    if: ${{ false }}
+    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -234,9 +238,8 @@ jobs:
       - name: 浏览器 smoke
         run: |
           export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
-          node tests/ui_smoke.js
-          node tests/kb_smoke.js
-          node tests/tool_store_smoke.js
+          test -n "$CHROME"
+          npm run test:bridge-smoke
           node ../remote-control-relay/test/mobile-ui.smoke.cjs
           node tests/detached_boot_smoke.js
           node tests/drag_gesture_smoke.js

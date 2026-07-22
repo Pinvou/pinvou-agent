@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const appRoot = path.resolve(__dirname, "..");
 const tauriRoot = path.join(appRoot, "src-tauri");
+const repoRoot = path.resolve(appRoot, "..");
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(tauriRoot, relativePath), "utf8"));
@@ -29,6 +30,8 @@ const windows = readJson("config/platforms/windows/tauri.conf.json");
 const windowsSigning = readJson("config/platforms/windows/signing.wosign.conf.json");
 
 assert.ok(resourceSources(common).length > 0, "common Tauri config must declare shared resources");
+assert.match(common.build.beforeBuildCommand, /scripts\/tauri\/require-wrapper\.js build/);
+assert.match(common.build.beforeBundleCommand, /scripts\/tauri\/require-wrapper\.js bundle/);
 assert.ok(
   resourceSources(common).every((source) => source.startsWith("resources/common/")),
   "common Tauri config may only package resources/common",
@@ -88,5 +91,31 @@ for (const legacyPath of [
 ]) {
   assert.equal(fs.existsSync(path.join(tauriRoot, legacyPath)), false, `legacy packaging path must be removed: ${legacyPath}`);
 }
+
+const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
+assert.match(packageJson.scripts.tauri, /scripts\/tauri\/build\.js/);
+for (const [name, command] of Object.entries(packageJson.scripts)) {
+  assert.doesNotMatch(
+    command,
+    /(?:^|&&\s*)tauri\s+(?:build|bundle)\b/,
+    `${name} must route Tauri build/bundle through scripts/tauri/build.js`,
+  );
+}
+
+const gitmodules = fs.readFileSync(path.join(repoRoot, ".gitmodules"), "utf8");
+assert.match(
+  gitmodules,
+  /\[submodule "private-runtimes\/windows"\][\s\S]*?\n\s*update\s*=\s*none(?:\r?\n|$)/,
+  "private Windows runtime must remain opt-in during recursive submodule updates",
+);
+const workflow = fs.readFileSync(path.join(repoRoot, ".github/workflows/pr-check.yml"), "utf8");
+const submoduleUpdates = workflow.match(/git submodule update[^\r\n]*/g) || [];
+assert.ok(submoduleUpdates.length > 0, "CI must initialize the public DeepSeek-TUI submodule");
+assert.ok(
+  submoduleUpdates.every((command) => command.endsWith("-- DeepSeek-TUI")),
+  "Linux CI may only initialize DeepSeek-TUI, never the private Windows runtime",
+);
+assert.match(workflow, /npm run test:bridge-smoke/);
+assert.doesNotMatch(workflow, /frontend-test:[\s\S]{0,300}\n\s*if:\s*\$\{\{\s*false\s*\}\}/);
 
 console.log("tauri platform layout contract: ok");
