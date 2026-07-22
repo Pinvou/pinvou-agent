@@ -129,5 +129,9 @@ jobs:
 
       # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(sha256/plist/bundle targets)。
       # 核心校验失败会 exit 1,挡 build(此前 continue-on-error 让 sha256/plist 失败也变绿)。
+      # if: always():上游 cargo check/test/build 失败时仍跑 verify,确保 sha256/plist/bundle
+      #   target/CFBundleIdentifier 核心校验不被 skip(verify 内部自带 --skip-test,不依赖上游产物)。
+      # --skip-test:上游已跑 cargo check+test,verify 不重复(省 ~10min),只跑探测 + 核心校验。
       - name: Verify 脚本 (sha256/plist/bundle targets 校验)
-        run: ./scripts/run-mac-verify.sh
+        if: always()
+        run: ./scripts/run-mac-verify.sh --skip-test

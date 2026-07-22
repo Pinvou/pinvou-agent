@@ -302,6 +302,47 @@ pub async fn download_update_package(
     ))
 }
 
+/// 本进程专属的 /Applications 暂存目录。缺陷1:只用 PID 后缀,**不扫整个 /Applications**
+/// (此前会误删并发安装实例的暂存)。其它 PID 的残留由其下次启动自家清理。
+fn staging_path() -> String {
+    format!("/Applications/.pinvou3.app.new.{}", std::process::id())
+}
+
+/// 跨进程安装锁(缺陷1)。无 libc/nix 依赖 → 用 `OpenOptions::create_new`(底层 O_EXCL)
+/// 在 `~/.pinvou3/updates/.install.lock` 上做原子抢占:仅一个进程能 create_new 成功;
+/// 失败且为 AlreadyExists 即他人正在安装 → 调用方拒绝。Drop 时删锁文件释放。
+///
+/// 已知局限:持锁进程被 kill -9/崩溃会留死锁文件,阻塞后续安装直至人工删除。flock 能在
+/// 进程退出时由内核自动释放,但需 libc/nix;此处权衡为不引入新 crate 依赖。
+struct InstallGuard(std::path::PathBuf);
+impl InstallGuard {
+    fn acquire() -> Result<Self, String> {
+        let dir = paths::updates_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新目录失败: {e}"))?;
+        let lock = dir.join(".install.lock");
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(mut f) => {
+                // 写入 PID 便于人工排查死锁(macOS 无 /proc,此处不做自动存活检测)。
+                let _ = writeln!(f, "{}", std::process::id());
+                Ok(InstallGuard(lock))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err("另一个安装正在进行中,请等待其完成后再试".to_string())
+            }
+            Err(e) => Err(format!("创建安装锁失败: {e}")),
+        }
+    }
+}
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// 安装下载好的 dmg:hdiutil attach → PlistBuddy 校验 CFBundleIdentifier →
 /// cp -R 到 /Applications → detach + 清 dmg。返回 false = 由前端提示用户重启
 /// (与 Windows MSI 同型;返回 true 表示调用方已重启,这里不适用)。
@@ -310,6 +351,11 @@ pub fn install_downloaded_update(
     installer_path: Option<String>,
     info: Option<crate::updater::UpdateInfo>,
 ) -> Result<bool, String> {
+    // 缺陷1修复:跨进程安装序列化(文件锁)。无 libc/nix,用 OpenOptions::create_new
+    // (O_EXCL) 在 ~/.pinvou3/updates/.install.lock 上原子抢占:仅一个进程能创建成功,
+    // AlreadyExists 即他人正在安装 → 拒绝。guard 在作用域结束(Drop)时删锁释放。
+    let _install_guard = InstallGuard::acquire()?;
+
     // macOS download_update_package 返回 DownloadUpdateResult::Path(String),经 serde
     // untagged 序列化为纯 JSON 字符串。前端 downloadAndInstallUpdate 的 else 分支用
     // { debPath: downloadResult } 调用本函数(不传 installer_path)。因此 deb_path 是
@@ -382,6 +428,10 @@ pub fn install_downloaded_update(
                 .arg(&self.0)
                 .arg("-force")
                 .status();
+            // 缺陷2修复:detach 后删挂载点目录(此前每次安装留一个空 .dmg-mount.<pid>)。
+            // 用 remove_dir 而非 remove_dir_all:它是挂载点,即便 detach 失败也不应递归删;
+            // 非空时 remove_dir 自然失败(安全行为)。
+            let _ = std::fs::remove_dir(&self.0);
         }
     }
     let _guard = MountGuard(mp_str.clone());
@@ -398,29 +448,58 @@ pub fn install_downloaded_update(
         return Err(format!("CFBundleIdentifier 不匹配(期望 {EXPECTED_BUNDLE_ID},实际 {bundle_id})"));
     }
 
+    // 缺陷3修复:降级保护。即便 sha256 + bundle_id 都过,攻击者可下放一个真实历史
+    // 签名包(版本号伪装成高)实施降级。无 dmg 代码签名验证,这里多读一个
+    // CFBundleShortVersionString 做版本交叉校验:新装版本严格小于当前编译进二进制的
+    // CARGO_PKG_VERSION 则拒绝(在改 /Applications 之前 fail-fast)。版本号 parse 不了
+    // (非标准)只记日志不拒绝,避免误伤合法的非标准版本号。
+    let new_ver_out = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleShortVersionString"])
+        .arg(format!("{app_path}/Contents/Info.plist"))
+        .output()
+        .map_err(|e| format!("PlistBuddy 读取版本失败: {e}"))?;
+    let new_ver = String::from_utf8_lossy(&new_ver_out.stdout)
+        .trim()
+        .to_string();
+    let cur_ver = env!("CARGO_PKG_VERSION");
+    match (parse_semver(&new_ver), parse_semver(cur_ver)) {
+        (Some(n), Some(c)) if n < c => {
+            return Err(format!(
+                "拒绝降级安装:当前 {cur_ver},下载包 {new_ver}(可能 latest.json 被篡改)"
+            ));
+        }
+        (None, _) => {
+            eprintln!(
+                "macos_update: 下载包版本号 \"{new_ver}\" 非标准 semver,跳过降级校验"
+            );
+        }
+        _ => {}
+    }
+
     // 3. 原子替换 /Applications/pinvou3.app。直接 `cp -R` 到已存在的 .app 是**合并**
     //    而非替换——旧资源(废弃 dylib/Helper/框架)会残留并与新版混合(降级残留 /
     //    app 损坏)。改为:cp 到暂存目录 → 旧 .app 改名备份 → mv 暂存到目标。三者
     //    同处 /Applications(APFS 同卷),mv 原子;失败时把备份改回原名回滚。
     let target = "/Applications/pinvou3.app";
-    let staging = format!("/Applications/.pinvou3.app.new.{}", std::process::id());
+    let staging = staging_path();
     let backup = "/Applications/.pinvou3.app.old";
-    // 清理上次可能残留的暂存/备份(保证幂等)。
-    let _ = Command::new("/bin/rm")
-        .arg("-rf")
-        .arg(&staging)
-        .arg(backup)
-        .status();
-    // 清理其它 PID 的残留暂存目录(上次安装崩溃/OOM/kill 会在 /Applications 留下
-    // .pinvou3.app.new.<pid>,各数百 MB)。
-    if let Ok(entries) = std::fs::read_dir("/Applications") {
-        for e in entries.flatten() {
-            let name = e.file_name();
-            if name.to_string_lossy().starts_with(".pinvou3.app.new.") {
-                let _ = std::fs::remove_dir_all(e.path());
-            }
+    // 缺陷1修复:只清理自家 PID 的 staging(此前扫整个 /Applications 删所有
+    // .pinvou3.app.new.* 会误删并发安装实例的暂存)。其它 PID 的残留由其下次启动
+    // 自家清理(它们拿不到安装锁,跑不到这里)。
+    // 防御:staging 若是符号链接(攻击者预置指向 /Applications 外),remove_dir_all
+    // 会跟随误删外部目录 → 先 symlink_metadata 拦截;是 symlink 则拒绝安装(fail-closed)。
+    match std::fs::symlink_metadata(&staging) {
+        Ok(md) if md.is_symlink() => {
+            return Err(format!(
+                "拒绝安装:暂存路径 {staging} 是符号链接(疑似篡改),请人工检查后重试"
+            ));
         }
+        Ok(_) => {
+            let _ = std::fs::remove_dir_all(&staging);
+        }
+        Err(_) => {} // 不存在,正常。
     }
+    let _ = Command::new("/bin/rm").arg("-rf").arg(backup).status();
     let cp = Command::new("/bin/cp")
         .args(["-R", "-p"])
         .arg(&app_path)
@@ -517,17 +596,22 @@ fn available_kib(dir: &Path) -> Option<u64> {
     if !out.status.success() {
         return None;
     }
-    // 输出形如:
-    //   Filesystem   1024-blocks   Used   Available   Capacity ...
-    //   /dev/...     971319460     ...    141682884   85% ...
-    // 跳过 header 行,取数据行第 4 列。
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .nth(1)?
-        .split_whitespace()
-        .nth(3)?
-        .parse()
-        .ok()
+    // BSD df -k 列序(固定):Filesystem  1K-blocks  Used  Available  Capacity  Mounted-on
+    //   → Available 是第 4 列(tokens.get(3))。
+    // 缺陷4修复:此前 nth(1).split_whitespace().nth(3) 在设备名超长折行时会取错列
+    // (BSD df 把超长设备名单独占一行,数据字段挤到下一行 → nth(1) 拿到的是折行碎片)。
+    // 改为跳过 header 后找第一行「完整数据行」(字段数 >= 6,折行碎片字段不足)。
+    // 解析不出或 Available=0 → 返回 None(fail-open:跳过磁盘检查,MAX_DOWNLOAD_BYTES
+    // 仍是硬兜底)。
+    for line in String::from_utf8_lossy(&out.stdout).lines().skip(1) {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if toks.len() < 6 {
+            continue;
+        }
+        let n: u64 = toks.get(3)?.parse().ok()?;
+        return if n == 0 { None } else { Some(n) };
+    }
+    None
 }
 
 /// 把版本号清洗为纯 [0-9.] 序列。远程 manifest 的 version 字段不可信,被拼进
@@ -544,8 +628,14 @@ fn is_valid_sha256_hex(s: &str) -> bool {
 }
 
 fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
-    // 与 linux_update.rs 完全一致:严格 3-part,trim 'v' 前缀 + 空白。
-    let mut it = v.trim().trim_start_matches('v').splitn(3, '.');
+    // 与 linux_update.rs 思路一致:trim 'v' 前缀 + 空白,严格 3-part。
+    // 额外截掉预发布(-beta)与构建元数据(+build)后缀:降级校验(缺陷3)需能比较
+    // "0.7.0-beta" 这类版本,取其主.次.修 数字部分。split 始终至少返回 1 个元素,
+    // unwrap_or("") 永不触发,仅用于类型对齐。
+    let core = v.trim().trim_start_matches('v');
+    let core = core.split('-').next().unwrap_or("");
+    let core = core.split('+').next().unwrap_or("");
+    let mut it = core.splitn(3, '.');
     let major = it.next()?.parse().ok()?;
     let minor = it.next()?.parse().ok()?;
     let patch = it.next()?.parse().ok()?;
@@ -908,5 +998,36 @@ mod tests {
         assert!(r3.ends_with("pinvou3_0.7.0.dmg"));
         // 场景 4:三者都缺失 → Err(此前行为是 panic/unwrap,现 fail-closed)。
         assert_eq!(resolve(None, None, None), Err("缺少 dmg 路径"));
+    }
+
+    /// 缺陷1:staging 路径必须只含当前 PID(此前扫整个 /Applications 会误删并发实例)。
+    #[test]
+    fn staging_path_scoped_to_current_pid() {
+        let p = staging_path();
+        let pid = std::process::id();
+        assert!(p.ends_with(&format!(".pinvou3.app.new.{pid}")), "staging={p}");
+        assert!(p.contains(&pid.to_string()));
+        // 固定前缀,确认落点在 /Applications(而非可被远程字段污染的任意路径)。
+        assert!(p.starts_with("/Applications/.pinvou3.app.new."));
+    }
+
+    /// 缺陷3:降级校验依赖 parse_semver 能截掉 pre-release/build 后缀再比较,
+    /// 非标准版本号应返回 None(调用方据此只记日志不拒绝,避免误伤)。
+    #[test]
+    fn parse_semver_strips_prerelease_and_rejects_garbage() {
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
+        // 截断 pre-release 后缀,取主.次.修。
+        assert_eq!(parse_semver("0.7.0-beta"), Some((0, 7, 0)));
+        assert_eq!(parse_semver("1.0.0+build.7"), Some((1, 0, 0)));
+        assert_eq!(parse_semver("2.5.1-rc.2+meta"), Some((2, 5, 1)));
+        // v 前缀与空白容忍(与 is_newer 既有契约一致)。
+        assert_eq!(parse_semver("v3.4.5"), Some((3, 4, 5)));
+        assert_eq!(parse_semver("  3.4.5  "), Some((3, 4, 5)));
+        // 非标准:返回 None → 调用方跳过降级校验。
+        assert_eq!(parse_semver("abc"), None);
+        assert_eq!(parse_semver("1.2"), None);
+        assert_eq!(parse_semver(""), None);
+        // 降级判定:new 严格小于 cur 时拒绝。
+        assert!(parse_semver("0.6.0").unwrap() < parse_semver("0.7.0").unwrap());
     }
 }

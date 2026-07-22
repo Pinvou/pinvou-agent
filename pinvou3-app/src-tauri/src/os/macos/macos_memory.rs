@@ -1,6 +1,44 @@
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+
 use crate::monitor::RamSnapshot;
 
+/// RAM 快照缓存(3s TTL)。mirror `monitor.rs::gpu_snapshot` 的
+/// `OnceLock<Mutex<Cache>>` 模式:监控页 1s interval 常开时,ram_snapshot 每次会
+/// 串行 fork+exec 三次(vm_stat / sysctl hw.memsize / sysctl vm.swapusage),
+/// 缓存避免每秒 3 次 spawn 的 CPU/IO 开销,以及 `Command::output()` 阻塞 wait
+/// 累积延迟拖慢采样。常驻量仅几个 u64,Mutex 锁持有时间极短。
+#[derive(Default)]
+struct RamSnapshotCache {
+    sampled_at: Option<Instant>,
+    value: Option<RamSnapshot>,
+}
+
 pub fn ram_snapshot() -> Option<RamSnapshot> {
+    static RAM_CACHE: OnceLock<Mutex<RamSnapshotCache>> = OnceLock::new();
+    let cache = RAM_CACHE.get_or_init(|| Mutex::new(RamSnapshotCache::default()));
+    let mut guard = cache.lock();
+    if guard
+        .sampled_at
+        .is_some_and(|sampled_at| sampled_at.elapsed() < Duration::from_secs(3))
+    {
+        return guard.value.clone();
+    }
+    let value = ram_snapshot_uncached();
+    guard.sampled_at = Some(Instant::now());
+    if let Some(snapshot) = value {
+        guard.value = Some(snapshot.clone());
+        Some(snapshot)
+    } else {
+        // 与 gpu_snapshot 一致:采样失败时保留上次有效值,避免监控页在
+        // "正常数据" 与 "不可用" 之间闪烁(vm_stat 偶发卡顿时不丢 UI)。
+        guard.value.clone()
+    }
+}
+
+fn ram_snapshot_uncached() -> Option<RamSnapshot> {
     let text = std::process::Command::new("/usr/bin/vm_stat")
         .output()
         .ok()?
@@ -88,6 +126,37 @@ fn sysctl_hw_memsize_kib() -> Option<u64> {
     Some(bytes / 1024)
 }
 
+/// 解析 sysctl vm.swapusage 输出中某字段的 KiB 值。
+/// 字段格式形如 `total = 1234M` / `free = 5G` / `used = 1024K`,后缀 M/G/K
+/// 单位换算到 KiB。抽为自由函数以便单测直接覆盖(此前是 sysctl_swap_kib 内的
+/// 闭包,测试只能复制逻辑,生产改了它不会失败)。
+fn parse_swap_field(line: &str, key: &str) -> Option<u64> {
+    // 找 "key = <num><unit>" 中的 <num><unit>。
+    let idx = line.find(key)?;
+    let after = &line[idx + key.len()..];
+    let after = after.trim_start_matches([' ', '=']);
+    let num_str: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let num: f64 = num_str.parse().ok()?;
+    let unit = after
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .chars()
+        .next();
+    // 无单位裸数字:macOS vm.swapusage 实际只输出 M/G。
+    // 真出现裸数字(unit 为 None)或未知后缀(如 T/P)时保守按字节处理(num / 1024)。
+    let kib = match unit {
+        Some('G') | Some('g') => num * 1024.0 * 1024.0,
+        Some('M') | Some('m') => num * 1024.0,
+        Some('K') | Some('k') => num,
+        Some('B') | Some('b') => num / 1024.0,
+        // 无单位(None)或未知后缀(含 T/P 等):保守按字节处理(与注释一致,不放大百万倍)。
+        _ => num / 1024.0,
+    };
+    Some(kib as u64)
+}
+
 /// 解析 `sysctl vm.swapusage` 的 total/used。输出形如:
 /// `total = 3072.00M  used = 1024.00M  free = 2048.00M (encrypted)`
 /// 数值带 M/G 后缀,需分别解析。失败返回 (0, 0)。
@@ -100,34 +169,8 @@ fn sysctl_swap_kib() -> Option<(u64, u64)> {
         return None;
     }
     let line = String::from_utf8_lossy(&out.stdout);
-    let parse_field = |key: &str| -> Option<u64> {
-        // 找 "key = <num><unit>" 中的 <num><unit>。
-        let idx = line.find(key)?;
-        let after = &line[idx + key.len()..];
-        let after = after.trim_start_matches(|c: char| c == ' ' || c == '=');
-        let num_str: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
-        let num: f64 = num_str.parse().ok()?;
-        let unit = after
-            .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
-            .chars()
-            .next();
-        // 无单位裸数字:macOS vm.swapusage 实际只输出 M/G。
-        // 真出现裸数字(unit 为 None)时保守按字节处理(num / 1024)。
-        let kib = match unit {
-            Some('G') | Some('g') => num * 1024.0 * 1024.0,
-            Some('M') | Some('m') => num * 1024.0,
-            Some('K') | Some('k') => num,
-            Some('B') | Some('b') => num / 1024.0,
-            // 无单位(None)或未知后缀:保守按字节处理(与注释一致,不放大百万倍)。
-            _ => num / 1024.0,
-        };
-        Some(kib as u64)
-    };
-    let total = parse_field("total").unwrap_or(0);
-    let used = parse_field("used").unwrap_or(0);
+    let total = parse_swap_field(&line, "total").unwrap_or(0);
+    let used = parse_swap_field(&line, "used").unwrap_or(0);
     Some((total, used))
 }
 
@@ -232,35 +275,35 @@ Swapouts:                                          0.\n\
 
     #[test]
     fn swap_parsing_handles_suffixes() {
-        // sysctl_swap_kib 解析逻辑的字段抽取单元测试(不依赖系统真实 swap)。
-        // 调用 sysctl_swap_kib 的实际解析(非复制实现),验证 M/G 后缀处理。
-        // 由于 sysctl_swap_kib 调真实 sysctl 命令,这里改为直接测试 parse 逻辑。
-        let line = "vm.swapusage: total = 3072.00M  used = 1024.50M  free = 2048.00M (encrypted)";
-        // 与生产代码 sysctl_swap_kib 内 parse_field 完全一致的逻辑。
-        let parse_field = |key: &str| -> Option<u64> {
-            let idx = line.find(key)?;
-            let after = &line[idx + key.len()..];
-            let after = after.trim_start_matches(|c: char| c == ' ' || c == '=');
-            let num_str: String = after
-                .chars()
-                .take_while(|c| c.is_ascii_digit() || *c == '.')
-                .collect();
-            let num: f64 = num_str.parse().ok()?;
-            let unit = after
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
-                .chars()
-                .next();
-            let kib = match unit {
-                Some('G') | Some('g') => num * 1024.0 * 1024.0,
-                Some('M') | Some('m') => num * 1024.0,
-                Some('K') | Some('k') => num,
-                Some('B') | Some('b') => num / 1024.0,
-                _ => num / 1024.0,
-            };
-            Some(kib as u64)
-        };
-        assert_eq!(parse_field("total"), Some(3_145_728)); // 3072 MiB = 3145728 KiB
-        assert_eq!(parse_field("used"), Some(1_049_088));  // 1024.50 MiB
-        assert_eq!(parse_field("free"), Some(2_097_152));  // 2048 MiB
+        // 直接覆盖提取出的自由函数 parse_swap_field(此前此测试复制了生产闭包逻辑,
+        // 生产改了它也不会失败)。M/G/K 后缀换算到 KiB。
+        // 1024M = 1024*1024 KiB
+        assert_eq!(
+            parse_swap_field("total = 1024M  used = 512M  free = 512M", "total"),
+            Some(1024 * 1024)
+        );
+        // 2G = 2*1024*1024 KiB
+        assert_eq!(parse_swap_field("free = 2G", "free"), Some(2 * 1024 * 1024));
+        // 0K = 0 KiB
+        assert_eq!(parse_swap_field("used = 0K", "used"), Some(0));
+        // 生产逻辑对 T 后缀无专门分支 → 落入 `_`(按字节)分支:5T 视为 5 字节 → /1024 → 0 KiB。
+        // 断言锁住当前行为;若未来为 T 增加专门分支需同步更新此处。
+        assert_eq!(parse_swap_field("total = 5T", "total"), Some(0));
+        // 缺失字段返回 None(line.find(key) 失败 → `?` 提前返回)。
+        assert_eq!(parse_swap_field("total = 1024M", "used"), None);
+    }
+
+    #[test]
+    fn ram_snapshot_cache_serves_repeat_calls() {
+        // 集成测试(本机 darwin):ram_snapshot 第一次 spawn vm_stat/sysctl,
+        // 3s 内第二次必须命中缓存返回同一快照(mirror gpu_snapshot 的缓存模式)。
+        // RamSnapshot 未派生 PartialEq(仅 Debug/Clone/Serialize),逐字段比较 u64。
+        // 同 1s 窗口内 vm_stat 页数不变 → 任一字段不一致即说明第二次未命中缓存而重算出错。
+        let first = ram_snapshot().expect("ram_snapshot 在 macOS host 上应返回 Some");
+        let second = ram_snapshot().expect("ram_snapshot 第二次(应命中缓存)也应返回 Some");
+        assert_eq!(first.total_kib, second.total_kib);
+        assert_eq!(first.used_kib, second.used_kib);
+        assert_eq!(first.swap_total_kib, second.swap_total_kib);
+        assert_eq!(first.swap_used_kib, second.swap_used_kib);
     }
 }

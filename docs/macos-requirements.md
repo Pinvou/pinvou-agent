@@ -92,3 +92,20 @@ xcode-select --install
 - `/Applications/LibreOffice.app/Contents/MacOS`（LibreOffice cask 安装位置）
 
 如果工具安装在非标准路径，可通过设置 `PINVOU3_ASR_CMD` 等环境变量指向自定义路径。
+
+## 已知限制（后续 PR 跟进）
+
+以下为当前 macOS 分发链路的已知风险，集中登记以便后续 PR 跟踪：
+
+- **未签名 / ad-hoc 分发**：当前 dmg 为 ad-hoc 签名（`tauri.conf.json` 的 `mac.signingIdentity = "-"`），首次打开会被 Gatekeeper 隔离。用户需手动解除隔离：
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/pinvou3.app
+  ```
+  Developer ID + 公证（notarization）凭证将在后续 PR 接入，届时可省去此步并启用 Hardened Runtime（路线见 `src-tauri/entitlements.plist` 顶部注释）。
+
+- **OTA 无独立签名验证**：更新通道的 `latest.json` 仅靠 sha256 自校验 + CFBundleIdentifier 字符串校验 + PlistBuddy 字段校验，没有 minisign / Developer ID 离线签名。攻击者若控制 pinvou.com 分发域名，理论上可投递伪造的 manifest + dmg。计划后续引入 manifest 离线签名 + 客户端验签。
+
+- **凭证明文存储**：为绕开 ad-hoc 签名导致的 Keychain ACL 频繁弹窗，macOS 路径的 API Key 临时以明文存于 `~/.pinvou3/secrets/<service>.json`（目录 `0700` / 文件 `0600`，见 `src-tauri/src/credential_store.rs`）。接入稳定签名身份后将切回 Keychain。
+
+- **Intel Mac 不支持**：仅打包 arm64 语音识别引擎（SenseVoice darwin-arm64），Intel Mac（x86_64）的语音输入不可用（其余功能正常）。详见上方「系统要求」。
+

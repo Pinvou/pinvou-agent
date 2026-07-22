@@ -61,26 +61,36 @@ jobs:
           # 父 commit 不存在(首提交/浅克隆边界)→ 视为首次 bump,放行。
           if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
             echo "⚠️ 无父 commit(浅克隆或首提交),视为版本 bump,放行"
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-            echo "version=$V_TAURI" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # 旧版本(父 commit)——逐个 git show 取,文件在父 commit 不存在时返回空
-          V_TAURI_OLD=$(git show HEAD~1:pinvou3-app/src-tauri/tauri.conf.json 2>/dev/null | jq -r .version 2>/dev/null || echo "")
-          V_CARGO_OLD=$(git show HEAD~1:pinvou3-app/src-tauri/Cargo.toml 2>/dev/null | grep -m1 '^version = ' 2>/dev/null | sed 's/version = "\(.*\)"/\1/' || echo "")
-          V_NPM_OLD=$(git show HEAD~1:pinvou3-app/package.json 2>/dev/null | jq -r .version 2>/dev/null || echo "")
-          echo "父 commit 版本: tauri=$V_TAURI_OLD cargo=$V_CARGO_OLD npm=$V_NPM_OLD"
-
-          # 三处任一变化即判定 bump。版本文件改了但版本号没变(如 Cargo.toml 加依赖)→ 不触发。
-          if [ "$V_TAURI" != "$V_TAURI_OLD" ] || [ "$V_CARGO" != "$V_CARGO_OLD" ] || [ "$V_NPM" != "$V_NPM_OLD" ]; then
-            echo "✓ 版本号变化,触发 dmg 构建"
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            BUMPED=true
           else
-            echo "✗ 版本号未变化(版本文件的非版本字段改动),跳过"
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            # 旧版本(父 commit)——逐个 git show 取,文件在父 commit 不存在时返回空
+            V_TAURI_OLD=$(git show HEAD~1:pinvou3-app/src-tauri/tauri.conf.json 2>/dev/null | jq -r .version 2>/dev/null || echo "")
+            V_CARGO_OLD=$(git show HEAD~1:pinvou3-app/src-tauri/Cargo.toml 2>/dev/null | grep -m1 '^version = ' 2>/dev/null | sed 's/version = "\(.*\)"/\1/' || echo "")
+            V_NPM_OLD=$(git show HEAD~1:pinvou3-app/package.json 2>/dev/null | jq -r .version 2>/dev/null || echo "")
+            echo "父 commit 版本: tauri=$V_TAURI_OLD cargo=$V_CARGO_OLD npm=$V_NPM_OLD"
+
+            # 三处任一变化即判定 bump。版本文件改了但版本号没变(如 Cargo.toml 加依赖)→ 不触发。
+            if [ "$V_TAURI" != "$V_TAURI_OLD" ] || [ "$V_CARGO" != "$V_CARGO_OLD" ] || [ "$V_NPM" != "$V_NPM_OLD" ]; then
+              echo "✓ 版本号变化,触发 dmg 构建"
+              BUMPED=true
+            else
+              echo "✗ 版本号未变化(版本文件的非版本字段改动),跳过"
+              BUMPED=false
+            fi
           fi
+
+          echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
           echo "version=$V_TAURI" >> "$GITHUB_OUTPUT"
+
+          # 三处版本号必须一致(防只 bump package.json 忘改 Cargo.toml/tauri.conf,
+          # 导致 DMG 文件名用未 bump 的旧 tauri 版本号;build-dmg 用 version=$V_TAURI 命名 dmg)。
+          # 放在判定 bumped=true 之后、build-dmg 之前。
+          if [ "$BUMPED" = "true" ]; then
+            if [ "$V_TAURI" != "$V_CARGO" ] || [ "$V_TAURI" != "$V_NPM" ]; then
+              echo "::error::三处版本号不一致: tauri=$V_TAURI cargo=$V_CARGO npm=$V_NPM" >&2
+              exit 1
+            fi
+          fi
 
   # ── Job 2: 构建 dmg(仅版本 bump 时跑) ──────────────────────────────
   build-dmg:

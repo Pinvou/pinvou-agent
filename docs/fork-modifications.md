@@ -11,7 +11,7 @@
 | fork 分支 | `codex/sync-v0.9.0`，当前 head `4cff0b9e6e1d` |
 | 组织方式 | **6 个长期主题 commit + 1 个父仓主题（T7 macOS）**；T7 不动 fork，仅父仓平台抽象 |
 | drift | 对 `v0.9.0`：**+3260 / -539，53 文件**（T7 不增加 fork drift，零 fork 改动） |
-| 守护 | `scripts/fork-guard.sh`：43 条主题指纹 + submodule/app `forkguard_` 行为测试 |
+| 守护 | `scripts/fork-guard.sh`：43 条指纹(34 条 T1–T6 主题 + 9 条 app 行为)+ submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库 Linux/macOS 均编译通过，lib test target 可完整编译；macOS 适配在父仓 `feat/macos` 分支 |
 
 ### 软上限评估

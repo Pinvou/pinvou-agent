@@ -1551,9 +1551,13 @@ function defaultModelPresetForPlatform() {
 
             {/* API Key 拦截遮罩 —— 云端模型未配 key 时盖住聊天界面,强制先配置。
                 根因:此前前后端都无 key gate,空 key 打云端 → 401 静默无回应。
-                条件:credential_state=missing 且非本地 vllm 模型(后者走 LOCAL_VLLM_API_KEY 免鉴权)。 */}
+                条件:credential_state 为 missing 或 unavailable 且非本地 vllm 模型(后者走
+                LOCAL_VLLM_API_KEY 免鉴权)。unavailable 同样需拦截:macOS 上用户在 Keychain
+                授权弹窗点"拒绝"时 credential_state 变 unavailable(见 prefs.rs:785),
+                此时不盖遮罩用户仍可发消息 → 命中 Keychain 错误,与 missing 同等后果。 */}
             {bridge.available && bs && bs.effectiveModelConfig
-              && bs.effectiveModelConfig.credential_state === 'missing'
+              && (bs.effectiveModelConfig.credential_state === 'missing'
+                || bs.effectiveModelConfig.credential_state === 'unavailable')
               && bs.effectiveModelConfig.preset !== 'local_vllm' && (
               <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
                 <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"

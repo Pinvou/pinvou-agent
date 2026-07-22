@@ -97,9 +97,9 @@ assert.strictEqual(vmWindowsReady.label, '安装器已启动');
 assert.strictEqual(vmWindowsReady.action, 'none');
 assert.strictEqual(vmWindowsReady.disabled, true);
 
-// macOS 升级是原地 bundle 替换 + 后端返回 Ok(false)=需用户手动重启(旧进程持旧 inode,
-// app.restart() 不可靠)。与 Windows 启动外部 MSI 安装器不同。因此 macOS ready 应走
-// restart 分支(label=立即重启, action=restart, disabled=false, restartAfterInstall=true)。
+// macOS 与 Linux 同型:后端 Ok(false) → 前端自动 restartApp(app.restart() 按路径 exec 新
+// bundle,inode 语义与 Linux 一致)。与 Windows 启动外部 MSI 安装器不同。因此 macOS ready
+// 应走 restart 分支(label=立即重启, action=restart, disabled=false, restartAfterInstall=true)。
 let vmMacReady = logic.viewModel(
   { updateReady: true },
   { available: true, latest_version: '1.2.0', platform: 'macos' }
@@ -126,5 +126,19 @@ let vmError = logic.viewModel(
   { available: true, latest_version: '1.2.0' }
 );
 assert.strictEqual(vmError.error, 'sha256 failed');
+
+// unknown platform falls back to download-and-install (no auto-restart):
+// restartAfterInstall 只对 linux/macos 为 true(见 update-notice-logic.js),未知平台(如未来
+// 新增的 freebsd)不应假定可自动重启,故 idle 态走"下载并安装"而非"升级并重启",
+// action='download'(非 'restart')、restartAfterInstall=false。
+let vmUnknownIdle = logic.viewModel(
+  { appVersion: '1.1.0' },
+  { available: true, latest_version: '1.2.0', platform: 'freebsd' }
+);
+assert.strictEqual(vmUnknownIdle.visible, true);
+assert.strictEqual(vmUnknownIdle.label, '下载并安装');
+assert.strictEqual(vmUnknownIdle.action, 'download');
+assert.strictEqual(vmUnknownIdle.disabled, false);
+assert.strictEqual(vmUnknownIdle.restartAfterInstall, false);
 
 console.log('update_notice_logic: ok');

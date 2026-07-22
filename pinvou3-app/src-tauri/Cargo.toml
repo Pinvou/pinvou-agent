@@ -111,7 +111,13 @@ base64 = "0.22"
 # - NSWindowCollectionBehavior 跨 Space/全屏保持可见(TAO 只设 level,没设 collectionBehavior)
 # - NSStatusWindowLevel 提升桌宠浮在全屏 App 之上
 # detach.rs 的撕离拖拽已改用 CoreGraphics FFI(不再依赖 objc2 NSEvent global monitor)。
-# objc2 0.6.x 是 tao 0.35.2 的传递依赖,显式声明锁定同一次 ABI。
+# objc2 0.6.x 是 tao 0.35.2 的传递依赖,这里显式声明只是为了把 major/minor
+# 提升到**直接依赖**(否则它只是传递依赖,Cargo 不会按 app 的意愿解析)。
+# 注意:这些是 caret 版本(objc2 = "0.6" 允许 0.6.x 内任意 minor/patch 升级),
+# **不是** ABI 严格锁——严格锁应写成 `=0.6.4`。caret 版本只保证对齐到同一 major:
+# objc2 0.6.x / objc2-app-kit 0.3.x / objc2-foundation 0.3.x,与 tao 0.35.2
+# 期望的 objc2 family major 一致即可。具体 patch 由 Cargo.lock 在 lockfile 阶段
+# 固定(当前 0.6.4 / 0.3.2)。如未来需要绝对复现同一 ABI,改为精确锁 `=0.6.4`。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"

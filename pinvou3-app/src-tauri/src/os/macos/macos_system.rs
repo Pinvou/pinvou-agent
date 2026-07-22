@@ -1,8 +1,19 @@
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::macos_path;
+
+/// 校验路径存在且至少有一个可执行位(owner/group/other 任一有 x bit)。
+/// 与 Linux 侧 `which` 自带的可执行性校验对齐:`command_exists` 此前只调
+/// `Path::is_file()`,若目录里有同名但无执行权限的残留文件(手动 touch、
+/// 损坏的 brew 链接、备份)会误判依赖存在 → 依赖体检假阳性。
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Command::new("/usr/bin/open")
@@ -26,14 +37,18 @@ pub fn command_exists(command: &str) -> bool {
         return true;
     }
     for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        if std::path::Path::new(dir).join(command).is_file() {
+        let path = Path::new(dir).join(command);
+        // is_file() 后再校验可执行位:避免同名无执行权限的残留(手动 touch、
+        // 损坏的 brew 链接、备份)被误判为依赖就位。与 Linux 侧 `which` 对齐。
+        if path.is_file() && is_executable(&path) {
             return true;
         }
     }
     // cask 类 GUI 应用(如 LibreOffice)装在 /Applications/*.app/Contents/MacOS/,
     // 不在 Homebrew bin 目录,也不在 GUI 进程 PATH 内 → 依赖体检系统性误报缺失。
     for cask_dir in ["/Applications/LibreOffice.app/Contents/MacOS"] {
-        if std::path::Path::new(cask_dir).join(command).is_file() {
+        let path = Path::new(cask_dir).join(command);
+        if path.is_file() && is_executable(&path) {
             return true;
         }
     }
@@ -66,10 +81,17 @@ pub fn asr_tool_exists() -> bool {
     // 依赖名为 "pinvou-asr" 的独立 CLI(Linux deb 同样以引擎本体作为存在性判据)。
     if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
         if !path.trim().is_empty() {
-            return std::path::Path::new(&path).is_file();
+            // 与 command_exists 同理:仅 is_file() 不够,需校验可执行位,避免
+            // 无执行权限的残留文件(如手动 touch 的占位、损坏的符号链接)被
+            // 误判为 ASR 引擎就位 → 与 Linux `which` 的可执行性校验对齐。
+            let p = Path::new(&path);
+            return p.is_file() && is_executable(p);
         }
     }
-    crate::voice_asr::engine_path().is_file()
+    // bundled 引擎本体:权限由打包流程保证,但同样校验可执行位以对称与防御
+    // (若打包异常导致丢 x bit,此处正确返回 false 而非误判就位)。
+    let engine = crate::voice_asr::engine_path();
+    engine.is_file() && is_executable(&engine)
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {

@@ -1037,25 +1037,28 @@ fn apply_macos_pet_window_policy(win: &tauri::WebviewWindow) {
     } else {
         let app = win.app_handle().clone();
         let win_clone = win.clone();
-        let _ = app.run_on_main_thread(move || {
+        if let Err(e) = app.run_on_main_thread(move || {
             apply_macos_pet_window_policy_impl(&win_clone);
-        });
+        }) {
+            eprintln!("[pet] apply_macos_pet_window_policy marshal 到主线程失败: {e}(桌宠可能不跨 Space/全屏)");
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
 fn apply_macos_pet_window_policy_impl(win: &tauri::WebviewWindow) {
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior, NSStatusWindowLevel};
 
-    // tauri 2.11.1 的 WebviewWindow::ns_window() 返回 Result<*mut std::ffi::c_void>
-    // (裸指针,不带引用计数语义)。Retained::retain 给 objc2 增 +1 retain,转成
-    // Retained<NSWindow> 后由其 Drop 在作用域结束自动 release。
+    // tauri 2.11.1 的 WebviewWindow::ns_window() 返回的是 autoreleased 指针
+    // (Tauri 内部用 Retained::autorelease_ptr 传出,寄生于当前 autorelease pool)。
+    // retain_autoreleased 命中 objc2 的 fast autorelease 优化并转为强引用,
+    // 由 Retained<NSWindow> 的 Drop 在作用域结束自动 release。
     let raw: *mut std::ffi::c_void = match win.ns_window() {
         Ok(p) => p,
         Err(_) => return,
     };
-    let ns_window: Retained<NSWindow> = match unsafe { Retained::retain(raw.cast()) } {
+    let ns_window: Retained<NSWindow> = match unsafe { Retained::retain_autoreleased(raw.cast()) } {
         Some(w) => w,
         None => return,
     };
@@ -1068,7 +1071,8 @@ fn apply_macos_pet_window_policy_impl(win: &tauri::WebviewWindow) {
     // 提升窗口 level:FullScreenAuxiliary 只决定能否进入全屏 Space,不决定层叠顺序。
     // Tauri always_on_top 设的是 NSFloatingWindowLevel(=3),远低于全屏 App 的 level。
     // 提到 NSStatusWindowLevel(=25) 确保桌宠浮在全屏 App 之上。
-    ns_window.setLevel(25);
+    // 用 crate 命名常量而非魔法数字,避免 Apple 调整枚举值时埋雷。
+    ns_window.setLevel(NSStatusWindowLevel);
 }
 
 #[cfg(not(target_os = "macos"))]

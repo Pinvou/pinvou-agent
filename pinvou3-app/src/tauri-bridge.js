@@ -3463,7 +3463,8 @@
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
-      if (error && /401|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
+      // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+      if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
@@ -3562,7 +3563,8 @@
     if (error) addSystemItem("⚠️ " + error);
     // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
     // 兜底启动检测被绕过/中途删 key 的场景。
-    if (error && /401|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
+    // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+    if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。

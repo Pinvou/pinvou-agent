@@ -4,7 +4,7 @@
 #
 # 用法:
 #   ./scripts/run-mac-verify.sh                 # 完整跑
-#   ./scripts/run-mac-verify.sh --skip-test     # 跳过 cargo test(只编译 + 探测)
+#   ./scripts/run-mac-verify.sh --skip-test     # 跳过 cargo check/test(只跑探测 + sha256/plist/bundle 校验)
 #
 # 退出码:核心校验(sha256/provenance/plist/bundle targets)失败 → exit 1;
 # 非核心探测(brew/connector CLI 缺失)只 warn 不 fail。
@@ -27,19 +27,21 @@ APP_SRC_TAURI="$REPO_ROOT/pinvou3-app/src-tauri"
 # Mac 编译需要正确的部署目标(同 release-macos.sh)
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
-echo "=== 1. cargo check aarch64-apple-darwin ==="
-cd "$APP_SRC_TAURI"
-if ! cargo check --target aarch64-apple-darwin --lib; then
-  VERIFY_FAIL=1
-fi
-
 if [ "$SKIP_TEST" -eq 0 ]; then
+  echo "=== 1. cargo check aarch64-apple-darwin ==="
+  cd "$APP_SRC_TAURI"
+  if ! cargo check --target aarch64-apple-darwin --lib; then
+    VERIFY_FAIL=1
+  fi
+
   echo "=== 2. cargo test --lib (Mac native) ==="
   if ! cargo test --target aarch64-apple-darwin --lib -- --test-threads=1; then
     VERIFY_FAIL=1
   fi
 else
-  echo "=== 2. cargo test --lib  (skipped via --skip-test) ==="
+  # --skip-test:上游 mac-build.yml 已跑 cargo check/test,这里不重复(省 ~10min)。
+  # 后续 step 3-7 用绝对路径,不依赖此处 cwd。
+  echo "=== 1/2. cargo check/test (skipped via --skip-test;上游 CI 已跑) ==="
 fi
 
 echo "=== 3. brew 依赖探测(文件 ingestion) ==="
@@ -124,6 +126,14 @@ for f in Info.plist entitlements.plist; do
         VERIFY_FAIL=1
     fi
 done
+
+# CFBundleIdentifier 值必须与 tauri.conf.json identifier 一致(防 OTA 通道 bundle id 不匹配)。
+BID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_SRC_TAURI/Info.plist" 2>/dev/null || true)"
+TID="$(jq -r .identifier "$APP_SRC_TAURI/tauri.conf.json" 2>/dev/null || true)"
+if [ -z "$BID" ] || [ -z "$TID" ] || [ "$BID" != "$TID" ]; then
+  echo "❌ CFBundleIdentifier($BID) ≠ tauri.conf.json identifier($TID)" >&2
+  VERIFY_FAIL=1
+fi
 
 if [ "$VERIFY_FAIL" -ne 0 ]; then
     echo "=== ❌ 核心校验失败(详见上方 ❌ 标记)===" >&2
