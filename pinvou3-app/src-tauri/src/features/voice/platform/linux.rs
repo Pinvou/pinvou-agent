@@ -43,7 +43,7 @@ pub fn asr_model_exists() -> bool {
 
 pub fn asr_tool_exists() -> bool {
     let configured = asr_tool_path();
-    if configured.is_file() || crate::os::command_exists(&configured.to_string_lossy()) {
+    if configured.is_file() || crate::platform::os::command_exists(&configured.to_string_lossy()) {
         return true;
     }
     voice_asr::engine_path().is_file()

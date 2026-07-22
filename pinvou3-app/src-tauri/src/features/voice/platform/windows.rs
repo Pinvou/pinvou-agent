@@ -19,7 +19,7 @@ pub fn asr_tool_path() -> PathBuf {
             }
         }
     }
-    crate::os::windows::bundled_asr_tool_path().unwrap_or_else(|| PathBuf::from("pinvou-asr"))
+    crate::platform::os::windows::bundled_asr_tool_path().unwrap_or_else(|| PathBuf::from("pinvou-asr"))
 }
 
 pub fn asr_model_spec() -> AsrModelSpec {
@@ -34,7 +34,7 @@ pub fn asr_model_spec() -> AsrModelSpec {
 }
 
 pub fn asr_model_path() -> PathBuf {
-    crate::os::windows::asr_model_path()
+    crate::platform::os::windows::asr_model_path()
 }
 
 pub fn asr_model_exists() -> bool {
@@ -44,21 +44,21 @@ pub fn asr_model_exists() -> bool {
 pub fn asr_tool_exists() -> bool {
     if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
         if !path.trim().is_empty() {
-            return crate::os::command_exists(&path);
+            return crate::platform::os::command_exists(&path);
         }
     }
     if let Ok(path) = std::env::var("PINVOU3_DEEPSPEECH2_CMD") {
         if !path.trim().is_empty() {
-            return crate::os::command_exists(&path);
+            return crate::platform::os::command_exists(&path);
         }
     }
     if let Ok(path) = std::env::var("PADDLESPEECH_BIN") {
         if !path.trim().is_empty() {
-            return crate::os::command_exists(&path);
+            return crate::platform::os::command_exists(&path);
         }
     }
-    crate::os::windows::bundled_asr_tool_path().is_some()
-        && crate::os::windows::bundled_asr_backend_path().is_some()
+    crate::platform::os::windows::bundled_asr_tool_path().is_some()
+        && crate::platform::os::windows::bundled_asr_backend_path().is_some()
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {

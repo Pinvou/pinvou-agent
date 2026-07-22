@@ -29,7 +29,7 @@ pub fn resolve_current_identity() -> Result<LlmApiIdentity, LlmApiError> {
 
     #[cfg(target_os = "windows")]
     {
-        let bios_sn = crate::os::bios_serial_number().map_err(|err| {
+        let bios_sn = crate::platform::os::bios_serial_number().map_err(|err| {
             LlmApiError::new(
                 LlmApiErrorCode::DeviceBindingFailed,
                 format!("Failed to read device binding information: {err}"),

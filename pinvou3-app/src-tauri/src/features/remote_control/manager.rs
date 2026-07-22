@@ -16,8 +16,8 @@ use super::snapshot;
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::{SavedModel, UserPrefs};
 use crate::features::assistant::platform::bridge::{paths, sessions::SessionStore};
-use crate::connector_cli;
-use crate::engine_pool::EnginePool;
+use crate::features::connectors::connector_cli;
+use crate::features::assistant::engine_pool::EnginePool;
 
 const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
 // 远程下载单文件上限，避免把超大文件一次性读进内存并经 relay 转发。
@@ -31,7 +31,7 @@ const DOWNLOAD_CHUNK_BYTES: usize = 768 * 1024;
 // 让 attach_file_start / 累计 gate 直接拒绝(PR #213 审查 #5)。
 // 下载链路不受此约束(DOWNLOAD_LIMIT_BYTES 仍 64MiB):下载是把桌面已有产物原样发回
 // mobile 预览,不经过 file_ingest,没有 20MiB 语义。
-const UPLOAD_LIMIT_BYTES: u64 = crate::file_ingest::MAX_FILE_BYTES;
+const UPLOAD_LIMIT_BYTES: u64 = crate::features::files::file_ingest::MAX_FILE_BYTES;
 // 上传分块原始字节数;与下载保持一致(base64 后约 1MiB)。
 const UPLOAD_CHUNK_BYTES: usize = 768 * 1024;
 // 上传 ACK 等待超时:超过即视为中继或对端异常,主动收尾。
@@ -211,7 +211,7 @@ struct PendingAttachment {
     /// 会有 TOCTOU 窗口可绕过累计上限;gate 增减此值把「已通过但未落盘」也算进预算。
     bytes_in_flight: u64,
     /// streaming task 写盘+ingest 成功后填。user_message arm 取用时若 None 则报错。
-    ingest_result: Option<crate::file_ingest::IngestResult>,
+    ingest_result: Option<crate::features::files::file_ingest::IngestResult>,
 }
 
 #[derive(Clone)]
@@ -304,9 +304,9 @@ impl RemoteControlManager {
         self.close_current("qr_refreshed");
         let relay_ws_url = remote_relay_ws_url();
         let public_base = remote_public_base_url();
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
+        let room_id = format!("rc_{}", crate::features::remote_control::short_token(18));
+        let pairing_token = crate::features::remote_control::short_token(32);
+        let desktop_secret = crate::features::remote_control::short_token(32);
         // 二维码与当前 room 同寿命：只有刷新二维码、停止远控或关闭桌面端才失效。
         let url = format!(
             "{}/r/{}#token={}",
@@ -777,7 +777,7 @@ impl RemoteControlManager {
                     );
                     return;
                 };
-                let collections = match app.try_state::<crate::knowledge::KnowledgeService>() {
+                let collections = match app.try_state::<crate::features::knowledge::KnowledgeService>() {
                     Some(svc) => match svc.l1().list_collections() {
                         Ok(rows) => rows,
                         Err(e) => {
@@ -818,7 +818,7 @@ impl RemoteControlManager {
                     return;
                 }
                 let (knowledge, store) = (
-                    app.try_state::<crate::knowledge::KnowledgeService>(),
+                    app.try_state::<crate::features::knowledge::KnowledgeService>(),
                     app.try_state::<SessionStore>(),
                 );
                 let Some(knowledge) = knowledge else {
@@ -1465,7 +1465,7 @@ impl RemoteControlManager {
             && self
                 .app
                 .as_ref()
-                .and_then(|app| app.try_state::<crate::knowledge::KnowledgeService>())
+                .and_then(|app| app.try_state::<crate::features::knowledge::KnowledgeService>())
                 .map(|s| s.has_indexed_content() && s.semantic_ready())
                 .unwrap_or(false);
         room.sender
@@ -2636,7 +2636,7 @@ impl RemoteControlManager {
 
         let data_path_for_ingest = data_path.clone();
         let ingest_result = match tokio::task::spawn_blocking(move || {
-            crate::file_ingest::ingest(&data_path_for_ingest)
+            crate::features::files::file_ingest::ingest(&data_path_for_ingest)
         })
         .await
         {
@@ -3764,7 +3764,7 @@ mod tests {
                         mime: "text/plain".to_string(),
                         bytes_written: 4,
                         bytes_in_flight: 0,
-                        ingest_result: Some(crate::file_ingest::ingest(&dir.join("data.txt"))),
+                        ingest_result: Some(crate::features::files::file_ingest::ingest(&dir.join("data.txt"))),
                     },
                 );
             }
@@ -4015,7 +4015,7 @@ mod tests {
     fn upload_limit_bytes_matches_file_ingest_max() {
         assert_eq!(
             UPLOAD_LIMIT_BYTES,
-            crate::file_ingest::MAX_FILE_BYTES,
+            crate::features::files::file_ingest::MAX_FILE_BYTES,
             "mobile upload hard cap must align with file_ingest 20MiB cap (review #5)"
         );
         assert_eq!(UPLOAD_LIMIT_BYTES, 20 * 1024 * 1024);
@@ -4320,9 +4320,9 @@ mod e2e_tests {
         std::fs::create_dir_all(text_path.parent().expect("text parent")).expect("text dir");
         std::fs::write(&text_path, &text_bytes).expect("write text file");
 
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
+        let room_id = format!("rc_{}", crate::features::remote_control::short_token(18));
+        let pairing_token = crate::features::remote_control::short_token(32);
+        let desktop_secret = crate::features::remote_control::short_token(32);
         let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
         let (sender, download_sender, mut receiver) = relay_client::spawn(
             relay_ws_url.clone(),
@@ -4846,9 +4846,9 @@ mod e2e_tests {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
+        let room_id = format!("rc_{}", crate::features::remote_control::short_token(18));
+        let pairing_token = crate::features::remote_control::short_token(32);
+        let desktop_secret = crate::features::remote_control::short_token(32);
         let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
         let (sender, download_sender, mut receiver) = relay_client::spawn(
             relay_ws_url.clone(),
@@ -5162,9 +5162,9 @@ mod e2e_tests {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        let room_id = format!("rc_{}", crate::remote_control::short_token(18));
-        let pairing_token = crate::remote_control::short_token(32);
-        let desktop_secret = crate::remote_control::short_token(32);
+        let room_id = format!("rc_{}", crate::features::remote_control::short_token(18));
+        let pairing_token = crate::features::remote_control::short_token(32);
+        let desktop_secret = crate::features::remote_control::short_token(32);
         let relay_ws_url = format!("ws://127.0.0.1:{port}/ws");
         let (sender, download_sender, mut receiver) = relay_client::spawn(
             relay_ws_url.clone(),

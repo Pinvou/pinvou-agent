@@ -13,7 +13,7 @@ use deepseek_tui::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResu
 
 use super::ChunkHit;
 use crate::features::sessions::SessionStore;
-use crate::knowledge::KnowledgeService;
+use crate::features::knowledge::KnowledgeService;
 
 /// 工具单次检索 top-K(精排;太多稀释小模型注意力)。
 pub(crate) const KB_INJECT_TOP_K: usize = 5;

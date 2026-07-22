@@ -15,7 +15,7 @@
 //! 维护：卸载 .deb 时由 `prerm` 删 `/etc/sudoers.d/pinvou3`，避免遗留授权。
 
 pub fn is_enabled() -> bool {
-    crate::os::super_permission_is_enabled()
+    crate::platform::os::super_permission_is_enabled()
 }
 
 /// 静态 system prompt 的 §7 占位段。**不含开关状态**。
@@ -38,13 +38,13 @@ pub fn instruction_block() -> &'static str {
 /// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
 /// **关闭**:禁 sudo(会被 deny hook 拦或卡超时),引导用户开开关。
 pub fn turn_reminder() -> &'static str {
-    crate::os::super_permission_turn_reminder()
+    crate::platform::os::super_permission_turn_reminder()
 }
 
 pub fn enable() -> Result<(), String> {
-    crate::os::enable_super_permission()
+    crate::platform::os::enable_super_permission()
 }
 
 pub fn disable() -> Result<(), String> {
-    crate::os::disable_super_permission()
+    crate::platform::os::disable_super_permission()
 }

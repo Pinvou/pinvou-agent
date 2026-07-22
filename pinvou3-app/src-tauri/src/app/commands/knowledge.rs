@@ -53,7 +53,7 @@ fn broadcast_kb_mount_to_mobile(
     session_id: &str,
     collection_id: Option<i64>,
 ) {
-    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+    if let Some(manager) = app.try_state::<crate::features::remote_control::RemoteControlManager>() {
         let payload = serde_json::json!({
             "session_id": session_id,
             "collection_id": collection_id,

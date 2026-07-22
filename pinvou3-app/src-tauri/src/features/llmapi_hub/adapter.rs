@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::models::{LlmApiError, LlmApiErrorCode, LlmApiIdentity, LlmApiPolicy};
-use crate::credential_store::{CredentialReference, CredentialStore, SystemCredentialStore};
+use crate::platform::credential_store::{CredentialReference, CredentialStore, SystemCredentialStore};
 
 pub const LOOKUP_USER_ENDPOINT_ENV: &str = "PINVOU3_LLMAPI_LOOKUP_USER_ENDPOINT";
 pub const CREATE_TOKEN_ENDPOINT_ENV: &str = "PINVOU3_LLMAPI_CREATE_TOKEN_ENDPOINT";
@@ -255,7 +255,7 @@ impl HttpLlmApiHubAdapter {
         );
         let adapter = Self {
             admin_base_url: std::env::var(ADMIN_BASE_URL_ENV)
-                .unwrap_or_else(|_| crate::llmapi_hub::DEFAULT_ADMIN_BASE_URL.to_string()),
+                .unwrap_or_else(|_| crate::features::llmapi_hub::DEFAULT_ADMIN_BASE_URL.to_string()),
             admin_user_id,
             admin_token,
             lookup_user_endpoint: std::env::var(LOOKUP_USER_ENDPOINT_ENV).ok(),
@@ -275,7 +275,7 @@ impl HttpLlmApiHubAdapter {
         log::info!("[llmapi_hub][adapter] for_token_usage start");
         let adapter = Self {
             admin_base_url: std::env::var(ADMIN_BASE_URL_ENV)
-                .unwrap_or_else(|_| crate::llmapi_hub::DEFAULT_ADMIN_BASE_URL.to_string()),
+                .unwrap_or_else(|_| crate::features::llmapi_hub::DEFAULT_ADMIN_BASE_URL.to_string()),
             admin_user_id: String::new(),
             admin_token: String::new(),
             lookup_user_endpoint: None,
@@ -1291,7 +1291,7 @@ fn compact_body(body: &str) -> String {
     if compact.chars().count() > 500 {
         snippet.push_str("...");
     }
-    crate::credential_store::redact_secret(&snippet)
+    crate::platform::credential_store::redact_secret(&snippet)
 }
 
 fn http_error(operation: &str, status: u16, body: &str) -> LlmApiError {

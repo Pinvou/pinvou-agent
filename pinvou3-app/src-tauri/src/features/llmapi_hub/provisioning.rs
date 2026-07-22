@@ -1,7 +1,7 @@
 use chrono::Utc;
 use std::time::Instant;
 
-use crate::credential_store::{CredentialReference, CredentialStore};
+use crate::platform::credential_store::{CredentialReference, CredentialStore};
 
 use super::adapter::{HttpLlmApiHubAdapter, LlmApiHubAdapter, NewApiTokenUsage};
 use super::identity::{IdentityResolver, SystemIdentityResolver};
@@ -112,7 +112,7 @@ where
 pub fn ensure_binding_for_current_user() -> Result<EnsureLlmApiBindingResponse, LlmApiError> {
     let started_at = Instant::now();
     let store = FileLlmApiBindingStore::default();
-    let credentials = crate::credential_store::SystemCredentialStore::new();
+    let credentials = crate::platform::credential_store::SystemCredentialStore::new();
     let identity = SystemIdentityResolver;
     let resolved = identity.resolve_identity()?;
     log::info!(
@@ -257,7 +257,7 @@ pub fn login_user_session_system(
     password: String,
 ) -> Result<EnsureLlmApiBindingResponse, LlmApiError> {
     let store = FileLlmApiBindingStore::default();
-    let credentials = crate::credential_store::SystemCredentialStore::new();
+    let credentials = crate::platform::credential_store::SystemCredentialStore::new();
     let identity = SystemIdentityResolver.resolve_identity()?;
     let adapter = HttpLlmApiHubAdapter::for_token_usage();
     let session = adapter.login_user_session(&username, &password)?;
@@ -287,7 +287,7 @@ pub fn save_user_session_system(
     access_token: String,
 ) -> Result<EnsureLlmApiBindingResponse, LlmApiError> {
     let store = FileLlmApiBindingStore::default();
-    let credentials = crate::credential_store::SystemCredentialStore::new();
+    let credentials = crate::platform::credential_store::SystemCredentialStore::new();
     let identity = SystemIdentityResolver.resolve_identity()?;
     let user_id = user_id.trim();
     let access_token = access_token.trim();
@@ -1033,7 +1033,7 @@ fn selected_model_from_binding(binding: &LlmApiBinding) -> String {
     } else {
         prefs.advanced.builtin_llmapi_available_models.clone()
     };
-    crate::llmapi_hub::select_model(
+    crate::features::llmapi_hub::select_model(
         &available_models,
         prefs.advanced.builtin_llmapi_default_model.as_deref(),
     )
@@ -1042,7 +1042,7 @@ fn selected_model_from_binding(binding: &LlmApiBinding) -> String {
 fn local_builtin_models_response() -> BuiltinLlmApiModelsResponse {
     let prefs = crate::platform::prefs::UserPrefs::load();
     let available_models = prefs.advanced.builtin_llmapi_available_models.clone();
-    let default_model = crate::llmapi_hub::select_model(
+    let default_model = crate::features::llmapi_hub::select_model(
         &available_models,
         prefs.advanced.builtin_llmapi_default_model.as_deref(),
     );
@@ -1066,7 +1066,7 @@ fn sync_available_models(
     match adapter.available_models(token) {
         Ok(models) => {
             let mut prefs = crate::platform::prefs::UserPrefs::load();
-            let selected = crate::llmapi_hub::select_model(
+            let selected = crate::features::llmapi_hub::select_model(
                 &models,
                 prefs.advanced.builtin_llmapi_default_model.as_deref(),
             );
@@ -1543,7 +1543,7 @@ where
     );
     Ok(ReadyModelConfig {
         provider: "openai".to_string(),
-        base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
+        base_url: crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
         model,
         token_credential_ref: reference,
     })
@@ -1576,7 +1576,7 @@ where
         max_output_tokens: None,
         api_key: String::new(),
         credential_ref: Some(config.token_credential_ref),
-        credential_state: crate::credential_store::CredentialState::Configured,
+        credential_state: crate::platform::credential_store::CredentialState::Configured,
         has_secret: true,
         credential_action: None,
     })
@@ -1587,7 +1587,7 @@ pub fn ready_saved_model_system() -> Result<crate::platform::prefs::SavedModel, 
     log::info!("[llmapi_hub][provisioning] ready_saved_model_system start");
     let store = FileLlmApiBindingStore::default();
     log::info!("[llmapi_hub][provisioning] ready_saved_model_system store ready");
-    let credentials = crate::credential_store::SystemCredentialStore::new();
+    let credentials = crate::platform::credential_store::SystemCredentialStore::new();
     log::info!("[llmapi_hub][provisioning] ready_saved_model_system credential store ready");
     let identity = SystemIdentityResolver.resolve_identity()?;
     log::info!(
@@ -1689,12 +1689,12 @@ pub fn ready_saved_model_from_local_binding_system(
         name: crate::platform::prefs::BUILTIN_LLMAPI_MODEL_NAME.to_string(),
         preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
         model,
-        base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
+        base_url: crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
         context_window_tokens: None,
         max_output_tokens: None,
         api_key: String::new(),
         credential_ref: Some(reference),
-        credential_state: crate::credential_store::CredentialState::Configured,
+        credential_state: crate::platform::credential_store::CredentialState::Configured,
         has_secret: true,
         credential_action: None,
     })
@@ -1754,7 +1754,7 @@ pub fn retry_binding_system(
     device_binding_id: String,
 ) -> Result<EnsureLlmApiBindingResponse, LlmApiError> {
     let store = FileLlmApiBindingStore::default();
-    let credentials = crate::credential_store::SystemCredentialStore::new();
+    let credentials = crate::platform::credential_store::SystemCredentialStore::new();
     let adapter = HttpLlmApiHubAdapter::from_system_credentials()?;
     let binding = store
         .get_binding(&pinvou_user_id, &device_binding_id)?
@@ -1882,9 +1882,9 @@ impl IdentityResolver for StaticIdentityResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::{CredentialStore, MemoryCredentialStore};
-    use crate::llmapi_hub::adapter::tests::MockLlmApiHubAdapter;
-    use crate::llmapi_hub::store::MemoryLlmApiBindingStore;
+    use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
+    use crate::features::llmapi_hub::adapter::tests::MockLlmApiHubAdapter;
+    use crate::features::llmapi_hub::store::MemoryLlmApiBindingStore;
 
     fn identity() -> StaticIdentityResolver {
         StaticIdentityResolver(LlmApiIdentity {
@@ -2168,8 +2168,8 @@ mod tests {
 
         let config = ready_model_config(&store, &credentials, &identity()).unwrap();
         assert_eq!(config.provider, "openai");
-        assert_eq!(config.base_url, crate::llmapi_hub::DEFAULT_CHAT_BASE_URL);
-        assert_eq!(config.model, crate::llmapi_hub::DEFAULT_MODEL);
+        assert_eq!(config.base_url, crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL);
+        assert_eq!(config.model, crate::features::llmapi_hub::DEFAULT_MODEL);
     }
 
     #[test]
@@ -2184,7 +2184,7 @@ mod tests {
             model.preset,
             crate::platform::prefs::ModelPreset::OpenaiCompatible
         );
-        assert_eq!(model.base_url, crate::llmapi_hub::DEFAULT_CHAT_BASE_URL);
+        assert_eq!(model.base_url, crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL);
         assert!(model.credential_ref.is_some());
         assert!(model.api_key.is_empty());
     }
@@ -2196,7 +2196,7 @@ mod tests {
         let adapter = MockLlmApiHubAdapter::default();
         ensure_binding(&store, &credentials, &adapter, &identity()).unwrap();
 
-        let items = crate::llmapi_hub::store::admin_overview_items(store.list_bindings().unwrap());
+        let items = crate::features::llmapi_hub::store::admin_overview_items(store.list_bindings().unwrap());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].pinvou_user_id, "u_1");
         assert_eq!(items[0].provisioning_status, ProvisioningStatus::Ready);

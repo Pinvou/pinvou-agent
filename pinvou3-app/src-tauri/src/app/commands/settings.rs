@@ -9,7 +9,7 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
 fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String {
     format!(
         "{context}: {}",
-        crate::credential_store::redact_secret(&err.to_string())
+        crate::platform::credential_store::redact_secret(&err.to_string())
     )
 }
 
@@ -101,9 +101,9 @@ fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, Str
 
 #[tauri::command]
 pub async fn submit_feedback(
-    request: crate::feedback::FeedbackSubmitRequest,
-) -> Result<crate::feedback::FeedbackReceipt, String> {
-    crate::feedback::submit_feedback(request)
+    request: crate::features::feedback::FeedbackSubmitRequest,
+) -> Result<crate::features::feedback::FeedbackReceipt, String> {
+    crate::features::feedback::submit_feedback(request)
         .await
         .map_err(|e| e.to_string())
 }

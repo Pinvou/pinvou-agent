@@ -67,7 +67,7 @@ pub fn now_ts() -> String {
 pub fn envelope(room_id: &str, session_id: &str, kind: &str, payload: Value) -> RelayEnvelope {
     RelayEnvelope {
         v: PROTOCOL_VERSION,
-        id: format!("evt_{}", crate::remote_control::short_token(18)),
+        id: format!("evt_{}", crate::features::remote_control::short_token(18)),
         room_id: room_id.to_string(),
         session_id: session_id.to_string(),
         direction: "desktop_to_mobile".to_string(),

@@ -29,7 +29,7 @@ fn elapsed() -> Duration {
 }
 
 fn clean_field(value: &str) -> String {
-    crate::credential_store::redact_secret(value)
+    crate::platform::credential_store::redact_secret(value)
         .chars()
         .map(|c| {
             if matches!(c, '\r' | '\n' | '\t') {

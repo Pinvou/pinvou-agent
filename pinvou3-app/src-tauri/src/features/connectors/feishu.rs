@@ -5,7 +5,7 @@
 //! `lark-cli <域> ...`,技能渐进披露教它用法。
 //!
 //! 公共的"起子进程 / 抑黑窗 / 抓 URL / 出二维码 / 收发事件 / 取消"逻辑见
-//! [`crate::connector_cli`](开发方案 C 抽公共管道);本文件只留飞书特有的薄声明
+//! [`crate::features::connectors::connector_cli`](开发方案 C 抽公共管道);本文件只留飞书特有的薄声明
 //! [`FEISHU_CTX`] + 两段连接编排 + 技能门控。
 //!
 //! 凭证模型(用户零找 key):pinvou3 作为产品方**一次性**用自己的飞书 app
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键)。
 const ID: &str = "feishu";

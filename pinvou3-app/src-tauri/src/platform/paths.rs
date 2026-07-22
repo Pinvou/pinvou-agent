@@ -11,13 +11,13 @@ use std::path::PathBuf;
 /// AI 通过相对路径访问 → 落在家目录下；通过绝对路径访问 → trust_mode 放行
 /// 但敏感子目录由 path filter / instructions 引导拦截。
 pub fn user_home_dir() -> PathBuf {
-    crate::os::user_home_dir()
+    crate::platform::os::user_home_dir()
 }
 
 /// `~/.pinvou3/` 根目录。
 pub fn pinvou3_home() -> PathBuf {
     if let Ok(custom) = std::env::var("PINVOU3_HOME") {
-        return crate::os::platform_compat_path(&custom);
+        return crate::platform::os::platform_compat_path(&custom);
     }
     user_home_dir().join(".pinvou3")
 }
@@ -90,7 +90,7 @@ pub fn web_template_dir() -> PathBuf {
 /// - **其他平台**(Linux/macOS):用系统 `python3`(Linux 几乎自带;GUI 子进程不弹窗;
 ///   依赖由 marketplace 的自动 pip 安装)。
 pub fn python_command() -> String {
-    crate::os::python_command()
+    crate::platform::os::python_command()
 }
 
 pub fn user_root() -> PathBuf {
@@ -343,11 +343,11 @@ pub(crate) mod tests {
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override");
         assert_eq!(
             pinvou3_home(),
-            crate::os::platform_compat_path("/tmp/pinvou3-test-override")
+            crate::platform::os::platform_compat_path("/tmp/pinvou3-test-override")
         );
         assert_eq!(
             settings_path(),
-            crate::os::platform_compat_path("/tmp/pinvou3-test-override").join("settings.json")
+            crate::platform::os::platform_compat_path("/tmp/pinvou3-test-override").join("settings.json")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
@@ -401,7 +401,7 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-wf-paths-test");
-        let root = crate::os::platform_compat_path("/tmp/pinvou3-wf-paths-test");
+        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-wf-paths-test");
         assert_eq!(workflows_root(), root.join("workflows"));
         assert_eq!(
             workflow_run_dir("wf-20260610-1432-a3f9"),
@@ -428,7 +428,7 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
-        let root = crate::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
+        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
         assert_eq!(
             bundle_connector_bin_dir_for("linux", "aarch64"),
             Some(
@@ -452,7 +452,7 @@ pub(crate) mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test");
-        let root = crate::os::platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
+        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
         assert_eq!(
             session_artifacts_dir("abc123"),
             root.join("sessions").join("abc123").join("artifacts")

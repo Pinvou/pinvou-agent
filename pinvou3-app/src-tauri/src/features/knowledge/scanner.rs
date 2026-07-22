@@ -141,7 +141,7 @@ pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::store::SearchQuery;
+    use crate::features::knowledge::store::SearchQuery;
     use std::fs;
 
     /// 在唯一临时目录建一棵小树，验证扫描 + 排除剪枝 + 入库。

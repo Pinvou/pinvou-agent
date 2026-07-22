@@ -11,11 +11,11 @@
 #[tauri::command]
 pub async fn get_session_timeline(
     session_id: String,
-) -> Result<Vec<crate::timing::TimelineEvent>, String> {
+) -> Result<Vec<crate::features::assistant::timing::TimelineEvent>, String> {
     // 防路径穿越:timing reader 内部走 sessions_root().join(session_id),
     // 必须先校验 session_id 字符集(只允许 [A-Za-z0-9_-]),否则可构造 ../ 越界。
     crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:?}"))?;
-    tokio::task::spawn_blocking(move || crate::timing::read_timeline(&session_id))
+    tokio::task::spawn_blocking(move || crate::features::assistant::timing::read_timeline(&session_id))
         .await
         .map_err(|error| format!("读取 session timeline 任务失败: {error}"))?
         .map_err(|error| format!("读取 session timeline 失败: {error}"))
@@ -27,10 +27,10 @@ pub async fn get_session_timeline(
 #[tauri::command]
 pub async fn get_session_stats(
     session_id: String,
-) -> Result<crate::timing::SessionTimelineStats, String> {
+) -> Result<crate::features::assistant::timing::SessionTimelineStats, String> {
     // 同 get_session_timeline:校验 session_id 字符集防路径穿越。
     crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:?}"))?;
-    tokio::task::spawn_blocking(move || crate::timing::compute_stats(&session_id))
+    tokio::task::spawn_blocking(move || crate::features::assistant::timing::compute_stats(&session_id))
         .await
         .map_err(|error| format!("统计 session timeline 任务失败: {error}"))?
         .map_err(|error| format!("统计 session timeline 失败: {error}"))

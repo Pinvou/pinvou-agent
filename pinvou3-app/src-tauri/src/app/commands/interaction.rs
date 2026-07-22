@@ -96,7 +96,7 @@ pub async fn accept_plan(
 /// 源真相 = `/etc/sudoers.d/pinvou3` 是否存在；前端启动时调一次同步 UI 状态。
 #[tauri::command]
 pub async fn get_super_permission_status() -> Result<bool, String> {
-    Ok(crate::super_permission::is_enabled())
+    Ok(crate::platform::super_permission::is_enabled())
 }
 
 /// 切换超级权限。开启时 pkexec 弹系统密码框写 sudoers，关闭时 pkexec 删文件。
@@ -108,15 +108,15 @@ pub async fn set_super_permission(
     pool: State<'_, EnginePool>,
 ) -> Result<bool, String> {
     if enabled {
-        crate::super_permission::enable()?;
+        crate::platform::super_permission::enable()?;
     } else {
-        crate::super_permission::disable()?;
+        crate::platform::super_permission::disable()?;
     }
     // 多 session 并发:重写所有已起 engine 的 session 专属 instructions(含新 sudo 引导块),
     // engine 下个 turn rehydrate 时从 disk 重读 → 「下次 turn 生效」。低频操作,不为即时
     // 生效去 SyncSession 打断在跑的 turn。未起的 session 首次 spawn 时自然带上新引导。
     pool.refresh_all_instructions().await;
-    Ok(crate::super_permission::is_enabled())
+    Ok(crate::platform::super_permission::is_enabled())
 }
 
 /// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
@@ -211,7 +211,7 @@ pub async fn add_run_materials(
     let workspace = store
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
-    let project = crate::harness::find_project_dir(&workspace)
+    let project = crate::features::assistant::harness::find_project_dir(&workspace)
         .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
     let dst_dir = project.join("配套材料");
     std::fs::create_dir_all(&dst_dir).map_err(|e| format!("建配套材料目录失败: {e}"))?;
@@ -286,7 +286,7 @@ pub async fn summon_pinvou(
     mode: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
-) -> Result<crate::pinvou_review::PinvouReview, String> {
+) -> Result<crate::features::review::PinvouReview, String> {
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
@@ -300,7 +300,7 @@ pub async fn summon_pinvou(
     let workspace = store
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
-    crate::pinvou_review::summon(
+    crate::features::review::summon(
         &bridge,
         &session.messages,
         &workspace,

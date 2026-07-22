@@ -34,7 +34,7 @@ use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
-use crate::credential_store::{CredentialStore, SystemCredentialStore};
+use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
 ///
@@ -91,7 +91,7 @@ pub struct Pinvou3Bridge {
     pub probed_context_tokens: Option<u32>,
 }
 
-impl crate::memory::MemoryReviewModel for Pinvou3Bridge {
+impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
     fn memory_provider(&self) -> String {
         self.provider()
     }
@@ -132,25 +132,25 @@ impl Pinvou3Bridge {
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
         // 编译期内嵌常量,不依赖 bundle 解包。dump_system_prompt bin 也经此 boot,故
         // dump 同样生效。见 docs/base-prompt-override-阶段2.md。
-        crate::startup::mark("bridge_boot:prompt_overrides:start");
+        crate::platform::startup::mark("bridge_boot:prompt_overrides:start");
         bundle::install_prompt_overrides();
-        crate::startup::mark("bridge_boot:prompt_overrides:done");
-        crate::startup::mark("bridge_boot:ensure_dirs:start");
+        crate::platform::startup::mark("bridge_boot:prompt_overrides:done");
+        crate::platform::startup::mark("bridge_boot:ensure_dirs:start");
         paths::ensure_dirs()?;
-        crate::startup::mark("bridge_boot:ensure_dirs:done");
+        crate::platform::startup::mark("bridge_boot:ensure_dirs:done");
         let bundle = Pinvou3Bundle::paths();
-        crate::startup::mark("bridge_boot:bundle_extract:start");
+        crate::platform::startup::mark("bridge_boot:bundle_extract:start");
         bundle.ensure_extracted()?;
-        crate::startup::mark("bridge_boot:bundle_extract:done");
-        crate::startup::mark("bridge_boot:mcp_secret_sync:start");
+        crate::platform::startup::mark("bridge_boot:bundle_extract:done");
+        crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
             eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
-            crate::startup::mark_with_detail("rust", "bridge_boot:mcp_secret_sync:error", &err);
+            crate::platform::startup::mark_with_detail("rust", "bridge_boot:mcp_secret_sync:error", &err);
         }
-        crate::startup::mark("bridge_boot:mcp_secret_sync:done");
-        crate::startup::mark("bridge_boot:prefs_load:start");
+        crate::platform::startup::mark("bridge_boot:mcp_secret_sync:done");
+        crate::platform::startup::mark("bridge_boot:prefs_load:start");
         let prefs = UserPrefs::load();
-        crate::startup::mark("bridge_boot:prefs_load:done");
+        crate::platform::startup::mark("bridge_boot:prefs_load:done");
         if !paths::settings_path().exists() {
             prefs.save().ok();
         }
@@ -169,9 +169,9 @@ impl Pinvou3Bridge {
         //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
         //   • `~/.codewhale/instructions.md` / `~/.deepseek/instructions.md`(早期 P-brand 路径)
         // 不再生成任何 pinvou3-managed disk 文件 — 所有 prompt 内容走 Inline。
-        crate::startup::mark("bridge_boot:legacy_cleanup:start");
+        crate::platform::startup::mark("bridge_boot:legacy_cleanup:start");
         this.cleanup_legacy_pinvou3_disk_files();
-        crate::startup::mark("bridge_boot:legacy_cleanup:done");
+        crate::platform::startup::mark("bridge_boot:legacy_cleanup:done");
         Ok(this)
     }
 
@@ -265,7 +265,7 @@ impl Pinvou3Bridge {
             .replace("{{PINVOU3_MODEL}}", &self.model())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
-                crate::super_permission::instruction_block(),
+                crate::platform::super_permission::instruction_block(),
             )
             // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
             // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
@@ -310,7 +310,7 @@ impl Pinvou3Bridge {
         if user.is_file() {
             out.push(InstructionSource::File(user));
         }
-        match crate::memory::ensure_runtime_prompt(session_id) {
+        match crate::features::memory::ensure_runtime_prompt(session_id) {
             Ok(path) => out.push(InstructionSource::File(path)),
             Err(err) => eprintln!(
                 "[pinvou3-app] memory runtime prompt unavailable for session {session_id}: {err}"
@@ -1139,7 +1139,7 @@ impl Pinvou3Bridge {
         // spawn 时渲染一次就过时,这里每 turn 重出。
         // 但只对**能跑命令**的 mode 注入:Plan 是只读、无 exec_shell(底座只读工具集),
         // sudo 用不用对它毫无意义,注入纯浪费 ~110 字/turn。
-        let sudo = crate::super_permission::turn_reminder();
+        let sudo = crate::platform::super_permission::turn_reminder();
         let mut reminder_body = match reminder_for(mode) {
             // Plan: 无 exec,不带 sudo。
             Some(r) if matches!(mode, AppMode::Plan) => r.to_string(),
@@ -1338,7 +1338,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
             credential_ref: None,
-            credential_state: crate::credential_store::CredentialState::Missing,
+            credential_state: crate::platform::credential_store::CredentialState::Missing,
             has_secret: false,
             credential_action: None,
         }];

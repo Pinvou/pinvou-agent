@@ -1,4 +1,4 @@
-use crate::process::HiddenCommand;
+use crate::platform::process::HiddenCommand;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};

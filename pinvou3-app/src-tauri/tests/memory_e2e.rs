@@ -13,8 +13,8 @@ use chrono::{Duration as ChronoDuration, Utc};
 use deepseek_tui::core::engine::spawn_engine;
 use deepseek_tui::core::events::Event;
 use deepseek_tui::tui::app::AppMode;
-use pinvou3_lib::bridge::{paths, Pinvou3Bridge};
-use pinvou3_lib::memory::{
+use pinvou3_lib::features::assistant::platform::bridge::{paths, Pinvou3Bridge};
+use pinvou3_lib::features::memory::{
     self, MemoryProfile, MemorySuggestion, PendingSensitiveIdentity, ProfileConventions,
     ProfileIdentity, ProfilePatch, RecentWorkItem, RecentWorkPatch, TimedMemoryItem,
     WorkContextFile,

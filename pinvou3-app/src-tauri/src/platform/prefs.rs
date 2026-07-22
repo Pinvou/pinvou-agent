@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::credential_store::{
+use crate::platform::credential_store::{
     CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
     CredentialStore, SystemCredentialStore,
 };
@@ -952,7 +952,7 @@ impl UserPrefs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::MemoryCredentialStore;
+    use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]

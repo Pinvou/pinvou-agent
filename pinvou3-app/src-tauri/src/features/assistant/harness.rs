@@ -181,7 +181,7 @@ pub struct SubAgentTask {
 /// 兜底工作流:第一个已发现的(老项目缺 scenario / 角色反查不中时用,
 /// 解析出的路径至少存在,失败也走有日志的脚本报错而不是 panic)。
 fn fallback_workflow() -> String {
-    crate::workflow_registry::discover()
+    crate::features::workflow::workflow_registry::discover()
         .into_iter()
         .map(|w| w.id)
         .next()
@@ -190,7 +190,7 @@ fn fallback_workflow() -> String {
 
 /// scenario → 工作流名。查不到回落 fallback(兼容缺 scenario 的老项目)。
 pub(crate) fn workflow_name_for_scenario(scenario: &str) -> String {
-    crate::workflow_registry::by_scenario(scenario)
+    crate::features::workflow::workflow_registry::by_scenario(scenario)
         .map(|w| w.id)
         .unwrap_or_else(fallback_workflow)
 }
@@ -204,7 +204,7 @@ pub(crate) fn workflow_of_project(project: &Path) -> String {
 /// (`slide_writer#3`)先剥后缀取基角色,再扫各工作流 registry 命中;查不到回落 fallback。
 pub(crate) fn workflow_of_role(role_id: &str) -> String {
     let base = role_id.split(['~', '#']).next().unwrap_or(role_id);
-    for wf in crate::workflow_registry::discover() {
+    for wf in crate::features::workflow::workflow_registry::discover() {
         if read_registry_for(&wf.id)
             .get("agents")
             .and_then(|a| a.get(base))
@@ -296,7 +296,7 @@ pub fn read_full_agent_state(workspace: &Path) -> Option<serde_json::Value> {
         obj.insert("scenario".into(), serde_json::Value::String(scenario.clone()));
         let workflow = workflow_name_for_scenario(&scenario);
         obj.insert("workflow_id".into(), serde_json::Value::String(workflow.clone()));
-        if let Some(wf) = crate::workflow_registry::discover()
+        if let Some(wf) = crate::features::workflow::workflow_registry::discover()
             .into_iter()
             .find(|w| w.id == workflow)
         {
@@ -550,7 +550,7 @@ pub fn init_project(
     use chrono::Utc;
 
     // 合法场景 = 各 workflow.json 认领的 scenarios 并集(基座不硬编码场景名)
-    let valid_scenarios: Vec<String> = crate::workflow_registry::discover()
+    let valid_scenarios: Vec<String> = crate::features::workflow::workflow_registry::discover()
         .into_iter()
         .flat_map(|w| w.scenarios)
         .collect();
@@ -825,7 +825,7 @@ fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Resu
                 .map(|b| b.base_url())
                 .unwrap_or_else(crate::features::monitor::vllm_base_url)
         });
-    let mut command = crate::process::python_command();
+    let mut command = crate::platform::process::python_command();
     let program = command.get_program().to_string_lossy().into_owned();
     command
         .args(args)
@@ -834,7 +834,7 @@ fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Resu
         .env("PYTHONIOENCODING", "utf-8") // Windows stdout 默认 GBK，中文 print 会 UnicodeEncodeError
         .env("PINVOU3_MODEL_BASE_URL", base_url);
     // 平台层负责隐藏控制台、持续排空管道与超时回收，业务层只解释协议输出。
-    let output = crate::process::output_with_timeout(
+    let output = crate::platform::process::output_with_timeout(
         command,
         std::time::Duration::from_secs(timeout_secs),
     )?;

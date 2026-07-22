@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use crate::credential_store::{CredentialStore, SystemCredentialStore};
+use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 mod platform;
@@ -423,10 +423,10 @@ fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
         "--format=csv,noheader,nounits",
     ];
     // Try platform-provided probe candidates in order.
-    let out = crate::os::nvidia_smi_candidates()
+    let out = crate::platform::os::nvidia_smi_candidates()
         .into_iter()
         .find_map(|candidate| {
-            crate::process::HiddenCommand::new(candidate)
+            crate::platform::process::HiddenCommand::new(candidate)
                 .args(args)
                 .output()
                 .ok()

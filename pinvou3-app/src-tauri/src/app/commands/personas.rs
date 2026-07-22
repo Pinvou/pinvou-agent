@@ -1,12 +1,12 @@
 #[tauri::command]
-pub async fn list_personas() -> Result<Vec<crate::personas::PersonaSummary>, String> {
-    Ok(crate::personas::all_summaries())
+pub async fn list_personas() -> Result<Vec<crate::features::personas::PersonaSummary>, String> {
+    Ok(crate::features::personas::all_summaries())
 }
 
 /// 读单个专家的完整人设正文（详情 modal 预览用）。
 #[tauri::command]
 pub async fn read_persona_body(persona_id: String) -> Result<String, String> {
-    crate::personas::get(&persona_id)
+    crate::features::personas::get(&persona_id)
         .map(|c| c.body.clone())
         .ok_or_else(|| format!("未知专家面具: {persona_id}"))
 }
@@ -19,13 +19,13 @@ pub async fn equip_persona(
     session_id: String,
     persona_id: String,
     store: State<'_, SessionStore>,
-) -> Result<crate::personas::PersonaSummary, String> {
+) -> Result<crate::features::personas::PersonaSummary, String> {
     let card =
-        crate::personas::get(&persona_id).ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
+        crate::features::personas::get(&persona_id).ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
     let summary = card.summary();
     store.set_pending_persona_body(
         &session_id,
-        Some(crate::personas::equip_body_injection(&card)),
+        Some(crate::features::personas::equip_body_injection(&card)),
     );
     store.set_active_persona(&session_id, Some(persona_id));
     Ok(summary)
@@ -49,8 +49,8 @@ pub struct PersonaInput {
 }
 
 impl PersonaInput {
-    fn into_card(self, id: String) -> crate::personas::PersonaCard {
-        crate::personas::PersonaCard {
+    fn into_card(self, id: String) -> crate::features::personas::PersonaCard {
+        crate::features::personas::PersonaCard {
             id,
             dept: self.dept,
             name: self.name,
@@ -77,8 +77,8 @@ impl PersonaInput {
 #[tauri::command]
 pub async fn create_persona(
     input: PersonaInput,
-) -> Result<crate::personas::PersonaSummary, String> {
-    crate::personas::create_user_persona(input.into_card(String::new()))
+) -> Result<crate::features::personas::PersonaSummary, String> {
+    crate::features::personas::create_user_persona(input.into_card(String::new()))
 }
 
 /// 编辑自制卡(persona_id 必须是 user- 前缀)。
@@ -86,14 +86,14 @@ pub async fn create_persona(
 pub async fn update_persona(
     persona_id: String,
     input: PersonaInput,
-) -> Result<crate::personas::PersonaSummary, String> {
-    crate::personas::update_user_persona(input.into_card(persona_id))
+) -> Result<crate::features::personas::PersonaSummary, String> {
+    crate::features::personas::update_user_persona(input.into_card(persona_id))
 }
 
 /// 删除自制卡。
 #[tauri::command]
 pub async fn delete_persona(persona_id: String) -> Result<(), String> {
-    crate::personas::delete_user_persona(&persona_id)
+    crate::features::personas::delete_user_persona(&persona_id)
 }
 
 /// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。
@@ -223,9 +223,9 @@ pub async fn unequip_persona(
 pub async fn get_active_persona(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Result<Option<crate::personas::PersonaSummary>, String> {
+) -> Result<Option<crate::features::personas::PersonaSummary>, String> {
     Ok(store
         .active_persona_id(&session_id)
-        .and_then(|pid| crate::personas::get(&pid).map(|c| c.summary())))
+        .and_then(|pid| crate::features::personas::get(&pid).map(|c| c.summary())))
 }
 use super::prelude::*;

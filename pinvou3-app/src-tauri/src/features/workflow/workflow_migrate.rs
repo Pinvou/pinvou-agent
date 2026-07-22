@@ -31,7 +31,7 @@
 //! 旧布局写入方还活着时先跑迁移会让新项目滞留旧布局。
 
 use crate::platform::paths;
-use crate::workflow_runs;
+use crate::features::workflow::workflow_runs;
 use std::path::{Path, PathBuf};
 
 fn marker_path() -> PathBuf {
@@ -448,7 +448,7 @@ mod tests {
         migrate_if_needed().unwrap();
 
         // 项目搬进 workflows/<run_id>/project/，台账有一条，状态 completed
-        let runs = crate::workflow_runs::list_runs().unwrap();
+        let runs = crate::features::workflow::workflow_runs::list_runs().unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "completed");
         // run_id 推导自目录名时间戳（HHMM）+ 稳定散列，且过统一校验
@@ -457,7 +457,7 @@ mod tests {
             "run_id 推导错: {}",
             runs[0].run_id
         );
-        assert!(crate::workflow_runs::is_valid_run_id(&runs[0].run_id));
+        assert!(crate::features::workflow::workflow_runs::is_valid_run_id(&runs[0].run_id));
         assert_eq!(runs[0].scenario, "solution_deck");
         assert!(crate::platform::paths::workflow_project_dir(&runs[0].run_id)
             .join("_state/workflow_progress.json")
@@ -489,7 +489,7 @@ mod tests {
         assert!(marker.get("deleted_hosts").is_none(), "删除分支已整体移除");
         // 幂等：再跑一次不炸不重复
         migrate_if_needed().unwrap();
-        assert_eq!(crate::workflow_runs::list_runs().unwrap().len(), 1);
+        assert_eq!(crate::features::workflow::workflow_runs::list_runs().unwrap().len(), 1);
         std::env::remove_var("PINVOU3_HOME");
     }
 
@@ -530,7 +530,7 @@ mod tests {
 
         migrate_if_needed().unwrap();
 
-        let runs = crate::workflow_runs::list_runs().unwrap();
+        let runs = crate::features::workflow::workflow_runs::list_runs().unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "running");
         assert_eq!(runs[0].scenario, "internal_quick");
@@ -585,7 +585,7 @@ mod tests {
             "续跑必须重试 rename 把项目搬进 target"
         );
         assert!(!old_proj.exists(), "旧址项目应已搬走");
-        let runs = crate::workflow_runs::list_runs().unwrap();
+        let runs = crate::features::workflow::workflow_runs::list_runs().unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, run_id);
         std::env::remove_var("PINVOU3_HOME");
@@ -636,13 +636,13 @@ mod tests {
         migrate_if_needed().unwrap();
 
         // 两个 run 都在、台账 2 条、run_id 互异且都过统一校验
-        let runs = crate::workflow_runs::list_runs().unwrap();
+        let runs = crate::features::workflow::workflow_runs::list_runs().unwrap();
         assert_eq!(runs.len(), 2, "两个同名项目都必须被迁移");
         assert_ne!(runs[0].run_id, runs[1].run_id);
         let mut tags: Vec<String> = runs
             .iter()
             .map(|r| {
-                assert!(crate::workflow_runs::is_valid_run_id(&r.run_id));
+                assert!(crate::features::workflow::workflow_runs::is_valid_run_id(&r.run_id));
                 std::fs::read_to_string(
                     crate::platform::paths::workflow_project_dir(&r.run_id).join("who.txt"),
                 )
@@ -736,7 +736,7 @@ mod tests {
         assert!(crate::platform::paths::workflow_run_dir(run_id)
             .join("run.json")
             .exists());
-        let runs = crate::workflow_runs::list_runs().unwrap();
+        let runs = crate::features::workflow::workflow_runs::list_runs().unwrap();
         assert_eq!(runs.len(), 1, "隐身 run 必须重新出现在台账");
         assert_eq!(runs[0].run_id, run_id);
         assert_eq!(runs[0].status, "completed");

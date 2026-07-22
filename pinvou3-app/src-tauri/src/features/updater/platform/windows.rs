@@ -462,7 +462,7 @@ pub fn install_update_package(path: &Path) -> Result<(), String> {
     let canon = canonical_inside(path, &updates_dir, "Windows 安装文件")?;
     let kind = installer_kind(&canon)?;
     let installer_arg = windows_tool_path(&canon);
-    crate::process::HiddenCommand::new("powershell.exe")
+    crate::platform::process::HiddenCommand::new("powershell.exe")
         .args(update_installer_launcher_args(kind, &installer_arg))
         .spawn()
         .map_err(|e| format!("Windows 安装器提权启动失败: {e}"))?;

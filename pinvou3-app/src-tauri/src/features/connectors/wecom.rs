@@ -1,8 +1,8 @@
 //! 企业微信(`@wecom/cli`,腾讯官方·MIT)CLI 连接器 —— 启动引导 + 扫码鉴权。
 //!
-//! 路线同飞书([`crate::feishu`]):官方 CLI + 官方域技能,riding 在腾讯官方 app 上,
+//! 路线同飞书([`crate::features::connectors::feishu`]):官方 CLI + 官方域技能,riding 在腾讯官方 app 上,
 //! **纯扫码**接入(不需管理员建自建应用、不需手填 CorpID/Secret)。
-//! 公共管道见 [`crate::connector_cli`];本文件只有企微特有的薄声明 + 单段连接编排。
+//! 公共管道见 [`crate::features::connectors::connector_cli`];本文件只有企微特有的薄声明 + 单段连接编排。
 //!
 //! 连接:`wecom-cli init --noninteractive --no-open` 长驻 → 抓二维码 URL → 用户扫码 →
 //! 进程退出后 `auth show` 判 ready。进度走事件 `wecom:qr` / `wecom:connected` / `wecom:error`。
@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键 + 停用标志名)。
 const ID: &str = "wecom";

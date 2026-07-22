@@ -495,7 +495,7 @@ fn detect_hardware_identity(fallback_claim: &str) -> HardwareIdentity {
     #[cfg(target_os = "windows")]
     {
         let script = "try { (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop).UUID } catch { '' }";
-        let output = crate::process::HiddenCommand::new("powershell.exe")
+        let output = crate::platform::process::HiddenCommand::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .output();
         if let Ok(output) = output {

@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 use crate::platform::prefs::{SavedModel, UserPrefs};
 use crate::features::sessions::{ScheduledRunProfile, SessionStore};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
-use crate::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
+use crate::features::assistant::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -290,7 +290,7 @@ impl EnginePool {
                 "[engine_pool] fresh_bridge_for ready_saved_model_local start sid={}",
                 session_id
             );
-            match crate::llmapi_hub::provisioning::ready_saved_model_from_local_binding_system() {
+            match crate::features::llmapi_hub::provisioning::ready_saved_model_from_local_binding_system() {
                 Ok(model) => {
                     log::info!(
                         "[engine_pool] fresh_bridge_for ready_saved_model_local ok sid={} elapsed_ms={}",
@@ -527,7 +527,7 @@ impl EnginePool {
                     "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                     session_id
                 );
-                crate::timing::finish_turn(session_id, "Interrupted", None);
+                crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
             }
             entry.engine.cancel_current();
             entry.forwarder.abort();
@@ -625,8 +625,8 @@ impl EnginePool {
         let active_card = self
             .store
             .active_persona_id(session_id)
-            .and_then(|pid| crate::personas::get(&pid));
-        let persona_reminder = active_card.as_ref().map(crate::personas::equip_anchor);
+            .and_then(|pid| crate::features::personas::get(&pid));
+        let persona_reminder = active_card.as_ref().map(crate::features::personas::equip_anchor);
         let restrict_tools = active_card
             .as_ref()
             .map_or(false, |c| c.conversational_only);
@@ -735,7 +735,7 @@ impl EnginePool {
                 "[engine_pool] cancel recovered active turn without engine sid={}",
                 session_id
             );
-            crate::timing::finish_turn(session_id, "Interrupted", None);
+            crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
         } else {
             log::info!(
                 "[engine_pool] cancel ignored for unknown idle session sid={}",
@@ -992,7 +992,7 @@ mod scheduled_model_tests {
     };
     use crate::platform::prefs::{ModelPreset, SavedModel};
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
-    use crate::credential_store::{CredentialEditAction, CredentialState};
+    use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;

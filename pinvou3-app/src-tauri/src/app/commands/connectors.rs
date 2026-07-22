@@ -11,7 +11,7 @@ pub async fn set_disabled_connectors(
     crate::features::marketplace::apply_disabled_connectors(connector_ids).await?;
     pool.refresh_disallowed_tools().await;
     let _ = app.emit("remote_control:tools_changed", ());
-    if let Some(manager) = app.try_state::<crate::remote_control::RemoteControlManager>() {
+    if let Some(manager) = app.try_state::<crate::features::remote_control::RemoteControlManager>() {
         if let Some(session_id) = manager.current_session_id() {
             manager.broadcast_to_mobile(&session_id, "tools_changed", serde_json::json!({}));
         }

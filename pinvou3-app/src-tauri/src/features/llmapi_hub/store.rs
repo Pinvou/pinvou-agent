@@ -254,7 +254,7 @@ pub fn admin_overview_items(bindings: Vec<LlmApiBinding>) -> Vec<LlmApiAdminOver
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llmapi_hub::models::{LlmApiIdentity, LlmApiPolicy};
+    use crate::features::llmapi_hub::models::{LlmApiIdentity, LlmApiPolicy};
 
     #[test]
     fn memory_store_uses_user_and_device_as_unique_key() {

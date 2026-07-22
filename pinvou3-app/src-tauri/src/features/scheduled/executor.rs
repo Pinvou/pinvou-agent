@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::platform::prefs::{SavedModel, UserPrefs};
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
-use crate::engine_pool::{EnginePool, ScheduledTurnCompletion};
+use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletion};
 
 type StartedCallback =
     Box<dyn FnMut(String) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
@@ -278,8 +278,8 @@ mod tests {
 
     use crate::platform::prefs::{ModelPreset, SavedModel};
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
-    use crate::credential_store::{CredentialEditAction, CredentialState};
-    use crate::engine_pool::ScheduledTurnCompletion;
+    use crate::platform::credential_store::{CredentialEditAction, CredentialState};
+    use crate::features::assistant::engine_pool::ScheduledTurnCompletion;
 
     #[derive(Debug)]
     enum Script {

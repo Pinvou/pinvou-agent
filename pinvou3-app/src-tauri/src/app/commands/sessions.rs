@@ -167,7 +167,7 @@ pub async fn delete_session(
         }
         SessionKind::ScheduledRun => {
             let scheduled = app
-                .try_state::<crate::scheduled_tasks::ScheduledTaskState>()
+                .try_state::<crate::features::scheduled::tasks::ScheduledTaskState>()
                 .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
             scheduled.delete_run_for_session(&id).await
         }

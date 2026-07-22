@@ -83,7 +83,7 @@ pub fn kb_model_cancel() {
 pub async fn kb_model_load_after_first_frame(
     app: tauri::AppHandle,
     service: tauri::State<'_, KnowledgeService>,
-    pool: tauri::State<'_, crate::engine_pool::EnginePool>,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<bool, String> {
     if service.semantic_ready() {
         return Ok(true);
@@ -93,7 +93,7 @@ pub async fn kb_model_load_after_first_frame(
     }
     let _guard = StartupLoadGuard;
 
-    crate::startup::mark("knowledge_embedder_async:start");
+    crate::platform::startup::mark("knowledge_embedder_async:start");
     let dir = super::model_dir();
     let embedder = tokio::task::spawn_blocking(move || KnowledgeService::load_embedder(Some(&dir)))
         .await
@@ -107,7 +107,7 @@ pub async fn kb_model_load_after_first_frame(
     if ready {
         super::refresh_kb_tool_gate(&pool).await;
     }
-    crate::startup::mark_with_detail(
+    crate::platform::startup::mark_with_detail(
         "rust",
         "knowledge_embedder_async:done",
         &format!("ready={ready}"),
@@ -120,7 +120,7 @@ pub async fn kb_model_load_after_first_frame(
 pub async fn kb_model_download(
     app: tauri::AppHandle,
     service: tauri::State<'_, KnowledgeService>,
-    pool: tauri::State<'_, crate::engine_pool::EnginePool>,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<KbModelStatus, String> {
     use tauri::Emitter;
 

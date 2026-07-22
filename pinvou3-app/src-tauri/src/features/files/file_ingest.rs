@@ -66,14 +66,14 @@ static SYSTEM_TOOLS: OnceLock<SystemTools> = OnceLock::new();
 /// 启动时（或第一次 ingest 时）检测一次系统工具。
 pub fn system_tools() -> SystemTools {
     *SYSTEM_TOOLS.get_or_init(|| SystemTools {
-        pandoc: crate::os::pandoc_tool_exists(),
-        pdftotext: crate::os::pdf_tool_exists("pdftotext"),
-        libreoffice: crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice"),
-        tesseract: crate::os::ocr_tool_exists(),
-        pdftoppm: crate::os::pdf_tool_exists("pdftoppm"),
-        sevenzip: crate::os::archive_tool_exists(),
-        python: crate::os::command_exists(&crate::platform::paths::python_command()),
-        msgconvert: !crate::os::msg_converter_required() || crate::os::command_exists("msgconvert"),
+        pandoc: crate::platform::os::pandoc_tool_exists(),
+        pdftotext: crate::platform::os::pdf_tool_exists("pdftotext"),
+        libreoffice: crate::platform::os::command_exists("soffice") || crate::platform::os::command_exists("libreoffice"),
+        tesseract: crate::platform::os::ocr_tool_exists(),
+        pdftoppm: crate::platform::os::pdf_tool_exists("pdftoppm"),
+        sevenzip: crate::platform::os::archive_tool_exists(),
+        python: crate::platform::os::command_exists(&crate::platform::paths::python_command()),
+        msgconvert: !crate::platform::os::msg_converter_required() || crate::platform::os::command_exists("msgconvert"),
     })
 }
 
@@ -96,20 +96,20 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         installed,
         apt: apt.into(),
     };
-    let libreoffice = crate::os::command_exists("soffice") || crate::os::command_exists("libreoffice");
+    let libreoffice = crate::platform::os::command_exists("soffice") || crate::platform::os::command_exists("libreoffice");
     let mut items = Vec::new();
-    if crate::os::show_pdf_dependency_check() {
+    if crate::platform::os::show_pdf_dependency_check() {
         items.push(item(
             "pdf",
-            crate::os::pdf_tool_exists("pdftotext"),
-            crate::os::pdf_dependency_packages(),
+            crate::platform::os::pdf_tool_exists("pdftotext"),
+            crate::platform::os::pdf_dependency_packages(),
         ));
     }
-    if crate::os::show_pandoc_dependency_check() {
+    if crate::platform::os::show_pandoc_dependency_check() {
         items.push(item(
             "office_modern",
-            crate::os::pandoc_tool_exists(),
-            crate::os::pandoc_dependency_packages(),
+            crate::platform::os::pandoc_tool_exists(),
+            crate::platform::os::pandoc_dependency_packages(),
         ));
     }
     items.push(item(
@@ -118,57 +118,57 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         crate::features::voice::asr_dependency_packages(),
     ));
     items.push(item("office_legacy", libreoffice, "libreoffice"));
-    if crate::os::show_ocr_dependency_check() {
+    if crate::platform::os::show_ocr_dependency_check() {
         items.push(item(
             "ocr",
-            crate::os::ocr_tool_exists() && crate::os::pdf_tool_exists("pdftoppm"),
-            crate::os::ocr_dependency_packages(),
+            crate::platform::os::ocr_tool_exists() && crate::platform::os::pdf_tool_exists("pdftoppm"),
+            crate::platform::os::ocr_dependency_packages(),
         ));
     }
-    if crate::os::show_archive_dependency_check() {
+    if crate::platform::os::show_archive_dependency_check() {
         items.push(item(
             "archive",
-            crate::os::archive_tool_exists(),
-            crate::os::archive_dependency_packages(),
+            crate::platform::os::archive_tool_exists(),
+            crate::platform::os::archive_dependency_packages(),
         ));
     }
     items.push(item(
         "email",
-        crate::os::email_tool_exists(),
-        crate::os::email_dependency_packages(),
+        crate::platform::os::email_tool_exists(),
+        crate::platform::os::email_dependency_packages(),
     ));
     items
 }
 
 fn pdf_tool_command(command: &str) -> Command {
-    crate::process::HiddenCommand::new(crate::os::pdf_tool_path(command))
+    crate::platform::process::HiddenCommand::new(crate::platform::os::pdf_tool_path(command))
 }
 
 fn pandoc_tool_command() -> Command {
-    crate::process::HiddenCommand::new(crate::os::pandoc_tool_path())
+    crate::platform::process::HiddenCommand::new(crate::platform::os::pandoc_tool_path())
 }
 
 fn ocr_tool_command() -> Command {
-    crate::process::HiddenCommand::new(crate::os::ocr_tool_path())
+    crate::platform::process::HiddenCommand::new(crate::platform::os::ocr_tool_path())
 }
 
 fn archive_tool_command() -> Command {
-    crate::process::HiddenCommand::new(crate::os::archive_tool_path())
+    crate::platform::process::HiddenCommand::new(crate::platform::os::archive_tool_path())
 }
 
 fn libreoffice_tool_command() -> Command {
-    crate::process::HiddenCommand::new(crate::os::libreoffice_tool_path())
+    crate::platform::process::HiddenCommand::new(crate::platform::os::libreoffice_tool_path())
 }
 
 fn libreoffice_user_installation_arg(profile_dir: &Path) -> Result<String, String> {
     Ok(format!(
         "-env:UserInstallation={}",
-        crate::os::file_url_from_path(profile_dir)?
+        crate::platform::os::file_url_from_path(profile_dir)?
     ))
 }
 
 fn add_ocr_tessdata_arg(command: &mut Command) {
-    if let Some(tessdata_dir) = crate::os::ocr_tessdata_dir() {
+    if let Some(tessdata_dir) = crate::platform::os::ocr_tessdata_dir() {
         command.arg("--tessdata-dir").arg(tessdata_dir);
     }
 }
@@ -378,7 +378,7 @@ fn ingest_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(crate::os::pdf_text_missing_message().into()),
+            warning: Some(crate::platform::os::pdf_text_missing_message().into()),
         };
     }
     // pdftotext -layout <path> -  → stdout
@@ -446,7 +446,7 @@ fn ingest_pandoc(
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(crate::os::pandoc_missing_message().into()),
+            warning: Some(crate::platform::os::pandoc_missing_message().into()),
         };
     }
     let out = pandoc_tool_command()
@@ -501,7 +501,7 @@ fn libreoffice_convert_text(
     out_ext: &str,
 ) -> Result<String, String> {
     if !system_tools().libreoffice {
-        return Err(crate::os::libreoffice_missing_message().into());
+        return Err(crate::platform::os::libreoffice_missing_message().into());
     }
     // 临时目录：每次唯一，避免并发文件名冲突。
     let ts = std::time::SystemTime::now()
@@ -637,7 +637,7 @@ fn inline_html_images(html: &str, dir: &Path) -> String {
 /// 独立 UserInstallation profile + 临时目录约定。
 pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     if !system_tools().libreoffice {
-        return Err(crate::os::libreoffice_missing_message().into());
+        return Err(crate::platform::os::libreoffice_missing_message().into());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -699,10 +699,10 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
 pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     let tools = system_tools();
     if !tools.libreoffice {
-        return Err(crate::os::libreoffice_missing_message().into());
+        return Err(crate::platform::os::libreoffice_missing_message().into());
     }
     if !tools.pdftoppm {
-        return Err(crate::os::pdf_render_missing_message().into());
+        return Err(crate::platform::os::pdf_render_missing_message().into());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -793,7 +793,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
 /// 但 110 dpi(预览够清又不至于 data URI 过大)。返回 (data_uris, 是否因上限截断)。
 pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     if !system_tools().pdftoppm {
-        return Err(crate::os::pdf_render_missing_message().into());
+        return Err(crate::platform::os::pdf_render_missing_message().into());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -988,7 +988,7 @@ fn ingest_presentation(
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(crate::os::presentation_pdf_missing_message().into()),
+            warning: Some(crate::platform::os::presentation_pdf_missing_message().into()),
         };
     }
     match libreoffice_presentation_text(path) {
@@ -1141,7 +1141,7 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
             markdown: None,
             token_estimate: 0,
             byte_size,
-            warning: Some(crate::os::pdf_ocr_missing_message().into()),
+            warning: Some(crate::platform::os::pdf_ocr_missing_message().into()),
         };
     }
 
@@ -1409,8 +1409,8 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
 }
 
 fn archive_tool_missing_message() -> String {
-    if crate::os::show_archive_dependency_check() {
-        let packages = crate::os::archive_dependency_packages();
+    if crate::platform::os::show_archive_dependency_check() {
+        let packages = crate::platform::os::archive_dependency_packages();
         if packages.trim().is_empty() {
             "压缩包解析需要 7z，请按当前系统方式安装压缩包解析工具".into()
         } else {
@@ -1465,7 +1465,7 @@ fn ingest_email(
         }
     };
 
-    if kind == "msg" && crate::os::msg_native_supported() {
+    if kind == "msg" && crate::platform::os::msg_native_supported() {
         return match parse_msg_via_msg_parser(path) {
             Ok(text) => mk(Some(text), None),
             Err(e) => mk(None, Some(e)),
@@ -1853,7 +1853,7 @@ if atts:
     print('\n附件:', ', '.join(atts))
 "#;
     let program = crate::platform::paths::python_command();
-    let out = crate::process::HiddenCommand::new(&program)
+    let out = crate::platform::process::HiddenCommand::new(&program)
         .arg("-c")
         .arg(SCRIPT)
         .arg(path)
@@ -2150,7 +2150,7 @@ pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String>
             bytes.len() as f64 / 1024.0 / 1024.0
         ));
     }
-    let pastes = crate::os::user_home_dir().join(".pinvou3").join("pastes");
+    let pastes = crate::platform::os::user_home_dir().join(".pinvou3").join("pastes");
     std::fs::create_dir_all(&pastes).map_err(|e| format!("create pastes dir: {e}"))?;
     let safe_name = sanitize_filename(filename);
     let ts = std::time::SystemTime::now()
@@ -2195,11 +2195,11 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
     if !metadata.is_file() {
         return Err(format!("path {} is not a file", canon.display()));
     }
-    crate::os::validate_upload_location(&canon)?;
+    crate::platform::os::validate_upload_location(&canon)?;
     for blocked in &[".ssh", ".gnupg", ".aws", ".docker", ".kube"] {
         if canon
             .components()
-            .any(|c| crate::os::path_component_eq(c.as_os_str(), blocked))
+            .any(|c| crate::platform::os::path_component_eq(c.as_os_str(), blocked))
         {
             return Err(format!(
                 "path {} crosses sensitive dir {}",
@@ -2212,7 +2212,7 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 fn normalize_validated_path(path: &Path) -> PathBuf {
-    crate::os::platform_compat_path(&path.to_string_lossy())
+    crate::platform::os::platform_compat_path(&path.to_string_lossy())
 }
 
 #[cfg(test)]
@@ -2638,7 +2638,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn validate_path_accepts_windows_canonicalized_home_file() {
-        let home = crate::os::user_home_dir();
+        let home = crate::platform::os::user_home_dir();
         let file = home.join(format!(
             "pinvou3-validate-path-{}.txt",
             std::process::id()
@@ -2669,14 +2669,14 @@ mod tests {
         let command = pdf_tool_command("pdftotext");
         assert_eq!(
             command.get_program(),
-            crate::os::pdf_tool_path("pdftotext").as_os_str()
+            crate::platform::os::pdf_tool_path("pdftotext").as_os_str()
         );
     }
 
     #[test]
     fn archive_tool_command_uses_os_layer_program() {
         let command = archive_tool_command();
-        assert_eq!(command.get_program(), crate::os::archive_tool_path().as_os_str());
+        assert_eq!(command.get_program(), crate::platform::os::archive_tool_path().as_os_str());
     }
 
     #[test]
@@ -2686,26 +2686,26 @@ mod tests {
         let has_pandoc = deps.iter().any(|item| item.key == "office_modern");
         let has_ocr = deps.iter().any(|item| item.key == "ocr");
         let has_archive = deps.iter().any(|item| item.key == "archive");
-        assert_eq!(has_pdf, crate::os::show_pdf_dependency_check());
-        assert_eq!(has_pandoc, crate::os::show_pandoc_dependency_check());
-        assert_eq!(has_ocr, crate::os::show_ocr_dependency_check());
-        assert_eq!(has_archive, crate::os::show_archive_dependency_check());
+        assert_eq!(has_pdf, crate::platform::os::show_pdf_dependency_check());
+        assert_eq!(has_pandoc, crate::platform::os::show_pandoc_dependency_check());
+        assert_eq!(has_ocr, crate::platform::os::show_ocr_dependency_check());
+        assert_eq!(has_archive, crate::platform::os::show_archive_dependency_check());
 
-        if !crate::os::show_pdf_dependency_check() {
+        if !crate::platform::os::show_pdf_dependency_check() {
             assert!(
                 deps.iter()
                     .all(|item| !item.apt.contains("poppler") && !item.apt.contains("pdfto")),
                 "hidden Windows Poppler dependency should not leave install hints: {deps:?}"
             );
         }
-        if !crate::os::show_pandoc_dependency_check() {
+        if !crate::platform::os::show_pandoc_dependency_check() {
             assert!(
                 deps.iter()
                     .all(|item| !item.apt.contains("pandoc") && item.key != "office_modern"),
                 "hidden Windows Pandoc dependency should not leave install hints: {deps:?}"
             );
         }
-        if !crate::os::show_ocr_dependency_check() {
+        if !crate::platform::os::show_ocr_dependency_check() {
             assert!(
                 deps.iter().all(|item| {
                     !item.apt.contains("tesseract") && !item.apt.contains("tesseract-ocr")
@@ -2713,7 +2713,7 @@ mod tests {
                 "hidden Windows OCR dependency should not leave install hints: {deps:?}"
             );
         }
-        if !crate::os::show_archive_dependency_check() {
+        if !crate::platform::os::show_archive_dependency_check() {
             assert!(
                 deps.iter()
                     .all(|item| !item.apt.contains("p7zip") && item.key != "archive"),
@@ -2824,7 +2824,7 @@ mod tests {
 
     #[test]
     fn eml_regression_parses_headers_body_and_attachment_when_python_available() {
-        if !crate::os::command_exists(&crate::platform::paths::python_command()) {
+        if !crate::platform::os::command_exists(&crate::platform::paths::python_command()) {
             eprintln!("skip: Python is not available");
             return;
         }
@@ -2867,7 +2867,7 @@ mod tests {
         let command = pandoc_tool_command();
         assert_eq!(
             command.get_program(),
-            crate::os::pandoc_tool_path().as_os_str()
+            crate::platform::os::pandoc_tool_path().as_os_str()
         );
     }
 
@@ -2876,7 +2876,7 @@ mod tests {
         let command = ocr_tool_command();
         assert_eq!(
             command.get_program(),
-            crate::os::ocr_tool_path().as_os_str()
+            crate::platform::os::ocr_tool_path().as_os_str()
         );
     }
 
@@ -2885,7 +2885,7 @@ mod tests {
         let mut command = ocr_tool_command();
         add_ocr_tessdata_arg(&mut command);
         let args: Vec<_> = command.get_args().map(|arg| arg.to_os_string()).collect();
-        if let Some(dir) = crate::os::ocr_tessdata_dir() {
+        if let Some(dir) = crate::platform::os::ocr_tessdata_dir() {
             assert!(args.iter().any(|arg| arg == "--tessdata-dir"));
             assert!(args.iter().any(|arg| arg == dir.as_os_str()));
         } else {
@@ -2896,7 +2896,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_pandoc_missing_message_points_to_repair_install() {
-        let message = crate::os::pandoc_missing_message();
+        let message = crate::platform::os::pandoc_missing_message();
         assert!(!message.contains("sudo apt install pandoc"));
         assert!(message.contains("修复") || message.contains("重新安装"));
     }

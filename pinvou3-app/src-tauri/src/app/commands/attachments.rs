@@ -272,7 +272,7 @@ fn attachment_preview(md: &str) -> (String, usize) {
 /// 显式声明「只看到预览」——否则小模型会拿前 20 行当全量数据静默作答。
 fn push_large_attachment_section(
     out: &mut String,
-    a: &crate::file_ingest::IngestResult,
+    a: &crate::features::files::file_ingest::IngestResult,
     md: &str,
     workspace: &std::path::Path,
     attachment_dir: &str,
@@ -316,7 +316,7 @@ fn push_large_attachment_section(
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
 pub(super) fn build_message_with_attachments_in_dir(
     text: String,
-    attachments: Vec<crate::file_ingest::IngestResult>,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
     attachment_dir: &str,
 ) -> String {
@@ -407,7 +407,7 @@ pub(super) fn build_message_with_attachments_in_dir(
 /// 不是对外 API；scheduled chat 走上面的 run 专属目录入口。
 pub fn build_message_with_attachments(
     text: String,
-    attachments: Vec<crate::file_ingest::IngestResult>,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
 ) -> String {
     build_message_with_attachments_in_dir(text, attachments, workspace, "attachments")

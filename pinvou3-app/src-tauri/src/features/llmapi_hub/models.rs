@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::credential_store::{redact_secret, CredentialError, CredentialReference};
+use crate::platform::credential_store::{redact_secret, CredentialError, CredentialReference};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -120,7 +120,7 @@ impl Default for LlmApiPolicy {
         Self {
             quota_limit_tokens: 1_000_000,
             rpm_limit: 60,
-            allowed_models: vec![crate::llmapi_hub::DEFAULT_MODEL.to_string()],
+            allowed_models: vec![crate::features::llmapi_hub::DEFAULT_MODEL.to_string()],
         }
     }
 }

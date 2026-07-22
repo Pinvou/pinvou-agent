@@ -641,7 +641,7 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
         "bmp" => "image/bmp",
         _ => "image/png",
     };
-    let b64 = crate::file_ingest::base64_encode(&bytes);
+    let b64 = crate::features::files::file_ingest::base64_encode(&bytes);
     Ok(format!("data:{mime};base64,{b64}"))
 }
 
@@ -683,7 +683,7 @@ pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, Str
         } else {
             "image/jpeg"
         };
-        let b64 = crate::file_ingest::base64_encode(&buf);
+        let b64 = crate::features::files::file_ingest::base64_encode(&buf);
         return Ok(Some(format!("data:{mime};base64,{b64}")));
     }
     Ok(None)
@@ -810,7 +810,7 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
         .unwrap_or_default();
     let p2 = p.clone();
     let result = tokio::task::spawn_blocking(move || -> VisualResult {
-        use crate::file_ingest as fi;
+        use crate::features::files::file_ingest as fi;
         match ext.as_str() {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" => {
                 match fi::image_file_to_data_uri(&p2) {
@@ -875,14 +875,14 @@ fn valid_session_id(id: &str) -> bool {
 }
 
 fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
-    let program = crate::os::libreoffice_tool_path();
+    let program = crate::platform::os::libreoffice_tool_path();
     let program_text = program.to_string_lossy().to_string();
-    if !crate::os::command_exists(&program_text) {
-        return Err(crate::os::libreoffice_missing_message().into());
+    if !crate::platform::os::command_exists(&program_text) {
+        return Err(crate::platform::os::libreoffice_missing_message().into());
     }
 
     std::process::Command::new(&program)
-        .arg(crate::os::external_application_path(path))
+        .arg(crate::platform::os::external_application_path(path))
         .spawn()
         .map_err(|e| format!("LibreOffice 打开失败: {e}"))?;
     Ok(())
@@ -924,7 +924,7 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     if !url_in_external_allowlist(&url) {
         return Err(format!("URL not in allowlist: {url}"));
     }
-    crate::os::open_target(&url, "外部链接")
+    crate::platform::os::open_target(&url, "外部链接")
 }
 
 /// 本机 Obsidian 状态(供工具市场"连接"前分支)。
@@ -963,7 +963,7 @@ pub fn detect_obsidian() -> ObsidianStatus {
         state: "not_installed".into(),
         vault_path: None,
     };
-    let cfg = match crate::os::obsidian_config_path() {
+    let cfg = match crate::platform::os::obsidian_config_path() {
         Some(p) if p.is_file() => p,
         _ => return not_installed(),
     };
@@ -1034,10 +1034,10 @@ pub async fn open_in_system(
 ) -> Result<(), String> {
     let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
     let p = validate_user_path(&resolved)?;
-    if crate::os::libreoffice_open_fallback_needed(&p) {
+    if crate::platform::os::libreoffice_open_fallback_needed(&p) {
         return open_with_libreoffice(&p);
     }
-    crate::os::open_target(crate::os::external_application_path(&p), "产物")
+    crate::platform::os::open_target(crate::platform::os::external_application_path(&p), "产物")
 }
 
 /// 用文件管理器打开**所在目录**（不是文件本身）。
@@ -1052,7 +1052,7 @@ pub async fn open_containing_folder(
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
-    crate::os::open_target(crate::os::external_application_path(dir), "产物所在目录")
+    crate::platform::os::open_target(crate::platform::os::external_application_path(dir), "产物所在目录")
 }
 
 /// 在文件管理器里定位 session 文件夹。对标 WorkBuddy:打开所有任务文件夹的上级目录,
@@ -1075,8 +1075,8 @@ pub async fn reveal_session_folder(
             .map_err(|e| format!("reveal_session_folder({session_id}): {e:#}"))?;
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
-        return crate::os::open_target(
-            crate::os::external_application_path(&dir),
+        return crate::platform::os::open_target(
+            crate::platform::os::external_application_path(&dir),
             "定时任务工作区",
         );
     }
@@ -1084,7 +1084,7 @@ pub async fn reveal_session_folder(
     if !dir.is_dir() {
         return Err(format!("session folder not found: {}", dir.display()));
     }
-    crate::os::reveal_target(&dir)
+    crate::platform::os::reveal_target(&dir)
 }
 
 /// 打开某个定时任务独享的工作间。工作间由 automation id 稳定派生，任务的多次运行
@@ -1097,7 +1097,7 @@ pub async fn open_scheduled_task_folder(automation_id: String) -> Result<(), Str
     let dir = crate::platform::paths::scheduled_task_workspace_dir(&automation_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
-    crate::os::open_target(crate::os::external_application_path(&dir), "定时任务工作区")
+    crate::platform::os::open_target(crate::platform::os::external_application_path(&dir), "定时任务工作区")
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
@@ -1116,10 +1116,10 @@ pub async fn open_artifact_window(
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
-    if crate::os::system_default_open_supported(&p) {
-        return crate::os::open_target(crate::os::external_application_path(&p), "产物");
+    if crate::platform::os::system_default_open_supported(&p) {
+        return crate::platform::os::open_target(crate::platform::os::external_application_path(&p), "产物");
     }
-    if crate::os::libreoffice_open_fallback_needed(&p) {
+    if crate::platform::os::libreoffice_open_fallback_needed(&p) {
         return open_with_libreoffice(&p);
     }
     // 用文件 inode 做稳定 label,防同一文件多次打开建多窗口。Tauri label 只允许 a-zA-Z0-9-_。
@@ -1134,7 +1134,7 @@ pub async fn open_artifact_window(
         return Ok(());
     }
 
-    let url = crate::os::file_url_from_path(&p)?;
+    let url = crate::platform::os::file_url_from_path(&p)?;
     let title = p
         .file_name()
         .and_then(|s| s.to_str())

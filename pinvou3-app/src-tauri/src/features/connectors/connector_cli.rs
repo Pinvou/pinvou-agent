@@ -67,11 +67,11 @@ impl CliCtx {
 // ─────────────────────────── 子进程构造 ───────────────────────────
 
 fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
-    crate::os::connector_cli_command(cli_bin, program)
+    crate::platform::os::connector_cli_command(cli_bin, program)
 }
 
 pub fn apply_user_npm_prefix(cmd: &mut Command) {
-    crate::os::apply_user_npm_prefix(cmd);
+    crate::platform::os::apply_user_npm_prefix(cmd);
 }
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
@@ -189,7 +189,7 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
 
 /// tree-kill 一个 PID,连其子进程(.cmd 拉起的 node)一起。
 pub fn kill_pid_tree(pid: u32) {
-    crate::os::kill_pid_tree(pid);
+    crate::platform::os::kill_pid_tree(pid);
 }
 
 /// 给前端发连接编排事件(`<id>:qr` / `<id>:phase` / `<id>:connected` / `<id>:error`)。
@@ -257,24 +257,24 @@ pub struct ConnectorAuthGateRefresh {
 #[tauri::command]
 pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
     let started = Instant::now();
-    crate::startup::mark("connector_auth_refresh:start");
+    crate::platform::startup::mark("connector_auth_refresh:start");
 
     let feishu = tokio::task::spawn_blocking(|| {
-        let show = crate::feishu::feishu_skills_should_show();
+        let show = crate::features::connectors::feishu::feishu_skills_should_show();
         crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_feishu_skills(show)
             .map_err(|e| format!("刷新飞书技能门控失败: {e}"))?;
         Ok::<bool, String>(show)
     });
     let wecom = tokio::task::spawn_blocking(|| {
-        let show = crate::wecom::wecom_skills_should_show();
+        let show = crate::features::connectors::wecom::wecom_skills_should_show();
         crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_wecom_skills(show)
             .map_err(|e| format!("刷新企微技能门控失败: {e}"))?;
         Ok::<bool, String>(show)
     });
     let dingtalk = tokio::task::spawn_blocking(|| {
-        let show = crate::dingtalk::dingtalk_skills_should_show();
+        let show = crate::features::connectors::dingtalk::dingtalk_skills_should_show();
         crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_dingtalk_skills(show)
             .map_err(|e| format!("刷新钉钉技能门控失败: {e}"))?;
@@ -289,7 +289,7 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
     let dingtalk_visible = dingtalk_result
         .map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
     let elapsed_ms = started.elapsed().as_millis() as u64;
-    crate::startup::mark_with_detail(
+    crate::platform::startup::mark_with_detail(
         "rust",
         "connector_auth_refresh:done",
         &format!(

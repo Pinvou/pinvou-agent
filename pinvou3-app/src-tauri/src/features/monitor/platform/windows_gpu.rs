@@ -28,7 +28,7 @@ try {
   tempC = $temp
 } | ConvertTo-Json -Compress
 "#;
-    let mut command = crate::process::HiddenCommand::new("powershell.exe");
+    let mut command = crate::platform::process::HiddenCommand::new("powershell.exe");
     command.args([
         "-NoProfile",
         "-ExecutionPolicy",
@@ -36,7 +36,7 @@ try {
         "-Command",
         script,
     ]);
-    let output = crate::process::output_with_timeout(command, Duration::from_secs(15)).ok()?;
+    let output = crate::platform::process::output_with_timeout(command, Duration::from_secs(15)).ok()?;
     if !output.status.success() {
         return None;
     }

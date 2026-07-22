@@ -18,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 use crate::platform::prefs::UserPrefs;
 use crate::features::sessions::SessionStore;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
-use crate::engine_pool::EnginePool;
-use crate::scheduled_executor::ScheduledChatExecutor;
+use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::scheduled::executor::ScheduledChatExecutor;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEDULED_RETENTION_INTERVAL: Duration = Duration::from_secs(15);

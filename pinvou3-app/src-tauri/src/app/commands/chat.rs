@@ -20,7 +20,7 @@ use super::prelude::*;
 #[tauri::command]
 pub async fn chat(
     message: String,
-    attachments: Option<Vec<crate::file_ingest::IngestResult>>,
+    attachments: Option<Vec<crate::features::files::file_ingest::IngestResult>>,
     session_id: Option<String>,
     restrict_tools: Option<bool>,
     pool: State<'_, EnginePool>,
@@ -68,7 +68,7 @@ pub async fn chat(
         "attachments".to_string()
     };
     let raw_message = message.clone();
-    crate::timing::start_turn(&sid);
+    crate::features::assistant::timing::start_turn(&sid);
     let mut full = build_message_with_attachments_in_dir(
         message,
         attachments.unwrap_or_default(),
@@ -94,11 +94,11 @@ pub async fn chat(
     if let Some(body) = store.take_pending_persona_body(&sid) {
         full = format!("{body}\n\n---\n\n{full}");
     }
-    let memory_enabled = crate::memory::memory_enabled();
+    let memory_enabled = crate::features::memory::memory_enabled();
     if memory_enabled {
-        crate::memory::record_turn_user(&sid, &raw_message);
+        crate::features::memory::record_turn_user(&sid, &raw_message);
     }
-    match crate::memory::runtime_snapshot(&sid) {
+    match crate::features::memory::runtime_snapshot(&sid) {
         Ok(snapshot) => {
             let _ = app.emit(
                 "chat:memory",
@@ -145,7 +145,7 @@ pub async fn chat(
         let provision_result = tokio::time::timeout(
             std::time::Duration::from_secs(25),
             tokio::task::spawn_blocking(
-                crate::llmapi_hub::provisioning::ensure_binding_for_current_user,
+                crate::features::llmapi_hub::provisioning::ensure_binding_for_current_user,
             ),
         )
         .await;
@@ -214,7 +214,7 @@ pub async fn chat(
             Ok(())
         }
         Err(e) => {
-            crate::timing::finish_turn(&sid, "send_error", Some(&format!("{e:?}")));
+            crate::features::assistant::timing::finish_turn(&sid, "send_error", Some(&format!("{e:?}")));
             log::error!(
                 "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:?}",
                 sid,

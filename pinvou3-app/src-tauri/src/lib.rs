@@ -8,97 +8,32 @@
 //! Engine 事件（MessageDelta / ToolCallStarted / ToolCallComplete / TurnComplete）
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
-// bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
-// spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
-#[path = "features/assistant/audit.rs"]
-mod audit;
 mod core;
 pub mod platform;
-pub use features::assistant::platform::bridge as bridge;
 mod app;
-#[path = "platform/credential_store.rs"]
-pub mod credential_store;
-#[path = "features/pet/detach.rs"]
-mod detach;
-mod features;
-#[path = "features/feedback/mod.rs"]
-pub mod feedback;
+pub mod features;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use app::commands::attachments::build_message_with_attachments;
-// CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
-#[path = "features/connectors/connector_cli.rs"]
-mod connector_cli;
-#[path = "features/connectors/dingtalk.rs"]
-mod dingtalk;
-#[path = "features/connectors/eip.rs"]
-mod eip;
-#[path = "features/assistant/engine.rs"]
-pub mod engine;
-#[path = "features/assistant/engine_pool.rs"]
-pub mod engine_pool;
-#[path = "features/connectors/feishu.rs"]
-mod feishu;
-#[path = "features/files/file_ingest.rs"]
-pub mod file_ingest;
-#[path = "features/files/file_watcher.rs"]
-mod file_watcher;
-#[path = "features/assistant/harness.rs"]
-mod harness;
-#[path = "features/knowledge/mod.rs"]
-mod knowledge;
-#[path = "features/llmapi_hub/mod.rs"]
-pub mod llmapi_hub;
-#[path = "features/local_llm/setup.rs"]
-mod local_vllm_setup;
-#[path = "features/memory/mod.rs"]
-pub mod memory;
-#[path = "platform/notifications.rs"]
-mod notifications;
-#[path = "platform/os/mod.rs"]
-mod os;
-#[path = "features/personas/mod.rs"]
-pub mod personas;
-#[path = "features/pet/pet_window.rs"]
-mod pet_window;
-#[path = "features/review/mod.rs"]
-mod pinvou_review;
-#[path = "platform/process.rs"]
-mod process;
-#[path = "features/remote_control/mod.rs"]
-mod remote_control;
-#[path = "features/scheduled/executor.rs"]
-mod scheduled_executor;
-#[path = "features/scheduled/tasks.rs"]
-mod scheduled_tasks;
-#[path = "features/pet/selected_pet.rs"]
-mod selected_pet;
-#[path = "platform/startup.rs"]
-mod startup;
-#[path = "platform/super_permission.rs"]
-pub mod super_permission;
-#[path = "platform/telemetry.rs"]
-mod telemetry;
-#[path = "features/assistant/timing.rs"]
-mod timing;
-#[path = "features/connectors/wecom.rs"]
-mod wecom;
-#[path = "features/workflow/workflow_migrate.rs"]
-mod workflow_migrate;
-#[path = "features/workflow/workflow_registry.rs"]
-pub mod workflow_registry;
-#[path = "features/workflow/workflow_runs.rs"]
-mod workflow_runs;
-#[path = "features/connectors/zhidao.rs"]
-mod zhidao;
 
 use tauri::Manager;
 
 use crate::app::commands;
-use crate::engine_pool::EnginePool;
-use crate::features::monitor::MonitorState;
-use crate::features::sessions::SessionStore;
-use crate::remote_control::RemoteControlManager;
+use crate::features::{
+    assistant::{
+        engine_pool::EnginePool, platform::bridge,
+    },
+    connectors::{connector_cli, dingtalk, eip, feishu, wecom, zhidao},
+    files::{file_ingest, file_watcher},
+    knowledge,
+    local_llm::setup as local_vllm_setup,
+    monitor::MonitorState,
+    pet::{detach, pet_window, selected_pet},
+    remote_control::{self, RemoteControlManager},
+    scheduled::tasks as scheduled_tasks,
+    sessions::SessionStore,
+};
+use crate::platform::{notifications, startup, telemetry};
 
 /// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
 /// 要在副本里 `npm run build` 写盘,而随 deb 的 resource_dir 是只读安装目录,故首次启动复制一份)。
@@ -347,7 +282,7 @@ pub fn run() {
             // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
             // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
             startup::mark("workflow_migrate:start");
-            if let Err(e) = crate::workflow_migrate::migrate_if_needed() {
+            if let Err(e) = crate::features::workflow::workflow_migrate::migrate_if_needed() {
                 eprintln!("[pinvou3-app] workflow migrate failed (will retry next boot): {e}");
                 startup::mark_with_detail("rust", "workflow_migrate:error", &e.to_string());
             }
@@ -406,14 +341,14 @@ pub fn run() {
                 SessionStore::boot().expect("session store boot fallback")
             });
             startup::mark("engine_pool:start");
-            let tool_factory: crate::engine_pool::EngineToolFactory =
+            let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
                 std::sync::Arc::new(|app, session_id| {
                     vec![std::sync::Arc::new(knowledge::KbSearchTool::new(
                         app.clone(),
                         session_id.to_string(),
                     ))]
                 });
-            let tool_policy: crate::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
+            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
                 let mut tools = crate::features::marketplace::disabled_tool_names();
                 let kb_usable = app
                     .try_state::<knowledge::KnowledgeService>()

@@ -233,7 +233,7 @@ pub async fn start_workflow(
 
     // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
     //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。
-    let wf = crate::workflow_registry::by_scenario(&scenario).ok_or_else(|| {
+    let wf = crate::features::workflow::workflow_registry::by_scenario(&scenario).ok_or_else(|| {
         format!("scenario `{scenario}` 没有对应的工作流(bundle/workflow/*/workflow.json)")
     })?;
     if !wf.enabled {
@@ -289,7 +289,7 @@ pub async fn start_workflow(
     let project_dir = tokio::task::spawn_blocking({
         let workspace = workspace.clone();
         let scenario = scenario.clone();
-        move || crate::harness::init_project(&workspace, &scenario, &brief)
+        move || crate::features::assistant::harness::init_project(&workspace, &scenario, &brief)
     })
     .await
     .map_err(|e| format!("spawn_blocking init_project: {e}"))?
@@ -333,7 +333,7 @@ pub async fn start_workflow(
         let ws = workspace.clone();
         let app_clone = app.clone();
         tokio::task::spawn_blocking(move || {
-            if let Some(state) = crate::harness::read_full_agent_state(&ws) {
+            if let Some(state) = crate::features::assistant::harness::read_full_agent_state(&ws) {
                 let _ = app_clone.emit("workflow:full_state", state);
             }
         });
@@ -366,14 +366,14 @@ pub async fn kick_workflow(
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let harness_workspace = ws.clone();
     let action =
-        tokio::task::spawn_blocking(move || crate::harness::step_fresh(&harness_workspace))
+        tokio::task::spawn_blocking(move || crate::features::assistant::harness::step_fresh(&harness_workspace))
             .await
             .map_err(|e| format!("spawn_blocking step_fresh: {e}"))?;
 
     match action {
         // [拆对话线 C] step_fresh 直接返回 SpawnAgent，Harness 直派真 SubAgent，
         // executing 态，主 session 空闲（无品悟交代/自演）。
-        crate::harness::HarnessAction::SpawnAgent {
+        crate::features::assistant::harness::HarnessAction::SpawnAgent {
             role_id,
             role_name,
             prompt,
@@ -411,7 +411,7 @@ pub async fn kick_workflow(
             Ok(format!("spawning {role_name}"))
         }
         // [per_page] 纵向 fan-out：并发派 N 个 per-page SubAgent。
-        crate::harness::HarnessAction::SpawnAgentBatch {
+        crate::features::assistant::harness::HarnessAction::SpawnAgentBatch {
             base_role,
             role_name,
             tasks,
@@ -428,8 +428,8 @@ pub async fn kick_workflow(
                 }),
             );
             let n = tasks.len();
-            let k = crate::harness::per_page_concurrency();
-            let first = crate::harness::batch_seed_and_take(&sid, &base_role, tasks, k);
+            let k = crate::features::assistant::harness::per_page_concurrency();
+            let first = crate::features::assistant::harness::batch_seed_and_take(&sid, &base_role, tasks, k);
             for t in first {
                 let op = deepseek_tui::core::ops::Op::SpawnSubAgent {
                     prompt: t.prompt,
@@ -445,15 +445,15 @@ pub async fn kick_workflow(
                     .await
                     .map_err(|e| format!("fan-out spawn: {e:?}"))?;
             }
-            crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
+            crate::features::assistant::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
         }
-        crate::harness::HarnessAction::Blocked { message } => {
-            crate::engine::emit_workflow_blocked(&app, &sid, &ws, &message);
+        crate::features::assistant::harness::HarnessAction::Blocked { message } => {
+            crate::features::assistant::engine::emit_workflow_blocked(&app, &sid, &ws, &message);
             let display_message = serde_json::from_str::<serde_json::Value>(&message)
                 .ok()
                 .as_ref()
-                .and_then(crate::harness::warmup_block_reason)
+                .and_then(crate::features::assistant::harness::warmup_block_reason)
                 .unwrap_or(message);
             Err(format!("工作流启动失败：{display_message}"))
         }
@@ -480,12 +480,12 @@ pub async fn retry_workflow_role(
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let rid = role_id.clone();
-    let action = tokio::task::spawn_blocking(move || crate::harness::retry_role(&ws, &rid))
+    let action = tokio::task::spawn_blocking(move || crate::features::assistant::harness::retry_role(&ws, &rid))
         .await
         .map_err(|e| format!("spawn_blocking retry_role: {e}"))?;
 
     match action {
-        crate::harness::HarnessAction::SpawnAgent {
+        crate::features::assistant::harness::HarnessAction::SpawnAgent {
             role_id,
             role_name,
             prompt,
@@ -523,7 +523,7 @@ pub async fn retry_workflow_role(
             Ok(format!("retry → spawning {role_name}"))
         }
         // [per_page] retry 重派整批（fan-out）。
-        crate::harness::HarnessAction::SpawnAgentBatch {
+        crate::features::assistant::harness::HarnessAction::SpawnAgentBatch {
             base_role,
             role_name,
             tasks,
@@ -540,8 +540,8 @@ pub async fn retry_workflow_role(
                 }),
             );
             let n = tasks.len();
-            let k = crate::harness::per_page_concurrency();
-            let first = crate::harness::batch_seed_and_take(&sid, &base_role, tasks, k);
+            let k = crate::features::assistant::harness::per_page_concurrency();
+            let first = crate::features::assistant::harness::batch_seed_and_take(&sid, &base_role, tasks, k);
             for t in first {
                 let op = deepseek_tui::core::ops::Op::SpawnSubAgent {
                     prompt: t.prompt,
@@ -557,15 +557,15 @@ pub async fn retry_workflow_role(
                     .await
                     .map_err(|e| format!("fan-out spawn: {e:?}"))?;
             }
-            crate::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
+            crate::features::assistant::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!(
                 "retry → spawning {role_name} ({n} pages, 在飞={k})"
             ))
         }
-        crate::harness::HarnessAction::Blocked { message } => {
+        crate::features::assistant::harness::HarnessAction::Blocked { message } => {
             Err(format!("retry blocked: {message}"))
         }
-        crate::harness::HarnessAction::Error(e) => Err(format!("retry error: {e}")),
+        crate::features::assistant::harness::HarnessAction::Error(e) => Err(format!("retry error: {e}")),
         _ => Ok("retry: no dispatch (check role state)".to_string()),
     }
 }
@@ -596,9 +596,9 @@ pub async fn get_role_prompt(
     // 按项目 scenario 解析所属工作流;没传 project_dir 时按角色反查(角色跨工作流不重叠)
     let workflow = project_dir
         .as_deref()
-        .map(|p| crate::harness::workflow_of_project(std::path::Path::new(p)))
-        .unwrap_or_else(|| crate::harness::workflow_of_role(&role_id));
-    let skills_dir = crate::harness::workflow_root_for(&workflow);
+        .map(|p| crate::features::assistant::harness::workflow_of_project(std::path::Path::new(p)))
+        .unwrap_or_else(|| crate::features::assistant::harness::workflow_of_role(&role_id));
+    let skills_dir = crate::features::assistant::harness::workflow_root_for(&workflow);
     let registry_path = skills_dir.join("agent_registry.json");
     let registry: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&registry_path)
@@ -700,8 +700,8 @@ pub async fn get_role_outputs(
     role_id: String,
     project_dir: String,
 ) -> Result<Vec<OutputFile>, String> {
-    let workflow = crate::harness::workflow_of_project(std::path::Path::new(&project_dir));
-    let skills_dir = crate::harness::workflow_root_for(&workflow);
+    let workflow = crate::features::assistant::harness::workflow_of_project(std::path::Path::new(&project_dir));
+    let skills_dir = crate::features::assistant::harness::workflow_root_for(&workflow);
     let registry: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(skills_dir.join("agent_registry.json"))
             .map_err(|e| format!("read registry: {e}"))?,
@@ -1063,7 +1063,7 @@ pub async fn cancel_workflow_role(
     let rid = role_id.clone();
     let result = tokio::task::spawn_blocking(move || {
         // 找到 project_dir
-        let project = match crate::harness::find_project_dir(&workspace) {
+        let project = match crate::features::assistant::harness::find_project_dir(&workspace) {
             Some(p) => p,
             None => return Err("no project found".to_string()),
         };
@@ -1076,10 +1076,10 @@ pub async fn cancel_workflow_role(
             .and_then(|v| v.get("scenario").and_then(|s| s.as_str()).map(String::from))
             .unwrap_or_else(|| "solution_deck".to_string());
         // 走 scheduler 通用入口（用 std::process::Command 直接调）
-        let scheduler = crate::harness::scheduler_path_for(
-            &crate::harness::workflow_name_for_scenario(&scenario),
+        let scheduler = crate::features::assistant::harness::scheduler_path_for(
+            &crate::features::assistant::harness::workflow_name_for_scenario(&scenario),
         );
-        let output = crate::process::HiddenCommand::new(crate::platform::paths::python_command())
+        let output = crate::platform::process::HiddenCommand::new(crate::platform::paths::python_command())
             .args([
                 scheduler.to_string_lossy().as_ref(),
                 project.to_string_lossy().as_ref(),
@@ -1130,7 +1130,7 @@ pub async fn stop_workflow(
     let marker_sid = sid.clone();
     let marker_reason = stop_reason.clone();
     let result = tokio::task::spawn_blocking(move || {
-        crate::harness::stop_workflow(&ws, &marker_sid, &marker_reason)
+        crate::features::assistant::harness::stop_workflow(&ws, &marker_sid, &marker_reason)
     })
     .await
     .map_err(|e| format!("spawn_blocking stop_workflow: {e}"))??;
@@ -1180,20 +1180,20 @@ pub async fn approve_workflow_gate(
         .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
     let rid = role_id.clone();
     let action =
-        tokio::task::spawn_blocking(move || crate::harness::approve_gate(&workspace, &rid))
+        tokio::task::spawn_blocking(move || crate::features::assistant::harness::approve_gate(&workspace, &rid))
             .await
             .map_err(|e| format!("spawn_blocking: {e}"))?;
     // approve 后 step_fresh 推进到下一角色：SpawnAgent（直派）/ AllDone / WaitForHuman。
     // 用 apply_harness_action 统一处理（set phase / emit / 派发），其值化结果回前端。
     let next_label = match &action {
-        crate::harness::HarnessAction::SpawnAgent { .. } => "dispatch",
-        crate::harness::HarnessAction::AllDone => "all_done",
-        crate::harness::HarnessAction::WaitForHuman { .. } => "waiting",
-        crate::harness::HarnessAction::Blocked { .. } => "blocked",
+        crate::features::assistant::harness::HarnessAction::SpawnAgent { .. } => "dispatch",
+        crate::features::assistant::harness::HarnessAction::AllDone => "all_done",
+        crate::features::assistant::harness::HarnessAction::WaitForHuman { .. } => "waiting",
+        crate::features::assistant::harness::HarnessAction::Blocked { .. } => "blocked",
         _ => "noop",
     };
     let handled =
-        crate::engine::apply_harness_action(action, &app, &engine.workspace, &engine.handle, &sid)
+        crate::features::assistant::engine::apply_harness_action(action, &app, &engine.workspace, &engine.handle, &sid)
             .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
@@ -1221,17 +1221,17 @@ pub async fn reject_workflow_gate(
     let rid = role_id.clone();
     let r = reason.clone();
     let action =
-        tokio::task::spawn_blocking(move || crate::harness::reject_gate(&workspace, &rid, &r))
+        tokio::task::spawn_blocking(move || crate::features::assistant::harness::reject_gate(&workspace, &rid, &r))
             .await
             .map_err(|e| format!("spawn_blocking: {e}"))?;
     // reject 后 reject_gate 返回 SpawnAgent（重新派发同角色 SubAgent，附拒绝原因）。
     let next_label = match &action {
-        crate::harness::HarnessAction::SpawnAgent { .. } => "redo",
-        crate::harness::HarnessAction::Blocked { .. } => "blocked",
+        crate::features::assistant::harness::HarnessAction::SpawnAgent { .. } => "redo",
+        crate::features::assistant::harness::HarnessAction::Blocked { .. } => "blocked",
         _ => "noop",
     };
     let handled =
-        crate::engine::apply_harness_action(action, &app, &engine.workspace, &engine.handle, &sid)
+        crate::features::assistant::engine::apply_harness_action(action, &app, &engine.workspace, &engine.handle, &sid)
             .await;
     Ok(serde_json::json!({"ok": handled, "next": next_label}))
 }
@@ -1251,7 +1251,7 @@ pub async fn get_workflow_state(
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     tokio::task::spawn_blocking(move || {
-        crate::harness::read_full_agent_state(&workspace).unwrap_or(serde_json::json!(null))
+        crate::features::assistant::harness::read_full_agent_state(&workspace).unwrap_or(serde_json::json!(null))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))
@@ -1308,7 +1308,7 @@ pub async fn find_resumable_run(
         };
         // scenario 已没有对应工作流(如已下线存档的 h3c-ppt 项目)→ 跳过。
         // 否则老 PPT 半途 run(永远不会完成)mtime 最新时,每次开机都恢复进僵尸会话。
-        if crate::workflow_registry::by_scenario(&scenario).is_none() {
+        if crate::features::workflow::workflow_registry::by_scenario(&scenario).is_none() {
             continue;
         }
         let mtime = std::fs::metadata(&progress)
@@ -1330,7 +1330,7 @@ pub async fn find_resumable_run(
 /// 加第 N 个工作流 = 丢一份 workflow.json + bundle 嵌入表加一行,前端零改动。
 #[tauri::command]
 pub async fn list_workflows() -> Result<Vec<serde_json::Value>, String> {
-    Ok(crate::workflow_registry::discover()
+    Ok(crate::features::workflow::workflow_registry::discover()
         .into_iter()
         .filter(|w| w.enabled)
         .map(|w| {

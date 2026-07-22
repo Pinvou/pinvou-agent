@@ -334,12 +334,12 @@ impl L1Store {
             };
 
         // 复用 file_ingest 解析正文（pdf/docx/md/xlsx/pptx/...）。
-        let res = crate::file_ingest::ingest(path);
+        let res = crate::features::files::file_ingest::ingest(path);
         // 图片无正文 → KB 专用 OCR 取图中文字（截图/扫描件/PPT 图等）。仅知识库入库触发，
         // 对话附件图仍走视觉。OCR 没装/失败/识别为空 → 落 skipped（下面 `_` 分支）。
         let body = match res.markdown {
             Some(md) if !md.trim().is_empty() => Some(md),
-            _ if res.kind == "image" => crate::file_ingest::ocr_image_for_kb(path),
+            _ if res.kind == "image" => crate::features::files::file_ingest::ocr_image_for_kb(path),
             _ => None,
         };
         match body {
@@ -638,7 +638,7 @@ pub fn chunk_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::store::Store;
+    use crate::features::knowledge::store::Store;
     use std::fs;
 
     fn mem() -> L1Store {

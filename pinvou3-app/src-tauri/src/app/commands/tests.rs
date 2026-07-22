@@ -562,7 +562,7 @@ use std::path::{Path, PathBuf};
         std::fs::write(&path, "<!doctype html>").unwrap();
 
         let canon = std::fs::canonicalize(&path).unwrap();
-        let url = crate::os::file_url_from_path(&canon).unwrap();
+        let url = crate::platform::os::file_url_from_path(&canon).unwrap();
         let text = url.as_str();
 
         assert_eq!(url.scheme(), "file");
@@ -910,7 +910,7 @@ use std::path::{Path, PathBuf};
         );
         let prompt = build_message_with_attachments_in_dir(
             "inspect".to_string(),
-            vec![crate::file_ingest::ingest(&source)],
+            vec![crate::features::files::file_ingest::ingest(&source)],
             &locked,
             &staged_dir,
         );
@@ -1246,7 +1246,7 @@ use std::path::{Path, PathBuf};
         let src = tmp.join("shot.png");
         std::fs::write(&src, b"\x89PNG\r\n\x1a\nfake-bytes").expect("写假 png");
 
-        let r = crate::file_ingest::ingest(&src);
+        let r = crate::features::files::file_ingest::ingest(&src);
         assert_eq!(r.kind, "image", "应识别为 image");
         assert!(
             r.markdown.is_none(),
@@ -1277,9 +1277,9 @@ use std::path::{Path, PathBuf};
         basename: &str,
         rows: usize,
         tokens: u32,
-    ) -> crate::file_ingest::IngestResult {
+    ) -> crate::features::files::file_ingest::IngestResult {
         let md: String = (1..=rows).map(|i| format!("row-{i},value-{i}\n")).collect();
-        crate::file_ingest::IngestResult {
+        crate::features::files::file_ingest::IngestResult {
             kind: kind.into(),
             basename: basename.into(),
             path: format!("/tmp/fake/{basename}"),
@@ -1530,7 +1530,7 @@ use std::path::{Path, PathBuf};
 
         let image_source = root.join("remote.png");
         std::fs::write(&image_source, b"\x89PNG\r\n\x1a\nremote-image").unwrap();
-        let mut image = crate::file_ingest::ingest(&image_source);
+        let mut image = crate::features::files::file_ingest::ingest(&image_source);
         let staged_image = stage_remote_attachment_source(
             image_source.to_str().unwrap(),
             &image.basename,
@@ -1545,7 +1545,7 @@ use std::path::{Path, PathBuf};
 
         let text_source = root.join("remote.txt");
         std::fs::write(&text_source, "远控大文本\n".repeat(20_000)).unwrap();
-        let mut text = crate::file_ingest::ingest(&text_source);
+        let mut text = crate::features::files::file_ingest::ingest(&text_source);
         assert!(text.token_estimate > ATTACH_INLINE_MAX_TOKENS);
         let staged_text = stage_remote_attachment_source(
             text_source.to_str().unwrap(),
@@ -1755,7 +1755,7 @@ use std::path::{Path, PathBuf};
             if !p.exists() {
                 continue;
             }
-            let r = crate::file_ingest::ingest(&p);
+            let r = crate::features::files::file_ingest::ingest(&p);
             let ws = std::env::temp_dir().join("pinvou3-e2e-ws");
             let _ = std::fs::create_dir_all(&ws);
             let prompt = build_message_with_attachments(q.to_string(), vec![r], &ws);

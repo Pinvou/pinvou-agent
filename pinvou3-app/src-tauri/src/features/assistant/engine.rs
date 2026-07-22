@@ -46,7 +46,7 @@ const SCHEDULED_TURN_REMINDER: &str =
 
 /// 单个 session 的 engine wrapper(handle + 该 session 绑定的 bridge)。
 ///
-/// 多引擎并发模型下,[`EnginePool`](crate::engine_pool::EnginePool) 为每个 session
+/// 多引擎并发模型下,[`EnginePool`](crate::features::assistant::engine_pool::EnginePool) 为每个 session
 /// 持有一个 `AppEngine`(经 [`spawn_for_session`](Self::spawn_for_session) 创建);
 /// L1 headless harness 经 [`spawn_headless`](Self::spawn_headless) 单独用一个。
 /// Clone 廉价(EngineHandle 内部 Arc)。
@@ -202,7 +202,7 @@ impl AppEngine {
     /// (boot 会写盘 / 设 env)。
     ///
     /// [`build_engine_config_for_session`]: crate::features::assistant::platform::bridge::Pinvou3Bridge::build_engine_config_for_session
-    /// [`EnginePool`]: crate::engine_pool::EnginePool
+    /// [`EnginePool`]: crate::features::assistant::engine_pool::EnginePool
     pub(crate) async fn spawn_for_session(
         app: AppHandle,
         store: SessionStore,
@@ -536,7 +536,7 @@ impl TokenLedger {
 /// [per_page] 把某 fan-out 节点的逐页状态(queued/running/done/retrying)推给前端，
 /// 让工作流界面把该节点展开成 N 个 SubAgent chip 实时显示并发。
 pub(crate) fn emit_fanout(app: &AppHandle, session_id: &str, base_role: &str) {
-    let pages = crate::harness::fanout_snapshot(session_id, base_role);
+    let pages = crate::features::assistant::harness::fanout_snapshot(session_id, base_role);
     let _ = app.emit(
         "workflow:fanout",
         json!({
@@ -556,16 +556,16 @@ pub(crate) fn emit_workflow_blocked(
     message: &str,
 ) {
     eprintln!("[harness] blocked: {message}");
-    crate::audit::append(
+    crate::features::assistant::audit::append(
         workspace,
         "blocked",
         "",
-        json!({ "message": crate::audit::clip(message) }),
+        json!({ "message": crate::features::assistant::audit::clip(message) }),
     );
     let warmup_report = serde_json::from_str::<serde_json::Value>(message).ok();
     let display_message = warmup_report
         .as_ref()
-        .and_then(crate::harness::warmup_block_reason)
+        .and_then(crate::features::assistant::harness::warmup_block_reason)
         .unwrap_or_else(|| message.to_string());
     let stage = if warmup_report.is_some() { "warmup" } else { "runtime" };
     let _ = app.emit(
@@ -580,19 +580,19 @@ pub(crate) fn emit_workflow_blocked(
     );
 }
 
-/// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::harness::HarnessAction)：emit
+/// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::features::assistant::harness::HarnessAction)：emit
 /// 前端事件，派发真 SubAgent（SpawnAgent → `Op::SpawnSubAgent`）
 /// 或等待/收尾（WaitForHuman/AllDone/Blocked）。由 `TurnComplete`（首轮 step_fresh）
 /// 和 `AgentComplete`（SubAgent 完成后推进）两条路径共用。返回 `true` = harness
 /// 推进了（调用方据此 emit `workflow:full_state` 快照）。
 pub(crate) async fn apply_harness_action(
-    action: crate::harness::HarnessAction,
+    action: crate::features::assistant::harness::HarnessAction,
     app: &AppHandle,
     workspace: &Path,
     handle: &EngineHandle,
     active_id: &str,
 ) -> bool {
-    use crate::harness::HarnessAction as HA;
+    use crate::features::assistant::harness::HarnessAction as HA;
     let ws = workspace.to_path_buf();
     match action {
         HA::SpawnAgent {
@@ -608,7 +608,7 @@ pub(crate) async fn apply_harness_action(
                 "[harness] Step C spawn → {role_name} ({role_id}) tools={allowed_tools:?} max_steps={max_steps:?} structured={}",
                 output_schema.is_some()
             );
-            crate::audit::append(
+            crate::features::assistant::audit::append(
                 &ws,
                 "dispatch",
                 &role_id,
@@ -633,7 +633,7 @@ pub(crate) async fn apply_harness_action(
             if let Err(e) = handle.send(op).await {
                 let reason = format!("{failure_role} SubAgent 派发失败: {e:?}");
                 eprintln!("[harness] {reason}");
-                crate::harness::record_runtime_failure(
+                crate::features::assistant::harness::record_runtime_failure(
                     &ws,
                     &failure_role,
                     "spawn_subagent",
@@ -653,9 +653,9 @@ pub(crate) async fn apply_harness_action(
             tasks,
         } => {
             let total = tasks.len();
-            let k = crate::harness::per_page_concurrency();
+            let k = crate::features::assistant::harness::per_page_concurrency();
             eprintln!("[harness] Step C fan-out → {role_name} ({base_role}) {total} 页, 在飞并发={k}, 其余排队");
-            crate::audit::append(
+            crate::features::assistant::audit::append(
                 &ws,
                 "dispatch_batch",
                 &base_role,
@@ -668,7 +668,7 @@ pub(crate) async fn apply_harness_action(
                     "role_name": role_name, "status": "running",
                 }),
             );
-            let first = crate::harness::batch_seed_and_take(active_id, &base_role, tasks, k);
+            let first = crate::features::assistant::harness::batch_seed_and_take(active_id, &base_role, tasks, k);
             for t in first {
                 let op = Op::SpawnSubAgent {
                     prompt: t.prompt,
@@ -681,7 +681,7 @@ pub(crate) async fn apply_harness_action(
                 if let Err(e) = handle.send(op).await {
                     let reason = format!("{base_role} fan-out 派发失败: {e:?}");
                     eprintln!("[harness] {reason}");
-                    crate::harness::record_runtime_failure(
+                    crate::features::assistant::harness::record_runtime_failure(
                         &ws,
                         &base_role,
                         "spawn_subagent_batch",
@@ -698,11 +698,11 @@ pub(crate) async fn apply_harness_action(
             description,
         } => {
             eprintln!("[harness] waiting for human → {role_name} ({role_id})");
-            crate::audit::append(
+            crate::features::assistant::audit::append(
                 &ws,
                 "human_gate",
                 &role_id,
-                json!({ "role_name": &role_name, "description": crate::audit::clip(&description) }),
+                json!({ "role_name": &role_name, "description": crate::features::assistant::audit::clip(&description) }),
             );
             let _ = app.emit(
                 "workflow:gate_approval",
@@ -717,7 +717,7 @@ pub(crate) async fn apply_harness_action(
             eprintln!("[harness] workflow complete");
             // [edict-obs] 定位最终成品(deck 播放器入口),带进完成事件让前端弹"成品卡"。
             // 找不到(非 deck 类工作流/产物缺失)→ artifact=null,前端只标完成不弹卡。
-            let artifact: Option<String> = crate::harness::read_full_agent_state(&ws)
+            let artifact: Option<String> = crate::features::assistant::harness::read_full_agent_state(&ws)
                 .and_then(|st| {
                     st.get("project_dir")
                         .and_then(|v| v.as_str())
@@ -730,7 +730,7 @@ pub(crate) async fn apply_harness_action(
                 })
                 .filter(|p| p.exists())
                 .map(|p| p.display().to_string());
-            crate::audit::append(&ws, "complete", "", json!({ "artifact": artifact }));
+            crate::features::assistant::audit::append(&ws, "complete", "", json!({ "artifact": artifact }));
             let _ = app.emit(
                 "workflow:complete",
                 json!({ "session_id": active_id, "artifact": artifact }),
@@ -743,7 +743,7 @@ pub(crate) async fn apply_harness_action(
         }
         HA::Error(e) => {
             eprintln!("[harness] error: {e}");
-            crate::harness::record_runtime_failure(&ws, "", "harness", &e);
+            crate::features::assistant::harness::record_runtime_failure(&ws, "", "harness", &e);
             emit_workflow_blocked(app, active_id, &ws, &format!("工作流运行失败: {e}"));
             true
         }
@@ -907,7 +907,7 @@ fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let telemetry = app
-            .try_state::<crate::telemetry::TelemetryState>()
+            .try_state::<crate::platform::telemetry::TelemetryState>()
             .map(|state| state.inner().clone());
         let mut current_turn_id: Option<String> = None;
         let mut rx = handle.rx_event.write().await;
@@ -929,7 +929,7 @@ fn spawn_event_forwarder(
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
-                    crate::memory::append_turn_assistant(&session_id, &content);
+                    crate::features::memory::append_turn_assistant(&session_id, &content);
                     let payload = json!({ "session_id": session_id, "text": content });
                     let _ = app.emit("chat:delta", payload.clone());
                     crate::platform::app_events::forward_app_event(&app, "chat:delta", payload);
@@ -941,7 +941,7 @@ fn spawn_event_forwarder(
                     if let Some(m) = &self_metrics {
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
-                    crate::memory::record_turn_tool_start(&session_id, &name, &input);
+                    crate::features::memory::record_turn_tool_start(&session_id, &name, &input);
                     tool_inputs.insert(id.clone(), (name.clone(), input.clone()));
                     let payload =
                         json!({ "session_id": session_id, "id": id, "name": name, "args": input });
@@ -1025,7 +1025,7 @@ fn spawn_event_forwarder(
                             }
                         }
                     }
-                    crate::memory::record_turn_tool_complete(&session_id, &name, success);
+                    crate::features::memory::record_turn_tool_complete(&session_id, &name, success);
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
                     if success
                         && (name == "update_plan"
@@ -1256,7 +1256,7 @@ fn spawn_event_forwarder(
                                     "calls": calls,
                                 }),
                             );
-                            crate::audit::append(
+                            crate::features::assistant::audit::append(
                                 &ws,
                                 "token",
                                 &role,
@@ -1289,25 +1289,25 @@ fn spawn_event_forwarder(
                         }
                         MM::Completed { agent_id, summary } => {
                             let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
-                            crate::audit::append(
+                            crate::features::assistant::audit::append(
                                 &ws,
                                 "agent_done",
                                 &role,
                                 json!({
                                     "agent_id": agent_id,
-                                    "summary": crate::audit::clip(&summary),
+                                    "summary": crate::features::assistant::audit::clip(&summary),
                                 }),
                             );
                         }
                         MM::Failed { agent_id, error } => {
                             let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
-                            crate::audit::append(
+                            crate::features::assistant::audit::append(
                                 &ws,
                                 "agent_failed",
                                 &role,
                                 json!({
                                     "agent_id": agent_id,
-                                    "error": crate::audit::clip(&error),
+                                    "error": crate::features::assistant::audit::clip(&error),
                                 }),
                             );
                         }
@@ -1326,12 +1326,12 @@ fn spawn_event_forwarder(
                     // 用户停止整个工作流后，SubAgent 可能在任务 abort 前抢先送达
                     // 一个完成信封。持久 stop marker 是调度熔断边界：迟到结果可留在
                     // 项目目录，但绝不能再过 gate、补派下一页或推进下一个角色。
-                    if crate::harness::workflow_is_stopped(&execution_workspace) {
+                    if crate::features::assistant::harness::workflow_is_stopped(&execution_workspace) {
                         eprintln!("[harness] ignore late AgentComplete after workflow stop: {id}");
                         continue;
                     }
                     if let Some(reason) =
-                        crate::harness::workflow_failure_reason(&execution_workspace)
+                        crate::features::assistant::harness::workflow_failure_reason(&execution_workspace)
                     {
                         eprintln!(
                             "[harness] ignore late AgentComplete after workflow blocked: {id} ({reason})"
@@ -1368,20 +1368,20 @@ fn spawn_event_forwarder(
                             // join 之前统一截获，直接把逻辑角色写成 fatal failed。
                             if failed
                                 && role.contains('#')
-                                && crate::harness::model_auth_failure_reason(&result).is_some()
+                                && crate::features::assistant::harness::model_auth_failure_reason(&result).is_some()
                             {
                                 let base_role = role
                                     .split_once('#')
                                     .map(|(base, _)| base)
                                     .unwrap_or(role.as_str())
                                     .to_string();
-                                crate::harness::batch_clear(&session_id, &base_role);
+                                crate::features::assistant::harness::batch_clear(&session_id, &base_role);
                                 let ws = execution_workspace.clone();
                                 let err_text = result.clone();
                                 let base_for_failure = base_role.clone();
                                 let agent_for_failure = id.clone();
                                 let action = tokio::task::spawn_blocking(move || {
-                                    crate::harness::agent_failed_for_agent(
+                                    crate::features::assistant::harness::agent_failed_for_agent(
                                         &ws,
                                         &base_for_failure,
                                         &agent_for_failure,
@@ -1390,7 +1390,7 @@ fn spawn_event_forwarder(
                                 })
                                 .await
                                 .unwrap_or_else(|_| {
-                                    crate::harness::HarnessAction::Error(
+                                    crate::features::assistant::harness::HarnessAction::Error(
                                         "spawn_blocking panicked".into(),
                                     )
                                 });
@@ -1404,7 +1404,7 @@ fn spawn_event_forwarder(
                                 .await;
                                 if handled {
                                     if let Some(mut state) =
-                                        crate::harness::read_full_agent_state(&execution_workspace)
+                                        crate::features::assistant::harness::read_full_agent_state(&execution_workspace)
                                     {
                                         if let Some(obj) = state.as_object_mut() {
                                             obj.insert(
@@ -1431,22 +1431,22 @@ fn spawn_event_forwarder(
                                 // 该页(带上限)，挡住空壳混入 batch → 避免 gate pagenum_mismatch
                                 // 误判回滚的死循环。
                                 let outs =
-                                    crate::harness::batch_outputs_for(&session_id, base, page);
+                                    crate::features::assistant::harness::batch_outputs_for(&session_id, base, page);
                                 let real =
-                                    crate::harness::page_output_is_real(&ws, base, page, &outs);
+                                    crate::features::assistant::harness::page_output_is_real(&ws, base, page, &outs);
                                 let mut count_done = real;
                                 if real {
                                     eprintln!("[harness] per_page {role} 真写成 ✓");
-                                    crate::harness::fanout_mark(&session_id, base, page, "done");
+                                    crate::features::assistant::harness::fanout_mark(&session_id, base, page, "done");
                                 } else {
-                                    let n = crate::harness::page_retry_inc(&session_id, base, page);
-                                    let maxr = crate::harness::max_page_retry();
+                                    let n = crate::features::assistant::harness::page_retry_inc(&session_id, base, page);
+                                    let maxr = crate::features::assistant::harness::max_page_retry();
                                     if n <= maxr {
                                         // 空壳 → 重派该页(占用刚释放的在飞名额，不补排队页)。
                                         let ws_r = ws.clone();
                                         let base_r = base.to_string();
                                         let respawn = tokio::task::spawn_blocking(move || {
-                                            crate::harness::respawn_page(&ws_r, &base_r, page)
+                                            crate::features::assistant::harness::respawn_page(&ws_r, &base_r, page)
                                         })
                                         .await
                                         .unwrap_or(None);
@@ -1464,7 +1464,7 @@ fn spawn_event_forwarder(
                                                 eprintln!("[harness] per_page {role} 空壳→重派 {rr} 失败: {e:?}");
                                             } else {
                                                 eprintln!("[harness] per_page {role} 空壳→重派(第{n}/{maxr}次) {rr}");
-                                                crate::harness::fanout_mark(
+                                                crate::features::assistant::harness::fanout_mark(
                                                     &session_id,
                                                     base,
                                                     page,
@@ -1474,7 +1474,7 @@ fn spawn_event_forwarder(
                                         } else {
                                             eprintln!("[harness] per_page {role} 空壳但 respawn 取不到任务 → 兜底计 done");
                                             count_done = true;
-                                            crate::harness::fanout_mark(
+                                            crate::features::assistant::harness::fanout_mark(
                                                 &session_id,
                                                 base,
                                                 page,
@@ -1484,7 +1484,7 @@ fn spawn_event_forwarder(
                                     } else {
                                         eprintln!("[harness] per_page {role} 空壳且重试耗尽({maxr}) → 兜底计 done(留给 gate/人工)");
                                         count_done = true;
-                                        crate::harness::fanout_mark(
+                                        crate::features::assistant::harness::fanout_mark(
                                             &session_id,
                                             base,
                                             page,
@@ -1498,7 +1498,7 @@ fn spawn_event_forwarder(
                                     let ws_d = ws.clone();
                                     let base_d = base.to_string();
                                     let complete = tokio::task::spawn_blocking(move || {
-                                        crate::harness::record_page_done(&ws_d, &base_d, page)
+                                        crate::features::assistant::harness::record_page_done(&ws_d, &base_d, page)
                                     })
                                     .await
                                     .unwrap_or(true);
@@ -1506,12 +1506,12 @@ fn spawn_event_forwarder(
                                         "[harness] per_page {role} done; batch_complete={complete}"
                                     );
                                     if complete {
-                                        crate::harness::batch_clear(&session_id, base);
+                                        crate::features::assistant::harness::batch_clear(&session_id, base);
                                         Some(base.to_string())
                                     } else {
                                         // 未齐 → 补派下一排队页，维持在飞并发=K；不推进。
                                         if let Some(t) =
-                                            crate::harness::batch_pop_next(&session_id, base)
+                                            crate::features::assistant::harness::batch_pop_next(&session_id, base)
                                         {
                                             let next_role = t.agent_role.clone();
                                             let op = Op::SpawnSubAgent {
@@ -1552,19 +1552,19 @@ fn spawn_event_forwarder(
                                 let agent_for_failure = id.clone();
                                 let action = tokio::task::spawn_blocking(move || {
                                     if failed_single {
-                                        crate::harness::agent_failed_for_agent(
+                                        crate::features::assistant::harness::agent_failed_for_agent(
                                             &ws,
                                             &base_role,
                                             &agent_for_failure,
                                             &err_text,
                                         )
                                     } else {
-                                        crate::harness::step_after_role(&ws, &base_role)
+                                        crate::features::assistant::harness::step_after_role(&ws, &base_role)
                                     }
                                 })
                                 .await
                                 .unwrap_or_else(|_| {
-                                    crate::harness::HarnessAction::Error(
+                                    crate::features::assistant::harness::HarnessAction::Error(
                                         "spawn_blocking panicked".into(),
                                     )
                                 });
@@ -1582,7 +1582,7 @@ fn spawn_event_forwarder(
                                     let sid_clone = session_id.clone();
                                     tokio::task::spawn_blocking(move || {
                                         if let Some(mut st) =
-                                            crate::harness::read_full_agent_state(&ws)
+                                            crate::features::assistant::harness::read_full_agent_state(&ws)
                                         {
                                             if let Some(obj) = st.as_object_mut() {
                                                 obj.insert("session_id".into(), json!(sid_clone));
@@ -1735,11 +1735,11 @@ fn spawn_event_forwarder(
                             // 跑则返回 role_running→NotApplicable(防重复派发),否则派下一个。
                             let ws = harness_workspace.clone();
                             let action = tokio::task::spawn_blocking(move || {
-                                crate::harness::step_fresh(&ws)
+                                crate::features::assistant::harness::step_fresh(&ws)
                             })
                             .await
                             .unwrap_or(
-                                crate::harness::HarnessAction::Error(
+                                crate::features::assistant::harness::HarnessAction::Error(
                                     "spawn_blocking panicked".into(),
                                 ),
                             );
@@ -1762,7 +1762,7 @@ fn spawn_event_forwarder(
                             let app_clone = app.clone();
                             let sid_clone = active_id.clone();
                             tokio::task::spawn_blocking(move || {
-                                if let Some(mut state) = crate::harness::read_full_agent_state(&ws)
+                                if let Some(mut state) = crate::features::assistant::harness::read_full_agent_state(&ws)
                                 {
                                     if let Some(obj) = state.as_object_mut() {
                                         obj.insert("session_id".into(), json!(sid_clone));
@@ -1786,11 +1786,11 @@ fn spawn_event_forwarder(
                     // [F3] 转发 cache_write_tokens(Anthropic cache-write 按 1.25x 计费)
                     // 与 reasoning_tokens(DeepSeek V4 思考模型主要成本),否则字段一旦缺
                     // 持久化就回填不了,影响将来真实 cost 估算。
-                    crate::timing::finish_turn_with_usage(
+                    crate::features::assistant::timing::finish_turn_with_usage(
                         &session_id,
                         &status_text,
                         terminal_error.as_deref(),
-                        Some(crate::timing::TurnUsage {
+                        Some(crate::features::assistant::timing::TurnUsage {
                             input_tokens: u64::from(usage.input_tokens),
                             output_tokens: u64::from(usage.output_tokens),
                             cache_hit_tokens: u64::from(
@@ -1805,13 +1805,13 @@ fn spawn_event_forwarder(
                             reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
                         }),
                     );
-                    if crate::memory::memory_enabled() {
-                        if let Some(capture) = crate::memory::take_turn_capture(&session_id) {
+                    if crate::features::memory::memory_enabled() {
+                        if let Some(capture) = crate::features::memory::take_turn_capture(&session_id) {
                             let app_clone = app.clone();
                             let bridge_clone = bridge.clone();
                             let sid_clone = session_id.clone();
                             tauri::async_runtime::spawn(async move {
-                                match crate::memory::review_turn_candidates_with_llm(
+                                match crate::features::memory::review_turn_candidates_with_llm(
                                     &bridge_clone,
                                     &capture,
                                     &sid_clone,
@@ -1823,7 +1823,7 @@ fn spawn_event_forwarder(
                                         events.extend(outcome.pending.into_iter().filter_map(
                                             |item| {
                                                 (item.status == "pending_confirm").then(|| {
-                                                    crate::memory::MemoryWriteEvent {
+                                                    crate::features::memory::MemoryWriteEvent {
                                                         kind: item.kind,
                                                         action: "pending".to_string(),
                                                         id: item.id,
@@ -1843,21 +1843,21 @@ fn spawn_event_forwarder(
                                             );
                                             match emit_result {
                                                 Ok(()) => {
-                                                    crate::memory::append_memory_review_diagnostic(
+                                                    crate::features::memory::append_memory_review_diagnostic(
                                                         &sid_clone,
                                                         "event_emitted",
                                                         json!({ "event_count": event_count }),
                                                     )
                                                 }
                                                 Err(err) => {
-                                                    crate::memory::append_memory_review_diagnostic(
+                                                    crate::features::memory::append_memory_review_diagnostic(
                                                         &sid_clone,
                                                         "event_emit_failed",
                                                         json!({ "error": err.to_string() }),
                                                     )
                                                 }
                                             }
-                                            match crate::memory::runtime_snapshot(&sid_clone) {
+                                            match crate::features::memory::runtime_snapshot(&sid_clone) {
                                                 Ok(snapshot) => {
                                                     let _ = app_clone.emit(
                                                         "chat:memory",
@@ -1869,7 +1869,7 @@ fn spawn_event_forwarder(
                                                     );
                                                 }
                                                 Err(err) => {
-                                                    crate::memory::append_memory_review_diagnostic(
+                                                    crate::features::memory::append_memory_review_diagnostic(
                                                         &sid_clone,
                                                         "runtime_refresh_failed",
                                                         json!({ "error": err.to_string() }),
@@ -1889,14 +1889,14 @@ fn spawn_event_forwarder(
                                 }
                             });
                         } else {
-                            crate::memory::append_memory_review_diagnostic(
+                            crate::features::memory::append_memory_review_diagnostic(
                                 &session_id,
                                 "skipped",
                                 json!({ "reason": "turn_capture_missing" }),
                             );
                         }
                     } else {
-                        crate::memory::append_memory_review_diagnostic(
+                        crate::features::memory::append_memory_review_diagnostic(
                             &session_id,
                             "skipped",
                             json!({ "reason": "memory_disabled" }),
@@ -1995,7 +1995,7 @@ fn spawn_event_forwarder(
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
             }) => {
-                crate::timing::finish_turn(&session_id, "Failed", Some(&stopped_error));
+                crate::features::assistant::timing::finish_turn(&session_id, "Failed", Some(&stopped_error));
                 let _ = turn_events.send(EngineTurnSignal::Terminal {
                     turn_id,
                     status: TurnOutcomeStatus::Failed,
@@ -2028,17 +2028,17 @@ fn maybe_notify_task_completed(
     if store.mode_state(session_id).active_skill.is_some() {
         return;
     }
-    if !crate::notifications::task_completion_enabled() {
+    if !crate::platform::notifications::task_completion_enabled() {
         return;
     }
     let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
     let notify_key = format!("{session_id}:{key}");
     if app
-        .try_state::<crate::notifications::NotificationState>()
+        .try_state::<crate::platform::notifications::NotificationState>()
         .map(|state| state.should_notify(notify_key))
         .unwrap_or(true)
     {
-        crate::notifications::notify_task_completed(app);
+        crate::platform::notifications::notify_task_completed(app);
     }
 }
 

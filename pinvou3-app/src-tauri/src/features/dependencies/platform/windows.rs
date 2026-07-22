@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
-use crate::process::HiddenCommand;
+use crate::platform::process::HiddenCommand;
 
 const LIBREOFFICE_PACKAGE: &str = "libreoffice";
 const LIBREOFFICE_WINGET_ID: &str = "TheDocumentFoundation.LibreOffice";
@@ -97,8 +97,8 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         }
     }
 
-    if crate::os::command_exists("soffice")
-        || crate::os::command_exists("libreoffice")
+    if crate::platform::os::command_exists("soffice")
+        || crate::platform::os::command_exists("libreoffice")
     {
         return Ok(());
     }
@@ -124,8 +124,8 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         ));
     }
 
-    if crate::os::command_exists("soffice")
-        || crate::os::command_exists("libreoffice")
+    if crate::platform::os::command_exists("soffice")
+        || crate::platform::os::command_exists("libreoffice")
     {
         Ok(())
     } else {

@@ -1,7 +1,7 @@
 //! 钉钉(`dws`,钉钉官方 Apache-2.0)CLI 连接器 —— 安装引导 + 扫码鉴权。
 //!
-//! 路线同企微([`crate::wecom`]):官方 CLI + 官方 mono skill,纯扫码接入,
-//! 不要求用户填写 client_id/client_secret。公共管道见 [`crate::connector_cli`]。
+//! 路线同企微([`crate::features::connectors::wecom`]):官方 CLI + 官方 mono skill,纯扫码接入,
+//! 不要求用户填写 client_id/client_secret。公共管道见 [`crate::features::connectors::connector_cli`]。
 //!
 //! 连接:`dws auth login --device` 长驻 → 抓二维码 URL → 用户扫码 → 进程退出后
 //! `dws auth status --format json` 判 ready。进度走事件
@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
 
 const ID: &str = "dingtalk";
 const DWS_NPM_SPEC: &str = "dingtalk-workspace-cli@1.0.51";

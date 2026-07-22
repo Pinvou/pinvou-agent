@@ -47,7 +47,7 @@ impl Embedder {
         };
         // bge-m3 dense 用 CLS pooling；输出再手动归一化(便于点积即余弦)。
         let udm = UserDefinedEmbeddingModel::new(onnx, tokenizer_files).with_pooling(Pooling::Cls);
-        crate::os::configure_onnxruntime_dylib()?;
+        crate::platform::os::configure_onnxruntime_dylib()?;
         let model =
             TextEmbedding::try_new_from_user_defined(udm, InitOptionsUserDefined::default())
                 .map_err(|e| e.to_string())?;

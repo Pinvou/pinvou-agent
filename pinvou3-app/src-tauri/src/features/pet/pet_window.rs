@@ -358,7 +358,7 @@ fn save_state(st: PetWindowState) -> Result<(), String> {
 pub fn point_on_any_monitor(cx: i32, cy: i32, monitors: &[(i32, i32, u32, u32)]) -> bool {
     monitors
         .iter()
-        .any(|&(x, y, w, h)| crate::detach::point_in_rect(cx, cy, x, y, w as i32, h as i32))
+        .any(|&(x, y, w, h)| crate::features::pet::detach::point_in_rect(cx, cy, x, y, w as i32, h as i32))
 }
 
 /// 建/显示桌宠窗口。已存在只 show(设置开关反复切换不重建 WebView)。

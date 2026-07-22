@@ -444,7 +444,7 @@ pub async fn kb_collection_update(
 #[tauri::command]
 pub async fn kb_collection_delete(
     state: State<'_, KnowledgeService>,
-    pool: State<'_, crate::engine_pool::EnginePool>,
+    pool: State<'_, crate::features::assistant::engine_pool::EnginePool>,
     id: i64,
 ) -> Result<(), String> {
     let l1 = state.l1().clone();
@@ -455,7 +455,7 @@ pub async fn kb_collection_delete(
 
 /// 删文档/知识集后重算工具门控:若库已空,kb_search 进 disallowed 并广播给所有在跑会话 →
 /// 实时从模型目录消失。加文件后重新出现走新会话即可(老会话实时性次要)。
-async fn refresh_kb_tool_gate(pool: &crate::engine_pool::EnginePool) {
+async fn refresh_kb_tool_gate(pool: &crate::features::assistant::engine_pool::EnginePool) {
     pool.refresh_disallowed_tools().await;
 }
 
@@ -498,7 +498,7 @@ pub async fn kb_documents(
 #[tauri::command]
 pub async fn kb_remove_document(
     state: State<'_, KnowledgeService>,
-    pool: State<'_, crate::engine_pool::EnginePool>,
+    pool: State<'_, crate::features::assistant::engine_pool::EnginePool>,
     doc_id: i64,
 ) -> Result<(), String> {
     let l1 = state.l1().clone();

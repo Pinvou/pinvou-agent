@@ -259,7 +259,7 @@ fn is_target_sn(sn: &str) -> bool {
 
 async fn read_bios_sn() -> Option<String> {
     let output = timeout(Duration::from_secs(3), async {
-        crate::process::HiddenTokioCommand::new("powershell.exe")
+        crate::platform::process::HiddenTokioCommand::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -340,7 +340,7 @@ mod tests {
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-bootstrap-path-test");
-        let root = crate::os::platform_compat_path("/tmp/pinvou3-bootstrap-path-test");
+        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-bootstrap-path-test");
         assert_eq!(
             bootstrap_config_path(),
             root.join("windows-ota-bootstrap.json")

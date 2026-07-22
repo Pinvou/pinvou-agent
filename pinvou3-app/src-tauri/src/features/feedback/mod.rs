@@ -566,7 +566,7 @@ pub fn resolve_device_serial() -> Option<String> {
             return Some(serial);
         }
     }
-    crate::os::device_serial_number()
+    crate::platform::os::device_serial_number()
 }
 
 fn cleanup_successful_package(package: &PreparedFeedbackPackage) -> Result<(), FeedbackError> {

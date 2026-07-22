@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::error_taxonomy::ErrorEnvelope;
 use deepseek_tui::tui::app::AppMode;
-use pinvou3_lib::bridge::Pinvou3Bridge;
-use pinvou3_lib::engine::AppEngine;
+use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
+use pinvou3_lib::features::assistant::engine::AppEngine;
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
 
@@ -1545,7 +1545,7 @@ async fn large_xlsx_attachment_path_mode() {
     let (engine, ws) = spawn_for_scenario(scenario).await;
 
     // 真实 ingest → 注入分流。该表转换产物必须远超内联预算,否则测不到路径模式。
-    let r = pinvou3_lib::file_ingest::ingest(&src);
+    let r = pinvou3_lib::features::files::file_ingest::ingest(&src);
     assert!(
         r.token_estimate > 100_000,
         "[{scenario}] 转换产物应远超内联预算, got ~{} tokens",

@@ -12,7 +12,7 @@ use serde_json::Value;
 use tauri::State;
 
 use crate::features::sessions::SessionStore;
-use crate::engine_pool::EnginePool;
+use crate::features::assistant::engine_pool::EnginePool;
 
 pub(crate) fn short_token(len: usize) -> String {
     rand::rng()
