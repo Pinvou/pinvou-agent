@@ -15,7 +15,7 @@ use super::relay_client::{self, DownloadSender, RelayInbound, RelayOutbound, Rel
 use super::snapshot;
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::{SavedModel, UserPrefs};
-use crate::platform::engine_bridge::{paths, sessions::SessionStore};
+use crate::features::assistant::platform::bridge::{paths, sessions::SessionStore};
 use crate::connector_cli;
 use crate::engine_pool::EnginePool;
 

@@ -245,7 +245,7 @@ pub fn wecom_skills_should_show() -> bool {
 pub async fn wecom_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = wecom_skills_should_show();
-        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_wecom_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_wecom_skills(show);
         show
     })
     .await
@@ -259,7 +259,7 @@ pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_wecom_disabled_flag(!enabled);
         let show = wecom_skills_should_show();
-        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_wecom_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_wecom_skills(show);
         show
     })
     .await

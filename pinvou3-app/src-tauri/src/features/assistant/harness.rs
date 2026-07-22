@@ -817,7 +817,7 @@ fn run_python(args: &[&str], cwd: &Path) -> Result<String, String> {
 fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
     // warmup 只做本地前置条件检查，不再请求模型接口。保留解析后的 base_url 用于
     // 校验配置存在；API Key 不再暴露给 Python 调度/验收子进程。
-    let bridge = crate::platform::engine_bridge::Pinvou3Bridge::boot().ok();
+    let bridge = crate::features::assistant::platform::bridge::Pinvou3Bridge::boot().ok();
     let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
         .unwrap_or_else(|_| {
             bridge

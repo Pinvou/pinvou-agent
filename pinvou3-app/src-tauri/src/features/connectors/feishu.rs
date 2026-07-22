@@ -319,7 +319,7 @@ pub fn feishu_skills_should_show() -> bool {
 pub async fn feishu_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = feishu_skills_should_show();
-        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_feishu_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_feishu_skills(show);
         show
     })
     .await
@@ -335,7 +335,7 @@ pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_feishu_disabled_flag(!enabled);
         let show = feishu_skills_should_show();
-        let _ = crate::platform::bundle::Pinvou3Bundle::paths().apply_feishu_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_feishu_skills(show);
         show
     })
     .await

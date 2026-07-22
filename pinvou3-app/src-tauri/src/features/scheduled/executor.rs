@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::platform::prefs::{SavedModel, UserPrefs};
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
-use crate::platform::engine_bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::engine_pool::{EnginePool, ScheduledTurnCompletion};
 
 type StartedCallback =

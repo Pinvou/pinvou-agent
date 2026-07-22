@@ -40,7 +40,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::platform::prefs::{SavedModel, UserPrefs};
 use crate::features::sessions::{ScheduledRunProfile, SessionStore};
-use crate::platform::engine_bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

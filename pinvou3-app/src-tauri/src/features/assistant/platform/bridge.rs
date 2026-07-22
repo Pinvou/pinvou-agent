@@ -15,7 +15,7 @@ pub use crate::core::mode_state;
 pub use crate::features::marketplace;
 pub use crate::features::marketplace::skill_marketplace;
 pub use crate::features::sessions;
-pub use crate::platform::bundle;
+pub(crate) use crate::features::runtime_bundle::platform as bundle;
 pub use crate::platform::paths;
 pub use crate::platform::prefs;
 
@@ -89,6 +89,30 @@ pub struct Pinvou3Bridge {
     /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
     /// active_route_limits，并与 output profile 一起推导压缩阈值。
     pub probed_context_tokens: Option<u32>,
+}
+
+impl crate::memory::MemoryReviewModel for Pinvou3Bridge {
+    fn memory_provider(&self) -> String {
+        self.provider()
+    }
+
+    fn memory_model(&self) -> String {
+        self.model()
+    }
+
+    fn memory_base_url(&self) -> String {
+        self.base_url()
+    }
+
+    fn memory_api_key(&self) -> String {
+        self.api_key()
+    }
+
+    fn memory_model_preset(&self) -> ModelPreset {
+        self.effective_model_owned()
+            .map(|model| model.preset)
+            .unwrap_or_else(|| self.prefs.advanced.model_preset.unwrap_or_default())
+    }
 }
 
 impl Pinvou3Bridge {

@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::platform::prefs::UserPrefs;
 use crate::features::sessions::SessionStore;
-use crate::platform::engine_bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::engine_pool::EnginePool;
 use crate::scheduled_executor::ScheduledChatExecutor;
 

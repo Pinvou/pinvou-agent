@@ -37,7 +37,7 @@ use crate::core::mode_state::SerializableMode;
 use crate::features::sessions::{
     ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting, SessionStore,
 };
-use crate::platform::engine_bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 
 /// 定时任务无人值守首轮的唯一附加约束。任务 prompt 原文已作为用户消息传入，
 /// 这一句只防模型把目标改写成别的事，不再堆叠更长的提示词。
@@ -107,7 +107,7 @@ impl TurnLifecycle {
             state.turn_id = None;
             state.terminal_emitted = false;
             state.reclaimed = false;
-            crate::platform::connector_visibility::turn_submitted();
+            crate::features::connectors::visibility::turn_submitted();
             true
         } else {
             false
@@ -122,7 +122,7 @@ impl TurnLifecycle {
         if state.turn_id.is_none() && !state.terminal_emitted {
             state.active = false;
             drop(state);
-            crate::platform::connector_visibility::turn_finished();
+            crate::features::connectors::visibility::turn_finished();
         }
     }
 
@@ -132,7 +132,7 @@ impl TurnLifecycle {
             return;
         }
         if !state.active {
-            crate::platform::connector_visibility::turn_submitted();
+            crate::features::connectors::visibility::turn_submitted();
         }
         state.active = true;
         state.turn_id = Some(turn_id);
@@ -150,7 +150,7 @@ impl TurnLifecycle {
             turn_id: state.turn_id.take(),
         };
         drop(state);
-        crate::platform::connector_visibility::turn_finished();
+        crate::features::connectors::visibility::turn_finished();
         Some(emitted)
     }
 
@@ -186,7 +186,7 @@ impl TurnLifecycle {
             turn_id: state.turn_id.take(),
         };
         drop(state);
-        crate::platform::connector_visibility::turn_finished();
+        crate::features::connectors::visibility::turn_finished();
         emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None);
         Some(emitted)
     }
@@ -201,7 +201,7 @@ impl AppEngine {
     /// 调用方(EnginePool)负责复用同一份已 boot 的 `bridge`,避免每个 session 重 boot
     /// (boot 会写盘 / 设 env)。
     ///
-    /// [`build_engine_config_for_session`]: crate::platform::engine_bridge::Pinvou3Bridge::build_engine_config_for_session
+    /// [`build_engine_config_for_session`]: crate::features::assistant::platform::bridge::Pinvou3Bridge::build_engine_config_for_session
     /// [`EnginePool`]: crate::engine_pool::EnginePool
     pub(crate) async fn spawn_for_session(
         app: AppHandle,

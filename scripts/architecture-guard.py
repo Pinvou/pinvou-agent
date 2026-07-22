@@ -310,6 +310,7 @@ def count_platform_cfgs(text: str) -> int:
 def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], list[str]]:
     rules: dict[str, Counter[str]] = {
         "rust_feature_depends_on_app": Counter(),
+        "rust_platform_depends_on_upper_layer": Counter(),
         "rust_cyclic_feature_dependencies": Counter(),
         "rust_target_cfg_outside_adapter": Counter(),
         "rust_platform_details_outside_adapter": Counter(),
@@ -319,6 +320,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
     aliases = rust_aliases(root)
     rust_root = root / "pinvou3-app/src-tauri/src"
     feature_root = rust_root / "features"
+    platform_root = rust_root / "platform"
     graph: dict[str, set[str]] = defaultdict(set)
     feature_edge_counts: Counter[tuple[str, str]] = Counter()
     include_pattern = re.compile(r"\binclude\s*!\s*\(")
@@ -339,14 +341,21 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
         text = read_text(path)
         relative = normalize(path, root)
         resolved = path.resolve()
+        references = crate_references(text, aliases)
         if resolved.is_relative_to(feature_root.resolve()):
             source_feature = feature_name(resolved, feature_root)
-            for layer, target in crate_references(text, aliases):
+            for layer, target in references:
                 if layer == "app":
                     rules["rust_feature_depends_on_app"][f"{source_feature}->{target}"] += 1
                 elif layer == "features" and target != source_feature:
                     graph[source_feature].add(target)
                     feature_edge_counts[(source_feature, target)] += 1
+        if resolved.is_relative_to(platform_root.resolve()):
+            for layer, target in references:
+                if layer in {"app", "features"}:
+                    rules["rust_platform_depends_on_upper_layer"][
+                        f"{relative}->{layer}::{target}"
+                    ] += 1
         target_count = count_platform_cfgs(text)
         if target_count and not target_cfg_allowed(relative):
             rules["rust_target_cfg_outside_adapter"][relative] += target_count

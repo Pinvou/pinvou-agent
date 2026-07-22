@@ -98,8 +98,9 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             feature_a = rust_root / "features/a/mod.rs"
             feature_b = rust_root / "features/b/mod.rs"
             platform = rust_root / "features/a/platform/windows.rs"
+            platform_service = rust_root / "platform/service.rs"
             commands = rust_root / "app/commands.rs"
-            for path in [feature_a, feature_b, platform, commands]:
+            for path in [feature_a, feature_b, platform, platform_service, commands]:
                 path.parent.mkdir(parents=True, exist_ok=True)
             (rust_root / "lib.rs").write_text(
                 '#[path = "app/bridge/mod.rs"]\nmod bridge;\n'
@@ -125,10 +126,19 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 'fn allowed() { Command::new("xdg-open"); }\n',
                 encoding="utf-8",
             )
+            platform_service.write_text(
+                "fn reverse() { crate::feature_a::run(); }\n", encoding="utf-8"
+            )
             commands.write_text('include!("commands/chat.rs");\n', encoding="utf-8")
 
             rules, cycles, _ = self.guard.scan_rust(root)
             self.assertEqual(1, rules["rust_feature_depends_on_app"]["a->bridge"])
+            self.assertEqual(
+                1,
+                rules["rust_platform_depends_on_upper_layer"][
+                    "pinvou3-app/src-tauri/src/platform/service.rs->features::a"
+                ],
+            )
             self.assertEqual([["a", "b"]], cycles)
             self.assertEqual(1, rules["rust_cyclic_feature_dependencies"]["a->b"])
             self.assertEqual(1, rules["rust_cyclic_feature_dependencies"]["b->a"])

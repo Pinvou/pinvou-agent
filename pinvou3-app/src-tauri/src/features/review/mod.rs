@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::platform::engine_bridge::{prefs::ModelPreset, Pinvou3Bridge};
+use crate::features::assistant::platform::bridge::{prefs::ModelPreset, Pinvou3Bridge};
 
 const PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问，召之即来。
 

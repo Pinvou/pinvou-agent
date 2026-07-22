@@ -14,7 +14,7 @@
 mod audit;
 mod core;
 pub mod platform;
-pub use platform::engine_bridge as bridge;
+pub use features::assistant::platform::bridge as bridge;
 mod app;
 #[path = "platform/credential_store.rs"]
 pub mod credential_store;

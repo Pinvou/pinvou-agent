@@ -474,7 +474,7 @@ pub fn dingtalk_skills_should_show() -> bool {
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = dingtalk_skills_should_show();
-        crate::platform::bundle::Pinvou3Bundle::paths()
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_dingtalk_skills(show)
             .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
         Ok(show)
@@ -489,7 +489,7 @@ pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_dingtalk_disabled_flag(!enabled)?;
         let show = dingtalk_skills_should_show();
-        crate::platform::bundle::Pinvou3Bundle::paths()
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_dingtalk_skills(show)
             .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
         Ok(show)

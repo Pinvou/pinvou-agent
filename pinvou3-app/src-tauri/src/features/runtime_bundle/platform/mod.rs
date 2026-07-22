@@ -106,20 +106,20 @@ pub const BUNDLE_VERSION: &str = concat!(
 );
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
-pub const INSTRUCTIONS_MD: &str = include_str!("../../resources/common/bundle/instructions.md");
+pub const INSTRUCTIONS_MD: &str = include_str!("../../../../resources/common/bundle/instructions.md");
 
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
 /// 目录。目录名与 frontmatter 均使用 v0.9 要求的安全命令名 `visual-design`；中文触发词
 /// 继续由 description / 正文承载。
 const VISUAL_DESIGN_SKILL_MD: &str =
-    include_str!("../../resources/common/bundle/skills/visual-design/SKILL.md");
+    include_str!("../../../../resources/common/bundle/skills/visual-design/SKILL.md");
 
 /// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
 /// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
 /// `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,DeepSeek-TUI submodule 的
 /// base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
-pub const BASE_PROMPT_MD: &str = include_str!("../../resources/common/bundle/base.md");
+pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
 /// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
@@ -226,40 +226,40 @@ pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {\n    \"pinvou3\": {\n   
 /// present_artifact MCP server 脚本(零依赖 python stdio),编译期内嵌,解包到
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
-    include_str!("../../resources/common/bundle/mcp-servers/present_artifact_server.py");
+    include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-const WEATHER_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/weather/server.py");
+const WEATHER_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/weather/server.py");
 const WEATHER_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/weather/manifest.json");
-const IWENCAI_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/iwencai/server.py");
+    include_str!("../../../../../resources/mcp-servers/weather/manifest.json");
+const IWENCAI_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/iwencai/server.py");
 const IWENCAI_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/iwencai/manifest.json");
-const QCC_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/qcc/manifest.json");
+    include_str!("../../../../../resources/mcp-servers/iwencai/manifest.json");
+const QCC_MANIFEST_JSON: &str = include_str!("../../../../../resources/mcp-servers/qcc/manifest.json");
 const YUANDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/yuandian-mcp/manifest.json");
+    include_str!("../../../../../resources/mcp-servers/yuandian-mcp/manifest.json");
 const PATSNAP_SEARCH_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/patsnap-search/manifest.json");
-const OBSIDIAN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/obsidian/server.py");
+    include_str!("../../../../../resources/mcp-servers/patsnap-search/manifest.json");
+const OBSIDIAN_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/obsidian/manifest.json");
-const PPTX_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/pptx/server.py");
-const PPTX_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/pptx/manifest.json");
-const GONGWEN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/gongwen/server.py");
+    include_str!("../../../../../resources/mcp-servers/obsidian/manifest.json");
+const PPTX_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/pptx/server.py");
+const PPTX_MANIFEST_JSON: &str = include_str!("../../../../../resources/mcp-servers/pptx/manifest.json");
+const GONGWEN_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/gongwen/server.py");
 const GONGWEN_MANIFEST_JSON: &str =
-    include_str!("../../../resources/mcp-servers/gongwen/manifest.json");
+    include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =
-    include_str!("../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
+    include_str!("../../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
 pub const DENY_SENSITIVE_PATHS_SH: &str =
-    include_str!("../../resources/common/bundle/deny_sensitive_paths.sh");
+    include_str!("../../../../resources/common/bundle/deny_sensitive_paths.sh");
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
-    include_str!("../../resources/common/bundle/deny_sensitive_paths.ps1");
+    include_str!("../../../../resources/common/bundle/deny_sensitive_paths.ps1");
 
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
-pub const SHELL_ENV_SH: &str = include_str!("../../resources/common/bundle/shell_env.sh");
+pub const SHELL_ENV_SH: &str = include_str!("../../../../resources/common/bundle/shell_env.sh");
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {

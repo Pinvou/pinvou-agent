@@ -125,6 +125,32 @@ pub enum ModelPreset {
 
 pub const BUILTIN_LLMAPI_MODEL_ID: &str = "builtin_llmapi";
 pub const BUILTIN_LLMAPI_MODEL_NAME: &str = "内置模型";
+pub const BUILTIN_LLMAPI_DEFAULT_CHAT_BASE_URL: &str = "https://www.ma-xiao.com/llmapi/v1";
+pub const BUILTIN_LLMAPI_DEFAULT_MODEL: &str = "deepseek-v4-flash";
+
+pub fn select_builtin_llmapi_model(
+    available_models: &[String],
+    configured_default: Option<&str>,
+) -> String {
+    let configured = configured_default
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(configured) = configured {
+        if available_models.iter().any(|model| model == configured) {
+            return configured.to_string();
+        }
+    }
+    if available_models
+        .iter()
+        .any(|model| model == BUILTIN_LLMAPI_DEFAULT_MODEL)
+    {
+        return BUILTIN_LLMAPI_DEFAULT_MODEL.to_string();
+    }
+    available_models
+        .first()
+        .cloned()
+        .unwrap_or_else(|| BUILTIN_LLMAPI_DEFAULT_MODEL.to_string())
+}
 impl Default for ModelPreset {
     fn default() -> Self {
         ModelPreset::LocalVllm
@@ -370,8 +396,8 @@ impl SavedModel {
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
-            model: crate::llmapi_hub::DEFAULT_MODEL.to_string(),
-            base_url: crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string(),
+            model: BUILTIN_LLMAPI_DEFAULT_MODEL.to_string(),
+            base_url: BUILTIN_LLMAPI_DEFAULT_CHAT_BASE_URL.to_string(),
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -607,7 +633,7 @@ impl UserPrefs {
     }
 
     pub(crate) fn ensure_builtin_llmapi_model(&mut self) {
-        let builtin_model = crate::llmapi_hub::select_model(
+        let builtin_model = select_builtin_llmapi_model(
             &self.advanced.builtin_llmapi_available_models,
             self.advanced.builtin_llmapi_default_model.as_deref(),
         );
@@ -620,7 +646,7 @@ impl UserPrefs {
             model.name = BUILTIN_LLMAPI_MODEL_NAME.to_string();
             model.preset = ModelPreset::OpenaiCompatible;
             model.model = builtin_model;
-            model.base_url = crate::llmapi_hub::DEFAULT_CHAT_BASE_URL.to_string();
+            model.base_url = BUILTIN_LLMAPI_DEFAULT_CHAT_BASE_URL.to_string();
             model.api_key.clear();
             model.credential_action = None;
             return;
@@ -973,8 +999,8 @@ mod tests {
             .expect("built-in model");
         assert_eq!(model.name, BUILTIN_LLMAPI_MODEL_NAME);
         assert_eq!(model.preset, ModelPreset::OpenaiCompatible);
-        assert_eq!(model.model, crate::llmapi_hub::DEFAULT_MODEL);
-        assert_eq!(model.base_url, crate::llmapi_hub::DEFAULT_CHAT_BASE_URL);
+        assert_eq!(model.model, BUILTIN_LLMAPI_DEFAULT_MODEL);
+        assert_eq!(model.base_url, BUILTIN_LLMAPI_DEFAULT_CHAT_BASE_URL);
         assert!(model.credential_ref.is_none());
     }
 

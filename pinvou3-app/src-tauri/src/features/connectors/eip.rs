@@ -298,14 +298,14 @@ fn set_connected(v: bool) -> bool {
             let _ = std::fs::remove_file(&p);
         }
     }
-    let skill_visible = crate::platform::bundle::Pinvou3Bundle::paths()
+    let skill_visible = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
         .skills_dir
         .join("eip")
         .join("SKILL.md")
         .is_file();
     let deferred = (previous != v || skill_visible != v)
-        && crate::platform::connector_visibility::request(
-            crate::platform::connector_visibility::ConnectorKind::Eip,
+        && crate::features::connectors::visibility::request(
+            crate::features::connectors::visibility::ConnectorKind::Eip,
             v,
         );
     if deferred {

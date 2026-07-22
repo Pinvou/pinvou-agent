@@ -1,6 +1,9 @@
+pub(crate) mod assistant;
+pub(crate) mod connectors;
 pub(crate) mod dependencies;
 pub mod marketplace;
 pub(crate) mod monitor;
+pub(crate) mod runtime_bundle;
 pub mod sessions;
 pub(crate) mod updater;
 pub(crate) mod voice;

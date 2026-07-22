@@ -18,11 +18,18 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::platform::paths;
-use crate::platform::engine_bridge::{
+use crate::platform::{
+    paths,
     prefs::{ModelPreset, UserPrefs},
-    Pinvou3Bridge,
 };
+
+pub trait MemoryReviewModel {
+    fn memory_provider(&self) -> String;
+    fn memory_model(&self) -> String;
+    fn memory_base_url(&self) -> String;
+    fn memory_api_key(&self) -> String;
+    fn memory_model_preset(&self) -> ModelPreset;
+}
 
 const PROFILE_VERSION: u32 = 1;
 const RECENT_WORK_DEFAULT_TTL_DAYS: i64 = 14;
@@ -1900,7 +1907,7 @@ pub fn review_turn_candidates(user: &str, _assistant: &str) -> io::Result<Vec<Pe
 }
 
 pub async fn review_turn_candidates_with_llm(
-    bridge: &Pinvou3Bridge,
+    bridge: &(impl MemoryReviewModel + ?Sized),
     capture: &TurnMemoryCapture,
     session_id: &str,
 ) -> Result<MemoryReviewOutcome> {
@@ -1948,8 +1955,8 @@ pub async fn review_turn_candidates_with_llm(
         "triggered",
         json!({
             "trigger": trigger,
-            "provider": bridge.provider(),
-            "model": bridge.model(),
+            "provider": bridge.memory_provider(),
+            "model": bridge.memory_model(),
             "user_chars": user.chars().count(),
             "assistant_chars": assistant.chars().count(),
             "tool_summary_count": delivery_summary.len(),
@@ -2105,7 +2112,7 @@ fn assistant_suggests_delivery_complete(user: &str, assistant: &str) -> bool {
 }
 
 async fn request_llm_memory_review(
-    bridge: &Pinvou3Bridge,
+    bridge: &(impl MemoryReviewModel + ?Sized),
     user: &str,
     assistant: &str,
     trigger: &str,
@@ -2115,17 +2122,17 @@ async fn request_llm_memory_review(
         .timeout(LLM_REVIEW_TIMEOUT)
         .build()
         .context("build memory review client")?;
-    let base_url = bridge.base_url();
+    let base_url = bridge.memory_base_url();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let provider = bridge.provider();
-    let preset = memory_model_preset(bridge);
+    let provider = bridge.memory_provider();
+    let preset = bridge.memory_model_preset();
     let model_name = if provider == "vllm" {
         crate::features::monitor::probe_vllm_model_info(&base_url)
             .await
             .0
-            .unwrap_or_else(|| bridge.model())
+            .unwrap_or_else(|| bridge.memory_model())
     } else {
-        bridge.model()
+        bridge.memory_model()
     };
     let current_memory = render_memory_block()
         .map(|(block, _)| block)
@@ -2179,7 +2186,7 @@ async fn request_llm_memory_review(
     apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
     let resp = client
         .post(url)
-        .bearer_auth(bridge.api_key())
+        .bearer_auth(bridge.memory_api_key())
         .json(&body)
         .send()
         .await
@@ -2480,13 +2487,6 @@ fn extract_json_object(value: &str) -> Option<&str> {
     let start = value.find('{')?;
     let end = value.rfind('}')?;
     (start <= end).then(|| &value[start..=end])
-}
-
-fn memory_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
-    bridge
-        .effective_model_owned()
-        .map(|m| m.preset)
-        .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,6 +18,7 @@
     "rust_legacy_module_indirection": {
       "pinvou3-app/src-tauri/src/lib.rs:#[path]": 36
     },
+    "rust_platform_depends_on_upper_layer": {},
     "rust_platform_details_outside_adapter": {},
     "rust_target_cfg_outside_adapter": {
       "pinvou3-app/src-tauri/src/app/commands/artifacts.rs": 2,
