@@ -146,6 +146,10 @@ async function connectWithCapabilities(events, listener) {
     lease_id: 'lease_test',
     desktop_connected: true,
   });
+  const readinessBeforeSnapshot = socket.sent.filter(message => message.type === 'client_ready');
+  assert.equal(readinessBeforeSnapshot.length, 1);
+  assert.equal(readinessBeforeSnapshot[0].state_ready, false,
+    'a hydrated UI must still negotiate desktop capabilities before replay');
   socket.message({
     v: 2,
     type: 'desktop_snapshot',
@@ -155,6 +159,8 @@ async function connectWithCapabilities(events, listener) {
       capabilities: { protocol_version: 2, commands: [], events },
     },
   });
+  const readinessAfterSnapshot = socket.sent.filter(message => message.type === 'client_ready');
+  assert.deepEqual(readinessAfterSnapshot.map(message => message.state_ready), [false, true]);
   return { ...harness, client, socket };
 }
 

@@ -81,6 +81,7 @@
       this.frontendReady = false;
       this.stateReady = false;
       this.desktopCapabilitiesReady = false;
+      this.awaitingCapabilitySnapshot = false;
       this.webAllowedCommands = new Set();
       this.webAllowedEvents = new Set();
       this.pendingListenerRegistrations = 0;
@@ -196,6 +197,7 @@
           this.joined = true;
           this.desktopOnline = message.desktop_connected !== false;
           this.desktopCapabilitiesReady = false;
+          this.awaitingCapabilitySnapshot = this.desktopOnline;
           this.allowedCommands = new Set(this.webAllowedCommands);
           this.allowedEvents = new Set(this.webAllowedEvents);
           this.leaseId = message.lease_id || null;
@@ -204,17 +206,18 @@
             this.desktopOnline ? "" : "桌面端离线，等待重新连接…");
           if (this.frontendReady) {
             this.flushSubscriptions();
-            this.sendReady();
+            this.sendReady(false);
           }
           break;
         case "desktop_connection_state":
           this.desktopOnline = message.status === "connected";
           this.desktopCapabilitiesReady = false;
+          this.awaitingCapabilitySnapshot = this.desktopOnline;
           this.setConnection(this.desktopOnline ? "connected" : "desktop_offline",
             this.desktopOnline ? "" : "桌面端离线，等待重新连接…");
           if (this.desktopOnline && this.frontendReady) {
             this.flushSubscriptions();
-            this.sendReady();
+            this.sendReady(false);
           }
           break;
         case "rpc_response":
@@ -376,6 +379,8 @@
       this.allowedEvents = new Set(
         Array.from(this.webAllowedEvents).filter((eventName) => events.has(eventName)),
       );
+      const completesCapabilityHandshake = this.awaitingCapabilitySnapshot;
+      this.awaitingCapabilitySnapshot = false;
       this.desktopCapabilitiesReady = true;
       window.dispatchEvent(new CustomEvent("pinvou:web-capabilities", {
         detail: { commands: Array.from(this.allowedCommands), events: Array.from(this.allowedEvents) },
@@ -388,6 +393,10 @@
       });
       this.flushSubscriptions();
       this.flushPending();
+      if (completesCapabilityHandshake && this.frontendReady && this.stateReady
+          && this.joined && this.desktopOnline) {
+        this.sendReady(true);
+      }
     }
 
     async invoke(command, args) {
@@ -435,13 +444,13 @@
       return true;
     }
 
-    sendReady() {
+    sendReady(stateReady = this.stateReady) {
       this.sendJoined({
         v: protocolVersion,
         type: "client_ready",
         stream_epoch: this.streamEpoch || null,
         after_seq: this.lastSeq,
-        state_ready: this.stateReady,
+        state_ready: stateReady,
       });
     }
 
@@ -497,7 +506,10 @@
     markStateReady() {
       if (this.stateReady) return;
       this.stateReady = true;
-      if (this.frontendReady && this.joined && this.desktopOnline) this.sendReady();
+      if (this.frontendReady && this.joined && this.desktopOnline
+          && this.desktopCapabilitiesReady && !this.awaitingCapabilitySnapshot) {
+        this.sendReady(true);
+      }
     }
 
     tryCompleteFrontendReady() {
@@ -506,7 +518,8 @@
       this.frontendReady = true;
       if (this.joined && this.desktopOnline) {
         this.flushSubscriptions();
-        this.sendReady();
+        this.awaitingCapabilitySnapshot = true;
+        this.sendReady(false);
       }
     }
   }
