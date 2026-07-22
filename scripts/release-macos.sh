@@ -115,6 +115,28 @@ if [ "$SIGN_READY" = 1 ]; then
   export APPLE_SIGNING_IDENTITY="$MACOS_SIGNING_IDENTITY"
   echo "=== 将以 $MACOS_SIGNING_IDENTITY 签 .app(Tauri bundler 内联)==="
 fi
+
+# macOS 27+ 兼容 workaround(两个独立问题,均已在 macOS 27.0 arm64 实测复现并定位):
+#
+# 问题 A —— proc-macro dylib 无法加载(E0463 can't find crate):
+#   release profile 默认 strip=debuginfo,rustc 剥离 debuginfo 后符号字符串表偏移未按
+#   8 字节对齐;macOS 27 的 dyld 新增了对 LINKEDIT 字符串池 8 字节对齐的强制校验,
+#   proc-macro dylib(编译在 host 侧)dlopen 被拒 → rustc 加载它报 E0463。
+#   排除项:非 rustc 回归(1.96/1.97 均复现)、非链接器 bug(系统 ld / lld 均复现)。
+#   修复:release profile 用 strip=none。host + target 两侧都要覆盖
+#   (CARGO_PROFILE_RELEASE_STRIP 管 host 侧 proc-macro,RUSTFLAGS 管 target 侧 lib)。
+#   副作用:二进制含 debuginfo 体积略大;macOS 27 上无其他绕过方式,等 rustc 上游修。
+#   macOS ≤26 的 dyld 无此校验,保留默认 strip=debuginfo 以产出更小包。
+MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+if [ "$MACOS_MAJOR" -ge 27 ] 2>/dev/null; then
+  export CARGO_PROFILE_RELEASE_STRIP=none
+  # append 而非覆盖,保留调用者已设的 RUSTFLAGS
+  export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C strip=none"
+  echo "⚠️  macOS $MACOS_MAJOR+ → 注入 strip=none(绕过 dyld LINKEDIT 对齐校验)"
+else
+  echo "✓ macOS $MACOS_MAJOR,保留默认 strip=debuginfo"
+fi
+
 (
   cd "$APP_DIR"
   npm ci --prefer-offline --no-audit
@@ -122,6 +144,46 @@ fi
 )
 
 DMG="$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_${ARCH}.dmg"
+APP_BUNDLE="$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/pinvou3.app"
+
+# dmg 打包偶发失败兜底:
+#   Tauri 的 bundle_dmg.sh(基于 create-dmg)调 osascript 做 Finder 图标排版美化。
+#   这一步偶尔会失败——通常是瞬时状态(残留的 rw 临时镜像未卸载干净 / Finder 进程
+#   异常 / osascript 自动化权限首次未授权),而非 macOS 版本固有 bug(已在 macOS 27
+#   实测:Tauri 正常构建时 osascript 美化完整生效,dmg 含 .DS_Store + .VolumeIcon.icns)。
+#   策略:.app 已就绪但 dmg 缺失时,先重试 tauri 的 dmg bundling(跳过编译,只打包),
+#   重试通常就能成功(osascript 偶发失败重跑一般就好);重试仍失败再退化手动 hdiutil
+#   打包(丢 Finder 图标美化,但保证 dmg 可用)。
+if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
+  echo "⚠️  Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
+  (
+    cd "$APP_DIR"
+    npx tauri build --target aarch64-apple-darwin --bundles dmg
+  ) || echo "⚠️  重试仍失败,降级手动 hdiutil 打包"
+fi
+
+# 重试后仍无 dmg:手动 hdiutil 兜底(无 Finder 图标美化,但 dmg 功能完整)。
+if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
+  echo "⚠️  降级手动 hdiutil 打包(无 Finder 图标美化)"
+  DMG_DIR="$(dirname "$DMG")"
+  rm -f "$DMG_DIR"/rw.*.dmg 2>/dev/null || true
+  TMP_DMG="$DMG_DIR/rw.fallback.dmg"
+  if ! hdiutil create -ov -volname "pinvou3" -srcfolder "$APP_BUNDLE" \
+       -fs HFS+ -format UDRW "$TMP_DMG" >/dev/null 2>&1; then
+    echo "❌ hdiutil create 失败" >&2; exit 1
+  fi
+  DEV=$(hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" 2>/dev/null \
+        | grep -E '^/dev/' | sed '1q' | awk '{print $1}')
+  [ -z "$DEV" ] && { echo "❌ hdiutil attach 失败" >&2; exit 1; }
+  ln -sf /Applications "/Volumes/pinvou3/Applications" 2>/dev/null || true
+  hdiutil detach "$DEV" >/dev/null 2>&1
+  if ! hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null 2>&1; then
+    echo "❌ hdiutil convert 失败" >&2; exit 1
+  fi
+  rm -f "$TMP_DMG"
+  echo "✓ 手动 dmg 打包完成(无 Finder 图标美化)"
+fi
+
 if [ ! -f "$DMG" ]; then
   echo "dmg 产物不存在: $DMG" >&2
   exit 1

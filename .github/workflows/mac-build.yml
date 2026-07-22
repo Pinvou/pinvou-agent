@@ -69,6 +69,21 @@ jobs:
           shared-key: mac-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
+      # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
+      # runner 目前是 macos-14(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
+      # 注入,cargo build --release 会硬失败(该 step 无 continue-on-error)。
+      # 同 release-macos.sh 的 workaround;详见该脚本「问题 A」注释。等上游修后可移除。
+      - name: macOS 27+ strip workaround
+        run: |
+          if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
+            echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
+            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
+            echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
+          else
+            echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
+          fi
+
       - name: Node.js
         uses: actions/setup-node@v4
         with:
