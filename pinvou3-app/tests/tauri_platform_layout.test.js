@@ -115,6 +115,10 @@ assert.match(
   "private Windows runtime must remain opt-in during recursive submodule updates",
 );
 const workflow = fs.readFileSync(path.join(repoRoot, ".github/workflows/pr-check.yml"), "utf8");
+const arm64Workflow = fs.readFileSync(
+  path.join(repoRoot, ".github/workflows/arm64-connector-verify.yml"),
+  "utf8",
+);
 const submoduleUpdates = workflow.match(/git submodule update[^\r\n]*/g) || [];
 assert.ok(submoduleUpdates.length > 0, "CI must initialize the public DeepSeek-TUI submodule");
 assert.ok(
@@ -123,5 +127,18 @@ assert.ok(
 );
 assert.match(workflow, /npm run test:bridge-smoke/);
 assert.doesNotMatch(workflow, /frontend-test:[\s\S]{0,300}\n\s*if:\s*\$\{\{\s*false\s*\}\}/);
+for (const stalePath of [
+  "pinvou3-app/src-tauri/src/app/bridge",
+  "pinvou3-app/src-tauri/src/app/harness.rs",
+  "resources/common/bundle/connectors/linux-arm64",
+]) {
+  assert.equal(workflow.includes(stalePath), false, `PR workflow still references migrated path: ${stalePath}`);
+  assert.equal(arm64Workflow.includes(stalePath), false, `ARM64 workflow still references migrated path: ${stalePath}`);
+}
+assert.match(workflow, /src\/features\/assistant\/platform\/\*\*/);
+assert.match(workflow, /src\/features\/assistant\/harness\.rs/);
+assert.match(workflow, /src\/platform\/prefs\.rs/);
+assert.match(arm64Workflow, /resources\/platforms\/linux\/aarch64\/bundle\/connectors/);
+assert.match(arm64Workflow, /src\/platform\/paths\.rs/);
 
 console.log("tauri platform layout contract: ok");
