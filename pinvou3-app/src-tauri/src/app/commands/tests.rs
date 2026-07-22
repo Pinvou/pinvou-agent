@@ -562,7 +562,7 @@ use std::path::{Path, PathBuf};
         std::fs::write(&path, "<!doctype html>").unwrap();
 
         let canon = std::fs::canonicalize(&path).unwrap();
-        let url = file_url_from_path(&canon).unwrap();
+        let url = crate::os::file_url_from_path(&canon).unwrap();
         let text = url.as_str();
 
         assert_eq!(url.scheme(), "file");

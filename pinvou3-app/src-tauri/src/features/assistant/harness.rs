@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::platform::paths;
-use crate::process::HiddenCommand;
 
 /// 按 UTF-8 char 边界向下取整截断 `s` 到 ≤ `max_bytes` 字节，返回前缀切片。
 /// 直接 `&s[..max_bytes]` 在 max_bytes 落在多字节字符(中文)中间时会 panic——
@@ -738,7 +737,7 @@ fn materialize_dispatch_graph(project: &Path) -> Result<(), String> {
         project.to_string_lossy().to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_cmd(python_cmd(), &arg_refs, scripts_dir).map(|_| ())
+    run_python(&arg_refs, scripts_dir).map(|_| ())
 }
 
 /// 解析角色 gate 类型。真相源 = agent_registry.json 的 gate 字段(auto / human)。
@@ -805,22 +804,17 @@ pub(crate) fn record_runtime_failure(
 
 // ── Subprocess ──
 
-/// Windows 上 `python3` 命令不存在(exit 9009)，统一用 `python`。
-fn python_cmd() -> &'static str {
-    if cfg!(target_os = "windows") { "python" } else { "python3" }
-}
-
 // [2026-06-04] 30→120s:gate_runner --layer 1 对 23 页 deck 实测 31.8s,30s 差 2 秒
 // 被杀 → designer 后推进链静默断头(MegaBook run 实锤)。对齐 audit_format 工具的
 // 120s。深层债:layer1 耗时该优化(31s 大头在逐页结构审计)。
 const SUBPROCESS_TIMEOUT_SECS: u64 = 120;
 const WARMUP_TIMEOUT_SECS: u64 = 300;
 
-fn run_cmd(program: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
-    run_cmd_with_timeout(program, args, cwd, SUBPROCESS_TIMEOUT_SECS)
+fn run_python(args: &[&str], cwd: &Path) -> Result<String, String> {
+    run_python_with_timeout(args, cwd, SUBPROCESS_TIMEOUT_SECS)
 }
 
-fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
+fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
     // warmup 只做本地前置条件检查，不再请求模型接口。保留解析后的 base_url 用于
     // 校验配置存在；API Key 不再暴露给 Python 调度/验收子进程。
     let bridge = crate::platform::engine_bridge::Pinvou3Bridge::boot().ok();
@@ -831,66 +825,27 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
                 .map(|b| b.base_url())
                 .unwrap_or_else(crate::features::monitor::vllm_base_url)
         });
-    let mut command = HiddenCommand::new(program);
+    let mut command = crate::process::python_command();
+    let program = command.get_program().to_string_lossy().into_owned();
     command
         .args(args)
         .current_dir(cwd)
         .env("PYTHONPATH", cwd)
         .env("PYTHONIOENCODING", "utf-8") // Windows stdout 默认 GBK，中文 print 会 UnicodeEncodeError
         .env("PINVOU3_MODEL_BASE_URL", base_url);
-    let mut child = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn {program} failed: {e}"))?;
-
-    // [2026-06-04 管道死锁修复] 必须边跑边读:旧实现先 try_wait 等退出、后 wait_with_output
-    // 读管道——子进程输出超 64KB 管道缓冲即写阻塞、永不退出(scheduler --next 对 23 页
-    // dispatch_batch 输出全部任务书 JSON 实锤),再被超时误杀,kick 永远过不去。
-    // reader 线程持续吞两根管道,try_wait 循环只管超时;kill 会关管道让 reader 自然返回。
-    let mut stdout_pipe = child.stdout.take().ok_or_else(|| format!("{program}: no stdout pipe"))?;
-    let mut stderr_pipe = child.stderr.take().ok_or_else(|| format!("{program}: no stderr pipe"))?;
-    let out_handle = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let err_handle = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
-    });
-
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let start = std::time::Instant::now();
-
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait(); // reap zombie
-                    let _ = out_handle.join();
-                    let _ = err_handle.join();
-                    return Err(format!("{program} timed out after {timeout_secs}s"));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("{program} wait error: {e}")),
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).to_string();
-    let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).to_string();
-    if !status.success() && !stderr.is_empty() {
-        eprintln!("[harness] {program} exit={} stderr={}", status, truncate_on_char_boundary(&stderr, 300));
+    // 平台层负责隐藏控制台、持续排空管道与超时回收，业务层只解释协议输出。
+    let output = crate::process::output_with_timeout(
+        command,
+        std::time::Duration::from_secs(timeout_secs),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() && !stderr.is_empty() {
+        eprintln!("[harness] {program} exit={} stderr={}", output.status, truncate_on_char_boundary(&stderr, 300));
     }
 
-    if stdout.trim().is_empty() && !status.success() {
-        return Err(format!("{program} failed (exit {}): {}", status, truncate_on_char_boundary(&stderr, 500)));
+    if stdout.trim().is_empty() && !output.status.success() {
+        return Err(format!("{program} failed (exit {}): {}", output.status, truncate_on_char_boundary(&stderr, 500)));
     }
 
     Ok(stdout)
@@ -905,7 +860,7 @@ fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
     let mut full_args = vec![script.to_string_lossy().to_string(), project.to_string_lossy().to_string()];
     full_args.extend(args.iter().map(|s| s.to_string()));
     let arg_refs: Vec<&str> = full_args.iter().map(|s| s.as_str()).collect();
-    run_cmd(python_cmd(), &arg_refs, scripts_dir)
+    run_python(&arg_refs, scripts_dir)
 }
 
 fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
@@ -919,7 +874,7 @@ fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
         project.to_string_lossy().to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match run_cmd_with_timeout(python_cmd(), &arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
+    match run_python_with_timeout(&arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
         Ok(stdout) => match serde_json::from_str(&stdout) {
             Ok(v) => Ok(v),
             Err(_) => read_warmup_report(project),
@@ -1114,7 +1069,7 @@ fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
         "--layer".to_string(), "1".to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_cmd(python_cmd(), &arg_refs, scripts_dir)?;
+    let out = run_python(&arg_refs, scripts_dir)?;
     serde_json::from_str(&out).map_err(|e| format!("parse gate_runner: {e}"))
 }
 
@@ -1130,7 +1085,7 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
         role_id.to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_cmd(python_cmd(), &arg_refs, scripts_dir)?;
+    let out = run_python(&arg_refs, scripts_dir)?;
     let v: serde_json::Value = serde_json::from_str(&out)
         .map_err(|e| format!("parse deliverable check: {e}"))?;
 

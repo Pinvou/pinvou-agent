@@ -866,93 +866,12 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     Ok(result)
 }
 
-/// 跨平台"用系统默认程序打开"(文件 / 目录 / URL)。
-/// Windows: `cmd /C start`（`start` 是 cmd 内建；首个引号参数是窗口标题，用空串占位）；
-/// macOS: `open`；Linux/其它: `xdg-open`（freedesktop，跨发行版兼容）。
-/// 调用方对文件/目录路径应先过 `strip_verbatim` 去掉 `\\?\` 前缀（start/explorer 不认）。
-fn shell_open(arg: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c.arg(arg);
-        c
-    };
-    #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("open");
-        c.arg(arg);
-        c
-    };
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let mut cmd = {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(arg);
-        c
-    };
-    cmd.spawn()
-        .map_err(|e| format!("open({arg}) failed: {e}"))?;
-    Ok(())
-}
-
 /// 系统没有演示文稿默认打开方式时，使用 LibreOffice 作为显式兜底。
 fn valid_session_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}
-
-#[cfg(target_os = "windows")]
-fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
-    let target = strip_verbatim(target);
-    std::process::Command::new("explorer")
-        .arg(format!("/select,{target}"))
-        .spawn()
-        .map_err(|e| format!("explorer select failed: {e}"))?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
-    let target = strip_verbatim(target);
-    std::process::Command::new("open")
-        .args(["-R", &target])
-        .spawn()
-        .map_err(|e| format!("open -R failed: {e}"))?;
-    Ok(())
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn reveal_path_in_file_manager(target: &std::path::Path) -> Result<(), String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("no parent dir for {}", target.display()))?;
-
-    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
-        if let Ok(url) = tauri::Url::from_directory_path(target) {
-            let uri = url.to_string();
-            let items_arg = format!("array:string:{uri}");
-            if let Ok(output) = std::process::Command::new("dbus-send")
-                .args([
-                    "--session",
-                    "--dest=org.freedesktop.FileManager1",
-                    "--type=method_call",
-                    "/org/freedesktop/FileManager1",
-                    "org.freedesktop.FileManager1.ShowItems",
-                    &items_arg,
-                    "string:",
-                ])
-                .output()
-            {
-                if output.status.success() {
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    shell_open(&strip_verbatim(parent))
 }
 
 fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
@@ -963,32 +882,10 @@ fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
     }
 
     std::process::Command::new(&program)
-        .arg(strip_verbatim(path))
+        .arg(crate::os::external_application_path(path))
         .spawn()
         .map_err(|e| format!("LibreOffice 打开失败: {e}"))?;
     Ok(())
-}
-
-/// 去掉 Windows `canonicalize` 产出的 `\\?\` verbatim 前缀（含 UNC 形式）。
-/// start/explorer 不识别该前缀，不剥会"打不开"。非 Windows 原样返回。
-fn strip_verbatim(p: &std::path::Path) -> String {
-    let s = p.to_string_lossy();
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-            return format!(r"\\{rest}");
-        }
-        if let Some(rest) = s.strip_prefix(r"\\?\") {
-            return rest.to_string();
-        }
-    }
-    s.to_string()
-}
-
-pub(super) fn file_url_from_path(p: &std::path::Path) -> Result<tauri::Url, String> {
-    let normal_path = std::path::PathBuf::from(strip_verbatim(p));
-    tauri::Url::from_file_path(&normal_path)
-        .map_err(|_| format!("convert file url: {}", p.display()))
 }
 
 /// 外部链接白名单：前端 webview 万一被 XSS 时的最后一道防线。
@@ -1027,7 +924,7 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     if !url_in_external_allowlist(&url) {
         return Err(format!("URL not in allowlist: {url}"));
     }
-    shell_open(&url)
+    crate::os::open_target(&url, "外部链接")
 }
 
 /// 本机 Obsidian 状态(供工具市场"连接"前分支)。
@@ -1036,29 +933,6 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
 pub struct ObsidianStatus {
     pub state: String,
     pub vault_path: Option<String>,
-}
-
-/// Obsidian 桌面端记录库列表的 `obsidian.json` 路径(跨平台)。
-fn obsidian_config_path() -> Option<std::path::PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("APPDATA").map(|p| {
-            std::path::Path::new(&p)
-                .join("obsidian")
-                .join("obsidian.json")
-        })
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME").map(|p| {
-            std::path::Path::new(&p).join("Library/Application Support/obsidian/obsidian.json")
-        })
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::env::var_os("HOME")
-            .map(|p| std::path::Path::new(&p).join(".config/obsidian/obsidian.json"))
-    }
 }
 
 /// 从 obsidian.json 文本里挑出当前库路径:优先 `open:true`,否则 `ts` 最大。
@@ -1089,7 +963,7 @@ pub fn detect_obsidian() -> ObsidianStatus {
         state: "not_installed".into(),
         vault_path: None,
     };
-    let cfg = match obsidian_config_path() {
+    let cfg = match crate::os::obsidian_config_path() {
         Some(p) if p.is_file() => p,
         _ => return not_installed(),
     };
@@ -1150,7 +1024,7 @@ pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &std::pat
     crate::platform::path_policy::resolve_artifact_path_in_workspace(raw, workspace)
 }
 
-/// 用系统默认应用打开文件（跨平台：Win `start` / mac `open` / Linux `xdg-open`）；
+/// 用系统默认应用打开文件；
 /// 相对路径先按产物所属 session（前端传 `sessionId`，缺则 active）的 workspace 解析。
 #[tauri::command]
 pub async fn open_in_system(
@@ -1163,11 +1037,10 @@ pub async fn open_in_system(
     if crate::os::libreoffice_open_fallback_needed(&p) {
         return open_with_libreoffice(&p);
     }
-    shell_open(&strip_verbatim(&p))
+    crate::os::open_target(crate::os::external_application_path(&p), "产物")
 }
 
-/// 用文件管理器打开**所在目录**（不是文件本身）。跨平台：Win explorer / mac Finder /
-/// Linux Nautilus 等（freedesktop，跨 GNOME/KDE/XFCE 兼容）。
+/// 用文件管理器打开**所在目录**（不是文件本身）。
 #[tauri::command]
 pub async fn open_containing_folder(
     path: String,
@@ -1179,7 +1052,7 @@ pub async fn open_containing_folder(
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
-    shell_open(&strip_verbatim(dir))
+    crate::os::open_target(crate::os::external_application_path(dir), "产物所在目录")
 }
 
 /// 在文件管理器里定位 session 文件夹。对标 WorkBuddy:打开所有任务文件夹的上级目录,
@@ -1202,13 +1075,16 @@ pub async fn reveal_session_folder(
             .map_err(|e| format!("reveal_session_folder({session_id}): {e:#}"))?;
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
-        return shell_open(&strip_verbatim(&dir));
+        return crate::os::open_target(
+            crate::os::external_application_path(&dir),
+            "定时任务工作区",
+        );
     }
     let dir = crate::platform::paths::sessions_root().join(&session_id);
     if !dir.is_dir() {
         return Err(format!("session folder not found: {}", dir.display()));
     }
-    reveal_path_in_file_manager(&dir)
+    crate::os::reveal_target(&dir)
 }
 
 /// 打开某个定时任务独享的工作间。工作间由 automation id 稳定派生，任务的多次运行
@@ -1221,7 +1097,7 @@ pub async fn open_scheduled_task_folder(automation_id: String) -> Result<(), Str
     let dir = crate::platform::paths::scheduled_task_workspace_dir(&automation_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
-    shell_open(&strip_verbatim(&dir))
+    crate::os::open_target(crate::os::external_application_path(&dir), "定时任务工作区")
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
@@ -1241,7 +1117,7 @@ pub async fn open_artifact_window(
         return Err(format!("not a file: {}", p.display()));
     }
     if crate::os::system_default_open_supported(&p) {
-        return shell_open(&strip_verbatim(&p));
+        return crate::os::open_target(crate::os::external_application_path(&p), "产物");
     }
     if crate::os::libreoffice_open_fallback_needed(&p) {
         return open_with_libreoffice(&p);
@@ -1258,7 +1134,7 @@ pub async fn open_artifact_window(
         return Ok(());
     }
 
-    let url = file_url_from_path(&p)?;
+    let url = crate::os::file_url_from_path(&p)?;
     let title = p
         .file_name()
         .and_then(|s| s.to_str())

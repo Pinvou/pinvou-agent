@@ -262,6 +262,32 @@ pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
         .filter(|path| path.is_file())
 }
 
+pub fn configure_onnxruntime_dylib() -> Result<(), String> {
+    if std::env::var("ORT_DYLIB_PATH")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(());
+    }
+    let path = bundled_onnxruntime_dylib_path().ok_or_else(|| {
+        "Windows ONNX Runtime CPU runtime is missing: runtime/onnxruntime/onnxruntime.dll"
+            .to_string()
+    })?;
+    std::env::set_var("ORT_DYLIB_PATH", &path);
+    eprintln!(
+        "[platform] ONNX Runtime dynamic library pinned: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+pub fn obsidian_config_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|app_data| app_data.join("obsidian").join("obsidian.json"))
+}
+
 pub fn bundled_python_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
     let path = bundled_runtime_dir_for_exe(exe_path, "python").join("pythonw.exe");
     is_valid_python_candidate(&path).then_some(path)
@@ -499,8 +525,7 @@ pub fn bundled_asr_tool_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
 }
 
 pub fn bundled_asr_backend_path_for_exe(exe_path: &Path) -> Option<PathBuf> {
-    let path =
-        bundled_runtime_dir_for_exe(exe_path, "asr").join("llama-funasr-sensevoice.exe");
+    let path = bundled_runtime_dir_for_exe(exe_path, "asr").join("llama-funasr-sensevoice.exe");
     path.is_file().then_some(path)
 }
 

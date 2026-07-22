@@ -110,6 +110,7 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             feature_a.write_text(
                 '#[cfg(target_os = "windows")]\n'
                 "use crate::{bridge, feature_b};\n"
+                'fn leaked_platform_detail() { Command::new("powershell.exe"); }\n'
                 "fn upward() { bridge::notify(); feature_b::run(); }\n",
                 encoding="utf-8",
             )
@@ -117,7 +118,9 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 "fn backward() { crate::feature_a::run(); }\n", encoding="utf-8"
             )
             platform.write_text(
-                '#[cfg(target_os = "windows")]\nfn allowed() {}\n', encoding="utf-8"
+                '#[cfg(target_os = "windows")]\n'
+                'fn allowed() { Command::new("xdg-open"); }\n',
+                encoding="utf-8",
             )
             commands.write_text('include!("commands/chat.rs");\n', encoding="utf-8")
 
@@ -135,6 +138,16 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             self.assertNotIn(
                 "pinvou3-app/src-tauri/src/features/a/platform/windows.rs",
                 rules["rust_target_cfg_outside_adapter"],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_platform_details_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/a/mod.rs"
+                ],
+            )
+            self.assertNotIn(
+                "pinvou3-app/src-tauri/src/features/a/platform/windows.rs",
+                rules["rust_platform_details_outside_adapter"],
             )
             self.assertEqual(
                 1,

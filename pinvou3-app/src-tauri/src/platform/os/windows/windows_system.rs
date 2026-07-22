@@ -19,6 +19,19 @@ pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String>
     Ok(())
 }
 
+pub fn reveal_target(target: &Path) -> Result<(), String> {
+    let target = super::windows_path::platform_compat_path(&target.to_string_lossy());
+    HiddenCommand::new("explorer.exe")
+        .arg(format!("/select,{}", target.display()))
+        .spawn()
+        .map_err(|e| format!("文件管理器定位失败: {e}"))?;
+    Ok(())
+}
+
+pub fn device_serial_number() -> Option<String> {
+    bios_serial_number().ok()
+}
+
 pub fn command_exists(command: &str) -> bool {
     let command_path = Path::new(command);
     if command_path.components().count() > 1 || command_path.extension().is_some() {
@@ -64,7 +77,10 @@ pub fn command_exists(command: &str) -> bool {
 }
 
 pub fn bios_serial_number() -> Result<String, String> {
-    [read_bios_serial_from_powershell(), read_bios_serial_from_wmic()]
+    [
+        read_bios_serial_from_powershell(),
+        read_bios_serial_from_wmic(),
+    ]
     .into_iter()
     .flatten()
     .find_map(|value| normalize_bios_serial_for_binding(&value))

@@ -5,6 +5,17 @@ pub fn open_target(_target: impl AsRef<OsStr>, label: &str) -> Result<(), String
     Err(format!("当前平台不支持系统打开: {label}"))
 }
 
+pub fn reveal_target(target: &Path) -> Result<(), String> {
+    Err(format!(
+        "当前平台不支持文件管理器定位: {}",
+        target.display()
+    ))
+}
+
+pub fn device_serial_number() -> Option<String> {
+    None
+}
+
 pub fn command_exists(_command: &str) -> bool {
     false
 }
@@ -13,7 +24,11 @@ pub fn pandoc_tool_path() -> PathBuf {
     PathBuf::from("pandoc")
 }
 
-pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
+pub fn configure_onnxruntime_dylib() -> Result<(), String> {
+    Ok(())
+}
+
+pub fn obsidian_config_path() -> Option<PathBuf> {
     None
 }
 

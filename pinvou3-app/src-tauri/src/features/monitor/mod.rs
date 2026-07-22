@@ -9,15 +9,14 @@
 //! 而不是 panic 或让上层崩。pinvou3 用户可能没装 nvidia-smi，可能没启 vLLM。
 
 use std::collections::{HashMap, HashSet};
-use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::credential_store::{CredentialStore, SystemCredentialStore};
+use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 mod platform;
 
@@ -397,7 +396,7 @@ fn gpu_snapshot() -> Option<GpuSnapshot> {
     {
         return guard.value.clone();
     }
-    let value = nvidia_gpu_snapshot().or_else(platform_gpu_snapshot);
+    let value = nvidia_gpu_snapshot().or_else(platform::gpu_snapshot);
     guard.sampled_at = Some(Instant::now());
     if let Some(snapshot) = value {
         guard.value = Some(snapshot.clone());
@@ -451,118 +450,6 @@ fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
         temperature_c: parts[4].parse().ok(),
         power_w: parts[5].parse().ok(),
     })
-}
-
-#[cfg(target_os = "windows")]
-fn platform_gpu_snapshot() -> Option<GpuSnapshot> {
-    use serde_json::Value;
-
-    let script = r#"
-$cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
-$gpuName = (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'Intel|Arc|Graphics|GPU' } | Select-Object -First 1 -ExpandProperty Name)
-$cpu = $null
-try { $cpu = (Get-Counter '\Processor Information(_Total)\% Processor Utility').CounterSamples[0].CookedValue } catch {}
-$gpu = $null
-try { $gpu = ((Get-Counter '\GPU Engine(*)\Utilization Percentage').CounterSamples | Measure-Object CookedValue -Sum).Sum } catch {}
-$shared = $null
-try { $shared = ((Get-Counter '\GPU Adapter Memory(*)\Shared Usage').CounterSamples | Measure-Object CookedValue -Sum).Sum } catch {}
-$temp = $null
-try {
-  $tz = Get-CimInstance -Namespace root\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -First 1
-  if ($tz) { $temp = [math]::Round(($tz.CurrentTemperature / 10) - 273.15, 0) }
-} catch {}
-[pscustomobject]@{
-  cpuName = $cpuName
-  gpuName = $gpuName
-  cpuPct = $cpu
-  gpuPct = $gpu
-  sharedBytes = $shared
-  tempC = $temp
-} | ConvertTo-Json -Compress
-"#;
-    let mut command = crate::process::HiddenCommand::new("powershell");
-    command.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        script,
-    ]);
-    let out = command_output_with_timeout(command, Duration::from_secs(15))
-        .filter(|o| o.status.success())?;
-    let text = std::str::from_utf8(&out.stdout).ok()?.trim();
-    let v: Value = serde_json::from_str(text).ok()?;
-    let cpu_name = v
-        .get("cpuName")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    let gpu_name = v
-        .get("gpuName")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if cpu_name.is_empty() && gpu_name.is_empty() {
-        return None;
-    }
-    let cpu_pct = v
-        .get("cpuPct")
-        .and_then(Value::as_f64)
-        .map(|n| n.round().clamp(0.0, 100.0) as u32);
-    let gpu_pct = v
-        .get("gpuPct")
-        .and_then(Value::as_f64)
-        .map(|n| n.round().clamp(0.0, 100.0) as u32)
-        .unwrap_or(0);
-    let shared_mib = v
-        .get("sharedBytes")
-        .and_then(Value::as_f64)
-        .map(|n| (n / 1024.0 / 1024.0).round().max(0.0) as u64);
-    let temp_c = v
-        .get("tempC")
-        .and_then(Value::as_f64)
-        .map(|n| n.round().clamp(0.0, 120.0) as u32);
-    Some(GpuSnapshot {
-        name: if cpu_name.is_empty() {
-            gpu_name.to_string()
-        } else {
-            cpu_name.to_string()
-        },
-        vram_used_mib: 0,
-        vram_total_mib: 0,
-        utilization_pct: gpu_pct,
-        processor_utilization_pct: cpu_pct,
-        shared_memory_used_mib: shared_mib,
-        temperature_c: temp_c,
-        power_w: None,
-    })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn platform_gpu_snapshot() -> Option<GpuSnapshot> {
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn command_output_with_timeout(mut command: Command, timeout: Duration) -> Option<Output> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().ok()?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(25)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Err(_) => {
-                let _ = child.kill();
-                return None;
-            }
-        }
-    }
 }
 
 pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
@@ -1279,13 +1166,6 @@ mod tests {
             strip_v1_suffix("http://host:8000").as_deref(),
             Some("http://host:8000")
         );
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    #[test]
-    fn ram_snapshot_succeeds_on_supported_platform() {
-        let s = platform::ram_snapshot().expect("RAM snapshot should be readable");
-        assert!(s.total_kib > 0);
     }
 
     #[tokio::test]

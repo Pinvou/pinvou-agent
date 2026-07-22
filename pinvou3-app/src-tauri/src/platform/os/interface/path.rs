@@ -22,8 +22,30 @@ pub fn python_command() -> String {
     super::super::platform::python_command()
 }
 
-pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
-    super::super::platform::bundled_onnxruntime_dylib_path()
+pub fn configure_onnxruntime_dylib() -> Result<(), String> {
+    super::super::platform::configure_onnxruntime_dylib()
+}
+
+pub fn obsidian_config_path() -> Option<PathBuf> {
+    super::super::platform::obsidian_config_path()
+}
+
+/// Convert a filesystem path to the native form accepted by desktop applications.
+pub fn external_application_path(path: &Path) -> PathBuf {
+    platform_compat_path(&path.to_string_lossy())
+}
+
+/// Build a standards-compliant file URL after normalising platform-only path prefixes.
+pub fn file_url_from_path(path: &Path) -> Result<tauri::Url, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(path)
+    };
+    let native = external_application_path(&absolute);
+    tauri::Url::from_file_path(&native).map_err(|_| format!("convert file url: {}", path.display()))
 }
 
 pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {

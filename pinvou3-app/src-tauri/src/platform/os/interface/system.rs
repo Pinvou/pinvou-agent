@@ -6,6 +6,14 @@ pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String>
     super::super::platform::open_target(target, label)
 }
 
+pub fn reveal_target(target: &Path) -> Result<(), String> {
+    super::super::platform::reveal_target(target)
+}
+
+pub fn device_serial_number() -> Option<String> {
+    super::super::platform::device_serial_number()
+}
+
 pub fn command_exists(command: &str) -> bool {
     super::super::platform::command_exists(command)
 }

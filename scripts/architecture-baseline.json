@@ -16,19 +16,14 @@
     "rust_cyclic_feature_dependencies": {},
     "rust_feature_depends_on_app": {},
     "rust_legacy_module_indirection": {
-      "pinvou3-app/src-tauri/src/lib.rs:#[path]": 37
+      "pinvou3-app/src-tauri/src/lib.rs:#[path]": 36
     },
+    "rust_platform_details_outside_adapter": {},
     "rust_target_cfg_outside_adapter": {
-      "pinvou3-app/src-tauri/src/app/commands/artifacts.rs": 11,
       "pinvou3-app/src-tauri/src/app/commands/runtime.rs": 7,
-      "pinvou3-app/src-tauri/src/features/assistant/harness.rs": 1,
       "pinvou3-app/src-tauri/src/features/dependencies/mod.rs": 1,
-      "pinvou3-app/src-tauri/src/features/feedback/mod.rs": 2,
-      "pinvou3-app/src-tauri/src/features/files/file_ingest.rs": 4,
-      "pinvou3-app/src-tauri/src/features/knowledge/embed.rs": 2,
       "pinvou3-app/src-tauri/src/features/llmapi_hub/identity.rs": 2,
       "pinvou3-app/src-tauri/src/features/marketplace/mod.rs": 1,
-      "pinvou3-app/src-tauri/src/features/monitor/mod.rs": 5,
       "pinvou3-app/src-tauri/src/features/pet/pet_window.rs": 5
     }
   },

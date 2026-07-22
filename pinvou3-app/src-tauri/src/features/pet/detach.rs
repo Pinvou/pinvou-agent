@@ -69,7 +69,7 @@ pub fn create_detached_at(
     // id 做 URL 编码，空 id 省略。
     let mut query = format!(
         "ui={}&detached=1&kind={}",
-        crate::ui_cache::UI_CACHE_SCHEMA,
+        crate::platform::ui_cache::UI_CACHE_SCHEMA,
         urlencode(kind)
     );
     if let Some(i) = id {
@@ -222,7 +222,7 @@ mod tests {
     fn detached_url_contract_uses_ui_cache_schema() {
         let query = format!(
             "ui={}&detached=1&kind={}",
-            crate::ui_cache::UI_CACHE_SCHEMA,
+            crate::platform::ui_cache::UI_CACHE_SCHEMA,
             urlencode("workflow")
         );
         assert_eq!(query, "ui=vite-react-1&detached=1&kind=workflow");

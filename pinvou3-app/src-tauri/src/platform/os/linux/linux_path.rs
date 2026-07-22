@@ -38,8 +38,15 @@ pub fn python_command() -> String {
     "python3".to_string()
 }
 
-pub fn bundled_onnxruntime_dylib_path() -> Option<PathBuf> {
-    None
+pub fn configure_onnxruntime_dylib() -> Result<(), String> {
+    Ok(())
+}
+
+pub fn obsidian_config_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".config/obsidian/obsidian.json"))
 }
 
 pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {

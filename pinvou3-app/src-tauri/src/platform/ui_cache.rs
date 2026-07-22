@@ -11,6 +11,58 @@ use std::path::{Path, PathBuf};
 pub(crate) const UI_CACHE_SCHEMA: &str = "vite-react-1";
 
 #[cfg(target_os = "linux")]
+const LINUX_UI_ENV_DEFAULTS: &[(&str, &str)] = &[
+    ("GDK_BACKEND", "x11"),
+    ("GTK_IM_MODULE", "fcitx"),
+    ("QT_IM_MODULE", "fcitx"),
+    ("XMODIFIERS", "@im=fcitx"),
+];
+
+#[cfg(target_os = "linux")]
+const WEBKIT_RENDERING_OVERRIDE_KEYS: &[&str] = &[
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+    "WEBKIT_FORCE_DMABUF_RENDERER",
+    "WEBKIT_WEB_RENDER_DEVICE_FILE",
+];
+
+/// Configure OS desktop variables before Tauri creates the first WebView.
+pub(crate) fn configure_runtime_environment() {
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("HOME").is_none() {
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            std::env::set_var("HOME", profile);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        for (key, value) in LINUX_UI_ENV_DEFAULTS {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, value);
+            }
+        }
+        let has_override = WEBKIT_RENDERING_OVERRIDE_KEYS
+            .iter()
+            .any(|key| std::env::var_os(key).is_some());
+        let is_arm64_nvidia =
+            cfg!(target_arch = "aarch64") && Path::new("/proc/driver/nvidia/version").is_file();
+        if should_force_webkit_dmabuf_shm(is_arm64_nvidia, has_override) {
+            std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn should_force_webkit_dmabuf_shm(
+    is_linux_arm64_nvidia: bool,
+    has_explicit_rendering_override: bool,
+) -> bool {
+    is_linux_arm64_nvidia && !has_explicit_rendering_override
+}
+
+#[cfg(target_os = "linux")]
 const APP_IDENTIFIER: &str = "com.pinvou.pinvou3";
 #[cfg(target_os = "linux")]
 const MARKER_FILE: &str = ".ui-cache-schema";
@@ -135,5 +187,15 @@ mod tests {
         let config = include_str!("../../tauri.conf.json");
         assert!(config.contains(&format!("\"identifier\": \"{APP_IDENTIFIER}\"")));
         assert!(config.contains(&format!("index.html?ui={UI_CACHE_SCHEMA}")));
+    }
+
+    #[test]
+    fn arm64_nvidia_uses_shm_without_disabling_compositing() {
+        assert!(should_force_webkit_dmabuf_shm(true, false));
+        assert!(!should_force_webkit_dmabuf_shm(true, true));
+        assert!(!should_force_webkit_dmabuf_shm(false, false));
+        assert!(!LINUX_UI_ENV_DEFAULTS
+            .iter()
+            .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"));
     }
 }

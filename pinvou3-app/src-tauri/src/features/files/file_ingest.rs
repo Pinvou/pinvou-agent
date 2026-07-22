@@ -55,8 +55,8 @@ pub struct SystemTools {
     pub pdftoppm: bool,
     /// 7z —— 解 zip/7z/rar 等压缩包；Windows 优先使用内置 7-Zip。
     pub sevenzip: bool,
-    /// python3 —— 解析 .eml 邮件（标准库 email 模块，无额外依赖）。
-    pub python3: bool,
+    /// Python —— 解析 .eml 邮件（标准库 email 模块，无额外依赖）。
+    pub python: bool,
     /// msgconvert（libemail-outlook-message-perl）—— Linux .msg → .eml；Windows 走 Rust 原生解析。
     pub msgconvert: bool,
 }
@@ -72,7 +72,7 @@ pub fn system_tools() -> SystemTools {
         tesseract: crate::os::ocr_tool_exists(),
         pdftoppm: crate::os::pdf_tool_exists("pdftoppm"),
         sevenzip: crate::os::archive_tool_exists(),
-        python3: crate::os::command_exists("python3"),
+        python: crate::os::command_exists(&crate::platform::paths::python_command()),
         msgconvert: !crate::os::msg_converter_required() || crate::os::command_exists("msgconvert"),
     })
 }
@@ -160,55 +160,11 @@ fn libreoffice_tool_command() -> Command {
     crate::process::HiddenCommand::new(crate::os::libreoffice_tool_path())
 }
 
-fn libreoffice_user_installation_arg(profile_dir: &Path) -> String {
-    format!(
+fn libreoffice_user_installation_arg(profile_dir: &Path) -> Result<String, String> {
+    Ok(format!(
         "-env:UserInstallation={}",
-        path_to_libreoffice_file_url(profile_dir)
-    )
-}
-
-fn path_to_libreoffice_file_url(path: &Path) -> String {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join(path)
-    };
-    let normalized = path.as_os_str().to_string_lossy().replace('\\', "/");
-    let escaped = escape_file_url_path(&normalized);
-
-    #[cfg(target_os = "windows")]
-    {
-        if escaped.starts_with("//") {
-            return format!("file:{escaped}");
-        }
-        return format!("file:///{escaped}");
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        format!("file://{escaped}")
-    }
-}
-
-fn escape_file_url_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for byte in path.as_bytes() {
-        match *byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~'
-            | b'/'
-            | b':' => out.push(*byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
+        crate::os::file_url_from_path(profile_dir)?
+    ))
 }
 
 fn add_ocr_tessdata_arg(command: &mut Command) {
@@ -558,7 +514,7 @@ fn libreoffice_convert_text(
     // 独立 UserInstallation profile：LibreOffice 同一 profile 不能并发(会 lock)，
     // 用户一次拖多个 office 文件时前端会并发 ingest_file，必须各用各的 profile。
     let out = libreoffice_tool_command()
-        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
+        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
         .arg("--headless")
         .arg("--convert-to")
         .arg(convert_to)
@@ -691,7 +647,7 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     let out = libreoffice_tool_command()
-        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
+        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
         .arg("--headless")
         .arg("--convert-to")
         // 不写死 `html:HTML`(那是 Writer 专用 filter,套到 Calc/Impress 会无产出)。
@@ -758,7 +714,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
     let result = (|| -> Result<(Vec<String>, bool), String> {
         // 1) office → PDF
         let out = libreoffice_tool_command()
-            .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
+            .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
             .arg("--headless")
             .arg("--convert-to")
             .arg("pdf")
@@ -1079,7 +1035,7 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     let convert = libreoffice_tool_command()
-        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile")))
+        .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
         .arg("--headless")
         .arg("--convert-to")
         .arg("pdf")
@@ -1516,8 +1472,8 @@ fn ingest_email(
         };
     }
 
-    if !tools.python3 {
-        return mk(None, Some("邮件解析需要 python3，请运行: sudo apt install python3".into()));
+    if !tools.python {
+        return mk(None, Some("邮件解析需要可用的 Python 运行时。".into()));
     }
 
     let parsed = if kind == "msg" {
@@ -1896,12 +1852,13 @@ atts = [p.get_filename() for p in msg.iter_attachments() if p.get_filename()]
 if atts:
     print('\n附件:', ', '.join(atts))
 "#;
-    let out = crate::process::HiddenCommand::new("python3")
+    let program = crate::platform::paths::python_command();
+    let out = crate::process::HiddenCommand::new(&program)
         .arg("-c")
         .arg(SCRIPT)
         .arg(path)
         .output()
-        .map_err(|e| format!("python3 调用失败: {e}"))?;
+        .map_err(|e| format!("Python 调用失败({program}): {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
@@ -2670,23 +2627,12 @@ mod tests {
         assert!(validate_path("relative/path.txt").is_err());
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn libreoffice_user_installation_uses_windows_file_url() {
-        let arg = libreoffice_user_installation_arg(Path::new(
-            r"C:\Users\pinvou\AppData\Local\Temp\profile dir",
-        ));
-        assert_eq!(
-            arg,
-            "-env:UserInstallation=file:///C:/Users/pinvou/AppData/Local/Temp/profile%20dir"
-        );
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn libreoffice_user_installation_uses_posix_file_url() {
-        let arg = libreoffice_user_installation_arg(Path::new("/tmp/profile dir"));
-        assert_eq!(arg, "-env:UserInstallation=file:///tmp/profile%20dir");
+    fn libreoffice_user_installation_uses_encoded_file_url() {
+        let arg = libreoffice_user_installation_arg(&std::env::temp_dir().join("profile dir"))
+            .expect("file URL");
+        assert!(arg.starts_with("-env:UserInstallation=file://"));
+        assert!(arg.ends_with("profile%20dir"));
     }
 
     #[cfg(windows)]
@@ -2878,8 +2824,8 @@ mod tests {
 
     #[test]
     fn eml_regression_parses_headers_body_and_attachment_when_python_available() {
-        if !crate::os::command_exists("python3") {
-            eprintln!("skip: python3 is not available");
+        if !crate::os::command_exists(&crate::platform::paths::python_command()) {
+            eprintln!("skip: Python is not available");
             return;
         }
 
@@ -3076,9 +3022,9 @@ mod tests {
     }
 
     /// 端到端验证 .eml：手写一封带 UTF-8 正文的邮件，ingest 应解出发件人/主题/
-    /// 中文正文。依赖 python3（标准库 email），故 `#[ignore]`。
+    /// 中文正文。依赖 Python（标准库 email），故 `#[ignore]`。
     #[test]
-    #[ignore = "需要 python3"]
+    #[ignore = "需要 Python"]
     fn eml_parses_headers_and_chinese_body() {
         let dir = std::env::temp_dir().join(format!("pinvou3-eml-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3198,7 +3144,7 @@ mod visual_preview_smoke {
         // 2) md -> pdf (soffice via docx) -> png 页
         let pdf = dir.join("doc.pdf");
         let _ = libreoffice_tool_command()
-            .arg(libreoffice_user_installation_arg(&dir.join("p")))
+            .arg(libreoffice_user_installation_arg(&dir.join("p")).unwrap())
             .args(["--headless", "--convert-to", "pdf", "--outdir"])
             .arg(&dir)
             .arg(&docx)
@@ -3233,7 +3179,7 @@ mod visual_preview_smoke {
         let csv = dir.join("data.csv");
         std::fs::write(&csv, "甲,乙\n1,2\n3,4\n").unwrap();
         let _ = libreoffice_tool_command()
-            .arg(libreoffice_user_installation_arg(&dir.join("p2")))
+            .arg(libreoffice_user_installation_arg(&dir.join("p2")).unwrap())
             .args(["--headless", "--convert-to", "xlsx", "--outdir"])
             .arg(&dir)
             .arg(&csv)

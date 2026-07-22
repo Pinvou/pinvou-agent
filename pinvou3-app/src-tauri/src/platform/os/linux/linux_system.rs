@@ -12,6 +12,39 @@ pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String>
     Ok(())
 }
 
+pub fn reveal_target(target: &Path) -> Result<(), String> {
+    let target = super::linux_path::platform_compat_path(&target.to_string_lossy());
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("no parent dir for {}", target.display()))?;
+
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
+        if let Ok(url) = tauri::Url::from_directory_path(&target) {
+            let items = format!("array:string:{url}");
+            if Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &items,
+                    "string:",
+                ])
+                .output()
+                .is_ok_and(|output| output.status.success())
+            {
+                return Ok(());
+            }
+        }
+    }
+    open_target(parent, "文件所在目录")
+}
+
+pub fn device_serial_number() -> Option<String> {
+    None
+}
+
 pub fn command_exists(command: &str) -> bool {
     Command::new("which")
         .arg(command)

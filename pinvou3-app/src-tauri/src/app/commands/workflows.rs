@@ -365,9 +365,10 @@ pub async fn kick_workflow(
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let harness_workspace = ws.clone();
-    let action = tokio::task::spawn_blocking(move || crate::harness::step_fresh(&harness_workspace))
-        .await
-        .map_err(|e| format!("spawn_blocking step_fresh: {e}"))?;
+    let action =
+        tokio::task::spawn_blocking(move || crate::harness::step_fresh(&harness_workspace))
+            .await
+            .map_err(|e| format!("spawn_blocking step_fresh: {e}"))?;
 
     match action {
         // [拆对话线 C] step_fresh 直接返回 SpawnAgent，Harness 直派真 SubAgent，
@@ -1078,7 +1079,7 @@ pub async fn cancel_workflow_role(
         let scheduler = crate::harness::scheduler_path_for(
             &crate::harness::workflow_name_for_scenario(&scenario),
         );
-        let output = std::process::Command::new("python3")
+        let output = crate::process::HiddenCommand::new(crate::platform::paths::python_command())
             .args([
                 scheduler.to_string_lossy().as_ref(),
                 project.to_string_lossy().as_ref(),

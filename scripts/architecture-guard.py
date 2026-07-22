@@ -269,11 +269,16 @@ def target_cfg_allowed(relative: str) -> bool:
     return "/platform/" in f"/{relative}" or relative.endswith("/src/lib.rs")
 
 
+def platform_detail_allowed(relative: str) -> bool:
+    return "/platform/" in f"/{relative}"
+
+
 def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], list[str]]:
     rules: dict[str, Counter[str]] = {
         "rust_feature_depends_on_app": Counter(),
         "rust_cyclic_feature_dependencies": Counter(),
         "rust_target_cfg_outside_adapter": Counter(),
+        "rust_platform_details_outside_adapter": Counter(),
         "rust_legacy_module_indirection": Counter(),
     }
     warnings: list[str] = []
@@ -285,6 +290,17 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
     target_cfg_pattern = re.compile(r"\btarget_os\s*=\s*\"[^\"]+\"")
     include_pattern = re.compile(r"\binclude\s*!\s*\(")
     path_pattern = re.compile(r"#\s*\[\s*path\s*=")
+    platform_detail_patterns = [
+        re.compile(r"\bpowershell(?:\.exe)?\b", re.IGNORECASE),
+        re.compile(r"\bxdg-open\b"),
+        re.compile(r"\bDBUS_SESSION_BUS_ADDRESS\b"),
+        re.compile(r"\bORT_DYLIB_PATH\b"),
+        re.compile(r"\bWEBKIT_(?:DISABLE|DMABUF|FORCE|WEB_RENDER)[A-Z0-9_]*\b"),
+        re.compile(r"\b(?:HKEY_[A-Z_]+|Win32::System::Registry)\b"),
+        re.compile(
+            r'Command\s*::\s*new\s*\(\s*"(?:open|explorer(?:\.exe)?|reg(?:\.exe)?)"'
+        ),
+    ]
 
     for path in source_files(root, "pinvou3-app/src-tauri/src", {".rs"}):
         text = read_text(path)
@@ -301,6 +317,12 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
         target_count = len(target_cfg_pattern.findall(text))
         if target_count and not target_cfg_allowed(relative):
             rules["rust_target_cfg_outside_adapter"][relative] += target_count
+        if not platform_detail_allowed(relative):
+            detail_count = sum(
+                len(pattern.findall(text)) for pattern in platform_detail_patterns
+            )
+            if detail_count:
+                rules["rust_platform_details_outside_adapter"][relative] += detail_count
         include_count = len(include_pattern.findall(text))
         if include_count:
             rules["rust_legacy_module_indirection"][f"{relative}:include!"] += include_count

@@ -6,7 +6,6 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     pin::Pin,
-    process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -24,7 +23,6 @@ const MAX_VIDEO_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 80 * 1024 * 1024;
 const TOKEN_URL: &str = "https://magic.h3c.com/rest/ihomers/uploadRequest";
 const UPLOAD_URL: &str = "https://magic.h3c.com/rest/ihomers/uploadSysinfoFile";
-const TEMP_FEEDBACK_GW_SN_OVERRIDE: Option<&str> = Some("219801A4BL522CM00002");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -562,45 +560,13 @@ fn h3c_value_to_string(value: &serde_json::Value) -> Option<String> {
 }
 
 pub fn resolve_device_serial() -> Option<String> {
-    if let Some(serial) = TEMP_FEEDBACK_GW_SN_OVERRIDE {
-        return Some(serial.to_string());
-    }
     if let Ok(serial) = std::env::var("PINVOU3_FEEDBACK_GW_SN") {
         let serial = serial.trim().to_string();
         if !serial.is_empty() {
             return Some(serial);
         }
     }
-    resolve_windows_serial()
-}
-
-#[cfg(target_os = "windows")]
-fn resolve_windows_serial() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let output = Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-Command",
-            "(Get-CimInstance Win32_BIOS).SerialNumber",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let serial = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if serial.is_empty() {
-        None
-    } else {
-        Some(serial)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn resolve_windows_serial() -> Option<String> {
-    None
+    crate::os::device_serial_number()
 }
 
 fn cleanup_successful_package(package: &PreparedFeedbackPackage) -> Result<(), FeedbackError> {
