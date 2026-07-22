@@ -10,6 +10,7 @@
     "serve:src": "vite",
     "build:ui": "vite build",
     "lint:ui": "eslint src/app src/components src/features src/hooks src/platform src/shared",
+    "check:architecture": "python ../scripts/architecture-guard.py",
     "build": "node scripts/tauri/build.js build",
     "build:msi": "node scripts/tauri/build.js build --bundles msi",
     "prebuild:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/runtime/scripts/stage-runtime.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/nsis/scripts/clean-staging.ps1",

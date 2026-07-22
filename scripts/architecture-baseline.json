@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "generated_from": "76441635f0ce633a0c83812fec8fb8bac3c7b820",
+  "rules": {
+    "frontend_feature_imports_app": {},
+    "frontend_tauri_global_outside_platform": {
+      "pinvou3-app/src/app/main.jsx": 22,
+      "pinvou3-app/src/features/chat/ChatView.jsx": 1,
+      "pinvou3-app/src/features/knowledge/KnowledgeView.jsx": 4,
+      "pinvou3-app/src/features/pet/PetWindow.jsx": 21,
+      "pinvou3-app/src/features/settings/SettingsView.jsx": 9,
+      "pinvou3-app/src/features/tools/ToolStoreView.jsx": 60,
+      "pinvou3-app/src/index.html": 7
+    },
+    "frontend_user_agent_platform_detection": {},
+    "rust_cyclic_feature_dependencies": {
+      "assistant->knowledge": 1,
+      "assistant->remote_control": 14,
+      "files->remote_control": 2,
+      "knowledge->assistant": 5,
+      "knowledge->files": 2,
+      "remote_control->assistant": 2,
+      "remote_control->files": 5,
+      "remote_control->knowledge": 3
+    },
+    "rust_feature_depends_on_app": {
+      "assistant->audit": 12,
+      "assistant->bridge": 15,
+      "assistant->commands": 3,
+      "assistant->harness": 37,
+      "assistant->telemetry": 1,
+      "assistant->timing": 5,
+      "connectors->bridge": 29,
+      "connectors->startup": 2,
+      "feedback->bridge": 4,
+      "knowledge->bridge": 4,
+      "knowledge->commands": 1,
+      "knowledge->startup": 2,
+      "llmapi_hub->bridge": 18,
+      "local_llm->bridge": 1,
+      "memory->bridge": 3,
+      "monitor->bridge": 4,
+      "personas->bridge": 5,
+      "pet->bridge": 11,
+      "pet->ui_cache": 2,
+      "remote_control->bridge": 15,
+      "remote_control->commands": 3,
+      "review->bridge": 2,
+      "scheduled->bridge": 44,
+      "updater->bridge": 11,
+      "voice->bridge": 2,
+      "workflow->bridge": 56
+    },
+    "rust_legacy_module_indirection": {
+      "pinvou3-app/src-tauri/src/app/commands.rs:include!": 19,
+      "pinvou3-app/src-tauri/src/lib.rs:#[path]": 40
+    },
+    "rust_target_cfg_outside_adapter": {
+      "pinvou3-app/src-tauri/src/app/bridge/marketplace.rs": 1,
+      "pinvou3-app/src-tauri/src/app/bridge/prefs.rs": 6,
+      "pinvou3-app/src-tauri/src/app/commands/artifacts.rs": 11,
+      "pinvou3-app/src-tauri/src/app/commands/runtime.rs": 7,
+      "pinvou3-app/src-tauri/src/app/harness.rs": 1,
+      "pinvou3-app/src-tauri/src/app/telemetry.rs": 2,
+      "pinvou3-app/src-tauri/src/app/ui_cache.rs": 8,
+      "pinvou3-app/src-tauri/src/features/dependencies/mod.rs": 1,
+      "pinvou3-app/src-tauri/src/features/feedback/mod.rs": 2,
+      "pinvou3-app/src-tauri/src/features/files/file_ingest.rs": 4,
+      "pinvou3-app/src-tauri/src/features/knowledge/embed.rs": 2,
+      "pinvou3-app/src-tauri/src/features/llmapi_hub/identity.rs": 2,
+      "pinvou3-app/src-tauri/src/features/monitor/mod.rs": 5,
+      "pinvou3-app/src-tauri/src/features/pet/pet_window.rs": 5
+    }
+  },
+  "rust_feature_cycles": [
+    [
+      "assistant",
+      "files",
+      "knowledge",
+      "remote_control"
+    ]
+  ]
+}

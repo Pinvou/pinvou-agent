@@ -165,6 +165,9 @@ jobs:
           submodules: false
           fetch-depth: 0
 
+      - name: 架构边界门禁
+        run: python3 scripts/architecture-guard.py --base-ref "origin/${{ github.base_ref }}"
+
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- DeepSeek-TUI
 

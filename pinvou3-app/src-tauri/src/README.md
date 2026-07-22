@@ -17,3 +17,7 @@ Rust 后端按“功能优先、平台适配次之”组织：
 3. 只有被多个 feature 共同使用的低层能力才能进入 `platform/`。
 4. 操作系统选择使用 `cfg(target_os)`；Cargo feature 不用于模拟操作系统。
 5. 未支持能力必须显式返回 unsupported，不得静默执行其他平台实现。
+
+上述依赖和平台边界由仓库根目录的 `scripts/architecture-guard.py` 检查。迁移期已有的
+`#[path]`、`include!`、向上依赖和依赖环记录在 `scripts/architecture-baseline.json`，
+只能逐步减少，不能新增或扩大；规则和本地运行方式见 `docs/architecture-guard.md`。
