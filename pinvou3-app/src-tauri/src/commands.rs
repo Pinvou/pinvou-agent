@@ -161,8 +161,9 @@ pub async fn chat(
         }
     }
     // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
-    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
-    // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
+    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道;需要命中
+    // 附近上下文时用 kb_open_source,不直接打开二进制原文件。不再自动注入片段(注入式已
+    // 废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
     //
     // 关键防线:kb_search 的可见性是 engine config.disallowed_tools 控制的,而知识库模型/
     // 索引状态可能在 engine spawn 后才变化。挂集 turn 先刷新 live engine 的工具门控;
@@ -212,8 +213,10 @@ fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
         "<system-reminder>\n\
          本会话挂载了知识集《{title}》。涉及用户本地资料/文档的问题,你**必须先调用 \
          `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
-         内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。与本地资料无关的闲聊/\
-         常识问题不必检索,正常回答即可。\n\
+         内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
+         只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\
+         DOCX/PPTX 等来源调用 `read_file` 或用 shell 全量展开。与本地资料无关的闲聊/常识\
+         问题不必检索,正常回答即可。\n\
          </system-reminder>"
     )
 }
@@ -1880,7 +1883,8 @@ pub async fn apply_disabled_connectors(
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
 ///
 /// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
-/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库不可用时)`kb_search`。
+/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库不可用时)
+/// `kb_search`/`kb_open_source`。
 /// 知识库"可用" = 有已入库内容 **且** embedding 模型已就绪(semantic_ready)。embedding 模型按需
 /// 下载,没装时知识库走完全门控 → kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索;
 /// 库删光文件后同理。KnowledgeService state 取不到时保守隐藏(宁可少功能不误宣传)。
@@ -1892,6 +1896,7 @@ pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
         .unwrap_or(false);
     if !kb_usable {
         tools.push("kb_search".to_string());
+        tools.push("kb_open_source".to_string());
     }
     tools
 }
@@ -6415,12 +6420,15 @@ mod tests {
         assert!(msg.contains("立即开始执行"), "缺少明确执行信号");
     }
 
-    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
+    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 按需 kb_open_source + 禁止二进制
+    /// read_file + 无依据说不知道;空名兜底。
     #[test]
     fn agentic_guide_mentions_collection_and_kb_search() {
         let g = build_kb_agentic_guide(Some("硬件资料"));
         assert!(g.contains("《硬件资料》"));
         assert!(g.contains("kb_search"));
+        assert!(g.contains("kb_open_source"));
+        assert!(g.contains("不要对 XLSX/"));
         assert!(g.contains("绝不凭记忆编造"));
         assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
     }

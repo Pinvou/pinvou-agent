@@ -25,7 +25,7 @@ mod watcher;
 mod e2e_test;
 
 pub use exclude::Excluder;
-pub use kb_tool::KbSearchTool;
+pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
 pub use l1::{ChunkHit, Collection, Document};
 
 use std::path::{Path, PathBuf};
@@ -136,7 +136,8 @@ impl KnowledgeService {
         ready
     }
 
-    /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search 工具的对外可见性：
+    /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search/kb_open_source
+    /// 工具的对外可见性：
     /// 为空时把工具加入引擎 disallowed → 模型看不到，AI 不再宣称「能本地知识库检索」。
     /// 读失败保守按「无内容」处理（宁可隐藏也不误宣传能力）。
     pub fn has_indexed_content(&self) -> bool {
@@ -448,7 +449,7 @@ pub async fn kb_collection_delete(
     Ok(())
 }
 
-/// 删文档/知识集后重算工具门控:若库已空,kb_search 进 disallowed 并广播给所有在跑会话 →
+/// 删文档/知识集后重算工具门控:若库已空,kb_search/kb_open_source 进 disallowed 并广播给所有在跑会话 →
 /// 实时从模型目录消失。加文件后重新出现走新会话即可(老会话实时性次要)。
 async fn refresh_kb_tool_gate(app: &AppHandle, pool: &crate::engine_pool::EnginePool) {
     let disallowed = crate::commands::compute_disallowed_tools(app);
