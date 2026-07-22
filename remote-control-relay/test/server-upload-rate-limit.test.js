@@ -66,6 +66,11 @@ function maybeNextMessage(ws, type, timeoutMs = 500) {
   return nextMessage(ws, type, timeoutMs).catch(() => null);
 }
 
+// 不阻塞地等一条 upload ack:超时返回 null(用于断言「relay 不应回 ack」)。
+function maybeNextUploadAck(mobile, uploadId, index, timeoutMs = 1500) {
+  return nextUploadAck(mobile, uploadId, index, timeoutMs).catch(() => null);
+}
+
 // 在 desktop 侧等到某条被转发上来的 attach_file_chunk mobile_action。
 // 必须 filter:mobile 一加入,relay 会先向 desktop 发一条 request_snapshot 的 mobile_action,
 // 用 nextMessage(desktop, "mobile_action") 会误捕到它。
@@ -171,15 +176,18 @@ after(async () => {
   relay?.kill("SIGTERM");
 });
 
-test("relay 回送 attach_file_relay_ack(ok:true) 在转发 attach_file_chunk 到 desktop 之后", async () => {
+test("relay 转发 attach_file_chunk 给 desktop 后不再提前回 ok:true ack(成功 ack 由 desktop 写盘后回)", async () => {
   const room = `rc_upload_ack_${Date.now()}`;
   const token = `token_${Date.now()}`;
   const secret = `secret_${Date.now()}`;
   const desktop = await registerDesktop(room, token, secret);
   const mobile = await joinMobile(room, token);
 
+  // 审查(PR #213 #3)修复后:relay 转发给 desktop 即完成自身职责,**不**向 mobile
+  // 回 ok:true ack。成功 ack 由桌面 streaming task 写盘后发 attach_file_relay_ack
+  // (经 relay 透传)。relay 只在 desktop 不可达时补 NAK。这样 mobile 的下一块严格
+  // 等 desktop 真正落盘,背压贯穿到磁盘,避免慢盘设备上 desktop 无界 inbound 堆积。
   const forwarded = nextUploadForward(desktop, "ul-ack", 3);
-  const acknowledged = nextUploadAck(mobile, "ul-ack", 3);
   mobile.send(JSON.stringify(uploadChunk("ul-ack", 3, 64 * 1024, true)));
 
   const fwd = await forwarded;
@@ -187,12 +195,35 @@ test("relay 回送 attach_file_relay_ack(ok:true) 在转发 attach_file_chunk �
   assert.equal(fwd.payload.upload_id, "ul-ack");
   assert.equal(fwd.payload.index, 3);
 
+  // relay 自己不得回 ok:true ack:1500ms 内 mobile 不应收到 attach_file_relay_ack。
+  const leaked = await maybeNextUploadAck(mobile, "ul-ack", 3, 1500);
+  assert.equal(leaked, null, "relay 不应在转发后提前回 ok:true upload ack");
+
+  closeSocket(mobile);
+  closeSocket(desktop);
+});
+
+test("desktop 写盘后回的 attach_file_relay_ack(ok:true) 经 relay 透传给 mobile", async () => {
+  const room = `rc_upload_desktop_ack_${Date.now()}`;
+  const token = `token_${Date.now()}`;
+  const secret = `secret_${Date.now()}`;
+  const desktop = await registerDesktop(room, token, secret);
+  const mobile = await joinMobile(room, token);
+
+  const forwarded = nextUploadForward(desktop, "ul-dack", 0);
+  const acknowledged = nextUploadAck(mobile, "ul-dack", 0);
+  mobile.send(JSON.stringify(uploadChunk("ul-dack", 0, 32 * 1024, false)));
+  await forwarded;
+  // 桌面应用写盘成功后回 attach_file_relay_ack,relay 按 desktop→mobile 透传原样转发。
+  desktop.send(JSON.stringify({
+    type: "attach_file_relay_ack",
+    room_id: room,
+    payload: { upload_id: "ul-dack", index: 0, ok: true },
+  }));
+
   const ack = await acknowledged;
-  assert.deepEqual(ack.payload, {
-    upload_id: "ul-ack",
-    index: 3,
-    ok: true,
-  });
+  assert.equal(ack.type, "attach_file_relay_ack");
+  assert.deepEqual(ack.payload, { upload_id: "ul-dack", index: 0, ok: true });
 
   closeSocket(mobile);
   closeSocket(desktop);
@@ -216,7 +247,9 @@ test("relay 在 desktop 不可达时立即回 attach_file_relay_ack(ok:false)", 
   assert.equal(ack.payload.upload_id, "ul-nak");
   assert.equal(ack.payload.index, 0);
   assert.equal(ack.payload.ok, false);
-  assert.match(ack.payload.message, /not open/);
+  // 审查 #3 后 NAK 文案由 relay 决定(desktop 不可达),不再是 ws 的 "not open"。
+  assert.ok(typeof ack.payload.message === "string" && ack.payload.message.length > 0,
+    `NAK 应携带非空 message,实际=${ack.payload.message}`);
 
   closeSocket(mobile);
 });
@@ -228,12 +261,18 @@ test("mobile 上传超出字节窗口时被限流,desktop 不收到被拒分片"
   const desktop = await registerDesktop(room, token, secret);
   const mobile = await joinMobile(room, token);
 
-  // 第一块 384 KiB:在 1 MiB 窗口内,正常转发,desktop 收到 + mobile 收到 ok:true ack。
+  // 第一块 384 KiB:在 1 MiB 窗口内,正常转发给 desktop。审查 #3 后 relay 不再提前回
+  // ok:true ack(成功 ack 由 desktop 写盘后回),这里模拟 desktop 写盘 ack 回给 mobile。
   const firstForwarded = nextUploadForward(desktop, "ul-rl", 0);
   const firstAck = nextUploadAck(mobile, "ul-rl", 0);
   mobile.send(JSON.stringify(uploadChunk("ul-rl", 0, 384 * 1024)));
   const fwd0 = await firstForwarded;
   assert.equal(fwd0.payload.index, 0);
+  desktop.send(JSON.stringify({
+    type: "attach_file_relay_ack",
+    room_id: room,
+    payload: { upload_id: "ul-rl", index: 0, ok: true },
+  }));
   const ack0 = await firstAck;
   assert.equal(ack0.payload.ok, true);
 
@@ -300,10 +339,16 @@ test("mobile 上传字节窗口在窗口周期后重置", async () => {
   const mobile = await joinMobile(room, token);
 
   // 用 512 KiB 一块:远小于 1 MiB 窗口,稳定放行(base64 估算后仍 < 1 MiB)。
+  // 审查 #3 后 relay 不再提前回 ok:true ack,需模拟 desktop 写盘 ack。
   const firstForwarded = nextUploadForward(desktop, "ul-reset", 0);
   const firstAck = nextUploadAck(mobile, "ul-reset", 0);
   mobile.send(JSON.stringify(uploadChunk("ul-reset", 0, 512 * 1024)));
   await firstForwarded;
+  desktop.send(JSON.stringify({
+    type: "attach_file_relay_ack",
+    room_id: room,
+    payload: { upload_id: "ul-reset", index: 0, ok: true },
+  }));
   await firstAck;
 
   // 窗口已用 512 KiB,再发 768 KiB(512+768>1024)立即被限流。
@@ -318,6 +363,11 @@ test("mobile 上传字节窗口在窗口周期后重置", async () => {
   mobile.send(JSON.stringify(uploadChunk("ul-reset", 2, 512 * 1024)));
   const fwd2 = await refreshedForwarded;
   assert.equal(fwd2.payload.index, 2);
+  desktop.send(JSON.stringify({
+    type: "attach_file_relay_ack",
+    room_id: room,
+    payload: { upload_id: "ul-reset", index: 2, ok: true },
+  }));
   const ack2 = await refreshedAck;
   assert.equal(ack2.payload.ok, true);
 

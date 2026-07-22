@@ -527,14 +527,24 @@ wss.on("connection", (ws, req) => {
           });
           return;
         }
-        // 等到 desktop WS 真正把这一帧写完后再向 mobile 回 ack(成功/失败均回),
-        // 把 desktop 有界通道的背压贯穿到 mobile 的下一块,并避免 mobile 干等 60s 超时。
-        send(room.desktop, {
+        // 上传分片的背压贯穿(PR #213 审查 #3):relay 不在「转发给 desktop socket」时
+        // 就向 mobile 回 ok:true ack —— desktop 把帧写进 TCP 缓冲并不意味着桌面应用已把
+        // 数据落盘,这条提前 ack 会让 mobile 在慢盘设备上抢跑发下一块,堆积到 desktop 的
+        // 无界 inbound 通道。正确语义:成功 ack 由桌面端 streaming task 写盘后自己回
+        // `attach_file_relay_ack`(见 manager.rs stream_file_upload),relay 只负责把
+        // 「desktop 不可达 / 转发硬失败」这种**对端异常**立即回 NAK,避免 mobile 干等
+        // 65s 超时。这与下载链路对称:下载的成功 ack 也由 mobile 落盘后回,relay 只补 NAK。
+        const forwarded = send(room.desktop, {
           type: "mobile_action",
           room_id: room.room_id,
           session_id: room.session_id,
           payload,
-        }, (error) => acknowledgeUploadChunk(room, payload, error));
+        });
+        if (!forwarded) {
+          // desktop socket 不可写(断开 / 未就绪):立刻 NAK,让 mobile 进入重试或失败,
+          // 不必等 desktop 端那条永远不会来的 ok:true ack。
+          acknowledgeUploadChunk(room, payload, new Error("desktop unreachable"));
+        }
         return;
       }
       send(room.desktop, {

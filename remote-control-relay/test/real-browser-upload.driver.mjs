@@ -233,13 +233,13 @@ async function main() {
   if (largeHits.length === 0) fail(`多分块文件成功路径未触发 addSystem('附件 ${largeFileName} 已就绪。')`);
   console.log('[real-browser-upload] 多分块全链路上传成功');
 
-  // 4. 超限(64MiB + 1)→ 客户端预检拒绝,不发起 attach_file_start
-  console.log('[real-browser-upload] 上传超限文件(64MiB+1),预期客户端拒绝…');
+  // 4. 超限(20MiB + 1)→ 客户端预检拒绝,不发起 attach_file_start
+  console.log('[real-browser-upload] 上传超限文件(20MiB+1),预期客户端拒绝…');
   await page.$eval('#fileInput', (el) => { el.value = ''; });
   await (await page.$('#fileInput')).uploadFile(oversizeFilePath);
   await waitFor(
     '超限文件被客户端预检拒绝(system 提示)',
-    () => seenSystemContaining(page, '超过 64MiB 上限').then((h) => h.length > 0),
+    () => seenSystemContaining(page, '超过 20MiB 上限').then((h) => h.length > 0),
     60_000,
   );
   // 超限绝不能进 attach 链路:卡片不应出现 done。

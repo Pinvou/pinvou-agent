@@ -24,8 +24,14 @@ const PREVIEW_LIMIT_BYTES: usize = 256 * 1024;
 const DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 // 每块原始字节数；base64 后约 1MiB，低于 relay 默认 4MiB 的 WS payload 上限。
 const DOWNLOAD_CHUNK_BYTES: usize = 768 * 1024;
-// 远程上传单文件上限,与下载对称,防止一次性把超大文件读进内存。
-const UPLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+// 远程上传单文件上限。**对齐 file_ingest::MAX_FILE_BYTES(20MiB)**:file_ingest 按
+// 磁盘路径扩展名 + 字节数分派,超过 20MiB 一律回 `kind:"oversize"` 空 markdown 兜底,
+// 模型读不到内容。若这里设 64MiB,mobile 会让用户等 20-64MiB 文件传完(可能数十秒),
+// 再被 ingest 静默降级成「文件太大」,体验差且浪费带宽 / 磁盘。这里把硬上限收到 20MiB,
+// 让 attach_file_start / 累计 gate 直接拒绝(PR #213 审查 #5)。
+// 下载链路不受此约束(DOWNLOAD_LIMIT_BYTES 仍 64MiB):下载是把桌面已有产物原样发回
+// mobile 预览,不经过 file_ingest,没有 20MiB 语义。
+const UPLOAD_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
 // 上传分块原始字节数;与下载保持一致(base64 后约 1MiB)。
 const UPLOAD_CHUNK_BYTES: usize = 768 * 1024;
 // 上传 ACK 等待超时:超过即视为中继或对端异常,主动收尾。
@@ -45,6 +51,62 @@ const UPLOAD_CHUNK_MAX_BYTES: usize = UPLOAD_CHUNK_BYTES * 2;
 const MAX_DISABLED_CONNECTOR_IDS: usize = 256;
 const MAX_CONNECTOR_ID_LEN: usize = 128;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
+
+/// 净化 mobile 传入的原始文件名为安全的落盘文件名,并**保留扩展名**。
+///
+/// 为何必须保留扩展名:`file_ingest::ingest` 按**磁盘路径扩展名**分派(txt/pdf/docx/
+/// xlsx/png/...),扩展名丢失会把所有类型都打到 binary 兜底,得到「不支持的文件类型」,
+/// 模型读不到真实内容。审查(PR #213)指出旧实现把每个文件都落盘成 `data.bin`,
+/// 导致 txt/pdf/word/excel/图片全部失效。
+///
+/// 安全要求:上传文件名是半可信客户端输入,直接 `join(filename)` 会被 `../` 或绝对路径
+/// 路径穿越出 `<uploads_base>/<upload_id>/`(写盘到任意位置)。所以:
+/// 1. 只取 `file_name()`(剥掉所有目录成分);
+/// 2. 拒绝非 ASCII 可见字符之外的可疑字符,只允许字母/数字/`-`/`_`/`.`;
+/// 3. 文件名退化(空 / 全非法字符 / 单独 `.`/`..`)→ 回退 `data.bin`(向后兼容)。
+/// 扩展名原样保留(小写化为 file_ingest::classify 的预期),不限制类型白名单 ——
+/// classify 对未知扩展名自然落到 binary 兜底,不需要服务端预先枚举。
+fn sanitize_upload_filename(raw: &str) -> String {
+    use std::path::Path as StdPath;
+    // file_name 只在最后一层且不为 `..`/`.` 时返回 Some,天然防目录穿越(剥掉所有
+    // `/` `\` 目录成分)。这里只做字符净化:保留**任何 Unicode 字母/数字**(中文 /
+    // 日文 / 韩文 / 带重音拉丁字母等)+ 常见安全文件名标点;过滤控制字符、空字节
+    // 与 Windows 保留字符(`: < > | ? *`)防 cross-platform 文件系统问题。
+    //
+    // 旧实现用 is_ascii_alphanumeric 会丢掉所有非 ASCII 字符:`报告.pdf` → `.pdf`
+    // → trim → `pdf`(无扩展名)→ binary 兜底,中文文件名与扩展名双丢失。这是回归。
+    // 文件名仅用于构造 PathBuf 喂给 file_ingest::ingest / pandoc / soffice(均用
+    // Command::arg 参数数组,不经 shell),故 shell 注入不是威胁模型。
+    let leaf = StdPath::new(raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let cleaned: String = leaf
+        .chars()
+        .filter(|c| {
+            c.is_alphanumeric() // Unicode-aware:含中文等
+                || matches!(
+                    c,
+                    '-' | '_' | '.' | ' ' | '(' | ')' | '[' | ']' | '+' | ',' | '&' | '@'
+                )
+        })
+        .collect();
+    // 压缩连续空格为单空格(避免 "a   b.txt" 这类异常空白),去掉首尾 `.`(防 `.`/`..`
+    // 残留与以 `.` 起头当隐藏文件)与首尾空白。
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    if trimmed.is_empty() {
+        return "data.bin".to_string();
+    }
+    // 扩展名小写:file_ingest::classify 用 to_ascii_lowercase 比较;stem 原样保留
+    // (含 Unicode,大小写不动)。
+    match trimmed.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
+            format!("{stem}.{}", ext.to_ascii_lowercase())
+        }
+        _ => trimmed.to_string(), // 无扩展名,原样保留(file_ingest 会做内容嗅探)。
+    }
+}
 
 /// 收敛 mobile set_disabled_connectors 入参:丢弃非 string 元素与超长 id,数量封顶。
 /// 返回 (净化后的 ids, 是否被截断)。被截断说明入参异常,调用方可据此上报 error。
@@ -719,6 +781,17 @@ impl RemoteControlManager {
                     );
                     return;
                 }
+                // kb_search 工具只在 Plan 模式注册到 turn registry(见 chips_snapshot 里
+                // kb_search_available 的注释)。非 Plan 模式(Yolo / Coverage 等)挂载
+                // collection 不会让模型真检索,chip 会显示「挂载成功」但实际无效 —— 拒绝并
+                // 给出明确文案,让 mobile 提示用户切到 Plan 模式(PR #213 审查 #6)。
+                if store.mode_state(&active_session_id).mode != SerializableMode::Plan {
+                    self.send_error(
+                        "kb_search_unavailable",
+                        "当前模式不支持知识库检索,请切到 Plan 模式后再挂载",
+                    );
+                    return;
+                }
                 // 拒绝挂载空集合(规范 §3 决策:doc_count==0 视为空)。
                 let non_empty = knowledge
                     .l1()
@@ -1328,6 +1401,19 @@ impl RemoteControlManager {
         let effective_model_id = effective_model.map(|m| m.id.clone());
         let effective_model_name = effective_model.map(|m| m.name.clone());
         let global_model_id = prefs.advanced.active_model_id.clone();
+        // KB chip 是否真实可用(PR #213 审查 #6):kb_search 工具只在 Plan 模式注册到
+        // turn registry(DeepSeek-TUI tool_setup.rs 的 `if mode != AppMode::Plan` 早返回),
+        // Yolo / 其它非 Plan 模式下挂载 collection 不会让模型真的能检索 —— chip 会
+        // 显示「已挂载」但实际无效。这里把「Plan 模式且有内容且 embedding 就绪」作为
+        // kb_search_available 下发,mobile 据此禁用 / 置灰 KB chip,避免误导用户。
+        // 注意:这是临时产品收敛(根因是 fork 的 extra_tools 只在 Plan 注册,改 fork 超本 PR 范围)。
+        let kb_search_available = mode_state.mode == SerializableMode::Plan
+            && self
+                .app
+                .as_ref()
+                .and_then(|app| app.try_state::<crate::knowledge::KnowledgeService>())
+                .map(|s| s.has_indexed_content() && s.semantic_ready())
+                .unwrap_or(false);
         room.sender
             .send(RelayOutbound::Envelope(envelope(
                 &room.room_id,
@@ -1348,6 +1434,7 @@ impl RemoteControlManager {
                     })),
                     "persona_id": mode_state.active_persona,
                     "mounted_collection": mode_state.mounted_collection,
+                    "kb_search_available": kb_search_available,
                 }),
             )))
             .map_err(|e| format!("send chips snapshot: {e}"))
@@ -2188,15 +2275,22 @@ impl RemoteControlManager {
 
         // 锁内只取写盘路径 + session_id,锁外做所有 await / fs / send_event。
         // pending_attachments 已经被 cleanup 清掉时 session_id 空 → 直接退出。
-        let (data_path, session_id) = {
+        //
+        // 落盘文件名保留**原始扩展名**(经 sanitize_upload_filename 净化):file_ingest
+        // 按磁盘路径扩展名分派,旧实现写死 data.bin 会让 txt/pdf/docx/xlsx/png 全部
+        // 进入 binary 兜底「不支持的文件类型」,模型读不到真实内容(PR #213 审查 #1)。
+        let (data_path, session_id, declared_byte_size) = {
             let inner = self.inner.lock();
             let base = inner.uploads_base.join(&upload_id);
-            let session_id = inner
-                .pending_attachments
-                .get(&upload_id)
+            let pending = inner.pending_attachments.get(&upload_id);
+            let session_id = pending
                 .map(|p| p.session_id.clone())
                 .unwrap_or_default();
-            (base.join("data.bin"), session_id)
+            let declared_byte_size = pending.map(|p| p.byte_size).unwrap_or(0);
+            let leaf = pending
+                .map(|p| sanitize_upload_filename(&p.filename))
+                .unwrap_or_else(|| "data.bin".to_string());
+            (base.join(&leaf), session_id, declared_byte_size)
         };
         if session_id.is_empty() {
             // 不在 pending_attachments 里 → 已经被 cleanup 清掉了,直接退出。
@@ -2334,6 +2428,35 @@ impl RemoteControlManager {
         }
         drop(file);
 
+        // 最终字节数一致性校验(PR #213 审查 #4):收到 last=true 后,实际写盘字节数
+        // 必须严格等于 attach_file_start 声明的 byte_size。截断 / 畸形上传
+        // (声明 1000 实到 800)会被旧实现静默 ingest 并标「已就绪」;此处拒绝并
+        // 回 ok:false,让 mobile 重传而不是把残缺文件喂给模型。
+        // bytes_written 由 streaming task 在每块写盘后累加(见 loop 内),是真实落盘字节。
+        let bytes_written_final = {
+            let inner = self.inner.lock();
+            inner
+                .pending_attachments
+                .get(&upload_id)
+                .map(|p| p.bytes_written)
+                .unwrap_or(0)
+        };
+        if bytes_written_final != declared_byte_size {
+            self.send_event(
+                &session_id,
+                "attach_file_result",
+                json!({
+                    "upload_id": upload_id,
+                    "ok": false,
+                    "error": format!(
+                        "size mismatch: declared {declared_byte_size} bytes, got {bytes_written_final}"
+                    ),
+                }),
+            );
+            self.cleanup_active_upload("stream_size_mismatch");
+            return;
+        }
+
         let data_path_for_ingest = data_path.clone();
         let ingest_result = match tokio::task::spawn_blocking(move || {
             crate::file_ingest::ingest(&data_path_for_ingest)
@@ -2366,6 +2489,26 @@ impl RemoteControlManager {
             }
             if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
                 p.ingest_result = Some(ingest_result.clone());
+            }
+        }
+
+        // 删除盘上源文件(PR #213 审查 #2):ingest 已经把内容读进 IngestResult.markdown
+        // (text/pdf/office/image 的 markdown / data-URI 全在内存里),后续 user_message
+        // 只读 pending_attachments.ingest_result,不再碰磁盘。旧实现不删源文件 →
+        // 成功上传的 <pinvou3_home>/uploads/<upload_id>/ 永久残留(每次最多 64MiB),
+        // 因为成功路径已把 active_upload 清空,cleanup_active_upload 的早返回让它成了孤儿。
+        // 这里直接 best-effort remove_dir_all 整个 upload 目录;失败只 log,不阻塞成功回执。
+        {
+            let dir_to_remove = {
+                let inner = self.inner.lock();
+                inner.uploads_base.join(&upload_id)
+            };
+            if let Err(e) = std::fs::remove_dir_all(&dir_to_remove) {
+                // 文件已被并发清理(switch_session / mobile_disconnected)或盘错误,
+                // 不影响成功语义 —— ingest_result 已就绪。只在日志留痕。
+                eprintln!(
+                    "[remote-control] post-ingest remove upload dir failed upload_id={upload_id} (likely already cleaned): {e:#}"
+                );
             }
         }
 
@@ -3428,11 +3571,10 @@ mod tests {
     }
 
     /// 端到端 happy path:dispatch 推两块("hello" + "world",最后一块 last=true)→
-    /// stream_file_upload 必须 (1) 拼接写盘成 "helloworld";(2) 跑 file_ingest::ingest
-    /// 填 ingest_result;(3) 发 attach_file_result(ok=true);(4) 释放 active_upload 槽位。
-    ///
-    /// ingest 对 10 字节 .txt(由 data.bin 扩展名走 binary 兜底 —— 不需要任何外部工具)
-    /// 必返回有 basename/path/byte_size 的 IngestResult,无需 pandoc/pdftotext 等。
+    /// stream_file_upload 必须 (1) 拼接写盘成 "helloworld" 并**保留 .txt 扩展名**(PR #213
+    /// 审查 #1);(2) 跑 file_ingest::ingest 填 ingest_result,kind 必须是 "text" 而非
+    /// binary 兜底;(3) 发 attach_file_result(ok=true);(4) 释放 active_upload 槽位;
+    /// (5) 成功后**删除盘上 upload 目录**(审查 #2,无磁盘泄漏)。
     #[tokio::test]
     async fn stream_file_upload_writes_chunks_and_ingests() {
         let _env_lock = ENV_LOCK
@@ -3442,7 +3584,7 @@ mod tests {
         let session_id = "rc-stream-happy-session".to_string();
         let manager = RemoteControlManager::new_headless();
         let upload_id = "up_stream_happy".to_string();
-        {
+        let uploads_base = {
             let mut inner = manager.inner.lock();
             std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
             inner.active_upload = Some(upload_id.clone());
@@ -3458,7 +3600,8 @@ mod tests {
                     ingest_result: None,
                 },
             );
-        }
+            inner.uploads_base.clone()
+        };
         // 推两块:第一块 "hello",最后一块 "world"。
         let (tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
         tx.send(UploadChunkMsg {
@@ -3483,13 +3626,10 @@ mod tests {
         // clone 一份调用,原 manager 留给后续断言用。
         manager.clone().stream_file_upload(upload_id.clone(), rx).await;
 
+        // 审查 #1 + #2:ingest_result 携带了文件被 ingest 时的全部信息(kind / basename /
+        // markdown 正文)。成功上传后盘上源文件已被删(审查 #2),所以正文断言改走
+        // ingest_result.markdown,不再 read 磁盘。
         let inner = manager.inner.lock();
-        let data_path = inner.uploads_base.join(&upload_id).join("data.bin");
-        let bytes = std::fs::read(&data_path).unwrap();
-        assert_eq!(
-            &bytes, b"helloworld",
-            "chunks must concatenate correctly into data.bin"
-        );
         let pending = inner
             .pending_attachments
             .get(&upload_id)
@@ -3498,10 +3638,19 @@ mod tests {
             .ingest_result
             .as_ref()
             .expect("ingest_result must be filled after last chunk");
-        // ingest 用的是 data.bin 路径,basename 即 "data.bin";原 filename 保留在
-        // PendingAttachment.filename 里(供前端 UI 展示)。这是 spec §5 的已知取舍。
-        assert_eq!(ir.basename, "data.bin");
+        // 审查 #1:扩展名保留后,ingest 必须按 .txt 走 text 分派(kind == "text"),
+        // 不再是 binary 兜底「不支持的文件类型」。markdown 正文 = 写盘内容 = "helloworld"。
+        assert_eq!(
+            ir.kind, "text",
+            "ingest must dispatch by preserved .txt extension, not fall back to binary (review #1)"
+        );
+        assert_eq!(ir.basename, "hello.txt");
         assert_eq!(ir.byte_size, 10);
+        assert_eq!(
+            ir.markdown.as_deref(),
+            Some("helloworld"),
+            "ingest markdown must be the concatenated chunk content (review #1)"
+        );
         assert!(
             inner.active_upload.is_none(),
             "active_upload slot must be released after successful upload"
@@ -3510,6 +3659,127 @@ mod tests {
             inner.upload_chunk_sender.is_none(),
             "upload_chunk_sender must be cleared after successful upload"
         );
+        drop(inner);
+
+        // 审查 #2:成功上传后盘上 upload 目录必须被删除(无磁盘泄漏)。
+        assert!(
+            !uploads_base.join(&upload_id).exists(),
+            "successful upload dir must be deleted after ingest (no disk leak, review #2)"
+        );
+    }
+
+    /// 审查 #4 截断拒绝回归:声明 byte_size=1000,只发 800 字节然后 last=true。
+    /// 旧实现会静默 ingest 残缺文件并标「已就绪」;新实现必须 ok:false 拒绝 +
+    /// cleanup(清状态 + 删盘)。data.bin 文件名为兜底(无扩展名),ingest 不被调用。
+    #[tokio::test]
+    async fn stream_file_upload_rejects_truncated_upload_with_size_mismatch() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("stream-trunc");
+        let session_id = "rc-stream-trunc-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        let upload_id = "up_stream_trunc".to_string();
+        let uploads_base = {
+            let mut inner = manager.inner.lock();
+            std::fs::create_dir_all(inner.uploads_base.join(&upload_id)).unwrap();
+            inner.active_upload = Some(upload_id.clone());
+            inner.pending_attachments.insert(
+                upload_id.clone(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "doc.txt".to_string(),
+                    byte_size: 1000, // 声明 1000
+                    mime: "text/plain".to_string(),
+                    bytes_written: 0,
+                    bytes_in_flight: 0,
+                    ingest_result: None,
+                },
+            );
+            inner.uploads_base.clone()
+        };
+        // 只发 800 字节就 last=true(截断)。
+        let (tx, rx) = tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+        tx.send(UploadChunkMsg {
+            upload_id: upload_id.clone(),
+            index: 0,
+            data: vec![b'A'; 800],
+            last: true,
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        manager.clone().stream_file_upload(upload_id.clone(), rx).await;
+
+        let inner = manager.inner.lock();
+        // 必须拒绝:active_upload 释放,cleanup 清掉 pending_attachments(无 ingest_result)。
+        assert!(
+            inner.active_upload.is_none(),
+            "truncated upload must be rejected and release active_upload slot"
+        );
+        assert!(
+            inner.pending_attachments.get(&upload_id).is_none()
+                || inner
+                    .pending_attachments
+                    .get(&upload_id)
+                    .map(|p| p.ingest_result.is_none())
+                    .unwrap_or(true),
+            "truncated upload must not be marked ready (no ingest_result)"
+        );
+        drop(inner);
+        // 截断上传目录必须被 cleanup 删除。
+        assert!(
+            !uploads_base.join(&upload_id).exists(),
+            "truncated upload dir must be deleted after rejection (review #4)"
+        );
+    }
+
+    /// 审查 #1 文件名净化单元:sanitize_upload_filename 必须保留扩展名 + 防路径穿越,
+    /// 且**保留 Unicode 文件名**(中文 / 日韩 / 带重音),不得把非 ASCII 全过滤掉。
+    #[test]
+    fn sanitize_upload_filename_preserves_extension_and_blocks_traversal() {
+        // 保留扩展名(小写化),stem 原样。
+        assert_eq!(sanitize_upload_filename("report.PDF"), "report.pdf");
+        assert_eq!(sanitize_upload_filename("data.xlsx"), "data.xlsx");
+        assert_eq!(sanitize_upload_filename("photo.JPEG"), "photo.jpeg");
+        // Unicode 文件名必须保留(中文 / 日文 / 带重音):旧 is_ascii 过滤会丢成 .pdf→pdf。
+        assert_eq!(sanitize_upload_filename("报告.pdf"), "报告.pdf");
+        assert_eq!(sanitize_upload_filename("データ.xlsx"), "データ.xlsx");
+        assert_eq!(sanitize_upload_filename("café.md"), "café.md");
+        assert_eq!(sanitize_upload_filename("季度总结 第一期.docx"), "季度总结 第一期.docx");
+        // 防路径穿越:file_name() 剥掉目录成分。
+        assert_eq!(sanitize_upload_filename("../evil.txt"), "evil.txt");
+        assert_eq!(sanitize_upload_filename("/etc/passwd"), "passwd");
+        // Windows 风格反斜杠:在 Linux 上 file_name() 不把它当分隔符(Linux 只认 /),
+        // 但反斜杠不在允许字符集 → 被过滤,结果仍无目录穿越(无 / 或 \ 残留)。
+        assert_eq!(sanitize_upload_filename("..\\windows\\x.exe"), "windowsx.exe");
+        // Windows 保留字符被过滤(: < > | ? *),其余安全标点保留。
+        assert_eq!(sanitize_upload_filename("data:v2.txt"), "datav2.txt");
+        assert_eq!(sanitize_upload_filename("report (v2).csv"), "report (v2).csv");
+        assert_eq!(sanitize_upload_filename("a+b&c@d.json"), "a+b&c@d.json");
+        // 退化输入回退 data.bin(向后兼容)。
+        assert_eq!(sanitize_upload_filename(""), "data.bin");
+        assert_eq!(sanitize_upload_filename(".."), "data.bin");
+        assert_eq!(sanitize_upload_filename("   "), "data.bin");
+        // 无扩展名原样保留(file_ingest 会做内容嗅探,不再一刀切 binary)。
+        assert_eq!(sanitize_upload_filename("README"), "README");
+        assert_eq!(sanitize_upload_filename("Dockerfile"), "Dockerfile");
+        // 连续空格压缩 + 首尾空白/点去除。
+        assert_eq!(sanitize_upload_filename("  a   b.txt  "), "a b.txt");
+        assert_eq!(sanitize_upload_filename(".hidden.txt"), "hidden.txt");
+    }
+
+    /// 审查 #5 上限对齐:UPLOAD_LIMIT_BYTES 必须等于 file_ingest::MAX_FILE_BYTES(20MiB),
+    /// 不得是 64MiB,否则 20-64MiB 文件会被 mobile 接受但 file_ingest 静默降级。
+    #[test]
+    fn upload_limit_bytes_matches_file_ingest_max() {
+        assert_eq!(
+            UPLOAD_LIMIT_BYTES,
+            crate::file_ingest::MAX_FILE_BYTES,
+            "mobile upload hard cap must align with file_ingest 20MiB cap (review #5)"
+        );
+        assert_eq!(UPLOAD_LIMIT_BYTES, 20 * 1024 * 1024);
     }
 
     /// Abort 路径:dispatch 还没推任何 chunk,channel sender 就被 drop(mobile abort /
@@ -4763,20 +5033,28 @@ mod e2e_tests {
             "desktop must see at least 1 attach_file_abort, got {aborts}"
         );
 
-        // 验证落盘:small + large 成功上传(各 1 个 upload_id 目录)。
-        // abort-large 路径的目录由 handle_attach_file_abort 删除,不应残留。
+        // 验证落盘(PR #213 审查 #2):成功上传的 small + large 都必须在 ingest 后**删除**
+        // 盘上目录(无磁盘泄漏)。abort-slow 的目录由 handle_attach_file_abort 删除。
+        // 旧实现成功上传后不删源文件 → 每次最多残留 20MiB;新实现 ingest 完成即删。
         let uploads_root = home.join("uploads");
-        if uploads_root.exists() {
-            let entries: Vec<_> = std::fs::read_dir(&uploads_root)
-                .map(|it| it.filter_map(|e| e.ok()).collect())
-                .unwrap_or_default();
-            assert!(
-                entries.len() >= 2,
-                "uploads dir should have >= 2 upload_id entries (small + large) after successful uploads, got {}: {:?}",
-                entries.len(),
-                entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
-            );
-        }
+        let leaked: Vec<_> = if uploads_root.exists() {
+            std::fs::read_dir(&uploads_root)
+                .map(|it| {
+                    it.filter_map(|e| e.ok())
+                        .filter(|e| {
+                            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        assert!(
+            leaked.is_empty(),
+            "成功上传 + abort 后 uploads 目录必须清空(无磁盘泄漏,审查 #2),实际残留: {:?}",
+            leaked.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
 
         let _ = &guard;
     }

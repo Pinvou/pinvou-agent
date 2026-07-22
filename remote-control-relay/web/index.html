@@ -817,7 +817,13 @@
         } else {
           el.knowledgeChip.textContent = '📚 知识库';
         }
-        el.knowledgeChip.disabled = !joined || state.replaced;
+        // kb_search 工具只在 Plan 模式注册(PR #213 审查 #6):非 Plan 模式下挂载无效,
+        // chip 必须置灰并带 title 提示,避免用户挂上后以为能检索实际却无效。
+        const kbAvailable = !!(state.chips && state.chips.kb_search_available);
+        el.knowledgeChip.disabled = !joined || state.replaced || !kbAvailable;
+        el.knowledgeChip.title = kbAvailable
+          ? ''
+          : '当前模式不支持知识库检索,请切到 Plan 模式';
       }
       if (el.toolsChip) {
         const all = (state.tools && state.tools.all) || [];
@@ -1158,9 +1164,18 @@
       }
       const collections = Array.isArray(state.kb.collections) ? state.kb.collections : [];
       const mounted = state.kb.mounted || null;
+      const kbAvailable = !!(state.chips && state.chips.kb_search_available);
       const mountedItem = mounted
         ? collections.find(c => c && c.id === mounted)
         : null;
+      // 非 Plan 模式下 kb_search 未注册到模型(PR #213 审查 #6):置顶提示 + 禁用挂载,
+      // 避免用户挂上「看似成功实际无效」的 collection。已挂载的仍允许摘挂。
+      if (!kbAvailable) {
+        const warn = document.createElement('div');
+        warn.className = 'empty-panel';
+        warn.textContent = '当前模式不支持知识库检索(仅 Plan 模式可用),请切到 Plan 模式后再挂载。';
+        el.sheetBody.appendChild(warn);
+      }
       if (mounted) {
         el.sheetBody.appendChild(sheetItem({
           title: (mountedItem && (mountedItem.name || mountedItem.title)) || ('#' + mounted),
@@ -1196,10 +1211,12 @@
           onClick: () => {
             if (isMounted) {
               sendAction('unmount_kb_collection', {});
-            } else {
+              closeSheet();
+            } else if (kbAvailable) {
+              // 非 Plan 模式(kb_search 未注册)禁用挂载:服务端也会拒绝,这里先挡 UI。
               sendAction('mount_kb_collection', { collection_id: c.id });
+              closeSheet();
             }
-            closeSheet();
           },
         }));
       });
@@ -1583,20 +1600,24 @@
         addSystem('未连接到桌面端,无法上传。');
         return;
       }
-      if (state.uploadBusy) {
-        addSystem('已有附件正在上传,请等待完成或取消。');
-        return;
-      }
-      // 客户端预检:与桌面端 UPLOAD_LIMIT_BYTES=64MiB 对齐,避免把超大文件
-      // 完整 base64 后才被服务端拒绝(浪费带宽 + 误导性的 timeout 报错)。
-      // 与 startArtifactDownload 的 DOWNLOAD_LIMIT_BYTES 预检同源。
-      const UPLOAD_LIMIT_BYTES = 64 * 1024 * 1024;
+      // 客户端预检:与桌面端 UPLOAD_LIMIT_BYTES(20MiB,对齐 file_ingest::MAX_FILE_BYTES)
+      // 对齐,避免把超大文件完整 base64 后才被服务端拒绝(浪费带宽 + 误导性的 timeout 报错)。
+      // 桌面 file_ingest 超过 20MiB 会回 kind:oversize 空 markdown,模型读不到内容;
+      // 这里直接挡在客户端,提示准确(PR #213 审查 #5)。下载链路不受此约束,仍 64MiB。
+      // **预检在 uploadBusy 守卫之前**:无效文件(空 / 超限)无论是否正忙都应立即给出准确
+      // 提示,否则上一个上传刚结束 busy 未清时,超限文件会被误报成「已有附件正在上传」
+      // 而不是「超过 20MiB 上限」,误导用户。
+      const UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
       if (!file || typeof file.size !== 'number' || file.size === 0) {
         addSystem('空文件无法上传。');
         return;
       }
       if (file.size > UPLOAD_LIMIT_BYTES) {
-        addSystem('附件超过 64MiB 上限,未上传。');
+        addSystem('附件超过 20MiB 上限,未上传。');
+        return;
+      }
+      if (state.uploadBusy) {
+        addSystem('已有附件正在上传,请等待完成或取消。');
         return;
       }
       state.uploadBusy = true;

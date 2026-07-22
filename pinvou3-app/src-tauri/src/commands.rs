@@ -7878,16 +7878,36 @@ pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, Stri
     // 防 upload_id 路径穿越:只允许 [A-Za-z0-9_-],与 session_id 校验一致。
     crate::bridge::sessions::validate_session_id(&upload_id)
         .map_err(|_| "invalid upload_id".to_string())?;
-    let file_path = crate::bridge::paths::pinvou3_home()
+    // 落盘文件名保留原始扩展名(PR #213 审查 #1),不再是固定 data.bin。verify_upload
+    // 用目录里唯一的普通文件定位(e2e 场景目录下只有一个落盘文件),避免对扩展名硬编码。
+    let upload_dir = crate::bridge::paths::pinvou3_home()
         .join("uploads")
-        .join(&upload_id)
-        .join("data.bin");
-    // 有界读取:上限 64MiB(与上传单文件上限一致),防止超大/异常文件把内存撑爆。
-    // 所有读失败统一收敛为不透明文案,既不回显绝对路径(泄露 home / 用户名),
-    // 也不把 io::ErrorKind 暴露出去(避免 NotFound vs PermissionDenied 的存在性 oracle)。
+        .join(&upload_id);
+    let file_path = match std::fs::read_dir(&upload_dir).ok().and_then(|it| {
+        it.filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .next()
+            .map(|e| e.path())
+    }) {
+        Some(p) => p,
+        None => return Err("upload not available".to_string()),
+    };
+    // 有界读取:上限 20MiB(与上传单文件上限 UPLOAD_LIMIT_BYTES 对齐),防止超大/异常
+    // 文件把内存撑爆。所有读失败统一收敛为不透明文案,既不回显绝对路径(泄露 home /
+    // 用户名),也不把 io::ErrorKind 暴露出去(避免 NotFound vs PermissionDenied 的存在性 oracle)。
+    const VERIFY_UPLOAD_MAX_BYTES: usize = 20 * 1024 * 1024;
     let mut file = tokio::fs::File::open(&file_path)
         .await
         .map_err(|_| "upload not available".to_string())?;
+    // 先按 metadata 长度预检,避免无界 read_to_end 把超大残留文件全读进内存。
+    let meta_len = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .unwrap_or(VERIFY_UPLOAD_MAX_BYTES as u64);
+    if meta_len as usize > VERIFY_UPLOAD_MAX_BYTES {
+        return Err("upload not available".to_string());
+    }
     let mut bytes = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
         .await
