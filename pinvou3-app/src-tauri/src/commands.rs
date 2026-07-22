@@ -6026,6 +6026,104 @@ mod tests {
         }
     }
 
+    /// 管理一个测试期间临时设置的 PINVOU3_E2E 环境变量,drop 时还原。
+    /// verify_upload 是 e2e 专用命令,生产构建(env 未置 1)必须直接拒绝,不得读盘。
+    struct TestE2EFlag {
+        previous: Option<String>,
+    }
+    impl TestE2EFlag {
+        fn enable() -> Self {
+            let previous = std::env::var("PINVOU3_E2E").ok();
+            std::env::set_var("PINVOU3_E2E", "1");
+            Self { previous }
+        }
+    }
+    impl Drop for TestE2EFlag {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("PINVOU3_E2E", value),
+                None => std::env::remove_var("PINVOU3_E2E"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_upload_refuses_in_production_env() {
+        // 生产路径:PINVOU3_E2E 未置。即使文件真的落盘也必须拒绝,且错误里
+        // 不得出现 home 路径(防止向 webview 泄露用户名/目录布局)。
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // 显式清空 PINVOU3_E2E 模拟生产构建,RAII 保证测试结束后还原。
+        let _restore = RemoveE2EOnDrop::clear();
+
+        let err = verify_upload("up_testprod".to_string()).await.unwrap_err();
+        assert!(
+            !err.contains(".pinvou3") && !err.contains('/') && !err.contains('\\'),
+            "生产环境错误不得泄露 home 路径,实际={err}"
+        );
+        assert!(
+            err.contains("e2e") || err.contains("E2E") || err.contains("disabled"),
+            "应明确说明未启用,实际={err}"
+        );
+    }
+
+    struct RemoveE2EOnDrop {
+        previous: Option<String>,
+    }
+    impl RemoveE2EOnDrop {
+        fn clear() -> Self {
+            let previous = std::env::var("PINVOU3_E2E").ok();
+            std::env::remove_var("PINVOU3_E2E");
+            Self { previous }
+        }
+    }
+    impl Drop for RemoveE2EOnDrop {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var("PINVOU3_E2E", v),
+                None => std::env::remove_var("PINVOU3_E2E"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
+        let _home = test_pinvou_home("verify-upload-e2e");
+        let _e2e = TestE2EFlag::enable();
+
+        let upload_dir = crate::bridge::paths::pinvou3_home().join("uploads").join("up_ok1");
+        std::fs::create_dir_all(&upload_dir).unwrap();
+        let data = b"hello verify_upload";
+        std::fs::write(upload_dir.join("data.bin"), data).unwrap();
+
+        let out = verify_upload("up_ok1".to_string()).await.unwrap();
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(data);
+        let expected = format!("{:x}", h.finalize());
+        assert_eq!(out.sha256, expected);
+        assert_eq!(out.byte_size, data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn verify_upload_missing_file_does_not_leak_path_or_distinguish_errors() {
+        let _home = test_pinvou_home("verify-upload-missing");
+        let _e2e = TestE2EFlag::enable();
+
+        // 文件不存在:错误消息必须收敛为单一不透明文案,不得回显绝对路径,也不得
+        // 把 NotFound 等 io::ErrorKind 暴露给调用方(存在性 oracle)。
+        let err = verify_upload("up_missing1".to_string()).await.unwrap_err();
+        assert!(
+            !err.contains(".pinvou3") && !err.contains('/') && !err.contains('\\'),
+            "缺失文件错误不得泄露 home 路径,实际={err}"
+        );
+        assert!(
+            !err.contains("No such file") && !err.to_lowercase().contains("not found"),
+            "不得区分 NotFound 与其它 io 错误(存在性 oracle),实际={err}"
+        );
+    }
+
     fn test_pinvou_home(tag: &str) -> TestPinvouHome {
         let guard = crate::bridge::paths::tests::ENV_LOCK
             .lock()
@@ -7769,16 +7867,31 @@ pub async fn get_session_stats(
 /// 测试可用 `PINVOU3_HOME` 重定位)。返回 sha256(小写 hex)+ 字节数,e2e 比对客户端已知值。
 #[tauri::command]
 pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, String> {
+    // 该命令仅供 web 远控 e2e 校验落盘文件 sha256,生产构建(PINVOU3_E2E 未置 "1")
+    // 必须直接拒绝:它仍是已注册的 Tauri command,webview 内任意 JS(XSS / 注入)都能
+    // invoke 它,没有 env 守卫就会变成一个未鉴权的「读任意 upload 文件 + 泄露 sha256/
+    // 字节数」oracle。守卫只放行测试机显式开启的 e2e 场景。
+    let e2e_enabled = matches!(std::env::var("PINVOU3_E2E").as_deref(), Ok("1"));
+    if !e2e_enabled {
+        return Err("verify_upload is disabled: e2e-only command (set PINVOU3_E2E=1)".to_string());
+    }
     // 防 upload_id 路径穿越:只允许 [A-Za-z0-9_-],与 session_id 校验一致。
     crate::bridge::sessions::validate_session_id(&upload_id)
-        .map_err(|e| format!("invalid upload_id: {e:?}"))?;
+        .map_err(|_| "invalid upload_id".to_string())?;
     let file_path = crate::bridge::paths::pinvou3_home()
         .join("uploads")
         .join(&upload_id)
         .join("data.bin");
-    let bytes = tokio::fs::read(&file_path)
+    // 有界读取:上限 64MiB(与上传单文件上限一致),防止超大/异常文件把内存撑爆。
+    // 所有读失败统一收敛为不透明文案,既不回显绝对路径(泄露 home / 用户名),
+    // 也不把 io::ErrorKind 暴露出去(避免 NotFound vs PermissionDenied 的存在性 oracle)。
+    let mut file = tokio::fs::File::open(&file_path)
         .await
-        .map_err(|e| format!("read {}: {e}", file_path.display()))?;
+        .map_err(|_| "upload not available".to_string())?;
+    let mut bytes = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
+        .await
+        .map_err(|_| "upload not available".to_string())?;
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&bytes);

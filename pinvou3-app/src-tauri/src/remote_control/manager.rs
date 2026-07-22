@@ -39,7 +39,35 @@ const MAX_PENDING_ATTACHMENTS_PER_SESSION: usize = 16;
 // 服务端对单块原始字节的硬上限 = chunk_bytes × 2(容许 client 用更大 chunk_bytes,但
 // 不能大到撑爆 dispatcher 协程的 base64 缓冲)。relay 默认 WS payload 4MiB 也是兜底。
 const UPLOAD_CHUNK_MAX_BYTES: usize = UPLOAD_CHUNK_BYTES * 2;
+// mobile 端 set_disabled_connectors 入参防御性上限:connector id 数量与单 id 长度。
+// 防止 mobile(或被劫持的中继)用单条 4MiB 消息塞入海量/超长字符串,落盘成
+// ~/.pinvou3/disabled_connectors.json 后缓慢撑盘。正常工具 id 数量远小于这些上限。
+const MAX_DISABLED_CONNECTOR_IDS: usize = 256;
+const MAX_CONNECTOR_ID_LEN: usize = 128;
 const DEFAULT_PUBLIC_BASE_URL: &str = "https://pinvou.com/pinvou3/remote";
+
+/// 收敛 mobile set_disabled_connectors 入参:丢弃非 string 元素与超长 id,数量封顶。
+/// 返回 (净化后的 ids, 是否被截断)。被截断说明入参异常,调用方可据此上报 error。
+/// 不做白名单校验(未知 id 在 marketplace 侧本就 no-op),只做结构性防 DoS。
+fn sanitize_disabled_connector_ids(raw: Option<&serde_json::Value>) -> (Vec<String>, bool) {
+    let Some(arr) = raw.and_then(|v| v.as_array()) else {
+        return (Vec::new(), false);
+    };
+    let mut ids = Vec::new();
+    let mut truncated = false;
+    for x in arr {
+        let Some(s) = x.as_str() else { continue };
+        if s.len() > MAX_CONNECTOR_ID_LEN {
+            continue;
+        }
+        if ids.len() >= MAX_DISABLED_CONNECTOR_IDS {
+            truncated = true;
+            break;
+        }
+        ids.push(s.to_string());
+    }
+    (ids, truncated)
+}
 const DEFAULT_RELAY_WS_URL: &str = "wss://pinvou.com/pinvou3/remote/ws";
 
 #[derive(Clone)]
@@ -104,6 +132,10 @@ struct PendingAttachment {
     /// streaming task 已写盘字节数,用于在 handle_attach_file_chunk 校验累计不超过
     /// 声明 byte_size 的 2×(防 client 谎报 byte_size 后发巨量分块)。
     bytes_written: u64,
+    /// 已过 gate 但消费者尚未确认写盘的累计字节(背压预算)。cap-4 有界通道下,
+    /// client 可在消费者更新 bytes_written 之前把多块送进 channel,仅看 bytes_written
+    /// 会有 TOCTOU 窗口可绕过累计上限;gate 增减此值把「已通过但未落盘」也算进预算。
+    bytes_in_flight: u64,
     /// streaming task 写盘+ingest 成功后填。user_message arm 取用时若 None 则报错。
     ingest_result: Option<crate::file_ingest::IngestResult>,
 }
@@ -782,16 +814,15 @@ impl RemoteControlManager {
                     self.send_error("headless_unsupported", "marketplace needs Tauri runtime");
                     return;
                 };
-                let ids: Vec<String> = action
-                    .payload
-                    .get("connector_ids")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let (ids, truncated) =
+                    sanitize_disabled_connector_ids(action.payload.get("connector_ids"));
+                if truncated {
+                    // 入参异常(数量超上限):仍应用净化后的列表,但先上报,便于排查中继/客户端异常。
+                    self.send_error(
+                        "too_many_connector_ids",
+                        &format!("截断到 {MAX_DISABLED_CONNECTOR_IDS} 个"),
+                    );
+                }
                 match crate::commands::apply_disabled_connectors(Some(app), pool, ids).await {
                     Ok(()) => {
                         // apply_disabled_connectors 自身不 emit,这里补一次本地广播。
@@ -1554,6 +1585,7 @@ impl RemoteControlManager {
                                     byte_size,
                                     mime: mime.clone(),
                                     bytes_written: 0,
+                                    bytes_in_flight: 0,
                                     ingest_result: None,
                                 },
                             );
@@ -1624,21 +1656,31 @@ impl RemoteControlManager {
         enum ChunkGate {
             Ok(Option<tokio::sync::mpsc::Sender<UploadChunkMsg>>),
             UnknownUpload,
-            SizeExceeded { written: u64, chunk: usize, declared: u64 },
+            SizeExceeded { written: u64, inflight: u64, chunk: usize, declared: u64 },
         }
         let gate = {
-            let inner = self.inner.lock();
+            let mut inner = self.inner.lock();
             if inner.active_upload.as_deref() != Some(&upload_id) {
                 ChunkGate::UnknownUpload
-            } else if let Some(pending) = inner.pending_attachments.get(&upload_id) {
+            } else if let Some(pending) = inner.pending_attachments.get_mut(&upload_id) {
                 let declared = pending.byte_size.max(1);
-                if pending.bytes_written + data.len() as u64 > declared.saturating_mul(2) {
+                // 已写盘 + 已过 gate 未落盘 + 本块:必须同时满足两条上限。
+                // ① 声明 byte_size 的 2×(软上限,防 client 谎报 byte_size)。
+                // ② UPLOAD_LIMIT_BYTES 硬上限(无条件,即便 client 声明 64MiB 也不得多写)。
+                // 用 in_flight 预算消掉「cap-4 通道下多块在消费者更新 bytes_written 前都已过 gate」
+                // 的 TOCTOU 窗口:本块过 gate 即刻占用 in_flight,写盘确认后再归还成 bytes_written。
+                let projected =
+                    pending.bytes_written.saturating_add(pending.bytes_in_flight).saturating_add(data.len() as u64);
+                if projected > declared.saturating_mul(2) || projected > UPLOAD_LIMIT_BYTES {
                     ChunkGate::SizeExceeded {
                         written: pending.bytes_written,
+                        inflight: pending.bytes_in_flight,
                         chunk: data.len(),
                         declared,
                     }
                 } else {
+                    // 预占本块字节,直到 streaming task 写盘后在消费者侧归还。
+                    pending.bytes_in_flight = pending.bytes_in_flight.saturating_add(data.len() as u64);
                     ChunkGate::Ok(inner.upload_chunk_sender.clone())
                 }
             } else {
@@ -1650,11 +1692,11 @@ impl RemoteControlManager {
                 self.send_error("unknown_upload", "upload_id not active");
                 return;
             }
-            ChunkGate::SizeExceeded { written, chunk, declared } => {
+            ChunkGate::SizeExceeded { written, inflight, chunk, declared } => {
                 self.send_error(
                     "upload_size_exceeded",
                     &format!(
-                        "累计 {written} + 本块 {chunk} > 声明 {declared}×2,client 谎报 byte_size"
+                        "累计 已写{written}+在途{inflight}+本块{chunk} > 声明 {declared}×2 或硬上限 {UPLOAD_LIMIT_BYTES},client 谎报 byte_size"
                     ),
                 );
                 return;
@@ -1665,15 +1707,24 @@ impl RemoteControlManager {
             self.send_error("upload_closed", "sender dropped");
             return;
         };
+        let chunk_len = data.len() as u64;
         if let Err(e) = sender
             .send(UploadChunkMsg {
-                upload_id,
+                upload_id: upload_id.clone(),
                 index,
                 data,
                 last,
             })
             .await
         {
+            // 投递失败:这块不会到达 streaming task 消费者,in_flight 预算必须归还,
+            // 否则一次失败就永久吃掉一块预算,最终把后续合法上传全堵死。
+            {
+                let mut inner = self.inner.lock();
+                if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
+                    p.bytes_in_flight = p.bytes_in_flight.saturating_sub(chunk_len);
+                }
+            }
             self.send_error("upload_send_failed", &format!("{e:#}"));
         }
     }
@@ -2241,11 +2292,13 @@ impl RemoteControlManager {
                 self.cleanup_active_upload("stream_write_failed");
                 return;
             }
-            // 累计已写字节,handle_attach_file_chunk 据此拦截累计超 byte_size×2 的攻击。
+            // 累计已写字节并把该块从 in_flight 预算里归还,handle_attach_file_chunk 据此
+            // 拦截累计超 byte_size×2 的攻击(in_flight 用于消除 cap-4 通道的 TOCTOU 窗口)。
             {
                 let mut inner = self.inner.lock();
                 if let Some(p) = inner.pending_attachments.get_mut(&upload_id) {
                     p.bytes_written = p.bytes_written.saturating_add(msg.data.len() as u64);
+                    p.bytes_in_flight = p.bytes_in_flight.saturating_sub(msg.data.len() as u64);
                 }
             }
             // 回 chunk ack,让 mobile 发下一块(对应 mobile 端的 acknowledgeUploadChunk)。
@@ -2352,6 +2405,39 @@ mod tests {
     use crate::bridge::paths::tests::ENV_LOCK;
     use std::ffi::OsString;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn sanitize_disabled_connector_ids_drops_non_string_truncates_oversized_and_caps_count() {
+        // 非 string 元素丢弃;超长 id 丢弃;数量超上限截断并标记。
+        let payload = serde_json::json!({
+            "connector_ids": [
+                "good_connector",
+                12345,                       // 非 string → 丢
+                true,                        // 非 string → 丢
+                "x".repeat(MAX_CONNECTOR_ID_LEN),     // 刚好在上限 → 保留
+                "y".repeat(MAX_CONNECTOR_ID_LEN + 1), // 超长 → 丢
+            ]
+        });
+        let (ids, truncated) = sanitize_disabled_connector_ids(payload.get("connector_ids"));
+        assert!(!truncated, "未超数量上限不应截断");
+        assert_eq!(ids, vec!["good_connector".to_string(), "x".repeat(MAX_CONNECTOR_ID_LEN)]);
+
+        // 数量超上限:截断到 MAX_DISABLED_CONNECTOR_IDS 且 truncated=true。
+        let huge: Vec<String> = (0..MAX_DISABLED_CONNECTOR_IDS + 50)
+            .map(|i| format!("c{i}"))
+            .collect();
+        let payload = serde_json::json!({ "connector_ids": huge });
+        let (ids, truncated) = sanitize_disabled_connector_ids(payload.get("connector_ids"));
+        assert!(truncated, "超数量上限必须截断");
+        assert_eq!(ids.len(), MAX_DISABLED_CONNECTOR_IDS);
+
+        // 缺字段 / 非 array → 空列表,不截断。
+        let (ids, truncated) = sanitize_disabled_connector_ids(None);
+        assert!(ids.is_empty() && !truncated);
+        let (ids, truncated) =
+            sanitize_disabled_connector_ids(Some(&serde_json::json!("not_an_array")));
+        assert!(ids.is_empty() && !truncated);
+    }
 
     struct PinvouHomeOverride {
         previous: Option<OsString>,
@@ -2746,6 +2832,7 @@ mod tests {
                     byte_size: 1024,
                     mime: "application/octet-stream".to_string(),
                     bytes_written: 0,
+                    bytes_in_flight: 0,
                     ingest_result: None,
                 },
             );
@@ -2874,6 +2961,7 @@ mod tests {
                     byte_size: UPLOAD_LIMIT_BYTES,
                     mime: "application/octet-stream".to_string(),
                     bytes_written: 0,
+                    bytes_in_flight: 0,
                     ingest_result: None,
                 },
             );
@@ -2944,6 +3032,7 @@ mod tests {
                     byte_size: 10,
                     mime: "application/octet-stream".to_string(),
                     bytes_written: 100,
+                    bytes_in_flight: 0,
                     ingest_result: None,
                 },
             );
@@ -2971,6 +3060,115 @@ mod tests {
         assert!(
             manager.inner.lock().active_upload.is_some(),
             "cumulative-size rejection must not evict active upload slot"
+        );
+    }
+
+    /// 回归:gate 不得只看 bytes_written(消费者写盘后才更新),否则在 cap-4 有界通道里
+    /// client 可在消费者确认第一块之前把多块都送进 channel,绕过累计上限。
+    ///
+    /// 复现路径:声明 byte_size=1MiB,bytes_written=0(消费者尚未确认)。
+    /// 发第一个 768KiB 块 → written(0)+768K < 1MiB×2,放行,该块在 cap-4 channel
+    /// 里尚未被消费。若 gate 不把「已过 gate 但未落盘」算进预算,发第二块时 written 仍是 0,
+    /// 同样放行 —— 累计实际进 channel 的字节(1.5MiB)其实已超声明 1MiB,只是 gate 没看见。
+    ///
+    /// 修复后 gate 必须在第二块基于 in_flight=768K 拦住:768K+768K > 1MiB×2 → 拒绝。
+    #[test]
+    fn attach_file_chunk_gate_counts_in_flight_not_just_written() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = PinvouHomeOverride::new("attach-chunk-inflight");
+        let (sender, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (download_sender, _download_rx) =
+            tokio::sync::mpsc::channel(relay_client::DOWNLOAD_CHANNEL_CAPACITY);
+        // cap-4 channel 但故意不消费(_upload_rx 保留存活以避免 sender 立即 err):
+        // 这样第一块 send().await 成功且 bytes_written 不会被更新,精确复现 TOCTOU 窗口。
+        let (upload_tx, _upload_rx) =
+            tokio::sync::mpsc::channel::<UploadChunkMsg>(UPLOAD_CHANNEL_CAPACITY);
+        let session_id = "rc-attach-chunk-inflight-session".to_string();
+        let manager = RemoteControlManager::new_headless();
+        {
+            let mut inner = manager.inner.lock();
+            inner.room = Some(ActiveRoom {
+                room_id: "rc_attach_chunk_inflight".to_string(),
+                session_id: session_id.clone(),
+                url: String::new(),
+                relay_ws_url: String::new(),
+                status: RemoteControlStatusKind::WaitingMobile,
+                last_error: None,
+                sender,
+                download_sender,
+            });
+            inner.active_upload = Some("up_inflight".to_string());
+            inner.upload_chunk_sender = Some(upload_tx);
+            // 声明 1MiB;bytes_written=0(模拟消费者尚未确认第一块)。
+            inner.pending_attachments.insert(
+                "up_inflight".to_string(),
+                PendingAttachment {
+                    session_id: session_id.clone(),
+                    filename: "inflight.bin".to_string(),
+                    byte_size: 1024 * 1024,
+                    mime: "application/octet-stream".to_string(),
+                    bytes_written: 0,
+                    bytes_in_flight: 0,
+                    ingest_result: None,
+                },
+            );
+        }
+        // 768KiB 块:小于 UPLOAD_CHUNK_MAX_BYTES(单块硬上限),不触发 chunk_too_large。
+        let chunk = vec![0u8; 768 * 1024];
+        let mk_payload = |index: u64| serde_json::json!({
+            "upload_id": "up_inflight",
+            "index": index,
+            "data_base64": base64::engine::general_purpose::STANDARD.encode(&chunk),
+            "last": false,
+        });
+        let manager_clone = manager.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build one-off runtime");
+        rt.block_on(async move {
+            // 第一块:768K < 1MiB×2,必须放行进 channel。
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                manager_clone.handle_attach_file_chunk(&mk_payload(0)),
+            )
+            .await
+            .expect("first chunk must not hang");
+            // 第二块:消费者未确认,bytes_written 仍 0。只看 bytes_written 会再放行(漏洞);
+            // 修复后应看到 in_flight=768K → 768K+768K > 2MiB... 不,1MiB×2=2MiB,768+768=1536K<2MiB 放行。
+            // 所以这里仍放行,继续测第三块。
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                manager_clone.handle_attach_file_chunk(&mk_payload(1)),
+            )
+            .await
+            .expect("second chunk must not hang");
+            // 第三块:累计进 channel 已 2×768K=1536K。修复后 in_flight=1536K,加 768K=2304K
+            // > 1MiB×2=2048K → 必须拒绝。旧实现只看 bytes_written=0 仍放行(漏洞复现)。
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                manager_clone.handle_attach_file_chunk(&mk_payload(2)),
+            )
+            .await
+            .expect("third chunk gate decision must not hang");
+        });
+        // 修复后第三块被拒 → in_flight 停在 1536K(两块),不会被增加也不会被错误扣减。
+        let inner = manager.inner.lock();
+        let p = inner
+            .pending_attachments
+            .get("up_inflight")
+            .expect("pending attachment must still exist");
+        assert_eq!(
+            p.bytes_in_flight,
+            2u64 * (768 * 1024) as u64,
+            "应在第二块放行后 in_flight=1536K,第三块被拒不改变它;实际={}",
+            p.bytes_in_flight
+        );
+        assert!(
+            inner.active_upload.is_some(),
+            "in-flight gate 拒绝不得 evict active upload slot"
         );
     }
 
@@ -3009,6 +3207,7 @@ mod tests {
                         byte_size: 100,
                         mime: "application/octet-stream".to_string(),
                         bytes_written: 100,
+                        bytes_in_flight: 0,
                         ingest_result: None,
                     },
                 );
@@ -3173,6 +3372,7 @@ mod tests {
                     byte_size: 8,
                     mime: "application/octet-stream".to_string(),
                     bytes_written: 0,
+                    bytes_in_flight: 0,
                     ingest_result: None,
                 },
             );
@@ -3254,6 +3454,7 @@ mod tests {
                     byte_size: 10,
                     mime: "text/plain".to_string(),
                     bytes_written: 0,
+                    bytes_in_flight: 0,
                     ingest_result: None,
                 },
             );
@@ -3335,6 +3536,7 @@ mod tests {
                     byte_size: 100,
                     mime: "application/octet-stream".to_string(),
                     bytes_written: 0,
+                    bytes_in_flight: 0,
                     ingest_result: None,
                 },
             );

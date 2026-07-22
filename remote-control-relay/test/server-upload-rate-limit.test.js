@@ -243,11 +243,50 @@ test("mobile 上传超出字节窗口时被限流,desktop 不收到被拒分片"
   const rl = await rateLimited;
   assert.equal(rl.type, "attach_file_rate_limited");
   assert.equal(rl.payload.upload_id, "ul-rl");
-  assert.equal(rl.payload.retry_after_ms, 1000);
+  // retry_after_ms 应反映窗口剩余时间(刚开窗就限流 → 接近整窗 5s),而不是写死 1000。
+  assert.ok(
+    rl.payload.retry_after_ms >= 4000 && rl.payload.retry_after_ms <= 6000,
+    `retry_after_ms 应接近窗口剩余时间,实际=${rl.payload.retry_after_ms}`,
+  );
 
   // desktop 不应收到被限流的第二块:500ms 内没有任何 attach_file_chunk 到达。
   const leaked = await maybeNextMessage(desktop, "mobile_action", 500);
   assert.equal(leaked, null, "desktop 不应收到被限流的 attach_file_chunk");
+
+  closeSocket(mobile);
+  closeSocket(desktop);
+});
+
+test("非 string 的 data_base64 不会让上传字节限流失效(fail-open 回归)", async () => {
+  const room = `rc_upload_nan_${Date.now()}`;
+  const token = `token_${Date.now()}`;
+  const secret = `secret_${Date.now()}`;
+  const desktop = await registerDesktop(room, token, secret);
+  const mobile = await joinMobile(room, token);
+
+  // 先发一块 data_base64 为数字(非字符串)的畸形分片。
+  // 旧实现:(123456).length === undefined → approxBytes = NaN → consumeMobileUploadBudget
+  // 把 entry.bytes 永久污染成 NaN,此后任何分片都满足不了 "entry.bytes + n > 预算"
+  // (NaN 比较恒为 false),限流器对整窗失效(fail-open)。
+  mobile.send(JSON.stringify({
+    type: "mobile_action",
+    payload: {
+      type: "attach_file_chunk",
+      upload_id: "ul-nan",
+      index: 0,
+      data_base64: 123456, // 故意非字符串
+      last: false,
+    },
+  }));
+  // 给 relay 处理畸形分片一拍时间。
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // 再发一块单独就超过 1 MiB 窗口的合法分片:必须被限流(畸形分片不得污染计数器)。
+  const rateLimited = nextMessage(mobile, "attach_file_rate_limited", 5000);
+  mobile.send(JSON.stringify(uploadChunk("ul-nan", 1, 2 * 1024 * 1024)));
+  const rl = await rateLimited;
+  assert.equal(rl.type, "attach_file_rate_limited");
+  assert.equal(rl.payload.upload_id, "ul-nan");
 
   closeSocket(mobile);
   closeSocket(desktop);

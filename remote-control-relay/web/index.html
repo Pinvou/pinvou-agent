@@ -822,7 +822,10 @@
       if (el.toolsChip) {
         const all = (state.tools && state.tools.all) || [];
         const disabledIds = (state.tools && state.tools.disabledIds) || [];
-        const enabled = all.length - disabledIds.length;
+        // 用集合交集统计,而非 all.length - disabledIds.length:disabledIds 可能含重复 id
+        // 或未知 id(畸形 / 中继注入),后者会让计数变负。
+        const disabledSet = new Set(disabledIds);
+        const enabled = all.filter((t) => t && !disabledSet.has(t.id)).length;
         el.toolsChip.innerHTML = '🔧 <strong>' + enabled + '/' + all.length + '</strong>';
         el.toolsChip.disabled = !joined || state.replaced;
       }
@@ -1634,9 +1637,15 @@
           }
         });
         realUploadId = startAck && startAck.upload_id;
-        // 桌面端 UPLOAD_CHUNK_BYTES = 768KiB(manager.rs:28),ack 总会带 chunk_bytes;
-        // 这里只在 ack 字段缺失(极旧服务端 / 测试桩)时兜底,默认对齐桌面常量避免错位。
-        const chunkBytes = (startAck && startAck.chunk_bytes) || (768 * 1024);
+        // 桌面端 UPLOAD_CHUNK_BYTES = 768KiB(manager.rs:28),ack 总会带 chunk_bytes。
+        // 但 ack 来自半可信中继,必须校验:负数会让 offset 不断递减进入无限空块循环;
+        // 非整数 / 过大 / 非数字会让切分错乱或内存爆炸。只接受 [1, 8MiB] 的整数,
+        // 其余一律回退默认 768KiB,避免异常值造成客户端挂死或 WS 洪水。
+        const DEFAULT_CHUNK_BYTES = 768 * 1024;
+        const rawChunkBytes = startAck && startAck.chunk_bytes;
+        const chunkBytes = (Number.isInteger(rawChunkBytes) && rawChunkBytes >= 1 && rawChunkBytes <= 8 * 1024 * 1024)
+          ? rawChunkBytes
+          : DEFAULT_CHUNK_BYTES;
         if (!realUploadId) throw new Error('attach_file_start_ack 缺少 upload_id');
         // 把临时 state 迁移到真实 upload_id
         const tempState = state.uploads[tempUploadId] || {};
@@ -1954,7 +1963,9 @@
         wrap.className = 'html-frame-wrap';
         wrap.dataset.previewFrameId = previewFrameId;
         const iframe = document.createElement('iframe');
-        iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-pointer-lock');
+        // sandbox:只给预览内容脚本与表单能力,不给 allow-same-origin(防访问父页 origin)。
+        // allow-pointer-lock 对预览无意义,按最小权限移除。
+        iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
         iframe.setAttribute('scrolling', 'auto');
         iframe.dataset.previewFrameId = previewFrameId;
         iframe.srcdoc = htmlPreviewSrcdoc(preview.content, previewFrameId);
@@ -2416,6 +2427,19 @@
           x.onclick = () => {
             // 仅在已拿到真实 upload_id 时才向桌面端发 abort;否则只能本地清。
             if (up.realUploadId) sendAction('attach_file_abort', { upload_id: up.realUploadId });
+            // 关键:必须同时 reject 在途的 waitForRelayAck(分块阶段)与 start resolver
+            // (start 阶段还没拿到 realUploadId)。否则迟到的 ack 一到就会 resolve,
+            // requestAttachFile 继续推进 → 重建卡片 + 发下一块,与用户取消相反,
+            // 且会让 attach 按钮卡 busy 直到 65s 超时。
+            if (up.realUploadId) {
+              rejectAllPendingRelayAcks(up.realUploadId, 'user_aborted');
+            }
+            // start 阶段(tempUploadId 还没换成 realUploadId):reject __pending__ resolver。
+            const startResolver = state.uploadStartResolvers['__pending__'];
+            if (startResolver) {
+              delete state.uploadStartResolvers['__pending__'];
+              startResolver.reject(new Error('user_aborted'));
+            }
             clearUploadState(id);
             renderAttachmentPreview();
           };

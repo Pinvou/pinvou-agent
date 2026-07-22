@@ -379,3 +379,236 @@ test('enterRemoteSession 切到不同 session 时发 switch_remote_session + 拉
   assert.ok(types.includes('list_kb_collections'), '切 session 后应发送 list_kb_collections');
   assert.ok(types.includes('list_tools'), '切 session 后应发送 list_tools');
 });
+
+// 回归:start_ack 里恶意/异常的 chunk_bytes(负数 / 非整数 / 过大 / 非数字)不得被
+// 直接当步长使用,否则会进入无限空块循环(负数 offset 递减)或内存爆炸。必须回退到
+// 默认 768KiB(或合理区间)。
+test('start_ack 的 chunk_bytes 异常值被回退到默认,不进入负步长循环', async (t) => {
+  for (const bad of [-1, -99999, 0, 0.5, 1e12, '768', true, null, NaN, undefined]) {
+    const { window, sent, close } = createPage();
+    t.after(close);
+
+    const file = makeFakeFile({ name: 'small.txt', type: 'text/plain', bytes: 'abcdef' });
+    const uploadP = window.requestAttachFile(file);
+    await sleep(10);
+
+    // 注入畸形 chunk_bytes。
+    window.handleDesktopEvent({
+      type: 'attach_file_start_ack',
+      payload: { upload_id: 'up_bad', chunk_bytes: bad },
+    });
+    // 给循环若干 tick 跑。
+    await sleep(40);
+
+    const chunks = sent.filter(
+      (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_chunk',
+    );
+    // 不应进入无限空块循环:正常情况下 6 字节文件只需 1 块(last=true)。
+    // 若 chunk_bytes 被当负步长,offset 会不断递减,瞬间发出海量空块。
+    assert.ok(
+      chunks.length <= 2,
+      `chunk_bytes=${bad} 不应触发海量空块(实际发出 ${chunks.length} 块)`,
+    );
+    assert.ok(chunks.length >= 1, `chunk_bytes=${bad} 应至少发 1 块(回退默认后正常切分)`);
+    // 第一块应包含全部 6 字节(默认 768KiB 步长,6 字节单块),last=true。
+    const decoded = Buffer.from(chunks[0].payload.payload.data_base64, 'base64');
+    assert.equal(decoded.length, 6, `chunk_bytes=${bad} 回退默认后首块应是全部 6 字节`);
+    assert.equal(chunks[0].payload.payload.last, true, `chunk_bytes=${bad} 单块文件首块应 last=true`);
+
+    // 收尾:注入 result 让 uploadP resolve,避免泄漏到下一个用例。
+    window.handleDesktopEvent({
+      type: 'attach_file_relay_ack',
+      payload: { upload_id: 'up_bad', index: 0, ok: true },
+    });
+    window.handleDesktopEvent({
+      type: 'attach_file_result',
+      payload: { upload_id: 'up_bad', ok: true, ingest_preview: { kind: 'text', byte_size: 6 } },
+    });
+    try { await uploadP; } catch { /* 忽略:本用例只验证切分行为 */ }
+  }
+});
+
+// 回归:用户点 × 取消上传后,迟到的 attach_file_relay_ack / start_ack 不得让已取消
+// 的上传「复活」(继续发下一块、重建卡片)。修复前 × 只 clearUploadState,没 reject
+// 在途的 waitForRelayAck / start resolver,导致 ack 一到就继续推进。
+test('× 取消上传后迟到的 relay_ack 不让上传复活', async (t) => {
+  const { window, sent, close } = createPage();
+  t.after(close);
+
+  // 多块文件,chunk_bytes=4 → 10 字节切 3 块,便于观察「下一块」是否被发。
+  const file = makeFakeFile({
+    name: 'cancel.bin',
+    type: 'application/octet-stream',
+    bytes: Buffer.from('0123456789'),
+  });
+  const uploadP = window.requestAttachFile(file);
+  await sleep(10);
+
+  window.handleDesktopEvent({
+    type: 'attach_file_start_ack',
+    payload: { upload_id: 'up_cancel', chunk_bytes: 4 },
+  });
+  await sleep(15);
+  const chunksBefore = sent.filter(
+    (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_chunk',
+  ).length;
+  assert.ok(chunksBefore >= 1, '取消前应已发出第一块');
+
+  // 点 × 取消。
+  const xBtn = window.document.querySelector('#attachmentPreview .att-x');
+  assert.ok(xBtn, '应有取消按钮');
+  xBtn.click();
+  // 卡片应被清掉。
+  assert.ok(
+    !window.document.querySelector('#attachmentPreview .att-x'),
+    '取消后卡片应消失',
+  );
+  sent.length = 0;
+
+  // 现在注入第一块的迟到 relay_ack:修复前会 resolve waitForRelayAck → 循环推进 →
+  // 发第二块 + 重建卡片;修复后应被忽略。
+  window.handleDesktopEvent({
+    type: 'attach_file_relay_ack',
+    payload: { upload_id: 'up_cancel', index: 0, ok: true },
+  });
+  await sleep(30);
+
+  const chunksAfter = sent.filter(
+    (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_chunk',
+  );
+  assert.equal(
+    chunksAfter.length,
+    0,
+    '取消后迟到的 relay_ack 不应触发发出下一块',
+  );
+  assert.ok(
+    !window.document.querySelector('#attachmentPreview .att-x'),
+    '迟到的 ack 不应重建已取消的上传卡片',
+  );
+
+  // uploadP 不得 hang:requestAttachFile 外层 catch 会吞掉 user_aborted 错误
+  // (fire-and-forget 调用方不期望 reject),所以这里只要确认它在合理时间内 settle
+  // 即可(无论 resolve 还是 reject),关键是副作用:不再发块、不重建卡片。
+  let settled = false;
+  await Promise.race([
+    uploadP.finally(() => { settled = true; }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('uploadP hung after abort')), 3000)),
+  ]);
+  assert.ok(settled, '取消后 uploadP 必须 settle,不得 hang');
+});
+
+// 回归:tools_snapshot 里 disabled_ids 含未知 id / 重复 id 时,「已启用 N/总数」
+// 不得显示负数。
+test('tools_snapshot 的 enabled 计数不会因未知/重复 disabled_ids 变负', (t) => {
+  const { window, close } = createPage();
+  t.after(close);
+
+  window.openSheet('tools');
+  window.handleDesktopEvent({
+    type: 'tools_snapshot',
+    payload: {
+      all: [
+        { id: 'tool_a', name: 'A', description: '' },
+        { id: 'tool_b', name: 'B', description: '' },
+      ],
+      disabled_ids: ['tool_a', 'tool_a', 'ghost_id', 'another_ghost'], // 重复 + 2 个未知
+    },
+  });
+  const chipText = window.document.getElementById('toolsChip').textContent;
+  // 实际启用 = 2 - {tool_a 唯一} = 1;不得因 4 个 disabled(>总数)算成 -2/2。
+  assert.ok(
+    !/-\d/.test(chipText),
+    `toolsChip 不得出现负数 enabled 计数,实际=${chipText}`,
+  );
+  assert.match(chipText, /1\/2|0\/2/, `enabled 计数应合理,实际=${chipText}`);
+});
+
+// 回归(安全):附件文件名是桌面端经半可信中继透传的字符串,绝不能作为 HTML 渲染。
+// 用 <img src=x onerror=...> 当文件名,注入完成后必须:① 不执行脚本(window.__xss
+// 未被置位)② 卡片/预览把文件名当纯文本显示(含字面量 <)。这条 jsdom 测试替代了
+// real-browser-upload.driver.mjs 里那条 driver 自己也承认「无法构造」的同义反复断言。
+test('附件文件名含 <img onerror> 时按文本渲染,不执行脚本', async (t) => {
+  const { window, sent, close } = createPage();
+  t.after(close);
+
+  window.__xss = false;
+  const maliciousName = '<img src=x onerror="window.__xss=1">.txt';
+  const file = makeFakeFile({ name: maliciousName, type: 'text/plain', bytes: 'hi' });
+  const uploadP = window.requestAttachFile(file);
+  await sleep(10);
+
+  window.handleDesktopEvent({
+    type: 'attach_file_start_ack',
+    payload: { upload_id: 'up_xss', chunk_bytes: 768 * 1024 },
+  });
+  await sleep(15);
+  window.handleDesktopEvent({
+    type: 'attach_file_relay_ack',
+    payload: { upload_id: 'up_xss', index: 0, ok: true },
+  });
+  window.handleDesktopEvent({
+    type: 'attach_file_result',
+    payload: { upload_id: 'up_xss', ok: true, ingest_preview: { kind: 'text', byte_size: 2 } },
+  });
+  await uploadP;
+
+  // ① 脚本未执行。
+  assert.equal(window.__xss, false, '文件名里的 onerror 脚本不得执行');
+  // ② 预览区没有活的 <img> 节点(文件名应是文本,不是元素)。
+  const liveImg = window.document.querySelector('#attachmentPreview img');
+  assert.equal(liveImg, null, '不得把恶意文件名渲染成活的 img 节点');
+  // ③ 文件名字面量应作为文本可见(证明是 textContent 渲染,不是被吞)。
+  const previewText = window.document.querySelector('#attachmentPreview').textContent;
+  assert.ok(
+    previewText.includes('<img') || previewText.includes('&lt;img'),
+    '恶意文件名应作为文本可见(转义或原样),实际=' + previewText,
+  );
+});
+
+// 回归:attach_file_relay_ack 带 ok:false 且 message 不是 'rate_limited' 时,是硬错误,
+// 必须立即终止上传(不重试、进入 error 态),而不是静默继续或无限重试。
+test('relay_ack ok:false(非 rate_limited)是硬错误,立即终止上传', async (t) => {
+  const { window, sent, close } = createPage();
+  t.after(close);
+
+  const file = makeFakeFile({ name: 'nak.bin', type: 'application/octet-stream', bytes: Buffer.from('0123456789') });
+  const uploadP = window.requestAttachFile(file);
+  await sleep(10);
+
+  window.handleDesktopEvent({
+    type: 'attach_file_start_ack',
+    payload: { upload_id: 'up_nak', chunk_bytes: 4 },
+  });
+  await sleep(15);
+  const chunksBefore = sent.filter(
+    (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_chunk',
+  ).length;
+  assert.ok(chunksBefore >= 1, '应已发出第一块');
+
+  // 第一块收到非 rate_limited 的 NAK(模拟中继/桌面硬拒绝)。
+  sent.length = 0;
+  window.handleDesktopEvent({
+    type: 'attach_file_relay_ack',
+    payload: { upload_id: 'up_nak', index: 0, ok: false, message: 'desktop_rejected' },
+  });
+  await sleep(60);
+
+  // 不应继续发第二块(硬错误不重试)。允许 0~1 块(可能有一次 attempt 内的检查),
+  // 但不应发到 index>=1 的块。
+  const laterChunks = sent.filter(
+    (m) => m.type === 'mobile_action' && m.payload.type === 'attach_file_chunk',
+  );
+  const reachedIdx2 = laterChunks.some((m) => m.payload.payload.index >= 1);
+  assert.ok(
+    !reachedIdx2,
+    '硬错误 NAK 后不得推进到第二块,实际发出 index>=1 的块',
+  );
+
+  // uploadP 应已 settle(error 态),不 hang。
+  let settled = false;
+  await Promise.race([
+    uploadP.finally(() => { settled = true; }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('uploadP hung after hard NAK')), 3000)),
+  ]);
+  assert.ok(settled, '硬错误 NAK 后 uploadP 必须 settle');
+});

@@ -177,10 +177,11 @@ function consumeMobileUploadBudget(ws, byteLen, now = Date.now()) {
     mobileUploadRate.set(ws, entry);
   }
   if (entry.bytes + byteLen > MOBILE_UPLOAD_WINDOW_BYTES) {
-    return false;
+    // 限流:返回窗口还要多久翻转,调用方据此回 retry_after_ms;至少 1s 避免边界反复试探。
+    return { allowed: false, retryAfterMs: Math.max(1000, entry.resetAt - now) };
   }
   entry.bytes += byteLen;
-  return true;
+  return { allowed: true, retryAfterMs: 0 };
 }
 
 function rejectSocket(ws, code, message) {
@@ -508,8 +509,12 @@ wss.on("connection", (ws, req) => {
       if (payload?.type === "attach_file_chunk") {
         // 上传分片先做字节速率限流:mobile 网络抖动时避免把 desktop 写盘撑爆。
         // base64 长度 ≈ 4/3 原始字节,粗估即可,精确解码反而消耗 CPU。
-        const approxBytes = Math.ceil((payload?.data_base64 || "").length * 3 / 4);
-        if (!consumeMobileUploadBudget(ws, approxBytes)) {
+        // data_base64 必须是 string:非 string(数字/对象等)的 .length 为 undefined,
+        // 会让 approxBytes 变 NaN 并把窗口计数器永久污染成 NaN,限流器随之 fail-open。
+        const dataBase64 = typeof payload?.data_base64 === "string" ? payload.data_base64 : "";
+        const approxBytes = Math.ceil(dataBase64.length * 3 / 4);
+        const uploadDecision = consumeMobileUploadBudget(ws, approxBytes);
+        if (!uploadDecision.allowed) {
           // 超出窗口:直接通知 mobile 限流并停止转发,desktop 不会收到这一块。
           send(ws, {
             type: "attach_file_rate_limited",
@@ -517,7 +522,7 @@ wss.on("connection", (ws, req) => {
             session_id: room.session_id,
             payload: {
               upload_id: payload?.upload_id || "",
-              retry_after_ms: 1000,
+              retry_after_ms: uploadDecision.retryAfterMs,
             },
           });
           return;
