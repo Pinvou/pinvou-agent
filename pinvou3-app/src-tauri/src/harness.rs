@@ -603,11 +603,6 @@ pub fn init_project(
     )
     .map_err(|e| format!("write brief.json: {e}"))?;
 
-    // scheduler.py --status 验证项目结构合法。失败不阻塞（目录已建好），仅记日志。
-    if let Err(e) = run_scheduler(&project, &["--scenario", scenario, "--status"]) {
-        eprintln!("[harness::init_project] scheduler --status warning: {e}");
-    }
-
     log_flow(
         &project,
         "project_initialized",
@@ -616,6 +611,13 @@ pub fn init_project(
             ("project_dir", &project.to_string_lossy()),
         ],
     );
+
+    // scheduler.py --status 验证项目结构合法。目录已经初始化，失败不在这里删除项目；
+    // 但必须把完整 stderr 持久化，后续 kick 的 --next 会将同一错误返回给前端。
+    if let Err(e) = run_scheduler(&project, &["--scenario", scenario, "--status"]) {
+        eprintln!("[harness::init_project] scheduler --status warning: {e}");
+        record_runtime_failure_for_project(&project, "", "scheduler_status", &e);
+    }
 
     Ok(project)
 }
@@ -788,11 +790,20 @@ pub(crate) fn record_runtime_failure(
         eprintln!("[harness] runtime failure without workflow project: {stage}: {error}");
         return;
     };
+    record_runtime_failure_for_project(&project, role_id, stage, error);
+}
+
+fn record_runtime_failure_for_project(
+    project: &Path,
+    role_id: &str,
+    stage: &str,
+    error: &str,
+) {
     let detail = failure_detail(error);
     let reason = failure_summary(&detail);
     let category = failure_category(&detail);
     log_flow(
-        &project,
+        project,
         "runtime_failure",
         &[
             ("role_id", role_id),
@@ -822,17 +833,17 @@ fn run_cmd(program: &str, args: &[&str], cwd: &Path) -> Result<String, String> {
     run_cmd_with_timeout(program, args, cwd, SUBPROCESS_TIMEOUT_SECS)
 }
 
-fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
-    // warmup 只做本地前置条件检查，不再请求模型接口。保留解析后的 base_url 用于
-    // 校验配置存在；API Key 不再暴露给 Python 调度/验收子进程。
-    let bridge = crate::bridge::Pinvou3Bridge::boot().ok();
-    let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
-        .unwrap_or_else(|_| {
-            bridge
-                .as_ref()
-                .map(|b| b.base_url())
-                .unwrap_or_else(crate::monitor::vllm_base_url)
-        });
+fn run_cmd_with_timeout(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    // warmup 只做本地前置条件检查，不再请求模型接口。仅轻量读取模型 base_url，
+    // 禁止为每个 Python 子进程重新 boot bridge（会重复解包 bundle、同步凭据和清理文件）。
+    // API Key 不暴露给 Python 调度/验收子进程。
+    let base_url =
+        std::env::var("PINVOU3_MODEL_BASE_URL").unwrap_or_else(|_| crate::monitor::vllm_base_url());
     let mut command = HiddenCommand::new(program);
     command
         .args(args)
@@ -854,8 +865,14 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
     // 读管道——子进程输出超 64KB 管道缓冲即写阻塞、永不退出(scheduler --next 对 23 页
     // dispatch_batch 输出全部任务书 JSON 实锤),再被超时误杀,kick 永远过不去。
     // reader 线程持续吞两根管道,try_wait 循环只管超时;kill 会关管道让 reader 自然返回。
-    let mut stdout_pipe = child.stdout.take().ok_or_else(|| format!("{program}: no stdout pipe"))?;
-    let mut stderr_pipe = child.stderr.take().ok_or_else(|| format!("{program}: no stderr pipe"))?;
+    let mut stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{program}: no stdout pipe"))?;
+    let mut stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("{program}: no stderr pipe"))?;
     let out_handle = std::thread::spawn(move || {
         use std::io::Read;
         let mut buf = Vec::new();
@@ -879,9 +896,14 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait(); // reap zombie
-                    let _ = out_handle.join();
-                    let _ = err_handle.join();
-                    return Err(format!("{program} timed out after {timeout_secs}s"));
+                    let stdout =
+                        String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).to_string();
+                    let stderr =
+                        String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).to_string();
+                    let detail = subprocess_failure_detail(&stdout, &stderr);
+                    return Err(format!(
+                        "工作流 Python 执行超时 (interpreter={program}, timeout={timeout_secs}s): {detail}"
+                    ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -892,21 +914,35 @@ fn run_cmd_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout_secs: 
     let stdout = String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).to_string();
     let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).to_string();
     if !status.success() && !stderr.is_empty() {
-        eprintln!("[harness] {program} exit={} stderr={}", status, truncate_on_char_boundary(&stderr, 300));
+        eprintln!(
+            "[harness] {program} exit={} stderr={}",
+            status,
+            truncate_on_char_boundary(&stderr, 300)
+        );
     }
 
-    if stdout.trim().is_empty() && !status.success() {
-        let detail = if stderr.trim().is_empty() {
-            "无错误输出"
-        } else {
-            truncate_on_char_boundary(&stderr, 500)
-        };
+    if !status.success() {
+        let detail = subprocess_failure_detail(&stdout, &stderr);
         return Err(format!(
             "工作流 Python 执行失败 (interpreter={program}, exit={status}): {detail}"
         ));
     }
 
     Ok(stdout)
+}
+
+/// 保留调度器 stderr（含 Python traceback）供 flow_log.jsonl 持久化；极少数程序只把
+/// 错误写 stdout，因此 stderr 为空时回退 stdout。两者都有时同时记录，避免误诊。
+fn subprocess_failure_detail(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    let detail = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => "无错误输出".to_string(),
+        (true, false) => stderr.to_string(),
+        (false, true) => stdout.to_string(),
+        (false, false) => format!("stderr:\n{stderr}\nstdout:\n{stdout}"),
+    };
+    truncate_on_char_boundary(&detail, 4000).to_string()
 }
 
 fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
@@ -2648,6 +2684,41 @@ mod tests {
         assert!(!detail.contains("codewhale"));
         assert_eq!(failure_category(&detail), "permission");
         assert!(failure_summary(&detail).contains("access denied"));
+    }
+
+    #[test]
+    fn subprocess_failure_detail_prefers_stderr_and_keeps_stdout_context() {
+        let detail = subprocess_failure_detail(
+            "partial scheduler output",
+            "Traceback (most recent call last):\nModuleNotFoundError: workflow_state",
+        );
+        assert!(detail.contains("stderr:"));
+        assert!(detail.contains("ModuleNotFoundError: workflow_state"));
+        assert!(detail.contains("stdout:"));
+        assert!(detail.contains("partial scheduler output"));
+    }
+
+    #[test]
+    fn scheduler_runtime_failure_persists_stderr_in_flow_log() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduler-failure-log-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("_state")).unwrap();
+        let error = "工作流 Python 执行失败: Traceback\nModuleNotFoundError: No module named 'workflow_state'";
+
+        record_runtime_failure_for_project(&root, "", "scheduler_kick", error);
+
+        let content = std::fs::read_to_string(root.join("_state").join("flow_log.jsonl")).unwrap();
+        let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record["event"], "runtime_failure");
+        assert_eq!(record["stage"], "scheduler_kick");
+        assert!(record["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("ModuleNotFoundError")));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

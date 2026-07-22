@@ -5192,7 +5192,21 @@ pub async fn kick_workflow(
                 .unwrap_or(message);
             Err(format!("工作流启动失败：{display_message}"))
         }
-        _ => Ok("no dispatch (already running or not applicable)".to_string()),
+        crate::harness::HarnessAction::Error(error) => {
+            // 调度器非零退出时 error 包含 stderr / traceback。必须同时落盘和返回调用方，
+            // 不能被 no-dispatch 兜底吞掉，否则前端会把“没有派发任何 agent”误判为启动成功。
+            crate::harness::record_runtime_failure(&ws, "", "scheduler_kick", &error);
+            let message = format!("工作流调度失败：{error}");
+            crate::engine::emit_workflow_blocked(&app, &sid, &ws, &message);
+            Err(message)
+        }
+        crate::harness::HarnessAction::NotApplicable => {
+            Ok("no dispatch (already running or not applicable)".to_string())
+        }
+        crate::harness::HarnessAction::WaitForHuman { .. }
+        | crate::harness::HarnessAction::AllDone => {
+            Ok("no dispatch (workflow is waiting or complete)".to_string())
+        }
     }
 }
 
