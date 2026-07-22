@@ -15,6 +15,7 @@ const staticScripts = new Set([
   'vendor/purify.min.js',
   'vendor/tailwind.js',
 ]);
+const staticScriptPrefixes = ['platform/tauri/bridge/'];
 
 function copyRuntimeAssets() {
   let outputRoot;
@@ -33,7 +34,8 @@ function copyRuntimeAssets() {
             continue;
           }
           const relative = source.slice(sourceRoot.length + 1).replaceAll('\\', '/');
-          if (!staticExtensions.has(extname(entry.name).toLowerCase()) && !staticScripts.has(relative)) continue;
+          const isRuntimeScript = staticScripts.has(relative) || staticScriptPrefixes.some(prefix => relative.startsWith(prefix));
+          if (!staticExtensions.has(extname(entry.name).toLowerCase()) && !isRuntimeScript) continue;
           const target = join(outputRoot, relative);
           mkdirSync(resolve(target, '..'), { recursive: true });
           cpSync(source, target);

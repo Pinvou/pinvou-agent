@@ -649,6 +649,7 @@ pub fn run() {
             zhidao::zhidao_cancel,
             zhidao::zhidao_logout,
             commands::get_settings,
+            commands::get_platform_capabilities,
             commands::submit_feedback,
             commands::get_effective_model_config,
             commands::update_settings,

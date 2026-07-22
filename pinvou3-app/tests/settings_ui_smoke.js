@@ -100,6 +100,13 @@ function injectSource() {
     function invoke(cmd, args) {
       record(cmd, args);
       switch (cmd) {
+        case 'get_platform_capabilities': return Promise.resolve({
+          os: 'windows',
+          showMegacubeSite: false,
+          showSuperPermissionSettings: false,
+          usesBundledDependencyInstaller: true,
+          taskCompletionNotificationsDefault: true,
+        });
         case 'get_settings': return Promise.resolve(settings);
         case 'update_settings': settings = args.prefs; return Promise.resolve(null);
         case 'save_settings_and_restart': settings = args.prefs; return Promise.resolve(null);
@@ -550,16 +557,16 @@ async function modalWidth(page, headingText) {
   });
   await sleep(600);
   const permToast = await page.evaluate(() => ({
-    isWindows: /Windows/i.test(navigator.userAgent || ''),
+    showSuperPermissionSettings: !!(window.TauriBridge.getState().platformCapabilities || {}).showSuperPermissionSettings,
     setCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'set_super_permission'),
     toast: document.body.innerText.includes('pkexec unavailable') || document.body.innerText.includes('无法开启高级执行权限'),
     checked: document.querySelector('[role="switch"]')?.getAttribute('aria-checked'),
     advancedPermissionVisible: document.body.innerText.includes('高级执行权限'),
     dependencyCheckVisible: document.body.innerText.includes('依赖体检'),
   }));
-  const permissionPass = permToast.isWindows
-    ? !permToast.advancedPermissionVisible && permToast.dependencyCheckVisible && !permToast.setCall
-    : permToast.setCall && permToast.toast && permToast.checked === 'false';
+  const permissionPass = permToast.showSuperPermissionSettings
+    ? permToast.setCall && permToast.toast && permToast.checked === 'false'
+    : !permToast.advancedPermissionVisible && permToast.dependencyCheckVisible && !permToast.setCall;
   rec('⑭ 权限与环境按平台展示并保持失败回滚', permissionPass, JSON.stringify(permToast));
 
   await clickSettingsSection(page, '帮助反馈');

@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js");
+const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "voice.js");
 const source = fs.readFileSync(bridgePath, "utf8");
 const start = source.indexOf("  function normalizeVoiceError(err, fallbackStage) {");
 const end = source.indexOf("\n  function stopMediaTracks(", start);

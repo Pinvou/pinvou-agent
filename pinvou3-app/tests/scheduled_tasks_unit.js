@@ -17,7 +17,14 @@ const indexHtml = [
   'features/chat/ChatView.jsx',
   'features/scheduled/ScheduledTasksView.jsx'
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
-const tauriBridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
+const tauriBridgeFeatureNames = [
+  'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
+  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'workflow'
+];
+const tauriBridge = tauriBridgeFeatureNames
+  .map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8'))
+  .concat(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'))
+  .join('\n');
 const modelOptionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'model-options.js'), 'utf8');
 const settingsViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
@@ -383,7 +390,7 @@ assert.ok(
 assert.ok(
   /builtin_llmapi/.test(modelOptionsSource) &&
     /const savedModels = visibleUserModels\(appState\.savedModels \|\| \[\]\)/.test(indexHtml) &&
-    /const savedModels = visibleSortedModels\(\(bs && bs\.savedModels\) \|\| \[\], bs\)/.test(settingsViewSource) &&
+    /const userModels = visibleSortedModels\(savedModels \|\| \[\], bs\)/.test(settingsViewSource) &&
     /const allowBuiltin = hasLlmApiBackendUser\(bs\)/.test(settingsViewSource),
   'scheduled tasks should hide the built-in model option while chat keeps the account-gated built-in model'
 );

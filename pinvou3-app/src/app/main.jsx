@@ -341,8 +341,8 @@ let appFirstRenderMarked = false;
       const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
       const [llmApiLoading, setLlmApiLoading] = useState(false);
       const [llmApiError, setLlmApiError] = useState(null);
-      const navInfo = typeof navigator === 'undefined' ? '' : ((navigator.userAgent || '') + ' ' + (navigator.platform || ''));
-      const isWindows = /Windows|Win32|Win64/i.test(navInfo);
+      const platformCapabilities = (bs && bs.platformCapabilities) || {};
+      const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
       const activeChatRef = useRef(activeChat);
       activeChatRef.current = activeChat;
@@ -363,7 +363,7 @@ let appFirstRenderMarked = false;
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
-      const defaultTaskCompletedNotif = !/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
+      const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
@@ -1711,7 +1711,7 @@ let appFirstRenderMarked = false;
                     </button>
                   </>
                 )}
-                {!isWindows && (
+                {showMegacubeSite && (
                   <button
                     onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
                     title={t.megacubeSite}

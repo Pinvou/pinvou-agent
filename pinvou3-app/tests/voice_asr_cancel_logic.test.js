@@ -4,10 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js");
+const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "voice.js");
 const bridgeSource = fs.readFileSync(bridgePath, "utf8");
 const start = bridgeSource.indexOf("  async function installVoiceAsr() {");
-const end = bridgeSource.indexOf("\n  // 知识库 embedding 模型按需下载", start);
+const end = bridgeSource.indexOf("\n  async function startVoiceInput", start);
 
 assert.notStrictEqual(start, -1, "installVoiceAsr must exist");
 assert.notStrictEqual(end, -1, "voice ASR setup function boundary must exist");

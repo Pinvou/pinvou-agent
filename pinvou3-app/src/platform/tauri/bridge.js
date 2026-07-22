@@ -52,6 +52,21 @@
     }
   }
 
+  async function loadPlatformCapabilities() {
+    try {
+      state.platformCapabilities = Object.assign(
+        {},
+        state.platformCapabilities,
+        await invoke("get_platform_capabilities"),
+        { loaded: true }
+      );
+    } catch (error) {
+      console.warn("[platform] capability detection failed", error);
+    }
+    notify();
+    return state.platformCapabilities;
+  }
+
   async function loadKnowledgeEmbedderAfterFirstFrame() {
     startupMark("bridge:knowledge_embedder_async:start");
     try {
@@ -113,6 +128,13 @@
     return;
   }
 
+  function installBridgeFeature(name, context) {
+    var registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__;
+    var factory = registry && registry[name];
+    if (typeof factory !== "function") throw new Error("Tauri bridge feature not loaded: " + name);
+    return factory(context);
+  }
+
   // ── State ────────────────────────────────────────────────────────
   var state = {
     sessions: [],
@@ -145,6 +167,14 @@
     busy: false,
     monitor: null,
     backendOnline: null, // null=checking, true, false
+    platformCapabilities: {
+      loaded: false,
+      os: "unknown",
+      showMegacubeSite: false,
+      showSuperPermissionSettings: false,
+      usesBundledDependencyInstaller: false,
+      taskCompletionNotificationsDefault: true,
+    },
     settings: null,
     selectedPet: "lingling",
     memory: {
@@ -294,7 +324,6 @@
   };
   var initPromise = null;
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
-  var personaPoolCache = [];
   var SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
   var scheduledTaskTemplateSources = loadScheduledTaskTemplateSources();
 
@@ -311,22 +340,6 @@
   // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
   var turnUsageDirty = {};  // session_id → bool
-  var monitorIntervalId = null;
-  var monitorPollInFlight = false;
-  var gpuUtilHistory = [];
-  var maxModelLen = 32768;
-  // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
-  // cache）无法真正清零（它们跟随远端 vLLM 进程生命周期，归零要重启共享进程）。
-  // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter
-  // 倒退到小于基准，自动判定基准失效并丢弃，回落到生命周期累计值。持久化到
-  // localStorage，关掉应用再开仍保持「自某时起」的统计。
-  var MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline.self";
-  var monitorBaseline = null;
-  try {
-    var _mb = localStorage.getItem(MONITOR_BASELINE_KEY);
-    if (_mb) monitorBaseline = JSON.parse(_mb);
-  } catch (e) { monitorBaseline = null; }
-  var attachIdSeq = 0;
   var scheduledTaskSelectionGeneration = 0;
   var scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
   var scheduledTaskRefreshInFlight = null;
@@ -437,7 +450,7 @@
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-      tokens: { input: 0, max: maxModelLen },
+      tokens: { input: 0, max: state.tokens.max },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
       scheduledTaskDraft: null,
@@ -3867,7 +3880,7 @@
     if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加值≠占用，保留上个准确值
     var input = Number(e.payload && e.payload.input_tokens || 0);
     if (input > 0) {
-      state.tokens = { input: input, max: maxModelLen };
+      state.tokens = { input: input, max: state.tokens.max };
       notify();
     }
   }); });
@@ -4246,651 +4259,44 @@
     notify();
   });
 
-  // ── Monitor ──────────────────────────────────────────────────────
-  function fmtMiB(mib) {
-    if (mib == null) return "—";
-    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
-  }
-  function fmtKiB(kib) {
-    if (kib == null) return "—";
-    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
-    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
-    return kib + " KB";
-  }
-  function fmtDuration(secs) {
-    if (secs == null || secs < 0) return "—";
-    var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
-    if (h > 0) return h + "h " + m + "m";
-    if (m > 0) return m + "m " + (secs % 60) + "s";
-    return secs + "s";
-  }
-  function fmtTok(n) {
-    if (n == null) return "—";
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
-    return String(Math.round(n));
-  }
-
-  function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
-
-  // 用基准点把累计 counter 换算成「自清除以来」的区间值。sp=app 自测(snap.self_perf,
-  // TTFT/TPS/tokens 全从这);v=vllm(仅 KV 的本地 prefix_cache 分支要它)。无基准 → 直接
-  // 用进程生命周期累计值。任一 counter 倒退（< 基准：app 或 vLLM 重启、counter 归零）
-  // → 丢弃失效基准，回落到累计值，避免负数。
-  // KV 命中率(混合):本地 vLLM 用 /metrics prefix_cache(vllmKvPct);拿不到再用 usage 的
-  // cache token 口径(selfKvPct,给云端/D3)。二者都按区间(扣基准)重算。
-  function adjustCounters(sp, v) {
-    sp = sp || {};
-    var kvRatio = function (hit, miss) {
-      var d = hit + miss;
-      return d > 0 ? (hit / d * 100) : null;
-    };
-    var b = monitorBaseline;
-    if (b) {
-      var reset =
-        numOr0(sp.ttft_sum_s) < b.ttft_sum_s ||
-        numOr0(sp.tps_time_s) < b.tps_time_s ||
-        numOr0(sp.gen_tokens_total) < b.gen_tokens ||
-        numOr0(sp.prompt_tokens_total) < b.prompt_tokens ||
-        numOr0(sp.cache_hit_tokens) < b.cache_hit ||
-        numOr0(sp.cache_miss_tokens) < b.cache_miss ||
-        (v && numOr0(v.prefix_cache_queries) < numOr0(b.pc_queries));
-      if (reset) { clearMonitorBaseline(); b = null; }
-    }
-    var base = function (k) { return b ? numOr0(b[k]) : 0; };
-    var vllmKvPct = null;
-    if (v) {
-      var pcH = numOr0(v.prefix_cache_hits) - base("pc_hits");
-      var pcQ = numOr0(v.prefix_cache_queries) - base("pc_queries");
-      vllmKvPct = pcQ > 0 ? (pcH / pcQ * 100) : null;
-    }
-    return {
-      cleared: !!b,
-      ttft_sum_s: numOr0(sp.ttft_sum_s) - base("ttft_sum_s"),
-      ttft_count: numOr0(sp.ttft_count) - base("ttft_count"),
-      tps_tokens: numOr0(sp.tps_tokens) - base("tps_tokens"),
-      tps_time_s: numOr0(sp.tps_time_s) - base("tps_time_s"),
-      gen: numOr0(sp.gen_tokens_total) - base("gen_tokens"),
-      prompt: numOr0(sp.prompt_tokens_total) - base("prompt_tokens"),
-      vllmKvPct: vllmKvPct,
-      selfKvPct: kvRatio(
-        numOr0(sp.cache_hit_tokens) - base("cache_hit"),
-        numOr0(sp.cache_miss_tokens) - base("cache_miss")
-      ),
-      clearedAt: b ? (b.at || null) : null,
-    };
-  }
-
-  function clearMonitorBaseline() {
-    monitorBaseline = null;
-    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch (e) {}
-  }
-
-  // 把当前 counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
-  // 自测计数(TTFT/TPS/tokens/usage-cache)+ vLLM prefix_cache(供本地 KV 分支)一起存。
-  function clearMonitorStats() {
-    var sp = state.monitor && state.monitor.self_perf;
-    if (!sp) return false;
-    var v = (state.monitor && state.monitor.vllm) || {};
-    monitorBaseline = {
-      ttft_sum_s: numOr0(sp.ttft_sum_s),
-      ttft_count: numOr0(sp.ttft_count),
-      tps_tokens: numOr0(sp.tps_tokens),
-      tps_time_s: numOr0(sp.tps_time_s),
-      gen_tokens: numOr0(sp.gen_tokens_total),
-      prompt_tokens: numOr0(sp.prompt_tokens_total),
-      cache_hit: numOr0(sp.cache_hit_tokens),
-      cache_miss: numOr0(sp.cache_miss_tokens),
-      pc_hits: numOr0(v.prefix_cache_hits),
-      pc_queries: numOr0(v.prefix_cache_queries),
-      at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
-    };
-    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch (e) {}
-    pollMonitor();  // 立即刷新显示，无需等下一个轮询周期
-    return true;
-  }
-
-  function appQueueSnapshot() {
-    var running = 0;
-    var waiting = state.queued ? state.queued.length : 0;
-    var busyMap = {};
-    for (var id in sessionStates) {
-      if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
-      if (id === state.activeSessionId) continue;
-      var buf = sessionStates[id] || {};
-      if (buf.busy) busyMap[id] = true;
-      if (Array.isArray(buf.queued)) waiting += buf.queued.length;
-    }
-    if (state.activeSessionId && state.busy) busyMap[state.activeSessionId] = true;
-    running = Object.keys(busyMap).length;
-    return { running: running, waiting: waiting };
-  }
-
-  async function pollMonitor() {
-    if (monitorPollInFlight) return;
-    monitorPollInFlight = true;
-    try {
-      var snap = await invoke("get_monitor_snapshot");
-      state.monitorError = null;
-      // GPU util sliding window
-      if (snap.gpu) {
-        gpuUtilHistory.push(snap.gpu.utilization_pct);
-        if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
-        snap.gpu._utilMax = Math.max.apply(null, [0].concat(gpuUtilHistory));
-      }
-      // 监控页「后 4 项」累计指标：TTFT/TPS/tokens 来自 app 侧自测(snap.self_perf,
-      // 任何后端都有);KV 混合(本地 vLLM prefix_cache 优先,否则 usage 口径)。
-      // 按「清除统计」基准点换算成区间值后再格式化。
-      var sadj = adjustCounters(snap.self_perf, snap.vllm);
-      // KV 显示值:本地 vLLM 的 /metrics prefix_cache 优先,拿不到用 usage cache 口径(云端)。
-      var kvShown = sadj ? (sadj.vllmKvPct != null ? sadj.vllmKvPct
-        : (sadj.selfKvPct != null ? sadj.selfKvPct : null)) : null;
-      // Format values for display
-      var vllm = snap.vllm || null;
-      var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      var metricNotApplicableText = "不适用";
-      var metricUnavailableText = "未提供";
-      var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
-      var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
-        ? vllm.metric_diagnostics[0] : null;
-      var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
-      var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
-      var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
-      var appQueue = appQueueSnapshot();
-      var cpu = snap.cpu || null;
-      var cpuUsage = cpu && typeof cpu.total_usage_pct === "number" && isFinite(cpu.total_usage_pct)
-        ? Math.round(Math.max(0, Math.min(100, cpu.total_usage_pct)))
-        : null;
-      var computeName = snap.gpu ? snap.gpu.name : (cpu && cpu.name ? cpu.name : bt("gpuUnavailable"));
-      snap._fmt = {
-        gpuName: computeName,
-        cpuName: cpu && cpu.name ? cpu.name : "",
-        cpuAvailable: !!cpu,
-        computeAvailable: !!(snap.gpu || cpu),
-        computeName: computeName,
-        gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
-          ? fmtMiB(snap.gpu.vram_used_mib) + " / " + fmtMiB(snap.gpu.vram_total_mib) : "—",
-        gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
-          ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
-        gpuUtil: snap.gpu ? (snap.gpu._utilMax + "%") : "—",
-        gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
-        processorUtil: cpuUsage != null
-          ? cpuUsage + "%"
-          : (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct + "%" : "—"),
-        processorUtilPct: cpuUsage != null
-          ? cpuUsage
-          : (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0),
-        gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
-        gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
-        gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
-        gpuAvailable: !!snap.gpu,
-        gpuHasVram: !!(snap.gpu && snap.gpu.vram_total_mib > 0),
-        ramUsed: snap.ram ? fmtKiB(snap.ram.used_kib) : "—",
-        ramTotal: snap.ram ? fmtKiB(snap.ram.total_kib) : "—",
-        ramPct: snap.ram && snap.ram.total_kib > 0 ? Math.round(snap.ram.used_kib / snap.ram.total_kib * 100) : 0,
-        ramUsedGiB: snap.ram ? (snap.ram.used_kib / 1024 / 1024).toFixed(1) : "—",
-        swapUsed: snap.ram ? fmtKiB(snap.ram.swap_used_kib) : "—",
-        swapTotal: snap.ram ? fmtKiB(snap.ram.swap_total_kib) : "—",
-        swapPct: snap.ram && snap.ram.swap_total_kib > 0 ? Math.round(snap.ram.swap_used_kib / snap.ram.swap_total_kib * 100) : 0,
-        vllmModel: vllmDisplayModel,
-        vllmConfiguredModel: vllm ? (vllm.configured_model || null) : null,
-        vllmModelMismatch: vllm && vllm.configured_model && vllm.model
-          ? vllm.configured_model !== vllm.model : false,
-        vllmStatus: vllm ? vllm.status.toUpperCase() : "OFFLINE",
-        vllmHealthStatus: healthStatus,
-        vllmOnline: vllm ? (healthStatus === "verified" && (vllm.status === "ready" || vllm.status === "busy")) : false,
-        vllmUpstream: vllm ? (vllm.upstream || "—") : "—",
-        vllmTargetKind: targetKindLabel,
-        // 云端(remote)不做健康探测(无 auth 的 /v1/models 必 401)→ 不显示 OFFLINE。
-        // 暴露原始 kind 供前端判定(别比本地化 label)。
-        vllmIsRemote: targetKind === "remote",
-        vllmDiagnostic: diagnostic ? diagnostic.message : null,
-        vllmDiagnosticCode: diagnostic ? diagnostic.code : null,
-        vllmMetricsApplicable: metricsApplicable,
-        vllmMetricDiagnostic: metricDiagnostic ? metricDiagnostic.message : null,
-        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : (vllm.max_model_len || metricUnavailableText)) : "—",
-        // 本地推理引擎(target_kind=local)且探测窗口 < 128k(131072):监控卡给告警。
-        // 云端(remote)/v1/models 不返回 max_model_len,自然不触发。传原始值供前端拼文案。
-        vllmCtxWarn: (vllm && targetKind === "local" && vllm.max_model_len && vllm.max_model_len < 131072)
-          ? vllm.max_model_len : null,
-        vllmQueue: appQueue.running + " / " + appQueue.waiting,
-        vllmQueueSource: "app",
-        // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
-        // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
-        // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
-        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "0%",
-        vllmKvHasData: kvShown != null,
-        vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "0 s",
-        vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "0 tok/s",
-        vllmTokTotal: sadj
-          ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
-        vllmStatsCleared: !!(sadj && sadj.cleared),
-        vllmClearedAt: sadj && sadj.cleared ? (sadj.clearedAt || null) : null,
-        // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
-        vllmRaw: sadj ? {
-          kvPct: kvShown,
-          ttftS: sadj.ttft_count > 0 ? sadj.ttft_sum_s / sadj.ttft_count : null,
-          tps: sadj.tps_time_s > 0 ? sadj.tps_tokens / sadj.tps_time_s : null,
-          gen: sadj.gen != null ? sadj.gen : null,
-          prompt: sadj.prompt != null ? sadj.prompt : null,
-        } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
-        dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
-        uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
-        updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
-      };
-      if (snap.vllm && snap.vllm.max_model_len) {
-        maxModelLen = snap.vllm.max_model_len;
-        state.tokens.max = maxModelLen;
-      }
-      state.monitor = snap;
-      notify();
-    } catch (e) {
-      state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
-      console.warn("monitor poll failed", e);
-      notify();
-    } finally {
-      monitorPollInFlight = false;
-    }
-  }
-
-  function startMonitorPolling() {
-    if (monitorIntervalId) return;
-    gpuUtilHistory = [];
-    pollMonitor();
-    monitorIntervalId = setInterval(pollMonitor, 1000);
-  }
-  function stopMonitorPolling() {
-    if (monitorIntervalId) {
-      clearInterval(monitorIntervalId);
-      monitorIntervalId = null;
-    }
-  }
-
-  // ── Backend status (live dot) ────────────────────────────────────
-  async function pollBackendStatus() {
-    try {
-      var s = await invoke("get_backend_status");
-      state.backendOnline = !!s.vllm_online;
-      // 修 token 分母时机 bug：不再依赖用户打开监控页才拿到真实 max_model_len
-      if (s.max_model_len) {
-        maxModelLen = s.max_model_len;
-        state.tokens.max = maxModelLen;
-      }
-    } catch (e) {
-      state.backendOnline = false;
-    }
-    notify();
-  }
-
-  // ── Settings ─────────────────────────────────────────────────────
-  // 桌宠开关由 Rust set_pet_enabled 直接写盘(设置页/宠物右键/快捷图标共用),
-  // 这里同步进内存副本——否则下次整份 saveSettings 会用旧值把开关翻回去。
-  listen("pet:enabled_changed", function (e) {
-    if (state.settings) {
-      state.settings.pet = Object.assign({}, state.settings.pet || {}, {
-        enabled: !!(e.payload && e.payload.enabled),
-      });
-      notify();
-    }
-  });
-
-  listen("pet:selected_changed", function (e) {
-    var selectedPet = e.payload && e.payload.selected_pet;
-    if (typeof selectedPet === "string") {
-      state.selectedPet = selectedPet;
-      notify();
-    }
-  });
-
-  async function loadSettings() {
-    try {
-      state.settings = await invoke("get_settings");
-    } catch (e) {
-      state.settings = { theme: "genesis", language: "zh-Hans" };
-    }
-    notify();
-  }
-  async function loadSelectedPet() {
-    try {
-      state.selectedPet = await invoke("get_selected_pet");
-    } catch (e) {
-      state.selectedPet = "lingling";
-    }
-    notify();
-  }
-  async function setSelectedPet(id) {
-    return await invoke("set_selected_pet", { id: id });
-  }
-  async function loadEffectiveModelConfig() {
-    try {
-      state.effectiveModelConfig = await invoke("get_effective_model_config");
-    } catch (e) {
-      state.effectiveModelConfig = null;
-    }
-    notify();
-  }
-  async function saveSettings(prefs) {
-    const previous = state.settings;
-    try {
-      await invoke("update_settings", { prefs: prefs });
-      state.settings = prefs;
-      notify();
-      return true;
-    } catch (e) {
-      console.warn("save settings failed", e);
-      state.settings = previous;
-      notify();
-      return false;
-    }
-  }
-  async function saveSettingsAndRestart(prefs) {
-    state.settings = prefs;
-    try {
-      await invoke("save_settings_and_restart", { prefs: prefs });
-    } catch (e) {
-      console.warn("save settings and restart failed", e);
-    }
-  }
-
-  function llmApiBackendUserState(status) {
-    if (!status) return "unknown";
-    if (status.backend_user_state === "exists" || status.backend_user_state === "not_exists" || status.backend_user_state === "unknown") {
-      return status.backend_user_state;
-    }
-    return status.backend_user_exists ? "exists" : "not_exists";
-  }
-
-  function llmApiAccountKnownExists(status) {
-    return llmApiBackendUserState(status) === "exists";
-  }
-
-  function llmApiAccountStateIsKnown(status) {
-    var backendUserState = llmApiBackendUserState(status);
-    return backendUserState === "exists" || backendUserState === "not_exists";
-  }
-
-  var LLMAPI_STARTUP_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
-
-  function llmApiStartupRetryDelay(attempt) {
-    return LLMAPI_STARTUP_RETRY_DELAYS_MS[
-      Math.min(attempt, LLMAPI_STARTUP_RETRY_DELAYS_MS.length - 1)
-    ];
-  }
-
-  function waitForLlmApiStartupRetry(delayMs) {
-    return new Promise(function (resolve) { setTimeout(resolve, delayMs); });
-  }
-
-  async function refreshLlmApiState(options) {
-    options = options || {};
-    var refreshModels = options.refreshModels !== false;
-    var refreshSavedModels = !!options.refreshSavedModels;
-    var status = null;
-    var models = null;
-    try {
-      status = await invoke("get_llmapi_status");
-      // An inconclusive refresh must not change model visibility after an
-      // authoritative account result has already been observed.
-      if (llmApiAccountStateIsKnown(status) || !llmApiAccountStateIsKnown(state.llmApiStatus)) {
-        state.llmApiStatus = status;
-      }
-    } catch (e) {
-      console.warn("get llmapi status failed", e);
-      // Keep the last known account state. A transport failure is not proof
-      // that the backend account disappeared.
-      notify();
-      throw e;
-    }
-    if (refreshModels && llmApiAccountKnownExists(status)) {
-      try {
-        models = await invoke("get_llmapi_models");
-        state.llmApiModels = models;
-      } catch (e) {
-        console.warn("get llmapi models failed", e);
-        // Preserve the last successfully synchronized model list.
-        notify();
-        throw e;
-      }
-    } else if (llmApiBackendUserState(status) === "not_exists") {
-      state.llmApiModels = null;
-    }
-    if (refreshSavedModels) await loadModels();
-    notify();
-    return { status: status, models: models };
-  }
-
-  async function getLlmApiStatus() {
-    var result = await refreshLlmApiState({ refreshModels: false });
-    return result.status;
-  }
-
-  async function getLlmApiModels() {
-    var models = await invoke("get_llmapi_models");
-    state.llmApiModels = models;
-    notify();
-    return models;
-  }
-
-  async function refreshLlmApiOnStartup() {
-    var retryAttempt = 0;
-    while (true) {
-      var status = null;
-      try {
-        status = await getLlmApiStatus();
-      } catch (e) {
-        console.warn("load llmapi account status failed", e);
-      }
-
-      if (llmApiAccountStateIsKnown(status)) {
-        if (llmApiAccountKnownExists(status)) {
-          try {
-            await getLlmApiModels();
-          } catch (e) {
-            console.warn("load llmapi models failed", e);
-          }
-        }
-        try {
-          await loadModels();
-        } catch (e) {
-          console.warn("reload saved models after llmapi account refresh failed", e);
-        }
-        return status;
-      }
-
-      var retryDelayMs = llmApiStartupRetryDelay(retryAttempt);
-      retryAttempt += 1;
-      console.warn("llmapi account status is unknown; retrying in " + retryDelayMs + "ms");
-      await waitForLlmApiStartupRetry(retryDelayMs);
-    }
-  }
-
-  async function setLlmApiDefaultModel(model) {
-    var models = await invoke("set_llmapi_default_model", { model: model });
-    state.llmApiModels = models;
-    await loadSettings();
-    await loadModels();
-    notify();
-    return models;
-  }
-
-  async function ensureLlmApiBinding() {
-    var result = await invoke("ensure_llmapi_binding");
-    await refreshLlmApiState({ refreshSavedModels: true });
-    return result;
-  }
-
-  async function loginLlmApiUser(username, password) {
-    var result = await invoke("login_llmapi_user", { username: username, password: password });
-    await refreshLlmApiState({ refreshSavedModels: true });
-    return result;
-  }
-
-  async function saveLlmApiUserSession(userId, accessToken) {
-    var result = await invoke("save_llmapi_user_session", { userId: userId, accessToken: accessToken });
-    await refreshLlmApiState({ refreshSavedModels: true });
-    return result;
-  }
-
-  async function retryLlmApiProvisioning(pinvouUserId, deviceBindingId) {
-    var result = await invoke("retry_llmapi_provisioning", { pinvouUserId: pinvouUserId, deviceBindingId: deviceBindingId });
-    await refreshLlmApiState({ refreshSavedModels: true });
-    return result;
-  }
-
-  async function setLlmApiUserEnabled(pinvouUserId, enabled) {
-    var result = await invoke("set_llmapi_user_enabled", { pinvouUserId: pinvouUserId, enabled: enabled });
-    await refreshLlmApiState({ refreshSavedModels: true });
-    return result;
-  }
-
-  async function getLlmApiAdminOverview(query, status, limit, offset) {
-    return await invoke("get_llmapi_admin_overview", {
-      query: query || null,
-      status: status || null,
-      limit: limit == null ? null : limit,
-      offset: offset == null ? null : offset,
-    });
-  }
-
-  async function submitFeedback(request) {
-    return await invoke("submit_feedback", { request: request });
-  }
-  async function discoverLocalVllm(request) {
-    return await invoke("discover_local_vllm", { request: request || null });
-  }
-
-  // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
-  var vllmSetupPollTimer = null;
-  var vllmSetupPollStartedAt = 0;
-  var VLLM_SETUP_POLL_INTERVAL_MS = 3000;
-  var VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
-  // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
-  // 开机加载中不弹框，每 3 秒静默复查；12 分钟后仍 starting 则恢复可重试入口。
-  // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
-  async function detectLocalVllmSetup(options) {
-    var autoPoll = !!(options && options.autoPoll);
-    if (vllmSetupPollTimer) {
-      clearTimeout(vllmSetupPollTimer);
-      vllmSetupPollTimer = null;
-    }
-    if (!autoPoll) vllmSetupPollStartedAt = Date.now();
-    try {
-      state.vllmSetup = await invoke("detect_local_vllm_setup");
-    } catch (e) {
-      state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
-      vllmSetupPollStartedAt = 0;
-    }
-    if (state.vllmSetup && state.vllmSetup.engine_state === 'starting' && state.vllmSetup.may_offer_setup !== false) {
-      var elapsed = Date.now() - vllmSetupPollStartedAt;
-      if (vllmSetupPollStartedAt > 0 && elapsed >= VLLM_SETUP_POLL_TIMEOUT_MS) {
-        state.vllmSetup = Object.assign({}, state.vllmSetup, {
-          engine_state: 'failed',
-          eligible: !!state.vllmSetup.may_offer_setup,
-          detection_timed_out: true,
-        });
-        vllmSetupPollStartedAt = 0;
-      } else {
-        vllmSetupPollTimer = setTimeout(function () {
-          vllmSetupPollTimer = null;
-          detectLocalVllmSetup({ autoPoll: true });
-        }, VLLM_SETUP_POLL_INTERVAL_MS);
-      }
-    } else {
-      vllmSetupPollStartedAt = 0;
-    }
-    notify();
-    return state.vllmSetup; // 返回供设置页「检测本机 vLLM」判断 has_packages
-  }
-  // 用户点「启用」:后端一次 pkexec 拉起引擎+装 systemd 服务,轮询就绪后写模型配置。
-  // 引擎首次载模型可能几分钟,全程 vllmBootstrapping 显示 spinner。
-  async function bootstrapLocalVllm() {
-    if (state.vllmBootstrapping) return;
-    state.vllmBootstrapping = true;
-    state.vllmBootstrapError = null;
-    state.vllmBootstrapDone = null;
-    state.vllmSetupPhase = 'authorizing'; // 后端事件到达前先本地置首阶段(pkexec 阻塞期也有步骤显示)
-    state.vllmSetupAttempt = 0;
-    notify();
-    try {
-      state.vllmBootstrapDone = await invoke("bootstrap_local_vllm");
-    } catch (e) {
-      state.vllmBootstrapError = String(e && e.message ? e.message : e);
-    }
-    state.vllmBootstrapping = false;
-    notify();
-  }
-  // 点「跳过」:仅本次会话内不再弹(不写持久标记,下次启动若仍未配好会再次友好提示)。
-  function dismissVllmSetup() {
-    state.vllmSetupDismissed = true;
-    notify();
-  }
-  // 点「不再提醒 → 确认」:持久婉拒,开机引导框不再自动弹(仍可在设置→模型管理手动启用)。
-  async function declineVllmSetup() {
-    try { await invoke("decline_local_vllm_setup"); } catch (e) { /* 持久失败也先隐藏本会话,不阻断 */ }
-    state.vllmSetupDismissed = true;
-    notify();
-  }
-  async function getEffectiveModelConfig() {
-    return await invoke("get_effective_model_config");
-  }
-
-  // ── 模型列表(「添加模型」方案)─────────────────────────────────
-  async function loadModels() {
-    try {
-      var v = await invoke("list_models");
-      state.savedModels = (v && v.models) || [];
-      state.activeModelId = (v && v.active_model_id) || null;
-    } catch (e) {
-      state.savedModels = []; state.activeModelId = null;
-    }
-    notify();
-  }
-  // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
- async function saveModel(model) {
-   await invoke("save_model", { model: model });
-   await loadModels();
- }
- async function revealModelApiKey(id) {
-   return await invoke("reveal_model_api_key", { id: id });
- }
- async function deleteModel(id) {
-   await invoke("delete_model", { id: id });
-   await loadModels();
-  }
-  async function setActiveModel(id) {
-    await invoke("set_active_model", { id: id });
-    await loadModels();
-  }
-  // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
-  async function loadSessionModel(sessionId) {
-    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
-    try {
-      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
-    } catch (e) { state.currentSessionModelId = null; }
-    notify();
-  }
-  // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
-  async function switchModel(sessionId, modelId) {
-    if (sessionId) {
-      await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
-      state.currentSessionModelId = modelId;
-      notify();
-    } else {
-      await setActiveModel(modelId);
-    }
-  }
-  async function testModelConnection(baseUrl, apiKey, modelId) {
-    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
-  }
-  async function testSearchProvider(provider, apiKey) {
-    return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
-  }
-
+  var monitorFeature = installBridgeFeature("monitor", { state: state, notify: notify, invoke: invoke, bt: bt, safeConsoleInfo: safeConsoleInfo, sessionStates: sessionStates });
+  var startMonitorPolling = monitorFeature.startMonitorPolling;
+  var stopMonitorPolling = monitorFeature.stopMonitorPolling;
+  var clearMonitorStats = monitorFeature.clearMonitorStats;
+  var pollBackendStatus = monitorFeature.pollBackendStatus;
+  var settingsFeature = installBridgeFeature("settings", { state: state, notify: notify, invoke: invoke, listen: listen });
+  var loadSettings = settingsFeature.loadSettings;
+  var loadSelectedPet = settingsFeature.loadSelectedPet;
+  var setSelectedPet = settingsFeature.setSelectedPet;
+  var loadEffectiveModelConfig = settingsFeature.loadEffectiveModelConfig;
+  var saveSettings = settingsFeature.saveSettings;
+  var saveSettingsAndRestart = settingsFeature.saveSettingsAndRestart;
+  var refreshLlmApiOnStartup = settingsFeature.refreshLlmApiOnStartup;
+  var getLlmApiStatus = settingsFeature.getLlmApiStatus;
+  var getLlmApiModels = settingsFeature.getLlmApiModels;
+  var setLlmApiDefaultModel = settingsFeature.setLlmApiDefaultModel;
+  var ensureLlmApiBinding = settingsFeature.ensureLlmApiBinding;
+  var loginLlmApiUser = settingsFeature.loginLlmApiUser;
+  var saveLlmApiUserSession = settingsFeature.saveLlmApiUserSession;
+  var retryLlmApiProvisioning = settingsFeature.retryLlmApiProvisioning;
+  var setLlmApiUserEnabled = settingsFeature.setLlmApiUserEnabled;
+  var getLlmApiAdminOverview = settingsFeature.getLlmApiAdminOverview;
+  var submitFeedback = settingsFeature.submitFeedback;
+  var discoverLocalVllm = settingsFeature.discoverLocalVllm;
+  var detectLocalVllmSetup = settingsFeature.detectLocalVllmSetup;
+  var bootstrapLocalVllm = settingsFeature.bootstrapLocalVllm;
+  var dismissVllmSetup = settingsFeature.dismissVllmSetup;
+  var declineVllmSetup = settingsFeature.declineVllmSetup;
+  var getEffectiveModelConfig = settingsFeature.getEffectiveModelConfig;
+  var loadModels = settingsFeature.loadModels;
+  var saveModel = settingsFeature.saveModel;
+  var revealModelApiKey = settingsFeature.revealModelApiKey;
+  var deleteModel = settingsFeature.deleteModel;
+  var setActiveModel = settingsFeature.setActiveModel;
+  var loadSessionModel = settingsFeature.loadSessionModel;
+  var switchModel = settingsFeature.switchModel;
+  var testModelConnection = settingsFeature.testModelConnection;
+  var testSearchProvider = settingsFeature.testSearchProvider;
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
     try {
@@ -4952,271 +4358,17 @@
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
 
-  function memoryWriteLabel(event) {
-    var text = event && event.text || "";
-    if (!text) return "记忆已更新";
-    return text;
-  }
-  function memoryWriteStatusLabel(event) {
-    var action = event && event.action || "";
-    if (action === "confirmed" || action === "remembered") return "记忆已更新";
-    if (action === "archived") return "记忆已归档";
-    if (action === "deleted") return "记忆已删除";
-    return "记忆已更新";
-  }
-  function normalizeMemoryCandidateText(text) {
-    return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
-  }
-  function handleMemoryWrite(payload) {
-    var sid = payload && payload.session_id || state.activeSessionId;
-    var events = payload && Array.isArray(payload.events) ? payload.events : [];
-    if (!sid || !events.length) return;
-    runOnSession(sid, function () {
-      events.forEach(function (event) {
-        if (!event) return;
-        if (event.action === "pending") {
-          var label = memoryWriteLabel(event);
-          var labelKey = normalizeMemoryCandidateText(label);
-          var existing = state.chatItems.find(function (it) {
-            return it.type === "memory_candidate" && !it.resolved && (
-              (event.id && it.memoryId === event.id) ||
-              (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
-            );
-          });
-          if (existing) {
-            existing.memoryId = event.id || existing.memoryId;
-            existing.kind = event.kind || existing.kind || "preference";
-            existing.text = label;
-            existing.time = timeStr();
-            return;
-          }
-          addChatItem({
-            type: "memory_candidate",
-            memoryId: event.id,
-            kind: event.kind || "preference",
-            text: label,
-            time: timeStr(),
-            resolved: false,
-          });
-          return;
-        }
-        var label = memoryWriteLabel(event);
-        var labelKey = normalizeMemoryCandidateText(label);
-        var existing = state.chatItems.find(function (it) {
-          return it.type === "memory_candidate" && (
-            (event.id && it.memoryId === event.id) ||
-            (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
-          );
-        });
-        if (existing) {
-          if (event.action === "ignored" || event.action === "never") {
-            state.chatItems = state.chatItems.filter(function (it) { return it !== existing; });
-            return;
-          }
-          existing.resolved = true;
-          existing.statusLabel = event.action === "ignored" ? "已忽略"
-            : event.action === "never" ? "不再提示"
-            : event.action === "archived" ? "已归档"
-            : event.action === "deleted" ? "已删除"
-            : "已记住";
-          existing.kind = event.kind || existing.kind || "preference";
-          existing.text = label;
-          existing.time = timeStr();
-          return;
-        }
-        if (event.action === "ignored" || event.action === "never") {
-          return;
-        }
-        addChatItem({
-          type: "memory_notice",
-          memoryId: event.id,
-          kind: event.kind || "preference",
-          text: label,
-          statusLabel: memoryWriteStatusLabel(event),
-          time: timeStr(),
-        });
-      });
-      notify();
-    });
-    if (invoke) {
-      setTimeout(function () {
-        loadMemoryOverview({ rehydratePending: true });
-      }, 0);
-    }
-  }
-
-  function applyMemoryOverview(overview) {
-    state.memory = {
-      loading: false,
-      error: null,
-      profile: overview && overview.profile || null,
-      preferences: overview && Array.isArray(overview.preferences) ? overview.preferences : [],
-      work_context: overview && Array.isArray(overview.work_context) ? overview.work_context : [],
-      current_focus: overview && Array.isArray(overview.current_focus) ? overview.current_focus : [],
-      recent_activity: overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [],
-      recent_work: overview && Array.isArray(overview.recent_work) ? overview.recent_work : [],
-      pending: overview && Array.isArray(overview.pending) ? overview.pending : [],
-      never: overview && Array.isArray(overview.never) ? overview.never : [],
-      runtime: overview && overview.runtime || null,
-      snapshot_path: overview && overview.snapshot_path || "",
-    };
-  }
-  function upsertPendingMemoryCandidate(item) {
-    if (!item || item.status !== "pending_confirm") return;
-    var label = item.content || item.text || "";
-    if (!label) return;
-    var labelKey = normalizeMemoryCandidateText(label);
-    var existing = state.chatItems.find(function (it) {
-      return it.type === "memory_candidate" && !it.resolved && (
-        (item.id && it.memoryId === item.id) ||
-        (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
-      );
-    });
-    if (existing) {
-      existing.memoryId = item.id || existing.memoryId;
-      existing.kind = item.kind || existing.kind || "preference";
-      existing.text = label;
-      return;
-    }
-    addChatItem({
-      type: "memory_candidate",
-      memoryId: item.id,
-      kind: item.kind || "preference",
-      text: label,
-      time: timeStr(),
-      resolved: false,
-    });
-  }
-  function rehydratePendingMemoryCandidates(overview) {
-    var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
-    pending.forEach(upsertPendingMemoryCandidate);
-  }
-  async function loadMemoryOverview(options) {
-    if (!invoke) return null;
-    options = options || {};
-    state.memory = Object.assign({}, state.memory, { loading: true, error: null });
-    notify();
-    try {
-      var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
-      applyMemoryOverview(overview);
-      if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
-      notify();
-      return overview;
-    } catch (e) {
-      state.memory = Object.assign({}, state.memory, { loading: false, error: String(e) });
-      notify();
-      return null;
-    }
-  }
-  async function saveMemoryProfilePatch(patch) {
-    if (!invoke) return null;
-    try {
-      await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
-      return await loadMemoryOverview();
-    } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function deleteMemoryPreference(id) {
-    if (!id || !invoke) return false;
-    try {
-      var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
-      await loadMemoryOverview();
-      return !!(res && res.value);
-    } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function updateMemoryItem(kind, id, patch) {
-    if (!id || !invoke) return null;
-    try {
-      var command = kind === "preference" ? "update_memory_preference"
-        : kind === "work_context" ? "update_work_context_memory"
-        : (kind === "current_focus" || kind === "recent_activity") ? "update_timed_memory"
-        : null;
-      if (!command) return null;
-      var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
-      if (command === "update_timed_memory") args.kind = kind;
-      var res = await invoke(command, args);
-      await loadMemoryOverview();
-      return res && res.value;
-    } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function deleteMemoryItem(kind, id) {
-    if (!id || !invoke) return false;
-    try {
-      var command = kind === "preference" ? "delete_memory_preference"
-        : kind === "work_context" ? "delete_work_context_memory"
-        : (kind === "current_focus" || kind === "recent_activity") ? "delete_timed_memory"
-        : null;
-      if (!command) return false;
-      var args = { id: id, sessionId: state.activeSessionId };
-      if (command === "delete_timed_memory") args.kind = kind;
-      var res = await invoke(command, args);
-      await loadMemoryOverview();
-      return !!(res && res.value);
-    } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function archiveRecentWorkMemory(id) {
-    if (!id || !invoke) return false;
-    try {
-      var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
-      await loadMemoryOverview();
-      return !!(res && res.value);
-    } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function confirmMemoryCandidate(memoryId, chatItemId) {
-    if (!memoryId) return;
-    var sid = state.activeSessionId;
-    try {
-      await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
-      await loadMemoryOverview();
-      notify();
-    } catch (e) {
-      addSystemItem("记忆写入失败：" + e);
-    }
-  }
-  async function ignoreMemoryCandidate(memoryId, chatItemId) {
-    if (!memoryId) return;
-    var sid = state.activeSessionId;
-    try {
-      await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
-      await loadMemoryOverview();
-      notify();
-    } catch (e) {
-      addSystemItem("忽略记忆失败：" + e);
-    }
-  }
-  async function neverMemoryCandidate(memoryId, chatItemId) {
-    if (!memoryId) return;
-    var sid = state.activeSessionId;
-    try {
-      await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
-      await loadMemoryOverview();
-      notify();
-    } catch (e) {
-      addSystemItem("设置不再提示失败：" + e);
-    }
-  }
+  var memoryFeature = installBridgeFeature("memory", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, runSyncOnSession: runSyncOnSession, patchItemById: patchItemById, runOnSession: runOnSession, addChatItem: addChatItem, timeStr: timeStr });
+  var handleMemoryWrite = memoryFeature.handleMemoryWrite;
+  var loadMemoryOverview = memoryFeature.loadMemoryOverview;
+  var saveMemoryProfilePatch = memoryFeature.saveMemoryProfilePatch;
+  var deleteMemoryPreference = memoryFeature.deleteMemoryPreference;
+  var updateMemoryItem = memoryFeature.updateMemoryItem;
+  var deleteMemoryItem = memoryFeature.deleteMemoryItem;
+  var archiveRecentWorkMemory = memoryFeature.archiveRecentWorkMemory;
+  var confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
+  var ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
+  var neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -5342,1249 +4494,100 @@
     try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
   }
 
-  // ── 产物面板 ─────────────────────────────────────────────────────
-  function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
-  function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
-  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path: path, content: content }); }
-  function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
-  // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
-  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
-  function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
-  function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId: automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
-  function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
-  function listDeliverables(projectDir) {
-    return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
-  }
-  function deliverableCategory(path) {
-    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    if (ext === "html" || ext === "htm" || ext === "mhtml" || ext === "mht") return "web";
-    if (ext === "ppt" || ext === "pptx" || ext === "odp" || ext === "dps") return "ppt";
-    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].indexOf(ext) >= 0) return "img";
-    return "doc";
-  }
-  function sessionTitleById(sid) {
-    var m = state.sessions.find(function (s) { return s.id === sid; });
-    return (m && m.title) || "";
-  }
-  function currentMemoryArtifacts() {
-    var rows = [];
-    function addFrom(sid, arts) {
-      (arts || []).forEach(function (a) {
-        var path = a && a.path;
-        if (!path || !isDeliverable(path)) return;
-        rows.push({ path: path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
-      });
-    }
-    addFrom(state.activeSessionId, state.artifacts);
-    Object.keys(sessionStates).forEach(function (sid) { addFrom(sid, sessionStates[sid] && sessionStates[sid].artifacts); });
-    return rows;
-  }
-  // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
-  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「本地知识 → 产出物」。
-  async function listDeliverableIndex() {
-    var disk = await invoke("list_deliverable_index").catch(function () { return []; });
-    var byPath = {};
-    (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    var mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
-    var hydrated = await Promise.all(mem.map(async function (x) {
-      var path = x.path;
-      if (!isAbsPath(path) && x.sessionId) {
-        try {
-          var ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
-          var bn = basename(path);
-          var resolved = (ws || []).find(function (p) { return basename(p) === bn; });
-          if (resolved) path = resolved;
-        } catch (_) {}
-      }
-      var info = null;
-      try { info = await artifactInfo(path); } catch (_) {}
-      var ext = (String(path).split(".").pop() || "").toLowerCase();
-      return {
-        name: x.name || basename(path),
-        path: path,
-        ext: ext,
-        category: deliverableCategory(path),
-        sessionId: x.sessionId || "",
-        source: x.source || sessionTitleById(x.sessionId) || "",
-        mtime: info && info.modified ? info.modified : 0,
-        size: info && info.size ? info.size : 0,
-      };
-    }));
-    hydrated.forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    return Object.keys(byPath).map(function (p) { return byPath[p]; }).sort(function (a, b) {
-      return (b.mtime || 0) - (a.mtime || 0) || String(a.name || "").localeCompare(String(b.name || ""));
-    });
-  }
-  // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
-  // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
-  // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
-  // session 才解析得准(否则相对路径被拼到错的 workspace 报 not a file)。绝对路径无视它。
-  function openArtifactExternal(path, sessionId) {
-    var ext = (String(path).split(".").pop() || "").toLowerCase();
-    var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
-  }
+  var artifactsFeature = installBridgeFeature("artifacts", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, basename: basename, isDeliverable: isDeliverable, isAbsPath: isAbsPath, sessionStates: sessionStates, TAURI: TAURI, listen: listen });
+  var artifactInfo = artifactsFeature.artifactInfo;
+  var readArtifactText = artifactsFeature.readArtifactText;
+  var writeArtifactText = artifactsFeature.writeArtifactText;
+  var readArtifactImageB64 = artifactsFeature.readArtifactImageB64;
+  var readArtifactThumbnail = artifactsFeature.readArtifactThumbnail;
+  var renderArtifactVisual = artifactsFeature.renderArtifactVisual;
+  var openContainingFolder = artifactsFeature.openContainingFolder;
+  var revealSessionFolder = artifactsFeature.revealSessionFolder;
+  var openScheduledTaskFolder = artifactsFeature.openScheduledTaskFolder;
+  var openInSystem = artifactsFeature.openInSystem;
+  var openArtifactExternal = artifactsFeature.openArtifactExternal;
+  var listDeliverables = artifactsFeature.listDeliverables;
+  var listDeliverableIndex = artifactsFeature.listDeliverableIndex;
+  var openExternalUrl = artifactsFeature.openExternalUrl;
+  var addAttachmentByPath = artifactsFeature.addAttachmentByPath;
+  var addPasteImage = artifactsFeature.addPasteImage;
+  var removeAttachment = artifactsFeature.removeAttachment;
+  var clearAttachments = artifactsFeature.clearAttachments;
+  var pickAndAttach = artifactsFeature.pickAndAttach;
+  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
+  var loadPersonas = personasFeature.loadPersonas;
+  var getPersonas = personasFeature.getPersonas;
+  var createPersona = personasFeature.createPersona;
+  var updatePersona = personasFeature.updatePersona;
+  var deletePersona = personasFeature.deletePersona;
+  var recordPersonaEvent = personasFeature.recordPersonaEvent;
+  var equipPersona = personasFeature.equipPersona;
+  var unequipPersona = personasFeature.unequipPersona;
+  var syncActivePersona = personasFeature.syncActivePersona;
+  var mountCollection = personasFeature.mountCollection;
+  var unmountCollection = personasFeature.unmountCollection;
+  var syncMountedCollection = personasFeature.syncMountedCollection;
+  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer });
+  var loadAppVersion = updaterFeature.loadAppVersion;
+  var checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
+  var checkForUpdate = updaterFeature.checkForUpdate;
+  var downloadAndInstallUpdate = updaterFeature.downloadAndInstallUpdate;
+  var cancelUpdate = updaterFeature.cancelUpdate;
+  var restartApp = updaterFeature.restartApp;
+  var reportPendingUpdateResult = updaterFeature.reportPendingUpdateResult;
+  var remoteControlFeature = installBridgeFeature("remote-control", { state: state, notify: notify, invoke: invoke });
+  var refreshRemoteControlStatus = remoteControlFeature.refreshRemoteControlStatus;
+  var startRemoteControl = remoteControlFeature.startRemoteControl;
+  var stopRemoteControl = remoteControlFeature.stopRemoteControl;
+  var refreshRemoteControlQr = remoteControlFeature.refreshRemoteControlQr;
+  var dependenciesFeature = installBridgeFeature("dependencies", { state: state, notify: notify, invoke: invoke });
+  var checkDependencies = dependenciesFeature.checkDependencies;
+  var installDependencies = dependenciesFeature.installDependencies;
+  var voiceFeature = installBridgeFeature("voice", { state: state, notify: notify, invoke: invoke });
+  var startVoiceInput = voiceFeature.startVoiceInput;
+  var installVoiceAsr = voiceFeature.installVoiceAsr;
+  var cancelVoiceAsrSetup = voiceFeature.cancelVoiceAsrSetup;
+  var closeVoiceAsrSetup = voiceFeature.closeVoiceAsrSetup;
+  var cancelVoiceInput = voiceFeature.cancelVoiceInput;
+  var clearVoiceInput = voiceFeature.clearVoiceInput;
+  var appendVoiceText = voiceFeature.appendVoiceText;
+  var runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
+  var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke });
+  var downloadKbModel = knowledgeModelFeature.downloadKbModel;
+  var cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
-  // ── 附件 ────────────────────────────────────────────────────────
-  async function addAttachmentByPath(path) {
-    var id = ++attachIdSeq;
-    var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
-    state.attachments.push(att); notify();
-    try {
-      var result = await invoke("ingest_file", { path: path });
-      att.status = "ready"; att.result = result;
-    } catch (e) { att.status = "error"; att.error = String(e); }
-    notify();
-  }
-  var recentDroppedPaths = {};
-  var DROP_DEDUP_MS = 1500;
-  function dropPathKey(path) {
-    return String(path || "").toLowerCase();
-  }
-  function droppedFilePaths(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload.filter(Boolean);
-    if (payload.payload) return droppedFilePaths(payload.payload);
-    if (payload.type && payload.type !== "drop") return [];
-    if (Array.isArray(payload.paths)) return payload.paths.filter(Boolean);
-    if (Array.isArray(payload.files)) return payload.files.filter(Boolean);
-    if (typeof payload.path === "string") return [payload.path];
-    if (typeof payload === "string") return [payload];
-    return [];
-  }
-  async function addDroppedAttachments(paths) {
-    var now = Date.now();
-    var seen = {};
-    var list = (paths || []).filter(function (p) {
-      var key = dropPathKey(p);
-      if (!p || seen[key]) return false;
-      seen[key] = true;
-      if (recentDroppedPaths[key] && now - recentDroppedPaths[key] < DROP_DEDUP_MS) return false;
-      recentDroppedPaths[key] = now;
-      return true;
-    });
-    Object.keys(recentDroppedPaths).forEach(function (key) {
-      if (now - recentDroppedPaths[key] > DROP_DEDUP_MS * 4) delete recentDroppedPaths[key];
-    });
-    for (var i = 0; i < list.length; i++) {
-      await addAttachmentByPath(list[i]);
-    }
-  }
-  function initAttachmentDrop() {
-    if (initAttachmentDrop.done) return;
-    initAttachmentDrop.done = true;
-
-    var currentWindow = TAURI.window && TAURI.window.getCurrentWindow ? TAURI.window.getCurrentWindow() : null;
-    if (currentWindow && typeof currentWindow.onDragDropEvent === "function") {
-      currentWindow.onDragDropEvent(function (event) {
-        var paths = droppedFilePaths(event);
-        if (paths.length) addDroppedAttachments(paths);
-      }).catch(function (e) { console.warn("[attachment] drag-drop listener failed", e); });
-    }
-
-    listen("tauri://file-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-    listen("tauri://drag-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-
-    document.addEventListener("dragover", function (e) {
-      if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }
-    });
-    document.addEventListener("drop", function (e) {
-      var files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      e.preventDefault();
-      var paths = [];
-      for (var i = 0; i < files.length; i++) {
-        if (files[i] && files[i].path) paths.push(files[i].path);
-      }
-      if (paths.length) addDroppedAttachments(paths);
-    });
-  }
-  async function addPasteImage(filename, bytes) {
-    try {
-      var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
-      await addAttachmentByPath(path);
-    } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
-  }
-  function removeAttachment(id) {
-    state.attachments = state.attachments.filter(function (a) { return a.id !== id; });
-    notify();
-  }
-  function clearAttachments() { state.attachments = []; }
-  // 打开系统文件选择器并摄入为附件
-  async function pickAndAttach() {
-    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
-    try {
-      var selected = await dialogOpen({ multiple: true });
-      if (!selected) return;
-      var paths = Array.isArray(selected) ? selected : [selected];
-      for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
-    } catch (e) { addSystemItem(bt("filePickFailed") + e); }
-  }
-  initAttachmentDrop();
-
-
-  // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
-  // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
-  async function loadPersonas() {
-    if (state.personaPool.loadState === "ready" || state.personaPool.loadState === "loading") return;
-    await refreshPersonas();
-  }
-  // 强制重拉卡牌列表(自创卡增删改后调,让池子立即反映)。
-  async function refreshPersonas() {
-    state.personaPool.loadState = "loading"; notify();
-    try {
-      personaPoolCache = await invoke("list_personas");
-      state.personaPool.loadState = "ready";
-    } catch (e) {
-      personaPoolCache = []; state.personaPool.loadState = "error";
-      console.warn("list_personas failed", e);
-    }
-    notify();
-  }
-  // ── 用户自创卡 CRUD(写盘后刷新缓存) ──
-  async function createPersona(input) {
-    var sum = await invoke("create_persona", { input: input });
-    await refreshPersonas();
-    return sum;
-  }
-  async function updatePersona(personaId, input) {
-    var sum = await invoke("update_persona", { personaId: personaId, input: input });
-    await refreshPersonas();
-    // 若改的正是当前 session 加持的卡, 同步挂件显示
-    if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
-    return sum;
-  }
-  async function deletePersona(personaId) {
-    await invoke("delete_persona", { personaId: personaId });
-    await refreshPersonas();
-  }
-  // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
-  // 前端记 activePersona(挂件) + 发一条系统消息播报。
-  // 取专家显示名(兼容 Side A 的 cn_name / Side B 的 name)。
-  function personaName(p) {
-    if (!p) return "";
-    // 内置卡名按 UI 语言显示(personas-i18n.js overlay),中文兜底;自制卡不翻
-    var lang = state.settings && state.settings.language;
-    var L = lang === "en" ? "en" : lang === "ja" ? "ja" : null;
-    var tr = L && p.source !== "user" && window.PERSONA_I18N && window.PERSONA_I18N[p.id] && window.PERSONA_I18N[p.id][L];
-    if (tr && tr.name) return tr.name;
-    return (p.name || p.cn_name) || "";
-  }
-  // 记一条卡牌事件到时间线 sidecar(pos=当前 messages 数),并落盘。重载历史时按 pos 插回。
-  function recordPersonaEvent(ev) {
-    if (!state.activeSessionId) return;
-    ev.pos = state.messages.length;
-    state.personaEvents.push(ev);
-    var sid = state.activeSessionId;
-    var snapshot = JSON.parse(JSON.stringify(state.personaEvents));
-    invoke("save_session_persona_events", { sessionId: sid, events: snapshot }).catch(function () {});
-  }
-  async function equipPersona(personaId) {
-    if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
-      if (!state.activeSessionId) return; // 物化失败,放弃
-    }
-    var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
-    try {
-      var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
-      // 标题仍是默认值「新对话」→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
-      // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
-      var sid = state.activeSessionId;
-      var m = state.sessions.find(function (s) { return s.id === sid; });
-      // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
-      // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
-      if (m && (m.title === "新对话" || m.title === "New chat" || personaPlaceholderTitles[sid])) {
-        var newTitle = personaName(card);
-        if (newTitle) {
-          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
-          m.title = newTitle;
-          personaPlaceholderTitles[sid] = true;
-        }
-      }
-      // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
-      if (prev && prev.id !== card.id) {
-        addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
-        recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
-      }
-      state.activePersona = card;
-      addChatItem({ type: "persona_equip", card: card, time: timeStr() });
-      recordPersonaEvent({ kind: "equip", card: card });
-      notify();
-      return card;
-    } catch (e) { addSystemItem(bt("equipFailed") + e); return null; }
-  }
-  // 摘下当前 session 的专家面具。
-  async function unequipPersona() {
-    if (!state.activeSessionId) return;
-    var prev = state.activePersona;
-    try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
-    state.activePersona = null;
-    if (prev) { addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
-    notify();
-  }
-  // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
-  async function syncActivePersona() {
-    if (!state.activeSessionId) { state.activePersona = null; return; }
-    try {
-      state.activePersona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
-    } catch (e) { /* 旧 session 无加持,忽略 */ }
-  }
-
-  // ── 知识库挂载(会话级粘连,仿 persona) ──
-  // 给当前对话挂一个知识集;草稿态先物化 session(同 equipPersona)。挂上后每条消息
-  // 发送前后端自动检索注入(commands::chat)。返回挂载的 id 或 null(失败)。
-  async function mountCollection(collectionId) {
-    if (collectionId == null) return null;
-    if (!state.activeSessionId) {
-      await ensureSession();
-      if (!state.activeSessionId) return null;
-    }
-    try {
-      await invoke("session_mount_collection", { sessionId: state.activeSessionId, collectionId: collectionId });
-      state.mountedCollection = collectionId;
-      notify();
-      return collectionId;
-    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
-  }
-  // 摘下当前对话的知识集挂载。
-  async function unmountCollection() {
-    if (!state.activeSessionId) { state.mountedCollection = null; notify(); return; }
-    try { await invoke("session_unmount_collection", { sessionId: state.activeSessionId }); } catch (e) { /* 前端照样摘 */ }
-    state.mountedCollection = null;
-    notify();
-  }
-  // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
-  async function syncMountedCollection() {
-    if (!state.activeSessionId) { state.mountedCollection = null; return; }
-    try {
-      var cid = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
-      state.mountedCollection = (cid == null) ? null : cid;
-    } catch (e) { state.mountedCollection = null; }
-  }
-
-  // ── 应用内升级 ───────────────────────────────────────────────────
-  // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
-  // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
-  listen("update:progress", function (e) {
-    var p = e.payload || {};
-    state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
-    notify();
-  });
-  listen("remote_control:status", function (e) {
-    state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
-    notify();
-  });
-  listen("remote_control:snapshot_requested", function (e) {
-    var sid = e && e.payload && e.payload.session_id;
-    if (!sid) return;
-    publishRemoteLiveSnapshot(sid).catch(function () {});
-  });
-  listen("remote_control:session_created", function (e) {
-    var s = e && e.payload && e.payload.session;
-    if (s && s.id) {
-      getBuffer(s.id);
-      if (!state.sessions.some(function (item) { return item.id === s.id; })) {
-        state.sessions.unshift({
-          id: s.id,
-          title: s.title || "新对话",
-          updated_at: s.updated_at || "",
-          message_count: s.message_count || 0,
-        });
-      }
-      notify();
-    }
-    refreshHistoryList().then(function () { notify(); }).catch(function () {});
-  });
-  async function loadAppVersion() {
-    try {
-      state.appVersion = await invoke("get_app_version");
-    } catch (_) {}
-  }
-  // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
-  // available 驱动红点,current_version 给设置页显示当前版本用。
-  async function checkForUpdateSilently() {
-    try {
-      var info = await invoke("check_for_update");
-      if (info && info.current_version) state.appVersion = info.current_version;
-      if (info) { state.updateInfo = info; notify(); }
-    } catch (e) { /* 静默 */ }
-  }
-  // 设置页手动检查: 错误和「已是最新」都要反馈。
-  async function checkForUpdate() {
-    state.updateChecking = true; state.updateCheckError = null; notify();
-    try {
-      var info = await invoke("check_for_update");
-      if (info && info.current_version) state.appVersion = info.current_version;
-      state.updateInfo = info;
-      if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
-    } catch (e) {
-      state.updateCheckError = String(e);
-    }
-    state.updateChecking = false; notify();
-  }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
-  // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
-  async function downloadAndInstallUpdate() {
-    if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
-    var installed = false;
-    state.updateDownloading = true; state.updateCancelling = false;
-    state.updateProgress = 0; state.updateError = null; notify();
-    try {
-      var downloadResult = await invoke("download_update", { info: state.updateInfo });
-      state.updateProgress = 100; notify();
-      if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
-        await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
-      } else {
-        await invoke("install_update", { debPath: downloadResult });
-      }
-      state.updateReady = true;
-      installed = true;
-    } catch (e) {
-      // 用户主动取消下载时后端返回「已取消下载」,当正常处理不弹错误
-      if (state.updateCancelling) state.updateProgress = 0;
-      else state.updateError = String(e);
-    }
-    state.updateDownloading = false; state.updateCancelling = false; notify();
-    if (installed && shouldRestartAfterInstall) restartApp();
-    return installed;
-  }
-  // 取消进行中的下载: 置前端标志 + 通知后端中断下载循环。仅下载阶段有效;
-  // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
-  function cancelUpdate() {
-    if (!state.updateDownloading || state.updateCancelling) return;
-    state.updateCancelling = true; notify();
-    invoke("cancel_download").catch(function () { /* 忽略,下载循环超时也会退 */ });
-  }
-  function restartApp() {
-    invoke("restart_app").catch(function () { /* restart 成功不会返回 */ });
-  }
-  function reportPendingUpdateResult() {
-    invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
-  }
-
-  // ── Remote Control: 当前 session 手机远控 ───────────────────────
-  async function refreshRemoteControlStatus() {
-    try {
-      var status = await invoke("remote_control_status");
-      state.remoteControl = Object.assign({}, state.remoteControl, status || {});
-    } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
-    }
-    notify();
-  }
-  async function startRemoteControl(sessionId) {
-    state.remoteControl = Object.assign({}, state.remoteControl, { starting: true, last_error: null });
-    notify();
-    try {
-      var info = await invoke("remote_control_start", { sessionId: sessionId || null });
-      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, starting: false, last_error: null });
-      await refreshRemoteControlStatus();
-      return info;
-    } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { active: false, starting: false, status: "error", last_error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-  async function stopRemoteControl() {
-    try {
-      await invoke("remote_control_stop");
-    } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
-      notify();
-      throw e;
-    }
-    state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
-    notify();
-  }
-  async function refreshRemoteControlQr(sessionId) {
-    try {
-      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || null });
-      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, last_error: null });
-      await refreshRemoteControlStatus();
-      return info;
-    } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-
-  // ── 依赖体检 ─────────────────────────────────────────────────────
-  // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
-  // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
-  async function checkDependencies() {
-    if (state.depsChecking) return;
-    state.depsChecking = true; state.depsInstallError = null; notify();
-    try {
-      state.deps = await invoke("check_dependencies");
-    } catch (e) { state.deps = []; }
-    state.depsChecking = false; notify();
-  }
-  // 一键安装缺失依赖: 收集缺失项的包名 → 后端 pkexec apt 提权安装 → 装完实时重检。
-  async function installDependencies() {
-    var deps = state.deps || [];
-    var missing = deps.filter(function (d) { return !d.installed; });
-    if (!missing.length || state.depsInstalling) return;
-    var pkgs = [];
-    missing.forEach(function (d) {
-      var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
-      if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
-        return;
-      }
-      parts.forEach(function (p) {
-        if (pkgs.indexOf(p) < 0) pkgs.push(p);
-      });
-    });
-    if (!pkgs.length) {
-      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
-      notify();
-      return;
-    }
-    state.depsInstalling = true; state.depsInstallError = null; notify();
-    try {
-      await invoke("install_dependencies", { packages: pkgs });
-      state.deps = await invoke("check_dependencies"); // 装完实时重检,缺失项应清空
-    } catch (e) {
-      state.depsInstallError = String(e);
-    }
-    state.depsInstalling = false; notify();
-  }
-
-  // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
-  var activeVoiceInput = null;
-  var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
-  var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
-
-  function setVoiceInputStatus(status, patch) {
-    var next = Object.assign({}, state.voiceInput, patch || {});
-    next.status = status;
-    if (status !== "failed") {
-      next.error = null;
-      next.category = null;
-    }
-    state.voiceInput = next;
-    notify();
-  }
-
-  function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
-    var event = {
-      stage: stage,
-      level: level,
-      message: message,
-      user_message: userMessage || "",
-      category: category || "",
-    };
-    var fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
-    fn.call(console, "[voice-input]", event);
-  }
-
-  function normalizeVoiceError(err, fallbackStage) {
-    var name = String((err && err.name) || "");
-    var rawCategory = (err && err.category) || "";
-    var rawStage = (err && err.stage) || fallbackStage || "recording";
-    var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
-    var constraint = String((err && err.constraint) || "");
-    if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
-      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
-    }
-    if (rawCategory === "device_unavailable") {
-      return { category: "device_unavailable", stage: "device", message: rawMessage || "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
-    }
-    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-      return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
-    }
-    // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
-    // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
-    if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError" || /invalid constraint/i.test(rawMessage)) {
-      return {
-        category: "constraint_unsupported",
-        stage: "device",
-        message: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
-        diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
-      };
-    }
-    if (rawCategory === "empty_result") {
-      return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
-    }
-    if (rawCategory === "context_mismatch") {
-      return { category: "context_mismatch", stage: "writeback", message: "识别已完成，但当前会话已切换，结果未自动写入。" };
-    }
-    if (rawCategory === "timeout") {
-      return { category: "timeout", stage: "recording", message: "本次语音输入超时，请重试。" };
-    }
-    if (rawCategory === "recognition_failed") {
-      return { category: "recognition_failed", stage: rawStage, message: rawMessage || "语音识别失败，请稍后重试。" };
-    }
-    return {
-      category: rawCategory || "recording_failed",
-      stage: rawStage,
-      message: rawMessage || "语音输入失败，请检查麦克风后重试。",
-    };
-  }
-
-  function stopMediaTracks(stream) {
-    if (!stream) return;
-    stream.getTracks().forEach(function (track) { try { track.stop(); } catch (_) {} });
-  }
-
-  function cleanupVoiceInputSession(session) {
-    if (!session) return;
-    if (session.timeoutId) clearTimeout(session.timeoutId);
-    if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
-    session.permissionTimeoutId = null;
-    if (session.cancelPermissionRequest) {
-      var cancelPermissionRequest = session.cancelPermissionRequest;
-      session.cancelPermissionRequest = null;
-      try { cancelPermissionRequest(); } catch (_) {}
-    }
-    // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
-    // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
-    // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
-    try { if (session.processor) session.processor.onaudioprocess = null; } catch (_) {}
-    try { if (session.processor) session.processor.disconnect(); } catch (_) {}
-    try { if (session.source) session.source.disconnect(); } catch (_) {}
-    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
-    stopMediaTracks(session.stream);
-    session.processor = null;
-    session.source = null;
-    session.zeroGain = null;
-    session.stream = null;
-    // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
-    // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
-    var ctx = session.audioContext;
-    session.audioContext = null;
-    if (ctx && ctx.state !== "closed") {
-      setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
-    }
-  }
-
-  async function probeVoiceAudioInput(timeoutMs) {
-    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") return null;
-    var timer = null;
-    try {
-      return await Promise.race([
-        navigator.mediaDevices.enumerateDevices().then(function (devices) {
-          return devices.some(function (device) { return device && device.kind === "audioinput"; });
-        }),
-        new Promise(function (resolve) {
-          timer = setTimeout(function () { resolve(null); }, timeoutMs || VOICE_DEVICE_PROBE_TIMEOUT_MS);
-        }),
-      ]);
-    } catch (_) {
-      return null;
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  function requestVoiceMedia(session, constraints, timeoutMs) {
-    var abandoned = false;
-    var mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
-      if (abandoned || activeVoiceInput !== session) {
-        stopMediaTracks(stream);
-        throw { category: "cancelled", stage: "permission", message: "已取消语音输入" };
-      }
-      return stream;
-    });
-    var timeoutPromise = new Promise(function (_, reject) {
-      session.permissionTimeoutId = setTimeout(function () {
-        abandoned = true;
-        reject({
-          category: "device_unavailable",
-          stage: "device",
-          message: "麦克风检测超时，未发现可用录音设备。请检查设备连接和 Windows 麦克风设置后重试。",
-        });
-      }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
-    });
-    var cancelPromise = new Promise(function (_, reject) {
-      session.cancelPermissionRequest = function () {
-        abandoned = true;
-        reject({ category: "cancelled", stage: "permission", message: "已取消语音输入" });
-      };
-    });
-    return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
-      if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
-      session.permissionTimeoutId = null;
-      session.cancelPermissionRequest = null;
-    });
-  }
-
-  function mergeFloatChunks(chunks) {
-    var total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
-    var out = new Float32Array(total);
-    var offset = 0;
-    chunks.forEach(function (chunk) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-    });
-    return out;
-  }
-
-  function downsamplePcm(samples, sourceRate, targetRate) {
-    if (!samples.length || sourceRate === targetRate) return samples;
-    var ratio = sourceRate / targetRate;
-    var len = Math.max(1, Math.round(samples.length / ratio));
-    var out = new Float32Array(len);
-    for (var i = 0; i < len; i++) {
-      var start = Math.floor(i * ratio);
-      var end = Math.min(samples.length, Math.floor((i + 1) * ratio));
-      var sum = 0;
-      var count = 0;
-      for (var j = start; j < end; j++) { sum += samples[j]; count++; }
-      out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
-    }
-    return out;
-  }
-
-  function encodeWav(samples, sampleRate) {
-    var dataSize = samples.length * 2;
-    var buffer = new ArrayBuffer(44 + dataSize);
-    var view = new DataView(buffer);
-    function writeString(offset, value) {
-      for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
-    }
-    writeString(0, "RIFF");
-    view.setUint32(4, 36 + dataSize, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, "data");
-    view.setUint32(40, dataSize, true);
-    var offset = 44;
-    for (var i = 0; i < samples.length; i++, offset += 2) {
-      var s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
-  }
-
-  async function finishVoiceInput(cancelled, timedOut) {
-    var session = activeVoiceInput;
-    if (!session) return;
-    if (cancelled) {
-      cleanupVoiceInputSession(session);
-      activeVoiceInput = null;
-      setVoiceInputStatus("cancelled", { message: "已取消语音输入", completedAt: Date.now() });
-      emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
-      return;
-    }
-
-    setVoiceInputStatus("transcribing", { message: "正在识别语音…", stage: "transcribing" });
-    cleanupVoiceInputSession(session);
-
-    try {
-      if (timedOut) {
-        emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
-      }
-      var raw = mergeFloatChunks(session.chunks);
-      var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
-      if (durationMs < 300) {
-        throw { category: "recording_failed", stage: "recording", message: "录音时间过短，请重试。" };
-      }
-      var pcm = downsamplePcm(raw, session.sampleRate, 16000);
-      var wav = encodeWav(pcm, 16000);
-      var bytes = Array.from(new Uint8Array(wav));
-      var res = await invoke("transcribe_voice_audio", {
-        request: {
-          audio_bytes: bytes,
-          session_id: session.sessionId,
-        },
-      });
-      if (activeVoiceInput !== session) return;
-      var text = String((res && res.text) || "").trim();
-      if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
-      if (state.activeSessionId !== session.sessionId) {
-        throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
-      }
-      if (typeof session.writeback === "function") {
-        session.writeback(text, session.draftBeforeStart);
-      }
-      setVoiceInputStatus("completed", { message: "语音已写入输入框", completedAt: Date.now() });
-      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
-    } catch (err) {
-      var normalized = normalizeVoiceError(err, "transcribing");
-      setVoiceInputStatus("failed", {
-        message: normalized.message,
-        error: normalized.message,
-        category: normalized.category,
-        stage: normalized.stage,
-        completedAt: Date.now(),
-      });
-      emitVoiceDiagnostic(normalized.stage, "error", normalized.diagnostic || normalized.category, normalized.message, normalized.category);
-    } finally {
-      if (activeVoiceInput === session) activeVoiceInput = null;
-    }
-  }
-
-  // 一键安装本地语音识别依赖（模型下载 + 缺 ffmpeg 走 pkexec apt），进度走
-  // voice_asr:progress 事件。装完 ready 自动关框。
-  async function installVoiceAsr() {
-    if (state.voiceAsrSetup.installing) return;
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, cancelling: false, error: null, progress: { stage: "start" } });
-    notify();
-    try {
-      var st = await invoke("install_voice_asr");
-      var patch = { installing: false, cancelling: false, status: st, progress: { stage: "done" } };
-      if (st && st.ready) patch.open = false;
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
-      notify();
-    } catch (e) {
-      var cancelled = state.voiceAsrSetup.cancelling || String(e).indexOf("已取消") >= 0;
-      var failedPatch = {
-        installing: false,
-        cancelling: false,
-        progress: cancelled ? { stage: "cancelled" } : state.voiceAsrSetup.progress,
-        error: cancelled ? null : String(e),
-      };
-      if (cancelled) failedPatch.open = false;
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, failedPatch);
-      notify();
-    }
-  }
-
-  async function cancelVoiceAsrSetup() {
-    if (!state.voiceAsrSetup.installing) {
-      closeVoiceAsrSetup();
-      return;
-    }
-    if (state.voiceAsrSetup.cancelling) return;
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
-      cancelling: true,
-      progress: { stage: "cancelling" },
-      error: null,
-    });
-    notify();
-    try {
-      await invoke("cancel_voice_asr");
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
-      notify();
-    } catch (e) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, {
-        cancelling: false,
-        error: String(e),
-      });
-      notify();
-    }
-  }
-
-  function closeVoiceAsrSetup() {
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false });
-    notify();
-  }
-
-  // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
-  // kb_model:progress 事件。resolve 时模型已就绪，调用方据 status.installed 收起 gate。
-  async function downloadKbModel() {
-    if (state.kbModelSetup.downloading) return state.kbModelSetup.status;
-    state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
-    notify();
-    try {
-      var st = await invoke("kb_model_download");
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, status: st, progress: { stage: "done" } });
-      notify();
-      return st;
-    } catch (e) {
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, error: String(e) });
-      notify();
-      throw e;
-    }
-  }
-
-  function cancelKbModel() {
-    invoke("kb_model_cancel").catch(function () {});
-  }
-
-  async function startVoiceInput(draftText, writeback) {
-    if (activeVoiceInput && state.voiceInput.status === "recording") {
-      finishVoiceInput(false, false);
-      return;
-    }
-    if (activeVoiceInput) {
-      finishVoiceInput(true, false);
-      return;
-    }
-
-    // 模型下载期间再次点麦克风时保留原下载会话，不能用新的依赖检测结果
-    // 覆盖 installing/cancelling/progress，否则新引导框的“取消”只会关 UI，
-    // 后端下载仍会继续。
-    if (state.voiceAsrSetup.installing) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: true });
-      notify();
-      return;
-    }
-
-    // 点击后立即进入可见、可取消的检测态。模型状态查询首次可能需要读取模型文件，
-    // 如果等查询结束后才更新 UI，Windows 上会表现为按钮点击后没有任何反馈。
-    var session = {
-      id: Date.now().toString(36),
-      sessionId: state.activeSessionId || null,
-      draftBeforeStart: String(draftText || ""),
-      writeback: writeback,
-      chunks: [],
-      sampleRate: 16000,
-      startedAt: Date.now(),
-    };
-    activeVoiceInput = session;
-    setVoiceInputStatus("requesting_permission", {
-      message: "正在检测麦克风设备…",
-      sessionId: session.sessionId,
-      startedAt: session.startedAt,
-      stage: "device",
-    });
-    emitVoiceDiagnostic("device", "info", "checking voice input environment", "", "");
-
-    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
-    try {
-      var asrStatus = await invoke("voice_asr_status");
-      if (activeVoiceInput !== session) return;
-      // 未装好即弹安装引导；installable 决定当前平台是否提供内置安装入口。
-      if (asrStatus && !asrStatus.ready) {
-        cleanupVoiceInputSession(session);
-        activeVoiceInput = null;
-        setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
-        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, cancelling: false, progress: null, error: null };
-        notify();
-        return;
-      }
-    } catch (e) {
-      if (activeVoiceInput !== session) return;
-      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
-    }
-
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
-    setVoiceInputStatus("requesting_permission", {
-      message: "正在请求麦克风权限…",
-      stage: "permission",
-    });
-    emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
-
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw { category: "device_unavailable", stage: "device", message: "当前 WebView 不支持麦克风采集。" };
-      }
-      if (!AudioCtor) {
-        throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
-      }
-      var hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
-      if (activeVoiceInput !== session) return;
-      if (hasAudioInput === false) {
-        throw { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请连接或启用录音设备后重试。" };
-      }
-      session.stream = await requestVoiceMedia(session, {
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      }, VOICE_DEVICE_REQUEST_TIMEOUT_MS);
-      if (activeVoiceInput !== session) {
-        cleanupVoiceInputSession(session);
-        return;
-      }
-      session.audioContext = new AudioCtor();
-      session.sampleRate = session.audioContext.sampleRate || 16000;
-      session.source = session.audioContext.createMediaStreamSource(session.stream);
-      session.processor = session.audioContext.createScriptProcessor(4096, 1, 1);
-      session.zeroGain = session.audioContext.createGain();
-      session.zeroGain.gain.value = 0;
-      session.processor.onaudioprocess = function (event) {
-        if (activeVoiceInput !== session) return;
-        var input = event.inputBuffer.getChannelData(0);
-        session.chunks.push(new Float32Array(input));
-      };
-      session.source.connect(session.processor);
-      session.processor.connect(session.zeroGain);
-      session.zeroGain.connect(session.audioContext.destination);
-      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: "正在录音，再点一次结束", stage: "recording" });
-      emitVoiceDiagnostic("recording", "info", "recording started", "", "");
-    } catch (err) {
-      cleanupVoiceInputSession(session);
-      if (activeVoiceInput !== session) return;
-      activeVoiceInput = null;
-      var normalized = normalizeVoiceError(err, "recording");
-      if (normalized.category === "permission_denied") {
-        try {
-          var permissionReset = await invoke("reset_microphone_permission");
-          if (permissionReset) {
-            normalized.message = "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查 Windows 麦克风设置。";
-            emitVoiceDiagnostic("permission", "info", "microphone permission reset to default", normalized.message, normalized.category);
-          }
-        } catch (resetError) {
-          emitVoiceDiagnostic("permission", "warn", "failed to reset microphone permission: " + String(resetError), normalized.message, normalized.category);
-        }
-      }
-      setVoiceInputStatus("failed", {
-        message: normalized.message,
-        error: normalized.message,
-        category: normalized.category,
-        stage: normalized.stage,
-        completedAt: Date.now(),
-      });
-      emitVoiceDiagnostic(normalized.stage, "error", normalized.diagnostic || normalized.category, normalized.message, normalized.category);
-    }
-  }
-
-  function cancelVoiceInput() {
-    finishVoiceInput(true, false);
-  }
-
-  function clearVoiceInput() {
-    if (activeVoiceInput) {
-      finishVoiceInput(true, false);
-      return;
-    }
-    setVoiceInputStatus("idle", {
-      message: "",
-      error: null,
-      category: null,
-      stage: null,
-      sessionId: null,
-    });
-  }
-
-  function appendVoiceText(base, text) {
-    var left = String(base || "").trimEnd();
-    var right = String(text || "").trim();
-    if (!left) return right;
-    if (!right) return left;
-    return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
-  }
-
-  function runVoiceInputDebugAssertions() {
-    var denied = normalizeVoiceError({ name: "NotAllowedError" });
-    var noDevice = normalizeVoiceError({ name: "NotFoundError" });
-    var unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
-    var mismatch = normalizeVoiceError({ category: "context_mismatch" });
-    console.assert(denied.category === "permission_denied", "permission error classified");
-    console.assert(noDevice.category === "device_unavailable", "device error classified");
-    console.assert(unsupportedConstraint.category === "constraint_unsupported", "unsupported constraint classified");
-    console.assert(unsupportedConstraint.diagnostic === "unsupported media constraint: channelCount", "unsupported constraint diagnostic");
-    console.assert(mismatch.stage === "writeback", "context mismatch classified");
-    console.assert(appendVoiceText("草稿", "识别文本") === "草稿\n识别文本", "voice text appended");
-    return true;
-  }
-
-  // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
-  // 合并 973a6f0 把这 6 个函数定义弄丢了(导出/UI调用/后端命令都在,独缺定义)→
-  // 导出对象构建撞 ReferenceError(loadSkills undefined)→ window.TauriBridge 整个没装上。
-  // 从 943af78 原样恢复。
-  function setCurrentPhase(phaseId, source) {
-    if (!phaseId) return;
-    var wf = state.workflow;
-    // 大小写归一匹配 phases
-    var match = wf.phases.find(function (p) { return String(p.id).toLowerCase() === String(phaseId).toLowerCase(); });
-    var canonical = match ? match.id : phaseId;
-    wf.currentPhaseId = canonical;
-    if (wf.reachedPhaseIds.indexOf(canonical) < 0) wf.reachedPhaseIds.push(canonical);
-    notify();
-  }
-  async function loadSkills() {
-    state.workflow.loadState = "loading"; notify();
-    try {
-      state.workflow.skills = await invoke("list_skills_v2");
-      state.workflow.loadState = "ready";
-    } catch (e) { state.workflow.skills = []; state.workflow.loadState = "error"; }
-    notify();
-  }
-  async function activateSkill(name) {
-    try {
-      var res = await invoke("start_skill_session", { name: name });
-      var skill = res.skill || {};
-      var meta = res.session || res.metadata || {};
-      state.activeSessionId = meta.id || state.activeSessionId;
-      state.messages = []; state.chatItems = []; resetPendingAssistant();
-      state.workflow.activeSkillName = skill.name || name;
-      state.workflow.phases = skill.phases || [];
-      state.workflow.currentPhaseId = skill.current_phase_id || (skill.phases && skill.phases[0] && skill.phases[0].id) || null;
-      state.workflow.reachedPhaseIds = state.workflow.currentPhaseId ? [state.workflow.currentPhaseId] : [];
-      if (meta.id) state.workflow.bindings[meta.id] = skill.name || name;
-      await refreshHistoryList();
-      await syncModeState();
-      notify();
-      return res;
-    } catch (e) { addSystemItem("⚠️ 启用工作流失败: " + e); notify(); return null; }
-  }
-  async function deactivateSkill() {
-    if (state.activeSessionId) {
-      try { await invoke("unbind_session_skill", { sessionId: state.activeSessionId }); } catch (_) {}
-      delete state.workflow.bindings[state.activeSessionId];
-    }
-    state.workflow.activeSkillName = null;
-    state.workflow.phases = [];
-    state.workflow.currentPhaseId = null;
-    state.workflow.reachedPhaseIds = [];
-    notify();
-  }
-  async function openDemo(name) {
-    state.workflow.demo = { open: true, name: name, loading: true, kind: null, content: null, error: null, description: null, duration: null };
-    notify();
-    try {
-      var d = await invoke("read_skill_demo", { name: name });
-      state.workflow.demo = {
-        open: true, name: name, loading: false,
-        kind: d.file_kind, path: d.file_path, content: d.content,
-        error: null, description: d.description, duration: d.duration,
-      };
-    } catch (e) {
-      state.workflow.demo = { open: true, name: name, loading: false, kind: null, content: null, error: String(e) };
-    }
-    notify();
-  }
-  function closeDemo() { state.workflow.demo = null; notify(); }
-
-  // ── 卡片流工作流：动作（invoke 包装）────────────────────────────
-  // 新建任务：建项目（project_started 事件设 run 态）→ kick 派发首个 agent（无聊天）。
-  async function startWorkflowTask(scenario, brief) {
-    var res;
-    try {
-      res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
-    } catch (e) {
-      addSystemItem("⚠️ 创建工作流失败: " + e);
-      throw e;
-    }
-    try {
-      await invoke("kick_workflow", { sessionId: res.session_id });
-    } catch (e) {
-      addSystemItem("⚠️ 启动工作流失败: " + e);
-      throw e;
-    }
-    return res;
-  }
-  // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
-  // 供工作流页打开“修改需求并重新开始”的预填表单。
-  async function stopWorkflowTask(reason) {
-    var sid = state.workflow.run.sessionId;
-    if (!sid) throw new Error("当前没有可停止的工作流");
-    var result = await invoke("stop_workflow", {
-      sessionId: sid,
-      reason: reason || "user_stopped",
-    });
-    markWorkflowRunStopped();
-    notify();
-    return result || {};
-  }
-  // 模板页数据源:已发现且 enabled 的工作流(含 ui 块)。失败回空数组(模板页显示空态)。
-  async function listWorkflows() {
-    try { return (await invoke("list_workflows")) || []; }
-    catch (e) { console.warn("list_workflows failed", e); return []; }
-  }
-  function selectWorkflowRole(roleId) { state.workflow.run.selectedRole = roleId; notify(); }
-  function closeWorkflowDrawer() { state.workflow.run.selectedRole = null; notify(); }
-  function resetWorkflowRun() {
-    state.workflow.run = { active: false, sessionId: null, projectDir: null, scenario: null, status: "idle", agents: {}, cards: [], selectedRole: null };
-    notify();
-  }
-  // 抽屉数据：按 role 拉产出 / gate / 日志（projectDir 来自 run）。
-  function getRolePrompt(roleId, projectDir) { return invoke("get_role_prompt", { roleId: roleId, projectDir: projectDir || null }); }
-  function getRoleOutputs(roleId) { return invoke("get_role_outputs", { roleId: roleId, projectDir: state.workflow.run.projectDir }); }
-  function getGateReport(roleId) { return invoke("get_gate_report", { roleId: roleId, projectDir: state.workflow.run.projectDir }); }
-  function getRoleLogs(roleId, tail) { return invoke("get_role_logs", { roleId: roleId, projectDir: state.workflow.run.projectDir, tail: tail || 50 }); }
-  // 交互卡动作
-  async function submitWorkflowUserInput(cardId, toolCallId, answers) {
-    try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
-    catch (e) { addSystemItem("⚠️ 提交失败: " + e); }
-  }
-  // [2026-06-06] 素材上传：复用系统文件选择器(dialogOpen) → 拷进当前 run 的 配套材料/。
-  // 返回落盘文件名数组(含同名去重);失败 throw 给调用方(卡片上报错)。
-  async function pickAndAddMaterials() {
-    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
-    var selected = await dialogOpen({ multiple: true });
-    if (!selected) return [];
-    var paths = Array.isArray(selected) ? selected : [selected];
-    var added = await invoke("add_run_materials", { sessionId: state.workflow.run.sessionId, paths: paths });
-    addSystemItem("✅ 已添加 " + added.length + " 个素材到配套材料：" + added.join("、"));
-    return added;
-  }
-  // [新建任务模态] 只弹系统选择器拿路径,不拷贝(run 还没建)。返回路径数组。
-  async function pickFiles() {
-    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
-    var selected = await dialogOpen({ multiple: true });
-    if (!selected) return [];
-    return Array.isArray(selected) ? selected : [selected];
-  }
-  async function pickFolder() {
-    if (!dialogOpen) throw new Error("当前环境无法打开文件夹选择器");
-    var selected = await dialogOpen({
-      directory: true,
-      multiple: false,
-      title: "选择工作目录",
-    });
-    if (!selected) return null;
-    return Array.isArray(selected) ? (selected[0] || null) : selected;
-  }
-  async function pickFeedbackFiles() {
-    if (!dialogOpen) return [];
-    var selected = await dialogOpen({
-      multiple: true,
-      filters: [
-        { name: "Images and videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
-      ],
-    });
-    if (!selected) return [];
-    return Array.isArray(selected) ? selected : [selected];
-  }
-  // [新建任务模态] start_workflow 建好 run 后,把已选路径拷进该 session 的配套材料/。
-  async function addMaterialsToSession(sessionId, paths) {
-    if (!paths || !paths.length) return [];
-    return invoke("add_run_materials", { sessionId: sessionId, paths: paths });
-  }
-  // cardId 可为 null:看板 agent 卡上的"确认通过"只有 roleId(刷新后内存 gate 卡已清空)。
-  // 批准只需 roleId + sessionId,绝不依赖前端那张内存卡是否存在(那正是"按钮点了没反应"的 bug)。
-  async function approveWorkflowGate(cardId, roleId) {
-    try {
-      await invoke("approve_workflow_gate", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      if (cardId) resolveRunCard(cardId, "approved");
-      resolveRunCardsForRole(roleId, "approved");
-      await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
-      notify();
-    } catch (e) { addSystemItem("⚠️ 通过失败: " + e); }
-  }
-  async function rejectWorkflowGate(cardId, roleId, reason) {
-    try {
-      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || "用户打回，请改进后重试", sessionId: state.workflow.run.sessionId });
-      if (cardId) resolveRunCard(cardId, "rejected");
-      resolveRunCardsForRole(roleId, "rejected");
-      await refreshRunState();
-      notify();
-    } catch (e) { addSystemItem("⚠️ 打回失败: " + e); }
-  }
-  // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
-  async function retryWorkflowRole(roleId) {
-    try {
-      const r = await invoke("retry_workflow_role", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      addSystemItem("🔄 重跑 " + roleId + ": " + r);
-    } catch (e) { addSystemItem("⚠️ 重跑失败: " + e); }
-  }
-
+  var workflowFeature = installBridgeFeature("workflow", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, resetPendingAssistant: resetPendingAssistant, syncModeState: syncModeState, refreshHistoryList: refreshHistoryList, markWorkflowRunStopped: markWorkflowRunStopped, refreshRunState: refreshRunState, resolveRunCard: resolveRunCard, resolveRunCardsForRole: resolveRunCardsForRole });
+  var setCurrentPhase = workflowFeature.setCurrentPhase;
+  var loadSkills = workflowFeature.loadSkills;
+  var activateSkill = workflowFeature.activateSkill;
+  var deactivateSkill = workflowFeature.deactivateSkill;
+  var openDemo = workflowFeature.openDemo;
+  var closeDemo = workflowFeature.closeDemo;
+  var startWorkflowTask = workflowFeature.startWorkflowTask;
+  var stopWorkflowTask = workflowFeature.stopWorkflowTask;
+  var listWorkflows = workflowFeature.listWorkflows;
+  var selectWorkflowRole = workflowFeature.selectWorkflowRole;
+  var closeWorkflowDrawer = workflowFeature.closeWorkflowDrawer;
+  var resetWorkflowRun = workflowFeature.resetWorkflowRun;
+  var getRolePrompt = workflowFeature.getRolePrompt;
+  var getRoleOutputs = workflowFeature.getRoleOutputs;
+  var getGateReport = workflowFeature.getGateReport;
+  var getRoleLogs = workflowFeature.getRoleLogs;
+  var submitWorkflowUserInput = workflowFeature.submitWorkflowUserInput;
+  var pickAndAddMaterials = workflowFeature.pickAndAddMaterials;
+  var pickFiles = workflowFeature.pickFiles;
+  var pickFolder = workflowFeature.pickFolder;
+  var pickFeedbackFiles = workflowFeature.pickFeedbackFiles;
+  var addMaterialsToSession = workflowFeature.addMaterialsToSession;
+  var approveWorkflowGate = workflowFeature.approveWorkflowGate;
+  var rejectWorkflowGate = workflowFeature.rejectWorkflowGate;
+  var retryWorkflowRole = workflowFeature.retryWorkflowRole;
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     if (initPromise) return initPromise;
     initPromise = (async function () {
     startupMark("bridge:init_start");
+    await startupAwait("bridge:load_platform_capabilities", loadPlatformCapabilities);
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
     loadScheduledTasks().catch(function () {}).then(function () {
@@ -6626,6 +4629,7 @@
     getState: function () { return snapshotState(); },
     init: init,
     refreshConnectorAuthGates: refreshConnectorAuthGates,
+    loadPlatformCapabilities: loadPlatformCapabilities,
     loadKnowledgeEmbedderAfterFirstFrame: loadKnowledgeEmbedderAfterFirstFrame,
     sendMessage: sendMessage,
     sendMessageToSession: sendMessageToSession,
@@ -6777,7 +4781,7 @@
     retryWorkflowRole: retryWorkflowRole,
     // 卡片池: 专家面具
     loadPersonas: loadPersonas,
-    getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照
+    getPersonas: getPersonas, // 返回引用(只读),不进 notify 快照
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
     equipPersona: equipPersona,
     unequipPersona: unequipPersona,

@@ -1430,7 +1430,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
-      const isWindows = /Windows/i.test(navigator.userAgent || '');
+      const platformCapabilities = (bs && bs.platformCapabilities) || {};
+      const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
+      const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
@@ -2007,7 +2009,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const busy = checking || installing;
         return (
           <>
-            {!isWindows && (
+            {showSuperPermissionSettings && (
               <IOSSection title="系统">
                 <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
                   <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
@@ -2017,7 +2019,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}
-                footer={isWindows ? t.depInstallNoteWindows : t.depInstallNote}
+                footer={usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote}
               >
                 <IOSRow
                   label={checking ? t.depChecking : (!checked ? t.depCheckTitle : (missing.length ? `${missing.length}${t.depMissingSuffix}` : t.depAllOk))}
@@ -2035,7 +2037,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   </IOSRow>
                 ))}
                 {missing.length > 0 && (
-                  <IOSRow label={isWindows ? '安装缺失依赖' : t.depGoInstall}>
+                  <IOSRow label={usesBundledDependencyInstaller ? '安装缺失依赖' : t.depGoInstall}>
                     <button
                       onClick={() => bridge.available && bridge.installDependencies()}
                       disabled={!bridge.available || busy}
