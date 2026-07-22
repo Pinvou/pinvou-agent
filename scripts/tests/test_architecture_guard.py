@@ -109,6 +109,9 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             )
             feature_a.write_text(
                 '#[cfg(target_os = "windows")]\n'
+                '#[cfg(any(windows, target_arch = "aarch64"))]\n'
+                '#[cfg_attr(all(unix, target_family = "unix"), allow(dead_code))]\n'
+                'fn cfg_macro() { if cfg!(target_env = "msvc") {} }\n'
                 "use crate::{bridge, feature_b};\n"
                 'fn leaked_platform_detail() { Command::new("powershell.exe"); }\n'
                 "fn upward() { bridge::notify(); feature_b::run(); }\n",
@@ -130,7 +133,7 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             self.assertEqual(1, rules["rust_cyclic_feature_dependencies"]["a->b"])
             self.assertEqual(1, rules["rust_cyclic_feature_dependencies"]["b->a"])
             self.assertEqual(
-                1,
+                6,
                 rules["rust_target_cfg_outside_adapter"][
                     "pinvou3-app/src-tauri/src/features/a/mod.rs"
                 ],

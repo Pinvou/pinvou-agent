@@ -273,6 +273,40 @@ def platform_detail_allowed(relative: str) -> bool:
     return "/platform/" in f"/{relative}"
 
 
+def count_platform_cfgs(text: str) -> int:
+    """Count platform selectors inside cfg/cfg_attr expressions.
+
+    Rust accepts both key/value selectors (`target_os = "windows"`,
+    `target_arch = "aarch64"`, ...) and shorthand predicates (`windows`,
+    `unix`).  Keep the scanner deliberately syntax-light, but balance nested
+    parentheses so `all(...)`, `any(...)` and `not(...)` are covered without
+    matching ordinary prose or identifiers outside cfg expressions.
+    """
+    invocation = re.compile(r"\b(?:cfg|cfg_attr)\s*!?\s*\(")
+    target_selector = re.compile(
+        r"\b(?:target_os|target_arch|target_family|target_env|target_vendor|"
+        r"target_endian|target_pointer_width|target_abi)\s*="
+    )
+    shorthand_selector = re.compile(r"(?<![A-Za-z0-9_])(?:windows|unix)(?![A-Za-z0-9_])")
+    count = 0
+    for match in invocation.finditer(text):
+        cursor = match.end()
+        depth = 1
+        while cursor < len(text) and depth:
+            if text[cursor] == "(":
+                depth += 1
+            elif text[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        if depth:
+            continue
+        expression = text[match.end() : cursor - 1]
+        count += len(target_selector.findall(expression))
+        expression_without_strings = re.sub(r'"(?:\\.|[^"\\])*"', '""', expression)
+        count += len(shorthand_selector.findall(expression_without_strings))
+    return count
+
+
 def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], list[str]]:
     rules: dict[str, Counter[str]] = {
         "rust_feature_depends_on_app": Counter(),
@@ -287,7 +321,6 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
     feature_root = rust_root / "features"
     graph: dict[str, set[str]] = defaultdict(set)
     feature_edge_counts: Counter[tuple[str, str]] = Counter()
-    target_cfg_pattern = re.compile(r"\btarget_os\s*=\s*\"[^\"]+\"")
     include_pattern = re.compile(r"\binclude\s*!\s*\(")
     path_pattern = re.compile(r"#\s*\[\s*path\s*=")
     platform_detail_patterns = [
@@ -314,7 +347,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
                 elif layer == "features" and target != source_feature:
                     graph[source_feature].add(target)
                     feature_edge_counts[(source_feature, target)] += 1
-        target_count = len(target_cfg_pattern.findall(text))
+        target_count = count_platform_cfgs(text)
         if target_count and not target_cfg_allowed(relative):
             rules["rust_target_cfg_outside_adapter"][relative] += target_count
         if not platform_detail_allowed(relative):

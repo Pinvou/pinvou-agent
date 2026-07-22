@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_from": "ad1b51d9742b482bf38e7ed062947060ae44a4f0",
+  "generated_from": "cc600dc0072809415236b0deb2247d1adac6119c",
   "rules": {
     "frontend_feature_imports_app": {},
     "frontend_tauri_global_outside_platform": {
@@ -20,11 +20,22 @@
     },
     "rust_platform_details_outside_adapter": {},
     "rust_target_cfg_outside_adapter": {
+      "pinvou3-app/src-tauri/src/app/commands/artifacts.rs": 2,
+      "pinvou3-app/src-tauri/src/app/commands/attachments.rs": 4,
       "pinvou3-app/src-tauri/src/app/commands/runtime.rs": 7,
+      "pinvou3-app/src-tauri/src/app/commands/tests.rs": 12,
+      "pinvou3-app/src-tauri/src/app/commands/voice.rs": 2,
+      "pinvou3-app/src-tauri/src/features/connectors/eip.rs": 6,
+      "pinvou3-app/src-tauri/src/features/connectors/zhidao.rs": 4,
       "pinvou3-app/src-tauri/src/features/dependencies/mod.rs": 1,
+      "pinvou3-app/src-tauri/src/features/files/file_ingest.rs": 5,
       "pinvou3-app/src-tauri/src/features/llmapi_hub/identity.rs": 2,
+      "pinvou3-app/src-tauri/src/features/local_llm/setup.rs": 1,
       "pinvou3-app/src-tauri/src/features/marketplace/mod.rs": 1,
-      "pinvou3-app/src-tauri/src/features/pet/pet_window.rs": 5
+      "pinvou3-app/src-tauri/src/features/pet/pet_window.rs": 5,
+      "pinvou3-app/src-tauri/src/features/remote_control/manager.rs": 1,
+      "pinvou3-app/src-tauri/src/features/voice/asr/pinvou_asr.rs": 8,
+      "pinvou3-app/src-tauri/src/features/workflow/workflow_migrate.rs": 1
     }
   },
   "rust_feature_cycles": []
