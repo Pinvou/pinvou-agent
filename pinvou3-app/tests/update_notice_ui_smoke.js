@@ -105,7 +105,9 @@ async function main() {
       && r.bottom > 0
       && text.includes('版本')
       && text.includes('更新内容')
-      && text.includes('检查更新');
+      && text.includes('发现新版本')
+      && text.includes('升级并重启')
+      && text.includes('UI smoke update');
   }, { timeout: 5000 });
 
   await browser.close();
