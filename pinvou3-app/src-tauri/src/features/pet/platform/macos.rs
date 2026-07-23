@@ -14,6 +14,12 @@ pub(crate) fn apply_pet_window_policy(window: &tauri::WebviewWindow) {
     }
 }
 
+pub(crate) fn prepare_main_focus_raise(_app: &tauri::AppHandle) {}
+
+pub(crate) fn finish_main_focus_raise(window: &tauri::WebviewWindow) {
+    let _ = window.set_always_on_top(false);
+}
+
 fn apply_pet_window_policy_impl(window: &tauri::WebviewWindow) {
     use objc2::rc::Retained;
     use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};

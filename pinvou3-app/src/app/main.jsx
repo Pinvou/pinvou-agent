@@ -13,6 +13,7 @@ import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { RemoteControlModal, SettingsView } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
+import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import {
   emitTauri,
   invokeTauri,
@@ -361,6 +362,24 @@ function defaultModelPresetForCapabilities(capabilities) {
       activeChatRef.current = activeChat;
       const currentViewRef = useRef(currentView);
       currentViewRef.current = currentView;
+      useEffect(() => {
+        if (!isTauriAvailable()) return undefined;
+        const guard = createPetActivationGuard();
+        let disposed = false;
+        let unlisten = null;
+        tauriEvents.listen('pet:activation_guard', guard.arm).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        }).catch(() => {});
+        // 只拦截由上面的桌宠专用事件武装后的一个 click。普通 window.focus、
+        // Alt-Tab、任务栏回焦和其它平台不会触发保护，也就不会丢掉正常首击。
+        window.addEventListener('click', guard.handleClick, true);
+        return () => {
+          disposed = true;
+          if (unlisten) unlisten();
+          window.removeEventListener('click', guard.handleClick, true);
+        };
+      }, []);
       useEffect(() => {
         const liveBridge = window.TauriBridge || bridge;
         if (!liveBridge?.monitor || typeof liveBridge.monitor.startMonitorPolling !== 'function') return;

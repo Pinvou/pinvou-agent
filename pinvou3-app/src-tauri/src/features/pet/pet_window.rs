@@ -7,7 +7,10 @@
 //! 漏掉会导致 listen/startDragging 全部静默被拒(宠物不动、拖不了)。
 
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::Mutex,
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const PET_LABEL: &str = "pet";
@@ -90,6 +93,7 @@ impl PetNavigationState {
             .map_err(|_| "pet navigation state lock poisoned".to_string())
             .map(|mut pending| pending.take())
     }
+
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -962,14 +966,17 @@ pub async fn open_main_from_pet(
     })?;
     // X11 焦点抢占保护:实测(GB10) show/unminimize/set_focus 全部返回 Ok,
     // 但 WM 拒绝把主窗口提到前台,只打 demand-attention——用户看到"点了没反应"。
-    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前,聚焦后立即交还。
+    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前。取消置顶不能紧跟
+    // set_focus 同步执行;X11/Mutter 上主窗口可能尚未完成激活,立刻撤销会让
+    // 激活点击落到下层窗口(常见表现:下层窗口收到点击后 Pinvou 又最小化)。
+    super::platform::prepare_main_focus_raise(&app);
     let _ = main.set_always_on_top(true);
     let focus_result = main.set_focus().map_err(|error| {
         let msg = format!("focus main window failed: {error}");
         eprintln!("[pet nav] {msg}");
         msg
     });
-    let _ = main.set_always_on_top(false);
+    super::platform::finish_main_focus_raise(&main);
     focus_result?;
     app.emit_to("main", "pet:navigation_pending", ())
         .map_err(|error| format!("emit pet navigation wakeup failed: {error}"))?;
