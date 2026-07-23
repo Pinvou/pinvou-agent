@@ -15,6 +15,7 @@ import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
+import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
@@ -422,7 +423,7 @@ function defaultModelPresetForCapabilities(capabilities) {
         // monitor/settings 拽走。
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
-          if (bs.activeSessionId && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
+          if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
             setCurrentView('chat');
           }
         }
@@ -1456,6 +1457,14 @@ function defaultModelPresetForCapabilities(capabilities) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
+              <NavItem
+                icon={<Sparkles size={18} />} label="Codex"
+                active={currentView === 'codex'}
+                nativeButton
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('codex')}
+              />
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
@@ -1749,6 +1758,7 @@ function defaultModelPresetForCapabilities(capabilities) {
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
+            {currentView === 'codex' && <CodexAcpView theme={activeTheme} />}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />

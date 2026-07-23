@@ -1,7 +1,7 @@
 //! Codex ACP 运行时。
 //!
-//! pinvou3 只做 ACP client、进程托管和现有 `chat:*` 事件的适配；Codex 的模型调用、
-//! 工具循环、会话与权限协议都由官方 `@agentclientprotocol/codex-acp` Agent 提供。
+//! pinvou3 只做 ACP client、进程托管、权限路由、事件持久化和 `acp:event` 投影；
+//! Codex 的模型调用、工具循环、会话与权限协议都由 `codex-acp` Agent 提供。
 
 mod events;
 mod store;
@@ -17,6 +17,7 @@ use agent_client_protocol::schema::{
     CancelNotification, ContentBlock, Implementation, InitializeRequest, LoadSessionRequest,
     NewSessionRequest, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionModeState,
     SessionModelState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
     SetSessionModelRequest, StopReason, TextContent,
 };
@@ -24,16 +25,19 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::bridge::mode_state::SerializableMode;
 use crate::bridge::sessions::SessionStore;
-use events::EventBridge;
-pub use store::{AgentBackend, SessionAgentRecord, SessionAgentStore};
+pub use events::AcpEventEnvelope;
+use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
+pub use store::{
+    validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentRecord,
+    SessionAgentStore,
+};
 
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
@@ -44,6 +48,8 @@ pub struct CodexAcpStatus {
     pub installed: bool,
     pub adapter_path: Option<String>,
     pub node_available: bool,
+    pub node_version: Option<String>,
+    pub node_supported: bool,
     pub npm_available: bool,
     pub authenticated: bool,
     pub installing: bool,
@@ -62,6 +68,30 @@ pub struct CodexAcpSessionInfo {
     pub session_id: String,
     pub current_model_id: Option<String>,
     pub models: Vec<CodexAcpModel>,
+    pub modes: Option<SessionModeState>,
+    pub config_options: Vec<SessionConfigOption>,
+    pub pending_permissions: Vec<CodexAcpPendingPermission>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CodexAcpWorkspaceInfo {
+    pub workspace_kind: CodexWorkspaceKind,
+    pub workspace_path: String,
+    pub workspace_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAcpPendingPermission {
+    pub session_id: String,
+    pub tool_call_id: String,
+    pub request: serde_json::Value,
+}
+
+struct PendingPermission {
+    view: CodexAcpPendingPermission,
+    option_ids: Vec<String>,
+    response_tx: oneshot::Sender<RequestPermissionResponse>,
 }
 
 struct AcpSession {
@@ -69,49 +99,42 @@ struct AcpSession {
     acp_session_id: String,
     bridge: EventBridge,
     busy: AtomicBool,
-    allow_permissions: Arc<AtomicBool>,
+    configuring: AtomicBool,
     models: Vec<CodexAcpModel>,
     current_model: parking_lot::RwLock<Option<String>>,
+    modes: parking_lot::RwLock<Option<SessionModeState>>,
+    config_options: parking_lot::RwLock<Vec<SessionConfigOption>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     child: Mutex<Child>,
 }
 
 impl AcpSession {
-    async fn set_mode(&self, mode: SerializableMode) {
-        let (agent_mode, collaboration_mode) = match mode {
-            SerializableMode::Plan => ("read-only", "plan"),
-            SerializableMode::Yolo => ("agent-full-access", "default"),
-        };
-        self.allow_permissions
-            .store(matches!(mode, SerializableMode::Yolo), Ordering::Release);
-        let _ = self
-            .connection
+    async fn set_mode(&self, mode_id: &str) -> Result<()> {
+        let supported = self.modes.read().as_ref().is_some_and(|modes| {
+            modes
+                .available_modes
+                .iter()
+                .any(|mode| mode.id.to_string() == mode_id)
+        });
+        if !supported {
+            bail!("Codex ACP 未上报会话模式: {mode_id}");
+        }
+        self.connection
             .send_request(SetSessionModeRequest::new(
                 self.acp_session_id.clone(),
-                agent_mode,
+                mode_id.to_string(),
             ))
             .block_task()
-            .await;
-        let _ = self
-            .connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                self.acp_session_id.clone(),
-                "collaboration_mode",
-                collaboration_mode,
-            ))
-            .block_task()
-            .await;
+            .await
+            .context("Codex ACP session/set_mode 失败")?;
+        if let Some(modes) = self.modes.write().as_mut() {
+            modes.current_mode_id = mode_id.to_string().into();
+        }
+        Ok(())
     }
 
-    async fn prompt(self: Arc<Self>, content: String, mode: SerializableMode) {
-        if self.busy.swap(true, Ordering::AcqRel) {
-            self.bridge.emit(
-                "chat:done",
-                json!({ "status": "Failed", "error": "Codex ACP 会话仍在生成" }),
-            );
-            return;
-        }
-        self.set_mode(mode).await;
+    async fn prompt(self: Arc<Self>, content: String) {
+        let turn_id = self.bridge.begin_turn(&content);
         let result = self
             .connection
             .send_request(PromptRequest::new(
@@ -130,18 +153,13 @@ impl AcpSession {
                     StopReason::Refusal => "Refused",
                     _ => "Completed",
                 };
-                if matches!(mode, SerializableMode::Plan) {
-                    self.bridge.emit_plan_ready();
-                }
                 crate::timing::finish_turn(&self.bridge_session_id(), status, None);
-                self.bridge
-                    .emit("chat:done", json!({ "status": status, "error": null }));
+                self.bridge.finish_turn(&turn_id, status, None);
             }
             Err(error) => {
                 let message = format!("Codex ACP: {error}");
                 crate::timing::finish_turn(&self.bridge_session_id(), "Failed", Some(&message));
-                self.bridge
-                    .emit("chat:done", json!({ "status": "Failed", "error": message }));
+                self.bridge.finish_turn(&turn_id, "Failed", Some(&message));
             }
         }
     }
@@ -164,11 +182,14 @@ impl AcpSession {
         let _ = child.kill().await;
     }
 
-    fn info(&self) -> CodexAcpSessionInfo {
+    fn info(&self, pending_permissions: Vec<CodexAcpPendingPermission>) -> CodexAcpSessionInfo {
         CodexAcpSessionInfo {
             session_id: self.acp_session_id.clone(),
             current_model_id: self.current_model.read().clone(),
             models: self.models.clone(),
+            modes: self.modes.read().clone(),
+            config_options: self.config_options.read().clone(),
+            pending_permissions,
         }
     }
 
@@ -187,12 +208,27 @@ impl AcpSession {
         *self.current_model.write() = Some(model_id.to_string());
         Ok(())
     }
+
+    async fn set_config_option(&self, config_id: &str, value_id: &str) -> Result<()> {
+        let mut options = self.config_options.read().clone();
+        apply_config_option(
+            &self.connection,
+            &self.acp_session_id,
+            &mut options,
+            config_id,
+            value_id,
+        )
+        .await?;
+        *self.config_options.write() = options;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
 pub struct AcpPool {
     app: AppHandle,
     sessions: Arc<Mutex<HashMap<String, Arc<AcpSession>>>>,
+    pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     agents: SessionAgentStore,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
@@ -228,7 +264,8 @@ impl AcpPool {
         Ok(Self {
             app,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            agents: SessionAgentStore::load()?,
+            pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+            agents: SessionAgentStore::load_or_empty(),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
             last_error: Arc::new(parking_lot::RwLock::new(None)),
@@ -244,13 +281,63 @@ impl AcpPool {
         self.agents.backend(session_id) == AgentBackend::CodexAcp
     }
 
+    pub fn workspace_info(&self, session_id: &str) -> Result<CodexAcpWorkspaceInfo> {
+        let record = self.agents.get(session_id);
+        let path = match record.workspace_kind {
+            CodexWorkspaceKind::Project => record
+                .workspace_path
+                .context("Codex 项目会话缺少工作目录记录")?,
+            CodexWorkspaceKind::Temporary => self
+                .session_store
+                .execution_workspace(session_id)
+                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?,
+        };
+        let available = match record.workspace_kind {
+            CodexWorkspaceKind::Project => path.is_dir(),
+            CodexWorkspaceKind::Temporary => true,
+        };
+        Ok(CodexAcpWorkspaceInfo {
+            workspace_kind: record.workspace_kind,
+            workspace_path: path.to_string_lossy().into_owned(),
+            workspace_available: available,
+        })
+    }
+
+    fn execution_workspace(&self, session_id: &str) -> Result<PathBuf> {
+        let record = self.agents.get(session_id);
+        match record.workspace_kind {
+            CodexWorkspaceKind::Temporary => self
+                .session_store
+                .execution_workspace(session_id)
+                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败")),
+            CodexWorkspaceKind::Project => {
+                let path = record
+                    .workspace_path
+                    .context("Codex 项目会话缺少工作目录记录")?;
+                validate_codex_project_workspace(&path).with_context(|| {
+                    format!(
+                        "Codex 会话绑定的项目目录已不可用: {}。请恢复该目录，或新建会话选择其他项目",
+                        path.display()
+                    )
+                })
+            }
+        }
+    }
+
     pub fn status(&self) -> CodexAcpStatus {
         let adapter = self.resolve_adapter();
+        let node_version = installed_node_version();
+        let node_supported = node_version
+            .as_deref()
+            .and_then(node_major_version)
+            .is_some_and(|major| major >= 20);
         CodexAcpStatus {
             version: CODEX_ACP_VERSION,
             installed: adapter.is_some(),
             adapter_path: adapter.map(|path| path.to_string_lossy().into_owned()),
-            node_available: find_in_path("node").is_some(),
+            node_available: node_version.is_some(),
+            node_version,
+            node_supported,
             npm_available: find_in_path("npm").is_some(),
             authenticated: codex_authenticated(),
             installing: self.installing.load(Ordering::Acquire),
@@ -259,8 +346,15 @@ impl AcpPool {
     }
 
     pub async fn ensure_installed(&self) -> Result<CodexAcpStatus> {
+        let status = self.status();
+        if !status.node_supported {
+            bail!(
+                "Codex ACP MVP 需要 Node.js 20+；当前版本: {}",
+                status.node_version.as_deref().unwrap_or("未安装")
+            );
+        }
         if self.resolve_adapter().is_some() {
-            return Ok(self.status());
+            return Ok(status);
         }
         if self.installing.swap(true, Ordering::AcqRel) {
             bail!("Codex ACP 正在安装，请稍候");
@@ -322,24 +416,30 @@ impl AcpPool {
         Ok(())
     }
 
-    pub async fn send_message(
-        &self,
-        session_id: &str,
-        content: String,
-        mode: SerializableMode,
-    ) -> Result<()> {
+    pub async fn send_message(&self, session_id: &str, content: String) -> Result<()> {
         let runtime = self.get_or_spawn(session_id).await?;
-        tokio::spawn(runtime.prompt(content, mode));
+        if runtime.configuring.load(Ordering::Acquire) {
+            bail!("Codex 会话配置仍在同步，请稍候再发送");
+        }
+        if runtime.busy.swap(true, Ordering::AcqRel) {
+            bail!("Codex ACP 会话仍在生成");
+        }
+        tokio::spawn(runtime.prompt(content));
         Ok(())
     }
 
     pub async fn cancel(&self, session_id: &str) {
+        self.cancel_pending_permissions(session_id).await;
         if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
             runtime.cancel();
+            runtime
+                .bridge
+                .emit("cancel_requested", json!({ "status": "cancelling" }));
         }
     }
 
     pub async fn evict(&self, session_id: &str) {
+        self.cancel_pending_permissions(session_id).await;
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
         }
@@ -349,7 +449,8 @@ impl AcpPool {
         if !self.is_codex(session_id) {
             bail!("当前会话不是 Codex ACP 会话");
         }
-        Ok(self.get_or_spawn(session_id).await?.info())
+        let pending = self.pending_permissions_for(session_id).await;
+        Ok(self.get_or_spawn(session_id).await?.info(pending))
     }
 
     pub async fn set_model(&self, session_id: &str, model_id: &str) -> Result<CodexAcpSessionInfo> {
@@ -357,7 +458,171 @@ impl AcpPool {
         runtime.set_model(model_id).await?;
         self.agents
             .set_acp_model(session_id, Some(model_id.to_string()))?;
-        Ok(runtime.info())
+        let info = runtime.info(self.pending_permissions_for(session_id).await);
+        patch_acp_state(session_id, json!({ "session": &info }))?;
+        Ok(info)
+    }
+
+    pub async fn set_config_option(
+        &self,
+        session_id: &str,
+        config_id: &str,
+        value_id: &str,
+    ) -> Result<CodexAcpSessionInfo> {
+        let runtime = self.get_or_spawn(session_id).await?;
+        if runtime.busy.load(Ordering::Acquire) {
+            bail!("Codex 正在处理当前任务，配置将在本轮结束后才能修改");
+        }
+        if runtime.configuring.swap(true, Ordering::AcqRel) {
+            bail!("Codex 会话已有配置正在同步");
+        }
+        if runtime.busy.load(Ordering::Acquire) {
+            runtime.configuring.store(false, Ordering::Release);
+            bail!("Codex 正在处理当前任务，配置将在本轮结束后才能修改");
+        }
+        runtime.bridge.emit(
+            "config_change_requested",
+            json!({ "configId": config_id, "valueId": value_id }),
+        );
+        let apply_result = runtime.set_config_option(config_id, value_id).await;
+        runtime.configuring.store(false, Ordering::Release);
+        if let Err(error) = apply_result {
+            runtime.bridge.emit(
+                "config_change_failed",
+                json!({
+                    "configId": config_id,
+                    "valueId": value_id,
+                    "message": format!("{error:#}"),
+                }),
+            );
+            return Err(error);
+        }
+        if config_id == "mode" {
+            self.agents
+                .set_acp_mode(session_id, Some(value_id.to_string()))?;
+        }
+        runtime.bridge.emit(
+            "config_change_applied",
+            json!({ "configId": config_id, "valueId": value_id }),
+        );
+        let info = runtime.info(self.pending_permissions_for(session_id).await);
+        patch_acp_state(session_id, json!({ "session": &info }))?;
+        Ok(info)
+    }
+
+    pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<CodexAcpSessionInfo> {
+        let runtime = self.get_or_spawn(session_id).await?;
+        if runtime.busy.load(Ordering::Acquire) {
+            bail!("Codex 正在处理当前任务，权限模式将在本轮结束后才能修改");
+        }
+        if runtime.configuring.swap(true, Ordering::AcqRel) {
+            bail!("Codex 会话已有配置正在同步");
+        }
+        if runtime.busy.load(Ordering::Acquire) {
+            runtime.configuring.store(false, Ordering::Release);
+            bail!("Codex 正在处理当前任务，权限模式将在本轮结束后才能修改");
+        }
+        runtime.bridge.emit(
+            "config_change_requested",
+            json!({ "configId": "mode", "valueId": mode_id }),
+        );
+        let apply_result = runtime.set_mode(mode_id).await;
+        runtime.configuring.store(false, Ordering::Release);
+        if let Err(error) = apply_result {
+            runtime.bridge.emit(
+                "config_change_failed",
+                json!({
+                    "configId": "mode",
+                    "valueId": mode_id,
+                    "message": format!("{error:#}"),
+                }),
+            );
+            return Err(error);
+        }
+        self.agents
+            .set_acp_mode(session_id, Some(mode_id.to_string()))?;
+        runtime.bridge.emit(
+            "config_change_applied",
+            json!({ "configId": "mode", "valueId": mode_id }),
+        );
+        let info = runtime.info(self.pending_permissions_for(session_id).await);
+        patch_acp_state(session_id, json!({ "session": &info }))?;
+        Ok(info)
+    }
+
+    pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
+        if !self.is_codex(session_id) {
+            bail!("当前会话不是 Codex ACP 会话");
+        }
+        load_timeline(session_id)
+    }
+
+    pub async fn pending_permissions_for(
+        &self,
+        session_id: &str,
+    ) -> Vec<CodexAcpPendingPermission> {
+        self.pending_permissions
+            .lock()
+            .await
+            .values()
+            .filter(|pending| pending.view.session_id == session_id)
+            .map(|pending| pending.view.clone())
+            .collect()
+    }
+
+    pub async fn respond_permission(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        option_id: &str,
+    ) -> Result<()> {
+        let key = permission_key(session_id, tool_call_id);
+        let mut pending = self.pending_permissions.lock().await;
+        let request = pending
+            .remove(&key)
+            .context("权限请求已过期、已回复或不属于当前会话")?;
+        if !request
+            .option_ids
+            .iter()
+            .any(|candidate| candidate == option_id)
+        {
+            pending.insert(key, request);
+            bail!("权限选项不属于该请求");
+        }
+        let response = RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new(option_id.to_string()),
+        ));
+        request
+            .response_tx
+            .send(response)
+            .map_err(|_| anyhow::anyhow!("Codex ACP 权限请求已关闭"))?;
+        if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
+            runtime.bridge.emit(
+                "permission_resolved",
+                json!({
+                    "toolCallId": tool_call_id,
+                    "optionId": option_id,
+                    "outcome": "selected",
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    async fn cancel_pending_permissions(&self, session_id: &str) {
+        let mut pending = self.pending_permissions.lock().await;
+        let keys = pending
+            .iter()
+            .filter(|(_, request)| request.view.session_id == session_id)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Some(request) = pending.remove(&key) {
+                let _ = request.response_tx.send(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ));
+            }
+        }
     }
 
     async fn get_or_spawn(&self, session_id: &str) -> Result<Arc<AcpSession>> {
@@ -373,11 +638,10 @@ impl AcpPool {
 
     async fn spawn_session(&self, pinvou_session_id: &str) -> Result<AcpSession> {
         let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
-        let workspace = self
-            .session_store
-            .execution_workspace(pinvou_session_id)
-            .with_context(|| format!("解析会话 {pinvou_session_id} 工作目录失败"))?;
-        tokio::fs::create_dir_all(&workspace).await?;
+        let workspace = self.execution_workspace(pinvou_session_id)?;
+        if self.agents.get(pinvou_session_id).workspace_kind == CodexWorkspaceKind::Temporary {
+            tokio::fs::create_dir_all(&workspace).await?;
+        }
 
         let mut command = adapter_command(&adapter)?;
         configure_codex_path(&mut command, &adapter);
@@ -404,13 +668,13 @@ impl AcpPool {
 
         let event_bridge = EventBridge::new(self.app.clone(), pinvou_session_id.to_string());
         let replay_suppressed = Arc::new(AtomicBool::new(false));
-        let allow_permissions = Arc::new(AtomicBool::new(true));
         let (ready_tx, ready_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let bridge_for_notification = event_bridge.clone();
         let bridge_for_permission = event_bridge.clone();
         let replay_for_notification = replay_suppressed.clone();
-        let allow_for_permission = allow_permissions.clone();
+        let pending_for_permission = self.pending_permissions.clone();
+        let pinvou_id_for_permission = pinvou_session_id.to_string();
 
         tokio::spawn(async move {
             let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
@@ -429,32 +693,40 @@ impl AcpPool {
                 )
                 .on_receive_request(
                     async move |request: RequestPermissionRequest, responder, _cx| {
-                        use agent_client_protocol::schema::PermissionOptionKind;
-                        let permits = allow_for_permission.load(Ordering::Acquire);
-                        let selected = request.options.iter().find(|option| {
-                            if permits {
-                                matches!(option.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)
-                            } else {
-                                matches!(option.kind, PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways)
-                            }
-                        });
+                        let tool_call_id = request.tool_call.tool_call_id.to_string();
+                        let key = permission_key(&pinvou_id_for_permission, &tool_call_id);
+                        let option_ids = request
+                            .options
+                            .iter()
+                            .map(|option| option.option_id.to_string())
+                            .collect::<Vec<_>>();
+                        let request_value =
+                            serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
+                        let view = CodexAcpPendingPermission {
+                            session_id: pinvou_id_for_permission.clone(),
+                            tool_call_id: tool_call_id.clone(),
+                            request: request_value.clone(),
+                        };
+                        let (response_tx, response_rx) = oneshot::channel();
+                        pending_for_permission.lock().await.insert(
+                            key.clone(),
+                            PendingPermission {
+                                view,
+                                option_ids,
+                                response_tx,
+                            },
+                        );
                         bridge_for_permission.emit(
-                            "chat:acp_permission",
+                            "permission_requested",
                             json!({
-                                "tool_call_id": request.tool_call.tool_call_id.to_string(),
-                                "auto_approved": permits,
-                                "selected_option": selected.map(|option| option.option_id.to_string()),
+                                "toolCallId": tool_call_id,
+                                "request": request_value,
                             }),
                         );
-                        let response = selected
-                            .map(|option| {
-                                RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
-                                    SelectedPermissionOutcome::new(option.option_id.clone()),
-                                ))
-                            })
-                            .unwrap_or_else(|| {
-                                RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
-                            });
+                        let response = response_rx.await.unwrap_or_else(|_| {
+                            RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
+                        });
+                        pending_for_permission.lock().await.remove(&key);
                         responder.respond(response)
                     },
                     agent_client_protocol::on_receive_request!(),
@@ -489,27 +761,44 @@ impl AcpPool {
             .context("Codex ACP initialize 失败")?;
 
         let saved = self.agents.get(pinvou_session_id);
-        let (acp_session_id, model_state) = if initialized.agent_capabilities.load_session {
-            if let Some(saved_id) = saved.acp_session_id {
-                replay_suppressed.store(true, Ordering::Release);
-                let loaded = connection
-                    .send_request(LoadSessionRequest::new(saved_id.clone(), workspace.clone()))
-                    .block_task()
-                    .await;
-                replay_suppressed.store(false, Ordering::Release);
-                match loaded {
-                    Ok(response) => (saved_id, response.models),
-                    Err(error) => {
-                        eprintln!("[pinvou3-app] Codex ACP 恢复会话失败，改建新会话: {error}");
-                        new_acp_session(&connection, &workspace).await?
+        let (acp_session_id, model_state, mut mode_state, mut config_options) =
+            if initialized.agent_capabilities.load_session {
+                if let Some(saved_id) = saved.acp_session_id.clone() {
+                    replay_suppressed.store(true, Ordering::Release);
+                    let loaded = connection
+                        .send_request(LoadSessionRequest::new(saved_id.clone(), workspace.clone()))
+                        .block_task()
+                        .await;
+                    replay_suppressed.store(false, Ordering::Release);
+                    match loaded {
+                        Ok(response) => (
+                            saved_id,
+                            response.models,
+                            response.modes,
+                            response.config_options.unwrap_or_default(),
+                        ),
+                        Err(error) => {
+                            eprintln!("[pinvou3-app] Codex ACP 恢复会话失败，改建新会话: {error}");
+                            new_acp_session(&connection, &workspace).await?
+                        }
                     }
+                } else {
+                    new_acp_session(&connection, &workspace).await?
                 }
             } else {
                 new_acp_session(&connection, &workspace).await?
-            }
-        } else {
-            new_acp_session(&connection, &workspace).await?
-        };
+            };
+        if let Some(mode_id) = saved.acp_mode_id.as_deref() {
+            apply_saved_mode(
+                &connection,
+                &acp_session_id,
+                &mut mode_state,
+                &mut config_options,
+                mode_id,
+            )
+            .await
+            .with_context(|| format!("恢复 Codex 权限模式 {mode_id} 失败"))?;
+        }
         let current_model_id = model_state
             .as_ref()
             .map(|state| state.current_model_id.to_string());
@@ -519,10 +808,29 @@ impl AcpPool {
             acp_session_id.clone(),
             current_model_id.clone(),
         )?;
-        let _ = self.app.emit(
-            "chat:acp_ready",
+        persist_acp_state(
+            pinvou_session_id,
             json!({
-                "session_id": pinvou_session_id,
+                "adapter": {
+                    "package": CODEX_ACP_PACKAGE,
+                    "version": CODEX_ACP_VERSION,
+                    "path": adapter,
+                },
+                "agent": &initialized.agent_info,
+                "capabilities": &initialized.agent_capabilities,
+                "session": {
+                    "session_id": &acp_session_id,
+                    "current_model_id": &current_model_id,
+                    "models": &models,
+                    "modes": &mode_state,
+                    "config_options": &config_options,
+                },
+                "lastStatus": "ready",
+            }),
+        )?;
+        event_bridge.emit(
+            "runtime_ready",
+            json!({
                 "agent": initialized.agent_info,
                 "capabilities": initialized.agent_capabilities,
             }),
@@ -533,9 +841,11 @@ impl AcpPool {
             acp_session_id,
             bridge: event_bridge,
             busy: AtomicBool::new(false),
-            allow_permissions,
+            configuring: AtomicBool::new(false),
             models,
             current_model: parking_lot::RwLock::new(current_model_id),
+            modes: parking_lot::RwLock::new(mode_state),
+            config_options: parking_lot::RwLock::new(config_options),
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             child: Mutex::new(child),
         })
@@ -549,13 +859,115 @@ impl AcpPool {
 async fn new_acp_session(
     connection: &ConnectionTo<Agent>,
     workspace: &Path,
-) -> Result<(String, Option<SessionModelState>)> {
+) -> Result<(
+    String,
+    Option<SessionModelState>,
+    Option<SessionModeState>,
+    Vec<SessionConfigOption>,
+)> {
     let response = connection
         .send_request(NewSessionRequest::new(workspace))
         .block_task()
         .await
         .context("Codex ACP session/new 失败")?;
-    Ok((response.session_id.to_string(), response.models))
+    Ok((
+        response.session_id.to_string(),
+        response.models,
+        response.modes,
+        response.config_options.unwrap_or_default(),
+    ))
+}
+
+fn config_option_supports(
+    options: &[SessionConfigOption],
+    config_id: &str,
+    value_id: &str,
+) -> bool {
+    options.iter().any(|option| {
+        option.id.to_string() == config_id
+            && match &option.kind {
+                SessionConfigKind::Select(select) => match &select.options {
+                    SessionConfigSelectOptions::Ungrouped(options) => options
+                        .iter()
+                        .any(|candidate| candidate.value.to_string() == value_id),
+                    SessionConfigSelectOptions::Grouped(groups) => groups.iter().any(|group| {
+                        group
+                            .options
+                            .iter()
+                            .any(|candidate| candidate.value.to_string() == value_id)
+                    }),
+                    _ => false,
+                },
+                _ => false,
+            }
+    })
+}
+
+async fn apply_config_option(
+    connection: &ConnectionTo<Agent>,
+    acp_session_id: &str,
+    options: &mut [SessionConfigOption],
+    config_id: &str,
+    value_id: &str,
+) -> Result<()> {
+    if !config_option_supports(options, config_id, value_id) {
+        bail!("Codex ACP 配置项或取值不存在: {config_id}={value_id}");
+    }
+    connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            acp_session_id.to_string(),
+            config_id.to_string(),
+            value_id.to_string(),
+        ))
+        .block_task()
+        .await
+        .context("Codex ACP session/set_config_option 失败")?;
+    for option in options {
+        if option.id.to_string() != config_id {
+            continue;
+        }
+        if let SessionConfigKind::Select(select) = &mut option.kind {
+            select.current_value = value_id.to_string().into();
+        }
+    }
+    Ok(())
+}
+
+async fn apply_saved_mode(
+    connection: &ConnectionTo<Agent>,
+    acp_session_id: &str,
+    modes: &mut Option<SessionModeState>,
+    config_options: &mut [SessionConfigOption],
+    mode_id: &str,
+) -> Result<()> {
+    if config_options
+        .iter()
+        .any(|option| option.id.to_string() == "mode")
+    {
+        return apply_config_option(connection, acp_session_id, config_options, "mode", mode_id)
+            .await;
+    }
+    let supported = modes.as_ref().is_some_and(|state| {
+        state
+            .available_modes
+            .iter()
+            .any(|mode| mode.id.to_string() == mode_id)
+    });
+    if !supported {
+        bail!("Codex ACP 未上报会话模式: {mode_id}");
+    }
+    connection
+        .send_request(SetSessionModeRequest::new(
+            acp_session_id.to_string(),
+            mode_id.to_string(),
+        ))
+        .block_task()
+        .await
+        .context("Codex ACP session/set_mode 失败")?;
+    if let Some(state) = modes.as_mut() {
+        state.current_mode_id = mode_id.to_string().into();
+    }
+    Ok(())
 }
 
 fn codex_models(state: Option<&SessionModelState>) -> Vec<CodexAcpModel> {
@@ -666,6 +1078,27 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+fn installed_node_version() -> Option<String> {
+    let node = find_in_path("node")?;
+    let output = std::process::Command::new(node)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?;
+    Some(version.trim().trim_start_matches('v').to_string())
+}
+
+fn node_major_version(version: &str) -> Option<u32> {
+    version.split('.').next()?.parse().ok()
+}
+
+fn permission_key(session_id: &str, tool_call_id: &str) -> String {
+    format!("{session_id}\u{1f}{tool_call_id}")
+}
+
 fn codex_authenticated() -> bool {
     if std::env::var_os("OPENAI_API_KEY").is_some() {
         return true;
@@ -683,5 +1116,20 @@ mod tests {
         let path = managed_adapter_path().to_string_lossy().into_owned();
         assert!(path.contains(CODEX_ACP_VERSION));
         assert!(path.contains("codex-acp"));
+    }
+
+    #[test]
+    fn node_version_parser_requires_a_major() {
+        assert_eq!(node_major_version("20.18.1"), Some(20));
+        assert_eq!(node_major_version("v20.18.1"), None);
+        assert_eq!(node_major_version("unknown"), None);
+    }
+
+    #[test]
+    fn permission_key_is_scoped_to_session() {
+        assert_ne!(
+            permission_key("session-a", "tool-1"),
+            permission_key("session-b", "tool-1")
+        );
     }
 }

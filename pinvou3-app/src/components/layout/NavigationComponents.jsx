@@ -3,19 +3,21 @@ import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 
-const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp }) => {
+const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false }) => {
       const isDark = theme === 'dark';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
+      const Root = nativeButton ? 'button' : 'div';
       return (
-        <div
+        <Root
+          {...(nativeButton ? { type: 'button', 'aria-label': label } : {})}
           onClick={clickH}
           {...dragProps}
           data-nav={dragKind || undefined}
           title={!isSidebarOpen ? label : ""}
           style={dragging ? { opacity: 0.4 } : undefined}
-          className={`group flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
+          className={`group border-0 text-left flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
           ${isSidebarOpen ? 'px-4 py-2 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
@@ -30,7 +32,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             )}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
-        </div>
+        </Root>
       );
     };
 
