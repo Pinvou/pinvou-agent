@@ -328,8 +328,8 @@ const ToolOutput = ({ item, isDark, t }) => {
       );
     };
 
-    // 检阅 loading:本地模型 5-30s,iOS 旋转菊花 spinner + 计时 + 安抚文字,别让 Boss 干等焦虑。
-    const PinvouLoading = ({ isWu, isDark, t }) => {
+    // 检阅 loading:本地模型 5-30s / 在线模型通常更快,iOS 旋转菊花 spinner + 计时 + 安抚文字,别让 Boss 干等焦虑。
+    const PinvouLoading = ({ isWu, isDark, t, isLocal }) => {
       const [secs, setSecs] = useState(0);
       useEffect(() => {
         const b = setInterval(() => setSecs(s => s + 1), 1000);
@@ -352,19 +352,19 @@ const ToolOutput = ({ item, isDark, t }) => {
             {isWu ? t.pvLoadingWuSub : t.pvLoadingPinSub}
             {secs > 0 && <span className="ml-1.5 tabular-nums opacity-70">{secs}s</span>}
           </div>
-          <div className={`text-[12px] mt-1 ${muted}`} style={{ opacity: 0.6 }}>{t.pvLoadingHint}</div>
+          <div className={`text-[12px] mt-1 ${muted}`} style={{ opacity: 0.6 }}>{t.pvLoadingHint(isLocal)}</div>
         </div>
       );
     };
 
     // 检阅结果卡（在底部 sheet 内渲染，无外层卡框；品=橙 / 悟=紫，与产物卡一致）。
-    const PinvouSummonCard = ({ item, theme, t }) => {
+    const PinvouSummonCard = ({ item, theme, t, isLocal }) => {
       const isDark = theme === 'dark';
       const isWu = !!item.coverage; // 悟=发散(coverage)；品=查错
       const role = pvRole(isWu, isDark);
       const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
       const body = isDark ? 'text-[#fff]' : 'text-[#000]';
-      if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} />;
+      if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} isLocal={isLocal} />;
       if (item.error) return (
         <div className="py-2">
           <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>Pinvou {role.name}</span></div>

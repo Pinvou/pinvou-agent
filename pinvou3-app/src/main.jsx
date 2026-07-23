@@ -5,7 +5,7 @@ import './styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from './components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from './components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from './components/VllmSetupProgress.jsx';
-import { bridge, useBridge } from './hooks/useBridge.js';
+import { bridge, useBridge, activeModelIsLocal } from './hooks/useBridge.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from './shared/i18n.js';
 import { formatSessionDate } from './shared/date-utils.js';
 import { KnowledgeView } from './features/knowledge/KnowledgeView.jsx';
@@ -1652,7 +1652,7 @@ function defaultModelPresetForPlatform() {
                     <X size={16} />
                   </button>
                   <div className="max-h-[90vh] overflow-y-auto custom-scrollbar px-5 pt-5 pb-6">
-                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} />
+                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} isLocal={activeModelIsLocal(bs)} />
                   </div>
                 </div>
               </div>

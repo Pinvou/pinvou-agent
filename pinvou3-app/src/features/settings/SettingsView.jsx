@@ -5,7 +5,7 @@ import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationC
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
-import { bridge } from '../../hooks/useBridge.js';
+import { bridge, isLocalModel } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
@@ -1626,7 +1626,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         }`}>{children}</span>
       );
       const userModels = visibleUserModels(savedModels || []);
-      const isLocalModel = model => model && (model.preset === 'local_vllm' || /127\.0\.0\.1|localhost/i.test(model.base_url || ''));
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: '内置搜索' },
         { key: 'metaso', label: '秘塔', desc: '中文搜索服务' },
