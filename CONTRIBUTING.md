@@ -9,7 +9,7 @@
    ./scripts/fork-guard.sh --fast
    ```
    CI 的 `fast-gate` 跑的就是它——本地先跑,别等 CI 红。
-2. 确认 **PR 不落后 main**(落后会被挡合,见下)。
+2. 确认创建 PR 时已基于最新 `main`，并解决全部冲突。
 
 ## main 受 CI 门控保护
 
@@ -29,7 +29,7 @@
 > 1. **依赖外部资源**(网络/真 bge-m3/vLLM/真模型)的测试**必须标 `#[ignore]`** —— CI 的 bge-m3 是空占位、无网络。参照现有 `e2e_test` / `l1_harness`。
 > 2. 本地复现 CI 用 **`cargo test --lib -- --test-threads=1`** —— bridge 等测试读写全局 env,并行会竞争 flaky(CI 已锁单线程)。
 
-另外 main 要求 **PR up-to-date**:别人先合了你就得 rebase——GitHub 会显示 "Update branch",点一下或本地 `git rebase origin/main`。合并还需 **1 个 review approval**。
+main 使用 **Merge Queue**：PR 需要 CI 通过、获得 1 个 review approval 并解决全部对话，然后加入队列。队列会基于最新 `main` 运行完整检查并自动合入；评审和修复期间不要仅因 `main` 更新而反复 rebase，出现真实冲突时再处理。
 
 > 注:**fmt / clippy 暂未进 gate**(现有代码各 329/75 处不符合,要先清理才能加 `-D` gate),后续再说。
 
