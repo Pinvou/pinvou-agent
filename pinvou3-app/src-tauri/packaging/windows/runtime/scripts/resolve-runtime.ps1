@@ -232,6 +232,52 @@ function Test-ManagedArchiveExpansion {
   }
 }
 
+function Stage-NsisBootstrapper {
+  param(
+    $Manifest,
+    [string]$StagingRoot,
+    [string]$StagingParent
+  )
+
+  $manifestPath = "payload/vc_redist/VC_redist.x64.exe"
+  $entries = @($Manifest.files | Where-Object { [string]$_.path -eq $manifestPath })
+  if ($entries.Count -ne 1) {
+    throw "Windows runtime manifest must contain exactly one NSIS VC++ bootstrapper: $manifestPath"
+  }
+  $entry = $entries[0]
+  $sourcePath = Join-Path $StagingRoot $manifestPath.Replace('/', '\')
+  Assert-ChildPath -Root $StagingRoot -Path $sourcePath
+  if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+    throw "Staged NSIS VC++ bootstrapper is missing: $sourcePath"
+  }
+
+  $destinationRoot = Join-Path $StagingParent "nsis"
+  $temporaryRoot = Join-Path $StagingParent (".tmp-nsis-" + [System.Guid]::NewGuid().ToString("N"))
+  Assert-ChildPath -Root $StagingParent -Path $destinationRoot
+  Assert-ChildPath -Root $StagingParent -Path $temporaryRoot
+  try {
+    $temporaryPath = Join-Path $temporaryRoot "vc_redist\VC_redist.x64.exe"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $temporaryPath) -Force | Out-Null
+    Copy-Item -LiteralPath $sourcePath -Destination $temporaryPath -Force
+    $temporaryItem = Get-Item -LiteralPath $temporaryPath
+    if (
+      [long]$temporaryItem.Length -ne [long]$entry.bytes -or
+      (Get-Sha256 -Path $temporaryPath) -ne [string]$entry.sha256
+    ) {
+      throw "Staged NSIS VC++ bootstrapper failed manifest verification: $temporaryPath"
+    }
+
+    if (Test-Path -LiteralPath $destinationRoot) {
+      Remove-Item -LiteralPath $destinationRoot -Recurse -Force
+    }
+    Move-Item -LiteralPath $temporaryRoot -Destination $destinationRoot
+  } finally {
+    Remove-Item -LiteralPath $temporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  return Join-Path $destinationRoot "vc_redist\VC_redist.x64.exe"
+}
+
 function Write-TauriOverlay {
   param([string]$StageId)
   $relativeRoot = "target/windows-runtime/$StageId"
@@ -300,8 +346,10 @@ function Stage-Submodule {
     }
   }
 
+  $nsisBootstrapper = Stage-NsisBootstrapper -Manifest $Manifest -StagingRoot $stagingRoot -StagingParent $stagingParent
   Write-TauriOverlay -StageId $stageId
   Write-Host ("Staged Windows runtime submodule: {0}" -f $stagingRoot)
+  Write-Host ("Staged NSIS VC++ bootstrapper: {0}" -f $nsisBootstrapper)
   Write-Host ("Generated Tauri overlay: {0}" -f $generatedConfigPath)
 }
 

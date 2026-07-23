@@ -57,9 +57,13 @@ pub(crate) fn output_with_timeout(
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(format!("{program} timed out after {}s", timeout.as_secs()));
+                let stdout = stdout_reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                let detail = subprocess_output_detail(&stdout, &stderr);
+                return Err(format!(
+                    "{program} timed out after {}s: {detail}",
+                    timeout.as_secs()
+                ));
             }
             Err(error) => {
                 let _ = child.kill();
@@ -76,6 +80,20 @@ pub(crate) fn output_with_timeout(
         stdout: stdout_reader.join().unwrap_or_default(),
         stderr: stderr_reader.join().unwrap_or_default(),
     })
+}
+
+fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    let detail = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => "no subprocess output".to_string(),
+        (true, false) => stderr.to_string(),
+        (false, true) => stdout.to_string(),
+        (false, false) => format!("stderr:\n{stderr}\nstdout:\n{stdout}"),
+    };
+    detail.chars().take(4000).collect()
 }
 
 pub(crate) struct HiddenTokioCommand;

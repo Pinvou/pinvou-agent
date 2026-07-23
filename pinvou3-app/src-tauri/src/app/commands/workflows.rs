@@ -457,7 +457,29 @@ pub async fn kick_workflow(
                 .unwrap_or(message);
             Err(format!("工作流启动失败：{display_message}"))
         }
-        _ => Ok("no dispatch (already running or not applicable)".to_string()),
+        crate::features::assistant::harness::HarnessAction::Error(error) => {
+            crate::features::assistant::harness::record_runtime_failure(
+                &ws,
+                "",
+                "scheduler_kick",
+                &error,
+            );
+            let message = format!("工作流调度失败：{error}");
+            crate::features::assistant::engine::emit_workflow_blocked(
+                &app,
+                &sid,
+                &ws,
+                &message,
+            );
+            Err(message)
+        }
+        crate::features::assistant::harness::HarnessAction::NotApplicable => {
+            Ok("no dispatch (already running or not applicable)".to_string())
+        }
+        crate::features::assistant::harness::HarnessAction::WaitForHuman { .. }
+        | crate::features::assistant::harness::HarnessAction::AllDone => {
+            Ok("no dispatch (workflow is waiting or complete)".to_string())
+        }
     }
 }
 

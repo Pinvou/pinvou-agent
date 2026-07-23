@@ -34,7 +34,7 @@ vc_redist_install:
   DetailPrint "Installing Microsoft Visual C++ Redistributable 2015-2022 (x64)..."
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
-  File "/oname=$PLUGINSDIR\VC_redist.x64.exe" "${__FILEDIR__}\..\..\..\..\packaging\windows\vc_redist\VC_redist.x64.exe"
+  File "/oname=$PLUGINSDIR\VC_redist.x64.exe" "${__FILEDIR__}\..\..\..\windows-runtime\nsis\vc_redist\VC_redist.x64.exe"
   SetOutPath "$INSTDIR"
   ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /install /quiet /norestart' $5
 
