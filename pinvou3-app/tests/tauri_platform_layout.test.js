@@ -124,6 +124,13 @@ const arm64Workflow = fs.readFileSync(
   path.join(repoRoot, ".github/workflows/arm64-connector-verify.yml"),
   "utf8",
 );
+const architectureGate = workflow.slice(
+  workflow.indexOf("- name: 架构边界门禁"),
+  workflow.indexOf("- name: 初始化公共底座 submodule"),
+);
+assert.match(architectureGate, /github\.event\.merge_group\.base_ref/);
+assert.match(architectureGate, /base_ref="\$\{BASE_REF#refs\/heads\/\}"/);
+assert.match(architectureGate, /architecture-guard\.py --base-ref "origin\/\$base_ref"/);
 const submoduleUpdates = workflow.match(/git submodule update[^\r\n]*/g) || [];
 assert.ok(submoduleUpdates.length > 0, "CI must initialize the public DeepSeek-TUI submodule");
 assert.ok(

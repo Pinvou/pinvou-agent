@@ -179,7 +179,11 @@ jobs:
           fetch-depth: 0
 
       - name: 架构边界门禁
-        run: python3 scripts/architecture-guard.py --base-ref "origin/${{ github.base_ref }}"
+        env:
+          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}
+        run: |
+          base_ref="${BASE_REF#refs/heads/}"
+          python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- DeepSeek-TUI
