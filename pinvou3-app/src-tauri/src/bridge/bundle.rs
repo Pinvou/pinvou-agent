@@ -233,6 +233,8 @@ const IWENCAI_MANIFEST_JSON: &str =
 const QCC_MANIFEST_JSON: &str = include_str!("../../../resources/mcp-servers/qcc/manifest.json");
 const YUANDIAN_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/yuandian-mcp/manifest.json");
+const CANVA_MCP_MANIFEST_JSON: &str =
+    include_str!("../../../resources/mcp-servers/canva-mcp/manifest.json");
 const PATSNAP_SEARCH_MANIFEST_JSON: &str =
     include_str!("../../../resources/mcp-servers/patsnap-search/manifest.json");
 const OBSIDIAN_SERVER_PY: &str = include_str!("../../../resources/mcp-servers/obsidian/server.py");
@@ -792,6 +794,10 @@ impl Pinvou3Bundle {
         let yuandian_dir = dir.join("yuandian-mcp");
         std::fs::create_dir_all(&yuandian_dir)?;
         std::fs::write(yuandian_dir.join("manifest.json"), YUANDIAN_MANIFEST_JSON)?;
+        // 工具市场：Canva 可画（远程 MCP + OAuth，只有 manifest.json，无 server.py）
+        let canva_dir = dir.join("canva-mcp");
+        std::fs::create_dir_all(&canva_dir)?;
+        std::fs::write(canva_dir.join("manifest.json"), CANVA_MCP_MANIFEST_JSON)?;
         // 工具市场：智慧芽专利&文献融合检索（远程 MCP，API Key 通过请求头占位符注入）
         let patsnap_dir = dir.join("patsnap-search");
         std::fs::create_dir_all(&patsnap_dir)?;
@@ -864,6 +870,17 @@ mod tests {
             server_keys.contains_key("pinvou3") && !server_keys.contains_key("pinvou"),
             "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
             server_keys.keys().collect::<Vec<_>>()
+        );
+        let canva_dir = paths::bundle_mcp_servers_dir().join("canva-mcp");
+        let canva_manifest = canva_dir.join("manifest.json");
+        assert!(canva_manifest.is_file(), "Canva 可画 manifest 应被解包");
+        let canva_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&canva_manifest).unwrap()).unwrap();
+        assert_eq!(canva_json["id"], "canva-mcp");
+        assert_eq!(canva_json["servers"][0]["name"], "canva_mcp");
+        assert!(
+            !canva_dir.join("server.py").exists(),
+            "Canva 远程 MCP 不应解包本地 server.py"
         );
         // 已下线 skills(h3c-ppt / pinvou-review-*)不应再被写出。
         for retired in ["h3c-ppt", "pinvou-review-plan", "pinvou-review-final"] {

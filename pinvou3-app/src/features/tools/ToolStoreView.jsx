@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
+import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Server, User, XIcon, Zap } from '../../components/icons.jsx';
+import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
@@ -46,6 +47,8 @@ const oauthUiTimeoutResult = (serverName) => ({
   message: '未收到浏览器授权回调，请确认是否已完成授权，或稍后重新授权。',
   server_name: serverName,
 });
+
+const oauthServerNameForTool = (tool) => tool?.oauthServerName || tool?.serverName || null;
 
 const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
   let timeoutId = null;
@@ -889,7 +892,7 @@ const FEISHU_STEPS = [
         });
       }, []);
 
-      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成元典 OAuth 授权。') => {
+      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成 OAuth 授权。') => {
         setToolAuthStates(prev => ({
           ...prev,
           [backendId]: {
@@ -946,11 +949,15 @@ const FEISHU_STEPS = [
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
+        const oauthServerName = t?.oauthMcp ? oauthServerNameForTool(t) : null;
+        if (t?.oauthMcp && !oauthServerName) {
+          setAlert({ visible: true, loading: false, title: 'OAuth 配置错误', subtitle: `「${name}」未声明 MCP server name，无法发起授权。`, isInstall: false, isError: true });
+          return;
+        }
         const oauthRequestId = t?.oauthMcp ? beginOAuthRequest(backendId) : null;
         setBusyId(backendId);
         if (t?.oauthMcp) {
-          const loadingTitle = backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`;
-          setAlert({ loading: true, visible: false, title: loadingTitle, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
+          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
         } else if (hasConfig) {
           setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在校验 API Key 与远程工具…', isInstall: true, isError: false });
         } else if (hasPipDeps) {
@@ -980,12 +987,12 @@ const FEISHU_STEPS = [
               .catch(err => ({
                 status: 'failed',
                 message: String(err).slice(0, 240),
-                server_name: backendId,
+                server_name: oauthServerName,
               }));
             setAlert({
               loading: true,
               visible: false,
-              title: backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`,
+              title: `正在连接「${name}」`,
               subtitle: '已打开浏览器，正在等待授权…',
               isInstall: true,
               isError: false,
@@ -996,7 +1003,7 @@ const FEISHU_STEPS = [
             const loginResult = await withUiTimeout(
               loginPromise,
               OAUTH_UI_TIMEOUT_MS,
-              oauthUiTimeoutResult('yuandian_mcp')
+              oauthUiTimeoutResult(oauthServerName)
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
@@ -1384,7 +1391,7 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
-                message: '尚未连接华宇元典法律数据。',
+                message: `尚未连接「${name}」。`,
               },
             }));
           }
@@ -1515,52 +1522,40 @@ const FEISHU_STEPS = [
           <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar">
 
             {/* Header */}
-            <header className="sticky top-0 z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl border-b border-slate-200/50 dark:border-white/10 pt-6 pb-4 transition-colors">
-              <div className="max-w-7xl mx-auto px-6 md:px-10 flex flex-col gap-5">
-                <div className="flex items-center justify-between gap-4">
-                  <h1 className="text-[32px] font-normal tracking-tight">工具商店</h1>
-                  <div className={`flex items-center gap-3 ${installedOnly ? 'hidden' : ''}`}>
-                    {/* 已安装入口(App Store 风:头像 + 文字);进「我的工具」后隐藏 */}
-                    <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
-                      className="flex items-center gap-2 pl-1 pr-3.5 py-1 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 transition-colors">
-                      <span className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white shrink-0"><User size={15} /></span>
-                      <span className="text-[14px] font-semibold">我的工具</span>
-                    </button>
-                  </div>
-                </div>
-                <div className={`relative group ${installedOnly ? 'hidden' : ''}`}>
-                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
-                  <input
-                    type="text"
-                    placeholder="搜索 MCP、API 或工作流工具"
+            <header className="bg-white/80 dark:bg-[#131314]/80 px-4 backdrop-blur-2xl transition-colors sm:px-6 lg:px-10">
+              <div className="w-full max-w-[1400px] mx-auto border-b border-slate-200/50 px-2 dark:border-white/10">
+                <div className="flex flex-col gap-3 pt-12 pb-6 lg:flex-row lg:items-center lg:justify-between">
+                <h1 className="shrink-0 whitespace-nowrap text-[32px] font-normal tracking-tight">工具商店</h1>
+                <div className={`flex min-w-0 flex-col gap-3 lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end ${installedOnly ? 'hidden' : ''}`}>
+                  <IosSearchField
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-11 pr-4 py-3 bg-slate-100 dark:bg-[#1C1C1E] border-none rounded-2xl text-[17px] focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-500 text-slate-900 dark:text-white"
+                    placeholder="搜索 MCP、API 或工作流工具"
+                    isDark={isDark}
+                    compact
+                    className="w-full min-w-[220px] lg:w-[360px] lg:flex-none"
                   />
+                  {/* 已安装入口;进「我的工具」后隐藏 */}
+                  <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
+                    className="inline-flex h-9 shrink-0 items-center justify-center rounded-full bg-[#E9E9EB] px-4 text-[13px] font-semibold text-[#1D1D1F] shadow-sm transition-colors hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                    <User size={14} className="mr-2 opacity-70" />
+                    我的工具
+                  </button>
+                  <IosSegmentedControl
+                    value={viewMode}
+                    onChange={(next) => { setViewMode(next); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
+                    isDark={isDark}
+                    compact
+                    segments={[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }]}
+                  />
+                </div>
                 </div>
               </div>
             </header>
 
             {/* Main scrollable area */}
             <main className="flex-1">
-              <div className="max-w-7xl mx-auto px-6 md:px-10 py-8 space-y-12">
-
-                {/* 视图切换:卡片 / 列表(内容区顶部右对齐;进「我的工具」时隐藏)*/}
-                <div className={`flex justify-end ${installedOnly ? 'hidden' : ''}`}>
-                  <div className="flex p-1 bg-slate-100 dark:bg-[#1C1C1E] rounded-xl border border-slate-200/50 dark:border-white/5">
-                    {[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }].map(seg => (
-                      <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
-                        className={`px-4 py-1.5 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-all duration-300 flex items-center gap-1.5 ${
-                          viewMode === seg.key
-                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                        }`}>
-                        <seg.Icon size={15} /> {seg.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+              <div className="max-w-[1400px] mx-auto px-6 md:px-10 py-8 space-y-12">
                 {/* Featured carousel */}
                 {isCard && searchQuery === '' && activeCategory === 'all' && (
                   <section
@@ -1667,33 +1662,34 @@ const FEISHU_STEPS = [
 
                 {/* Category filter + tool list */}
                 <section>
-                  <div className={`flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 ${isCard ? '' : 'border-b border-slate-200 dark:border-white/10 pb-5'}`}>
-                    <div className="flex items-center gap-3">
-                      {installedOnly && (
-                        <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
-                          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
-                          <ChevronLeft size={20} />
-                        </button>
-                      )}
-                      <h2 className="text-2xl font-bold tracking-tight">
-                        {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : (searchQuery ? '检索结果' : '全部工具'))}
-                      </h2>
-                    </div>
+                  <div className={`flex flex-col gap-4 mb-6 ${isCard ? '' : 'pb-2'}`}>
+                    {(installedOnly || searchQuery || isCard) && (
+                      <div className="flex items-center gap-3">
+                        {installedOnly && (
+                          <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
+                            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                            <ChevronLeft size={20} />
+                          </button>
+                        )}
+                        <h2 className="text-2xl font-bold tracking-tight">
+                          {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : '检索结果')}
+                        </h2>
+                      </div>
+                    )}
                     {!isCard && !installedOnly && (
-                      <div className="flex flex-wrap gap-2 overflow-x-auto no-scrollbar">
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar">
                         {tsCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
                               key={cat.id}
                               onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
-                              className={`shrink-0 px-4 py-1.5 rounded-full text-[13px] font-semibold whitespace-nowrap transition-colors ${
-                                isActive
-                                  ? 'bg-blue-600 text-white'
-                                  : 'text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-500'
-                              }`}
+                              className="h-9 shrink-0 whitespace-nowrap rounded-full px-3.5 text-[13px] font-semibold transition-colors"
+                              style={isActive
+                                ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
+                                : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}
                             >
-                              {cat.label}
+                              {cat.id === 'all' ? '全部工具' : cat.label}
                             </button>
                           );
                         })}

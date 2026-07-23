@@ -166,9 +166,10 @@ def main():
         "pptx",
         "gongwen",
         "yuandian-mcp",
+        "canva-mcp",
         "patsnap-search",
     }
-    print("✅ manifest: 8 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 9 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -253,6 +254,36 @@ def main():
         "oauth_resource": "https://open.chineselaw.com/mcp",
     }]
     print("✅ yuandian-mcp: 唯一远程端点 + OAuth scope/resource 清单契约")
+
+    canva = manifests["canva-mcp"]
+    assert canva["mcp_tools"] == [] and not canva["command"]
+    assert canva["servers"] == [{
+        "name": "canva_mcp",
+        "url": "https://mcp.canva.cn/mcp",
+        "scopes": [
+            "profile:read",
+            "design:meta:read",
+            "design:content:write",
+            "design:content:read",
+            "folder:read",
+            "folder:write",
+            "brandtemplate:content:read",
+            "brandtemplate:meta:read",
+            "brandtemplate:content:write",
+            "comment:write",
+            "comment:read",
+            "asset:read",
+            "asset:write",
+            "brandkit:read",
+            "help:answers:read",
+            "help:answers:write",
+        ],
+        "oauth_resource": "https://mcp.canva.cn/mcp",
+    }]
+    assert "validate_on_install" not in canva
+    assert "secret_headers" not in canva
+    assert "config_fields" not in canva
+    print("✅ canva-mcp: 唯一远程端点 + OAuth scope/resource 清单契约")
 
     patsnap = manifests["patsnap-search"]
     assert patsnap["mcp_tools"] == ["patsnap_search", "patsnap_fetch"] and not patsnap["command"]

@@ -1898,6 +1898,66 @@ mod tests {
         });
     }
 
+    #[test]
+    fn canva_oauth_server_writes_config_and_model_prefix() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "canva-mcp",
+                r#"{
+                    "id":"canva-mcp","name":"Canva 可画","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "servers":[
+                        {
+                            "name":"canva_mcp",
+                            "url":"https://mcp.canva.cn/mcp",
+                            "scopes":[
+                                "profile:read",
+                                "design:meta:read",
+                                "design:content:write",
+                                "design:content:read",
+                                "folder:read",
+                                "folder:write",
+                                "brandtemplate:content:read",
+                                "brandtemplate:meta:read",
+                                "brandtemplate:content:write",
+                                "comment:write",
+                                "comment:read",
+                                "asset:read",
+                                "asset:write",
+                                "brandkit:read",
+                                "help:answers:read",
+                                "help:answers:write"
+                            ],
+                            "oauth_resource":"https://mcp.canva.cn/mcp"
+                        }
+                    ]
+                }"#,
+            );
+
+            let mgr = MarketplaceManager::new();
+            mgr.install("canva-mcp", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            let server = &mcp["servers"]["canva_mcp"];
+            assert_eq!(server["url"], "https://mcp.canva.cn/mcp");
+            assert_eq!(server["oauth_resource"], "https://mcp.canva.cn/mcp");
+            assert!(server["scopes"].as_array().unwrap().contains(&serde_json::json!("profile:read")));
+            assert!(server["scopes"].as_array().unwrap().contains(&serde_json::json!("design:content:write")));
+            assert!(server.get("headers").is_none());
+            assert!(server.get("env_headers").is_none());
+            assert!(server.get("bearer_token_env_var").is_none());
+            assert_eq!(
+                mgr.oauth_remote_server_name("canva-mcp").as_deref(),
+                Some("canva_mcp")
+            );
+            assert_eq!(
+                mgr.model_tool_names(&["canva-mcp".to_string()]),
+                vec!["mcp_canva_mcp_*".to_string()]
+            );
+        });
+    }
+
     /// 全局禁用列表落盘往返:存→读一致;清空→读空;没文件→读空。
     #[test]
     fn disabled_connectors_persist_roundtrip() {
