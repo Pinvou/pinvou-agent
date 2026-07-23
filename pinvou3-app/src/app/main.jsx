@@ -187,6 +187,7 @@ function defaultModelPresetForCapabilities(capabilities) {
       const [activeTheme, setActiveTheme] = useState('dark');
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
+      const codexAcpSupported = !!platformCapabilities.codexAcpSupported;
       // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
       const activeChatRef = useRef(activeChat);
       activeChatRef.current = activeChat;
@@ -1457,14 +1458,16 @@ function defaultModelPresetForCapabilities(capabilities) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
-              <NavItem
-                icon={<Sparkles size={18} />} label="Codex"
-                active={currentView === 'codex'}
-                nativeButton
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('codex')}
-              />
+              {codexAcpSupported && (
+                <NavItem
+                  icon={<Sparkles size={18} />} label="Codex"
+                  active={currentView === 'codex'}
+                  nativeButton
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => navigateFromScheduledRun('codex')}
+                />
+              )}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
@@ -1758,7 +1761,7 @@ function defaultModelPresetForCapabilities(capabilities) {
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
-            {currentView === 'codex' && <CodexAcpView theme={activeTheme} />}
+            {codexAcpSupported && currentView === 'codex' && <CodexAcpView theme={activeTheme} />}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />

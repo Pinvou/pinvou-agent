@@ -26,7 +26,7 @@ pub async fn chat(
     session_id: Option<String>,
     restrict_tools: Option<bool>,
     pool: State<'_, EnginePool>,
-    acp_pool: State<'_, crate::acp_runtime::AcpPool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {

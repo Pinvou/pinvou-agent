@@ -4,12 +4,13 @@
 //! Codex 的模型调用、工具循环、会话与权限协议都由 `codex-acp` Agent 提供。
 
 mod events;
+mod runtime;
 mod store;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,12 +32,14 @@ use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::bridge::sessions::SessionStore;
+use crate::features::sessions::SessionStore;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
+use runtime::{
+    codex_version, install_managed_codex, resolve_codex_path, ResolvedCodex, MANAGED_CODEX_VERSION,
+};
 pub use store::{
-    validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentRecord,
-    SessionAgentStore,
+    validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
 };
 
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
@@ -46,11 +49,21 @@ const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
 pub struct CodexAcpStatus {
     pub version: &'static str,
     pub installed: bool,
+    pub bridge_ready: bool,
     pub adapter_path: Option<String>,
     pub node_available: bool,
     pub node_version: Option<String>,
     pub node_supported: bool,
     pub npm_available: bool,
+    pub codex_available: bool,
+    pub codex_path: Option<String>,
+    pub codex_version: Option<String>,
+    pub runtime_source: Option<&'static str>,
+    pub managed_codex_version: &'static str,
+    pub download_required: bool,
+    pub downloaded_bytes: u64,
+    pub download_total_bytes: u64,
+    pub download_progress: Option<u8>,
     pub authenticated: bool,
     pub installing: bool,
     pub error: Option<String>,
@@ -153,12 +166,20 @@ impl AcpSession {
                     StopReason::Refusal => "Refused",
                     _ => "Completed",
                 };
-                crate::timing::finish_turn(&self.bridge_session_id(), status, None);
+                crate::features::assistant::timing::finish_turn(
+                    &self.bridge_session_id(),
+                    status,
+                    None,
+                );
                 self.bridge.finish_turn(&turn_id, status, None);
             }
             Err(error) => {
                 let message = format!("Codex ACP: {error}");
-                crate::timing::finish_turn(&self.bridge_session_id(), "Failed", Some(&message));
+                crate::features::assistant::timing::finish_turn(
+                    &self.bridge_session_id(),
+                    "Failed",
+                    Some(&message),
+                );
                 self.bridge.finish_turn(&turn_id, "Failed", Some(&message));
             }
         }
@@ -232,14 +253,46 @@ pub struct AcpPool {
     agents: SessionAgentStore,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
+    downloaded_bytes: Arc<AtomicU64>,
+    download_total_bytes: Arc<AtomicU64>,
     last_error: Arc<parking_lot::RwLock<Option<String>>>,
     bundled_adapter: Option<PathBuf>,
+    bundled_node: Option<PathBuf>,
 }
 
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
-        let bundled_adapter = app.path().resource_dir().ok().and_then(|root| {
+        let resource_root = app.path().resource_dir().ok();
+        let development_bridge = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("platforms")
+            .join("linux")
+            .join("codex-bridge");
+        let bundled_adapter = resource_root.as_ref().and_then(|root| {
             [
+                root.join("runtime")
+                    .join("codex-bridge")
+                    .join("acp")
+                    .join("node_modules")
+                    .join("@agentclientprotocol")
+                    .join("codex-acp")
+                    .join("dist")
+                    .join("index.js"),
+                root.join("codex-bridge")
+                    .join("acp")
+                    .join("node_modules")
+                    .join("@agentclientprotocol")
+                    .join("codex-acp")
+                    .join("dist")
+                    .join("index.js"),
+                root.join("resources")
+                    .join("codex-bridge")
+                    .join("acp")
+                    .join("node_modules")
+                    .join("@agentclientprotocol")
+                    .join("codex-acp")
+                    .join("dist")
+                    .join("index.js"),
                 root.join("codex-acp")
                     .join("node_modules")
                     .join("@agentclientprotocol")
@@ -257,6 +310,39 @@ impl AcpPool {
                 root.join("resources")
                     .join("codex-acp")
                     .join(adapter_filename()),
+                development_bridge
+                    .join("acp")
+                    .join("node_modules")
+                    .join("@agentclientprotocol")
+                    .join("codex-acp")
+                    .join("dist")
+                    .join("index.js"),
+            ]
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+        });
+        let bundled_node = resource_root.as_ref().and_then(|root| {
+            let node_name = if crate::platform::capabilities::is_windows() {
+                "node.exe"
+            } else {
+                "node"
+            };
+            [
+                root.join("runtime")
+                    .join("codex-bridge")
+                    .join("node")
+                    .join("bin")
+                    .join(node_name),
+                root.join("codex-bridge")
+                    .join("node")
+                    .join("bin")
+                    .join(node_name),
+                root.join("resources")
+                    .join("codex-bridge")
+                    .join("node")
+                    .join("bin")
+                    .join(node_name),
+                development_bridge.join("node").join("bin").join(node_name),
             ]
             .into_iter()
             .find(|candidate| candidate.is_file())
@@ -268,8 +354,11 @@ impl AcpPool {
             agents: SessionAgentStore::load_or_empty(),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
+            downloaded_bytes: Arc::new(AtomicU64::new(0)),
+            download_total_bytes: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(parking_lot::RwLock::new(None)),
             bundled_adapter,
+            bundled_node,
         })
     }
 
@@ -326,19 +415,47 @@ impl AcpPool {
 
     pub fn status(&self) -> CodexAcpStatus {
         let adapter = self.resolve_adapter();
-        let node_version = installed_node_version();
+        let node = adapter
+            .as_deref()
+            .and_then(|adapter| self.resolve_node(adapter));
+        let node_version = node.as_deref().and_then(installed_node_version);
         let node_supported = node_version
             .as_deref()
             .and_then(node_major_version)
             .is_some_and(|major| major >= 20);
+        let codex = adapter
+            .as_deref()
+            .and_then(|adapter| self.resolve_codex(adapter));
+        let codex_version = codex
+            .as_ref()
+            .and_then(|resolved| codex_version(&resolved.path));
+        let downloaded_bytes = self.downloaded_bytes.load(Ordering::Acquire);
+        let download_total_bytes = self.download_total_bytes.load(Ordering::Acquire);
+        let download_progress = (download_total_bytes > 0).then(|| {
+            ((downloaded_bytes.saturating_mul(100) / download_total_bytes).min(100)) as u8
+        });
+        let bridge_ready = adapter.is_some() && node_supported;
+        let codex_available = codex.is_some();
         CodexAcpStatus {
             version: CODEX_ACP_VERSION,
-            installed: adapter.is_some(),
+            installed: bridge_ready && codex_available,
+            bridge_ready,
             adapter_path: adapter.map(|path| path.to_string_lossy().into_owned()),
             node_available: node_version.is_some(),
             node_version,
             node_supported,
             npm_available: find_in_path("npm").is_some(),
+            codex_available,
+            codex_path: codex
+                .as_ref()
+                .map(|resolved| resolved.path.to_string_lossy().into_owned()),
+            codex_version,
+            runtime_source: codex.as_ref().map(|resolved| resolved.source.as_str()),
+            managed_codex_version: MANAGED_CODEX_VERSION,
+            download_required: bridge_ready && !codex_available,
+            downloaded_bytes,
+            download_total_bytes,
+            download_progress,
             authenticated: codex_authenticated(),
             installing: self.installing.load(Ordering::Acquire),
             error: self.last_error.read().clone(),
@@ -347,22 +464,23 @@ impl AcpPool {
 
     pub async fn ensure_installed(&self) -> Result<CodexAcpStatus> {
         let status = self.status();
-        if !status.node_supported {
-            bail!(
-                "Codex ACP MVP 需要 Node.js 20+；当前版本: {}",
-                status.node_version.as_deref().unwrap_or("未安装")
-            );
+        if !status.bridge_ready {
+            bail!("Pinvou 安装包缺少可用的 Codex ACP Bridge，请重新安装或重新生成 Bridge Runtime");
         }
-        if self.resolve_adapter().is_some() {
+        if status.codex_available {
             return Ok(status);
         }
         if self.installing.swap(true, Ordering::AcqRel) {
-            bail!("Codex ACP 正在安装，请稍候");
+            bail!("托管 Codex 正在下载，请稍候");
         }
-        let result = self.install_adapter().await;
+        let result = install_managed_codex(
+            self.downloaded_bytes.clone(),
+            self.download_total_bytes.clone(),
+        )
+        .await;
         self.installing.store(false, Ordering::Release);
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 *self.last_error.write() = None;
                 Ok(self.status())
             }
@@ -376,7 +494,7 @@ impl AcpPool {
     pub async fn login(&self) -> Result<CodexAcpStatus> {
         self.ensure_installed().await?;
         let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
-        let mut command = adapter_command(&adapter)?;
+        let mut command = self.adapter_command(&adapter)?;
         command
             .arg("login")
             .arg("--client-name")
@@ -385,35 +503,12 @@ impl AcpPool {
             .arg("品悟")
             .arg("--client-version")
             .arg(env!("CARGO_PKG_VERSION"));
-        configure_codex_path(&mut command, &adapter);
+        self.configure_codex_path(&mut command, &adapter)?;
         let status = command.status().await.context("启动 Codex 登录失败")?;
         if !status.success() {
             bail!("Codex 登录失败: {status}");
         }
         Ok(self.status())
-    }
-
-    async fn install_adapter(&self) -> Result<()> {
-        let npm = find_in_path("npm").context("未找到 npm；请先安装 Node.js 20+")?;
-        let root = managed_runtime_dir();
-        tokio::fs::create_dir_all(&root).await?;
-        let status = Command::new(npm)
-            .arg("install")
-            .arg("--prefix")
-            .arg(&root)
-            .arg("--no-audit")
-            .arg("--no-fund")
-            .arg(format!("{CODEX_ACP_PACKAGE}@{CODEX_ACP_VERSION}"))
-            .status()
-            .await
-            .context("启动 npm install 失败")?;
-        if !status.success() {
-            bail!("npm 安装 Codex ACP 失败: {status}");
-        }
-        if self.resolve_adapter().is_none() {
-            bail!("npm 安装完成，但未找到 codex-acp 可执行文件");
-        }
-        Ok(())
     }
 
     pub async fn send_message(&self, session_id: &str, content: String) -> Result<()> {
@@ -643,8 +738,8 @@ impl AcpPool {
             tokio::fs::create_dir_all(&workspace).await?;
         }
 
-        let mut command = adapter_command(&adapter)?;
-        configure_codex_path(&mut command, &adapter);
+        let mut command = self.adapter_command(&adapter)?;
+        self.configure_codex_path(&mut command, &adapter)?;
         command
             .current_dir(&workspace)
             .stdin(Stdio::piped())
@@ -854,6 +949,48 @@ impl AcpPool {
     fn resolve_adapter(&self) -> Option<PathBuf> {
         resolve_adapter_from(self.bundled_adapter.as_deref())
     }
+
+    fn resolve_node(&self, adapter: &Path) -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("PINVOU3_CODEX_NODE_PATH").map(PathBuf::from) {
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        if let Some(path) = self.bundled_node.as_ref().filter(|path| path.is_file()) {
+            return Some(path.clone());
+        }
+        if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
+            return find_in_path(if crate::platform::capabilities::is_windows() {
+                "node.exe"
+            } else {
+                "node"
+            });
+        }
+        None
+    }
+
+    fn resolve_codex(&self, adapter: &Path) -> Option<ResolvedCodex> {
+        resolve_codex_path(
+            find_in_path(if crate::platform::capabilities::is_windows() {
+                "codex.cmd"
+            } else {
+                "codex"
+            }),
+            codex_path_for_adapter(adapter),
+        )
+    }
+
+    fn adapter_command(&self, adapter: &Path) -> Result<Command> {
+        adapter_command(adapter, self.resolve_node(adapter).as_deref())
+    }
+
+    fn configure_codex_path(&self, command: &mut Command, adapter: &Path) -> Result<()> {
+        let codex = self
+            .resolve_codex(adapter)
+            .context("未检测到可用 Codex；请下载托管 Codex")?;
+        command.env("CODEX_PATH", &codex.path);
+        Ok(())
+    }
 }
 
 async fn new_acp_session(
@@ -987,13 +1124,13 @@ fn codex_models(state: Option<&SessionModelState>) -> Vec<CodexAcpModel> {
 }
 
 fn managed_runtime_dir() -> PathBuf {
-    crate::bridge::paths::pinvou3_home()
+    crate::platform::paths::pinvou3_home()
         .join("runtimes")
         .join(format!("codex-acp-{CODEX_ACP_VERSION}"))
 }
 
 fn managed_adapter_path() -> PathBuf {
-    let name = if cfg!(windows) {
+    let name = if crate::platform::capabilities::is_windows() {
         "codex-acp.cmd"
     } else {
         "codex-acp"
@@ -1005,16 +1142,16 @@ fn managed_adapter_path() -> PathBuf {
 }
 
 fn adapter_filename() -> &'static str {
-    if cfg!(windows) {
+    if crate::platform::capabilities::is_windows() {
         "codex-acp.exe"
     } else {
         "codex-acp"
     }
 }
 
-fn adapter_command(adapter: &Path) -> Result<Command> {
+fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Command> {
     if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
-        let node = find_in_path("node").context("未找到 node")?;
+        let node = node.context("Codex ACP Bridge 缺少可用 Node")?;
         let mut command = Command::new(node);
         command.arg(adapter);
         Ok(command)
@@ -1023,16 +1160,12 @@ fn adapter_command(adapter: &Path) -> Result<Command> {
     }
 }
 
-fn configure_codex_path(command: &mut Command, adapter: &Path) {
-    if let Some(codex) = codex_path_for_adapter(adapter)
-        .or_else(|| find_in_path(if cfg!(windows) { "codex.cmd" } else { "codex" }))
-    {
-        command.env("CODEX_PATH", codex);
-    }
-}
-
 fn codex_path_for_adapter(adapter: &Path) -> Option<PathBuf> {
-    let name = if cfg!(windows) { "codex.cmd" } else { "codex" };
+    let name = if crate::platform::capabilities::is_windows() {
+        "codex.cmd"
+    } else {
+        "codex"
+    };
     if adapter
         .parent()?
         .file_name()
@@ -1064,7 +1197,7 @@ fn resolve_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
     if managed.is_file() {
         return Some(managed);
     }
-    find_in_path(if cfg!(windows) {
+    find_in_path(if crate::platform::capabilities::is_windows() {
         "codex-acp.cmd"
     } else {
         "codex-acp"
@@ -1078,8 +1211,7 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-fn installed_node_version() -> Option<String> {
-    let node = find_in_path("node")?;
+fn installed_node_version(node: &Path) -> Option<String> {
     let output = std::process::Command::new(node)
         .arg("--version")
         .output()
@@ -1103,7 +1235,7 @@ fn codex_authenticated() -> bool {
     if std::env::var_os("OPENAI_API_KEY").is_some() {
         return true;
     }
-    let home = crate::os::user_home_dir();
+    let home = crate::platform::os::user_home_dir();
     home.join(".codex").join("auth.json").is_file()
 }
 

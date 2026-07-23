@@ -1,17 +1,17 @@
 //! Codex ACP 独立页面的 Tauri 命令。
 //!
 //! 这里只保留传输边界与会话元数据编排；Codex 进程、ACP 协议、权限和事件适配
-//! 均由 `acp_runtime` 领域模块负责。
+//! 均由 `features::codex_acp` 领域模块负责。
 
 use deepseek_tui::session_manager::SessionMetadata;
 use serde::Serialize;
 use tauri::State;
 
-use crate::acp_runtime::{
+use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::codex_acp::{
     validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingPermission,
     CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo, CodexWorkspaceKind,
 };
-use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::sessions::{SessionKind, SessionStore};
 
 #[derive(Debug, Clone, Serialize)]

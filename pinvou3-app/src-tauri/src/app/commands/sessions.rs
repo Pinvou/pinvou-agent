@@ -55,7 +55,7 @@ pub async fn clear_session() -> Result<(), String> {
 #[tauri::command]
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
-    acp_pool: State<'_, crate::acp_runtime::AcpPool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     metas.retain(|m| {
@@ -158,7 +158,7 @@ pub async fn delete_session(
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
-    acp_pool: State<'_, crate::acp_runtime::AcpPool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<(), String> {
     let result = match store
         .session_kind(&id)

@@ -82,7 +82,7 @@ pub struct SessionAgentStore {
 
 impl SessionAgentStore {
     pub fn load() -> Result<Self> {
-        let path = crate::bridge::paths::pinvou3_home().join("session-agents.json");
+        let path = crate::platform::paths::pinvou3_home().join("session-agents.json");
         let records = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("读取 {} 失败", path.display()))?;
@@ -106,7 +106,7 @@ impl SessionAgentStore {
         match Self::load() {
             Ok(store) => store,
             Err(error) => {
-                let path = crate::bridge::paths::pinvou3_home().join("session-agents.json");
+                let path = crate::platform::paths::pinvou3_home().join("session-agents.json");
                 eprintln!(
                     "[pinvou3-app] Codex ACP session index unavailable, starting empty: {error:#}"
                 );

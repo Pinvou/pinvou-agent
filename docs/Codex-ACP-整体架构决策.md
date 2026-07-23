@@ -644,14 +644,14 @@ Codex 页面新建会话时必须由用户明确选择一种 workspace：
 
 ## 19. 参考代码落点
 
-### pinvou 当前原型
+### pinvou 当前实现
 
-- `pinvou3-app/src-tauri/src/acp_runtime/mod.rs`：运行时、会话、自动权限、new/load/model。
-- `pinvou3-app/src-tauri/src/acp_runtime/events.rs`：当前 ACP -> `chat:*` 压扁翻译。
-- `pinvou3-app/src-tauri/src/acp_runtime/store.rs`：pinvou session -> ACP session/model 映射。
-- `pinvou3-app/src-tauri/src/commands.rs`：当前 skill/persona 前缀与 ACP/DeepSeek 分流。
-- `pinvou3-app/src/features/chat/ChatView.jsx`：当前共用对话面。
-- `pinvou3-app/src/tauri-bridge.js`：当前 `chat:*` 消费和 ACP 命令。
+- `pinvou3-app/src-tauri/src/features/codex_acp/mod.rs`：运行时、会话、权限、new/load/model。
+- `pinvou3-app/src-tauri/src/features/codex_acp/events.rs`：ACP 原始事件持久化与页面投影。
+- `pinvou3-app/src-tauri/src/features/codex_acp/store.rs`：pinvou session 到 ACP session/model/workspace 映射。
+- `pinvou3-app/src-tauri/src/app/commands/codex.rs`：Codex 独立 Tauri 命令边界。
+- `pinvou3-app/src/features/codex/CodexAcpView.jsx`：Codex 独立对话页。
+- `pinvou3-app/src/platform/tauri/client.js`：前端统一 Tauri 平台适配。
 
 ### AionUI / AionCore 参考
 

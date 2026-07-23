@@ -156,19 +156,21 @@ try {
   assert.ok(!chatView.includes('ComposerAgentSelector'), 'DeepSeek composer must not expose backend switching');
   assert.ok(!chatView.includes('sessionAgentBackend'), 'DeepSeek ChatView must not branch on Codex state');
 
-  const main = readFileSync(path.join(root, 'src', 'main.jsx'), 'utf8');
+  const main = readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<CodexAcpView'));
+  assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay Linux capability-gated');
 
-  const commands = readFileSync(path.join(root, 'src-tauri', 'src', 'commands.rs'), 'utf8');
-  assert.ok(commands.includes('Codex ACP 会话必须通过独立 Codex 页面发送'));
-  assert.ok(commands.includes('pub async fn codex_acp_prompt'));
-  assert.ok(commands.includes('pub async fn set_codex_acp_mode'));
-  assert.ok(commands.includes('list_codex_acp_sessions'));
-  assert.ok(commands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
-  assert.ok(commands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
+  const chatCommands = readFileSync(path.join(root, 'src-tauri', 'src', 'app', 'commands', 'chat.rs'), 'utf8');
+  const codexCommands = readFileSync(path.join(root, 'src-tauri', 'src', 'app', 'commands', 'codex.rs'), 'utf8');
+  assert.ok(chatCommands.includes('Codex ACP 会话必须通过独立 Codex 页面发送'));
+  assert.ok(codexCommands.includes('pub async fn codex_acp_prompt'));
+  assert.ok(codexCommands.includes('pub async fn set_codex_acp_mode'));
+  assert.ok(codexCommands.includes('list_codex_acp_sessions'));
+  assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
+  assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
-  const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'acp_runtime', 'mod.rs'), 'utf8');
+  const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
   assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('Codex 会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');

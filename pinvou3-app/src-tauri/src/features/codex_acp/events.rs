@@ -144,7 +144,11 @@ impl EventBridge {
     fn tool_call(&self, call: ToolCall, notification_meta: Value) {
         let id = call.tool_call_id.to_string();
         let input = call.raw_input.clone().unwrap_or_else(|| json!({}));
-        crate::memory::record_turn_tool_start(&self.pinvou_session_id, &call.title, &input);
+        crate::features::memory::record_turn_tool_start(
+            &self.pinvou_session_id,
+            &call.title,
+            &input,
+        );
         let terminal = is_terminal(call.status);
         self.tools.lock().insert(id, call.clone());
         self.emit_protocol("tool_call", call.clone(), notification_meta);
@@ -164,7 +168,7 @@ impl EventBridge {
                     completed = Some(call.clone());
                 }
             } else if let Ok(call) = ToolCall::try_from(update.clone()) {
-                crate::memory::record_turn_tool_start(
+                crate::features::memory::record_turn_tool_start(
                     &self.pinvou_session_id,
                     &call.title,
                     &call.raw_input.clone().unwrap_or_else(|| json!({})),
@@ -183,7 +187,7 @@ impl EventBridge {
     }
 
     fn record_tool_complete(&self, call: &ToolCall) {
-        crate::memory::record_turn_tool_complete(
+        crate::features::memory::record_turn_tool_complete(
             &self.pinvou_session_id,
             &call.title,
             matches!(call.status, ToolCallStatus::Completed),
@@ -262,7 +266,7 @@ fn session_file_path(session_id: &str, filename: &str) -> Result<PathBuf> {
     {
         bail!("非法 Codex ACP session id");
     }
-    Ok(crate::bridge::paths::sessions_root()
+    Ok(crate::platform::paths::sessions_root()
         .join(session_id)
         .join(filename))
 }

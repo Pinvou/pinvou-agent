@@ -1,6 +1,9 @@
 # Codex ACP 接入
 
-> 完整架构决策和评审项见 [`Codex-ACP-整体架构决策.md`](./Codex-ACP-整体架构决策.md)。本文说明当前 MVP 的使用、验证和发布方式。
+> 完整架构决策和评审项见 [`Codex-ACP-整体架构决策.md`](./Codex-ACP-整体架构决策.md)；
+> 无系统 Node/Codex 时的安装、登录和修复方案见
+> [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md)。
+> 本文说明当前 MVP 的使用、验证和发布方式。
 
 pinvou3 在同一个主窗口中提供独立的 Codex 页面。Codex 会话使用独立的 ACP
 事件、权限和持久化链路，不进入 DeepSeek `ChatView`；原有品悟对话继续固定使用
@@ -8,17 +11,21 @@ DeepSeek-TUI。
 
 ## 开发环境使用
 
-1. 安装 Node.js 20 或更高版本，并使用 `codex login` 完成登录。
-2. 启动 `./pinvou3-app/run-dev.sh`。
+1. 开发源码首次运行前执行 `./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`；
+   正式安装包会自带该 Bridge，不要求系统安装 Node/npm。
+2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 会优先检测系统 Codex；没有检测到时可在
+   Codex 页面下载固定版本的托管 Codex。
 3. 展开主侧栏，点击“Codex”，再点“新建 Codex 会话”：
    - **选择项目目录**：Codex 的进程 cwd、`session/new` 和 `session/load`
      都使用该真实项目目录。
    - **临时会话**：Codex 使用
      `~/.pinvou3/sessions/<id>/workspace/` 隔离目录。
    同一个项目可以创建多个独立会话；会话开始后不能更换目录，需要切换项目时新建会话。
-4. 页面会读取 Agent 实际上报的模型、模式和配置项。首次使用若没有内置运行时，
-   点击安装会把固定版本 `1.1.5` 放到
-   `~/.pinvou3/runtimes/codex-acp-1.1.5/`。
+4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，点击下载会把
+   固定版本托管 Codex 放到 `~/.pinvou3/runtimes/codex/`；ACP Bridge 版本固定为
+   `1.1.5`。当前 Linux MVP 下载 OpenAI 发布的固定平台归档，官方 registry 不可达时
+   允许使用镜像，但 Pinvou 代码内置版本、URL 和 SHA-512；不会执行系统 npm，也不会
+   把依赖写进系统环境。
 5. 输入消息即可使用流式回答、思考、工具步骤、计划、权限选择、停止生成和会话恢复。
 
 ## 会话与权限状态
@@ -66,18 +73,17 @@ Codex 继续复用用户自己的 `HOME` 和 `~/.codex`，所以登录态、Code
 
 ## 发布
 
-Linux 发布构建前运行：
+Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手动运行：
 
 ```bash
 ./pinvou3-app/scripts/prepare-codex-acp-runtime.sh
 ```
 
-脚本会把当前 Linux 架构的完整 npm 运行时（ACP 适配器、Codex CLI 与原生依赖）放到
-Tauri resource 目录。生成物由 `.gitignore` 排除，不进入源码仓库。这里保留完整依赖
-树，是因为适配器运行时会动态解析 `@openai/codex`，不能安全压成单文件。
-
-当前 MVP 的目标机器仍需提供 Node.js 20+；正式 Linux x64 / arm64 发布包内置私有
-Node runtime 的工作属于下一阶段。
+脚本会把当前 Linux 架构的私有 Node 与精简 `codex-acp` Bridge 放到
+`resources/platforms/linux/codex-bridge/`。项目统一构建入口也会自动准备该目录。
+生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含大体积 Codex 平台
+二进制。正式 Linux x64 / arm64 包不依赖系统 Node/npm，系统 Codex 缺失时由应用下载
+固定、带完整性校验的托管版本。
 
 ## 边界
 

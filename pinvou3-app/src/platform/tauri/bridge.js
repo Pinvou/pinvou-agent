@@ -185,6 +185,7 @@
       usesBundledDependencyInstaller: false,
       taskCompletionNotificationsDefault: true,
       localVllmSupported: false,
+      codexAcpSupported: false,
     },
     settings: null,
     selectedPet: "lingling",

@@ -11,9 +11,13 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
+import {
+  invokeTauri,
+  listenTauri,
+  openTauriDialog,
+} from '../../platform/tauri/client.js';
 
-const tauri = () => window.__TAURI__;
-const invoke = (command, args) => tauri().core.invoke(command, args);
+const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 
 function workspaceName(path) {
@@ -405,20 +409,31 @@ function Turn({ turn, now, pendingByTool, onRespond, responding }) {
 
 function RuntimeNotice({ status, working, error, onPrepare, onLogin }) {
   if (!status) return <div className="text-[13px] text-gray-400">正在检查 Codex ACP…</div>;
-  if (!status.node_supported) {
+  if (!status.bridge_ready) {
     return (
-      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-start gap-3">
-        <AlertTriangle size={19} className="text-amber-500 shrink-0 mt-0.5" />
-        <div><div className="text-[13px] font-semibold">需要 Node.js 20+</div><div className="mt-1 text-[12px] text-gray-500">当前：{status.node_version || '未安装'}。这是 MVP 开发依赖，正式包会内置私有 runtime。</div></div>
+      <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-4 flex items-start gap-3">
+        <AlertTriangle size={19} className="text-red-500 shrink-0 mt-0.5" />
+        <div>
+          <div className="text-[13px] font-semibold">Codex ACP Bridge 不可用</div>
+          <div className="mt-1 text-[12px] text-gray-500">请修复或重新安装 Pinvou。开发环境可运行 prepare-codex-bridge-runtime.sh。</div>
+          {(error || status.error) && <div className="mt-2 text-[11px] text-red-500">{error || status.error}</div>}
+        </div>
       </div>
     );
   }
-  if (!status.installed) {
+  if (!status.codex_available) {
+    const progress = status.download_progress;
     return (
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
         <Terminal size={19} className="text-blue-500 shrink-0" />
-        <div className="min-w-0 flex-1"><div className="text-[13px] font-semibold">安装 Codex ACP 组件</div><div className="text-[12px] text-gray-500">固定版本 {status.version}</div></div>
-        <button onClick={onPrepare} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">{working ? '安装中…' : '安装'}</button>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold">未检测到系统 Codex</div>
+          <div className="text-[12px] text-gray-500">可下载 Pinvou 托管 Codex {status.managed_codex_version}，不修改系统环境</div>
+          {(error || status.error) && <div className="mt-1 text-[11px] text-red-500">{error || status.error}</div>}
+        </div>
+        <button onClick={onPrepare} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
+          {working ? (progress == null ? '正在下载…' : `下载 ${progress}%`) : '下载托管 Codex'}
+        </button>
       </div>
     );
   }
@@ -426,13 +441,26 @@ function RuntimeNotice({ status, working, error, onPrepare, onLogin }) {
     return (
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-center gap-3">
         <Sparkles size={19} className="text-amber-500 shrink-0" />
-        <div className="min-w-0 flex-1"><div className="text-[13px] font-semibold">Codex 尚未登录</div><div className="text-[12px] text-gray-500">使用 Codex CLI / ChatGPT 账号完成授权</div></div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold">Codex 尚未登录</div>
+          <div className="text-[12px] text-gray-500">使用 Codex CLI / ChatGPT 账号完成授权</div>
+          {(error || status.error) && <div className="mt-1 text-[11px] text-red-500">{error || status.error}</div>}
+        </div>
         <button onClick={onLogin} disabled={working} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">{working ? '等待授权…' : '登录'}</button>
       </div>
     );
   }
-  if (error) return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{error}</div>;
+  if (error || status.error) return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{error || status.error}</div>;
   return null;
+}
+
+function runtimeSourceLabel(status) {
+  if (!status) return '';
+  if (status.runtime_source === 'system') return '系统 Codex';
+  if (status.runtime_source === 'managed') return '托管 Codex';
+  if (status.runtime_source === 'override') return '自定义 Codex';
+  if (status.runtime_source === 'legacy_bundled') return '内置 Codex';
+  return '';
 }
 
 export function CodexAcpView({ theme }) {
@@ -515,7 +543,7 @@ export function CodexAcpView({ theme }) {
   }
 
   async function chooseProjectSession() {
-    const selected = await tauri().dialog.open({
+    const selected = await openTauriDialog({
       directory: true,
       multiple: false,
       title: '选择 Codex 项目目录',
@@ -530,7 +558,7 @@ export function CodexAcpView({ theme }) {
       const initial = activeId && list.some(item => item.id === activeId) ? activeId : (list[0] && list[0].id);
       if (initial) openSession(initial).catch(err => setError(String(err)));
     }).catch(err => setError(String(err)));
-    tauri().event.listen('acp:event', message => {
+    listenTauri('acp:event', message => {
       const incoming = message.payload;
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
       if (incoming && incoming.sessionId === activeIdRef.current) {
@@ -568,9 +596,10 @@ export function CodexAcpView({ theme }) {
 
   async function prepare() {
     setWorking(true); setError('');
+    const poll = window.setInterval(() => refreshStatus().catch(() => {}), 500);
     try { setStatus(await invoke('prepare_codex_acp')); }
     catch (err) { setError(String(err)); }
-    finally { setWorking(false); }
+    finally { window.clearInterval(poll); await refreshStatus().catch(() => {}); setWorking(false); }
   }
 
   async function login() {
@@ -822,8 +851,10 @@ export function CodexAcpView({ theme }) {
                       className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
                       title="Codex Agent 上报的命令">/</button>
                   )}
-                  <span className={`w-1.5 h-1.5 rounded-full ${status && status.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-                  {status && status.authenticated ? 'Codex 已连接' : 'Codex 未就绪'}
+                  <span className={`w-1.5 h-1.5 rounded-full ${status && status.installed && status.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                  {status && status.installed && status.authenticated
+                    ? `Codex 已连接${runtimeSourceLabel(status) ? ` · ${runtimeSourceLabel(status)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
+                    : 'Codex 未就绪'}
                 </div>
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>

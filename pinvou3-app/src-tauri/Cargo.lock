@@ -5979,6 +5979,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "wait-timeout",
  "walkdir",
  "webkit2gtk",
  "webview2-com",

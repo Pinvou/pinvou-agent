@@ -9,7 +9,6 @@
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
 mod app;
-pub mod acp_runtime;
 mod core;
 pub mod features;
 pub mod platform;
@@ -323,7 +322,8 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
-            match acp_runtime::AcpPool::new(handle.clone(), store_for_engine.clone()) {
+            match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
+            {
                 Ok(pool) => {
                     handle.manage(pool);
                     eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");

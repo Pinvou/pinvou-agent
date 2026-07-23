@@ -77,7 +77,8 @@ codewhale-secrets = { path = "../../CodeWhale/crates/secrets" }
 codewhale-config = { path = "../../CodeWhale/crates/config" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking", "stream"] }
+wait-timeout = "0.2"
 
 # Updater 用：下载 deb 的 sha256 校验；Windows OTA 包使用 zip + MD5；
 # 产物卡封面也会读 .pptx(zip)里的 docProps/thumbnail.jpeg。

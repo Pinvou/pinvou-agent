@@ -6,6 +6,7 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) uses_bundled_dependency_installer: bool,
     pub(crate) task_completion_notifications_default: bool,
     pub(crate) local_vllm_supported: bool,
+    pub(crate) codex_acp_supported: bool,
 }
 
 pub(crate) const fn current() -> DesktopCapabilities {
@@ -16,6 +17,7 @@ pub(crate) const fn current() -> DesktopCapabilities {
         uses_bundled_dependency_installer: cfg!(target_os = "windows"),
         task_completion_notifications_default: !cfg!(target_os = "linux"),
         local_vllm_supported: cfg!(target_os = "linux"),
+        codex_acp_supported: cfg!(target_os = "linux"),
     }
 }
 

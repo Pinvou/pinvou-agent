@@ -64,6 +64,19 @@ function prepareLinuxArm64Connectors({
   }
 }
 
+function prepareLinuxCodexBridge({ platform = process.platform, spawn = spawnSync } = {}) {
+  if (platform !== "linux") return;
+  const script = path.join(APP_ROOT, "scripts", "prepare-codex-bridge-runtime.sh");
+  const child = spawn(script, [], {
+    cwd: APP_ROOT,
+    stdio: "inherit",
+  });
+  if (child.error) throw child.error;
+  if (child.status !== 0) {
+    throw new Error(`准备 Codex ACP Bridge 失败，退出码: ${child.status ?? "unknown"}`);
+  }
+}
+
 function main() {
   const args = process.argv.slice(2);
   const validateOnly = args[0] === "--validate-only";
@@ -75,6 +88,7 @@ function main() {
   if (tauriCommandIndex(preparedArgs) >= 0) {
     prepareLinuxArm64Connectors();
     prepareWebTemplate();
+    prepareLinuxCodexBridge();
     const artifacts = writeEffectiveArtifacts(configSpecs(preparedArgs));
     console.log(`[build] 有效 Tauri 配置: ${artifacts.effectiveConfigPath}`);
     console.log(
@@ -105,6 +119,7 @@ module.exports = {
   configSpecs,
   main,
   prepareLinuxArm64Connectors,
+  prepareLinuxCodexBridge,
   prepareTauriArgs,
   tauriCommandIndex,
 };
