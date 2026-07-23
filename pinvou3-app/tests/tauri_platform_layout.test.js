@@ -63,6 +63,11 @@ assertResourceSourcesExist(windows, "Windows");
 for (const legacyPath of ["resources/bundle", "resources/skill-marketplace", "resources/web-template", "resources/asr"]) {
   assert.equal(fs.existsSync(path.join(tauriRoot, legacyPath)), false, `legacy resource root must be removed: ${legacyPath}`);
 }
+assert.equal(
+  fs.existsSync(path.join(tauriRoot, "tauri.windows-runtime.generated.conf.json")),
+  false,
+  "generated Windows runtime config must stay under the ignored target directory",
+);
 
 const packagingPaths = [
   linux.bundle.linux.deb.desktopTemplate,

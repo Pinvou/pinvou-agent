@@ -41,8 +41,8 @@ pinvou3 按“业务功能优先、平台适配次之”组织。新增代码按
 | Tauri / Web 宿主适配 | `pinvou3-app/src/platform/{tauri,web}/` |
 | Rust 业务及其平台差异 | `pinvou3-app/src-tauri/src/features/<name>/`，专属适配放功能内 `platform/` |
 | 跨功能 OS 原语 | `pinvou3-app/src-tauri/src/platform/`，接口与各 OS 实现放 `platform/os/` |
-| 共享 / 平台资源 | `resources/common/` / `resources/platforms/<os>[/<arch>]/` |
-| Tauri 平台配置 | `config/platforms/<os>/` |
+| 共享 / 平台资源 | `pinvou3-app/src-tauri/resources/common/` / `pinvou3-app/src-tauri/resources/platforms/<os>[/<arch>]/` |
+| Tauri 平台配置 | `pinvou3-app/src-tauri/config/platforms/<os>/` |
 
 - 业务逻辑留在 `features/`；只有跨功能复用的低层能力才能进入全局 `platform/`。依赖保持 `app → features → platform/core`，不得反向依赖。
 - React 不判断 user agent 或直接访问 Tauri 全局对象；通过 `get_platform_capabilities` 和 `can(capability)` 消费语义化能力。

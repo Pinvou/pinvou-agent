@@ -15,7 +15,7 @@ gitignored `scripts/.builtin-secrets.env` file through
 `PINVOU3_WOSIGN_THUMBPRINT` and `PINVOU3_WOSIGN_PASSWORD`. The script always uses
 the tools in this directory, runs the command from this directory so the companion
 executable can be resolved, and keeps `/isf` to ignore already-signed inputs. The
-command still requests an RFC 3161 timestamp. The script treats a zero WoSign exit
-code as success and does not perform an additional Authenticode, certificate
-thumbprint, or timestamp validation. Update the private secrets file when the
-signing certificate or UKey password changes.
+command requests an RFC 3161 timestamp. A zero WoSign exit code is not sufficient:
+the script verifies the final Authenticode status, signer certificate thumbprint,
+and timestamp certificate before reporting success. Update the private secrets
+file when the signing certificate or UKey password changes.

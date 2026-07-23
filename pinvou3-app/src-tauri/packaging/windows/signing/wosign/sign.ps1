@@ -129,4 +129,22 @@ if ($signExitCode -ne 0) {
   throw "WoSign failed with exit code $signExitCode while signing: $resolvedFilePath"
 }
 
+$signature = Get-AuthenticodeSignature -LiteralPath $resolvedFilePath
+$signatureStatus = [string]$signature.Status
+if ($signatureStatus -ne "Valid") {
+  throw "Authenticode validation failed with status $signatureStatus after signing: $resolvedFilePath"
+}
+
+if ($null -eq $signature.SignerCertificate) {
+  throw "Authenticode validation did not return a signer certificate: $resolvedFilePath"
+}
+$normalizedSignerThumbprint = Normalize-Thumbprint -Value $signature.SignerCertificate.Thumbprint
+if ($normalizedSignerThumbprint -ne $normalizedThumbprint) {
+  throw "Authenticode signer thumbprint does not match the configured certificate: $resolvedFilePath"
+}
+
+if ($null -eq $signature.TimeStamperCertificate) {
+  throw "Authenticode validation did not return an RFC 3161 timestamp certificate: $resolvedFilePath"
+}
+
 Write-Host "WoSign signing completed: $resolvedFilePath"
