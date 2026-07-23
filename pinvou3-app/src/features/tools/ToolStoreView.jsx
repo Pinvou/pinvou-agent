@@ -1594,6 +1594,7 @@ const FEISHU_STEPS = [
                     <div className="relative group min-w-0 max-w-[520px] flex-1">
                       <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8E8E93] group-focus-within:text-blue-500 transition-colors" size={18} />
                       <input
+                        data-testid="tool-store-search"
                         type="text"
                         placeholder="搜索连接器、skill、插件等"
                         value={searchQuery}
