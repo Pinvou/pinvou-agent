@@ -57,13 +57,12 @@ const THIRD_PARTY_TOOL_LOGOS = {
   4: 'assets/tool-icons/wb-ima-mcp.png',
   5: 'assets/tool-icons/wb-lexiang.png',
   6: 'assets/tool-icons/wb-tencent-docs.png',
-  7: 'assets/tool-icons/wb-tmeet.svg',
   8: 'assets/tool-icons/wecom-user.png',
   11: 'assets/tool-icons/wb-tapd.png',
   12: 'assets/tool-icons/wb-cnb-api.svg',
 };
 
-const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/h3c-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-yuandian-mcp.svg']);
+const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/h3c-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-yuandian-mcp.svg', 'assets/tool-icons/wecom-user.png']);
 const CROPPED_TILE_LOGOS = new Set(['assets/tool-icons/wb-yuandian-mcp.svg']);
 
 const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallbackSize = 30, fallbackStrokeWidth = 1.5, children }) => {
@@ -71,7 +70,7 @@ const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallback
   const isFullTileLogo = tool.logoSrc && FULL_TILE_LOGOS.has(tool.logoSrc);
   const cropTileLogo = tool.logoSrc && CROPPED_TILE_LOGOS.has(tool.logoSrc);
   return (
-    <div className={`relative flex items-center justify-center overflow-hidden ${tool.logoSrc ? 'bg-white text-slate-900 dark:bg-white' : `${tool.color} text-white`} ${className}`}>
+    <div className={`relative flex items-center justify-center overflow-hidden ${tool.logoSrc ? `${isFullTileLogo ? 'bg-transparent' : 'bg-white dark:bg-white'} text-slate-900` : `${tool.color} text-white`} ${className}`}>
       {tool.logoSrc ? (
         <img
           src={tool.logoSrc}
@@ -610,6 +609,7 @@ const FEISHU_STEPS = [
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
       const isCard = viewMode === 'card';
       const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
+      const showFeaturedCollections = isCard && searchQuery === '' && activeCategory === 'all';
       // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
       const LOCAL_TOOLS = ['pptx', 'gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
@@ -647,6 +647,19 @@ const FEISHU_STEPS = [
         } catch (e) { console.error('dingtalk_status failed:', e); }
       };
       useEffect(() => { refreshDingtalk(); }, []);
+
+      useEffect(() => {
+        const urls = [
+          'assets/h3c-banner.jpg',
+          ...tsFeaturedCollections.map((item) => item.img),
+          ...tsSkillsData.map((item) => item.todayImg),
+        ].filter(Boolean);
+        urls.forEach((src) => {
+          const img = new Image();
+          img.decoding = 'async';
+          img.src = src;
+        });
+      }, []);
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
@@ -852,10 +865,14 @@ const FEISHU_STEPS = [
       // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
+      const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
+      const visibleCategories = tsCategories.filter(cat => cat.id === 'all' || listItems.some(tool => (
+        isLaunchedTool(tool)
+        && (cat.id === 'h3c' ? (tool.category === 'h3c' || !!tool.internal) : tool.category === cat.id)
+      )));
       const PIN = ['government-writing', 'pptx', 'visualizer'];
       const filteredTools = sourceItems.filter(tool => {
-        const launched = !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
-        if (!launched) return false;
+        if (!isLaunchedTool(tool)) return false;
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
         if (installedOnly && !isCard) return matchesSearch && tool.installed;
@@ -870,6 +887,11 @@ const FEISHU_STEPS = [
         if (!a.installed && b.installed) return 1;
         return 0;
       });
+      useEffect(() => {
+        if (!isCard && !installedOnly && !searching && activeCategory !== 'all' && !visibleCategories.some(cat => cat.id === activeCategory)) {
+          setActiveCategory('all');
+        }
+      }, [activeCategory, installedOnly, isCard, searching, visibleCategories]);
 
       // 从后端加载已安装状态
       const loadBackendState = async () => {
@@ -1606,15 +1628,16 @@ const FEISHU_STEPS = [
 
             {/* Main scrollable area */}
             <main className="flex-1">
-              <div className="max-w-[1400px] mx-auto py-8 space-y-12">
+              <div className={`max-w-[1400px] mx-auto ${isCard ? 'py-8 space-y-12' : 'pt-5 pb-8 space-y-6'}`}>
 
                 {/* Featured carousel */}
-                {isCard && searchQuery === '' && activeCategory === 'all' && (
-                  <section
-                    className="relative group/featured"
-                    onMouseEnter={() => setIsFeaturedHovered(true)}
-                    onMouseLeave={() => setIsFeaturedHovered(false)}
-                  >
+                <section
+                  hidden={!showFeaturedCollections}
+                  className={`relative group/featured ${showFeaturedCollections ? '' : 'hidden'}`}
+                  aria-hidden={!showFeaturedCollections}
+                  onMouseEnter={() => setIsFeaturedHovered(true)}
+                  onMouseLeave={() => setIsFeaturedHovered(false)}
+                >
                     <div className="flex items-end justify-between mb-5">
                       <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">精选连接器</h2>
                     </div>
@@ -1643,7 +1666,7 @@ const FEISHU_STEPS = [
                           onClick={() => setShowH3cModal(true)}
                           className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
                         >
-                          <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                          <img src="assets/h3c-banner.jpg" alt="" loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
                           <div className="relative p-8 text-white">
                             <div className="flex items-center justify-between mb-4">
@@ -1679,7 +1702,7 @@ const FEISHU_STEPS = [
                             className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
                           >
                             {collection.img
-                              ? <img src={collection.img} alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                              ? <img src={collection.img} alt="" loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                               : <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />}
                             <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60" />
 
@@ -1707,8 +1730,7 @@ const FEISHU_STEPS = [
                         );
                       })}
                     </div>
-                  </section>
-                )}
+                </section>
 
                 {/* Category filter + tool list */}
                 <section>
@@ -1728,7 +1750,7 @@ const FEISHU_STEPS = [
                     )}
                     {!isCard && !installedOnly && (
                       <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
-                        {tsCategories.map((cat) => {
+                        {visibleCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
@@ -1749,7 +1771,7 @@ const FEISHU_STEPS = [
 
                   {filteredTools.length > 0 ? (
                     (isSkillTab && !searching) ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 pb-7">
+                    <div key="tool-store-card-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 pb-7">
                       {filteredTools.map((tool) => {
                         const v = tool.todayVariant || 'fallback';
                         const bar = (
@@ -1760,30 +1782,30 @@ const FEISHU_STEPS = [
                           </div>
                         );
                         return (
-                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
+                          <div key={`card-${tool.id}`} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
                             {v === 'light' ? (
                               <>
                                 <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
                                 {bar}
                               </>
                             ) : v === 'drama' ? (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/40" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em]">{tool.todayLabel}</p></div>
                                 <div className="absolute bottom-0 left-0 p-6"><h2 className="text-white text-[32px] font-bold leading-[1.05] tracking-tight drop-shadow mb-2 whitespace-pre-line">{tool.todayTitle}</h2><p className="text-white/85 text-[14px] font-medium">{tool.subtitle}</p></div>
                               </>
                             ) : v === 'appbar' ? (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/10 to-black/35" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
                                 {bar}
                               </>
                             ) : v === 'appimg' ? (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/5 to-black/80" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
                                 <div className="absolute bottom-0 left-0 right-0 p-6 flex items-center gap-3">
@@ -1804,7 +1826,7 @@ const FEISHU_STEPS = [
                               </>
                             ) : (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
                                 <p className="absolute bottom-5 left-6 right-6 text-white/90 text-[14px] font-medium leading-snug">{tool.subtitle}</p>
@@ -1815,18 +1837,14 @@ const FEISHU_STEPS = [
                       })}
                     </div>
                     ) : (
-                    <div className="grid gap-x-10 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                    <div key="tool-store-list-grid" className="grid gap-x-10 gap-y-0" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
                       {filteredTools.map((tool) => (
                         <div
-                          key={tool.id}
+                          key={`list-${tool.id}`}
                           onClick={() => setSelectedTool(tool)}
-                          className="group flex items-center gap-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1C1C1E]/50 rounded-2xl px-3 -mx-3 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
+                          className="group flex items-center gap-4 py-3 cursor-pointer px-3 border-b border-slate-100 dark:border-white/5 last:border-0"
                         >
-                          <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30}>
-                            {tool.internal && (
-                              <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
-                            )}
-                          </TsToolIcon>
+                          <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30} />
                           <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
                             <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                             <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
@@ -1893,9 +1911,7 @@ const FEISHU_STEPS = [
                   <div className="space-y-4">
                     {visibleInternalTools.map(t => (
                       <div key={t.id} className="flex items-start gap-4">
-                        <TsToolIcon tool={t} className="h-14 w-14 flex-shrink-0 rounded-[14px] border border-black/5 shadow-sm dark:border-white/5">
-                          <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
-                        </TsToolIcon>
+                        <TsToolIcon tool={t} className="h-14 w-14 flex-shrink-0 rounded-[14px] border border-black/5 shadow-sm dark:border-white/5" />
                         <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
                           <div className="flex justify-between items-center gap-2 mb-1">
                             <h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{t.title}</h4>

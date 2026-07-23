@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, AppWindow, Archive, BookOpen, Check, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, Search, TableIcon, Trash2, X } from '../../components/icons.jsx';
+import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2, X } from '../../components/icons.jsx';
+import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridge } from '../../hooks/useBridge.js';
-import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
 
@@ -9,10 +9,6 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
-      const canOpenSystemFiles = can('externalSystemOpen');
-      const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
-      const canPickHostFiles = !isWeb || can('hostFilePicker');
-      const canDownloadArtifacts = !isWeb || can('artifactDownload');
       const bs = useBridge(); // 取 kbModelSetup 的实时下载进度
       const inv = (cmd, args) =>
         (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
@@ -22,8 +18,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 
       // ---------- 共用 ----------
-      const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
-      const openFolder = (p) => canOpenSystemFiles ? inv('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
+      const openFile = (p) => inv('open_in_system', { path: p }).catch(() => {});
+      const openFolder = (p) => inv('open_containing_folder', { path: p }).catch(() => {});
       const fmtSize = (b) => {
         if (b == null) return '';
         if (b < 1024) return b + ' B';
@@ -77,8 +73,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [outputsLoaded, setOutputsLoaded] = useState(kbCache.outputsLoaded);
       const [outCat, setOutCat] = useState('all');
       const [outQuery, setOutQuery] = useState('');
-      const [outView, setOutView] = useState('grid');
-      const [outputPreview, setOutputPreview] = useState(null);
+      const [outView, setOutView] = useState('list');
+      const [outSortDir, setOutSortDir] = useState('desc');
+      const [outputPreviewPath, setOutputPreviewPath] = useState(null);
       const outPreviewCache = useRef({});
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
@@ -109,6 +106,32 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         { key: 'ppt', label: t.kbOutCatPpt, color: '#e0773a', icon: PresentationIcon },
       ];
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
+      const FILE_ICON_BY_EXT = {
+        html: '/file-icons/html.svg', htm: '/file-icons/html.svg', mhtml: '/file-icons/html.svg', mht: '/file-icons/html.svg',
+        xml: '/file-icons/xml.svg', json: '/file-icons/code.svg', js: '/file-icons/code.svg', jsx: '/file-icons/code.svg', ts: '/file-icons/code.svg', tsx: '/file-icons/code.svg', css: '/file-icons/code.svg',
+        xls: '/file-icons/xlsx.svg', xlsx: '/file-icons/xlsx.svg', csv: '/file-icons/csv.svg', ods: '/file-icons/xlsx.svg', et: '/file-icons/xlsx.svg',
+        ppt: '/file-icons/pptx.svg', pptx: '/file-icons/pptx.svg', odp: '/file-icons/pptx.svg', dps: '/file-icons/pptx.svg',
+        doc: '/file-icons/docx.svg', docx: '/file-icons/docx.svg', md: '/file-icons/txt.svg', txt: '/file-icons/txt.svg', rtf: '/file-icons/docx.svg', odt: '/file-icons/docx.svg', wps: '/file-icons/docx.svg',
+        pdf: '/file-icons/pdf.svg',
+        png: '/file-icons/photo.svg', jpg: '/file-icons/photo.svg', jpeg: '/file-icons/photo.svg', gif: '/file-icons/photo.svg', webp: '/file-icons/photo.svg', bmp: '/file-icons/photo.svg', svg: '/file-icons/photo.svg', heic: '/file-icons/photo.svg', fig: '/file-icons/photo.svg',
+        zip: '/file-icons/zip.svg', rar: '/file-icons/zip.svg', '7z': '/file-icons/zip.svg', tar: '/file-icons/zip.svg', gz: '/file-icons/zip.svg',
+      };
+      const FILE_ICON_BY_CAT = { web: '/file-icons/html.svg', doc: '/file-icons/docx.svg', img: '/file-icons/photo.svg', ppt: '/file-icons/pptx.svg' };
+      const fileIconSrc = (ext, category) => FILE_ICON_BY_EXT[String(ext || '').toLowerCase()] || FILE_ICON_BY_CAT[category] || '/file-icons/genericfile.svg';
+      const OutputFileIcon = ({ meta, ext, category }) => {
+        const lowerExt = String(ext || '').toLowerCase();
+        const code = lowerExt.toUpperCase().slice(0, 4) || meta.label;
+        const isImageIcon = category === 'img' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'fig'].includes(lowerExt);
+        return (
+          <span
+            className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden text-[10px] font-semibold tracking-[0.02em]"
+            style={{ color: meta.color }}
+          >
+            <img src={fileIconSrc(ext, category)} alt="" className={`${isImageIcon ? 'h-9 w-9' : 'h-10 w-10'} object-contain`} draggable={false} />
+            <span className="sr-only">{code}</span>
+          </span>
+        );
+      };
       const refreshOutputs = useCallback(async () => {
         const list = bridge && bridge.listDeliverableIndex
           ? await bridge.listDeliverableIndex().catch(() => [])
@@ -142,6 +165,14 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           return catOk && qOk;
         });
       }, [outputs, outCat, outQuery]);
+      const sortedFilteredOutputs = React.useMemo(() => {
+        const dir = outSortDir === 'asc' ? 1 : -1;
+        return [...filteredOutputs].sort((a, b) => {
+          const byTime = ((a.mtime || 0) - (b.mtime || 0)) * dir;
+          if (byTime) return byTime;
+          return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+      }, [filteredOutputs, outSortDir]);
       const queryOutputs = React.useMemo(() => {
         const q = outQuery.trim().toLowerCase();
         return outputs.filter((o) => !q || String(o.name || '').toLowerCase().includes(q) || String(o.source || '').toLowerCase().includes(q));
@@ -195,8 +226,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       const OutputLivePreview = ({ o, onOpen }) => {
         const ext = String(o.ext || '').toLowerCase();
-        const outputSessionId = o.sessionId || o.session_id || null;
-        const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
+        const cacheKey = `${o.path}|${o.mtime || 0}`;
         const boxRef = useRef(null);
         const [visible, setVisible] = useState(false);
         const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
@@ -229,22 +259,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             try {
               let next = null;
               if (o.category === 'img' && bridge.readArtifactImageB64) {
-                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path, outputSessionId) };
+                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path) };
               } else if (ext === 'pptx' && bridge.readArtifactThumbnail) {
-                const thumb = await bridge.readArtifactThumbnail(o.path, outputSessionId);
+                const thumb = await bridge.readArtifactThumbnail(o.path);
                 next = thumb ? { kind: 'image', url: thumb } : null;
               }
               if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.readArtifactText) {
-                next = { kind: 'html', html: await bridge.readArtifactText(o.path, outputSessionId) };
+                next = { kind: 'html', html: await bridge.readArtifactText(o.path) };
               }
               if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.renderArtifactVisual) {
-                const visual = await bridge.renderArtifactVisual(o.path, outputSessionId);
+                const visual = await bridge.renderArtifactVisual(o.path);
                 if (visual && visual.mode === 'html' && visual.html) {
                   next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                 }
               }
               if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.readArtifactText) {
-                const text = await bridge.readArtifactText(o.path, outputSessionId);
+                const text = await bridge.readArtifactText(o.path);
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
@@ -258,14 +288,14 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
+        }, [cacheKey, visible, o.path, o.category, ext, runQueuedPreview]);
 
-        const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
-        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
+        const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
+        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const shell = (children) => (
           <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
             onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
-            className={`h-[164px] m-2.5 rounded-[13px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] ${onOpen ? 'cursor-pointer' : ''}`}>
+            className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
             {children}
           </div>
         );
@@ -281,7 +311,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (pv.kind === 'html') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'dark' }} />
           </>
@@ -289,7 +319,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (pv.kind === 'officeHtml') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-white"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'light' }} />
           </>
@@ -337,8 +367,6 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           const hit = outPreviewCache.current[cacheKey];
           if (hit) { setPv(hit); return () => { alive = false; }; }
           if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
-          // 本机知识文件不是 Session 产物；Web 端不读取或下载任意主机路径。
-          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
           setPv({ loading: true });
           setFrameReady(false);
           const timer = setTimeout(() => {
@@ -388,9 +416,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
         const shell = (children) => (
-          <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
-            onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
-            className={`h-[126px] rounded-[14px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] mb-3 ${onOpen ? 'cursor-pointer' : ''}`}>
+          <div ref={boxRef} onClick={onOpen} role="button" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
+            className="h-[126px] rounded-[14px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] cursor-pointer mb-3">
             {children}
           </div>
         );
@@ -443,6 +471,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [query, setQuery] = useState('');
       const [results, setResults] = useState([]);
       const [searched, setSearched] = useState(false);
+      const [fileSortDir, setFileSortDir] = useState('desc');
       const [addToKb, setAddToKb] = useState(null);
 
       const CATS = [
@@ -459,6 +488,14 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (!c.exts) return stats ? stats.totalFiles : 0;
         return c.exts.reduce((s, e) => s + (extCountMap[e] || 0), 0);
       };
+      const sortedResults = React.useMemo(() => {
+        const dir = fileSortDir === 'asc' ? 1 : -1;
+        return [...results].sort((a, b) => {
+          const byTime = ((a.mtime || 0) - (b.mtime || 0)) * dir;
+          if (byTime) return byTime;
+          return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+      }, [results, fileSortDir]);
 
       const refreshL0 = useCallback(async () => {
         // 三个查询并行(原顺序 await 累加延迟);拉完更新缓存 + loaded,供 remount 秒显。
@@ -560,7 +597,6 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         : dlProg.stage === 'done' ? t.kbModelStageDone
         : t.kbModelStageDownload;
       const startModelDownload = async () => {
-        if (!canInstallKbModel) return;
         try {
           const st = await bridge.downloadKbModel();
           if (st) { setKbModel(st); kbCache.model = st; }
@@ -622,42 +658,78 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       const docStatusLabel = (d) => d.parseStatus === 'parsed' ? `${d.nChunks} ${t.kbBlocks}` : (d.parseStatus === 'skipped' ? t.kbSkipped : (d.parseStatus === 'pending' ? t.kbStPending : d.parseStatus));
 
-      const SubTab = ({ k, label, count }) => (
-        <button onClick={() => setSub(k)}
-          className={`flex items-center gap-2 px-1 pb-3 text-[15px] font-bold border-b-2 -mb-[1px] transition-colors ${sub === k ? (isDark ? 'border-[#A8C7FA] ' + ink : 'border-[#0B57D0] ' + ink) : `border-transparent ${muted}`}`}>
-          {label}{count != null && <span className={`text-[11px] px-2 py-0.5 rounded-md ${sub === k ? accent : card}`}>{count}</span>}
-        </button>
-      );
-
       return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-y-auto p-4 custom-scrollbar animate-in fade-in duration-300 sm:p-6 lg:p-10">
           {/* Header */}
-          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 pt-12 pb-3">
-            <h1 className="text-[32px] font-normal tracking-tight mb-1.5">{t.kbPageTitle}</h1>
-            <p className={`text-[14px] ${muted}`}>{sub === 'files' ? t.kbFilesSub : sub === 'kb' ? t.kbKbSub : t.kbOutSub}</p>
-          </div>
-          {/* Sub-tabs */}
-          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 flex items-center gap-7 border-b border-gray-400/15">
-            <SubTab k="output" label={t.kbSubOutput} count={outputs.length || null} />
-            <SubTab k="files" label={t.kbSubFiles} count={total ? total.toLocaleString() : null} />
-            <SubTab k="kb" label={t.kbSubKb} count={modelInstalled ? (colls.length || null) : null} />
+          <div className="w-full max-w-[1400px] mx-auto border-b border-slate-200/50 dark:border-white/10">
+            <div className="flex flex-col gap-3 pb-6 lg:flex-row lg:items-center lg:justify-between">
+              <div className="shrink-0">
+                <IosSegmentedControl
+                  value={sub}
+                  onChange={setSub}
+                  isDark={isDark}
+                  segments={[
+                    { key: 'output', label: t.kbSubOutput, count: outputs.length || null },
+                    { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
+                    { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
+                  ]}
+                />
+              </div>
+              <div className="flex min-w-0 flex-col gap-3 overflow-hidden lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end">
+                {sub === 'output' ? (
+                  <>
+                    <IosSearchField
+                      value={outQuery}
+                      onChange={(e) => setOutQuery(e.target.value)}
+                      placeholder={t.kbOutSearchList}
+                      isDark={isDark}
+                      compact
+                      className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
+                    />
+                    <IosSegmentedControl
+                      value={outView}
+                      onChange={setOutView}
+                      isDark={isDark}
+                      compact
+                      segments={[
+                        { key: 'grid', label: t.kbOutGallery, Icon: GridIcon },
+                        { key: 'list', label: t.kbOutList, Icon: IconList },
+                      ]}
+                    />
+                  </>
+                ) : null}
+                {sub === 'files' && !neverScanned ? (
+                  <>
+                    <IosSearchField
+                      value={loaded ? query : ''}
+                      placeholder={t.kbSearchPlaceholder}
+                      onChange={loaded ? (e) => setQuery(e.target.value) : () => {}}
+                      onKeyDown={(e) => { if (loaded && e.key === 'Enter') runSearch(cat, query); }}
+                      isDark={isDark}
+                      compact
+                      disabled={!loaded}
+                      className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
+                    />
+                    <button onClick={startScan} disabled={scanning || !loaded} title={t.kbRescan}
+                      className={`inline-flex h-9 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap ${scanning ? 'cursor-default' : ''} ${isDark ? 'bg-[#2C2C2E] text-white hover:bg-[#3A3A3C] disabled:hover:bg-[#2C2C2E]' : 'bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] disabled:hover:bg-[#E9E9EB]'}`}>
+                      <RefreshCw size={14} className={`mr-2 opacity-70 ${scanning ? 'animate-spin' : ''}`} />
+                      {scanning ? `${t.kbScanning} ${(scan.scanned || 0).toLocaleString()}` : t.kbRescan}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar py-6">
+          <div className="flex-1 py-6">
 
             {/* ============ 文件管理 ============ */}
             {sub === 'files' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-10">
+              <div className="max-w-[1400px] mx-auto">
                 {!loaded ? (
                   // 加载骨架:页面壳即时呈现(搜索栏+真实类型卡,数字/文件用灰条占位),数据 async 填,
                   // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
                   <div>
-                    <div className="flex items-center gap-3 mb-5">
-                      <div className={`flex-1 flex items-center gap-3 px-5 py-3 rounded-full ${card}`}>
-                        <Search size={18} className={muted} />
-                        <span className={`text-[15px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.kbSearchPlaceholder}</span>
-                      </div>
-                    </div>
                     <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbBrowseByType}</div>
                     <div className="grid grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
                       {CATS.map((c) => { const col = CAT_COLOR[c.key] || '#8a8a9a'; const CatI = CAT_ICON[c.key] || FileText; return (
@@ -687,95 +759,78 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 ) : (
                   <div>
-                    <div className="flex items-center gap-3 mb-5">
-                      <div className={`flex-1 flex items-center gap-3 px-5 py-3 rounded-full ${card}`}>
-                        <Search size={18} className={muted} />
-                        <input type="text" value={query} placeholder={t.kbSearchPlaceholder}
-                          onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') runSearch(cat, query); }}
-                          className={`flex-1 bg-transparent border-none outline-none text-[15px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`} />
-                      </div>
-                      {/* 自动维护(档3)已让库自保最新,重扫退化成兜底图标钮:闲时干净贴设计稿,
-                          扫描中自动展开显示进度。 */}
-                      <button onClick={startScan} disabled={scanning} title={t.kbRescan}
-                        className={`shrink-0 flex items-center gap-2 rounded-full transition-colors ${scanning ? 'px-4 py-2.5 cursor-default' : 'p-2.5'} ${soft}`}>
-                        <RefreshCw size={16} className={scanning ? 'animate-spin' : ''} />
-                        {scanning && <span className="text-[12px] font-medium">{t.kbScanning} {(scan.scanned || 0).toLocaleString()}</span>}
-                      </button>
-                    </div>
-
                     <div>
-                        {/* 按类型浏览 — 彩色类型卡(每类独立图标 + 白卡) */}
-                        <div className="flex items-baseline justify-between mb-3">
-                          <div className={`text-[15px] font-bold ${ink}`}>{t.kbBrowseByType}</div>
-                          <div className={`text-[12px] ${muted}`}>{t.kbMonitored}{scan && scan.roots && scan.roots.length ? ` · ${t.kbMonitoredDirs.replace('{n}', scan.roots.length)}` : ''}</div>
-                        </div>
-                        <div className="grid grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
-                          {CATS.map((c) => {
-                            const col = CAT_COLOR[c.key] || '#8a8a9a';
-                            const on = cat === c.key;
-                            const CatI = CAT_ICON[c.key] || FileText;
-                            return (
-                            <button key={c.key} onClick={() => setCat(c.key)}
-                              className={`flex items-center gap-3 p-3 rounded-xl text-left transition-all ${panel} ${panelHover}`}
-                              style={on ? { borderColor: col, boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 3px ${col}1f` } : panelShadow}>
-                              <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div>
-                              <div className="min-w-0">
-                                <div className={`text-[13px] font-bold truncate ${ink}`}>{c.label}</div>
-                                <div className={`text-[11px] ${muted}`}>{catCount(c).toLocaleString()}{t.kbItemUnit}</div>
-                              </div>
-                            </button>
-                          );})}
-                        </div>
-
-                        {/* 最近文件 — 卡片(L0 无打开次数,用最近修改的前 4 个) */}
-                        {!query && results.length > 0 && (
-                          <div className="mb-7">
-                            <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbRecentFiles}</div>
-                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                              {results.slice(0, 4).map((f) => { const e = extOf(f); const col = extColor(e); return (
-                                <div key={f.path} className={`p-3 rounded-2xl ${panel} ${panelHover} transition-all`} style={panelShadow}>
-                                  <LocalFilePreview f={f} onOpen={isWeb ? null : () => setOutputPreview({ path: f.path, sessionId: null })} />
-                                  <div className={`text-[13px] font-bold truncate ${ink}`} title={f.name}>{f.name}</div>
-                                  <div className={`text-[11px] truncate mt-1 ${muted}`}>{f.path}</div>
-                                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-400/10">
-                                    <span className={`text-[11px] ${muted}`}>{fmtDate(f.mtime)}</span>
-                                    {canOpenSystemFiles && <button onClick={() => openFile(f.path)} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${soft}`}>{t.kbOpen}</button>}
-                                  </div>
-                                </div>
-                              );})}
-                            </div>
+                        <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
+                            {CATS.map((c) => {
+                              const on = cat === c.key;
+                              return (
+                                <button key={c.key} onClick={() => setCat(c.key)}
+                                  className="h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors"
+                                  style={on
+                                    ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
+                                    : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+                                  {c.label}
+                                  <span className="ml-1.5 opacity-70">{catCount(c).toLocaleString()}</span>
+                                </button>
+                              );
+                            })}
                           </div>
-                        )}
-
-                        {/* 全部文件 — 标准表格 */}
-                        <div className="flex items-baseline justify-between mb-3">
-                          <div className={`text-[15px] font-bold ${ink}`}>{query ? `${t.kbResults} · ${results.length}` : t.kbAllFiles}</div>
-                          <div className={`text-[12px] ${muted}`}>{t.kbSortByModified}</div>
                         </div>
+
                         {searched && results.length === 0 ? (
                           <div className={`text-center py-16 ${muted} text-[14px]`}>{scanning ? `${t.kbScanningHint} ${(scan.scanned || 0).toLocaleString()}` : t.kbNoResults}</div>
                         ) : (
-                          <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
-                            <div className={`flex items-center gap-3 px-5 py-3 text-[11.5px] font-semibold ${muted} border-b border-gray-400/15 ${isDark ? 'bg-white/5' : 'bg-[#fbfbfd]'}`}>
-                              <span className="flex-1 min-w-0">{t.kbColName}</span>
-                              <span className="w-[26%] hidden lg:block">{t.kbColLoc}</span>
-                              <span className="w-20 text-right">{t.kbColSize}</span>
-                              <span className="w-28 text-right">{t.kbColTime}</span>
-                              <span className="w-24"></span>
+                          <div className="grid grid-cols-1">
+                            <div
+                              className="hidden md:grid grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4 border-b pb-2 text-[12px] font-medium"
+                              style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)', color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}
+                            >
+                              <span className="text-left">{t.kbColName}</span>
+                              <span className="text-right">{t.kbColSize}</span>
+                              <button
+                                type="button"
+                                onClick={() => setFileSortDir((v) => v === 'desc' ? 'asc' : 'desc')}
+                                className={`inline-flex w-fit items-center gap-1 rounded-[8px] py-1 transition-colors ${isDark ? 'hover:text-[#E5E5EA]' : 'hover:text-[#1D1D1F]'}`}
+                              >
+                                <span>{t.kbColTime}</span>
+                                <ChevronDown size={13} className={`transition-transform ${fileSortDir === 'asc' ? 'rotate-180' : ''}`} />
+                              </button>
+                              <span className="text-center">{t.kbOutColActions || '操作'}</span>
                             </div>
-                            {results.map((f) => { const e = extOf(f); const col = extColor(e); return (
-                              <div key={f.path} className={`group flex items-center gap-3 px-5 py-2.5 border-b border-gray-400/10 last:border-0 ${cardHover} transition-colors`}>
-                                <div className="flex-1 min-w-0 flex items-center gap-3">
-                                  <span className="w-7 h-7 rounded-lg grid place-items-center text-[8.5px] font-extrabold text-white shrink-0" style={{ background: col }}>{extLabel(e)}</span>
-                                  <span className={`text-[13px] truncate ${ink}`} title={f.name}>{f.name}</span>
-                                </div>
-                                <span className={`w-[26%] truncate text-[12px] hidden lg:block ${muted}`} title={f.path}>{f.path}</span>
-                                <span className={`w-20 text-right text-[12px] ${muted}`}>{fmtSize(f.size)}</span>
-                                <span className={`w-28 text-right text-[12px] ${muted}`}>{fmtDate(f.mtime)}</span>
-                                <div className="w-24 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button title={t.kbAddToKb} onClick={() => setAddToKb(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><Plus size={15} /></button>
-                                  {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={15} /></button>}
-                                  {canOpenSystemFiles && <button title={t.kbOpenFolder} onClick={() => openFolder(f.path)} className={`p-1.5 rounded-full ${iconHover}`}><BookOpen size={15} /></button>}
+                            {sortedResults.map((f) => { const e = extOf(f); return (
+                              <div key={f.path} onClick={() => setOutputPreviewPath(f.path)}
+                                className="group py-4 border-b cursor-pointer"
+                                style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                                  <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
+                                  <div className="flex min-w-0 items-center gap-4">
+                                    <OutputFileIcon meta={{ color: extColor(e), label: extLabel(e) }} ext={e} />
+                                    <div className="min-w-0">
+                                      <h2 className={`text-[14px] font-semibold tracking-tight truncate mb-0.5 ${ink}`} title={f.name}>{f.name}</h2>
+                                      <p className="text-[12px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>
+                                        {f.path}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <span className={`hidden md:block text-right text-[12px] ${muted}`}>{fmtSize(f.size)}</span>
+                                  <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
+                                  <div className="flex shrink-0 items-center justify-end gap-1">
+                                    <button title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); }}
+                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                      <Plus size={15} />
+                                    </button>
+                                    <button onClick={(e2) => { e2.stopPropagation(); openFile(f.path); }}
+                                      className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                                      {t.kbOpen}
+                                    </button>
+                                    <button title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
+                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                      <FolderOpen size={15} />
+                                    </button>
+                                  </div>
+                                  <div className="col-span-2 text-[12px] md:hidden" style={{ color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}>
+                                    {fmtSize(f.size)} · {fmtDate(f.mtime)}
+                                  </div>
                                 </div>
                               </div>
                             );})}
@@ -789,26 +844,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
             {/* ============ 产出物 ============ */}
             {sub === 'output' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-10">
-                <div className="flex flex-col lg:flex-row lg:items-center gap-3 mb-5">
-                  <div className={`flex-1 flex items-center gap-3 px-5 py-3 rounded-[16px] ${isDark ? 'bg-[#1f2124] border border-white/[0.06]' : 'bg-white border border-[#ececf1]'}`} style={panelShadow}>
-                    <Search size={18} className={muted} />
-                    <input type="text" value={outQuery} placeholder={t.kbOutSearchList}
-                      onChange={(e) => setOutQuery(e.target.value)}
-                      className={`flex-1 bg-transparent border-none outline-none text-[15px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`} />
-                  </div>
-                  <div className={`h-[52px] inline-flex items-center gap-1 p-1 rounded-[16px] border ${isDark ? 'bg-[#1f2124] border-white/[0.06]' : 'bg-white border-[#ececf1]'}`} style={panelShadow}>
-                    <button title={t.kbOutGallery} onClick={() => setOutView('grid')}
-                      className={`w-10 h-10 rounded-xl grid place-items-center transition-colors ${outView === 'grid' ? (isDark ? 'bg-[#2a3952] text-[#79aaff]' : 'bg-[#e9f1ff] text-[#2f6beb]') : muted}`}>
-                      <GridIcon size={18} />
-                    </button>
-                    <button title={t.kbOutList} onClick={() => setOutView('list')}
-                      className={`w-10 h-10 rounded-xl grid place-items-center transition-colors ${outView === 'list' ? (isDark ? 'bg-[#2a3952] text-[#79aaff]' : 'bg-[#e9f1ff] text-[#2f6beb]') : muted}`}>
-                      <IconList size={18} />
-                    </button>
-                  </div>
-                </div>
-
+              <div className="max-w-[1400px] mx-auto">
                 {!outputsLoaded ? (
                   <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
                     {Array.from({ length: 6 }).map((_, i) => (
@@ -825,7 +861,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     <p className="text-[13px]">{t.kbOutEmptyHint}</p>
                   </div>
                 ) : (() => {
-                  const activeOutputs = outView === 'list' ? filteredOutputs : queryOutputs;
+                  const activeOutputs = outView === 'list' ? sortedFilteredOutputs : queryOutputs;
                   if (outView === 'grid' && activeOutputs.length === 0) return (
                     <div className={`text-center py-20 ${muted}`}>
                       <div className={`w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4 ${card}`}><Archive size={24} /></div>
@@ -835,37 +871,40 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   );
                   const sections = groupOutputs(activeOutputs).filter((x) => x.rows.length > 0);
                   const OutputActions = ({ o, compact }) => (
-                    <div className={`flex items-center gap-2 ${compact ? 'justify-end' : 'mt-4'}`}>
-                      <button onClick={() => continueOutput(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-[#283650] text-[#8db7ff]' : 'bg-[#e9f1ff] text-[#2f6beb]'}`}>{t.kbOutContinue}</button>
-                      <button onClick={() => newOutputProject(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-white/[0.075] text-[#dfe3e9]' : 'bg-[#f2f4f8] text-[#444746]'}`}>{t.kbOutNewProject}</button>
-                      {canOpenSystemFiles && <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><FolderOpen size={16} /></button>}
-                      {isWeb && canDownloadArtifacts && <button title="下载产物" onClick={() => bridge.downloadArtifact(o.path, o.sessionId || o.session_id)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><Download size={16} /></button>}
+                    <div className={`flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
+                      <button onClick={() => continueOutput(o)}
+                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                        {t.kbOutContinue}
+                      </button>
+                      <button onClick={() => newOutputProject(o)}
+                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#D1D1D6] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                        {t.kbOutNewProject}
+                      </button>
+                      <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
+                        className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                        <FolderOpen size={15} />
+                      </button>
                     </div>
                   );
                   return (
                     <div>
-                      <div className="flex items-baseline justify-between mb-3">
-                        <div className={`text-[15px] font-bold ${ink}`}>{outView === 'grid' ? t.kbOutSort : t.kbOutCount(activeOutputs.length)} · {t.kbOutCount(activeOutputs.length)}</div>
-                        <div className={`text-[12px] ${muted}`}>{t.kbOutSort}</div>
-                      </div>
-
                       {outView === 'list' && (
-                        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-5">
+                        <div className="relative mb-5">
+                          <div className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
                           {OUTPUT_CATS.map((c) => {
                             const on = outCat === c.key;
-                            const CIcon = c.icon || FileText;
                             return (
                               <button key={c.key} onClick={() => setOutCat(c.key)}
-                                className={`relative h-[72px] flex items-center gap-3 rounded-[14px] px-4 text-left border overflow-hidden transition-all ${isDark ? 'bg-[#1f2124] border-white/[0.09] hover:border-white/[0.16]' : 'bg-white border-[#ececf1] hover:border-[#dfe4f5]'}`}
-                                style={on ? { borderColor: c.color + 'aa', boxShadow: `0 0 0 2px ${c.color}22` } : panelShadow}>
-                                <span className="w-[38px] h-[38px] rounded-[13px] grid place-items-center shrink-0" style={{ color: c.color, background: c.color + (isDark ? '2b' : '1a') }}><CIcon size={18} /></span>
-                                <span className="min-w-0">
-                                  <b className={`block text-[14px] font-extrabold truncate ${ink}`}>{c.label}</b>
-                                  <em className={`not-italic block text-[12px] font-semibold mt-1 ${muted}`}>{outputCount(c.key)} 个</em>
-                                </span>
+                                className="h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors"
+                                style={on
+                                  ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
+                                  : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+                                {c.label}
+                                <span className="ml-1.5 opacity-70">{outputCount(c.key)}</span>
                               </button>
                             );
                           })}
+                          </div>
                         </div>
                       )}
 
@@ -882,14 +921,15 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                 {rows.map((o) => {
                                   const meta = outCatMeta(o.category);
                                   return (
-                                    <article key={o.path} className={`min-h-[288px] rounded-[18px] overflow-hidden border transition-all ${isDark ? 'bg-[linear-gradient(180deg,rgba(36,38,42,.92),rgba(28,30,33,.92))] border-white/[0.08] hover:border-[#79aaff]/30' : 'bg-white border-[#ececf1] hover:border-[#b9cdf6]'}`} style={panelShadow}>
-                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
-                                      <div className="px-5 pb-[18px]">
-                                        <div className="flex items-start gap-2 mt-1">
-                                          <div className={`text-[17px] leading-snug font-extrabold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
-                                          <span className="h-6 px-2.5 rounded-full inline-flex items-center text-[11.5px] font-extrabold" style={{ color: meta.color, background: meta.color + (isDark ? '22' : '16') }}>{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
+                                    <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 ${isDark ? 'bg-[#1C1C1E] border-white/[0.055] hover:bg-[#202124] hover:border-white/[0.09]' : 'bg-white border-black/[0.045] hover:border-black/[0.075]'}`}
+                                      style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>
+                                      <OutputLivePreview o={o} onOpen={() => setOutputPreviewPath(o.path)} />
+                                      <div className="px-5 pb-4">
+                                        <div className="flex items-start gap-3 pt-1">
+                                          <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
+                                          <span className="h-6 min-w-[48px] px-2.5 rounded-full inline-flex items-center justify-center text-[11px] font-normal tracking-[0.02em] shrink-0" style={{ color: isDark ? '#8DB7FF' : '#0066CC', background: isDark ? 'rgba(10,132,255,.10)' : 'rgba(0,122,255,.08)' }}>{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
                                         </div>
-                                        <div className={`flex items-center gap-2 text-[13px] mt-2 ${muted}`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
+                                        <div className={`flex items-center gap-2 text-[13px] mt-2 ${isDark ? 'text-[#AEAEB2]' : 'text-[#6E6E73]'}`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
                                         <OutputActions o={o} />
                                       </div>
                                     </article>
@@ -900,10 +940,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                           ))}
                         </div>
                       ) : (
-                        <div className={`rounded-[18px] overflow-hidden border ${isDark ? 'bg-[#1d1f22]/80 border-white/[0.075]' : 'bg-white border-[#ececf1]'}`} style={panelShadow}>
-                          <div className={`hidden lg:grid grid-cols-[minmax(0,1.9fr)_150px_150px_260px] gap-4 px-5 h-12 items-center text-[12px] font-extrabold ${muted} border-b border-gray-400/15 ${isDark ? 'bg-white/[0.015]' : 'bg-[#fbfbfd]'}`}>
-                            <span>{t.kbOutColName}</span><span>{t.kbOutColTime}</span><span>{t.kbOutColSource}</span><span className="text-right">{t.kbOutColActions}</span>
-                          </div>
+                        <div>
                           {activeOutputs.length === 0 && (
                             <div className={`text-center py-14 ${muted}`}>
                               <div className={`w-12 h-12 mx-auto rounded-2xl grid place-items-center mb-3 ${card}`}><Archive size={20} /></div>
@@ -911,23 +948,67 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               <button onClick={() => { setOutCat('all'); setOutQuery(''); }} className={`px-4 py-2 rounded-full text-[13px] font-bold ${soft}`}>{t.kbOutCatAll}</button>
                             </div>
                           )}
-                          {activeOutputs.map((o) => {
-                            const meta = outCatMeta(o.category);
-                            return (
-                              <div key={o.path} className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1.9fr)_150px_150px_260px] gap-3 lg:gap-4 px-5 py-4 lg:min-h-[76px] items-center border-b border-gray-400/10 last:border-0 ${cardHover}`}>
-                                <div className="flex items-center gap-3 min-w-0">
-                                  <span className="w-10 h-10 rounded-[13px] grid place-items-center shrink-0 text-[10.5px] font-black border border-white/[0.06]" style={{ color: meta.color, background: meta.color + (isDark ? '24' : '16') }}>{String(o.ext || '').toUpperCase().slice(0, 4) || meta.label}</span>
-                                  <div className="min-w-0">
-                                    <strong className={`block text-[15px] truncate ${ink}`} title={o.name}>{o.name}</strong>
-                                    <span className={`block text-[12px] truncate mt-1 ${muted}`} title={o.path}>{outputDesc(o)}</span>
-                                  </div>
+                          {activeOutputs.length > 0 && (
+                            <div className="grid grid-cols-1">
+                              <div
+                                className="hidden md:grid grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4 border-b pb-2 text-[12px] font-medium"
+                                style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)', color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}
+                              >
+                                <span className="text-left">{t.kbColName}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setOutSortDir((v) => v === 'desc' ? 'asc' : 'desc')}
+                                  className={`inline-flex w-fit justify-self-start items-center gap-1 rounded-[8px] py-1 transition-colors ${isDark ? 'hover:text-[#E5E5EA]' : 'hover:text-[#1D1D1F]'}`}
+                                >
+                                  <span>{t.kbColTime}</span>
+                                  <ChevronDown size={13} className={`transition-transform ${outSortDir === 'asc' ? 'rotate-180' : ''}`} />
+                                </button>
+                                <div className="flex justify-end">
+                                  <span className="w-[144px] text-center">{t.kbOutColActions || '操作'}</span>
                                 </div>
-                                <span className={`text-[12.5px] ${muted}`}>{fmtOutputDate(o.mtime)}</span>
-                                <span className={`text-[12.5px] truncate ${muted}`} title={o.source || ''}>{o.source || '—'}</span>
-                                <OutputActions o={o} compact />
                               </div>
-                            );
-                          })}
+                              {activeOutputs.map((o) => {
+                                const meta = outCatMeta(o.category);
+                                return (
+                                  <div key={o.path} onClick={() => setOutputPreviewPath(o.path)}
+                                    className="group py-4 border-b cursor-pointer"
+                                    style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                                    <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
+                                      <div className="flex min-w-0 items-center gap-4">
+                                        <OutputFileIcon meta={meta} ext={o.ext} category={o.category} />
+                                        <div className="min-w-0">
+                                          <h2 className={`text-[14px] font-semibold tracking-tight truncate mb-0.5 ${ink}`} title={o.name}>{o.name}</h2>
+                                          <p className="text-[12px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>
+                                            {o.source || t.kbSubOutput}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <div className="hidden md:block text-[12px] font-medium tabular-nums" style={{ color: isDark ? 'rgba(235,235,245,.62)' : 'rgba(60,60,67,.62)' }}>
+                                        {fmtOutputDate(o.mtime)}
+                                      </div>
+                                      <div className="flex shrink-0 items-center justify-end gap-1">
+                                        <button onClick={(e) => { e.stopPropagation(); continueOutput(o); }}
+                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                                          {t.kbOutContinue}
+                                        </button>
+                                        <button onClick={(e) => { e.stopPropagation(); newOutputProject(o); }}
+                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#D1D1D6] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                          {t.kbOutNewProject}
+                                        </button>
+                                        <button title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
+                                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                          <FolderOpen size={15} />
+                                        </button>
+                                      </div>
+                                      <div className="col-span-2 text-[12px] md:hidden" style={{ color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}>
+                                        {fmtOutputDate(o.mtime)}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -935,7 +1016,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 })()}
               </div>
             )}
-            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} onClose={() => setOutputPreview(null)} />}
+            {outputPreviewPath && <FilePreviewModal path={outputPreviewPath} theme={theme} onClose={() => setOutputPreviewPath(null)} />}
 
             {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
             {sub === 'kb' && !modelInstalled && (
@@ -980,11 +1061,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 </div>
 
-                {!canInstallKbModel ? (
-                  <div className={`mt-5 rounded-xl px-4 py-3 text-[13px] leading-relaxed ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
-                    知识库模型尚未安装，请先在桌面端完成安装；安装后刷新此页面即可使用。
-                  </div>
-                ) : !downloading ? (
+                {!downloading ? (
                   <div className="mt-5">
                     <button onClick={startModelDownload}
                       className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
@@ -1010,7 +1087,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
             {/* ============ 知识库 列表（模型已就绪）============ */}
             {sub === 'kb' && modelInstalled && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-10">
+              <div className="max-w-[1400px] mx-auto">
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
                   <div className="flex-1 min-w-0">
                     <h2 className={`text-[20px] font-bold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#211f33]'}`}>{t.kbBannerTitle}</h2>
@@ -1058,7 +1135,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       <div className={`text-[15px] font-bold ${ink}`}>{t.kbMyColls}</div>
                       <div className={`text-[12px] ${muted}`}>{colls.length} {t.kbCollUnit} · {colls.reduce((s, c) => s + (c.docCount || 0), 0)} {t.kbDocs} · {fmtSize(colls.reduce((s, c) => s + (c.totalBytes || 0), 0))}</div>
                     </div>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="grid grid-cols-3 gap-4">
                       {shown.map((c) => {
                         const prog = (idx && idx.running && idx.collectionId === c.id && idx.total > 0) ? Math.round((idx.done / idx.total) * 100) : null;
                         const isIdx = c.status === 'indexing' || prog != null;
@@ -1105,10 +1182,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         </>}
                       </div>
                       {activeColl && <div className="flex items-center gap-2 shrink-0">
-                        {canPickHostFiles && <button onClick={() => addSources(activeColl.id)} disabled={indexing} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${indexing ? 'opacity-60 cursor-default' : ''} ${soft}`}>
+                        <button onClick={() => addSources(activeColl.id)} disabled={indexing} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${indexing ? 'opacity-60 cursor-default' : ''} ${soft}`}>
                           {indexing ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />}
                           {indexing ? `${t.kbIndexing} ${idx.done}/${idx.total}` : t.kbAddFiles}
-                        </button>}
+                        </button>
                         <button title={t.kbEditColl} onClick={() => setNewColl({ id: activeColl.id, name: activeColl.name, category: activeColl.category || '', description: activeColl.description ?? null })} className={`p-2 rounded-full ${iconHover}`}><Edit2 size={15} /></button>
                         <button title={t.kbDeleteColl} onClick={() => setDelColl(activeColl)} className={`p-2 rounded-full ${iconHover}`}><Trash2 size={15} /></button>
                       </div>}
@@ -1143,7 +1220,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               </div>
                             ) : (
                               <div className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>}
+                                <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>
                                 <button title={t.kbRemove} onClick={() => setConfirmDoc(d.id)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
                               </div>
                             )}
@@ -1156,11 +1233,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 )}
 
                 {/* 加入知识库入口：点击选文件(单知识集直接加，多个弹选择) */}
-                {canPickHostFiles && <div onClick={dzPick}
+                <div onClick={dzPick}
                   className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed cursor-pointer transition-colors ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
                   <Plus size={16} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
-                </div>}
+                </div>
               </div>
             )}
 
@@ -1168,8 +1245,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
           {/* 删除知识集 二次确认(删库连同所有文档+索引,不可恢复) */}
           {delColl && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4" onClick={() => setDelColl(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-[400px] max-h-full overflow-y-auto rounded-2xl p-5 sm:p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDelColl(null)}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
                   {t.kbDelCollConfirm.replace('{n}', delColl.name)}
@@ -1185,8 +1262,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
           {/* 新建知识集 modal */}
           {newColl && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4" onClick={() => setNewColl(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-[400px] max-h-full overflow-y-auto rounded-2xl p-5 sm:p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
                 <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') createColl(); }}
                   className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`} />
@@ -1202,8 +1279,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
           {/* 加入知识库 浮层 */}
           {addToKb && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4" onClick={() => setAddToKb(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-[380px] max-h-full overflow-y-auto rounded-2xl p-5 sm:p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddToKb(null)}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
                 <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
                 {colls.length === 0 ? (
