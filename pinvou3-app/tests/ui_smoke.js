@@ -241,9 +241,17 @@ async function expand(page) {
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
   await page.evaluate(async () => {
-    const handlers = window.__TAURI_EVENT_HANDLERS__['remote_control:mobile_user_message'] || [];
+    const handlers = window.__TAURI_EVENT_HANDLERS__['chat:user_message'] || [];
     for (const handler of handlers) {
-      await handler({ payload: { session_id: 's1', content: '手机补充消息', client_message_id: 'cm-regression' } });
+      await handler({
+        id: 'event-mobile-admission',
+        payload: {
+          session_id: 's1',
+          content: '手机补充消息',
+          operation: 'append',
+          base_transcript_revision: 'ui-smoke-baseline',
+        },
+      });
     }
   });
 

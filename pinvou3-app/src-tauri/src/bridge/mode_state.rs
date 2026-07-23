@@ -59,6 +59,14 @@ pub struct SessionModeState {
     pub pending_persona_body: Option<String>,
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
+    /// 当前可操作方案的服务端 ticket。新 plan_ready 会替换旧 ticket；
+    /// accept/discard 必须 compare-and-consume，防多端旧卡重复执行。
+    #[serde(default)]
+    pub pending_plan_id: Option<String>,
+    /// accept 已原子 claim、但 Engine mailbox 尚未确认的 ticket。
+    /// 仅用于进程内失败回滚，不暴露给前端。
+    #[serde(skip)]
+    pub(crate) plan_claim_in_flight: Option<String>,
     /// 品悟 review 质量护栏开关。默认 false(保持现状)。
     /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
@@ -78,6 +86,8 @@ impl Default for SessionModeState {
     fn default() -> Self {
         Self {
             mode: SerializableMode::Yolo,
+            pending_plan_id: None,
+            plan_claim_in_flight: None,
             pinvou_review_enabled: false,
             active_skill: None,
             active_persona: None,
@@ -131,6 +141,8 @@ mod tests {
     fn serializes_to_snake_case() {
         let s = SessionModeState {
             mode: SerializableMode::Plan,
+            pending_plan_id: Some("plan-1".to_string()),
+            plan_claim_in_flight: None,
             pinvou_review_enabled: false,
             active_skill: None,
             active_persona: None,
@@ -139,6 +151,8 @@ mod tests {
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));
+        assert!(json.contains("\"pending_plan_id\":\"plan-1\""));
+        assert!(!json.contains("plan_claim_in_flight"));
     }
 
     #[test]

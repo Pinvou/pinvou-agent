@@ -30,9 +30,10 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-use crate::bridge::mode_state::SerializableMode;
+use crate::bridge::mode_state::{SerializableMode, SessionModeState};
 use crate::bridge::sessions::{
-    ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting, SessionStore,
+    transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
+    ScheduledTokenAccounting, SessionStore,
 };
 use crate::bridge::Pinvou3Bridge;
 
@@ -61,9 +62,231 @@ pub struct AppEngine {
 #[derive(Debug, Default)]
 struct TurnLifecycleState {
     active: bool,
+    submitted: bool,
     turn_id: Option<String>,
     terminal_emitted: bool,
+    terminal_closing: bool,
     reclaimed: bool,
+    admission_emitted: bool,
+    next_reservation_id: u64,
+    active_reservation_id: Option<u64>,
+    transcript_rules: Vec<TranscriptSanitizationRule>,
+}
+
+/// The durable, user-visible meaning of a submitted engine operation.
+///
+/// `EditLast` deliberately differs from append: the engine truncates the last
+/// user message and every message after it before adding the replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptOperation {
+    Append,
+    EditLast,
+}
+
+impl TranscriptOperation {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::EditLast => "edit_last",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptSanitizationRule {
+    reservation_id: u64,
+    submitted: bool,
+    actual_user_content: String,
+    display_message: Message,
+    display_content: String,
+    #[allow(dead_code)]
+    operation: TranscriptOperation,
+    baseline_revision: Option<String>,
+    admission_metadata: Option<TurnAdmissionMetadata>,
+    superseded: Option<Box<TranscriptSanitizationRule>>,
+}
+
+#[derive(Debug, Clone)]
+struct ReservedTranscript {
+    operation: TranscriptOperation,
+    display_message: Message,
+    display_content: String,
+    baseline_revision: Option<String>,
+}
+
+/// Extra fields carried only by semantic admissions such as accepting a plan.
+/// Ordinary chat and edit admissions intentionally leave this absent so their
+/// wire payload stays unchanged.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnAdmissionMetadata {
+    action: &'static str,
+    plan_id: String,
+    mode: SerializableMode,
+    mode_state: SessionModeState,
+}
+
+impl TurnAdmissionMetadata {
+    pub(crate) fn accept_plan(plan_id: String, mode_state: SessionModeState) -> Self {
+        Self {
+            action: "accept_plan",
+            plan_id,
+            mode: SerializableMode::Yolo,
+            mode_state,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TurnAdmission {
+    content: String,
+    operation: TranscriptOperation,
+    base_transcript_revision: Option<String>,
+    metadata: Option<TurnAdmissionMetadata>,
+}
+
+impl TurnAdmission {
+    fn user_payload(&self, session_id: &str) -> serde_json::Value {
+        let mut payload = json!({
+            "session_id": session_id,
+            "content": self.content,
+            "operation": self.operation.as_str(),
+            "base_transcript_revision": self.base_transcript_revision,
+        });
+        if let Some(metadata) = self.metadata.as_ref() {
+            payload["action"] = json!(metadata.action);
+            payload["plan_id"] = json!(metadata.plan_id);
+            payload["mode"] = json!(metadata.mode);
+            payload["mode_state"] = json!(metadata.mode_state);
+        }
+        payload
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptFallback {
+    operation: TranscriptOperation,
+    display_message: Message,
+    baseline_revision: String,
+}
+
+/// RAII admission for one session turn.
+///
+/// Creating the reservation atomically marks the session busy. Dropping it
+/// before the engine operation is accepted rolls that state back, including
+/// any transcript sanitization rule prepared for the operation. Once
+/// `mark_submitted` is called, the authoritative engine terminal event owns
+/// lifecycle completion.
+pub(crate) struct TurnReservation {
+    lifecycle: Arc<TurnLifecycle>,
+    reservation_id: u64,
+    base_transcript_revision: Option<String>,
+    transcript: Option<ReservedTranscript>,
+    admission_metadata: Option<TurnAdmissionMetadata>,
+    submitted: bool,
+}
+
+impl TurnReservation {
+    fn new(lifecycle: Arc<TurnLifecycle>, reservation_id: u64) -> Self {
+        Self {
+            lifecycle,
+            reservation_id,
+            base_transcript_revision: None,
+            transcript: None,
+            admission_metadata: None,
+            submitted: false,
+        }
+    }
+
+    pub(crate) fn set_base_transcript_revision(&mut self, revision: String) {
+        self.base_transcript_revision = Some(revision);
+    }
+
+    pub(crate) fn base_transcript_revision(&self) -> Option<&str> {
+        self.base_transcript_revision.as_deref()
+    }
+
+    pub(crate) fn set_transcript(
+        &mut self,
+        operation: TranscriptOperation,
+        display_message: Message,
+    ) -> Result<()> {
+        if self.submitted {
+            anyhow::bail!("turn reservation was already submitted");
+        }
+        if display_message.role != "user" {
+            anyhow::bail!("display transcript message must have role=user");
+        }
+        let display_content = match display_message.content.first() {
+            Some(deepseek_tui::models::ContentBlock::Text { text, .. }) => text.clone(),
+            _ => anyhow::bail!("display transcript message must start with text content"),
+        };
+        self.transcript = Some(ReservedTranscript {
+            operation,
+            display_message,
+            display_content,
+            baseline_revision: None,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn set_transcript_with_baseline(
+        &mut self,
+        operation: TranscriptOperation,
+        display_message: Message,
+        baseline_revision: String,
+    ) -> Result<()> {
+        self.set_transcript(operation, display_message)?;
+        if let Some(transcript) = self.transcript.as_mut() {
+            transcript.baseline_revision = Some(baseline_revision);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_admission_metadata(&mut self, metadata: TurnAdmissionMetadata) -> Result<()> {
+        if self.submitted {
+            anyhow::bail!("turn reservation was already submitted");
+        }
+        self.admission_metadata = Some(metadata);
+        Ok(())
+    }
+
+    fn belongs_to(&self, lifecycle: &Arc<TurnLifecycle>) -> bool {
+        Arc::ptr_eq(&self.lifecycle, lifecycle)
+    }
+
+    pub(crate) fn ensure_active(&self) -> Result<()> {
+        self.lifecycle
+            .ensure_reservation_active(self.reservation_id)
+    }
+
+    fn prepare_actual_user_content(&self, actual_user_content: String) -> Result<()> {
+        let Some(transcript) = self.transcript.as_ref() else {
+            return Ok(());
+        };
+        self.lifecycle.install_transcript_rule(
+            self.reservation_id,
+            actual_user_content,
+            transcript.display_message.clone(),
+            transcript.display_content.clone(),
+            transcript.operation,
+            transcript.baseline_revision.clone(),
+            self.admission_metadata.clone(),
+        )
+    }
+
+    fn mark_submitted(mut self) {
+        self.lifecycle
+            .mark_reservation_submitted(self.reservation_id);
+        self.submitted = true;
+    }
+}
+
+impl Drop for TurnReservation {
+    fn drop(&mut self) {
+        if !self.submitted {
+            self.lifecycle.on_reservation_failed(self.reservation_id);
+        }
+    }
 }
 
 /// Session-scoped turn state shared by the command path and the event
@@ -72,11 +295,24 @@ struct TurnLifecycleState {
 #[derive(Debug, Default)]
 pub(crate) struct TurnLifecycle {
     state: Mutex<TurnLifecycleState>,
+    emission: Mutex<()>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct EmittedTerminal {
     turn_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct TerminalTransition {
+    terminal: EmittedTerminal,
+    admission: Option<TurnAdmission>,
+    fallback: Option<TranscriptFallback>,
+}
+
+#[derive(Debug)]
+struct StartedTransition {
+    admission: Option<TurnAdmission>,
 }
 
 pub(crate) fn emit_chat_terminal(
@@ -94,14 +330,221 @@ pub(crate) fn emit_chat_terminal(
     crate::remote_control::forward_app_event(app, "chat:done", payload);
 }
 
+fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
+    let user_payload = admission.user_payload(session_id);
+    let _ = app.emit("chat:user_message", user_payload.clone());
+    crate::remote_control::forward_app_event(app, "chat:user_message", user_payload);
+    let started_payload = json!({ "session_id": session_id });
+    let _ = app.emit("chat:turn_started", started_payload.clone());
+    crate::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
+}
+
 impl TurnLifecycle {
+    pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
+        let reservation_id = {
+            let mut state = self.state.lock();
+            if state.active || state.terminal_closing {
+                anyhow::bail!("session_turn_in_progress");
+            }
+            state.next_reservation_id = state.next_reservation_id.wrapping_add(1).max(1);
+            let reservation_id = state.next_reservation_id;
+            state.active = true;
+            state.submitted = false;
+            state.turn_id = None;
+            state.terminal_emitted = false;
+            state.terminal_closing = false;
+            state.reclaimed = false;
+            state.admission_emitted = false;
+            state.active_reservation_id = Some(reservation_id);
+            reservation_id
+        };
+        crate::connector_visibility::turn_submitted();
+        Ok(TurnReservation::new(self.clone(), reservation_id))
+    }
+
+    fn install_transcript_rule(
+        &self,
+        reservation_id: u64,
+        actual_user_content: String,
+        display_message: Message,
+        display_content: String,
+        operation: TranscriptOperation,
+        baseline_revision: Option<String>,
+        admission_metadata: Option<TurnAdmissionMetadata>,
+    ) -> Result<()> {
+        let mut state = self.state.lock();
+        if !state.active || state.active_reservation_id != Some(reservation_id) {
+            anyhow::bail!("turn reservation invalidated or no longer active");
+        }
+        state
+            .transcript_rules
+            .retain(|rule| rule.reservation_id != reservation_id);
+        let superseded = if operation == TranscriptOperation::EditLast {
+            state.transcript_rules.pop().map(Box::new)
+        } else {
+            None
+        };
+        state.transcript_rules.push(TranscriptSanitizationRule {
+            reservation_id,
+            submitted: false,
+            actual_user_content,
+            display_message,
+            display_content,
+            operation,
+            baseline_revision,
+            admission_metadata,
+            superseded,
+        });
+        Ok(())
+    }
+
+    fn ensure_reservation_active(&self, reservation_id: u64) -> Result<()> {
+        let state = self.state.lock();
+        if state.active
+            && !state.reclaimed
+            && !state.terminal_emitted
+            && state.active_reservation_id == Some(reservation_id)
+        {
+            Ok(())
+        } else {
+            anyhow::bail!("turn reservation invalidated or no longer active")
+        }
+    }
+
+    fn mark_reservation_submitted(&self, reservation_id: u64) {
+        let mut state = self.state.lock();
+        if let Some(rule) = state
+            .transcript_rules
+            .iter_mut()
+            .find(|rule| rule.reservation_id == reservation_id)
+        {
+            rule.submitted = true;
+        }
+        if state.active && state.active_reservation_id == Some(reservation_id) {
+            state.submitted = true;
+        }
+    }
+
+    fn on_reservation_failed(&self, reservation_id: u64) {
+        let mut state = self.state.lock();
+        if let Some(index) = state
+            .transcript_rules
+            .iter()
+            .position(|rule| rule.reservation_id == reservation_id)
+        {
+            // A real TurnStarted can race ahead of EngineHandle::send returning.
+            // In that case the forwarder, not the command future, has already
+            // transferred ownership to the engine. Preserve the durable rule.
+            if state.transcript_rules[index].submitted {
+                return;
+            }
+            let failed = state.transcript_rules.remove(index);
+            if let Some(superseded) = failed.superseded {
+                state.transcript_rules.insert(index, *superseded);
+            }
+        }
+        if state.active_reservation_id != Some(reservation_id)
+            || state.submitted
+            || state.turn_id.is_some()
+            || state.terminal_emitted
+        {
+            return;
+        }
+        state.active = false;
+        state.submitted = false;
+        state.active_reservation_id = None;
+        drop(state);
+        crate::connector_visibility::turn_finished();
+    }
+
+    /// Replace every engine-only user prompt registered during this engine's
+    /// lifetime with its UI display message. Rules intentionally survive turn
+    /// completion because later `SessionUpdated` snapshots still contain the
+    /// raw prompts from all earlier turns until the engine is rebuilt.
+    fn sanitize_messages(&self, mut messages: Vec<Message>) -> (Vec<Message>, bool) {
+        let state = self.state.lock();
+        let active_reservation_id = state.active_reservation_id;
+        let mut active_rule_matched = false;
+        for rule in state.transcript_rules.iter().rev() {
+            let Some(index) = messages.iter().rposition(|message| {
+                message.role == "user"
+                    && matches!(
+                        message.content.first(),
+                        Some(deepseek_tui::models::ContentBlock::Text { text, .. })
+                            if text == &rule.actual_user_content
+                    )
+            }) else {
+                continue;
+            };
+            messages[index] = rule.display_message.clone();
+            if active_reservation_id == Some(rule.reservation_id) {
+                active_rule_matched = true;
+            }
+        }
+        (messages, active_rule_matched)
+    }
+
+    fn active_transcript_fallback(&self) -> Option<TranscriptFallback> {
+        let state = self.state.lock();
+        Self::active_transcript_fallback_locked(&state)
+    }
+
+    fn active_transcript_fallback_locked(state: &TurnLifecycleState) -> Option<TranscriptFallback> {
+        let active = state.active_reservation_id?;
+        let rule = state
+            .transcript_rules
+            .iter()
+            .find(|rule| rule.reservation_id == active)?;
+        Some(TranscriptFallback {
+            operation: rule.operation,
+            display_message: rule.display_message.clone(),
+            baseline_revision: rule.baseline_revision.clone()?,
+        })
+    }
+
+    fn take_admission_locked(state: &mut TurnLifecycleState) -> Option<TurnAdmission> {
+        if state.admission_emitted {
+            return None;
+        }
+        let active_reservation_id = state.active_reservation_id?;
+        let rule = state
+            .transcript_rules
+            .iter()
+            .find(|rule| rule.reservation_id == active_reservation_id)?;
+        let admission = TurnAdmission {
+            content: rule.display_content.clone(),
+            operation: rule.operation,
+            base_transcript_revision: rule.baseline_revision.clone(),
+            metadata: rule.admission_metadata.clone(),
+        };
+        state.admission_emitted = true;
+        Some(admission)
+    }
+
+    fn remove_unsubmitted_rule_locked(state: &mut TurnLifecycleState, reservation_id: u64) {
+        let Some(index) = state
+            .transcript_rules
+            .iter()
+            .position(|rule| rule.reservation_id == reservation_id && !rule.submitted)
+        else {
+            return;
+        };
+        let invalidated = state.transcript_rules.remove(index);
+        if let Some(superseded) = invalidated.superseded {
+            state.transcript_rules.insert(index, *superseded);
+        }
+    }
+
     pub(crate) fn on_submitted(&self) -> bool {
         let mut state = self.state.lock();
-        if !state.active {
+        if !state.active && !state.terminal_closing {
             state.active = true;
+            state.submitted = true;
             state.turn_id = None;
             state.terminal_emitted = false;
             state.reclaimed = false;
+            state.admission_emitted = false;
+            state.active_reservation_id = None;
             crate::connector_visibility::turn_submitted();
             true
         } else {
@@ -116,75 +559,247 @@ impl TurnLifecycle {
         let mut state = self.state.lock();
         if state.turn_id.is_none() && !state.terminal_emitted {
             state.active = false;
+            state.submitted = false;
+            state.active_reservation_id = None;
             drop(state);
             crate::connector_visibility::turn_finished();
         }
     }
 
-    fn on_started(&self, turn_id: String) {
+    fn on_started_transition(&self, turn_id: String) -> Option<StartedTransition> {
         let mut state = self.state.lock();
-        if state.reclaimed {
-            return;
-        }
-        if !state.active {
-            crate::connector_visibility::turn_submitted();
-        }
-        state.active = true;
-        state.turn_id = Some(turn_id);
-        state.terminal_emitted = false;
-    }
-
-    pub(crate) fn claim_terminal(&self) -> Option<EmittedTerminal> {
-        let mut state = self.state.lock();
-        if !state.active || state.terminal_emitted {
+        if state.reclaimed || state.terminal_closing {
             return None;
         }
-        state.terminal_emitted = true;
-        state.active = false;
-        let emitted = EmittedTerminal {
-            turn_id: state.turn_id.take(),
+        let newly_active = !state.active;
+        if newly_active {
+            state.admission_emitted = false;
+        }
+        state.active = true;
+        state.submitted = true;
+        state.turn_id = Some(turn_id);
+        state.terminal_emitted = false;
+        if let Some(reservation_id) = state.active_reservation_id {
+            if let Some(rule) = state
+                .transcript_rules
+                .iter_mut()
+                .find(|rule| rule.reservation_id == reservation_id)
+            {
+                rule.submitted = true;
+            }
+        }
+        let transition = StartedTransition {
+            admission: Self::take_admission_locked(&mut state),
         };
         drop(state);
-        crate::connector_visibility::turn_finished();
-        Some(emitted)
+        if newly_active {
+            crate::connector_visibility::turn_submitted();
+        }
+        Some(transition)
     }
 
+    #[cfg(test)]
+    fn on_started(&self, turn_id: String) {
+        let _ = self.on_started_transition(turn_id);
+    }
+
+    fn emit_started_admission(&self, app: &AppHandle, session_id: &str, turn_id: String) -> bool {
+        let _emission = self.emission.lock();
+        let Some(transition) = self.on_started_transition(turn_id) else {
+            return false;
+        };
+        if let Some(admission) = transition.admission {
+            emit_turn_admission(app, session_id, admission);
+        }
+        true
+    }
+
+    fn claim_terminal_transition(&self) -> Option<TerminalTransition> {
+        let transition = {
+            let mut state = self.state.lock();
+            if !state.active || !state.submitted || state.terminal_emitted {
+                return None;
+            }
+            let admission = Self::take_admission_locked(&mut state);
+            let fallback = Self::active_transcript_fallback_locked(&state);
+            state.terminal_emitted = true;
+            state.terminal_closing = true;
+            state.active = false;
+            state.submitted = false;
+            state.active_reservation_id = None;
+            TerminalTransition {
+                terminal: EmittedTerminal {
+                    turn_id: state.turn_id.take(),
+                },
+                admission,
+                fallback,
+            }
+        };
+        crate::connector_visibility::turn_finished();
+        Some(transition)
+    }
+
+    /// Reclaim a lifecycle after an engine disappears. A reservation which
+    /// never reached the engine mailbox is invalidated silently; only an
+    /// accepted/started operation owns a user-visible terminal event.
+    fn claim_reclaimed_transition(&self) -> Option<TerminalTransition> {
+        let transition = {
+            let mut state = self.state.lock();
+            if !state.active || state.terminal_emitted {
+                return None;
+            }
+            state.reclaimed = true;
+            if !state.submitted {
+                if let Some(reservation_id) = state.active_reservation_id.take() {
+                    Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+                }
+                state.active = false;
+                state.turn_id = None;
+                None
+            } else {
+                let admission = Self::take_admission_locked(&mut state);
+                let fallback = Self::active_transcript_fallback_locked(&state);
+                state.terminal_emitted = true;
+                state.terminal_closing = true;
+                state.active = false;
+                state.submitted = false;
+                state.active_reservation_id = None;
+                Some(TerminalTransition {
+                    terminal: EmittedTerminal {
+                        turn_id: state.turn_id.take(),
+                    },
+                    admission,
+                    fallback,
+                })
+            }
+        };
+        crate::connector_visibility::turn_finished();
+        transition
+    }
+
+    #[cfg(test)]
+    pub(crate) fn claim_terminal(&self) -> Option<EmittedTerminal> {
+        self.claim_terminal_transition()
+            .map(|transition| transition.terminal)
+    }
+
+    fn claim_terminal_with_admission(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+    ) -> Option<EmittedTerminal> {
+        let _emission = self.emission.lock();
+        let transition = self.claim_terminal_transition()?;
+        if let Some(admission) = transition.admission {
+            emit_turn_admission(app, session_id, admission);
+        }
+        Some(transition.terminal)
+    }
+
+    #[cfg(test)]
     pub(crate) fn finish_once(&self, emit: impl FnOnce()) -> Option<EmittedTerminal> {
         let emitted = self.claim_terminal()?;
         emit();
+        self.finish_terminal_emission();
         Some(emitted)
     }
 
-    pub(crate) fn emit_terminal_once(
-        &self,
-        app: &AppHandle,
-        session_id: &str,
-        status: TurnOutcomeStatus,
-        error: Option<String>,
-    ) -> Option<EmittedTerminal> {
-        self.finish_once(|| emit_chat_terminal(app, session_id, status, error))
+    fn finish_terminal_emission(&self) {
+        self.state.lock().terminal_closing = false;
     }
 
-    fn emit_reclaimed_terminal_once(
+    fn claim_reclaimed_with_admission(
         &self,
         app: &AppHandle,
         session_id: &str,
-    ) -> Option<EmittedTerminal> {
-        let mut state = self.state.lock();
-        state.reclaimed = true;
-        if !state.active || state.terminal_emitted {
-            return None;
+    ) -> Option<TerminalTransition> {
+        let _emission = self.emission.lock();
+        let transition = self.claim_reclaimed_transition()?;
+        if let Some(admission) = transition.admission.clone() {
+            emit_turn_admission(app, session_id, admission);
         }
-        state.terminal_emitted = true;
+        Some(transition)
+    }
+
+    pub(crate) fn invalidate_unsubmitted_reservation(&self) -> bool {
+        let _emission = self.emission.lock();
+        let mut state = self.state.lock();
+        if !state.active || state.submitted || state.terminal_emitted {
+            return false;
+        }
+        state.reclaimed = true;
+        if let Some(reservation_id) = state.active_reservation_id.take() {
+            Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+        }
         state.active = false;
-        let emitted = EmittedTerminal {
-            turn_id: state.turn_id.take(),
-        };
+        state.turn_id = None;
         drop(state);
         crate::connector_visibility::turn_finished();
-        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None);
-        Some(emitted)
+        true
     }
+}
+
+async fn finish_reclaimed_lifecycle_turn(
+    lifecycle: &TurnLifecycle,
+    app: &AppHandle,
+    store: &SessionStore,
+    session_id: &str,
+    status: TurnOutcomeStatus,
+    error: Option<String>,
+) -> Option<EmittedTerminal> {
+    let transition = lifecycle.claim_reclaimed_with_admission(app, session_id)?;
+    let mut terminal_status = status;
+    let mut terminal_error = error;
+    if let Some(fallback) = transition.fallback {
+        let store_for_save = store.clone();
+        let session_for_save = session_id.to_string();
+        let saved = tokio::task::spawn_blocking(move || {
+            store_for_save.persist_admitted_chat_display(
+                &session_for_save,
+                &fallback.baseline_revision,
+                fallback.display_message,
+                fallback.operation == TranscriptOperation::EditLast,
+            )
+        })
+        .await;
+        match saved {
+            Ok(Ok(saved)) => match transcript_revision(&saved.messages) {
+                Ok(revision) => {
+                    let payload = json!({
+                        "session_id": session_id,
+                        "transcript_revision": revision,
+                    });
+                    let _ = app.emit("chat:transcript_committed", payload.clone());
+                    crate::remote_control::forward_app_event(
+                        app,
+                        "chat:transcript_committed",
+                        payload,
+                    );
+                }
+                Err(revision_error) => {
+                    terminal_status = TurnOutcomeStatus::Failed;
+                    terminal_error = Some(format!(
+                        "Reclaimed transcript revision failed: {revision_error:#}"
+                    ));
+                }
+            },
+            Ok(Err(save_error)) => {
+                terminal_status = TurnOutcomeStatus::Failed;
+                terminal_error = Some(format!(
+                    "Reclaimed transcript persistence failed: {save_error:#}"
+                ));
+            }
+            Err(join_error) => {
+                terminal_status = TurnOutcomeStatus::Failed;
+                terminal_error = Some(format!(
+                    "Reclaimed transcript persistence task failed: {join_error}"
+                ));
+            }
+        }
+    }
+    emit_chat_terminal(app, session_id, terminal_status, terminal_error);
+    lifecycle.finish_terminal_emission();
+    Some(transition.terminal)
 }
 
 impl AppEngine {
@@ -344,6 +959,20 @@ impl AppEngine {
         self.send_turn_op(op).await
     }
 
+    pub(crate) async fn send_reserved_user_message(
+        &self,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        reservation: TurnReservation,
+    ) -> Result<()> {
+        let op =
+            self.bridge
+                .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
+        self.send_reserved_turn_op(op, reservation).await
+    }
+
     /// Submit the initial prompt for one scheduled run using the immutable
     /// policy captured when its hidden session was created.
     pub(crate) async fn send_scheduled_message(
@@ -387,6 +1016,9 @@ impl AppEngine {
 
     async fn send_turn_op(&self, op: Op) -> Result<()> {
         let activated = self.turn_lifecycle.on_submitted();
+        if !activated {
+            anyhow::bail!("session_turn_in_progress");
+        }
         let result = self.handle.send(op).await;
         if result.is_err() {
             self.turn_lifecycle.on_submission_failed(activated);
@@ -394,10 +1026,41 @@ impl AppEngine {
         result
     }
 
-    pub(crate) fn finish_reclaimed_turn(&self, app: &AppHandle, session_id: &str) -> bool {
-        match self
-            .turn_lifecycle
-            .emit_reclaimed_terminal_once(app, session_id)
+    async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {
+        if !reservation.belongs_to(&self.turn_lifecycle) {
+            anyhow::bail!("turn reservation belongs to a different session");
+        }
+        reservation.ensure_active()?;
+        let actual_user_content = match &op {
+            Op::SendMessage { content, .. } => content.clone(),
+            Op::EditLastTurn { new_message } => new_message.clone(),
+            _ => anyhow::bail!("reserved turn requires a user-message operation"),
+        };
+        reservation.prepare_actual_user_content(actual_user_content)?;
+        match self.handle.send(op).await {
+            Ok(()) => {
+                reservation.mark_submitted();
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(crate) async fn finish_reclaimed_turn(
+        &self,
+        app: &AppHandle,
+        store: &SessionStore,
+        session_id: &str,
+    ) -> bool {
+        match finish_reclaimed_lifecycle_turn(
+            &self.turn_lifecycle,
+            app,
+            store,
+            session_id,
+            TurnOutcomeStatus::Interrupted,
+            None,
+        )
+        .await
         {
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
@@ -419,6 +1082,15 @@ impl AppEngine {
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
         self.send_turn_op(Op::EditLastTurn { new_message }).await
+    }
+
+    pub(crate) async fn edit_last_turn_reserved(
+        &self,
+        new_message: String,
+        reservation: TurnReservation,
+    ) -> Result<()> {
+        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, reservation)
+            .await
     }
 
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
@@ -762,6 +1434,9 @@ fn spawn_event_forwarder(
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
+        let mut latest_chat_engine_state: Option<ChatEngineState> = None;
+        let mut chat_persistence_error: Option<String> = None;
+        let mut active_transcript_seen = false;
         // app 侧自测推理指标累加器(TTFT/生成速度/累计tokens/KV)。try_state:headless
         // harness / 测试可能没 manage MonitorState,拿不到就整块跳过,不 panic。
         let self_metrics = app
@@ -775,7 +1450,15 @@ fn spawn_event_forwarder(
         while let Some(event) = rx.recv().await {
             match event {
                 Event::TurnStarted { turn_id, .. } => {
-                    turn_lifecycle.on_started(turn_id.clone());
+                    // Publish admission from the authoritative engine event,
+                    // before this serial forwarder can observe any delta or
+                    // terminal event for the same turn. Reclaim uses the same
+                    // emission gate, so it cannot overtake this pair.
+                    if !turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone()) {
+                        continue;
+                    }
+                    active_transcript_seen = false;
+                    chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
@@ -933,13 +1616,18 @@ fn spawn_event_forwarder(
                     model,
                     workspace,
                 } => {
-                    if let Some(profile) = scheduled_profile.as_ref() {
-                        if event_session_id != session_id {
-                            scheduled_persistence_error = Some(format!(
-                                "Engine session id mismatch: expected {session_id}, got {event_session_id}"
-                            ));
-                            continue;
+                    if event_session_id != session_id {
+                        let mismatch = format!(
+                            "Engine session id mismatch: expected {session_id}, got {event_session_id}"
+                        );
+                        if scheduled_profile.is_some() {
+                            scheduled_persistence_error = Some(mismatch);
+                        } else {
+                            chat_persistence_error = Some(mismatch);
                         }
+                        continue;
+                    }
+                    if let Some(profile) = scheduled_profile.as_ref() {
                         let state = ScheduledEngineState {
                             messages,
                             system_prompt,
@@ -962,6 +1650,48 @@ fn spawn_event_forwarder(
                             Err(error) => {
                                 scheduled_persistence_error = Some(format!(
                                     "scheduled transcript persistence task failed: {error}"
+                                ));
+                            }
+                        }
+                    } else {
+                        let (messages, matched_active_rule) =
+                            turn_lifecycle.sanitize_messages(messages);
+                        active_transcript_seen |= matched_active_rule;
+                        let state = ChatEngineState {
+                            messages,
+                            system_prompt,
+                            model,
+                            workspace,
+                        };
+                        latest_chat_engine_state = Some(state.clone());
+                        let store_for_save = store.clone();
+                        let session_for_save = session_id.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            store_for_save.persist_chat_engine_state(&session_for_save, state)
+                        })
+                        .await
+                        {
+                            Ok(Ok(saved)) => {
+                                chat_persistence_error = None;
+                                if let Ok(revision) = transcript_revision(&saved.messages) {
+                                    let payload = json!({
+                                        "session_id": session_id,
+                                        "transcript_revision": revision,
+                                    });
+                                    let _ = app.emit("chat:transcript_committed", payload.clone());
+                                    crate::remote_control::forward_app_event(
+                                        &app,
+                                        "chat:transcript_committed",
+                                        payload,
+                                    );
+                                }
+                            }
+                            Ok(Err(error)) => {
+                                chat_persistence_error = Some(format!("{error:#}"));
+                            }
+                            Err(error) => {
+                                chat_persistence_error = Some(format!(
+                                    "chat transcript persistence task failed: {error}"
                                 ));
                             }
                         }
@@ -1386,12 +2116,76 @@ fn spawn_event_forwarder(
                                 ),
                             });
                         }
+                    } else {
+                        let terminal_save = if active_transcript_seen {
+                            latest_chat_engine_state.clone().map(|state| {
+                                let store_for_save = store.clone();
+                                let session_for_save = session_id.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    store_for_save
+                                        .persist_chat_engine_state(&session_for_save, state)
+                                })
+                            })
+                        } else {
+                            turn_lifecycle.active_transcript_fallback().map(|fallback| {
+                                let store_for_save = store.clone();
+                                let session_for_save = session_id.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    store_for_save.persist_admitted_chat_display(
+                                        &session_for_save,
+                                        &fallback.baseline_revision,
+                                        fallback.display_message,
+                                        fallback.operation == TranscriptOperation::EditLast,
+                                    )
+                                })
+                            })
+                        };
+                        if let Some(save_task) = terminal_save {
+                            match save_task.await {
+                                Ok(Ok(saved)) => {
+                                    chat_persistence_error = None;
+                                    if let Ok(revision) = transcript_revision(&saved.messages) {
+                                        let payload = json!({
+                                            "session_id": session_id,
+                                            "transcript_revision": revision,
+                                        });
+                                        let _ =
+                                            app.emit("chat:transcript_committed", payload.clone());
+                                        crate::remote_control::forward_app_event(
+                                            &app,
+                                            "chat:transcript_committed",
+                                            payload,
+                                        );
+                                    }
+                                }
+                                Ok(Err(save_error)) => {
+                                    chat_persistence_error = Some(format!("{save_error:#}"));
+                                }
+                                Err(join_error) => {
+                                    chat_persistence_error = Some(format!(
+                                        "chat transcript persistence task failed: {join_error}"
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(save_error) = chat_persistence_error.take() {
+                            terminal_status = TurnOutcomeStatus::Failed;
+                            terminal_error = Some(match terminal_error {
+                                Some(engine_error) => format!(
+                                    "{engine_error}; chat conversation persistence failed: {save_error}"
+                                ),
+                                None => format!(
+                                    "Chat conversation persistence failed: {save_error}"
+                                ),
+                            });
+                        }
                     }
                     // Persistence above can change the authoritative outcome and
                     // may await. Claim only after that result is known, but before
                     // every completion-only side effect below. If reclaim won
                     // during the await, this late TurnComplete is discarded.
-                    let Some(_) = turn_lifecycle.claim_terminal() else {
+                    let Some(_) = turn_lifecycle.claim_terminal_with_admission(&app, &session_id)
+                    else {
                         continue;
                     };
                     // 单独发 usage 给前端 token 进度条
@@ -1444,17 +2238,25 @@ fn spawn_event_forwarder(
                         // (已砍 PlanPhase),mode 留 Plan 直到用户 accept/discard 切 Yolo。
                         // 修订(还在 Plan 时再调 update_plan)天然幂等:再弹一张新卡。
                         if plan_used && state.mode == SerializableMode::Plan {
-                            let payload = json!({
-                                "session_id": active_id.clone(),
-                                "plan_snapshot": plan_snapshot.clone(),
-                                "todos_snapshot": todos_snapshot.clone(),
-                            });
-                            let _ = app.emit("chat:plan_ready", payload.clone());
-                            crate::remote_control::forward_app_event(
-                                &app,
-                                "chat:plan_ready",
-                                payload,
-                            );
+                            if let Some(plan_id) = current_turn_id.clone() {
+                                if let Some(mode_state) =
+                                    store.register_pending_plan(&active_id, plan_id.clone())
+                                {
+                                    let payload = json!({
+                                        "session_id": active_id.clone(),
+                                        "plan_id": plan_id,
+                                        "plan_snapshot": plan_snapshot.clone(),
+                                        "todos_snapshot": todos_snapshot.clone(),
+                                        "mode_state": mode_state,
+                                    });
+                                    let _ = app.emit("chat:plan_ready", payload.clone());
+                                    crate::remote_control::forward_app_event(
+                                        &app,
+                                        "chat:plan_ready",
+                                        payload,
+                                    );
+                                }
+                            }
                         }
 
                         // From here the harness path may await. Publish the claimed
@@ -1468,6 +2270,7 @@ fn spawn_event_forwarder(
                             terminal_status,
                             terminal_error.clone(),
                         );
+                        turn_lifecycle.finish_terminal_emission();
 
                         // ── H1: Harness Loop (skill session 图执行器) ──
                         // 本 session 绑定了 skill 且项目目录有 workflow_progress.json →
@@ -1539,9 +2342,7 @@ fn spawn_event_forwarder(
                         Some(crate::timing::TurnUsage {
                             input_tokens: u64::from(usage.input_tokens),
                             output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(
-                                usage.prompt_cache_hit_tokens.unwrap_or(0),
-                            ),
+                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
                             cache_miss_tokens: u64::from(
                                 usage.prompt_cache_miss_tokens.unwrap_or(0),
                             ),
@@ -1695,12 +2496,16 @@ fn spawn_event_forwarder(
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
-        match turn_lifecycle.emit_terminal_once(
+        match finish_reclaimed_lifecycle_turn(
+            &turn_lifecycle,
             &app,
+            &store,
             &session_id,
             TurnOutcomeStatus::Failed,
             Some(stopped_error.clone()),
-        ) {
+        )
+        .await
+        {
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
             }) => {
@@ -1934,8 +2739,37 @@ fn scheduled_tool_should_auto_approve(
 
 #[cfg(test)]
 mod turn_lifecycle_tests {
-    use super::{EmittedTerminal, TurnLifecycle};
+    use super::{EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnLifecycle};
+    use crate::bridge::mode_state::SessionModeState;
+    use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
+    use std::sync::Arc;
+
+    fn message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn engine_user(text: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "<turn_meta>private</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+            ],
+        }
+    }
 
     #[test]
     fn reclaim_and_natural_completion_emit_exactly_once_per_turn() {
@@ -1971,6 +2805,15 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
+    fn concurrent_submission_is_rejected_until_the_active_turn_finishes() {
+        let lifecycle = TurnLifecycle::default();
+        assert!(lifecycle.on_submitted());
+        assert!(!lifecycle.on_submitted());
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        assert!(lifecycle.on_submitted());
+    }
+
+    #[test]
     fn forwarder_stop_and_reclaim_share_the_same_terminal_gate() {
         let lifecycle = TurnLifecycle::default();
         lifecycle.on_submitted();
@@ -1994,6 +2837,275 @@ mod turn_lifecycle_tests {
         }
 
         assert_eq!(effects.get(), 1);
+    }
+
+    #[test]
+    fn concurrent_rejection_happens_before_one_shot_state_is_consumed() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let first = lifecycle.reserve().expect("first admission");
+        let mut one_shot = Some("skill body".to_string());
+
+        let rejected = lifecycle.reserve();
+        assert!(rejected
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("session_turn_in_progress")));
+        assert_eq!(one_shot.as_deref(), Some("skill body"));
+
+        let consumed_after_admission = one_shot.take();
+        assert_eq!(consumed_after_admission.as_deref(), Some("skill body"));
+        drop(first);
+        assert!(lifecycle.reserve().is_ok(), "drop restores admission");
+    }
+
+    #[test]
+    fn real_turn_started_claims_admission_and_preserves_the_rule_if_command_lags() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation.set_base_transcript_revision("revision-before".to_string());
+        reservation
+            .set_transcript_with_baseline(
+                TranscriptOperation::Append,
+                message("user", "visible prompt"),
+                "revision-before".to_string(),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<private>injected</private>".to_string())
+            .expect("actual prompt");
+
+        // The engine can publish TurnStarted before EngineHandle::send returns
+        // to the command future. That event is authoritative submission.
+        let started = lifecycle
+            .on_started_transition("turn-fast".to_string())
+            .expect("started transition");
+        let payload = started
+            .admission
+            .expect("admission")
+            .user_payload("session-1");
+        assert_eq!(payload["content"], "visible prompt");
+        assert_eq!(payload["operation"], "append");
+        assert_eq!(payload["base_transcript_revision"], "revision-before");
+
+        // Simulate cancellation of the command future before its local guard
+        // can call mark_submitted. The forwarder-owned rule must survive.
+        drop(reservation);
+        let (sanitized, matched) =
+            lifecycle.sanitize_messages(vec![engine_user("<private>injected</private>")]);
+        assert!(matched);
+        assert_eq!(sanitized, vec![message("user", "visible prompt")]);
+        assert!(lifecycle.claim_terminal().is_some());
+    }
+
+    #[test]
+    fn reclaim_invalidates_reserved_turn_without_claiming_a_terminal() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "never submitted"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("private unsent prompt".to_string())
+            .expect("actual prompt");
+
+        assert!(lifecycle.claim_reclaimed_transition().is_none());
+        assert_eq!(lifecycle.claim_terminal(), None);
+        let invalidated = reservation
+            .prepare_actual_user_content("private unsent prompt".to_string())
+            .expect_err("reclaimed reservation must reject a later send");
+        assert!(invalidated.to_string().contains("reservation invalidated"));
+        drop(reservation);
+        let next = lifecycle.reserve().expect("reclaim released reservation");
+        let (messages, matched) =
+            lifecycle.sanitize_messages(vec![engine_user("private unsent prompt")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private unsent prompt")]);
+        drop(next);
+    }
+
+    #[test]
+    fn reclaim_of_submitted_accept_plan_carries_admission_once_before_terminal() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation.set_base_transcript_revision("plan-revision".to_string());
+        reservation
+            .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
+                "plan-ticket".to_string(),
+                SessionModeState::default(),
+            ))
+            .expect("accept metadata");
+        reservation
+            .set_transcript_with_baseline(
+                TranscriptOperation::Append,
+                message("user", "✅ 就这么干"),
+                "plan-revision".to_string(),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("execute approved plan".to_string())
+            .expect("actual prompt");
+        reservation.mark_submitted();
+
+        let reclaimed = lifecycle
+            .claim_reclaimed_transition()
+            .expect("submitted turn terminal");
+        let payload = reclaimed
+            .admission
+            .expect("reclaim carries pending admission")
+            .user_payload("session-plan");
+        assert_eq!(payload["action"], "accept_plan");
+        assert_eq!(payload["plan_id"], "plan-ticket");
+        assert_eq!(payload["mode"], "yolo");
+        assert_eq!(payload["mode_state"]["mode"], "yolo");
+        assert_eq!(payload["content"], "✅ 就这么干");
+        let fallback = reclaimed
+            .fallback
+            .expect("submitted reclaim carries durable transcript fallback");
+        assert_eq!(fallback.operation, TranscriptOperation::Append);
+        assert_eq!(fallback.baseline_revision, "plan-revision");
+        assert_eq!(fallback.display_message, message("user", "✅ 就这么干"));
+        assert_eq!(
+            reclaimed.terminal,
+            EmittedTerminal { turn_id: None },
+            "admitted-but-not-started reclaim still owns one terminal"
+        );
+        assert!(lifecycle.claim_reclaimed_transition().is_none());
+        assert!(
+            lifecycle
+                .on_started_transition("late-turn".to_string())
+                .is_none(),
+            "late TurnStarted cannot resurrect a reclaimed turn"
+        );
+    }
+
+    #[test]
+    fn append_sanitization_replaces_injected_user_and_preserves_tool_user_blocks() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "visible prompt\n\n📎 report.pdf"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<skill>secret</skill>\nvisible prompt".to_string())
+            .expect("actual prompt");
+
+        let tool_result = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: "tool output".to_string(),
+                is_error: None,
+                content_blocks: None,
+            }],
+        };
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![
+            message("assistant", "older"),
+            engine_user("<skill>secret</skill>\nvisible prompt"),
+            tool_result.clone(),
+        ]);
+
+        assert!(matched);
+        assert_eq!(
+            sanitized[1],
+            message("user", "visible prompt\n\n📎 report.pdf")
+        );
+        assert_eq!(sanitized[2], tool_result);
+    }
+
+    #[test]
+    fn edit_sanitization_keeps_engine_truncation_and_replaces_only_new_user() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::EditLast,
+                message("user", "edited display"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<persona>private</persona>\nedited".to_string())
+            .expect("actual prompt");
+
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![
+            message("user", "kept first turn"),
+            message("assistant", "kept answer"),
+            engine_user("<persona>private</persona>\nedited"),
+        ]);
+
+        assert!(matched);
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(sanitized[0], message("user", "kept first turn"));
+        assert_eq!(sanitized[2], message("user", "edited display"));
+    }
+
+    #[test]
+    fn duplicate_raw_prompts_map_newest_rule_to_newest_message() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut first = lifecycle.reserve().expect("first reserve");
+        first
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "first display"),
+            )
+            .unwrap();
+        first
+            .prepare_actual_user_content("same raw prompt".to_string())
+            .unwrap();
+        first.mark_submitted();
+        assert!(lifecycle.finish_once(|| {}).is_some());
+
+        let mut second = lifecycle.reserve().expect("second reserve");
+        second
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "second display"),
+            )
+            .unwrap();
+        second
+            .prepare_actual_user_content("same raw prompt".to_string())
+            .unwrap();
+
+        let (both, matched) = lifecycle.sanitize_messages(vec![
+            engine_user("same raw prompt"),
+            message("assistant", "between"),
+            engine_user("same raw prompt"),
+        ]);
+        assert!(matched);
+        assert_eq!(both[0], message("user", "first display"));
+        assert_eq!(both[2], message("user", "second display"));
+
+        // If compaction removed the older occurrence, the surviving newest
+        // prompt must still use the newest display rule.
+        let (compacted, matched) =
+            lifecycle.sanitize_messages(vec![engine_user("same raw prompt")]);
+        assert!(matched);
+        assert_eq!(compacted, vec![message("user", "second display")]);
+    }
+
+    #[test]
+    fn failed_reserved_submission_rolls_back_lifecycle_and_sanitization_rule() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        {
+            let mut reservation = lifecycle.reserve().expect("reserve");
+            reservation
+                .set_transcript(TranscriptOperation::Append, message("user", "display"))
+                .expect("display transcript");
+            reservation
+                .prepare_actual_user_content("private actual".to_string())
+                .expect("actual prompt");
+            // Simulate EngineHandle::send returning an error: no mark_submitted.
+        }
+
+        let next = lifecycle.reserve().expect("reservation restored");
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private actual")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private actual")]);
+        drop(next);
     }
 }
 

@@ -124,9 +124,9 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     setSaveState('saving');
     setErrorText('');
     const promise = (async () => {
-      await bridge.writeArtifactText(artifact.path, content);
+      await bridge.writeArtifactText(artifact.path, content, artifact.sessionId);
       let info = initialInfo || null;
-      try { info = await bridge.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifactInfo(artifact.path, artifact.sessionId); } catch (_) {}
       lastSavedRef.current = content;
       setSaveState('saved');
       onSaved?.(content, info);
@@ -155,9 +155,9 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     if (!artifact?.path || !bridge.readArtifactText) return false;
     if (!force && latestDraftRef.current !== lastSavedRef.current) return false;
     try {
-      const text = await bridge.readArtifactText(artifact.path);
+      const text = await bridge.readArtifactText(artifact.path, artifact.sessionId);
       let info = initialInfo || null;
-      try { info = await bridge.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifactInfo(artifact.path, artifact.sessionId); } catch (_) {}
       latestDraftRef.current = text || '';
       lastSavedRef.current = text || '';
       setDraft(text || '');

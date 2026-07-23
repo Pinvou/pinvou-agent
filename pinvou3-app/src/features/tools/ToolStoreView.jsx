@@ -4,8 +4,42 @@ import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, P
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { can } from '../../shared/platform.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
+
+const canStartExternalAuth = () => can('oauth') && can('externalAuth');
+
+const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
+  tool.authRequired
+  || tool.oauthMcp
+  || tool.feishuCli
+  || tool.wecomCli
+  || tool.dingtalkCli
+  || tool.eipCli
+  || tool.zhidaoCli
+);
+
+const PlatformToolAction = (props) => {
+  if (!can('toolStoreMutations')) {
+    if (!props.tool?.installed) return null;
+    const label = isRestrictedExternalAuthTool(props.tool) ? '已连接' : '已安装';
+    return (
+      <span className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap`}>
+        {label}
+      </span>
+    );
+  }
+  if (!canStartExternalAuth() && isRestrictedExternalAuthTool(props.tool)) {
+    if (!props.tool.installed) return null;
+    return (
+      <span className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap`}>
+        已连接
+      </span>
+    );
+  }
+  return <TsActionBtn {...props} />;
+};
 
 const oauthUiTimeoutResult = (serverName) => ({
   status: 'timeout',
@@ -475,7 +509,7 @@ const FEISHU_STEPS = [
     };
 
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
-    const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry }) => {
+    const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry, allowDownload = true }) => {
       const isDark = theme === 'dark';
       if (!guide) return null;
       const COPY = {
@@ -495,9 +529,9 @@ const FEISHU_STEPS = [
             <div className="px-6 pt-6 pb-4 text-center">
               <div className="text-[34px] mb-2">📖</div>
               <div className={`text-[17px] font-semibold mb-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>{c.title}</div>
-              <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{c.body}</div>
+              <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{!allowDownload && guide.state === 'not_installed' ? '请先在桌面端安装 Obsidian 并创建笔记库，然后在这里重新检测。' : c.body}</div>
             </div>
-            {c.primary && btn(c.primary, onDownload, `text-[17px] font-semibold ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`)}
+            {allowDownload && c.primary && btn(c.primary, onDownload, `text-[17px] font-semibold ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`)}
             {btn(c.retry, onRetry, `text-[15px] ${isDark ? 'text-slate-300 active:bg-white/5' : 'text-slate-600 active:bg-slate-100'}`)}
             {btn('取消', onCancel, `text-[15px] ${isDark ? 'text-slate-500 active:bg-white/5' : 'text-slate-400 active:bg-slate-100'}`)}
           </div>
@@ -507,6 +541,8 @@ const FEISHU_STEPS = [
 
     const ToolStoreView = ({ theme, onNewChat }) => {
       const isDark = theme === 'dark';
+      const externalAuthAvailable = canStartExternalAuth();
+      const canMutateToolStore = can('toolStoreMutations');
       const [searchQuery, setSearchQuery] = useState('');
       const [activeCategory, setActiveCategory] = useState('all');
       const [selectedTool, setSelectedTool] = useState(null);
@@ -569,6 +605,7 @@ const FEISHU_STEPS = [
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
       useEffect(() => {
+        if (!externalAuthAvailable) return undefined;
         ensureFeishuListeners();
         let prevPhase = feishuConn.flow && feishuConn.flow.phase;
         const unsub = feishuConn.subscribe((flow) => {
@@ -587,10 +624,11 @@ const FEISHU_STEPS = [
         });
         setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
         return unsub;
-      }, []);
+      }, [externalAuthAvailable]);
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
+        if (!externalAuthAvailable) return undefined;
         ensureWecomListeners();
         let prevPhase = wecomConn.flow && wecomConn.flow.phase;
         const unsub = wecomConn.subscribe((flow) => {
@@ -609,10 +647,11 @@ const FEISHU_STEPS = [
         });
         setWecomFlow(wecomConn.flow);
         return unsub;
-      }, []);
+      }, [externalAuthAvailable]);
 
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
+        if (!externalAuthAvailable) return undefined;
         ensureDingtalkListeners();
         let prevPhase = dingtalkConn.flow && dingtalkConn.flow.phase;
         const unsub = dingtalkConn.subscribe((flow) => {
@@ -631,7 +670,7 @@ const FEISHU_STEPS = [
         });
         setDingtalkFlow(dingtalkConn.flow);
         return unsub;
-      }, []);
+      }, [externalAuthAvailable]);
 
       // EIP(CLI 路线)连接态:由 eip-cli auth status 判定(同飞书)。
       const [eipConnected, setEipConnected] = useState(false);
@@ -654,6 +693,7 @@ const FEISHU_STEPS = [
 
       // 企微/EIP/知道 连接编排事件:后端推进度,前端驱动 UI。
       useEffect(() => {
+        if (!externalAuthAvailable) return undefined;
         const ev = window.__TAURI__ && window.__TAURI__.event;
         if (!ev) return;
         const unlisten = [];
@@ -704,7 +744,7 @@ const FEISHU_STEPS = [
           setAlert({ visible: true, loading: false, title: '知道连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
         }).then(u => unlisten.push(u));
         return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
-      }, []);
+      }, [externalAuthAvailable]);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/EIP/知道 的 installed = 已连接)
       // 新分类映射(按工具 id):沟通协作 / 文档知识 / 研发 / 金融数据 / 生活实用 / H3C 内部
@@ -733,6 +773,12 @@ const FEISHU_STEPS = [
           oauthTokenPresent: !!authState?.oauth_token_present,
         };
       });
+      const isToolVisibleOnPlatform = (tool) => (
+        externalAuthAvailable
+        || !isRestrictedExternalAuthTool(tool)
+        || !!tool.installed
+      );
+      const visibleInternalTools = tools.filter(tool => tool.internal && isToolVisibleOnPlatform(tool));
 
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
       const presetSkills = tsSkillsData.map(s => {
@@ -752,7 +798,7 @@ const FEISHU_STEPS = [
       }));
       const skillCards = [...presetSkills, ...uploadedSkills];
 
-      const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId));
+      const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId) && isToolVisibleOnPlatform(t));
       const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
       // 独家技能:公文写作 / PPT 生成 / 数据可视化 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
       const FEATURED_SKILL = s => ['government-writing', 'pptx', 'visualizer'].includes(s.backendId) || s.id === 's5';
@@ -894,7 +940,9 @@ const FEISHU_STEPS = [
 
       // 执行安装（已拿到 config 或无需 config）
       const doInstall = async (backendId, userConfig) => {
+        if (!canMutateToolStore) return;
         const t = tsToolsData.find(x => x.backendId === backendId);
+        if (!externalAuthAvailable && isRestrictedExternalAuthTool(t)) return;
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
@@ -1016,6 +1064,7 @@ const FEISHU_STEPS = [
 
       // 技能安装/卸载(无 configFields,直接装/卸)
       const handleSkillAction = async (backendId, isInstalled) => {
+        if (!canMutateToolStore) return;
         const t = skillCards.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
         setBusyId(backendId);
@@ -1038,6 +1087,7 @@ const FEISHU_STEPS = [
 
       // 上传 zip 技能包(Rust 端弹 dialog 选文件)
       const handleUploadSkill = async () => {
+        if (!canMutateToolStore) return;
         setBusyId('__upload__');
         setAlert({ loading: true, visible: false, title: '正在导入技能包…', subtitle: '校验并解压中', isInstall: true, isError: false });
         try {
@@ -1253,10 +1303,13 @@ const FEISHU_STEPS = [
 
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
+        if (!canMutateToolStore) return;
         // 有配套 MCP 的技能(公文=gongwen)→ 改走该 MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
         // 纯技能(无配套 MCP、无同名工具:如上传技能)才走 handleSkillAction。PPT=pptx 有同名工具,落下方正常工具流。
         if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
         else if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
+        const requestedTool = tools.find(x => x.backendId === backendId) || tsToolsData.find(x => x.backendId === backendId);
+        if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;
         // 飞书走 CLI 连接流程,不走 marketplace install
         if (backendId === 'feishu') {
           if (isInstalled) return disconnectFeishu();
@@ -1382,7 +1435,7 @@ const FEISHU_STEPS = [
         <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
           {createPortal(<TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
           {createPortal(<TsConfigDialog
-            config={configDialog}
+            config={externalAuthAvailable ? configDialog : null}
             theme={theme}
             onCancel={() => setConfigDialog(null)}
             onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); doInstall(bid, values); }}
@@ -1390,6 +1443,7 @@ const FEISHU_STEPS = [
           {createPortal(<TsObsidianGuide
             guide={obsidianGuide}
             theme={theme}
+            allowDownload={can('localModelSetup')}
             onCancel={() => setObsidianGuide(null)}
             onDownload={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
             onRetry={async () => {
@@ -1400,7 +1454,7 @@ const FEISHU_STEPS = [
             }}
           />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
-          {wecomQr && (() => {
+          {externalAuthAvailable && wecomQr && (() => {
             const cancel = () => { window.__TAURI__.core.invoke('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
@@ -1420,7 +1474,7 @@ const FEISHU_STEPS = [
             </div>
             ), document.body);
           })()}
-          {eipSso && (() => {
+          {externalAuthAvailable && eipSso && (() => {
             const cancel = () => { window.__TAURI__.core.invoke('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
@@ -1439,7 +1493,7 @@ const FEISHU_STEPS = [
             </div>
             ), document.body);
           })()}
-          {zhidaoSso && (() => {
+          {externalAuthAvailable && zhidaoSso && (() => {
             const cancel = () => { window.__TAURI__.core.invoke('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
@@ -1537,42 +1591,45 @@ const FEISHU_STEPS = [
                       style={{ scrollbarWidth: 'none', maskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)', WebkitMaskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)' }}
                     >
                       {/* H3C 集团内部工具合集 —— 精选第一张，点击展开详情 */}
-                      <div
-                        onClick={() => setShowH3cModal(true)}
-                        className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
-                      >
-                        <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
-                        <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
-                        <div className="relative p-8 text-white">
-                          <div className="flex items-center justify-between mb-4">
-                            <span className="text-[11px] font-bold text-white/85 uppercase tracking-[0.15em] bg-white/15 backdrop-blur px-2.5 py-1 rounded-full">集团内部 · 员工专属</span>
-                            <span className="text-[12px] font-black text-white border border-white/45 rounded-md px-1.5 py-0.5">H3C</span>
-                          </div>
-                          <h3 className="text-[30px] font-bold tracking-tight leading-tight drop-shadow-sm">H3C 办公生态<br/>一键接入</h3>
-                          <p className="text-white/85 text-[15px] font-medium mt-3 max-w-[88%]">以你本人 SSO 身份直连集团内部系统，全程不填 key</p>
-                        </div>
-                        <div className="absolute bottom-6 left-6 right-6">
-                          <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-lg transition-transform group-hover:-translate-y-1">
-                            <div className="flex items-center gap-3">
-                              <div className="w-12 h-12 rounded-[13px] flex items-center justify-center text-white shadow-inner" style={{ background: 'linear-gradient(135deg,#ff2a43,#a30010)' }}>
-                                <Briefcase size={22} strokeWidth={1.6} />
-                              </div>
-                              <div>
-                                <h4 className="text-[14px] font-bold text-white drop-shadow-sm">H3C 集团内部工具</h4>
-                                <p className="text-[12px] text-white/70 mt-0.5">2 个工具 · 需内网</p>
-                              </div>
+                      {visibleInternalTools.length > 0 && (
+                        <div
+                          onClick={() => setShowH3cModal(true)}
+                          className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
+                        >
+                          <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                          <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
+                          <div className="relative p-8 text-white">
+                            <div className="flex items-center justify-between mb-4">
+                              <span className="text-[11px] font-bold text-white/85 uppercase tracking-[0.15em] bg-white/15 backdrop-blur px-2.5 py-1 rounded-full">集团内部 · 员工专属</span>
+                              <span className="text-[12px] font-black text-white border border-white/45 rounded-md px-1.5 py-0.5">H3C</span>
                             </div>
-                            <span className="text-white font-bold text-[14px] drop-shadow-sm">查看</span>
+                            <h3 className="text-[30px] font-bold tracking-tight leading-tight drop-shadow-sm">H3C 办公生态<br/>一键接入</h3>
+                            <p className="text-white/85 text-[15px] font-medium mt-3 max-w-[88%]">以你本人 SSO 身份直连集团内部系统，全程不填 key</p>
+                          </div>
+                          <div className="absolute bottom-6 left-6 right-6">
+                            <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-lg transition-transform group-hover:-translate-y-1">
+                              <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-[13px] flex items-center justify-center text-white shadow-inner" style={{ background: 'linear-gradient(135deg,#ff2a43,#a30010)' }}>
+                                  <Briefcase size={22} strokeWidth={1.6} />
+                                </div>
+                                <div>
+                                  <h4 className="text-[14px] font-bold text-white drop-shadow-sm">H3C 集团内部工具</h4>
+                                  <p className="text-[12px] text-white/70 mt-0.5">{visibleInternalTools.length} 个工具 · 需内网</p>
+                                </div>
+                              </div>
+                              <span className="text-white font-bold text-[14px] drop-shadow-sm">查看</span>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      )}
                       {tsFeaturedCollections.map((collection) => {
                         const featTool = tools.find(a => a.id === collection.featuredToolId);
+                        if (featTool && !isToolVisibleOnPlatform(featTool)) return null;
                         return (
                           <div
                             key={collection.id}
                             onClick={() => setSelectedTool(featTool)}
-                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
+                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
                           >
                             {collection.img
                               ? <img src={collection.img} alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
@@ -1597,7 +1654,7 @@ const FEISHU_STEPS = [
                                       <Cpu size={12} /> {featTool.type}
                                     </p>
                                   </div>
-                                  <TsActionBtn tool={featTool} busy={busyId === featTool.backendId} onAction={handleAction} />
+                                  <PlatformToolAction tool={featTool} busy={busyId === featTool.backendId} onAction={handleAction} />
                                 </div>
                               </div>
                             )}
@@ -1653,11 +1710,11 @@ const FEISHU_STEPS = [
                           <div className="absolute bottom-4 left-4 right-4 bg-white/92 dark:bg-[#1c1c1e]/92 backdrop-blur-xl rounded-2xl p-3 flex items-center gap-3 shadow-lg">
                             <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white shadow-inner shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
                             <div className="flex-1 min-w-0"><h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{tool.title}</h4><p className="text-[12px] text-slate-500 dark:text-slate-400 truncate">{tool.subtitle}</p></div>
-                            <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
+                            <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
                           </div>
                         );
                         return (
-                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
+                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
                             {v === 'light' ? (
                               <>
                                 <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
@@ -1688,7 +1745,7 @@ const FEISHU_STEPS = [
                                   <div className="flex-1 min-w-0"><h4 className="text-white text-[15px] font-bold truncate drop-shadow">{tool.title}</h4><p className="text-white/80 text-[12px] truncate drop-shadow">{tool.subtitle}</p></div>
                                   {tool.builtin
                                     ? <span className="text-white text-[12px] font-bold bg-white/20 backdrop-blur px-3 py-1 rounded-full shrink-0">内置</span>
-                                    : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />}
+                                    : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />}
                                 </div>
                               </>
                             ) : v === 'fallback' ? (
@@ -1742,9 +1799,9 @@ const FEISHU_STEPS = [
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
                             {(() => {
                               const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : null;
-                              return (cf && (cf.phase === 'running' || cf.phase === 'qr'))
+                              return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
                                 ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
-                                : <TsActionBtn tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
+                                : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
                             })()}
                           </div>
                         </div>
@@ -1757,7 +1814,7 @@ const FEISHU_STEPS = [
                         {isSkillTab ? <Package size={28} /> : <Server size={28} />}
                       </div>
                       <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? '未找到匹配的工具' : (installedOnly ? '还没有已安装的工具' : (isSkillTab ? '没有技能' : '未检索到工具'))}</h3>
-                      <p className="text-slate-500 dark:text-slate-400">{searching ? '换个关键词试试，或检查一下拼写。' : (installedOnly ? '去商店安装连接器或技能后，会出现在这里。' : (isSkillTab ? '点右上「上传技能包」导入 zip。' : '请尝试修改搜索词或查阅 API 开发文档。'))}</p>
+                      <p className="text-slate-500 dark:text-slate-400">{searching ? '换个关键词试试，或检查一下拼写。' : (installedOnly ? (canMutateToolStore ? '去商店安装连接器或技能后，会出现在这里。' : '桌面端尚未安装工具或技能。') : (isSkillTab ? (canMutateToolStore ? '点右上「上传技能包」导入 zip。' : '当前没有可浏览的技能。') : '请尝试修改搜索词或查阅 API 开发文档。'))}</p>
                     </div>
                   )}
                 </section>
@@ -1787,9 +1844,9 @@ const FEISHU_STEPS = [
                 </div>
                 <div className="px-6 py-6">
                   <p className="text-[14px] text-slate-600 dark:text-slate-300 leading-relaxed mb-6">以你<b>本人 SSO 身份</b>直连 H3C 集团内部系统，浏览器 / 扫码登录、<b>全程不填 key</b>；数据经公司内网、不出集团。<span className="text-slate-400">需连接公司内网使用。</span></p>
-                  <h3 className="text-[16px] font-bold mb-4 text-slate-900 dark:text-white">包含的工具 (2)</h3>
+                  <h3 className="text-[16px] font-bold mb-4 text-slate-900 dark:text-white">包含的工具 ({visibleInternalTools.length})</h3>
                   <div className="space-y-4">
-                    {tools.filter(t => t.internal).map(t => (
+                    {visibleInternalTools.map(t => (
                       <div key={t.id} className="flex items-start gap-4">
                         <div className={`relative w-[56px] h-[56px] rounded-[14px] flex items-center justify-center flex-shrink-0 ${t.color} text-white shadow-sm`}>
                           <t.icon size={26} strokeWidth={1.5} />
@@ -1798,7 +1855,7 @@ const FEISHU_STEPS = [
                         <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
                           <div className="flex justify-between items-center gap-2 mb-1">
                             <h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{t.title}</h4>
-                            <TsActionBtn tool={t} busy={busyId === t.backendId} onAction={handleAction} />
+                            <PlatformToolAction tool={t} busy={busyId === t.backendId} onAction={handleAction} />
                           </div>
                           <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{t.subtitle}</p>
                         </div>
@@ -1841,9 +1898,9 @@ const FEISHU_STEPS = [
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : null; return (sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} />
-                          : <TsActionBtn tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
                       </div>
                     </div>
                   </div>
@@ -1868,13 +1925,13 @@ const FEISHU_STEPS = [
                     </div>
                   </div>
 
-                  {selectedTool.feishuCli && feishuFlow && (
+                  {externalAuthAvailable && selectedTool.feishuCli && feishuFlow && (
                     <FeishuFlowCard flow={feishuFlow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
                   )}
-                  {selectedTool.wecomCli && wecomFlow && (
+                  {externalAuthAvailable && selectedTool.wecomCli && wecomFlow && (
                     <FeishuFlowCard flow={wecomFlow} steps={WECOM_STEPS} name="企业微信" twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
                   )}
-                  {selectedTool.dingtalkCli && dingtalkFlow && (
+                  {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
                     <FeishuFlowCard flow={dingtalkFlow} steps={DINGTALK_STEPS} name="钉钉" twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (

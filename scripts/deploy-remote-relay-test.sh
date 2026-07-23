@@ -35,6 +35,7 @@
 #   BASE_PATH      /pinvou3/remote-test
 #   PUBLIC_URL     https://pinvou.com/pinvou3/remote-test
 #   SKIP_LOCAL_TESTS=1                   跳过本地 npm test(默认会跑)
+#   SKIP_WEB_BUILD=1                     使用已经构建并验证的 web/dist
 # 注:必须带 -E,否则函数+heredoc 调用失败时 ERR trap 不触发(错误路径无阶段报告)。
 set -eEuo pipefail
 
@@ -225,6 +226,15 @@ STAGE="本地检查"
 echo "── 本地检查 ──"
 node --check "$RELAY_DIR/server.js"
 node --check "$RELAY_DIR/telemetry-service.js"
+if [[ "${SKIP_WEB_BUILD:-0}" != "1" ]]; then
+  echo "构建共享 WebUI"
+  (cd "$ROOT/pinvou3-app" && PINVOU_REMOTE_PUBLIC_BASE_PATH="$BASE_PATH" npm run build:web)
+else
+  echo "使用已构建并验证的共享 WebUI 产物"
+fi
+test -f "$RELAY_DIR/web/dist/index.html"
+test -f "$RELAY_DIR/web/dist/tauri-bridge.js"
+grep -Fq "$BASE_PATH/" "$RELAY_DIR/web/dist/index.html"
 if [[ "${SKIP_LOCAL_TESTS:-0}" != "1" ]]; then
   (cd "$RELAY_DIR" && npm test)
 fi
@@ -234,7 +244,7 @@ echo "── 上传 relay 代码到 $RELAY_SERVER:$TEST_DIR(暂存 + 整体替�
 # 打成单个 tarball 流式上传,.tmp 落盘后原子 mv——scp 逐文件覆盖若中断会留下半新半旧的目录,
 # 服务一旦因故重启就会加载混合版本(与评审「暂存+原子替换」同类的隐患)。
 tar -czf - -C "$RELAY_DIR" \
-  server.js telemetry-service.js package.json package-lock.json web/index.html web/stats.html \
+  server.js telemetry-service.js package.json package-lock.json web/dist web/stats.html \
   | relay_ssh "cat > '$TEST_DIR.staging.tar.gz.tmp' && mv '$TEST_DIR.staging.tar.gz.tmp' '$TEST_DIR.staging.tar.gz'"
 
 STAGE="配置并重启测试 relay 实例(端口 $TEST_PORT,含失败回滚)"

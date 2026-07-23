@@ -195,10 +195,7 @@ fn configure_webkit_rendering_env() {
     let is_linux_arm64_nvidia = cfg!(all(target_os = "linux", target_arch = "aarch64"))
         && std::path::Path::new("/proc/driver/nvidia/version").is_file();
 
-    if should_force_webkit_dmabuf_shm(
-        is_linux_arm64_nvidia,
-        has_explicit_rendering_override,
-    ) {
+    if should_force_webkit_dmabuf_shm(is_linux_arm64_nvidia, has_explicit_rendering_override) {
         // GB10/NVIDIA + WebKitGTK 2.52 会在 DMA-BUF/GBM 路径调用
         // DRM_IOCTL_MODE_CREATE_DUMB 并被驱动拒绝。FORCE_SHM 仅把 WebKit
         // renderer buffer 传输改为共享内存，不关闭 compositing，因此透明
@@ -380,8 +377,8 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
-            app.handle()
-                .manage(RemoteControlManager::new(app.handle().clone()));
+            let remote_control_manager = RemoteControlManager::new(app.handle().clone());
+            app.handle().manage(remote_control_manager.clone());
             // 匿名设备遥测：独立于 UI/Engine，失败只写日志；先 manage 再建 EnginePool，
             // 让每个 session forwarder 都能在 TurnStarted/TurnComplete 取到状态。
             match telemetry::TelemetryState::boot(env!("CARGO_PKG_VERSION")) {
@@ -423,6 +420,13 @@ pub fn run() {
                     }
                     handle.manage(pool);
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
+                    match remote_control_manager.resume() {
+                        Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("[pinvou3-app] persistent Web access resume failed: {error}")
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("[pinvou3-app] failed to init engine pool: {e:?}");
@@ -630,12 +634,38 @@ pub fn run() {
             commands::cancel_generation,
             commands::list_shell_tasks,
             commands::cancel_shell_task,
-            remote_control::remote_control_start,
-            remote_control::remote_control_stop,
-            remote_control::remote_control_status,
-            remote_control::remote_control_refresh_qr,
-            remote_control::remote_control_publish_user_message,
-            remote_control::remote_control_publish_event,
+            remote_control::web_access_enable,
+            remote_control::web_access_disable,
+            remote_control::web_access_status,
+            remote_control::web_access_rotate,
+            remote_control::web_access_relay_settings,
+            remote_control::web_access_set_relay,
+            remote_control::web_access_reset_relay,
+            remote_control::web_access_bridge_ready,
+            remote_control::web_access_rpc_begin,
+            remote_control::web_access_rpc_respond,
+            remote_control::web_access_publish_event,
+            remote_control::web_access_list_host_files,
+            remote_control::web_access_create_session,
+            remote_control::web_access_load_session_chunk,
+            remote_control::web_access_ingest_file,
+            remote_control::web_access_chat,
+            remote_control::web_access_save_session_messages_chunk,
+            remote_control::web_access_transcribe_voice_audio,
+            remote_control::web_access_start_skill_session,
+            remote_control::web_access_read_artifact_chunk,
+            remote_control::web_access_update_settings,
+            remote_control::web_access_artifact_info,
+            remote_control::web_access_read_artifact_text,
+            remote_control::web_access_write_artifact_text,
+            remote_control::web_access_read_artifact_image_b64,
+            remote_control::web_access_read_artifact_thumbnail,
+            remote_control::web_access_render_artifact_visual,
+            remote_control::web_access_list_deliverables,
+            remote_control::web_access_get_role_prompt,
+            remote_control::web_access_get_role_outputs,
+            remote_control::web_access_get_role_logs,
+            remote_control::web_access_get_gate_report,
             commands::set_disabled_connectors,
             commands::get_disabled_connectors,
             commands::get_memory_profile,

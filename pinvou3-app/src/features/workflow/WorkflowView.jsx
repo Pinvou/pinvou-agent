@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
+import { useCompactViewport } from '../../hooks/useViewport.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
@@ -345,6 +347,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const cardRefs = useRef({});
       const [edges, setEdges] = useState([]);
       const [dims, setDims] = useState({ w: 0, h: 0 });
+      const compactViewport = useCompactViewport();
 
       // 渲染出的卡片 id → 所在层
       const rendered = {};
@@ -392,6 +395,36 @@ const WidgetCard = ({ title, children, theme }) => {
       }, [JSON.stringify((ui && ui.lanes) || null), JSON.stringify(agentStates), JSON.stringify(agentDeps)]);
 
       const lineColor = isDark ? 'rgba(168,199,250,0.40)' : 'rgba(11,87,208,0.30)';
+      // 紧凑视口：画布式连线在手机上放不下也看不清，降级为按层纵向列表
+      //（卡片全宽、不画 SVG）；层标题保留，执行顺序仍然自上而下可读。
+      if (compactViewport) {
+        return (
+          <div data-testid="workflow-pipeline-compact" className="flex flex-col gap-5 py-1">
+            {lanes.map((lane, i) => (
+              <div key={i}>
+                <div className={`text-[10px] uppercase tracking-wider mb-1.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#9AA0A6]'}`}>{lane.title}</div>
+                <div className="flex flex-col gap-3">
+                  {lane.agents.map(rid => {
+                    const agent = defs.find(a => a.id === rid);
+                    if (!agent) return null;
+                    return (
+                      <div key={rid} className="w-full">
+                        <AgentCard agent={agent}
+                          status={(agentStates || {})[rid]}
+                          waitingFor={(agentDeps || {})[rid]}
+                          fanout={(fanout || {})[rid]}
+                          progress={(progress || {})[rid]}
+                          tokens={(tokens || {})[rid]}
+                          theme={theme} onApprove={onApprove} onRetry={onRetry} onClick={onCardClick} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      }
       return (
         <div ref={containerRef} className="relative flex flex-col gap-6 items-stretch py-1">
           <svg className="absolute inset-0 pointer-events-none" width={dims.w} height={dims.h} style={{ zIndex: 0, overflow: 'visible' }}>
@@ -429,18 +462,18 @@ const WidgetCard = ({ title, children, theme }) => {
     // —— 右侧角色详情抽屉 ——
     // [2026-06-07] 通用文件预览浮层:产出文件/产物点文件名内联看,不再甩浏览器。
     // json 自动 parse+缩进+解 \u 转义;md→markdown、html→iframe、text/json→<pre>;其余给外部打开兜底。
-    const FilePreviewModal = ({ path, theme, onClose }) => {
+    const FilePreviewModal = ({ path, sessionId, theme, onClose }) => {
       const isDark = theme === 'dark';
       const [pv, setPv] = useState({ loading: true });
       useEffect(() => {
         let alive = true;
         (async () => {
           try {
-            const info = await bridge.artifactInfo(path);
+            const info = await bridge.artifactInfo(path, sessionId);
             if (!alive) return;
             if (!info || !info.exists) { setPv({ missing: true }); return; }
             if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-              let text = await bridge.readArtifactText(path);
+              let text = await bridge.readArtifactText(path, sessionId);
               if (!alive) return;
               let kind = info.kind;
               if (/\.json$/i.test(path)) {
@@ -448,17 +481,17 @@ const WidgetCard = ({ title, children, theme }) => {
               }
               setPv({ kind, text });
             } else if (info.kind === 'image') {
-              try { const dataUrl = await bridge.readArtifactImageB64(path); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
+              try { const dataUrl = await bridge.readArtifactImageB64(path, sessionId); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
               catch (e2) { if (alive) setPv({ kind: 'image', imgErr: String(e2) }); }
             } else {
-              const visual = bridge.renderArtifactVisual ? await bridge.renderArtifactVisual(path) : null;
+              const visual = bridge.renderArtifactVisual ? await bridge.renderArtifactVisual(path, sessionId) : null;
               if (!alive) return;
               setPv({ kind: info.kind || 'other', visual });
             }
           } catch (e) { if (alive) setPv({ error: String(e) }); }
         })();
         return () => { alive = false; };
-      }, [path]);
+      }, [path, sessionId]);
       const base = (path || '').split('/').pop();
       const dim = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       return (
@@ -468,7 +501,7 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
               <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={path}>{base}</span>
               <div className="flex items-center gap-2">
-                <button onClick={() => bridge.openArtifactExternal && bridge.openArtifactExternal(path)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>↗ 外部</button>
+                {(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.openArtifactExternal && bridge.openArtifactExternal(path, sessionId)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{isWeb ? '↓ 下载' : '↗ 外部'}</button>}
                 <button onClick={onClose} className={`w-7 h-7 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
               </div>
             </div>
@@ -482,7 +515,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">图片读取失败: {pv.imgErr}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
                 : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
                 : pv.visual && pv.visual.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(pv.visual.images || []).map((src, i) => <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />)}</div>
-                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p><button onClick={() => bridge.openArtifactExternal(path)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>↗ 外部打开</button></div>}
+                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p>{(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.openArtifactExternal(path, sessionId)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{isWeb ? '↓ 下载产物' : '↗ 外部打开'}</button>}</div>}
             </div>
           </div>
         </div>
@@ -490,7 +523,7 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     // 🏛️ 最终奏折：三省六部办差完毕、太子准奏后展开的结案呈报(回奏 final_report.md)。代入感拉满。
-    const ImperialMemorialModal = ({ projectDir, theme, onClose }) => {
+    const ImperialMemorialModal = ({ projectDir, sessionId, theme, onClose }) => {
       const [st, setSt] = useState({ loading: true, text: '', error: null });
       const [closing, setClosing] = useState(false);
       // 御赐宝箱:两层——products=真成品(题目命名的最终报告+二进制成品),装箱;
@@ -501,12 +534,12 @@ const WidgetCard = ({ title, children, theme }) => {
         let alive = true;
         const dir = (projectDir || '').replace(/\/$/, '');
         if (dir && bridge.listDeliverables) {
-          bridge.listDeliverables(dir).then((r) => {
+          bridge.listDeliverables(dir, sessionId).then((r) => {
             if (alive) setDeliv({ products: (r && r.products) || [], papers: (r && r.papers) || [] });
           });
         }
         return () => { alive = false; };
-      }, [projectDir]);
+      }, [projectDir, sessionId]);
       const closingRef = useRef(false);
       // 收卷:先放反向卷轴动画,卷合后再真正卸载
       const requestClose = () => {
@@ -520,12 +553,12 @@ const WidgetCard = ({ title, children, theme }) => {
         (async () => {
           try {
             const path = (projectDir || '').replace(/\/$/, '') + '/final_report.md';
-            const text = await bridge.readArtifactText(path);
+            const text = await bridge.readArtifactText(path, sessionId);
             if (alive) setSt({ loading: false, text: text || '', error: null });
           } catch (e) { if (alive) setSt({ loading: false, text: '', error: String(e) }); }
         })();
         return () => { alive = false; };
-      }, [projectDir]);
+      }, [projectDir, sessionId]);
       const ease = closing ? '.55s cubic-bezier(.5,0,.75,.4) both' : '.65s cubic-bezier(.22,.8,.3,1) both';
       // 两根轴杆:横向渐变带深色轴头,比纸面宽出一截,从中线滚向上下边缘
       const roller = (top) => ({
@@ -565,8 +598,9 @@ const WidgetCard = ({ title, children, theme }) => {
                         const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表格' : ext === 'pdf' ? 'PDF'
                           : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文书';
                         const sz = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
+                        if (isWeb && !can('artifactDownload')) return null;
                         return (
-                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开:' + (f.title || f.name)}
+                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path, sessionId)} title={(isWeb ? '下载:' : '打开:') + (f.title || f.name)}
                             style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                               animation: `chest-item-pop .45s cubic-bezier(.3,1.4,.5,1) ${i * 0.09}s both` }}>
                             {/* 展开的小卷轴(斜 45° 视角):两端轴杆 + 中间纸面写标题 */}
@@ -622,7 +656,7 @@ const WidgetCard = ({ title, children, theme }) => {
     // [2026-06-07 #18/#20] 生图引擎面板：客户选 provider + 填自己的 key（不用白浪的）。
     // (ImageProviderPanel 已随 h3c-ppt 工作流 2026-06-11 存档下线:仅 illustrator 角色用)
 
-    const CardDrawer = ({ roleId, projectDir, theme, onClose }) => {
+    const CardDrawer = ({ roleId, projectDir, sessionId, theme, onClose }) => {
       const isDark = theme === 'dark';
       const [info, setInfo] = useState({ loading: false, error: null, data: null });
       const [outputs, setOutputs] = useState({ loading: false, error: null, data: null });
@@ -771,8 +805,8 @@ const WidgetCard = ({ title, children, theme }) => {
                       <div key={i} title={f.path || f.basename} className={`flex items-center gap-2 px-2.5 py-2 rounded-[12px] border ${isDark ? 'border-white/10 bg-[#131314]' : 'border-black/10 bg-[#F8FAFC]'}`}>
                         <span className="shrink-0">{fileIcon(f.basename)}</span>
                         <span onClick={() => f.path && setPreviewPath(f.path)} title="点击预览" className={`flex-1 truncate text-[13px] cursor-pointer hover:underline ${titleCls}`}>{f.basename || '(未命名)'}</span>
-                        {f.path && (
-                          <button title="外部打开" onClick={() => bridge.available && bridge.openArtifactExternal && bridge.openArtifactExternal(f.path)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>↗</button>
+                        {f.path && (!isWeb || can('artifactDownload')) && (
+                          <button title={isWeb ? '下载产物' : '外部打开'} onClick={() => bridge.available && bridge.openArtifactExternal && bridge.openArtifactExternal(f.path, sessionId)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>{isWeb ? '↓' : '↗'}</button>
                         )}
                       </div>
                     ))}
@@ -809,7 +843,7 @@ const WidgetCard = ({ title, children, theme }) => {
               </section>
             </div>
           </div>
-          {previewPath && <FilePreviewModal path={previewPath} theme={theme} onClose={() => setPreviewPath(null)} />}
+          {previewPath && <FilePreviewModal path={previewPath} sessionId={sessionId} theme={theme} onClose={() => setPreviewPath(null)} />}
         </div>
       );
     };
@@ -853,7 +887,7 @@ const WidgetCard = ({ title, children, theme }) => {
           <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🤔 AI 想问你几个问题</div>
           {/* [2026-06-06] 素材上传：选文件 → 拷进当前 run 配套材料/ → 再选「已补充」让审计员重扫 */}
           <div className="mb-3 flex items-center flex-wrap gap-2">
-            <button disabled={matState.busy}
+            {(!isWeb || can('hostFilePicker')) && <button disabled={matState.busy}
               onClick={async () => {
                 setMatState({ busy: true, names: matState.names });
                 try { const added = await bridge.pickAndAddMaterials(); setMatState({ busy: false, names: matState.names.concat(added || []) }); }
@@ -861,7 +895,7 @@ const WidgetCard = ({ title, children, theme }) => {
               }}
               className={`px-3 py-1.5 rounded-[10px] text-[13px] border transition-colors disabled:opacity-50 ${isDark ? 'border-[#A8C7FA]/40 text-[#A8C7FA] hover:bg-[#A8C7FA]/10' : 'border-[#0B57D0]/30 text-[#0B57D0] hover:bg-[#0B57D0]/5'}`}>
               {matState.busy ? '上传中…' : '📎 上传素材文件'}
-            </button>
+            </button>}
             {matState.names.length > 0 && <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>已上传 {matState.names.length} 个：{matState.names.join('、')}</span>}
           </div>
           <div className="space-y-4">
@@ -954,7 +988,7 @@ const WidgetCard = ({ title, children, theme }) => {
       );
     };
 
-    const InteractionArea = ({ cards, theme }) => {
+    const InteractionArea = ({ cards, sessionId, theme }) => {
       const isDark = theme === 'dark';
       const pending = (cards || []).filter(c => !c.resolved);
       if (pending.length === 0) return null;
@@ -975,8 +1009,8 @@ const WidgetCard = ({ title, children, theme }) => {
                     <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{card.text || '🎉 工作流完成'}</div>
                     <div className={`text-[12px] mb-3 break-all ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{card.path}</div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button className={cardBtnCls(isDark)} onClick={() => bridge.openContainingFolder(card.path)}>📁 打开所在文件夹</button>
-                      <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.openArtifactExternal(card.path)}>▶ 打开成品</button>
+                      {can('externalSystemOpen') && <button className={cardBtnCls(isDark)} onClick={() => bridge.openContainingFolder(card.path)}>📁 打开所在文件夹</button>}
+                      {(!isWeb || can('artifactDownload')) && <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.openArtifactExternal(card.path, sessionId)}>{isWeb ? '↓ 下载成品' : '▶ 打开成品'}</button>}
                     </div>
                   </div>
                 ) : null}
@@ -1059,10 +1093,10 @@ const WidgetCard = ({ title, children, theme }) => {
                   className={`w-full rounded-[10px] p-2 text-[13px] outline-none border resize-y disabled:opacity-50 ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
                 {briefEmpty && <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>留空也能开始,但写清楚 AI 办得更准。</div>}
               </div>
-              {wfUi.attachments && (
+              {wfUi.attachments && (!isWeb || can('hostFilePicker')) && (
                 <div>
                   <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>附件(可选)</label>
-                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>{picking ? '选择中…' : '📎 上传附件'}</button>
+                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>{picking ? '选择中…' : (isWeb ? '📎 选择桌面端文件' : '📎 上传附件')}</button>
                   {files.length > 0 && (
                     <div className="mt-2 space-y-1">
                       {files.map(p => (
@@ -1073,7 +1107,7 @@ const WidgetCard = ({ title, children, theme }) => {
                       ))}
                     </div>
                   )}
-                  <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>上传的文件会作为素材交给六部参考。</div>
+                  <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{isWeb ? '从桌面主机选择的文件会作为素材交给六部参考。' : '上传的文件会作为素材交给六部参考。'}</div>
                 </div>
               )}
               {error && <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>⚠️ {error}</div>}
@@ -1159,12 +1193,12 @@ const WidgetCard = ({ title, children, theme }) => {
       if (!inBoard) {
         return (
           <div className={containerCls}>
-            <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-8 pb-4">
+            <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 pt-8 pb-4">
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择一个工作流模板开始</p>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
-              <div className="grid gap-4 max-w-7xl mx-auto px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+              <div className="grid gap-4 max-w-7xl mx-auto px-4 sm:px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
                 {/* [工作流分离 Stage D] 模板卡 = 后端 list_workflows(各 workflow.json 的
                     ui.template)。点开:当前 run 属于该工作流(scenario 命中它认领的场景)
                     → 续看板;否则弹该工作流自己的新建表单。 */}
@@ -1245,7 +1279,7 @@ const WidgetCard = ({ title, children, theme }) => {
 
       return (
         <div className={containerCls}>
-          <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-6 md:px-10 pt-8 pb-4">
+          <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 md:px-10 pt-8 pb-4">
             <div>
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
@@ -1267,17 +1301,17 @@ const WidgetCard = ({ title, children, theme }) => {
               <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>+ 新建任务</button>
             </div>
           </div>
-          <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
+          <div className="flex-1 overflow-auto custom-scrollbar px-4 sm:px-6 md:px-10 pb-4">
             <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme}
               onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.selectWorkflowRole(rid)} />
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
-            <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
-              <InteractionArea cards={run.cards || []} theme={theme} />
+            <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
+              <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} />
             </div>
           )}
-          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} theme={theme} onClose={() => bridge.closeWorkflowDrawer()} />}
-          {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} onClose={() => setMemorialOpen(false)} />}
+          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} sessionId={run.sessionId} theme={theme} onClose={() => bridge.closeWorkflowDrawer()} />}
+          {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} sessionId={run.sessionId} theme={theme} onClose={() => setMemorialOpen(false)} />}
           {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
         </div>
       );

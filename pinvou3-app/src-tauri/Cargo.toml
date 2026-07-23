@@ -70,6 +70,7 @@ tar = "0.4"
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
+fs2 = "0.4"
 
 # 时间戳：SessionMetadata.updated_at 用 chrono::Utc::now()，对齐上游 schema
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -125,6 +126,7 @@ objc2-foundation = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
+    "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
