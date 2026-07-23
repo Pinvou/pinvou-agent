@@ -17,8 +17,9 @@ packaging/
 公共构建编排位于 `../../scripts/tauri/`：
 
 - `platform-config.js`：只负责选择当前平台 overlay。
-- `builtin-secrets.js`：只负责构建密钥加载与校验。
 - `windows-runtime.js`：只在 Windows 构建时触发私有 runtime staging。
-- `build.js`：组合以上能力并启动 Tauri CLI。
+- `build.js`：组合平台配置与运行时 staging，并启动 Tauri CLI。
+
+工具市场不再在构建期注入共享 API Key；Windows WoSign 凭据仍由签名脚本从仓库外的本机配置读取。
 
 平台脚本不得修改其他平台的资源树；所有生成物必须写入 `src-tauri/target/`。

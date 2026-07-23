@@ -1093,7 +1093,7 @@ const FEISHU_STEPS = [
             const loginResult = await withUiTimeout(
               loginPromise,
               OAUTH_UI_TIMEOUT_MS,
-              oauthUiTimeoutResult(t?.oauthServerName || backendId)
+              oauthUiTimeoutResult(oauthServerName)
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
@@ -1479,7 +1479,6 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
-                message: `尚未连接「${name}」。`,
                 message: `尚未连接「${name}」。`,
               },
             }));
