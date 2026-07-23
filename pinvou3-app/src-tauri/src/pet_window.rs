@@ -7,7 +7,13 @@
 //! 漏掉会导致 listen/startDragging 全部静默被拒(宠物不动、拖不了)。
 
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const PET_LABEL: &str = "pet";
@@ -27,6 +33,7 @@ const PET_ACTIVITY_GAP_H: f64 = 12.0;
 const PET_CHARACTER_BOTTOM: f64 = 8.0;
 const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 1.2;
+const MAIN_FOCUS_RAISE_HOLD_MS: u64 = 180;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PetNavigationRequest {
@@ -72,6 +79,7 @@ impl PetScheduledRunNavigation {
 #[derive(Default)]
 pub struct PetNavigationState {
     pending: Mutex<Option<PetNavigationRequest>>,
+    focus_raise_generation: Arc<AtomicU64>,
 }
 
 impl PetNavigationState {
@@ -89,6 +97,18 @@ impl PetNavigationState {
             .lock()
             .map_err(|_| "pet navigation state lock poisoned".to_string())
             .map(|mut pending| pending.take())
+    }
+
+    fn next_focus_raise_generation(&self) -> (u64, Arc<AtomicU64>) {
+        let generation = self
+            .focus_raise_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        (generation, Arc::clone(&self.focus_raise_generation))
+    }
+
+    fn focus_raise_is_current(counter: &AtomicU64, generation: u64) -> bool {
+        counter.load(Ordering::Acquire) == generation
     }
 }
 
@@ -976,13 +996,31 @@ pub async fn open_main_from_pet(
     })?;
     // X11 焦点抢占保护:实测(GB10) show/unminimize/set_focus 全部返回 Ok,
     // 但 WM 拒绝把主窗口提到前台,只打 demand-attention——用户看到"点了没反应"。
-    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前,聚焦后立即交还。
+    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前。取消置顶不能紧跟
+    // set_focus 同步执行;X11/Mutter 上主窗口可能尚未完成激活,立刻撤销会让
+    // 激活点击落到下层窗口(常见表现:下层窗口收到点击后 Pinvou 又最小化)。
     let _ = main.set_always_on_top(true);
+    #[cfg(target_os = "linux")]
+    if let Err(error) = app.emit_to("main", "pet:activation_guard", ()) {
+        eprintln!("[pet nav] emit activation guard failed: {error}");
+    }
     let focus_result = main.set_focus().map_err(|error| {
         let msg = format!("focus main window failed: {error}");
         eprintln!("[pet nav] {msg}");
         msg
     });
+    #[cfg(target_os = "linux")]
+    {
+        let (generation, counter) = navigation.next_focus_raise_generation();
+        let raised_main = main.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(MAIN_FOCUS_RAISE_HOLD_MS)).await;
+            if PetNavigationState::focus_raise_is_current(&counter, generation) {
+                let _ = raised_main.set_always_on_top(false);
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
     let _ = main.set_always_on_top(false);
     focus_result?;
     app.emit_to("main", "pet:navigation_pending", ())
@@ -1152,6 +1190,26 @@ mod tests {
         state.replace(request.clone()).unwrap();
         assert_eq!(state.take().unwrap(), Some(request));
         assert_eq!(state.take().unwrap(), None);
+    }
+
+    #[test]
+    fn latest_focus_raise_generation_owns_delayed_clear() {
+        let state = PetNavigationState::default();
+        let (first, first_counter) = state.next_focus_raise_generation();
+        assert!(PetNavigationState::focus_raise_is_current(
+            &first_counter,
+            first
+        ));
+
+        let (second, second_counter) = state.next_focus_raise_generation();
+        assert!(
+            !PetNavigationState::focus_raise_is_current(&first_counter, first),
+            "an earlier wakeup must not clear a newer raise"
+        );
+        assert!(PetNavigationState::focus_raise_is_current(
+            &second_counter,
+            second
+        ));
     }
 
     #[test]

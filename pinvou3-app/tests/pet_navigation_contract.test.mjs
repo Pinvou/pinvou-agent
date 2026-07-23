@@ -53,6 +53,18 @@ assert.match(petWindow, /listen\(['"]pet:session_unavailable['"]/);
 assert.match(rustPetWindow, /pub async fn open_main_from_pet/);
 assert.match(rustPetWindow, /get_webview_window\(['"]main['"]\)/);
 assert.match(rustPetWindow, /pet:navigation_pending/);
+assert.match(rustPetWindow, /pet:activation_guard/);
+assert.match(
+  rustPetWindow,
+  /#\[cfg\(target_os = "linux"\)\][\s\S]{0,120}?emit_to\("main", "pet:activation_guard"/,
+  'only the Linux wake path may arm the activation guard',
+);
+assert.ok(
+  rustPetWindow.indexOf('pet:activation_guard') < rustPetWindow.indexOf('main.set_focus()'),
+  'the Linux activation guard must be armed before native focus',
+);
+assert.match(rustPetWindow, /next_focus_raise_generation/);
+assert.match(rustPetWindow, /focus_raise_is_current/);
 assert.match(rustPetWindow, /pub async fn take_pet_navigation/);
 assert.match(rustPetWindow, /emit_to\(\s*['"]main['"]/);
 assert.match(rustPetWindow, /pub async fn set_pet_activity_visible/);
@@ -64,8 +76,14 @@ assert.match(rustLib, /pet_window::set_pet_activity_visible/);
 assert.doesNotMatch(rustLib, /pet_window::(?:show|hide)_pet_context_menu/);
 
 assert.match(main, /listen\(['"]pet:navigation_pending['"]/);
+assert.match(main, /listen\(['"]pet:activation_guard['"]/);
 assert.match(main, /invoke\(['"]take_pet_navigation['"]\)/);
 assert.match(main, /addEventListener\(['"]focus['"]/);
+assert.doesNotMatch(
+  main,
+  /window\.addEventListener\(['"]focus['"],\s*(?:armGuard|guard\.arm)/,
+  'ordinary window focus must not arm the activation click guard',
+);
 assert.match(main, /pet:session_unavailable/);
 assert.match(main, /emitTo\(['"]pet['"],\s*name/);
 assert.match(main, /pet:activity_snapshot/);
