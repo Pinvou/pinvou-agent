@@ -11,8 +11,8 @@ mod windows_domain_bootstrap;
 
 #[cfg(target_os = "linux")]
 pub use linux::{
-    check_for_update_info, cleanup_stale_backup, download_update_package, install_downloaded_update,
-    report_pending_update_result_info,
+    check_for_update_info, cleanup_stale_backup, download_update_package,
+    install_downloaded_update, report_pending_update_result_info,
 };
 #[cfg(target_os = "macos")]
 pub use macos::{
@@ -21,11 +21,11 @@ pub use macos::{
 };
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub use unsupported::{
-    check_for_update_info, cleanup_stale_backup, download_update_package, install_downloaded_update,
-    report_pending_update_result_info,
+    check_for_update_info, cleanup_stale_backup, download_update_package,
+    install_downloaded_update, report_pending_update_result_info,
 };
 #[cfg(target_os = "windows")]
 pub use windows::{
-    check_for_update_info, cleanup_stale_backup, download_update_package, install_downloaded_update,
-    report_pending_update_result_info,
+    check_for_update_info, cleanup_stale_backup, download_update_package,
+    install_downloaded_update, report_pending_update_result_info,
 };

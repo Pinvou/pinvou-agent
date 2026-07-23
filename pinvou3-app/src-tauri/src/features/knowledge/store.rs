@@ -210,10 +210,11 @@ impl Store {
         }
         let stale = {
             match Connection::open(db_path) {
-                Ok(c) => c
-                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                    .unwrap_or(0)
-                    != SCHEMA_VERSION,
+                Ok(c) => {
+                    c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                        .unwrap_or(0)
+                        != SCHEMA_VERSION
+                }
                 Err(_) => false,
             }
         }; // 连接在此 drop，才能删文件
@@ -460,7 +461,6 @@ impl Store {
         })?;
         rows.collect()
     }
-
 }
 
 /// 转义 LIKE 的通配符（默认无 ESCAPE 子句时 `%`/`_` 会被当通配）。这里用 `\` 转义，
@@ -488,10 +488,28 @@ mod tests {
     fn seed() -> Store {
         let s = Store::open_in_memory().unwrap();
         s.upsert_many(&[
-            rec("/home/u/Documents/保险报价单.pdf", "保险报价单.pdf", Some("pdf"), 2048, 1000),
-            rec("/home/u/Downloads/平安交强险保单.pdf", "平安交强险保单.pdf", Some("pdf"), 1024, 2000),
+            rec(
+                "/home/u/Documents/保险报价单.pdf",
+                "保险报价单.pdf",
+                Some("pdf"),
+                2048,
+                1000,
+            ),
+            rec(
+                "/home/u/Downloads/平安交强险保单.pdf",
+                "平安交强险保单.pdf",
+                Some("pdf"),
+                1024,
+                2000,
+            ),
             rec("/home/u/Desktop/notes.md", "notes.md", Some("md"), 64, 3000),
-            rec("/home/u/Downloads/report.docx", "report.docx", Some("docx"), 4096, 500),
+            rec(
+                "/home/u/Downloads/report.docx",
+                "report.docx",
+                Some("docx"),
+                4096,
+                500,
+            ),
         ])
         .unwrap();
         s
@@ -571,19 +589,42 @@ mod tests {
     fn search_excludes_directories() {
         let s = Store::open_in_memory().unwrap();
         s.upsert_many(&[
-            FileRecord { path: "/a/项目文档".into(), name: "项目文档".into(), ext: None, size: 0, mtime: 1, is_dir: true },
-            FileRecord { path: "/a/项目文档.pdf".into(), name: "项目文档.pdf".into(), ext: Some("pdf".into()), size: 100, mtime: 2, is_dir: false },
+            FileRecord {
+                path: "/a/项目文档".into(),
+                name: "项目文档".into(),
+                ext: None,
+                size: 0,
+                mtime: 1,
+                is_dir: true,
+            },
+            FileRecord {
+                path: "/a/项目文档.pdf".into(),
+                name: "项目文档.pdf".into(),
+                ext: Some("pdf".into()),
+                size: 100,
+                mtime: 2,
+                is_dir: false,
+            },
         ])
         .unwrap();
         // FTS 路径(≥3 字符)：目录不应出现在结果里
         let hits = s
-            .search(&SearchQuery { text: Some("项目文档".into()), limit: 10, ..Default::default() })
+            .search(&SearchQuery {
+                text: Some("项目文档".into()),
+                limit: 10,
+                ..Default::default()
+            })
             .unwrap();
         assert!(hits.iter().all(|h| !h.is_dir), "search(FTS) 不应返回目录");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "项目文档.pdf");
         // 无 text 全量路径：同样排除目录
-        let all = s.search(&SearchQuery { limit: 10, ..Default::default() }).unwrap();
+        let all = s
+            .search(&SearchQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
         assert!(all.iter().all(|h| !h.is_dir), "search(全量) 不应返回目录");
         assert_eq!(all.len(), 1);
     }

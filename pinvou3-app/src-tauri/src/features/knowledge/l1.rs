@@ -83,7 +83,10 @@ pub struct L1Store {
 
 impl L1Store {
     pub fn new(conn: Arc<Mutex<Connection>>, embedder: Option<Arc<Embedder>>) -> Self {
-        Self { conn, embedder: Arc::new(RwLock::new(embedder)) }
+        Self {
+            conn,
+            embedder: Arc::new(RwLock::new(embedder)),
+        }
     }
 
     /// 取当前 embedder 的克隆句柄(只在锁内拷 Arc,立即释锁,不持锁跑推理)。
@@ -156,7 +159,11 @@ impl L1Store {
     pub fn collection_name(&self, id: i64) -> rusqlite::Result<Option<String>> {
         self.conn
             .lock()
-            .query_row("SELECT name FROM collections WHERE id=?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT name FROM collections WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()
     }
 
@@ -202,7 +209,11 @@ impl L1Store {
     }
 
     /// 列出某知识集文档（collection_id<=0 则列出全部知识集的，按最近解析倒序，给"知识库内文件"表）。
-    pub fn list_documents(&self, collection_id: i64, limit: usize) -> rusqlite::Result<Vec<Document>> {
+    pub fn list_documents(
+        &self,
+        collection_id: i64,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
         let lim = if limit == 0 { 500 } else { limit } as i64;
         let sql = if collection_id > 0 {
@@ -382,11 +393,17 @@ impl L1Store {
             Err(_) => (0, 0),
         };
 
-        let doc_id =
-            match self.upsert_document(collection_id, &path_str, &name, ext.as_deref(), size, mtime) {
-                Ok(id) => id,
-                Err(_) => return "failed".into(),
-            };
+        let doc_id = match self.upsert_document(
+            collection_id,
+            &path_str,
+            &name,
+            ext.as_deref(),
+            size,
+            mtime,
+        ) {
+            Ok(id) => id,
+            Err(_) => return "failed".into(),
+        };
 
         // 复用 file_ingest 解析正文（pdf/docx/md/xlsx/pptx/...）。
         let res = crate::features::files::file_ingest::ingest(path);
@@ -452,7 +469,12 @@ impl L1Store {
     // ───────────────────────── 检索（全文，Phase 3 升级为混合） ─────────────────────────
 
     /// 全文：≥3 字符走 FTS5 trigram(bm25)，1-2 字符 LIKE 兜底。
-    fn search_fts(&self, collection_id: i64, q: &str, lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
+    fn search_fts(
+        &self,
+        collection_id: i64,
+        q: &str,
+        lim: usize,
+    ) -> rusqlite::Result<Vec<ChunkHit>> {
         let c = self.conn.lock();
         let map = |r: &rusqlite::Row| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {
@@ -488,7 +510,12 @@ impl L1Store {
     }
 
     /// 向量召回：加载该集所有有 vec 的 chunk，暴力算余弦，取 top（选定知识集规模下足够）。
-    fn search_vec(&self, collection_id: i64, qv: &[f32], lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
+    fn search_vec(
+        &self,
+        collection_id: i64,
+        qv: &[f32],
+        lim: usize,
+    ) -> rusqlite::Result<Vec<ChunkHit>> {
         let c = self.conn.lock();
         let mut stmt = c.prepare(
             "SELECT d.id,k.text,k.vec,d.name,d.path,k.ord \
@@ -643,7 +670,11 @@ impl L1Store {
                 });
             }
         }
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(out)
     }
 }
@@ -674,7 +705,11 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
             h
         })
         .collect();
-    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     merged.into_iter().take(k).collect()
 }
 
@@ -731,12 +766,15 @@ mod tests {
     #[test]
     fn collection_crud() {
         let l1 = mem();
-        let id = l1.create_collection("产品资料", Some("产品"), Some("PRD")).unwrap();
+        let id = l1
+            .create_collection("产品资料", Some("产品"), Some("PRD"))
+            .unwrap();
         let list = l1.list_collections().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "产品资料");
         assert_eq!(list[0].doc_count, 0);
-        l1.update_collection(id, "产品资料库", Some("产品"), None).unwrap();
+        l1.update_collection(id, "产品资料库", Some("产品"), None)
+            .unwrap();
         assert_eq!(l1.list_collections().unwrap()[0].name, "产品资料库");
         l1.delete_collection(id).unwrap();
         assert!(l1.list_collections().unwrap().is_empty());
@@ -751,7 +789,10 @@ mod tests {
         assert!(!l1.has_any_document().unwrap(), "空库应为 false");
 
         let cid = l1.create_collection("库", None, None).unwrap();
-        assert!(!l1.has_any_document().unwrap(), "空知识集（无文档）不算有内容");
+        assert!(
+            !l1.has_any_document().unwrap(),
+            "空知识集（无文档）不算有内容"
+        );
 
         let doc = l1
             .upsert_document(cid, "/tmp/a.md", "a.md", Some("md"), 10, 0)
@@ -898,7 +939,10 @@ mod tests {
         assert!(!only[0].text.contains("第一段"), "radius=0 不带邻居");
 
         // 门控:无关键词命中 → 空(不注入)。空 query → 空。
-        assert!(l1.retrieve_for_chat(cid, "彻底无关的查询词组", 5, 1).unwrap().is_empty());
+        assert!(l1
+            .retrieve_for_chat(cid, "彻底无关的查询词组", 5, 1)
+            .unwrap()
+            .is_empty());
         assert!(l1.retrieve_for_chat(cid, "   ", 5, 1).unwrap().is_empty());
     }
 }

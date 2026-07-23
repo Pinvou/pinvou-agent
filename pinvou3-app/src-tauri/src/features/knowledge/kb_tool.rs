@@ -121,8 +121,7 @@ fn load_source_window(
     let Some(document) = l1.document_in_collection(collection_id, document_id)? else {
         return Ok(None);
     };
-    let chunks =
-        l1.document_chunk_window(collection_id, document_id, start_ord, max_chunks)?;
+    let chunks = l1.document_chunk_window(collection_id, document_id, start_ord, max_chunks)?;
     Ok(Some(render_source_window(
         source_ref_value,
         &document,
@@ -344,16 +343,16 @@ impl ToolSpec for KbOpenSourceTool {
                 "该 source_ref 不属于本会话当前挂载的知识集,或文档尚未解析完成。请重新调用 kb_search。",
             ));
         };
-        ToolResult::json(&rendered).map_err(
-            |e| ToolError::execution_failed(format!("serialize kb_open_source result: {e}")),
-        )
+        ToolResult::json(&rendered).map_err(|e| {
+            ToolError::execution_failed(format!("serialize kb_open_source result: {e}"))
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{l1::L1Store, store::Store};
+    use super::*;
     use std::path::Path;
 
     fn hit(name: &str, ord: i64, text: &str) -> ChunkHit {
@@ -460,7 +459,9 @@ mod tests {
 
         assert_eq!(l1.ingest_file(mounted, &fixture), "parsed");
         let hits = l1.retrieve_for_chat(mounted, "83.6", 5, 0).unwrap();
-        let hit = hits.first().expect("kb_search should hit non-first XLSX sheet");
+        let hit = hits
+            .first()
+            .expect("kb_search should hit non-first XLSX sheet");
         let reference = source_ref(hit.document_id, hit.ord);
         let (document_id, anchor_ord) = parse_source_ref(&reference).unwrap();
 

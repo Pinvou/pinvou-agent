@@ -13,19 +13,42 @@ use std::path::{Component, Path};
 /// basename 命中即排除（目录则整株剪枝）。
 const SKIP_NAMES: &[&str] = &[
     // VCS
-    ".git", ".svn", ".hg",
+    ".git",
+    ".svn",
+    ".hg",
     // 依赖/构建产物
-    "node_modules", "bower_components", "target", "dist", "build",
-    "__pycache__", ".mypy_cache", ".pytest_cache", "venv", ".venv",
-    ".cargo", ".rustup", ".npm", ".pnpm-store", ".yarn", ".gradle", ".m2",
+    "node_modules",
+    "bower_components",
+    "target",
+    "dist",
+    "build",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "venv",
+    ".venv",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".pnpm-store",
+    ".yarn",
+    ".gradle",
+    ".m2",
     // 缓存/隐私配置/浏览器
-    ".cache", ".config", ".mozilla", ".thumbnails",
+    ".cache",
+    ".config",
+    ".mozilla",
+    ".thumbnails",
     // 密钥
-    ".ssh", ".gnupg",
+    ".ssh",
+    ".gnupg",
     // 系统/包/回收站
-    "snap", ".Trash-1000", "lost+found",
+    "snap",
+    ".Trash-1000",
+    "lost+found",
     // pinvou3 自身数据（避免索引自己的 session/DB churn）
-    ".pinvou3", ".deepseek",
+    ".pinvou3",
+    ".deepseek",
 ];
 
 /// 扩展名命中即排除（小写，无点）。密钥证书 + 虚拟机镜像。
@@ -33,8 +56,16 @@ const SKIP_EXTS: &[&str] = &["key", "pem", "p12", "pfx", "vmdk", "qcow2", "vdi",
 
 /// 精确文件名命中即排除（散落在项目目录里的敏感文件）。
 const SKIP_SECRET_FILES: &[&str] = &[
-    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
-    ".env", ".netrc", ".npmrc", "credentials", "known_hosts", "authorized_keys",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    ".env",
+    ".netrc",
+    ".npmrc",
+    "credentials",
+    "known_hosts",
+    "authorized_keys",
 ];
 
 /// 常用类型白名单(办公+媒体)：只索引这些扩展名的**文件**；目录不受影响照常下探。
@@ -42,19 +73,14 @@ const SKIP_SECRET_FILES: &[&str] = &[
 /// 换类型改这里(用户可配入口暂未做)。注意 keynote 的 `key` 与密钥 `.key` 冲突，故不收。
 const ALLOW_EXTS: &[&str] = &[
     // 文档
-    "doc", "docx", "pdf", "txt", "md", "markdown", "rtf", "odt", "wps", "pages", "tex",
-    "html", "htm", "mhtml", "mht",
-    // 表格
-    "xls", "xlsx", "csv", "ods", "et", "numbers",
-    // 演示
-    "ppt", "pptx", "odp", "dps",
-    // 图片
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "heif", "tiff", "tif", "ico", "avif",
-    // 设计
-    "psd", "ai", "sketch", "fig", "xd", "cdr", "eps",
-    // 压缩
-    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz",
-    // 音视频
+    "doc", "docx", "pdf", "txt", "md", "markdown", "rtf", "odt", "wps", "pages", "tex", "html",
+    "htm", "mhtml", "mht", // 表格
+    "xls", "xlsx", "csv", "ods", "et", "numbers", // 演示
+    "ppt", "pptx", "odp", "dps", // 图片
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "heif", "tiff", "tif", "ico",
+    "avif", // 设计
+    "psd", "ai", "sketch", "fig", "xd", "cdr", "eps", // 压缩
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", // 音视频
     "mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "mov", "avi", "mkv", "wmv", "webm", "flv",
     // 电子书
     "epub", "mobi", "azw3", "fb2",

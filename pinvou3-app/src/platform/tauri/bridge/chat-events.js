@@ -14,6 +14,9 @@
     var onSessionEvent = context.onSessionEvent;
     var runSyncOnSession = context.runSyncOnSession;
     var addChatItem = context.addChatItem;
+    var toolCallAlreadyStarted = context.toolCallAlreadyStarted;
+    var toolCallAlreadyFinished = context.toolCallAlreadyFinished;
+    var hasChatItemForTool = context.hasChatItemForTool;
     var addSystemItem = context.addSystemItem;
     var timeStr = context.timeStr;
     var flushPendingTextBlock = context.flushPendingTextBlock;
@@ -23,9 +26,16 @@
     var isBusyFor = context.isBusyFor;
     var doSendFor = context.doSendFor;
     var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
+    var getBuffer = context.getBuffer;
+    var markRemoteTurn = context.markRemoteTurn;
+    var reconcileRemoteTurn = context.reconcileRemoteTurn;
+    var saveWorkingSetTo = context.saveWorkingSetTo;
+    var hydratedMessageKey = context.hydratedMessageKey;
     var thinkingTool = context.thinkingTool;
     var thinkingIdle = context.thinkingIdle;
+    var startThinking = context.startThinking;
     var stopThinking = context.stopThinking;
+    var userMessageDisplayText = context.userMessageDisplayText;
     var scheduleScheduledRunRefresh = context.scheduleScheduledRunRefresh;
     var handleMemoryWrite = context.handleMemoryWrite;
     var isPresentArtifactTool = context.isPresentArtifactTool;
@@ -77,6 +87,101 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
+  function applyRemoteUserMessageEvent(e, force) {
+    var payload = e && e.payload || {};
+    var sid = payload.session_id || state.activeSessionId;
+    if (!sid) return false;
+    var userBuffer = getBuffer(sid);
+    if (!userBuffer) return false;
+    if (userBuffer.localTurnOwned && !force) {
+      userBuffer.deferredRemoteUserEvent = e;
+      return false;
+    }
+    var content = String(payload.content || "");
+    var operation = String(payload.operation || "append");
+    var action = String(payload.action || "");
+    var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
+    var baseRevision = String(payload.base_transcript_revision || "");
+    var admissionKey = baseRevision
+      ? operation + ":" + baseRevision
+      : (e && e.id ? "event:" + e.id : "");
+    if (admissionKey && userBuffer.remoteAdmissionKeys.indexOf(admissionKey) >= 0) return false;
+    if (admissionKey) {
+      userBuffer.remoteAdmissionKeys.push(admissionKey);
+      if (userBuffer.remoteAdmissionKeys.length > 32) userBuffer.remoteAdmissionKeys.shift();
+    }
+    var lastUserText = "";
+    for (var messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
+      var candidate = userBuffer.messages[messageIndex];
+      if (candidate && candidate.role === "user") {
+        lastUserText = userMessageDisplayText(candidate.content || [], false);
+        break;
+      }
+    }
+    var snapshotAlreadyCoversTurn = !!(
+      userBuffer.loadedFromDisk && baseRevision && userBuffer.sessionRevision &&
+      userBuffer.sessionRevision !== baseRevision && lastUserText === content
+    );
+    markRemoteTurn(sid, userBuffer);
+    runSyncOnSession(sid, function () {
+      if (action === "accept_plan") {
+        state.chatItems.forEach(function (item) {
+          if (item && item.type === "plan_card" && item.cardState === "active" && !item.resolved &&
+              (!actionPlanId || String(item.planId || "") === actionPlanId)) {
+            item.cardState = "approved";
+            item.resolved = true;
+            item.statusLabel = bt("approved");
+          }
+        });
+        var acceptedMode = payload.mode_state || payload.modeState;
+        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+      }
+      if (!snapshotAlreadyCoversTurn) {
+        if (operation === "edit_last") {
+          for (var index = state.chatItems.length - 1; index >= 0; index--) {
+            if (state.chatItems[index] && state.chatItems[index].type === "user") {
+              state.chatItems.splice(index);
+              break;
+            }
+          }
+          resetPendingAssistant();
+        }
+        addChatItem({ type: "user", text: content, time: timeStr() });
+      }
+      state.busy = true;
+      if (!state.thinking.active) startThinking();
+      context.currentStreamText = "";
+      context.currentStreamId = 0;
+    });
+    notify();
+    return true;
+  }
+
+  listen("chat:user_message", function (e) {
+    applyRemoteUserMessageEvent(e, false);
+  });
+
+  listen("chat:transcript_committed", function (e) {
+    var payload = e && e.payload || {};
+    var sid = payload.session_id || state.activeSessionId;
+    if (!sid) return;
+    var committedBuffer = getBuffer(sid);
+    if (!committedBuffer) return;
+    var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
+    if (revision) committedBuffer.sessionRevision = revision;
+    if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
+      reconcileRemoteTurn(sid).then(function (ready) {
+        if (ready) flushQueued(sid);
+      }).catch(function () {});
+    }
+  });
+
+  listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
+    state.busy = true;
+    if (!state.thinking.active) startThinking();
+    notify();
+  }); });
+
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
     var text = e.payload && e.payload.text || "";
     context.pendingAssistantText += text;
@@ -113,6 +218,7 @@
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     context.toolMeta[p.id] = { name: p.name, args: p.args };
     thinkingTool(p.name);
@@ -164,6 +270,7 @@
 
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (toolCallAlreadyFinished(p.id)) return;
     var meta = context.toolMeta[p.id];
     thinkingIdle();
     var resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
@@ -323,11 +430,20 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    var knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
+    var scheduledDoneSession = isScheduledRunSession(sid);
+    if (sid && sid !== state.activeSessionId && !sessionStates[sid] &&
+        !knownDoneSession && !scheduledDoneSession) {
+      return;
+    }
     safeConsoleInfo("[pinvou3][chat-ui] chat done event", {
       sid: sid,
       error: e.payload && e.payload.error || null,
     });
-    if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
+    var doneBuffer = sid ? getBuffer(sid) : null;
+    var requiresAuthorityReconcile = !isScheduledRunSession(sid);
+    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
       refreshEffectiveModelConfigAfterAuthError(error);
@@ -363,15 +479,40 @@
       context.currentStreamText = "";
       context.currentStreamId = 0;
     });
+    if (requiresAuthorityReconcile && doneBuffer) {
+      var finalAssistantMessage = null;
+      for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
+        if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
+          finalAssistantMessage = doneBuffer.messages[doneMessageIndex];
+          break;
+        }
+      }
+      doneBuffer.remoteExpectedAssistantKey = finalAssistantMessage
+        ? hydratedMessageKey(finalAssistantMessage, isScheduledRunSession(sid))
+        : "";
+      if (doneBuffer.localTurnOwned) doneBuffer.deferredRemoteUserEvent = null;
+      doneBuffer.localTurnOwned = false;
+      doneBuffer.remoteTurnActive = true;
+      doneBuffer.remoteTerminalSeen = true;
+      doneBuffer.busy = false;
+      if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
+    }
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
+      var reconciled = requiresAuthorityReconcile ? await reconcileRemoteTurn(sid) : true;
+      if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
+      if (!reconciled) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。");
+        });
+      }
       notify();
       publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
-      flushQueued(sid);
+      if (reconciled) flushQueued(sid);
     })();
   });
 
@@ -411,6 +552,7 @@
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (hasChatItemForTool("user_input", p.id)) return;
     if (state.workflow.run.status === "stopped" &&
         state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
@@ -537,6 +679,12 @@
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    var planId = String(p.plan_id || p.planId || "").trim();
+    var readyMode = p.mode_state || p.modeState;
+    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo" };
+    if (planId && state.chatItems.some(function (item) {
+      return item && item.type === "plan_card" && String(item.planId || "") === planId;
+    })) return;
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -546,10 +694,31 @@
     var snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
     addChatItem({
       type: "plan_card", plan: snaps.plan, todos: snaps.todos,
-      planMarkdown: composePlanMarkdown(snaps), cardState: "active", statusLabel: "", time: timeStr(),
+      planMarkdown: composePlanMarkdown(snaps), planId: planId || null,
+      cardState: planId ? "active" : "frozen", resolved: !planId,
+      planResolutionConfirmed: false,
+      statusLabel: planId ? "" : bt("planHistorical"), time: timeStr(),
     });
     notify();
   }); });
+
+  listen("chat:plan_resolved", function (e) {
+    var p = e && e.payload || {};
+    var sid = p.session_id || state.activeSessionId;
+    var planId = String(p.plan_id || p.planId || "").trim();
+    if (!sid || !planId) return;
+    runSyncOnSession(sid, function () {
+      state.chatItems.forEach(function (item) {
+        if (item && item.type === "plan_card" && String(item.planId || "") === planId) {
+          item.cardState = "frozen";
+          item.resolved = true;
+          item.planResolutionConfirmed = true;
+          item.statusLabel = bt("planDiscarded");
+        }
+      });
+    });
+    notify();
+  });
 
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +

@@ -14,8 +14,8 @@
 //! 含 Thinking block 时才有差),harness 用后者代替私有 estimate_tokens_for_message。
 
 use deepseek_tui::compaction::{
-    CompactionConfig, KEEP_RECENT_MESSAGES, estimate_input_tokens_conservative, estimate_tokens,
-    plan_compaction, should_compact,
+    estimate_input_tokens_conservative, estimate_tokens, plan_compaction, should_compact,
+    CompactionConfig, KEEP_RECENT_MESSAGES,
 };
 use deepseek_tui::models::{ContentBlock, Message, SystemPrompt};
 
@@ -141,7 +141,10 @@ fn probe_crossover_constants() {
                 eprintln!("  反推 k_eff = (E - S - framing)/全量raw = {k_eff:.3}");
                 eprintln!("  可摘要子集 raw = {subset}  <= T 设此值则与 E 同时触发");
                 eprintln!("  pinned(recent+query) raw = {pinned}  <= R");
-                eprintln!("  建议 T ≈ {} (子集raw 留 15K margin)", subset.saturating_sub(15_000));
+                eprintln!(
+                    "  建议 T ≈ {} (子集raw 留 15K margin)",
+                    subset.saturating_sub(15_000)
+                );
                 if w == 262_144 {
                     eprintln!(
                         "  ▶ 190,000 判定: 子集raw={subset} {} 190000 → 写死190K {}",
@@ -200,7 +203,9 @@ fn probe_trigger_order() {
                 (Some(_), None) => "✅ 只正常线触发",
                 _ => "? 都没触发",
             };
-            eprintln!("  T={t:>7}: should_compact 首触={sc_at:?}  emergency 首触={em_at:?}  {verdict}");
+            eprintln!(
+                "  T={t:>7}: should_compact 首触={sc_at:?}  emergency 首触={em_at:?}  {verdict}"
+            );
         }
     }
 }

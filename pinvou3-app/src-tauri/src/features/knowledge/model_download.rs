@@ -131,7 +131,10 @@ pub async fn kb_model_download(
     let _guard = DownloadGuard;
 
     let dir = super::model_dir();
-    let parent = dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dir.clone());
+    let parent = dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| dir.clone());
     std::fs::create_dir_all(&parent).map_err(|e| format!("创建目录失败: {e}"))?;
     let part = parent.join("bge-m3.tar.gz.part");
 
@@ -149,7 +152,10 @@ pub async fn kb_model_download(
         .map_err(|e| format!("连接模型源失败: {e}"))?
         .error_for_status()
         .map_err(|e| format!("模型源响应异常: {e}"))?;
-    let total = resp.content_length().filter(|n| *n > 0).unwrap_or(MODEL_TARGZ_SIZE);
+    let total = resp
+        .content_length()
+        .filter(|n| *n > 0)
+        .unwrap_or(MODEL_TARGZ_SIZE);
     let mut file = std::fs::File::create(&part).map_err(|e| format!("创建文件失败: {e}"))?;
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
@@ -159,7 +165,8 @@ pub async fn kb_model_download(
             let _ = std::fs::remove_file(&part);
             return Err("已取消".into());
         }
-        file.write_all(&chunk).map_err(|e| format!("写盘失败: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("写盘失败: {e}"))?;
         downloaded += chunk.len() as u64;
         if downloaded - last_emit >= 2_097_152 || (total > 0 && downloaded >= total) {
             last_emit = downloaded;
@@ -182,15 +189,23 @@ pub async fn kb_model_download(
             .filter(|s| !s.trim().is_empty())
             .or_else(|| (!MODEL_SHA256.is_empty()).then(|| MODEL_SHA256.to_string()));
         if let Some(exp) = expected {
-            let _ = app2.emit("kb_model:progress", serde_json::json!({ "stage": "verify" }));
+            let _ = app2.emit(
+                "kb_model:progress",
+                serde_json::json!({ "stage": "verify" }),
+            );
             let got = sha256_file(&part2)?;
             if !got.eq_ignore_ascii_case(&exp) {
                 let _ = std::fs::remove_file(&part2);
-                return Err(format!("模型校验失败(sha256 不匹配): 期望 {exp:.12} 实际 {got:.12}"));
+                return Err(format!(
+                    "模型校验失败(sha256 不匹配): 期望 {exp:.12} 实际 {got:.12}"
+                ));
             }
         }
         // 解压到临时目录再原子换入（避免半包污染落点）。
-        let _ = app2.emit("kb_model:progress", serde_json::json!({ "stage": "extract" }));
+        let _ = app2.emit(
+            "kb_model:progress",
+            serde_json::json!({ "stage": "extract" }),
+        );
         let tmp = dir2.with_extension("tmp");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).map_err(|e| format!("创建解压目录失败: {e}"))?;
@@ -210,7 +225,10 @@ pub async fn kb_model_download(
     // ── 4. 热加载 + 刷新工具门控（免重启）─────────────────────────
     let ready = service.reload_embedder();
     super::refresh_kb_tool_gate(&pool).await;
-    let _ = app.emit("kb_model:progress", serde_json::json!({ "stage": "done", "ready": ready }));
+    let _ = app.emit(
+        "kb_model:progress",
+        serde_json::json!({ "stage": "done", "ready": ready }),
+    );
     Ok(current_status())
 }
 
@@ -234,7 +252,9 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1024 * 1024];
     loop {
-        let n = f.read(&mut buf).map_err(|e| format!("读校验文件失败: {e}"))?;
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| format!("读校验文件失败: {e}"))?;
         if n == 0 {
             break;
         }

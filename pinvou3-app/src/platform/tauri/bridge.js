@@ -7,6 +7,9 @@
 (function () {
   "use strict";
 
+  // Browser transport owns its own replay and persistence semantics.
+  if (window.PinvouPlatform && (window.PinvouPlatform.kind === "web" || window.PinvouPlatform.isWeb === true)) return;
+
   const TAURI = window.__TAURI__;
   if (!TAURI) {
     console.warn("[TauriBridge] Tauri not available — browser preview mode");
@@ -257,15 +260,14 @@
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
     updateInfo: null,
-    remoteControl: {
+    webAccess: {
       active: false,
-      room_id: null,
-      session_id: null,
+      endpoint_id: null,
       url: null,
+      qr_data_url: null,
       status: "idle",
       relay_url: "",
       last_error: null,
-      pairing: null,
       starting: false,
     },
     updateChecking: false,
@@ -428,6 +430,7 @@
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
+  var authoritativeTranscriptSyncs = Object.create(null);
   var scheduledRunSessionOwners = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
@@ -469,8 +472,12 @@
     notify: function () { return notify.apply(null, arguments); },
     runSyncOnSession: function () { return runSyncOnSession.apply(null, arguments); },
     startThinking: function () { return startThinking.apply(null, arguments); },
+    stopThinking: function () { return stopThinking.apply(null, arguments); },
     ensureSessionBufferLoaded: function () { return ensureSessionBufferLoaded.apply(null, arguments); },
     ensureSession: function () { return ensureSession.apply(null, arguments); },
+    getBuffer: function () { return getBuffer.apply(null, arguments); },
+    reconcileRemoteTurn: function () { return reconcileRemoteTurn.apply(null, arguments); },
+    markRemoteTurn: function () { return markRemoteTurn.apply(null, arguments); },
     clearAttachments: function () { return clearAttachments.apply(null, arguments); },
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
@@ -489,6 +496,9 @@
     set itemIdSeq(value) { itemIdSeq = value; },
   });
   var addChatItem = chatFeature.addChatItem;
+  var toolCallAlreadyStarted = chatFeature.toolCallAlreadyStarted;
+  var toolCallAlreadyFinished = chatFeature.toolCallAlreadyFinished;
+  var hasChatItemForTool = chatFeature.hasChatItemForTool;
   var isDuplicateArtifactCard = chatFeature.isDuplicateArtifactCard;
   var addSystemItem = chatFeature.addSystemItem;
   var compactPruneRollupText = chatFeature.compactPruneRollupText;
@@ -536,6 +546,7 @@
     applyScheduledRunViewed: function () { return applyScheduledRunViewed.apply(null, arguments); },
     loadScheduledTaskRecentRuns: function () { return loadScheduledTaskRecentRuns.apply(null, arguments); },
     addSystemItem: addSystemItem, basename: basename,
+    isAbsPath: isAbsPath,
     filterSessionArtifacts: filterSessionArtifacts,
     scheduleShellPoll: function () { return scheduleShellPoll.apply(null, arguments); },
     bt: bt, userMessageDisplayText: userMessageDisplayText,
@@ -621,9 +632,35 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
+  function markRemoteTurn(sid, buf) {
+    if (!sid || !buf || buf.localTurnOwned) return;
+    if (!buf.remoteTurnActive) {
+      var meta = state.sessions.find(function (session) { return session.id === sid; });
+      buf.remoteBaselineTrusted = !!buf.loadedFromDisk;
+      buf.remoteBaselineMessageCount = buf.loadedFromDisk
+        ? (buf.messages || []).length
+        : Number(meta && meta.message_count);
+      if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
+      buf.remoteExpectedAssistantKey = "";
+      buf.remoteTerminalSeen = false;
+    }
+    buf.remoteTurnActive = true;
+    buf.busy = true;
+    if (sid === state.activeSessionId) {
+      state.busy = true;
+      if (!state.thinking.active) startThinking();
+    }
+  }
   function onSessionEvent(e, fn) {
     var sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
-    if (sid && sid !== state.activeSessionId) getBuffer(sid);
+    if (sid) {
+      var eventBuffer = getBuffer(sid);
+      var eventName = String((e && e.event) || "");
+      var isTurnEvent = /chat:(user_message|turn_started|delta|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
+      if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
+        markRemoteTurn(sid, eventBuffer);
+      }
+    }
     var isBg = sid && sid !== state.activeSessionId;
     runSyncOnSession(sid, fn);
     if (isBg) notify();
@@ -637,7 +674,8 @@
     );
   }
 
-  // 落盘指定 session 的 messages + artifacts(active 用工作集,后台用其 buffer)。
+  // Transcript persistence is authoritative in Rust. The UI only persists the
+  // presentation-side artifact index and derives the optional auto-title.
   async function persistMessagesFor(sid) {
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
@@ -646,14 +684,10 @@
     var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
-    var backendOwnsTranscript = isScheduledRunSession(sid);
     try {
-      if (!backendOwnsTranscript) {
-        await invoke("save_session_messages", { id: sid, messages: msgs });
-      }
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!backendOwnsTranscript && (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
@@ -664,6 +698,124 @@
         }
       }
     } catch (e) { console.warn("persist failed", e); }
+  }
+
+  function planCardHydrationKey(item) {
+    if (!item || item.type !== "plan_card") return "";
+    if (item.planMarkdown) return "markdown:" + String(item.planMarkdown);
+    try {
+      return "snapshot:" + JSON.stringify({ plan: item.plan || null, todos: item.todos || null });
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function reconcileRemoteTurn(sid) {
+    if (!sid) return true;
+    var buf = sessionStates[sid];
+    if (!buf || (!buf.remoteTurnActive && !buf.remoteTerminalSeen)) return true;
+    if (!buf.remoteTerminalSeen && isBusyFor(sid)) return false;
+    if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
+    var expectedAssistantKey = buf.remoteTerminalSeen
+      ? String(buf.remoteExpectedAssistantKey || "")
+      : "";
+    var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
+      ? buf.messages.length
+      : 0;
+    var sync = (async function () {
+      for (var attempt = 0; attempt < 6; attempt++) {
+        if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        try {
+          var saved = await invoke("load_session", { id: sid, setActive: false });
+          if (!saved || !Array.isArray(saved.messages)) continue;
+          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          if (expectedAssistantKey) {
+            var hasExpectedAssistant = saved.messages.some(function (message) {
+              return message && message.role === "assistant" &&
+                hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
+            });
+            if (!hasExpectedAssistant) continue;
+          }
+          runSyncOnSession(sid, function () {
+            var rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+            var resolvedPlanTickets = Object.create(null);
+            var activePlanCards = Object.create(null);
+            rawLiveChatItems.forEach(function (item) {
+              if (!item || item.type !== "plan_card") return;
+              var key = planCardHydrationKey(item);
+              if (!key) return;
+              if (!item.resolved && item.cardState === "active" && item.planId) {
+                if (!activePlanCards[key]) activePlanCards[key] = [];
+                activePlanCards[key].push(item);
+                return;
+              }
+              if (!item.planId) return;
+              if (!resolvedPlanTickets[key]) resolvedPlanTickets[key] = [];
+              resolvedPlanTickets[key].push(String(item.planId));
+            });
+            var liveChatItems = rawLiveChatItems.filter(function (item) {
+              if (!item || item.type === "user" || item.type === "assistant" || item.type === "tool") return false;
+              if (item.type === "plan_card") return false;
+              return true;
+            });
+            state.messages = saved.messages;
+            state.artifacts = filterSessionArtifacts(
+              mergeHydratedArtifacts(saved.artifacts, state.artifacts),
+              sid,
+            );
+            resetPendingAssistant();
+            state.chatItems = [];
+            rerenderFromMessages();
+            for (var planIndex = state.chatItems.length - 1; planIndex >= 0; planIndex--) {
+              var hydratedPlan = state.chatItems[planIndex];
+              if (!hydratedPlan || hydratedPlan.type !== "plan_card") continue;
+              var hydratedKey = planCardHydrationKey(hydratedPlan);
+              var activeQueue = hydratedKey && activePlanCards[hydratedKey];
+              if (activeQueue && activeQueue.length) {
+                var liveActivePlan = activeQueue.pop();
+                hydratedPlan.planId = String(liveActivePlan.planId);
+                hydratedPlan.cardState = "active";
+                hydratedPlan.resolved = false;
+                hydratedPlan.statusLabel = liveActivePlan.statusLabel || "";
+                hydratedPlan.planResolutionConfirmed = !!liveActivePlan.planResolutionConfirmed;
+                continue;
+              }
+              var ticketQueue = hydratedKey && resolvedPlanTickets[hydratedKey];
+              if (!hydratedPlan.planId && ticketQueue && ticketQueue.length) hydratedPlan.planId = ticketQueue.pop();
+            }
+            var unmatchedActivePlans = [];
+            Object.keys(activePlanCards).forEach(function (key) {
+              (activePlanCards[key] || []).forEach(function (item) { unmatchedActivePlans.push(item); });
+            });
+            mergeHydratedChatItems(unmatchedActivePlans, 0);
+            mergeHydratedChatItems(liveChatItems, 0);
+            currentStreamId = 0;
+            currentStreamText = "";
+            pendingAssistantText = "";
+            pendingAssistantBlocks = [];
+            state.busy = false;
+            stopThinking();
+          });
+          buf.loadedFromDisk = true;
+          buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || buf.sessionRevision || "");
+          buf.localTurnOwned = false;
+          buf.remoteTurnActive = false;
+          buf.remoteTerminalSeen = false;
+          buf.remoteBaselineMessageCount = null;
+          buf.remoteBaselineTrusted = false;
+          buf.remoteExpectedAssistantKey = "";
+          buf.deferredRemoteUserEvent = null;
+          buf.busy = false;
+          if (sid === state.activeSessionId) saveWorkingSetTo(buf);
+          notify();
+          return true;
+        } catch (_) {}
+      }
+      return false;
+    })();
+    authoritativeTranscriptSyncs[sid] = sync;
+    try { return await sync; }
+    finally { if (authoritativeTranscriptSyncs[sid] === sync) delete authoritativeTranscriptSyncs[sid]; }
   }
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
@@ -690,7 +842,7 @@
     personas: ["activePersona", "personaEvents", "personaPool"],
     workflow: ["workflow"],
     memory: ["memory"],
-    remoteControl: ["remoteControl"],
+    remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"],
   };
@@ -1197,14 +1349,22 @@
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
     addChatItem: addChatItem, addSystemItem: addSystemItem, timeStr: timeStr,
+    toolCallAlreadyStarted: toolCallAlreadyStarted,
+    toolCallAlreadyFinished: toolCallAlreadyFinished,
+    hasChatItemForTool: hasChatItemForTool,
     flushPendingTextBlock: flushPendingTextBlock,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant, flushQueued: flushQueued,
     isBusyFor: isBusyFor, doSendFor: doSendFor,
     ensureSessionBufferLoaded: ensureSessionBufferLoaded,
+    getBuffer: getBuffer, markRemoteTurn: markRemoteTurn,
+    reconcileRemoteTurn: reconcileRemoteTurn, saveWorkingSetTo: saveWorkingSetTo,
+    hydratedMessageKey: hydratedMessageKey,
     thinkingTool: function () { return thinkingTool.apply(null, arguments); },
     thinkingIdle: function () { return thinkingIdle.apply(null, arguments); },
+    startThinking: function () { return startThinking.apply(null, arguments); },
     stopThinking: function () { return stopThinking.apply(null, arguments); },
+    userMessageDisplayText: userMessageDisplayText,
     scheduleScheduledRunRefresh: scheduleScheduledRunRefresh,
     handleMemoryWrite: function () { return handleMemoryWrite.apply(null, arguments); },
     isPresentArtifactTool: isPresentArtifactTool,
@@ -1316,6 +1476,10 @@
     turnUsageDirty: turnUsageDirty,
     ensureSession: ensureSession,
     sendMessage: sendMessage,
+    getBuffer: getBuffer,
+    reconcileRemoteTurn: reconcileRemoteTurn,
+    isBusyFor: isBusyFor,
+    markRemoteTurn: markRemoteTurn,
     get currentStreamText() { return currentStreamText; },
     set currentStreamText(value) { currentStreamText = value; },
     get currentStreamId() { return currentStreamId; },
@@ -1371,6 +1535,7 @@
   var openScheduledTaskFolder = artifactsFeature.openScheduledTaskFolder;
   var openInSystem = artifactsFeature.openInSystem;
   var openArtifactExternal = artifactsFeature.openArtifactExternal;
+  var downloadArtifact = artifactsFeature.downloadArtifact;
   var listDeliverables = artifactsFeature.listDeliverables;
   var listDeliverableIndex = artifactsFeature.listDeliverableIndex;
   var openExternalUrl = artifactsFeature.openExternalUrl;
@@ -1626,6 +1791,9 @@
       stopRemoteControl: stopRemoteControl,
       refreshRemoteControlQr: refreshRemoteControlQr,
       refreshRemoteControlStatus: refreshRemoteControlStatus,
+      getWebRelaySettings: remoteControlFeature.getWebRelaySettings,
+      setWebRelayAddress: remoteControlFeature.setWebRelayAddress,
+      resetWebRelayAddress: remoteControlFeature.resetWebRelayAddress,
     },
     artifacts: {
       artifactInfo: artifactInfo,
@@ -1639,6 +1807,7 @@
       openScheduledTaskFolder: openScheduledTaskFolder,
       openInSystem: openInSystem,
       openArtifactExternal: openArtifactExternal,
+      downloadArtifact: downloadArtifact,
       listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,

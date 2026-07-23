@@ -4,7 +4,7 @@ name: PR Check
 # - commit-message:强制校验 PR/push 的 Git commit 信息规范。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust/依赖、L1 harness 或前端改动,给编译/前端 job 做 paths filter。
-# - frontend-test:前端逻辑、构建及拆分后的 Bridge 浏览器 smoke。
+# - frontend-test:前端/Relay/WebUI 逻辑、构建及拆分后的 Bridge 浏览器 smoke。
 # - rust-test / windows-rust-test:**仅当改了 Rust/Cargo/submodule 才跑**，分别在
 #   Linux 与 Windows 原生 runner 编译，形成双平台目标门禁。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
@@ -82,6 +82,7 @@ jobs:
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/src-tauri/resources/**'
+              - 'pinvou3-app/src/platform/web/access-policy.json'
               - 'DeepSeek-TUI'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
@@ -129,6 +130,7 @@ jobs:
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'remote-control-relay/**'
+              - 'scripts/deploy-remote-relay.sh'
               - 'scripts/run-user-journey-tests.sh'
               - 'scripts/mcp-server-contract-smoke.py'
               - 'pinvou3-app/package.json'
@@ -246,7 +248,7 @@ jobs:
           export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           test -n "$CHROME"
           npm run test:bridge-smoke
-          node ../remote-control-relay/test/mobile-ui.smoke.cjs
+          npm run test:webui
           node tests/detached_boot_smoke.js
           node tests/drag_gesture_smoke.js
           node tests/update_notice_ui_smoke.js

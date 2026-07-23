@@ -347,7 +347,8 @@ pub(crate) mod tests {
         );
         assert_eq!(
             settings_path(),
-            crate::platform::os::platform_compat_path("/tmp/pinvou3-test-override").join("settings.json")
+            crate::platform::os::platform_compat_path("/tmp/pinvou3-test-override")
+                .join("settings.json")
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),

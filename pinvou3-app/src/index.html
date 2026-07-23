@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <base href="%BASE_URL%">
   <title>PINVOU 智能助手（内测版）</title>
   <script>
     // Collect startup timing before any vendor or application module loads.
@@ -143,10 +144,10 @@
   </script>
   <!-- Tailwind 仍使用本地离线 runtime；后续单独迁移预编译样式。 -->
   <script>__PINVOU_STARTUP__.mark('html:startup_observers_ready');</script>
-  <script src="/vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:tailwind_error')"></script>
+  <script src="%BASE_URL%vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:tailwind_error')"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="/vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:marked_error')"></script>
-  <script src="/vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:purify_error')"></script>
+  <script src="%BASE_URL%vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:marked_error')"></script>
+  <script src="%BASE_URL%vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:purify_error')"></script>
   <script>__PINVOU_STARTUP__.mark('html:head_end');</script>
 </head>
 <body class="m-0 p-0">
@@ -154,26 +155,29 @@
   <div id="root"></div>
   <script>__PINVOU_STARTUP__.mark('dom:root_created');</script>
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
-  <script src="/platform/tauri/bridge/artifact-tracker.js"></script>
-  <script src="/platform/tauri/bridge/chat.js"></script>
-  <script src="/platform/tauri/bridge/chat-events.js"></script>
-  <script src="/platform/tauri/bridge/sessions.js"></script>
-  <script src="/platform/tauri/bridge/terminal.js"></script>
-  <script src="/platform/tauri/bridge/scheduled.js"></script>
-  <script src="/platform/tauri/bridge/monitor.js"></script>
-  <script src="/platform/tauri/bridge/settings.js"></script>
-  <script src="/platform/tauri/bridge/memory.js"></script>
-  <script src="/platform/tauri/bridge/artifacts.js"></script>
-  <script src="/platform/tauri/bridge/personas.js"></script>
-  <script src="/platform/tauri/bridge/updater.js"></script>
-  <script src="/platform/tauri/bridge/remote-control.js"></script>
-  <script src="/platform/tauri/bridge/dependencies.js"></script>
-  <script src="/platform/tauri/bridge/voice.js"></script>
-  <script src="/platform/tauri/bridge/knowledge-model.js"></script>
-  <script src="/platform/tauri/bridge/interaction.js"></script>
-  <script src="/platform/tauri/bridge/workflow-runtime.js"></script>
-  <script src="/platform/tauri/bridge/workflow.js"></script>
-  <script src="/platform/tauri/bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
+  <script src="%BASE_URL%platform/web/bootstrap.js"></script>
+  <script src="%BASE_URL%platform/web/host-file-picker.js"></script>
+  <script src="%BASE_URL%platform/web/bridge.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/artifact-tracker.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/chat.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/chat-events.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/sessions.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/terminal.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/scheduled.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/monitor.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/settings.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/memory.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/artifacts.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/personas.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/updater.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/remote-control.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/dependencies.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/voice.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/knowledge-model.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/interaction.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/workflow-runtime.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/workflow.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
       const isPetWindow = new URLSearchParams(window.location.search).get('window') === 'pet';
@@ -190,8 +194,8 @@
       }
     });
   </script>
-  <script src="/features/personas/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
-  <script src="/features/updater/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
+  <script src="%BASE_URL%features/personas/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
+  <script src="%BASE_URL%features/updater/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
   <script type="module" src="/app/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
 </body>
 </html>

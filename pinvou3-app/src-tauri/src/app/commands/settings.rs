@@ -363,7 +363,11 @@ fn resolve_saved_search_key(provider: SearchProvider) -> Result<Option<String>, 
     SystemCredentialStore::new()
         .get(reference)
         .map_err(|error| error.user_message())
-        .map(|value| value.map(|key| key.trim().to_string()).filter(|key| !key.is_empty()))
+        .map(|value| {
+            value
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
 }
 
 #[tauri::command]

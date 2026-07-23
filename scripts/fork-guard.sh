@@ -79,7 +79,7 @@ fingerprints=(
   "APP|Shell 中文跨快照边界回归            |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn holds_incomplete_utf8_replacement_until_a_stable_snapshot"
   "APP|Shell 后台终态持续观察回归          |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn reports_detached_completion_after_the_engine_tool_has_returned"
   "APP|turn 权威终态抢占门                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|pub(crate) fn claim_terminal"
-  "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|emit_reclaimed_terminal_once"
+  "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|finish_reclaimed_lifecycle_turn"
 )
 
 for fp in "${fingerprints[@]}"; do

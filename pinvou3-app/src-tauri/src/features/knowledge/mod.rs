@@ -7,6 +7,8 @@
 //! 分层提醒：本模块只做 **L0 元数据**（零模型）。内容解析 / 全文 / 向量是 L1（后续），
 //! LLM 理解是 L2（纯按需）。**绝不在这里全盘跑模型分类**——那是 Marvis 的坑。
 
+#[cfg(test)]
+mod e2e_test;
 mod embed;
 mod exclude;
 mod kb_tool;
@@ -21,8 +23,6 @@ mod store;
 /// 保留模块供未来 daemon 版的「热点 watch + 周期重扫」混合策略复用。
 #[allow(dead_code)]
 mod watcher;
-#[cfg(test)]
-mod e2e_test;
 
 pub use exclude::Excluder;
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
@@ -39,8 +39,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use walkdir::WalkDir;
 
-use store::{SearchQuery, Store};
 pub use store::{FileHit, Stats, TypeCount};
+use store::{SearchQuery, Store};
 
 /// 后台扫描进度（回前端轮询）。
 #[derive(Debug, Clone, Serialize, Default)]
@@ -129,7 +129,11 @@ impl KnowledgeService {
     fn install_embedder(&self, embedder: Option<Arc<embed::Embedder>>) -> bool {
         let ready = embedder.is_some();
         if let Some(e) = &embedder {
-            eprintln!("[knowledge] L1 embedding 已启用: {} ({})", e.model(), e.source());
+            eprintln!(
+                "[knowledge] L1 embedding 已启用: {} ({})",
+                e.model(),
+                e.source()
+            );
         }
         self.l1.set_embedder(embedder);
         ready
@@ -188,16 +192,22 @@ impl KnowledgeService {
                     files.push(root.clone());
                     continue;
                 }
-                let walker = WalkDir::new(root).follow_links(false).into_iter().filter_entry(|e| {
-                    let name = e.file_name().to_str().unwrap_or("");
-                    let is_dir = e.file_type().is_dir();
-                    let ext = if is_dir {
-                        None
-                    } else {
-                        e.path().extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase())
-                    };
-                    !ex.is_skipped(name, is_dir, ext.as_deref())
-                });
+                let walker = WalkDir::new(root)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_entry(|e| {
+                        let name = e.file_name().to_str().unwrap_or("");
+                        let is_dir = e.file_type().is_dir();
+                        let ext = if is_dir {
+                            None
+                        } else {
+                            e.path()
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_lowercase())
+                        };
+                        !ex.is_skipped(name, is_dir, ext.as_deref())
+                    });
                 for entry in walker.flatten() {
                     if entry.file_type().is_file() {
                         files.push(entry.path().to_path_buf());
@@ -288,12 +298,7 @@ impl KnowledgeService {
             let mut st = scan_state.lock();
             st.running = false;
             st.finished_at = finished_at;
-            st.phase = if cancelled {
-                "cancelled"
-            } else {
-                "done"
-            }
-            .into();
+            st.phase = if cancelled { "cancelled" } else { "done" }.into();
         });
 
         self.scan_state.lock().clone()
@@ -373,10 +378,7 @@ where
 }
 
 /// 启动/续跑全盘扫描。`roots` 省略时默认用户家目录。
-pub fn kb_start_scan(
-    state: State<'_, KnowledgeService>,
-    roots: Option<Vec<String>>,
-) -> ScanState {
+pub fn kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState {
     let roots = roots
         .filter(|v| !v.is_empty())
         .map(|v| v.into_iter().map(PathBuf::from).collect())
@@ -390,7 +392,6 @@ pub fn kb_cancel_scan(state: State<'_, KnowledgeService>) {
     state.cancel_scan();
 }
 
-
 /// L0：按扩展名分类计数（文件管理「按类型浏览」用）。
 pub async fn kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String> {
     let store = state.store.clone();
@@ -398,7 +399,9 @@ pub async fn kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<Ty
 }
 
 // ───────────────────────── L1 知识库命令 ─────────────────────────
-pub async fn kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String> {
+pub async fn kb_collection_list(
+    state: State<'_, KnowledgeService>,
+) -> Result<Vec<Collection>, String> {
     let l1 = state.l1().clone();
     spawn_db(move || l1.list_collections().map_err(|e| e.to_string())).await
 }
@@ -496,8 +499,16 @@ pub struct EmbedInfo {
 }
 pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
     match state.l1().embed_info() {
-        Some((base_url, model)) => EmbedInfo { enabled: true, base_url, model },
-        None => EmbedInfo { enabled: false, base_url: String::new(), model: String::new() },
+        Some((base_url, model)) => EmbedInfo {
+            enabled: true,
+            base_url,
+            model,
+        },
+        None => EmbedInfo {
+            enabled: false,
+            base_url: String::new(),
+            model: String::new(),
+        },
     }
 }
 

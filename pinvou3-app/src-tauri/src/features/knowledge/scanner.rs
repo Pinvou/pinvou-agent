@@ -89,7 +89,11 @@ fn to_record(e: &DirEntry) -> Option<FileRecord> {
     let name = e.file_name().to_str()?.to_string();
     let is_dir = ft.is_dir();
     let md = e.metadata().ok();
-    let size = if is_dir { 0 } else { md.as_ref().map(|m| m.len()).unwrap_or(0) };
+    let size = if is_dir {
+        0
+    } else {
+        md.as_ref().map(|m| m.len()).unwrap_or(0)
+    };
     let mtime = md
         .as_ref()
         .and_then(|m| m.modified().ok())
@@ -161,7 +165,15 @@ mod tests {
         let ex = Excluder::default();
         let cancel = AtomicBool::new(false);
         let mut visited = HashSet::new();
-        scan(&base, &store, &ex, &cancel, &HashMap::new(), &mut visited, |_| {});
+        scan(
+            &base,
+            &store,
+            &ex,
+            &cancel,
+            &HashMap::new(),
+            &mut visited,
+            |_| {},
+        );
 
         // 能搜到 Documents 下的文件
         let pdf = store

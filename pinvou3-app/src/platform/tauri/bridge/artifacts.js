@@ -106,6 +106,9 @@
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
     return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
+  function downloadArtifact(path, sessionId) {
+    return openArtifactExternal(path, sessionId);
+  }
 
   // ── 附件 ────────────────────────────────────────────────────────
   async function addAttachmentByPath(path) {
@@ -226,6 +229,7 @@
       openScheduledTaskFolder: openScheduledTaskFolder,
       openInSystem: openInSystem,
       openArtifactExternal: openArtifactExternal,
+      downloadArtifact: downloadArtifact,
       listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,

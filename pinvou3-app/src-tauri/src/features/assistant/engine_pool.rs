@@ -38,10 +38,12 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::platform::prefs::{SavedModel, UserPrefs};
-use crate::features::sessions::{ScheduledRunProfile, SessionStore};
+use crate::features::assistant::engine::{
+    AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
+};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
-use crate::features::assistant::engine::{AppEngine, EngineTurnSignal, TurnLifecycle};
+use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
+use crate::platform::prefs::{SavedModel, UserPrefs};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -85,8 +87,6 @@ impl SessionTurnLocks {
     }
 }
 
-/// Per-session turn state survives Engine entry removal, allowing cancel and
-/// abnormal forwarder shutdown to converge on one authoritative terminal.
 #[derive(Clone, Default)]
 struct SessionTurnLifecycles {
     states: Arc<SyncMutex<HashMap<String, Arc<TurnLifecycle>>>>,
@@ -170,6 +170,43 @@ where
     store.delete_scheduled_run(session_id, expected_task_id)
 }
 
+async fn delete_chat_session_with_gate<F, Fut, G>(
+    turn_locks: &SessionTurnLocks,
+    store: &SessionStore,
+    session_id: &str,
+    evict_locked: F,
+    forget: G,
+) -> Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+    G: FnOnce(),
+{
+    let turn_lock = turn_locks.for_session(session_id).await;
+    let _turn = turn_lock.lock().await;
+    evict_locked().await;
+    store.delete(session_id)?;
+    forget();
+    Ok(())
+}
+
+async fn quiesce_engine_before_reclaim<C, S, SFut, F, Fut, T>(
+    cancel_current: C,
+    stop_forwarder: S,
+    finish_reclaimed: F,
+) -> T
+where
+    C: FnOnce(),
+    S: FnOnce() -> SFut,
+    SFut: Future<Output = ()>,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    cancel_current();
+    stop_forwarder().await;
+    finish_reclaimed().await
+}
+
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
 struct EngineEntry {
     engine: AppEngine,
@@ -181,8 +218,14 @@ pub type EngineToolFactory =
     Arc<dyn Fn(&AppHandle, &str) -> Vec<Arc<dyn ToolSpec>> + Send + Sync + 'static>;
 pub type ToolPolicy = Arc<dyn Fn(&AppHandle) -> Vec<String> + Send + Sync + 'static>;
 
-fn should_sync_session(is_scheduled: bool, has_messages: bool) -> bool {
-    is_scheduled || has_messages
+fn should_sync_session(_is_scheduled: bool, _has_messages: bool) -> bool {
+    // SyncSession carries both transcript history and the authoritative Session
+    // identity. An empty ordinary Session still needs it: otherwise the freshly
+    // spawned Engine keeps its generated internal id, and every SessionUpdated
+    // snapshot is rejected by the outer forwarder as belonging to another
+    // Session. That leaves only the admitted user fallback durable while the
+    // streamed assistant reply exists in memory alone.
+    true
 }
 
 /// 多 session engine 池。Tauri State 持有,`Clone` 廉价(内部全是 Arc)。
@@ -255,12 +298,8 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<Pinvou3Bridge> {
-        let started_at = std::time::Instant::now();
-        log::info!("[engine_pool] fresh_bridge_for start sid={}", session_id);
         let mut b = self.bridge.clone();
-        log::info!("[engine_pool] fresh_bridge_for bridge cloned sid={}", session_id);
         b.prefs = UserPrefs::load();
-        log::info!("[engine_pool] fresh_bridge_for prefs loaded sid={}", session_id);
         let scheduled_profile = self.store.scheduled_profile(session_id);
         let interactive_model_override = self.store.session_model_override(session_id);
         let pins_scheduled_model = scheduled_profile.is_some()
@@ -271,61 +310,12 @@ impl EnginePool {
             interactive_model_override.as_deref(),
             scheduled_unattended,
         )?;
-        log::info!(
-            "[engine_pool] fresh_bridge_for session model resolved sid={} has_model={}",
-            session_id,
-            b.session_model.is_some()
-        );
-        let use_builtin_llmapi = b
-            .effective_model_owned()
-            .as_ref()
-            .is_some_and(|model| model.is_builtin_llmapi());
-        log::info!(
-            "[engine_pool] fresh_bridge_for effective model checked sid={} use_builtin_llmapi={}",
-            session_id,
-            use_builtin_llmapi
-        );
-        if use_builtin_llmapi {
-            log::info!(
-                "[engine_pool] fresh_bridge_for ready_saved_model_local start sid={}",
-                session_id
-            );
-            match crate::features::llmapi_hub::provisioning::ready_saved_model_from_local_binding_system() {
-                Ok(model) => {
-                    log::info!(
-                        "[engine_pool] fresh_bridge_for ready_saved_model_local ok sid={} elapsed_ms={}",
-                        session_id,
-                        started_at.elapsed().as_millis()
-                    );
-                    b.session_model = Some(model);
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[engine_pool] fresh_bridge_for ready_saved_model_local failed sid={} code={:?} elapsed_ms={} message={}",
-                        session_id,
-                        err.code,
-                        started_at.elapsed().as_millis(),
-                        err.message
-                    );
-                    eprintln!(
-                        "[pinvou3-app] LLM API Hub model injection skipped: {}",
-                        err.to_tauri_error()
-                    );
-                }
-            }
-        }
         // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
         // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
         if b.provider() == "vllm" {
-            log::info!("[engine_pool] fresh_bridge_for vllm probe start sid={}", session_id);
-            let (served, max_len) = crate::features::monitor::probe_vllm_model_info(&b.base_url()).await;
-            log::info!(
-                "[engine_pool] fresh_bridge_for vllm probe done sid={} served={:?} max_len={:?}",
-                session_id,
-                served,
-                max_len
-            );
+            let (served, max_len) =
+                crate::features::monitor::probe_vllm_model_info(&b.base_url()).await;
             if let Some(served) = served.filter(|_| !pins_scheduled_model) {
                 if let Some(mut m) = b.effective_model_owned() {
                     if m.model != served {
@@ -338,11 +328,6 @@ impl EnginePool {
             // + 按真实窗口推导压缩阈值。探测失败保持 None → 名字 hint 老路。
             b.probed_context_tokens = max_len;
         }
-        log::info!(
-            "[engine_pool] fresh_bridge_for done sid={} elapsed_ms={}",
-            session_id,
-            started_at.elapsed().as_millis()
-        );
         Ok(b)
     }
 
@@ -361,34 +346,16 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<AppEngine> {
-        let started_at = std::time::Instant::now();
-        log::info!("[engine_pool] get_or_spawn start sid={}", session_id);
-        log::info!("[engine_pool] get_or_spawn lock wait start sid={}", session_id);
         let mut entries = self.entries.lock().await;
-        log::info!(
-            "[engine_pool] get_or_spawn lock acquired sid={} elapsed_ms={}",
-            session_id,
-            started_at.elapsed().as_millis()
-        );
         if let Some(entry) = entries.get(session_id) {
-            log::info!(
-                "[engine_pool] get_or_spawn reuse existing engine sid={} elapsed_ms={}",
-                session_id,
-                started_at.elapsed().as_millis()
-            );
             return Ok(entry.engine.clone());
         }
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
-        log::info!("[engine_pool] get_or_spawn spawn bridge start sid={}", session_id);
+
         let bridge = self
             .fresh_bridge_for_policy(session_id, scheduled_unattended)
             .await?;
-        log::info!(
-            "[engine_pool] get_or_spawn spawn_for_session start sid={} elapsed_ms={}",
-            session_id,
-            started_at.elapsed().as_millis()
-        );
         let shell_workspace = self
             .store
             .scheduled_profile(session_id)
@@ -406,58 +373,33 @@ impl EnginePool {
             shell_manager,
         )
         .await?;
-        log::info!(
-            "[engine_pool] get_or_spawn spawn_for_session ok sid={} elapsed_ms={}",
-            session_id,
-            started_at.elapsed().as_millis()
-        );
 
-        // 普通新会话没有历史时可跳过；scheduled session 即使为空也必须先同步，
-        // 让底座 Engine 的内部 session id 与预创建的持久化会话一致。
-        log::info!("[engine_pool] get_or_spawn load history start sid={}", session_id);
+        // 即使 messages 为空也必须同步：SyncSession 不只注入历史，还把底层 Engine
+        // 的内部 session id 对齐到预创建的持久化会话。跳过会让首轮 SessionUpdated
+        // 因 id mismatch 被拒绝，最终只落盘 user 而丢失 assistant。
         match self.store.load(session_id) {
-            Ok(saved) => {
-                log::info!(
-                    "[engine_pool] get_or_spawn load history ok sid={} messages={}",
-                    session_id,
-                    saved.messages.len()
-                );
-                if should_sync_session(is_scheduled, !saved.messages.is_empty()) {
-                log::info!("[engine_pool] get_or_spawn sync history start sid={}", session_id);
-                    if let Err(error) = engine
+            Ok(saved) if should_sync_session(is_scheduled, !saved.messages.is_empty()) => {
+                if let Err(error) = engine
                     .sync_session(session_id.to_string(), saved.messages)
                     .await
                 {
-                        if is_scheduled {
-                            let _ = engine.handle.send(Op::Shutdown).await;
-                            forwarder.abort();
-                            return Err(error).with_context(|| {
-                                format!("sync scheduled session {session_id} before its first turn")
-                            });
-                        }
-                        eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
-                    log::warn!(
-                        "[engine_pool] get_or_spawn sync history failed sid={} error={:?}",
-                        session_id,
-                            error
-                    );
+                    if is_scheduled {
+                        let _ = engine.handle.send(Op::Shutdown).await;
+                        forwarder.abort();
+                        return Err(error).with_context(|| {
+                            format!("sync scheduled session {session_id} before its first turn")
+                        });
+                    }
+                    eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
                 }
-                log::info!("[engine_pool] get_or_spawn sync history done sid={}", session_id);
             }
-            }
-            Err(error) if is_scheduled => {
+            Ok(_) => {}
+            Err(error) => {
                 let _ = engine.handle.send(Op::Shutdown).await;
                 forwarder.abort();
                 return Err(error).with_context(|| {
-                    format!("load scheduled session {session_id} before its first turn")
+                    format!("load session {session_id} before spawning its engine")
                 });
-            }
-            Err(error) => {
-                log::warn!(
-                    "[engine_pool] get_or_spawn load history failed sid={} error={:#}",
-                    session_id,
-                    error
-                );
             }
         }
 
@@ -467,11 +409,6 @@ impl EnginePool {
                 engine: engine.clone(),
                 forwarder,
             },
-        );
-        log::info!(
-            "[engine_pool] get_or_spawn inserted engine sid={} elapsed_ms={}",
-            session_id,
-            started_at.elapsed().as_millis()
         );
         Ok(engine)
     }
@@ -483,7 +420,7 @@ impl EnginePool {
             .lock()
             .await
             .get(session_id)
-            .map(|entry| entry.engine.clone())
+            .map(|e| e.engine.clone())
     }
 
     /// 回收某 session 的 engine:cancel 在跑的 turn → Shutdown engine → abort forwarder。
@@ -492,6 +429,20 @@ impl EnginePool {
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
         self.evict_locked(session_id).await;
+    }
+
+    /// Delete an ordinary chat under the exact turn gate used by lazy spawn
+    /// and send. No queued sender can slip between engine reclaim, disk delete,
+    /// and lifecycle cleanup to resurrect the session.
+    pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
+        delete_chat_session_with_gate(
+            &self.turn_locks,
+            &self.store,
+            session_id,
+            || self.evict_locked(session_id),
+            || self.forget_session(session_id),
+        )
+        .await
     }
 
     /// Atomically closes the live engine and removes a scheduled session under
@@ -519,21 +470,35 @@ impl EnginePool {
 
     async fn evict_locked(&self, session_id: &str) {
         if let Some(entry) = self.entries.lock().await.remove(session_id) {
-            if entry
-                .engine
-                .finish_reclaimed_turn(&self.app, session_id)
-            {
+            // Stop the producer before admission fallback awaits disk I/O.
+            // An in-flight SessionUpdated save is serialized with the fallback
+            // by SessionStore's mutation gate; no later delta/tool event can
+            // overtake the authoritative transcript_committed + done pair.
+            let EngineEntry { engine, forwarder } = entry;
+            let reclaimed = quiesce_engine_before_reclaim(
+                || engine.cancel_current(),
+                || async move {
+                    forwarder.abort();
+                    let _ = forwarder.await;
+                },
+                || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
+            )
+            .await;
+            if reclaimed {
                 log::warn!(
                     "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                     session_id
                 );
                 crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
             }
-            entry.engine.cancel_current();
-            entry.forwarder.abort();
-            if let Err(e) = entry.engine.handle.send(Op::Shutdown).await {
+            if let Err(e) = engine.handle.send(Op::Shutdown).await {
                 eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
             }
+        } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+            // A caller can reserve before lazy spawn. Reclaim that Reserved
+            // phase without fabricating chat:done; the guard's eventual send
+            // will observe that its reservation was invalidated.
+            lifecycle.invalidate_unsubmitted_reservation();
         }
     }
 
@@ -599,6 +564,16 @@ impl EnginePool {
 
     // ── 高层路由(commands.rs 调用)─────────────────────────────────
 
+    /// Atomically reserve the single turn slot for a session before callers
+    /// consume one-shot state, stage attachments, or perform other side effects.
+    /// Dropping the returned guard before submission restores the slot.
+    pub(crate) fn reserve_turn(&self, session_id: &str) -> Result<TurnReservation> {
+        let mut reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        let baseline = self.store.load(session_id)?;
+        reservation.set_base_transcript_revision(transcript_revision(&baseline.messages)?);
+        Ok(reservation)
+    }
+
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
     pub async fn send_user_message(
         &self,
@@ -607,6 +582,39 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
     ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        self.send_reserved_user_message(
+            session_id,
+            content,
+            display_message,
+            mode,
+            restrict_tools_for_turn,
+            reservation,
+        )
+        .await
+    }
+
+    /// Submit a previously admitted append operation. This is the entry point
+    /// used by chat commands that must reserve before resolving attachments.
+    pub(crate) async fn send_reserved_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        display_message: Message,
+        mode: AppMode,
+        restrict_tools_for_turn: bool,
+        mut reservation: TurnReservation,
+    ) -> Result<()> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(
+            TranscriptOperation::Append,
+            display_message,
+            baseline_revision,
+        )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
         if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
@@ -615,7 +623,12 @@ impl EnginePool {
         let _turn = turn_lock.lock().await;
         if let Some(profile) = scheduled_profile {
             scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
+        } else {
+            self.store.load(session_id).with_context(|| {
+                format!("Session '{session_id}' was deleted before the turn could start")
+            })?;
         }
+        reservation.ensure_active()?;
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
         // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
@@ -626,14 +639,22 @@ impl EnginePool {
             .store
             .active_persona_id(session_id)
             .and_then(|pid| crate::features::personas::get(&pid));
-        let persona_reminder = active_card.as_ref().map(crate::features::personas::equip_anchor);
+        let persona_reminder = active_card
+            .as_ref()
+            .map(crate::features::personas::equip_anchor);
         let restrict_tools = active_card
             .as_ref()
             .map_or(false, |c| c.conversational_only);
         let restrict_tools = restrict_tools || restrict_tools_for_turn;
         self.get_or_spawn(session_id)
             .await?
-            .send_user_message(content, mode, persona_reminder, restrict_tools)
+            .send_reserved_user_message(
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+                reservation,
+            )
             .await
     }
 
@@ -712,35 +733,14 @@ impl EnginePool {
         result
     }
 
-    /// 取消指定 session 正在生成的回复。Engine 已不存在时，仅在池仍确认存在活动
-    /// turn 时补发 Interrupted 权威终态；空闲会话取消保持 no-op。
+    /// 取消指定 session 正在生成的回复。engine 没起则 no-op。
     pub async fn cancel(&self, session_id: &str) {
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-            let emitted = lifecycle.emit_terminal_once(
-                &self.app,
-                session_id,
-                TurnOutcomeStatus::Interrupted,
-                None,
-            );
-            if emitted.is_none() {
-                log::info!(
-                    "[engine_pool] cancel ignored for idle session without engine sid={}",
-                    session_id
-                );
-                return;
-            }
-            log::warn!(
-                "[engine_pool] cancel recovered active turn without engine sid={}",
-                session_id
-            );
-            crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
-        } else {
-            log::info!(
-                "[engine_pool] cancel ignored for unknown idle session sid={}",
-                session_id
-            );
+            lifecycle.invalidate_unsubmitted_reservation();
         }
     }
 
@@ -766,6 +766,28 @@ impl EnginePool {
 
     /// 编辑/重发指定 session 最后一轮 user 消息。
     pub async fn edit_last_turn(&self, session_id: &str, new_message: String) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(new_message.clone());
+        self.edit_last_turn_reserved(session_id, new_message, display_message, reservation)
+            .await
+    }
+
+    pub(crate) async fn edit_last_turn_reserved(
+        &self,
+        session_id: &str,
+        new_message: String,
+        display_message: Message,
+        mut reservation: TurnReservation,
+    ) -> Result<()> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(
+            TranscriptOperation::EditLast,
+            display_message,
+            baseline_revision,
+        )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
         if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
@@ -774,10 +796,15 @@ impl EnginePool {
         let _turn = turn_lock.lock().await;
         if let Some(profile) = scheduled_profile {
             scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
+        } else {
+            self.store.load(session_id).with_context(|| {
+                format!("Session '{session_id}' was deleted before the edit could start")
+            })?;
         }
+        reservation.ensure_active()?;
         self.get_or_spawn(session_id)
             .await?
-            .edit_last_turn(new_message)
+            .edit_last_turn_reserved(new_message, reservation)
             .await
     }
 
@@ -824,6 +851,16 @@ impl EnginePool {
             "[engine_pool] sudo permission changed; {live_count} live session(s) — \
              new state takes effect next turn via per-turn system-reminder"
         );
+    }
+}
+
+pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
+    Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: text.into(),
+            cache_control: None,
+        }],
     }
 }
 
@@ -986,16 +1023,17 @@ fn resolve_spawn_model(
 #[cfg(test)]
 mod scheduled_model_tests {
     use super::{
-        delete_scheduled_run_with_gate, resolve_scheduled_model, resolve_spawn_model,
+        delete_chat_session_with_gate, delete_scheduled_run_with_gate,
+        quiesce_engine_before_reclaim, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
         SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
     };
-    use crate::platform::prefs::{ModelPreset, SavedModel};
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
+    use crate::platform::prefs::{ModelPreset, SavedModel};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     fn model(id: &str, wire_name: &str) -> SavedModel {
         SavedModel {
@@ -1079,11 +1117,11 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn scheduled_empty_session_is_synchronized_before_its_first_turn() {
+    fn every_empty_session_is_synchronized_before_its_first_turn() {
         assert!(should_sync_session(true, false));
         assert!(should_sync_session(true, true));
         assert!(should_sync_session(false, true));
-        assert!(!should_sync_session(false, false));
+        assert!(should_sync_session(false, false));
     }
 
     #[test]
@@ -1112,21 +1150,15 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn session_turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel() {
+    fn turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel() {
         let lifecycles = SessionTurnLifecycles::default();
         let engine_lifecycle = lifecycles.for_session("session-1");
         engine_lifecycle.on_submitted();
         drop(engine_lifecycle);
 
-        let pool_lifecycle = lifecycles
-            .get("session-1")
-            .expect("pool retains active lifecycle independently");
+        let pool_lifecycle = lifecycles.get("session-1").expect("session lifecycle");
         assert!(pool_lifecycle.finish_once(|| {}).is_some());
-        assert_eq!(
-            pool_lifecycle.finish_once(|| panic!("must stay idle")),
-            None
-        );
-        assert!(lifecycles.get("unknown-session").is_none());
+        assert_eq!(pool_lifecycle.finish_once(|| panic!("duplicate")), None);
         lifecycles.remove("session-1");
         assert!(lifecycles.get("session-1").is_none());
     }
@@ -1228,6 +1260,109 @@ mod scheduled_model_tests {
         let probe = locks.for_session("turn-lock-prune-probe").await;
         assert!(!locks.locks.lock().await.contains_key(&session_id));
         drop(probe);
+
+        match previous_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn engine_reclaim_quiesces_event_producer_before_persistence() {
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let cancel_order = order.clone();
+        let abort_order = order.clone();
+        let persist_order = order.clone();
+
+        let result = quiesce_engine_before_reclaim(
+            move || cancel_order.lock().unwrap().push("cancel"),
+            move || async move {
+                abort_order.lock().unwrap().push("abort");
+                tokio::task::yield_now().await;
+                abort_order.lock().unwrap().push("joined");
+            },
+            move || async move {
+                persist_order.lock().unwrap().push("persist");
+                42
+            },
+        )
+        .await;
+
+        assert_eq!(result, 42);
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["cancel", "abort", "joined", "persist"]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_delete_keeps_evict_delete_and_forget_ahead_of_waiting_send() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-chat-delete-race-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("PINVOU3_HOME", &home);
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let locks = SessionTurnLocks::default();
+        let gate = locks.for_session(&session_id).await;
+        let blocker = gate.lock().await;
+        let fake_engine_present = Arc::new(AtomicBool::new(true));
+        let forgotten = Arc::new(AtomicBool::new(false));
+
+        let delete_locks = locks.clone();
+        let delete_store = store.clone();
+        let delete_id = session_id.clone();
+        let delete_engine = fake_engine_present.clone();
+        let delete_forgotten = forgotten.clone();
+        let delete = tokio::spawn(async move {
+            delete_chat_session_with_gate(
+                &delete_locks,
+                &delete_store,
+                &delete_id,
+                || async move {
+                    delete_engine.store(false, Ordering::Release);
+                },
+                || delete_forgotten.store(true, Ordering::Release),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        let send_locks = locks.clone();
+        let send_store = store.clone();
+        let send_id = session_id.clone();
+        let waiting_send = tokio::spawn(async move {
+            let gate = send_locks.for_session(&send_id).await;
+            let _turn = gate.lock().await;
+            send_store.load(&send_id)
+        });
+        tokio::task::yield_now().await;
+        drop(blocker);
+        drop(gate);
+
+        delete
+            .await
+            .expect("delete task joins")
+            .expect("delete chat");
+        assert!(
+            waiting_send.await.expect("send task joins").is_err(),
+            "a sender queued on the gate must observe the completed delete"
+        );
+        assert!(!fake_engine_present.load(Ordering::Acquire));
+        assert!(forgotten.load(Ordering::Acquire));
+        assert!(store.load(&session_id).is_err());
 
         match previous_home {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),

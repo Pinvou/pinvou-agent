@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::error_taxonomy::ErrorEnvelope;
 use deepseek_tui::tui::app::AppMode;
-use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 use pinvou3_lib::features::assistant::engine::AppEngine;
+use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://10.214.74.113:8000/v1";
 
@@ -866,7 +866,10 @@ async fn yolo_large_html() {
         .map(|s| s.lines().count())
         .unwrap_or(0);
     eprintln!("[yolo_large_html] landing.html 行数 = {lines}");
-    assert!(lines >= 200, "landing.html 行数 {lines} < 200,疑似截断/没写完");
+    assert!(
+        lines >= 200,
+        "landing.html 行数 {lines} < 200,疑似截断/没写完"
+    );
 }
 
 /// 问题3 实测:sudo reminder **精简版**关闭态,模型还遵守吗?
@@ -1505,8 +1508,7 @@ async fn image_vision_analyze() {
         summary.tool_call_counts,
         summary.full_text.chars().count(),
     );
-    let path =
-        record_transcript(scenario, user, AppMode::Yolo, &timeline, &summary);
+    let path = record_transcript(scenario, user, AppMode::Yolo, &timeline, &summary);
     eprintln!("[{scenario}] transcript → {}", path.display());
 
     verify_expect(&summary, &expect, scenario);
@@ -1582,8 +1584,7 @@ async fn large_xlsx_attachment_path_mode() {
         summary.tool_call_counts,
         summary.full_text.chars().count(),
     );
-    let path =
-        record_transcript(scenario, &user, AppMode::Yolo, &timeline, &summary);
+    let path = record_transcript(scenario, &user, AppMode::Yolo, &timeline, &summary);
     eprintln!("[{scenario}] transcript → {}", path.display());
 
     verify_expect(&summary, &expect, scenario);

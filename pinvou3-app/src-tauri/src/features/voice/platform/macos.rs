@@ -11,8 +11,7 @@ const ASR_MODEL_URL: &str =
 const ASR_MODEL_MIRROR_URL: &str =
     "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf";
 const ASR_MODEL_SIZE: u64 = 182_278_688;
-const ASR_MODEL_SHA256: &str =
-    "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b";
+const ASR_MODEL_SHA256: &str = "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b";
 const BUNDLED_ENGINE_SHA256: &str =
     "7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4";
 

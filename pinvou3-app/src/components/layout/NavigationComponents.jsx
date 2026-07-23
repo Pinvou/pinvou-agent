@@ -16,7 +16,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           title={!isSidebarOpen ? label : ""}
           style={dragging ? { opacity: 0.4 } : undefined}
           className={`group flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
-          ${isSidebarOpen ? 'px-4 py-3 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
+          ${isSidebarOpen ? 'px-4 py-3 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
             : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
@@ -211,7 +211,10 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
       const [menuOpen, setMenuOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
       const [val, setVal] = useState(chat.title);
-      const drag = useLongPressDrag('session', onPickUp);
+      const sessionDragKind = onPickUp ? 'session' : null;
+      const drag = useLongPressDrag(sessionDragKind, onPickUp);
+      const dragProps = sessionDragKind ? drag.handlers : {};
+      const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       const closeMenu = () => setMenuOpen(false);
       const placeMenu = (target) => {
@@ -276,10 +279,12 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           {(onOpenFolder || onArchive) && (
             <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
           )}
-          <button className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder && onOpenFolder(chat.id); }}>
-            <FolderOpen size={15} />
-            <span>{t.riOpenFolder}</span>
-          </button>
+          {onOpenFolder && (
+            <button className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
+              <FolderOpen size={15} />
+              <span>{t.riOpenFolder}</span>
+            </button>
+          )}
           {onArchive && (
             <button className={menuItemCls} onClick={() => { closeMenu(); onArchive(chat.id); }}>
               <Archive size={15} />
@@ -302,8 +307,8 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
         );
       }
       return (
-        <div onClick={drag.guardClick(() => onSelect(chat.id))}
-          {...drag.handlers}
+        <div onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
+          {...dragProps}
           onContextMenu={openContextMenu}
           data-testid={chat.testId}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
@@ -332,13 +337,14 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             </div>
           ) : (
             <>
-              {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成编辑/删除按钮 */}
+              {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成编辑/删除按钮。
+                  窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
-                <span className={`text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                <span className={`text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
                   {chat.date}
                 </span>
               )}
-              <div className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+              <div className="hidden group-hover:flex max-sm:flex items-center gap-0.5 shrink-0">
                 <button title={chat.pinned ? t.riUnpin : t.riPin} onClick={(e) => { e.stopPropagation(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}>
                   {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}

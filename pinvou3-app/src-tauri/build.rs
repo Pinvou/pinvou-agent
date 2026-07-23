@@ -31,7 +31,8 @@ fn main() {
     // 因引用 env! 而重编 → include_dir! 重读，保证编译嵌入永远新鲜；并对每个文件发
     // rerun-if-changed 触发 build.rs 重跑。
     // (h3c-ppt 已下线存档 2026-06-11,恢复时在此加回一行 hash_dir)
-    let sansheng_workflow_hash = hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
+    let sansheng_workflow_hash =
+        hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
     println!("cargo:rustc-env=BUNDLE_WORKFLOW_HASH_SANSHENG={sansheng_workflow_hash:016x}");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("target OS is set by Cargo");
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("target arch is set by Cargo");

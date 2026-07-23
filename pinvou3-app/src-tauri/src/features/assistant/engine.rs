@@ -30,11 +30,12 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-use crate::core::mode_state::SerializableMode;
-use crate::features::sessions::{
-    ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting, SessionStore,
-};
+use crate::core::mode_state::{SerializableMode, SessionModeState};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::sessions::{
+    transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
+    ScheduledTokenAccounting, SessionStore,
+};
 
 /// 定时任务无人值守首轮的唯一附加约束。任务 prompt 原文已作为用户消息传入，
 /// 这一句只防模型把目标改写成别的事，不再堆叠更长的提示词。
@@ -61,9 +62,231 @@ pub struct AppEngine {
 #[derive(Debug, Default)]
 struct TurnLifecycleState {
     active: bool,
+    submitted: bool,
     turn_id: Option<String>,
     terminal_emitted: bool,
+    terminal_closing: bool,
     reclaimed: bool,
+    admission_emitted: bool,
+    next_reservation_id: u64,
+    active_reservation_id: Option<u64>,
+    transcript_rules: Vec<TranscriptSanitizationRule>,
+}
+
+/// The durable, user-visible meaning of a submitted engine operation.
+///
+/// `EditLast` deliberately differs from append: the engine truncates the last
+/// user message and every message after it before adding the replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptOperation {
+    Append,
+    EditLast,
+}
+
+impl TranscriptOperation {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::EditLast => "edit_last",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptSanitizationRule {
+    reservation_id: u64,
+    submitted: bool,
+    actual_user_content: String,
+    display_message: Message,
+    display_content: String,
+    #[allow(dead_code)]
+    operation: TranscriptOperation,
+    baseline_revision: Option<String>,
+    admission_metadata: Option<TurnAdmissionMetadata>,
+    superseded: Option<Box<TranscriptSanitizationRule>>,
+}
+
+#[derive(Debug, Clone)]
+struct ReservedTranscript {
+    operation: TranscriptOperation,
+    display_message: Message,
+    display_content: String,
+    baseline_revision: Option<String>,
+}
+
+/// Extra fields carried only by semantic admissions such as accepting a plan.
+/// Ordinary chat and edit admissions intentionally leave this absent so their
+/// wire payload stays unchanged.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnAdmissionMetadata {
+    action: &'static str,
+    plan_id: String,
+    mode: SerializableMode,
+    mode_state: SessionModeState,
+}
+
+impl TurnAdmissionMetadata {
+    pub(crate) fn accept_plan(plan_id: String, mode_state: SessionModeState) -> Self {
+        Self {
+            action: "accept_plan",
+            plan_id,
+            mode: SerializableMode::Yolo,
+            mode_state,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TurnAdmission {
+    content: String,
+    operation: TranscriptOperation,
+    base_transcript_revision: Option<String>,
+    metadata: Option<TurnAdmissionMetadata>,
+}
+
+impl TurnAdmission {
+    fn user_payload(&self, session_id: &str) -> serde_json::Value {
+        let mut payload = json!({
+            "session_id": session_id,
+            "content": self.content,
+            "operation": self.operation.as_str(),
+            "base_transcript_revision": self.base_transcript_revision,
+        });
+        if let Some(metadata) = self.metadata.as_ref() {
+            payload["action"] = json!(metadata.action);
+            payload["plan_id"] = json!(metadata.plan_id);
+            payload["mode"] = json!(metadata.mode);
+            payload["mode_state"] = json!(metadata.mode_state);
+        }
+        payload
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptFallback {
+    operation: TranscriptOperation,
+    display_message: Message,
+    baseline_revision: String,
+}
+
+/// RAII admission for one session turn.
+///
+/// Creating the reservation atomically marks the session busy. Dropping it
+/// before the engine operation is accepted rolls that state back, including
+/// any transcript sanitization rule prepared for the operation. Once
+/// `mark_submitted` is called, the authoritative engine terminal event owns
+/// lifecycle completion.
+pub(crate) struct TurnReservation {
+    lifecycle: Arc<TurnLifecycle>,
+    reservation_id: u64,
+    base_transcript_revision: Option<String>,
+    transcript: Option<ReservedTranscript>,
+    admission_metadata: Option<TurnAdmissionMetadata>,
+    submitted: bool,
+}
+
+impl TurnReservation {
+    fn new(lifecycle: Arc<TurnLifecycle>, reservation_id: u64) -> Self {
+        Self {
+            lifecycle,
+            reservation_id,
+            base_transcript_revision: None,
+            transcript: None,
+            admission_metadata: None,
+            submitted: false,
+        }
+    }
+
+    pub(crate) fn set_base_transcript_revision(&mut self, revision: String) {
+        self.base_transcript_revision = Some(revision);
+    }
+
+    pub(crate) fn base_transcript_revision(&self) -> Option<&str> {
+        self.base_transcript_revision.as_deref()
+    }
+
+    pub(crate) fn set_transcript(
+        &mut self,
+        operation: TranscriptOperation,
+        display_message: Message,
+    ) -> Result<()> {
+        if self.submitted {
+            anyhow::bail!("turn reservation was already submitted");
+        }
+        if display_message.role != "user" {
+            anyhow::bail!("display transcript message must have role=user");
+        }
+        let display_content = match display_message.content.first() {
+            Some(deepseek_tui::models::ContentBlock::Text { text, .. }) => text.clone(),
+            _ => anyhow::bail!("display transcript message must start with text content"),
+        };
+        self.transcript = Some(ReservedTranscript {
+            operation,
+            display_message,
+            display_content,
+            baseline_revision: None,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn set_transcript_with_baseline(
+        &mut self,
+        operation: TranscriptOperation,
+        display_message: Message,
+        baseline_revision: String,
+    ) -> Result<()> {
+        self.set_transcript(operation, display_message)?;
+        if let Some(transcript) = self.transcript.as_mut() {
+            transcript.baseline_revision = Some(baseline_revision);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_admission_metadata(&mut self, metadata: TurnAdmissionMetadata) -> Result<()> {
+        if self.submitted {
+            anyhow::bail!("turn reservation was already submitted");
+        }
+        self.admission_metadata = Some(metadata);
+        Ok(())
+    }
+
+    fn belongs_to(&self, lifecycle: &Arc<TurnLifecycle>) -> bool {
+        Arc::ptr_eq(&self.lifecycle, lifecycle)
+    }
+
+    pub(crate) fn ensure_active(&self) -> Result<()> {
+        self.lifecycle
+            .ensure_reservation_active(self.reservation_id)
+    }
+
+    fn prepare_actual_user_content(&self, actual_user_content: String) -> Result<()> {
+        let Some(transcript) = self.transcript.as_ref() else {
+            return Ok(());
+        };
+        self.lifecycle.install_transcript_rule(
+            self.reservation_id,
+            actual_user_content,
+            transcript.display_message.clone(),
+            transcript.display_content.clone(),
+            transcript.operation,
+            transcript.baseline_revision.clone(),
+            self.admission_metadata.clone(),
+        )
+    }
+
+    fn mark_submitted(mut self) {
+        self.lifecycle
+            .mark_reservation_submitted(self.reservation_id);
+        self.submitted = true;
+    }
+}
+
+impl Drop for TurnReservation {
+    fn drop(&mut self) {
+        if !self.submitted {
+            self.lifecycle.on_reservation_failed(self.reservation_id);
+        }
+    }
 }
 
 /// Session-scoped turn state shared by the command path and the event
@@ -72,6 +295,7 @@ struct TurnLifecycleState {
 #[derive(Debug, Default)]
 pub(crate) struct TurnLifecycle {
     state: Mutex<TurnLifecycleState>,
+    emission: Mutex<()>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -79,8 +303,18 @@ pub(crate) struct EmittedTerminal {
     turn_id: Option<String>,
 }
 
-/// Emit the single frontend/remote-control terminal shape used by both normal
-/// Engine completion and cancellation recovery when no Engine handle remains.
+#[derive(Debug)]
+struct TerminalTransition {
+    terminal: EmittedTerminal,
+    admission: Option<TurnAdmission>,
+    fallback: Option<TranscriptFallback>,
+}
+
+#[derive(Debug)]
+struct StartedTransition {
+    admission: Option<TurnAdmission>,
+}
+
 pub(crate) fn emit_chat_terminal(
     app: &AppHandle,
     session_id: &str,
@@ -93,17 +327,224 @@ pub(crate) fn emit_chat_terminal(
         "error": error,
     });
     let _ = app.emit("chat:done", payload.clone());
-    crate::platform::app_events::forward_app_event(app, "chat:done", payload);
+    crate::features::remote_control::forward_app_event(app, "chat:done", payload);
+}
+
+fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
+    let user_payload = admission.user_payload(session_id);
+    let _ = app.emit("chat:user_message", user_payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:user_message", user_payload);
+    let started_payload = json!({ "session_id": session_id });
+    let _ = app.emit("chat:turn_started", started_payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
 }
 
 impl TurnLifecycle {
+    pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
+        let reservation_id = {
+            let mut state = self.state.lock();
+            if state.active || state.terminal_closing {
+                anyhow::bail!("session_turn_in_progress");
+            }
+            state.next_reservation_id = state.next_reservation_id.wrapping_add(1).max(1);
+            let reservation_id = state.next_reservation_id;
+            state.active = true;
+            state.submitted = false;
+            state.turn_id = None;
+            state.terminal_emitted = false;
+            state.terminal_closing = false;
+            state.reclaimed = false;
+            state.admission_emitted = false;
+            state.active_reservation_id = Some(reservation_id);
+            reservation_id
+        };
+        crate::features::connectors::visibility::turn_submitted();
+        Ok(TurnReservation::new(self.clone(), reservation_id))
+    }
+
+    fn install_transcript_rule(
+        &self,
+        reservation_id: u64,
+        actual_user_content: String,
+        display_message: Message,
+        display_content: String,
+        operation: TranscriptOperation,
+        baseline_revision: Option<String>,
+        admission_metadata: Option<TurnAdmissionMetadata>,
+    ) -> Result<()> {
+        let mut state = self.state.lock();
+        if !state.active || state.active_reservation_id != Some(reservation_id) {
+            anyhow::bail!("turn reservation invalidated or no longer active");
+        }
+        state
+            .transcript_rules
+            .retain(|rule| rule.reservation_id != reservation_id);
+        let superseded = if operation == TranscriptOperation::EditLast {
+            state.transcript_rules.pop().map(Box::new)
+        } else {
+            None
+        };
+        state.transcript_rules.push(TranscriptSanitizationRule {
+            reservation_id,
+            submitted: false,
+            actual_user_content,
+            display_message,
+            display_content,
+            operation,
+            baseline_revision,
+            admission_metadata,
+            superseded,
+        });
+        Ok(())
+    }
+
+    fn ensure_reservation_active(&self, reservation_id: u64) -> Result<()> {
+        let state = self.state.lock();
+        if state.active
+            && !state.reclaimed
+            && !state.terminal_emitted
+            && state.active_reservation_id == Some(reservation_id)
+        {
+            Ok(())
+        } else {
+            anyhow::bail!("turn reservation invalidated or no longer active")
+        }
+    }
+
+    fn mark_reservation_submitted(&self, reservation_id: u64) {
+        let mut state = self.state.lock();
+        if let Some(rule) = state
+            .transcript_rules
+            .iter_mut()
+            .find(|rule| rule.reservation_id == reservation_id)
+        {
+            rule.submitted = true;
+        }
+        if state.active && state.active_reservation_id == Some(reservation_id) {
+            state.submitted = true;
+        }
+    }
+
+    fn on_reservation_failed(&self, reservation_id: u64) {
+        let mut state = self.state.lock();
+        if let Some(index) = state
+            .transcript_rules
+            .iter()
+            .position(|rule| rule.reservation_id == reservation_id)
+        {
+            // A real TurnStarted can race ahead of EngineHandle::send returning.
+            // In that case the forwarder, not the command future, has already
+            // transferred ownership to the engine. Preserve the durable rule.
+            if state.transcript_rules[index].submitted {
+                return;
+            }
+            let failed = state.transcript_rules.remove(index);
+            if let Some(superseded) = failed.superseded {
+                state.transcript_rules.insert(index, *superseded);
+            }
+        }
+        if state.active_reservation_id != Some(reservation_id)
+            || state.submitted
+            || state.turn_id.is_some()
+            || state.terminal_emitted
+        {
+            return;
+        }
+        state.active = false;
+        state.submitted = false;
+        state.active_reservation_id = None;
+        drop(state);
+        crate::features::connectors::visibility::turn_finished();
+    }
+
+    /// Replace every engine-only user prompt registered during this engine's
+    /// lifetime with its UI display message. Rules intentionally survive turn
+    /// completion because later `SessionUpdated` snapshots still contain the
+    /// raw prompts from all earlier turns until the engine is rebuilt.
+    fn sanitize_messages(&self, mut messages: Vec<Message>) -> (Vec<Message>, bool) {
+        let state = self.state.lock();
+        let active_reservation_id = state.active_reservation_id;
+        let mut active_rule_matched = false;
+        for rule in state.transcript_rules.iter().rev() {
+            let Some(index) = messages.iter().rposition(|message| {
+                message.role == "user"
+                    && matches!(
+                        message.content.first(),
+                        Some(deepseek_tui::models::ContentBlock::Text { text, .. })
+                            if text == &rule.actual_user_content
+                    )
+            }) else {
+                continue;
+            };
+            messages[index] = rule.display_message.clone();
+            if active_reservation_id == Some(rule.reservation_id) {
+                active_rule_matched = true;
+            }
+        }
+        (messages, active_rule_matched)
+    }
+
+    fn active_transcript_fallback(&self) -> Option<TranscriptFallback> {
+        let state = self.state.lock();
+        Self::active_transcript_fallback_locked(&state)
+    }
+
+    fn active_transcript_fallback_locked(state: &TurnLifecycleState) -> Option<TranscriptFallback> {
+        let active = state.active_reservation_id?;
+        let rule = state
+            .transcript_rules
+            .iter()
+            .find(|rule| rule.reservation_id == active)?;
+        Some(TranscriptFallback {
+            operation: rule.operation,
+            display_message: rule.display_message.clone(),
+            baseline_revision: rule.baseline_revision.clone()?,
+        })
+    }
+
+    fn take_admission_locked(state: &mut TurnLifecycleState) -> Option<TurnAdmission> {
+        if state.admission_emitted {
+            return None;
+        }
+        let active_reservation_id = state.active_reservation_id?;
+        let rule = state
+            .transcript_rules
+            .iter()
+            .find(|rule| rule.reservation_id == active_reservation_id)?;
+        let admission = TurnAdmission {
+            content: rule.display_content.clone(),
+            operation: rule.operation,
+            base_transcript_revision: rule.baseline_revision.clone(),
+            metadata: rule.admission_metadata.clone(),
+        };
+        state.admission_emitted = true;
+        Some(admission)
+    }
+
+    fn remove_unsubmitted_rule_locked(state: &mut TurnLifecycleState, reservation_id: u64) {
+        let Some(index) = state
+            .transcript_rules
+            .iter()
+            .position(|rule| rule.reservation_id == reservation_id && !rule.submitted)
+        else {
+            return;
+        };
+        let invalidated = state.transcript_rules.remove(index);
+        if let Some(superseded) = invalidated.superseded {
+            state.transcript_rules.insert(index, *superseded);
+        }
+    }
+
     pub(crate) fn on_submitted(&self) -> bool {
         let mut state = self.state.lock();
-        if !state.active {
+        if !state.active && !state.terminal_closing {
             state.active = true;
+            state.submitted = true;
             state.turn_id = None;
             state.terminal_emitted = false;
             state.reclaimed = false;
+            state.admission_emitted = false;
+            state.active_reservation_id = None;
             crate::features::connectors::visibility::turn_submitted();
             true
         } else {
@@ -118,75 +559,247 @@ impl TurnLifecycle {
         let mut state = self.state.lock();
         if state.turn_id.is_none() && !state.terminal_emitted {
             state.active = false;
+            state.submitted = false;
+            state.active_reservation_id = None;
             drop(state);
             crate::features::connectors::visibility::turn_finished();
         }
     }
 
-    fn on_started(&self, turn_id: String) {
+    fn on_started_transition(&self, turn_id: String) -> Option<StartedTransition> {
         let mut state = self.state.lock();
-        if state.reclaimed {
-            return;
-        }
-        if !state.active {
-            crate::features::connectors::visibility::turn_submitted();
-        }
-        state.active = true;
-        state.turn_id = Some(turn_id);
-        state.terminal_emitted = false;
-    }
-
-    pub(crate) fn claim_terminal(&self) -> Option<EmittedTerminal> {
-        let mut state = self.state.lock();
-        if !state.active || state.terminal_emitted {
+        if state.reclaimed || state.terminal_closing {
             return None;
         }
-        state.terminal_emitted = true;
-        state.active = false;
-        let emitted = EmittedTerminal {
-            turn_id: state.turn_id.take(),
+        let newly_active = !state.active;
+        if newly_active {
+            state.admission_emitted = false;
+        }
+        state.active = true;
+        state.submitted = true;
+        state.turn_id = Some(turn_id);
+        state.terminal_emitted = false;
+        if let Some(reservation_id) = state.active_reservation_id {
+            if let Some(rule) = state
+                .transcript_rules
+                .iter_mut()
+                .find(|rule| rule.reservation_id == reservation_id)
+            {
+                rule.submitted = true;
+            }
+        }
+        let transition = StartedTransition {
+            admission: Self::take_admission_locked(&mut state),
         };
         drop(state);
-        crate::features::connectors::visibility::turn_finished();
-        Some(emitted)
+        if newly_active {
+            crate::features::connectors::visibility::turn_submitted();
+        }
+        Some(transition)
     }
 
+    #[cfg(test)]
+    fn on_started(&self, turn_id: String) {
+        let _ = self.on_started_transition(turn_id);
+    }
+
+    fn emit_started_admission(&self, app: &AppHandle, session_id: &str, turn_id: String) -> bool {
+        let _emission = self.emission.lock();
+        let Some(transition) = self.on_started_transition(turn_id) else {
+            return false;
+        };
+        if let Some(admission) = transition.admission {
+            emit_turn_admission(app, session_id, admission);
+        }
+        true
+    }
+
+    fn claim_terminal_transition(&self) -> Option<TerminalTransition> {
+        let transition = {
+            let mut state = self.state.lock();
+            if !state.active || !state.submitted || state.terminal_emitted {
+                return None;
+            }
+            let admission = Self::take_admission_locked(&mut state);
+            let fallback = Self::active_transcript_fallback_locked(&state);
+            state.terminal_emitted = true;
+            state.terminal_closing = true;
+            state.active = false;
+            state.submitted = false;
+            state.active_reservation_id = None;
+            TerminalTransition {
+                terminal: EmittedTerminal {
+                    turn_id: state.turn_id.take(),
+                },
+                admission,
+                fallback,
+            }
+        };
+        crate::features::connectors::visibility::turn_finished();
+        Some(transition)
+    }
+
+    /// Reclaim a lifecycle after an engine disappears. A reservation which
+    /// never reached the engine mailbox is invalidated silently; only an
+    /// accepted/started operation owns a user-visible terminal event.
+    fn claim_reclaimed_transition(&self) -> Option<TerminalTransition> {
+        let transition = {
+            let mut state = self.state.lock();
+            if !state.active || state.terminal_emitted {
+                return None;
+            }
+            state.reclaimed = true;
+            if !state.submitted {
+                if let Some(reservation_id) = state.active_reservation_id.take() {
+                    Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+                }
+                state.active = false;
+                state.turn_id = None;
+                None
+            } else {
+                let admission = Self::take_admission_locked(&mut state);
+                let fallback = Self::active_transcript_fallback_locked(&state);
+                state.terminal_emitted = true;
+                state.terminal_closing = true;
+                state.active = false;
+                state.submitted = false;
+                state.active_reservation_id = None;
+                Some(TerminalTransition {
+                    terminal: EmittedTerminal {
+                        turn_id: state.turn_id.take(),
+                    },
+                    admission,
+                    fallback,
+                })
+            }
+        };
+        crate::features::connectors::visibility::turn_finished();
+        transition
+    }
+
+    #[cfg(test)]
+    pub(crate) fn claim_terminal(&self) -> Option<EmittedTerminal> {
+        self.claim_terminal_transition()
+            .map(|transition| transition.terminal)
+    }
+
+    fn claim_terminal_with_admission(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+    ) -> Option<EmittedTerminal> {
+        let _emission = self.emission.lock();
+        let transition = self.claim_terminal_transition()?;
+        if let Some(admission) = transition.admission {
+            emit_turn_admission(app, session_id, admission);
+        }
+        Some(transition.terminal)
+    }
+
+    #[cfg(test)]
     pub(crate) fn finish_once(&self, emit: impl FnOnce()) -> Option<EmittedTerminal> {
         let emitted = self.claim_terminal()?;
         emit();
+        self.finish_terminal_emission();
         Some(emitted)
     }
 
-    pub(crate) fn emit_terminal_once(
-        &self,
-        app: &AppHandle,
-        session_id: &str,
-        status: TurnOutcomeStatus,
-        error: Option<String>,
-    ) -> Option<EmittedTerminal> {
-        self.finish_once(|| emit_chat_terminal(app, session_id, status, error))
+    fn finish_terminal_emission(&self) {
+        self.state.lock().terminal_closing = false;
     }
 
-    fn emit_reclaimed_terminal_once(
+    fn claim_reclaimed_with_admission(
         &self,
         app: &AppHandle,
         session_id: &str,
-    ) -> Option<EmittedTerminal> {
-        let mut state = self.state.lock();
-        state.reclaimed = true;
-        if !state.active || state.terminal_emitted {
-            return None;
+    ) -> Option<TerminalTransition> {
+        let _emission = self.emission.lock();
+        let transition = self.claim_reclaimed_transition()?;
+        if let Some(admission) = transition.admission.clone() {
+            emit_turn_admission(app, session_id, admission);
         }
-        state.terminal_emitted = true;
+        Some(transition)
+    }
+
+    pub(crate) fn invalidate_unsubmitted_reservation(&self) -> bool {
+        let _emission = self.emission.lock();
+        let mut state = self.state.lock();
+        if !state.active || state.submitted || state.terminal_emitted {
+            return false;
+        }
+        state.reclaimed = true;
+        if let Some(reservation_id) = state.active_reservation_id.take() {
+            Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+        }
         state.active = false;
-        let emitted = EmittedTerminal {
-            turn_id: state.turn_id.take(),
-        };
+        state.turn_id = None;
         drop(state);
         crate::features::connectors::visibility::turn_finished();
-        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None);
-        Some(emitted)
+        true
     }
+}
+
+async fn finish_reclaimed_lifecycle_turn(
+    lifecycle: &TurnLifecycle,
+    app: &AppHandle,
+    store: &SessionStore,
+    session_id: &str,
+    status: TurnOutcomeStatus,
+    error: Option<String>,
+) -> Option<EmittedTerminal> {
+    let transition = lifecycle.claim_reclaimed_with_admission(app, session_id)?;
+    let mut terminal_status = status;
+    let mut terminal_error = error;
+    if let Some(fallback) = transition.fallback {
+        let store_for_save = store.clone();
+        let session_for_save = session_id.to_string();
+        let saved = tokio::task::spawn_blocking(move || {
+            store_for_save.persist_admitted_chat_display(
+                &session_for_save,
+                &fallback.baseline_revision,
+                fallback.display_message,
+                fallback.operation == TranscriptOperation::EditLast,
+            )
+        })
+        .await;
+        match saved {
+            Ok(Ok(saved)) => match transcript_revision(&saved.messages) {
+                Ok(revision) => {
+                    let payload = json!({
+                        "session_id": session_id,
+                        "transcript_revision": revision,
+                    });
+                    let _ = app.emit("chat:transcript_committed", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        app,
+                        "chat:transcript_committed",
+                        payload,
+                    );
+                }
+                Err(revision_error) => {
+                    terminal_status = TurnOutcomeStatus::Failed;
+                    terminal_error = Some(format!(
+                        "Reclaimed transcript revision failed: {revision_error:#}"
+                    ));
+                }
+            },
+            Ok(Err(save_error)) => {
+                terminal_status = TurnOutcomeStatus::Failed;
+                terminal_error = Some(format!(
+                    "Reclaimed transcript persistence failed: {save_error:#}"
+                ));
+            }
+            Err(join_error) => {
+                terminal_status = TurnOutcomeStatus::Failed;
+                terminal_error = Some(format!(
+                    "Reclaimed transcript persistence task failed: {join_error}"
+                ));
+            }
+        }
+    }
+    emit_chat_terminal(app, session_id, terminal_status, terminal_error);
+    lifecycle.finish_terminal_emission();
+    Some(transition.terminal)
 }
 
 impl AppEngine {
@@ -224,16 +837,14 @@ impl AppEngine {
             .map(|profile| profile.workspace.clone())
             .unwrap_or_else(|| bridge.session_workspace(session_id));
         let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
-        // The app and the Engine must observe the same background process table.
-        // This lets the UI cancel a detached shell directly by task id, without
-        // asking the model to call another tool or keeping the LLM turn busy.
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
-        // Agentic RAG tools are supplied by the composition root through the
-        // injected factory. Both kb_search and kb_open_source are session-scoped;
-        // the tool implementation verifies the mounted collection at execution.
+        // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
+        // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
+        // 运行时判断。
         engine_config.extra_tools.0.extend(extra_tools);
-        // The injected policy returns the complete catalog blocklist: connector
-        // switches plus both knowledge tools when the local index is unavailable.
+        // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search/kb_open_source。compute 返回
+        // **完整**列表(已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,
+        // 让新会话天生正确——空知识库就看不到知识工具,不会宣称能本地检索。
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can
         // enqueue autonomous continuation turns after TurnComplete. Apply this
@@ -278,7 +889,7 @@ impl AppEngine {
             scheduled_base_total_tokens,
             scheduled_unattended.clone(),
             turn_lifecycle.clone(),
-            shell_manager.clone(),
+            shell_manager,
         );
 
         Ok((
@@ -341,6 +952,20 @@ impl AppEngine {
         self.send_turn_op(op).await
     }
 
+    pub(crate) async fn send_reserved_user_message(
+        &self,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        reservation: TurnReservation,
+    ) -> Result<()> {
+        let op =
+            self.bridge
+                .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
+        self.send_reserved_turn_op(op, reservation).await
+    }
+
     /// Submit the initial prompt for one scheduled run using the immutable
     /// policy captured when its hidden session was created.
     pub(crate) async fn send_scheduled_message(
@@ -384,6 +1009,9 @@ impl AppEngine {
 
     async fn send_turn_op(&self, op: Op) -> Result<()> {
         let activated = self.turn_lifecycle.on_submitted();
+        if !activated {
+            anyhow::bail!("session_turn_in_progress");
+        }
         let result = self.handle.send(op).await;
         if result.is_err() {
             self.turn_lifecycle.on_submission_failed(activated);
@@ -391,13 +1019,41 @@ impl AppEngine {
         result
     }
 
-    /// Finish an in-flight turn before an explicit Engine reclaim aborts its
-    /// forwarder. Returns true only when this call emitted the authoritative
-    /// terminal event; a concurrent natural `TurnComplete` wins otherwise.
-    pub(crate) fn finish_reclaimed_turn(&self, app: &AppHandle, session_id: &str) -> bool {
-        match self
-            .turn_lifecycle
-            .emit_reclaimed_terminal_once(app, session_id)
+    async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {
+        if !reservation.belongs_to(&self.turn_lifecycle) {
+            anyhow::bail!("turn reservation belongs to a different session");
+        }
+        reservation.ensure_active()?;
+        let actual_user_content = match &op {
+            Op::SendMessage { content, .. } => content.clone(),
+            Op::EditLastTurn { new_message } => new_message.clone(),
+            _ => anyhow::bail!("reserved turn requires a user-message operation"),
+        };
+        reservation.prepare_actual_user_content(actual_user_content)?;
+        match self.handle.send(op).await {
+            Ok(()) => {
+                reservation.mark_submitted();
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(crate) async fn finish_reclaimed_turn(
+        &self,
+        app: &AppHandle,
+        store: &SessionStore,
+        session_id: &str,
+    ) -> bool {
+        match finish_reclaimed_lifecycle_turn(
+            &self.turn_lifecycle,
+            app,
+            store,
+            session_id,
+            TurnOutcomeStatus::Interrupted,
+            None,
+        )
+        .await
         {
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
@@ -419,6 +1075,15 @@ impl AppEngine {
     /// 所有消息，然后用 `new_message` 当成新 user 消息重新发送。
     pub async fn edit_last_turn(&self, new_message: String) -> Result<()> {
         self.send_turn_op(Op::EditLastTurn { new_message }).await
+    }
+
+    pub(crate) async fn edit_last_turn_reserved(
+        &self,
+        new_message: String,
+        reservation: TurnReservation,
+    ) -> Result<()> {
+        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, reservation)
+            .await
     }
 
     /// 手动触发上下文压缩（用户点 token 进度条 → 立即压缩）。
@@ -544,8 +1209,11 @@ pub(crate) fn emit_fanout(app: &AppHandle, session_id: &str, base_role: &str) {
     );
 }
 
-/// 发送工作流权威阻塞状态。启动预热和运行期调度共用同一事件，前端无需维护
-/// 两套失败协议；JSON warmup 报告保留在 payload 中，展示文本只取具体阻断原因。
+/// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::features::assistant::harness::HarnessAction)：emit
+/// 前端事件，派发真 SubAgent（SpawnAgent → `Op::SpawnSubAgent`）
+/// 或等待/收尾（WaitForHuman/AllDone/Blocked）。由 `TurnComplete`（首轮 step_fresh）
+/// 和 `AgentComplete`（SubAgent 完成后推进）两条路径共用。返回 `true` = harness
+/// 推进了（调用方据此 emit `workflow:full_state` 快照）。
 pub(crate) fn emit_workflow_blocked(
     app: &AppHandle,
     session_id: &str,
@@ -564,7 +1232,11 @@ pub(crate) fn emit_workflow_blocked(
         .as_ref()
         .and_then(crate::features::assistant::harness::warmup_block_reason)
         .unwrap_or_else(|| message.to_string());
-    let stage = if warmup_report.is_some() { "warmup" } else { "runtime" };
+    let stage = if warmup_report.is_some() {
+        "warmup"
+    } else {
+        "runtime"
+    };
     let _ = app.emit(
         "workflow:blocked",
         json!({
@@ -577,11 +1249,6 @@ pub(crate) fn emit_workflow_blocked(
     );
 }
 
-/// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::features::assistant::harness::HarnessAction)：emit
-/// 前端事件，派发真 SubAgent（SpawnAgent → `Op::SpawnSubAgent`）
-/// 或等待/收尾（WaitForHuman/AllDone/Blocked）。由 `TurnComplete`（首轮 step_fresh）
-/// 和 `AgentComplete`（SubAgent 完成后推进）两条路径共用。返回 `true` = harness
-/// 推进了（调用方据此 emit `workflow:full_state` 快照）。
 pub(crate) async fn apply_harness_action(
     action: crate::features::assistant::harness::HarnessAction,
     app: &AppHandle,
@@ -618,7 +1285,6 @@ pub(crate) async fn apply_harness_action(
                     "role_name": role_name, "status": "running",
                 }),
             );
-            let failure_role = role_id.clone();
             let op = Op::SpawnSubAgent {
                 prompt,
                 role_id,
@@ -628,15 +1294,7 @@ pub(crate) async fn apply_harness_action(
                 expects_file_output,
             };
             if let Err(e) = handle.send(op).await {
-                let reason = format!("{failure_role} SubAgent 派发失败: {e:?}");
-                eprintln!("[harness] {reason}");
-                crate::features::assistant::harness::record_runtime_failure(
-                    &ws,
-                    &failure_role,
-                    "spawn_subagent",
-                    &reason,
-                );
-                emit_workflow_blocked(app, active_id, &ws, &reason);
+                eprintln!("[harness] spawn subagent failed: {e:?}");
             }
             true
         }
@@ -665,7 +1323,9 @@ pub(crate) async fn apply_harness_action(
                     "role_name": role_name, "status": "running",
                 }),
             );
-            let first = crate::features::assistant::harness::batch_seed_and_take(active_id, &base_role, tasks, k);
+            let first = crate::features::assistant::harness::batch_seed_and_take(
+                active_id, &base_role, tasks, k,
+            );
             for t in first {
                 let op = Op::SpawnSubAgent {
                     prompt: t.prompt,
@@ -676,14 +1336,7 @@ pub(crate) async fn apply_harness_action(
                     expects_file_output: t.expects_file_output,
                 };
                 if let Err(e) = handle.send(op).await {
-                    let reason = format!("{base_role} fan-out 派发失败: {e:?}");
-                    eprintln!("[harness] {reason}");
-                    crate::features::assistant::harness::record_runtime_failure(
-                        &ws,
-                        &base_role,
-                        "spawn_subagent_batch",
-                        &reason,
-                    );
+                    eprintln!("[harness] fan-out spawn failed: {e:?}");
                 }
             }
             emit_fanout(app, active_id, &base_role); // 初始 fan-out 状态 → 前端
@@ -714,20 +1367,26 @@ pub(crate) async fn apply_harness_action(
             eprintln!("[harness] workflow complete");
             // [edict-obs] 定位最终成品(deck 播放器入口),带进完成事件让前端弹"成品卡"。
             // 找不到(非 deck 类工作流/产物缺失)→ artifact=null,前端只标完成不弹卡。
-            let artifact: Option<String> = crate::features::assistant::harness::read_full_agent_state(&ws)
-                .and_then(|st| {
-                    st.get("project_dir")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                })
-                .map(|p| {
-                    std::path::Path::new(&p)
-                        .join("HTML_Deck")
-                        .join("index.html")
-                })
-                .filter(|p| p.exists())
-                .map(|p| p.display().to_string());
-            crate::features::assistant::audit::append(&ws, "complete", "", json!({ "artifact": artifact }));
+            let artifact: Option<String> =
+                crate::features::assistant::harness::read_full_agent_state(&ws)
+                    .and_then(|st| {
+                        st.get("project_dir")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    })
+                    .map(|p| {
+                        std::path::Path::new(&p)
+                            .join("HTML_Deck")
+                            .join("index.html")
+                    })
+                    .filter(|p| p.exists())
+                    .map(|p| p.display().to_string());
+            crate::features::assistant::audit::append(
+                &ws,
+                "complete",
+                "",
+                json!({ "artifact": artifact }),
+            );
             let _ = app.emit(
                 "workflow:complete",
                 json!({ "session_id": active_id, "artifact": artifact }),
@@ -735,14 +1394,25 @@ pub(crate) async fn apply_harness_action(
             true
         }
         HA::Blocked { message } => {
-            emit_workflow_blocked(app, active_id, &ws, &message);
+            eprintln!("[harness] blocked: {message}");
+            crate::features::assistant::audit::append(
+                &ws,
+                "blocked",
+                "",
+                json!({ "message": crate::features::assistant::audit::clip(&message) }),
+            );
+            let warmup_report = serde_json::from_str::<serde_json::Value>(&message).ok();
+            let _ = app.emit(
+                "workflow:blocked",
+                json!({
+                    "session_id": active_id, "message": message, "warmup_report": warmup_report,
+                }),
+            );
             true
         }
         HA::Error(e) => {
             eprintln!("[harness] error: {e}");
-            crate::features::assistant::harness::record_runtime_failure(&ws, "", "harness", &e);
-            emit_workflow_blocked(app, active_id, &ws, &format!("工作流运行失败: {e}"));
-            true
+            false
         }
         HA::NotApplicable => false,
     }
@@ -806,6 +1476,9 @@ fn spawn_event_forwarder(
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
+        let mut latest_chat_engine_state: Option<ChatEngineState> = None;
+        let mut chat_persistence_error: Option<String> = None;
+        let mut active_transcript_seen = false;
         // app 侧自测推理指标累加器(TTFT/生成速度/累计tokens/KV)。try_state:headless
         // harness / 测试可能没 manage MonitorState,拿不到就整块跳过,不 panic。
         let self_metrics = app
@@ -819,7 +1492,15 @@ fn spawn_event_forwarder(
         while let Some(event) = rx.recv().await {
             match event {
                 Event::TurnStarted { turn_id, .. } => {
-                    turn_lifecycle.on_started(turn_id.clone());
+                    // Publish admission from the authoritative engine event,
+                    // before this serial forwarder can observe any delta or
+                    // terminal event for the same turn. Reclaim uses the same
+                    // emission gate, so it cannot overtake this pair.
+                    if !turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone()) {
+                        continue;
+                    }
+                    active_transcript_seen = false;
+                    chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
@@ -837,7 +1518,7 @@ fn spawn_event_forwarder(
                     crate::features::memory::append_turn_assistant(&session_id, &content);
                     let payload = json!({ "session_id": session_id, "text": content });
                     let _ = app.emit("chat:delta", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:delta", payload);
+                    crate::features::remote_control::forward_app_event(&app, "chat:delta", payload);
                 }
                 Event::ThinkingDelta { .. } => {
                     // Qwen3 已用 reasoning_effort=off 关 thinking，丢这段
@@ -852,7 +1533,11 @@ fn spawn_event_forwarder(
                     let payload =
                         json!({ "session_id": session_id, "id": id, "name": name, "args": input });
                     let _ = app.emit("chat:tool_start", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:tool_start", payload);
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:tool_start",
+                        payload,
+                    );
                 }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
@@ -860,24 +1545,22 @@ fn spawn_event_forwarder(
                         Ok(r) => (r.content, true, r.metadata),
                         Err(e) => (format!("{e:?}"), false, None),
                     };
-                    let background_task_id = if matches!(
-                        name.as_str(),
-                        "exec_shell" | "task_shell_start"
-                    )
-                        && metadata
-                            .as_ref()
-                            .and_then(|value| value.get("status"))
-                            .and_then(serde_json::Value::as_str)
-                            == Some("Running")
-                    {
-                        metadata
-                            .as_ref()
-                            .and_then(|value| value.get("task_id"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                    } else {
-                        None
-                    };
+                    let background_task_id =
+                        if matches!(name.as_str(), "exec_shell" | "task_shell_start")
+                            && metadata
+                                .as_ref()
+                                .and_then(|value| value.get("status"))
+                                .and_then(serde_json::Value::as_str)
+                                == Some("Running")
+                        {
+                            metadata
+                                .as_ref()
+                                .and_then(|value| value.get("task_id"))
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        } else {
+                            None
+                        };
                     shell_output.tool_completed(&id, background_task_id.as_deref());
                     let tracked_input = tool_inputs
                         .remove(&id)
@@ -947,7 +1630,7 @@ fn spawn_event_forwarder(
                             "todos_snapshot": todos_emit,
                         });
                         let _ = app.emit("chat:plan_snapshot", payload.clone());
-                        crate::platform::app_events::forward_app_event(
+                        crate::features::remote_control::forward_app_event(
                             &app,
                             "chat:plan_snapshot",
                             payload,
@@ -962,7 +1645,11 @@ fn spawn_event_forwarder(
                         "metadata": metadata,
                     });
                     let _ = app.emit("chat:tool_end", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:tool_end", payload);
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:tool_end",
+                        payload,
+                    );
                 }
                 Event::UserInputRequired { id, request } => {
                     if scheduled_profile.is_some() && scheduled_unattended.load(Ordering::Acquire) {
@@ -983,7 +1670,7 @@ fn spawn_event_forwarder(
                             "questions": request.questions,
                         });
                         let _ = app.emit("chat:user_input_required", payload.clone());
-                        crate::platform::app_events::forward_app_event(
+                        crate::features::remote_control::forward_app_event(
                             &app,
                             "chat:user_input_required",
                             payload,
@@ -997,13 +1684,18 @@ fn spawn_event_forwarder(
                     model,
                     workspace,
                 } => {
-                    if let Some(profile) = scheduled_profile.as_ref() {
-                        if event_session_id != session_id {
-                            scheduled_persistence_error = Some(format!(
-                                "Engine session id mismatch: expected {session_id}, got {event_session_id}"
-                            ));
-                            continue;
+                    if event_session_id != session_id {
+                        let mismatch = format!(
+                            "Engine session id mismatch: expected {session_id}, got {event_session_id}"
+                        );
+                        if scheduled_profile.is_some() {
+                            scheduled_persistence_error = Some(mismatch);
+                        } else {
+                            chat_persistence_error = Some(mismatch);
                         }
+                        continue;
+                    }
+                    if let Some(profile) = scheduled_profile.as_ref() {
                         let state = ScheduledEngineState {
                             messages,
                             system_prompt,
@@ -1026,6 +1718,48 @@ fn spawn_event_forwarder(
                             Err(error) => {
                                 scheduled_persistence_error = Some(format!(
                                     "scheduled transcript persistence task failed: {error}"
+                                ));
+                            }
+                        }
+                    } else {
+                        let (messages, matched_active_rule) =
+                            turn_lifecycle.sanitize_messages(messages);
+                        active_transcript_seen |= matched_active_rule;
+                        let state = ChatEngineState {
+                            messages,
+                            system_prompt,
+                            model,
+                            workspace,
+                        };
+                        latest_chat_engine_state = Some(state.clone());
+                        let store_for_save = store.clone();
+                        let session_for_save = session_id.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            store_for_save.persist_chat_engine_state(&session_for_save, state)
+                        })
+                        .await
+                        {
+                            Ok(Ok(saved)) => {
+                                chat_persistence_error = None;
+                                if let Ok(revision) = transcript_revision(&saved.messages) {
+                                    let payload = json!({
+                                        "session_id": session_id,
+                                        "transcript_revision": revision,
+                                    });
+                                    let _ = app.emit("chat:transcript_committed", payload.clone());
+                                    crate::features::remote_control::forward_app_event(
+                                        &app,
+                                        "chat:transcript_committed",
+                                        payload,
+                                    );
+                                }
+                            }
+                            Ok(Err(error)) => {
+                                chat_persistence_error = Some(format!("{error:#}"));
+                            }
+                            Err(error) => {
+                                chat_persistence_error = Some(format!(
+                                    "chat transcript persistence task failed: {error}"
                                 ));
                             }
                         }
@@ -1204,16 +1938,10 @@ fn spawn_event_forwarder(
                     // 用户停止整个工作流后，SubAgent 可能在任务 abort 前抢先送达
                     // 一个完成信封。持久 stop marker 是调度熔断边界：迟到结果可留在
                     // 项目目录，但绝不能再过 gate、补派下一页或推进下一个角色。
-                    if crate::features::assistant::harness::workflow_is_stopped(&execution_workspace) {
+                    if crate::features::assistant::harness::workflow_is_stopped(
+                        &execution_workspace,
+                    ) {
                         eprintln!("[harness] ignore late AgentComplete after workflow stop: {id}");
-                        continue;
-                    }
-                    if let Some(reason) =
-                        crate::features::assistant::harness::workflow_failure_reason(&execution_workspace)
-                    {
-                        eprintln!(
-                            "[harness] ignore late AgentComplete after workflow blocked: {id} ({reason})"
-                        );
                         continue;
                     }
                     eprintln!(
@@ -1241,60 +1969,6 @@ fn spawn_event_forwarder(
                         if is_dup {
                             eprintln!("[harness] 重复 AgentComplete id={id},跳过");
                         } else if let Some(role) = decision_role {
-                            // 401/403 已被底座归类为不可重试；工作流层也必须立即熔断。
-                            // per_page 原路径会把无产出的页当空壳重派，因此在 fan-out
-                            // join 之前统一截获，直接把逻辑角色写成 fatal failed。
-                            if failed
-                                && role.contains('#')
-                                && crate::features::assistant::harness::model_auth_failure_reason(&result).is_some()
-                            {
-                                let base_role = role
-                                    .split_once('#')
-                                    .map(|(base, _)| base)
-                                    .unwrap_or(role.as_str())
-                                    .to_string();
-                                crate::features::assistant::harness::batch_clear(&session_id, &base_role);
-                                let ws = execution_workspace.clone();
-                                let err_text = result.clone();
-                                let base_for_failure = base_role.clone();
-                                let agent_for_failure = id.clone();
-                                let action = tokio::task::spawn_blocking(move || {
-                                    crate::features::assistant::harness::agent_failed_for_agent(
-                                        &ws,
-                                        &base_for_failure,
-                                        &agent_for_failure,
-                                        &err_text,
-                                    )
-                                })
-                                .await
-                                .unwrap_or_else(|_| {
-                                    crate::features::assistant::harness::HarnessAction::Error(
-                                        "spawn_blocking panicked".into(),
-                                    )
-                                });
-                                let handled = apply_harness_action(
-                                    action,
-                                    &app,
-                                    &execution_workspace,
-                                    &approve_handle,
-                                    &session_id,
-                                )
-                                .await;
-                                if handled {
-                                    if let Some(mut state) =
-                                        crate::features::assistant::harness::read_full_agent_state(&execution_workspace)
-                                    {
-                                        if let Some(obj) = state.as_object_mut() {
-                                            obj.insert(
-                                                "session_id".into(),
-                                                json!(session_id.clone()),
-                                            );
-                                        }
-                                        let _ = app.emit("workflow:full_state", state);
-                                    }
-                                }
-                                continue;
-                            }
                             // [per_page] role 形如 "slide_writer#p01" = fan-out 成员：
                             // 记一页 join 计数，未齐则等其余页（不推进）；齐了才对【单一
                             // 逻辑节点】base_role 验收一次。普通角色 base = role 本身。
@@ -1308,23 +1982,39 @@ fn spawn_event_forwarder(
                                 // emit AgentComplete，但只留空壳骨架。空壳不计 done，自动重派
                                 // 该页(带上限)，挡住空壳混入 batch → 避免 gate pagenum_mismatch
                                 // 误判回滚的死循环。
-                                let outs =
-                                    crate::features::assistant::harness::batch_outputs_for(&session_id, base, page);
-                                let real =
-                                    crate::features::assistant::harness::page_output_is_real(&ws, base, page, &outs);
+                                let outs = crate::features::assistant::harness::batch_outputs_for(
+                                    &session_id,
+                                    base,
+                                    page,
+                                );
+                                let real = crate::features::assistant::harness::page_output_is_real(
+                                    &ws, base, page, &outs,
+                                );
                                 let mut count_done = real;
                                 if real {
                                     eprintln!("[harness] per_page {role} 真写成 ✓");
-                                    crate::features::assistant::harness::fanout_mark(&session_id, base, page, "done");
+                                    crate::features::assistant::harness::fanout_mark(
+                                        &session_id,
+                                        base,
+                                        page,
+                                        "done",
+                                    );
                                 } else {
-                                    let n = crate::features::assistant::harness::page_retry_inc(&session_id, base, page);
-                                    let maxr = crate::features::assistant::harness::max_page_retry();
+                                    let n = crate::features::assistant::harness::page_retry_inc(
+                                        &session_id,
+                                        base,
+                                        page,
+                                    );
+                                    let maxr =
+                                        crate::features::assistant::harness::max_page_retry();
                                     if n <= maxr {
                                         // 空壳 → 重派该页(占用刚释放的在飞名额，不补排队页)。
                                         let ws_r = ws.clone();
                                         let base_r = base.to_string();
                                         let respawn = tokio::task::spawn_blocking(move || {
-                                            crate::features::assistant::harness::respawn_page(&ws_r, &base_r, page)
+                                            crate::features::assistant::harness::respawn_page(
+                                                &ws_r, &base_r, page,
+                                            )
                                         })
                                         .await
                                         .unwrap_or(None);
@@ -1376,7 +2066,9 @@ fn spawn_event_forwarder(
                                     let ws_d = ws.clone();
                                     let base_d = base.to_string();
                                     let complete = tokio::task::spawn_blocking(move || {
-                                        crate::features::assistant::harness::record_page_done(&ws_d, &base_d, page)
+                                        crate::features::assistant::harness::record_page_done(
+                                            &ws_d, &base_d, page,
+                                        )
                                     })
                                     .await
                                     .unwrap_or(true);
@@ -1384,12 +2076,18 @@ fn spawn_event_forwarder(
                                         "[harness] per_page {role} done; batch_complete={complete}"
                                     );
                                     if complete {
-                                        crate::features::assistant::harness::batch_clear(&session_id, base);
+                                        crate::features::assistant::harness::batch_clear(
+                                            &session_id,
+                                            base,
+                                        );
                                         Some(base.to_string())
                                     } else {
                                         // 未齐 → 补派下一排队页，维持在飞并发=K；不推进。
                                         if let Some(t) =
-                                            crate::features::assistant::harness::batch_pop_next(&session_id, base)
+                                            crate::features::assistant::harness::batch_pop_next(
+                                                &session_id,
+                                                base,
+                                            )
                                         {
                                             let next_role = t.agent_role.clone();
                                             let op = Op::SpawnSubAgent {
@@ -1427,17 +2125,15 @@ fn spawn_event_forwarder(
                                 // per_page 成员(role 带 #)不走这里:空壳检测已按页处理。
                                 let failed_single = failed && !role.contains('#');
                                 let err_text = result.clone();
-                                let agent_for_failure = id.clone();
                                 let action = tokio::task::spawn_blocking(move || {
                                     if failed_single {
-                                        crate::features::assistant::harness::agent_failed_for_agent(
-                                            &ws,
-                                            &base_role,
-                                            &agent_for_failure,
-                                            &err_text,
+                                        crate::features::assistant::harness::agent_failed(
+                                            &ws, &base_role, &err_text,
                                         )
                                     } else {
-                                        crate::features::assistant::harness::step_after_role(&ws, &base_role)
+                                        crate::features::assistant::harness::step_after_role(
+                                            &ws, &base_role,
+                                        )
                                     }
                                 })
                                 .await
@@ -1518,12 +2214,76 @@ fn spawn_event_forwarder(
                                 ),
                             });
                         }
+                    } else {
+                        let terminal_save = if active_transcript_seen {
+                            latest_chat_engine_state.clone().map(|state| {
+                                let store_for_save = store.clone();
+                                let session_for_save = session_id.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    store_for_save
+                                        .persist_chat_engine_state(&session_for_save, state)
+                                })
+                            })
+                        } else {
+                            turn_lifecycle.active_transcript_fallback().map(|fallback| {
+                                let store_for_save = store.clone();
+                                let session_for_save = session_id.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    store_for_save.persist_admitted_chat_display(
+                                        &session_for_save,
+                                        &fallback.baseline_revision,
+                                        fallback.display_message,
+                                        fallback.operation == TranscriptOperation::EditLast,
+                                    )
+                                })
+                            })
+                        };
+                        if let Some(save_task) = terminal_save {
+                            match save_task.await {
+                                Ok(Ok(saved)) => {
+                                    chat_persistence_error = None;
+                                    if let Ok(revision) = transcript_revision(&saved.messages) {
+                                        let payload = json!({
+                                            "session_id": session_id,
+                                            "transcript_revision": revision,
+                                        });
+                                        let _ =
+                                            app.emit("chat:transcript_committed", payload.clone());
+                                        crate::features::remote_control::forward_app_event(
+                                            &app,
+                                            "chat:transcript_committed",
+                                            payload,
+                                        );
+                                    }
+                                }
+                                Ok(Err(save_error)) => {
+                                    chat_persistence_error = Some(format!("{save_error:#}"));
+                                }
+                                Err(join_error) => {
+                                    chat_persistence_error = Some(format!(
+                                        "chat transcript persistence task failed: {join_error}"
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(save_error) = chat_persistence_error.take() {
+                            terminal_status = TurnOutcomeStatus::Failed;
+                            terminal_error = Some(match terminal_error {
+                                Some(engine_error) => format!(
+                                    "{engine_error}; chat conversation persistence failed: {save_error}"
+                                ),
+                                None => format!(
+                                    "Chat conversation persistence failed: {save_error}"
+                                ),
+                            });
+                        }
                     }
                     // Persistence above can change the authoritative outcome and
                     // may await. Claim only after that result is known, but before
                     // every completion-only side effect below. If reclaim won
                     // during the await, this late TurnComplete is discarded.
-                    let Some(_) = turn_lifecycle.claim_terminal() else {
+                    let Some(_) = turn_lifecycle.claim_terminal_with_admission(&app, &session_id)
+                    else {
                         continue;
                     };
                     // 单独发 usage 给前端 token 进度条
@@ -1533,7 +2293,7 @@ fn spawn_event_forwarder(
                         "output_tokens": usage.output_tokens,
                     });
                     let _ = app.emit("chat:usage", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:usage", payload);
+                    crate::features::remote_control::forward_app_event(&app, "chat:usage", payload);
                     // app 侧自测:用精确 usage 收尾本轮。部分远端模型会流式返回文本,
                     // 但最终 usage.output_tokens 为 0,因此不能用 output_tokens 门控收尾。
                     if let Some(m) = &self_metrics {
@@ -1576,17 +2336,25 @@ fn spawn_event_forwarder(
                         // (已砍 PlanPhase),mode 留 Plan 直到用户 accept/discard 切 Yolo。
                         // 修订(还在 Plan 时再调 update_plan)天然幂等:再弹一张新卡。
                         if plan_used && state.mode == SerializableMode::Plan {
-                            let payload = json!({
-                                "session_id": active_id.clone(),
-                                "plan_snapshot": plan_snapshot.clone(),
-                                "todos_snapshot": todos_snapshot.clone(),
-                            });
-                            let _ = app.emit("chat:plan_ready", payload.clone());
-                            crate::platform::app_events::forward_app_event(
-                                &app,
-                                "chat:plan_ready",
-                                payload,
-                            );
+                            if let Some(plan_id) = current_turn_id.clone() {
+                                if let Some(mode_state) =
+                                    store.register_pending_plan(&active_id, plan_id.clone())
+                                {
+                                    let payload = json!({
+                                        "session_id": active_id.clone(),
+                                        "plan_id": plan_id,
+                                        "plan_snapshot": plan_snapshot.clone(),
+                                        "todos_snapshot": todos_snapshot.clone(),
+                                        "mode_state": mode_state,
+                                    });
+                                    let _ = app.emit("chat:plan_ready", payload.clone());
+                                    crate::features::remote_control::forward_app_event(
+                                        &app,
+                                        "chat:plan_ready",
+                                        payload,
+                                    );
+                                }
+                            }
                         }
 
                         // From here the harness path may await. Publish the claimed
@@ -1600,6 +2368,7 @@ fn spawn_event_forwarder(
                             terminal_status,
                             terminal_error.clone(),
                         );
+                        turn_lifecycle.finish_terminal_emission();
 
                         // ── H1: Harness Loop (skill session 图执行器) ──
                         // 本 session 绑定了 skill 且项目目录有 workflow_progress.json →
@@ -1640,7 +2409,8 @@ fn spawn_event_forwarder(
                             let app_clone = app.clone();
                             let sid_clone = active_id.clone();
                             tokio::task::spawn_blocking(move || {
-                                if let Some(mut state) = crate::features::assistant::harness::read_full_agent_state(&ws)
+                                if let Some(mut state) =
+                                    crate::features::assistant::harness::read_full_agent_state(&ws)
                                 {
                                     if let Some(obj) = state.as_object_mut() {
                                         obj.insert("session_id".into(), json!(sid_clone));
@@ -1671,9 +2441,7 @@ fn spawn_event_forwarder(
                         Some(crate::features::assistant::timing::TurnUsage {
                             input_tokens: u64::from(usage.input_tokens),
                             output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(
-                                usage.prompt_cache_hit_tokens.unwrap_or(0),
-                            ),
+                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
                             cache_miss_tokens: u64::from(
                                 usage.prompt_cache_miss_tokens.unwrap_or(0),
                             ),
@@ -1684,7 +2452,9 @@ fn spawn_event_forwarder(
                         }),
                     );
                     if crate::features::memory::memory_enabled() {
-                        if let Some(capture) = crate::features::memory::take_turn_capture(&session_id) {
+                        if let Some(capture) =
+                            crate::features::memory::take_turn_capture(&session_id)
+                        {
                             let app_clone = app.clone();
                             let bridge_clone = bridge.clone();
                             let sid_clone = session_id.clone();
@@ -1711,74 +2481,38 @@ fn spawn_event_forwarder(
                                             },
                                         ));
                                         if !events.is_empty() {
-                                            let event_count = events.len();
-                                            let emit_result = app_clone.emit(
+                                            let _ = app_clone.emit(
                                                 "chat:memory_write",
                                                 json!({
                                                     "session_id": sid_clone,
                                                     "events": events,
                                                 }),
                                             );
-                                            match emit_result {
-                                                Ok(()) => {
-                                                    crate::features::memory::append_memory_review_diagnostic(
-                                                        &sid_clone,
-                                                        "event_emitted",
-                                                        json!({ "event_count": event_count }),
-                                                    )
-                                                }
-                                                Err(err) => {
-                                                    crate::features::memory::append_memory_review_diagnostic(
-                                                        &sid_clone,
-                                                        "event_emit_failed",
-                                                        json!({ "error": err.to_string() }),
-                                                    )
-                                                }
-                                            }
                                             match crate::features::memory::runtime_snapshot(&sid_clone) {
-                                                Ok(snapshot) => {
-                                                    let _ = app_clone.emit(
-                                                        "chat:memory",
-                                                        json!({
-                                                            "session_id": sid_clone,
-                                                            "items": snapshot.items,
-                                                            "runtime_path": snapshot.runtime_path,
-                                                        }),
-                                                    );
-                                                }
-                                                Err(err) => {
-                                                    crate::features::memory::append_memory_review_diagnostic(
-                                                        &sid_clone,
-                                                        "runtime_refresh_failed",
-                                                        json!({ "error": err.to_string() }),
-                                                    );
-                                                    eprintln!(
-                                                        "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
-                                                    );
-                                                }
+                                            Ok(snapshot) => {
+                                                let _ = app_clone.emit(
+                                                    "chat:memory",
+                                                    json!({
+                                                        "session_id": sid_clone,
+                                                        "items": snapshot.items,
+                                                        "runtime_path": snapshot.runtime_path,
+                                                    }),
+                                                );
                                             }
+                                            Err(err) => eprintln!(
+                                                "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
+                                            ),
+                                        }
                                         }
                                     }
                                     Err(err) => {
                                         eprintln!(
-                                            "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
-                                        );
+                                        "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
+                                    );
                                     }
                                 }
                             });
-                        } else {
-                            crate::features::memory::append_memory_review_diagnostic(
-                                &session_id,
-                                "skipped",
-                                json!({ "reason": "turn_capture_missing" }),
-                            );
                         }
-                    } else {
-                        crate::features::memory::append_memory_review_diagnostic(
-                            &session_id,
-                            "skipped",
-                            json!({ "reason": "memory_disabled" }),
-                        );
                     }
                     maybe_notify_task_completed(
                         &app,
@@ -1798,7 +2532,11 @@ fn spawn_event_forwarder(
                 } => {
                     let payload = json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:compaction", payload);
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:compaction",
+                        payload,
+                    );
                 }
                 Event::CompactionCompleted {
                     id,
@@ -1818,12 +2556,20 @@ fn spawn_event_forwarder(
                         "messages_after": messages_after,
                     });
                     let _ = app.emit("chat:compaction", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:compaction", payload);
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:compaction",
+                        payload,
+                    );
                 }
                 Event::CompactionFailed { message, auto, .. } => {
                     let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:compaction", payload);
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:compaction",
+                        payload,
+                    );
                 }
                 Event::Error { envelope, .. } => {
                     // 可恢复错误(如 SSE idle timeout、瞬态工具失败)turn 不会结束——
@@ -1835,7 +2581,7 @@ fn spawn_event_forwarder(
                         let payload =
                             json!({ "session_id": session_id, "error": envelope.message });
                         let _ = app.emit("chat:transient_error", payload.clone());
-                        crate::platform::app_events::forward_app_event(
+                        crate::features::remote_control::forward_app_event(
                             &app,
                             "chat:transient_error",
                             payload,
@@ -1864,20 +2610,23 @@ fn spawn_event_forwarder(
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
-        match turn_lifecycle.emit_terminal_once(
+        match finish_reclaimed_lifecycle_turn(
+            &turn_lifecycle,
             &app,
+            &store,
             &session_id,
             TurnOutcomeStatus::Failed,
             Some(stopped_error.clone()),
-        ) {
+        )
+        .await
+        {
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
             }) => {
-                crate::features::assistant::timing::finish_turn(&session_id, "Failed", Some(&stopped_error));
                 let _ = turn_events.send(EngineTurnSignal::Terminal {
                     turn_id,
                     status: TurnOutcomeStatus::Failed,
-                    error: Some(stopped_error.clone()),
+                    error: Some(stopped_error),
                 });
             }
             Some(EmittedTerminal { turn_id: None }) | None => {
@@ -2105,8 +2854,37 @@ fn scheduled_tool_should_auto_approve(
 
 #[cfg(test)]
 mod turn_lifecycle_tests {
-    use super::{EmittedTerminal, TurnLifecycle};
+    use super::{EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnLifecycle};
+    use crate::core::mode_state::SessionModeState;
+    use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
+    use std::sync::Arc;
+
+    fn message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn engine_user(text: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "<turn_meta>private</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+            ],
+        }
+    }
 
     #[test]
     fn reclaim_and_natural_completion_emit_exactly_once_per_turn() {
@@ -2142,6 +2920,15 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
+    fn concurrent_submission_is_rejected_until_the_active_turn_finishes() {
+        let lifecycle = TurnLifecycle::default();
+        assert!(lifecycle.on_submitted());
+        assert!(!lifecycle.on_submitted());
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        assert!(lifecycle.on_submitted());
+    }
+
+    #[test]
     fn forwarder_stop_and_reclaim_share_the_same_terminal_gate() {
         let lifecycle = TurnLifecycle::default();
         lifecycle.on_submitted();
@@ -2165,6 +2952,275 @@ mod turn_lifecycle_tests {
         }
 
         assert_eq!(effects.get(), 1);
+    }
+
+    #[test]
+    fn concurrent_rejection_happens_before_one_shot_state_is_consumed() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let first = lifecycle.reserve().expect("first admission");
+        let mut one_shot = Some("skill body".to_string());
+
+        let rejected = lifecycle.reserve();
+        assert!(rejected
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("session_turn_in_progress")));
+        assert_eq!(one_shot.as_deref(), Some("skill body"));
+
+        let consumed_after_admission = one_shot.take();
+        assert_eq!(consumed_after_admission.as_deref(), Some("skill body"));
+        drop(first);
+        assert!(lifecycle.reserve().is_ok(), "drop restores admission");
+    }
+
+    #[test]
+    fn real_turn_started_claims_admission_and_preserves_the_rule_if_command_lags() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation.set_base_transcript_revision("revision-before".to_string());
+        reservation
+            .set_transcript_with_baseline(
+                TranscriptOperation::Append,
+                message("user", "visible prompt"),
+                "revision-before".to_string(),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<private>injected</private>".to_string())
+            .expect("actual prompt");
+
+        // The engine can publish TurnStarted before EngineHandle::send returns
+        // to the command future. That event is authoritative submission.
+        let started = lifecycle
+            .on_started_transition("turn-fast".to_string())
+            .expect("started transition");
+        let payload = started
+            .admission
+            .expect("admission")
+            .user_payload("session-1");
+        assert_eq!(payload["content"], "visible prompt");
+        assert_eq!(payload["operation"], "append");
+        assert_eq!(payload["base_transcript_revision"], "revision-before");
+
+        // Simulate cancellation of the command future before its local guard
+        // can call mark_submitted. The forwarder-owned rule must survive.
+        drop(reservation);
+        let (sanitized, matched) =
+            lifecycle.sanitize_messages(vec![engine_user("<private>injected</private>")]);
+        assert!(matched);
+        assert_eq!(sanitized, vec![message("user", "visible prompt")]);
+        assert!(lifecycle.claim_terminal().is_some());
+    }
+
+    #[test]
+    fn reclaim_invalidates_reserved_turn_without_claiming_a_terminal() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "never submitted"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("private unsent prompt".to_string())
+            .expect("actual prompt");
+
+        assert!(lifecycle.claim_reclaimed_transition().is_none());
+        assert_eq!(lifecycle.claim_terminal(), None);
+        let invalidated = reservation
+            .prepare_actual_user_content("private unsent prompt".to_string())
+            .expect_err("reclaimed reservation must reject a later send");
+        assert!(invalidated.to_string().contains("reservation invalidated"));
+        drop(reservation);
+        let next = lifecycle.reserve().expect("reclaim released reservation");
+        let (messages, matched) =
+            lifecycle.sanitize_messages(vec![engine_user("private unsent prompt")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private unsent prompt")]);
+        drop(next);
+    }
+
+    #[test]
+    fn reclaim_of_submitted_accept_plan_carries_admission_once_before_terminal() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation.set_base_transcript_revision("plan-revision".to_string());
+        reservation
+            .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
+                "plan-ticket".to_string(),
+                SessionModeState::default(),
+            ))
+            .expect("accept metadata");
+        reservation
+            .set_transcript_with_baseline(
+                TranscriptOperation::Append,
+                message("user", "✅ 就这么干"),
+                "plan-revision".to_string(),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("execute approved plan".to_string())
+            .expect("actual prompt");
+        reservation.mark_submitted();
+
+        let reclaimed = lifecycle
+            .claim_reclaimed_transition()
+            .expect("submitted turn terminal");
+        let payload = reclaimed
+            .admission
+            .expect("reclaim carries pending admission")
+            .user_payload("session-plan");
+        assert_eq!(payload["action"], "accept_plan");
+        assert_eq!(payload["plan_id"], "plan-ticket");
+        assert_eq!(payload["mode"], "yolo");
+        assert_eq!(payload["mode_state"]["mode"], "yolo");
+        assert_eq!(payload["content"], "✅ 就这么干");
+        let fallback = reclaimed
+            .fallback
+            .expect("submitted reclaim carries durable transcript fallback");
+        assert_eq!(fallback.operation, TranscriptOperation::Append);
+        assert_eq!(fallback.baseline_revision, "plan-revision");
+        assert_eq!(fallback.display_message, message("user", "✅ 就这么干"));
+        assert_eq!(
+            reclaimed.terminal,
+            EmittedTerminal { turn_id: None },
+            "admitted-but-not-started reclaim still owns one terminal"
+        );
+        assert!(lifecycle.claim_reclaimed_transition().is_none());
+        assert!(
+            lifecycle
+                .on_started_transition("late-turn".to_string())
+                .is_none(),
+            "late TurnStarted cannot resurrect a reclaimed turn"
+        );
+    }
+
+    #[test]
+    fn append_sanitization_replaces_injected_user_and_preserves_tool_user_blocks() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "visible prompt\n\n📎 report.pdf"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<skill>secret</skill>\nvisible prompt".to_string())
+            .expect("actual prompt");
+
+        let tool_result = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: "tool output".to_string(),
+                is_error: None,
+                content_blocks: None,
+            }],
+        };
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![
+            message("assistant", "older"),
+            engine_user("<skill>secret</skill>\nvisible prompt"),
+            tool_result.clone(),
+        ]);
+
+        assert!(matched);
+        assert_eq!(
+            sanitized[1],
+            message("user", "visible prompt\n\n📎 report.pdf")
+        );
+        assert_eq!(sanitized[2], tool_result);
+    }
+
+    #[test]
+    fn edit_sanitization_keeps_engine_truncation_and_replaces_only_new_user() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::EditLast,
+                message("user", "edited display"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<persona>private</persona>\nedited".to_string())
+            .expect("actual prompt");
+
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![
+            message("user", "kept first turn"),
+            message("assistant", "kept answer"),
+            engine_user("<persona>private</persona>\nedited"),
+        ]);
+
+        assert!(matched);
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(sanitized[0], message("user", "kept first turn"));
+        assert_eq!(sanitized[2], message("user", "edited display"));
+    }
+
+    #[test]
+    fn duplicate_raw_prompts_map_newest_rule_to_newest_message() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut first = lifecycle.reserve().expect("first reserve");
+        first
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "first display"),
+            )
+            .unwrap();
+        first
+            .prepare_actual_user_content("same raw prompt".to_string())
+            .unwrap();
+        first.mark_submitted();
+        assert!(lifecycle.finish_once(|| {}).is_some());
+
+        let mut second = lifecycle.reserve().expect("second reserve");
+        second
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "second display"),
+            )
+            .unwrap();
+        second
+            .prepare_actual_user_content("same raw prompt".to_string())
+            .unwrap();
+
+        let (both, matched) = lifecycle.sanitize_messages(vec![
+            engine_user("same raw prompt"),
+            message("assistant", "between"),
+            engine_user("same raw prompt"),
+        ]);
+        assert!(matched);
+        assert_eq!(both[0], message("user", "first display"));
+        assert_eq!(both[2], message("user", "second display"));
+
+        // If compaction removed the older occurrence, the surviving newest
+        // prompt must still use the newest display rule.
+        let (compacted, matched) =
+            lifecycle.sanitize_messages(vec![engine_user("same raw prompt")]);
+        assert!(matched);
+        assert_eq!(compacted, vec![message("user", "second display")]);
+    }
+
+    #[test]
+    fn failed_reserved_submission_rolls_back_lifecycle_and_sanitization_rule() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        {
+            let mut reservation = lifecycle.reserve().expect("reserve");
+            reservation
+                .set_transcript(TranscriptOperation::Append, message("user", "display"))
+                .expect("display transcript");
+            reservation
+                .prepare_actual_user_content("private actual".to_string())
+                .expect("actual prompt");
+            // Simulate EngineHandle::send returning an error: no mark_submitted.
+        }
+
+        let next = lifecycle.reserve().expect("reservation restored");
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private actual")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private actual")]);
+        drop(next);
     }
 }
 

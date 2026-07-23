@@ -46,7 +46,7 @@ run_optional_skip2 node pinvou3-app/tests/ui_smoke.js
 run_optional_skip2 node pinvou3-app/tests/settings_ui_smoke.js
 run_optional_skip2 node pinvou3-app/tests/kb_smoke.js
 run_optional_skip2 node pinvou3-app/tests/tool_store_smoke.js
-run_optional_skip2 node remote-control-relay/test/mobile-ui.smoke.cjs
+run_optional_skip2 npm --prefix pinvou3-app run test:webui
 
 if [ "${PINVOU3_AUDIT_LATEST_SESSIONS:-0}" != "0" ]; then
   run_required python3 scripts/session-replay-audit.py --latest "$PINVOU3_AUDIT_LATEST_SESSIONS"

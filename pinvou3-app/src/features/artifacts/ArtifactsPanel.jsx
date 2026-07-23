@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ExternalLink, FolderOpen, XCircle } from '../../components/icons.jsx';
+import { Download, ExternalLink, FolderOpen, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { AcFmtIcon } from '../tools/tool-common.jsx';
@@ -58,7 +59,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
     const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings }) => {
       const isDark = theme === 'dark';
+      const canOpenContainingFolder = can('externalSystemOpen');
+      const canDownloadArtifacts = can('artifactDownload');
       const artifacts = (bs && bs.artifacts) || [];
+      const activeSessionId = bs && bs.activeSessionId;
       const [tab, setTab] = useState('list');     // 'list' | 'preview'
       const [sel, setSel] = useState(null);        // 选中的 artifact { path, basename }
       const [pv, setPv] = useState({});            // 预览态
@@ -90,7 +94,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           setInfos(m);
         })();
         return () => { cancelled = true; };
-      }, [pathsKey]);
+      }, [pathsKey, activeSessionId]);
 
       // 切 session(artifacts 整批换了)→ 选中文件已不在新列表 → 清预览、退回列表。
       // 路径含 session id,故「不在列表」可靠区分换 session vs 同 session 内新增文件。
@@ -125,7 +129,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       async function preview(a) {
         const ok = await flushMarkdownPreview();
         if (!ok) return;
-        setSel(a);
+        const selected = { ...a, sessionId: a.sessionId || activeSessionId };
+        setSel(selected);
         setTab('preview');
         setPv({ loading: true });
         setExternalUpdateBlocked(false);
@@ -275,9 +280,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
-            <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
-              {t.apBtnOpen}
-            </button>
+            {(!isWeb || canDownloadArtifacts) && (
+              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
+                {t.apBtnOpen}
+              </button>
+            )}
           </div>
         );
       };
@@ -314,8 +321,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
-                        <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
+                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
                           className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#1E1F20] text-[#C4C7C5]' : 'hover:bg-white text-[#444746]'}`}><FolderOpen size={16} /></button>
+                        }
                       </div>
                     );
                   })}
@@ -344,14 +352,18 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       </div>
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
-                      <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
-                        className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark, 'primary')}`}>
-                        <ExternalLink size={15} /> {t.apBtnOpen}
-                      </button>
-                      <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
-                        className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark)}`}>
-                        <FolderOpen size={15} /> {t.apBtnLocate}
-                      </button>
+                      {(!isWeb || canDownloadArtifacts) && (
+                        <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
+                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark, 'primary')}`}>
+                          <ExternalLink size={15} /> {t.apBtnOpen}
+                        </button>
+                      )}
+                      {canOpenContainingFolder && (
+                        <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
+                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark)}`}>
+                          <FolderOpen size={15} /> {t.apBtnLocate}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </>

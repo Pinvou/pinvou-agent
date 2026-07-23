@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use deepseek_tui::mcp::{McpConfig, McpPool, McpServerConfig, McpTimeouts};
 use serde::{Deserialize, Serialize};
 
-use crate::platform::paths;
 use crate::platform::credential_store::{
     redact_secret, CredentialError, CredentialReference, CredentialStore, SystemCredentialStore,
 };
+use crate::platform::paths;
 
 /// Persist connector visibility and refresh the skill catalogue.
 ///
@@ -1393,8 +1393,8 @@ fn default_mcp_json() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::paths::tests::ENV_LOCK;
     use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
+    use crate::platform::paths::tests::ENV_LOCK;
     use std::future::Future;
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

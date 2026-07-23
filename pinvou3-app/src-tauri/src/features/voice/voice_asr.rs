@@ -458,10 +458,7 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     let work_dir = asr_dir();
     let _ = std::fs::create_dir_all(&work_dir);
     if !bundled_engine_intact(&engine) {
-        return Err(
-            "本地语音识别引擎完整性校验失败，已拒绝执行；请重新安装 pinvou3。"
-                .to_string(),
-        );
+        return Err("本地语音识别引擎完整性校验失败，已拒绝执行；请重新安装 pinvou3。".to_string());
     }
     let out = Command::new(&engine)
         .current_dir(&work_dir)

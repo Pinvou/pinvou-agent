@@ -51,14 +51,15 @@ pub fn session_unmount_collection(
 }
 
 fn broadcast_kb_mount_to_mobile(app: &AppHandle, session_id: &str, collection_id: Option<i64>) {
-    if let Some(manager) = app.try_state::<crate::features::remote_control::RemoteControlManager>()
-    {
-        let payload = serde_json::json!({
-            "session_id": session_id,
-            "collection_id": collection_id,
-        });
-        manager.broadcast_to_mobile(session_id, "kb_mount_changed", payload);
-    }
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "collection_id": collection_id,
+    });
+    crate::features::remote_control::forward_app_event(
+        app,
+        "remote_control:kb_mount_changed",
+        payload,
+    );
 }
 
 /// 读会话当前挂载的知识集 id(前端切会话时重读,恢复挂载条显示)。

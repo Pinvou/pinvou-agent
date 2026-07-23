@@ -125,17 +125,14 @@ pub fn finish_turn_with_usage(
     error: Option<&str>,
     usage: Option<TurnUsage>,
 ) {
-    let turn_id = active_turns()
-        .lock()
-        .ok()
-        .and_then(|mut map| {
-            let queue = map.get_mut(session_id)?;
-            let id = queue.pop_front();
-            if queue.is_empty() {
-                map.remove(session_id);
-            }
-            id
-        });
+    let turn_id = active_turns().lock().ok().and_then(|mut map| {
+        let queue = map.get_mut(session_id)?;
+        let id = queue.pop_front();
+        if queue.is_empty() {
+            map.remove(session_id);
+        }
+        id
+    });
 
     let Some(turn_id) = turn_id else {
         return;
@@ -167,11 +164,11 @@ pub fn finish_turn_with_usage(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEvent {
     pub turn_id: String,
-    pub event: String,           // "user_start" | "assistant_done"
-    pub timestamp: i64,          // ms epoch
-    pub ts: String,              // RFC3339
-    pub status: Option<String>,  // assistant_done only
-    pub error: Option<String>,   // assistant_done only
+    pub event: String,            // "user_start" | "assistant_done"
+    pub timestamp: i64,           // ms epoch
+    pub ts: String,               // RFC3339
+    pub status: Option<String>,   // assistant_done only
+    pub error: Option<String>,    // assistant_done only
     pub usage: Option<TurnUsage>, // assistant_done only(老事件为 None)
 }
 
@@ -190,9 +187,7 @@ pub fn read_timeline(session_id: &str) -> std::io::Result<Vec<TimelineEvent>> {
     if file_len > MAX_TIMING_FILE_BYTES {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
-            format!(
-                "timing sidecar too large: {file_len} bytes (limit {MAX_TIMING_FILE_BYTES})"
-            ),
+            format!("timing sidecar too large: {file_len} bytes (limit {MAX_TIMING_FILE_BYTES})"),
         ));
     }
 
@@ -211,9 +206,7 @@ pub fn read_timeline(session_id: &str) -> std::io::Result<Vec<TimelineEvent>> {
         if bytes_read > MAX_TIMING_FILE_BYTES {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
-                format!(
-                    "timing sidecar grew beyond {MAX_TIMING_FILE_BYTES} bytes while reading"
-                ),
+                format!("timing sidecar grew beyond {MAX_TIMING_FILE_BYTES} bytes while reading"),
             ));
         }
         if let Some(event) = parse_timeline_line(&line) {
@@ -270,10 +263,7 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
         event: event.to_string(),
         timestamp,
         ts: ts.to_string(),
-        status: v
-            .get("status")
-            .and_then(|x| x.as_str())
-            .map(str::to_string),
+        status: v.get("status").and_then(|x| x.as_str()).map(str::to_string),
         error: v
             .get("error")
             .and_then(|x| x.as_str())
@@ -324,15 +314,26 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
             entry.0 = Some(e);
         }
     }
-    stats.turn_count = by_turn.values().filter(|(start, _)| start.is_some()).count();
+    stats.turn_count = by_turn
+        .values()
+        .filter(|(start, _)| start.is_some())
+        .count();
     stats.first_turn_ts = events
         .iter()
-        .find(|event| by_turn.get(&event.turn_id).is_some_and(|pair| pair.0.is_some()))
+        .find(|event| {
+            by_turn
+                .get(&event.turn_id)
+                .is_some_and(|pair| pair.0.is_some())
+        })
         .map(|event| event.ts.clone());
     stats.last_turn_ts = events
         .iter()
         .rev()
-        .find(|event| by_turn.get(&event.turn_id).is_some_and(|pair| pair.0.is_some()))
+        .find(|event| {
+            by_turn
+                .get(&event.turn_id)
+                .is_some_and(|pair| pair.0.is_some())
+        })
         .map(|event| event.ts.clone());
     for (start, done) in by_turn.values() {
         if start.is_none() {
@@ -345,8 +346,9 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
         if let Some(u) = &d.usage {
             stats.total_input_tokens = stats.total_input_tokens.saturating_add(u.input_tokens);
             stats.total_output_tokens = stats.total_output_tokens.saturating_add(u.output_tokens);
-            stats.total_cache_hit_tokens =
-                stats.total_cache_hit_tokens.saturating_add(u.cache_hit_tokens);
+            stats.total_cache_hit_tokens = stats
+                .total_cache_hit_tokens
+                .saturating_add(u.cache_hit_tokens);
             stats.total_cache_miss_tokens = stats
                 .total_cache_miss_tokens
                 .saturating_add(u.cache_miss_tokens);
@@ -359,10 +361,7 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
         }
         match d.status.as_deref() {
             Some(s) if s.eq_ignore_ascii_case("Completed") => stats.completed_turns += 1,
-            Some(s)
-                if s.eq_ignore_ascii_case("Failed")
-                    || s.eq_ignore_ascii_case("send_error") =>
-            {
+            Some(s) if s.eq_ignore_ascii_case("Failed") || s.eq_ignore_ascii_case("send_error") => {
                 stats.failed_turns += 1;
             }
             Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,

@@ -83,7 +83,8 @@ pub async fn get_memory_profile(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryProfileState, String> {
-    let profile = crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
+    let profile =
+        crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
     let runtime = match resolve_memory_session_id(session_id, &store) {
         Some(sid) => Some(
             crate::features::memory::runtime_snapshot(&sid)
@@ -101,8 +102,8 @@ pub async fn update_memory_profile(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryProfileState, String> {
-    let profile =
-        crate::features::memory::update_profile(patch).map_err(|e| format!("update profile: {e}"))?;
+    let profile = crate::features::memory::update_profile(patch)
+        .map_err(|e| format!("update profile: {e}"))?;
     let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
     Ok(MemoryProfileState { profile, runtime })
 }
@@ -113,7 +114,8 @@ pub async fn clear_memory_profile(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryProfileState, String> {
-    let profile = crate::features::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
+    let profile =
+        crate::features::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
     let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
     Ok(MemoryProfileState { profile, runtime })
 }
@@ -123,21 +125,22 @@ pub async fn get_memory_overview(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryOverviewState, String> {
-    let profile = crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
-    let preferences =
-        crate::features::memory::list_preferences().map_err(|e| format!("load preferences: {e}"))?;
-    let work_context =
-        crate::features::memory::load_work_context().map_err(|e| format!("load work context: {e}"))?;
-    let current_focus =
-        crate::features::memory::load_current_focus().map_err(|e| format!("load current focus: {e}"))?;
-    let recent_activity =
-        crate::features::memory::load_recent_activity().map_err(|e| format!("load recent activity: {e}"))?;
-    let recent_work =
-        crate::features::memory::load_recent_work().map_err(|e| format!("load recent work: {e}"))?;
-    let pending =
-        crate::features::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))?;
-    let never =
-        crate::features::memory::load_never_memory().map_err(|e| format!("load never memory: {e}"))?;
+    let profile =
+        crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
+    let preferences = crate::features::memory::list_preferences()
+        .map_err(|e| format!("load preferences: {e}"))?;
+    let work_context = crate::features::memory::load_work_context()
+        .map_err(|e| format!("load work context: {e}"))?;
+    let current_focus = crate::features::memory::load_current_focus()
+        .map_err(|e| format!("load current focus: {e}"))?;
+    let recent_activity = crate::features::memory::load_recent_activity()
+        .map_err(|e| format!("load recent activity: {e}"))?;
+    let recent_work = crate::features::memory::load_recent_work()
+        .map_err(|e| format!("load recent work: {e}"))?;
+    let pending = crate::features::memory::load_pending_memory()
+        .map_err(|e| format!("load pending memory: {e}"))?;
+    let never = crate::features::memory::load_never_memory()
+        .map_err(|e| format!("load never memory: {e}"))?;
     let runtime = match resolve_memory_session_id(session_id, &store) {
         Some(sid) => Some(
             crate::features::memory::runtime_snapshot(&sid)
@@ -174,7 +177,8 @@ pub async fn get_memory_overview(
 }
 
 #[tauri::command]
-pub async fn list_pending_memory() -> Result<Vec<crate::features::memory::PendingMemoryItem>, String> {
+pub async fn list_pending_memory() -> Result<Vec<crate::features::memory::PendingMemoryItem>, String>
+{
     crate::features::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))
 }
 
@@ -274,7 +278,8 @@ pub async fn never_pending_memory(
 }
 
 #[tauri::command]
-pub async fn list_recent_work_memory() -> Result<Vec<crate::features::memory::RecentWorkItem>, String> {
+pub async fn list_recent_work_memory(
+) -> Result<Vec<crate::features::memory::RecentWorkItem>, String> {
     crate::features::memory::load_recent_work().map_err(|e| format!("load recent work memory: {e}"))
 }
 
@@ -285,8 +290,8 @@ pub async fn upsert_recent_work_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<crate::features::memory::RecentWorkItem>, String> {
-    let item =
-        crate::features::memory::upsert_recent_work(patch).map_err(|e| format!("upsert recent work: {e}"))?;
+    let item = crate::features::memory::upsert_recent_work(patch)
+        .map_err(|e| format!("upsert recent work: {e}"))?;
     if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
         emit_memory_write_events(
             &app,
@@ -313,8 +318,8 @@ pub async fn archive_recent_work_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed =
-        crate::features::memory::archive_recent_work(&id).map_err(|e| format!("archive recent work: {e}"))?;
+    let changed = crate::features::memory::archive_recent_work(&id)
+        .map_err(|e| format!("archive recent work: {e}"))?;
     if changed {
         if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
             emit_memory_write_events(
@@ -343,8 +348,8 @@ pub async fn delete_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed =
-        crate::features::memory::delete_preference(&id).map_err(|e| format!("delete preference: {e}"))?;
+    let changed = crate::features::memory::delete_preference(&id)
+        .map_err(|e| format!("delete preference: {e}"))?;
     if changed {
         if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
             emit_memory_write_events(
@@ -437,8 +442,8 @@ pub async fn delete_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed =
-        crate::features::memory::delete_work_context(&id).map_err(|e| format!("delete work context: {e}"))?;
+    let changed = crate::features::memory::delete_work_context(&id)
+        .map_err(|e| format!("delete work context: {e}"))?;
     if changed {
         if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
             emit_memory_write_events(

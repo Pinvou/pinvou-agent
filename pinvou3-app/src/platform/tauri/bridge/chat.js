@@ -15,8 +15,12 @@
     var bt = context.bt;
     var runSyncOnSession = context.runSyncOnSession;
     var startThinking = context.startThinking;
+    var stopThinking = context.stopThinking;
     var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     var ensureSession = context.ensureSession;
+    var getBuffer = context.getBuffer;
+    var reconcileRemoteTurn = context.reconcileRemoteTurn;
+    var markRemoteTurn = context.markRemoteTurn;
     var clearAttachments = context.clearAttachments;
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
@@ -28,6 +32,37 @@
   function addChatItem(item) {
     item.id = ++context.itemIdSeq;
     state.chatItems.push(item);
+  }
+  function messageHasToolBlock(type, toolCallId) {
+    if (!toolCallId) return false;
+    for (var i = state.messages.length - 1; i >= 0; i--) {
+      var blocks = state.messages[i] && state.messages[i].content;
+      if (!Array.isArray(blocks)) continue;
+      for (var j = blocks.length - 1; j >= 0; j--) {
+        var block = blocks[j];
+        if (!block || block.type !== type) continue;
+        if ((type === "tool_use" ? block.id : block.tool_use_id) === toolCallId) return true;
+      }
+    }
+    return false;
+  }
+  function toolCallAlreadyStarted(toolCallId) {
+    if (!toolCallId) return false;
+    if ((context.pendingAssistantBlocks || []).some(function (block) {
+      return block && block.type === "tool_use" && block.id === toolCallId;
+    })) return true;
+    if (state.chatItems.some(function (item) {
+      return item && item.type === "tool" && item.toolId === toolCallId;
+    })) return true;
+    return messageHasToolBlock("tool_use", toolCallId);
+  }
+  function toolCallAlreadyFinished(toolCallId) {
+    return messageHasToolBlock("tool_result", toolCallId);
+  }
+  function hasChatItemForTool(type, toolCallId) {
+    return !!toolCallId && state.chatItems.some(function (item) {
+      return item && item.type === type && item.toolCallId === toolCallId;
+    });
   }
   // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
   // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
@@ -148,35 +183,65 @@
       attachments: attachmentsPayload ? attachmentsPayload.length : 0,
     });
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
+    var turnOwnerBuffer = getBuffer(sid);
+    var submittedMessage = null;
+    var submittedUserItemId = 0;
+    var submittedStreamId = 0;
+    if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
+      return Promise.reject(new Error("该会话正在同步另一端完成的回合，请稍后重试"));
+    }
+    if (turnOwnerBuffer) {
+      turnOwnerBuffer.localTurnOwned = true;
+      turnOwnerBuffer.remoteTurnActive = false;
+      turnOwnerBuffer.remoteTerminalSeen = false;
+    }
     runSyncOnSession(sid, function () {
       var uitem = { type: "user", text: displayText, time: timeStr() };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
-      state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
+      submittedUserItemId = uitem.id;
+      submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
+      state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
       context.currentStreamText = "";
       context.currentStreamId = ++context.itemIdSeq;
+      submittedStreamId = context.currentStreamId;
       state.chatItems.push({ id: context.currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
     publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
+      .then(function () {
+        if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        return true;
+      })
       .catch(function (err) {
         console.warn("[pinvou3][chat-ui] send failed", {
           sid: sid,
           error: err && err.toString ? err.toString() : err,
         });
         emitPetEvent("pet:turn_end", sid);
+        var errorText = String(err && err.message ? err.message : err || "");
+        var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
+        runSyncOnSession(sid, function () {
+          state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
+          state.chatItems = state.chatItems.filter(function (item) {
+            return item.id !== submittedUserItemId && item.id !== submittedStreamId;
+          });
+          resetPendingAssistant();
+          state.busy = false;
+          stopThinking();
+        });
+        if (concurrentTurn && turnOwnerBuffer) markRemoteTurn(sid, turnOwnerBuffer);
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
-          state.busy = false;
-          state.chatItems = state.chatItems.filter(function (item) { return item.id !== context.currentStreamId || item.html; });
         });
         notify();
-        flushQueued(sid);
         if (surfaceFailure) throw err;
+        return false;
       });
   }
   function publishRemoteUserMessage(sid, content, clientMessageId) {
@@ -190,6 +255,13 @@
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
   // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
   function flushQueued(sid) {
+    var pendingBuffer = sessionStates[sid];
+    if (pendingBuffer && pendingBuffer.remoteTurnActive) {
+      reconcileRemoteTurn(sid).then(function (ready) {
+        if (ready) flushQueued(sid);
+      }).catch(function () {});
+      return;
+    }
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
@@ -202,7 +274,15 @@
     var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
-    doSendFor(sid, text, displayText, attachments, meta, restrictTools);
+    doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
+      .catch(function () {
+        var retryQueue = sid === state.activeSessionId
+          ? state.queued
+          : (sessionStates[sid] && sessionStates[sid].queued);
+        if (!retryQueue) return;
+        Array.prototype.unshift.apply(retryQueue, items);
+        notify();
+      });
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
@@ -214,7 +294,9 @@
     if (!exists) throw new Error("目标会话不存在");
 
     await ensureSessionBufferLoaded(sid);
-    if (isBusyFor(sid)) {
+    var targetBuffer = getBuffer(sid);
+    var targetQueue = targetBuffer && targetBuffer.queued;
+    if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++context.itemIdSeq,
@@ -226,6 +308,26 @@
         });
       });
       notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
+      return { accepted: true, queued: true };
+    }
+    if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      throw new Error("目标会话仍在同步另一端完成的回合");
+    }
+    targetBuffer = getBuffer(sid);
+    if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++context.itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: meta || null,
+          restrictTools: false,
+        });
+      });
+      notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
       return { accepted: true, queued: true };
     }
     var completion = doSendFor(sid, content, content, [], meta || null, false, true)
@@ -250,37 +352,94 @@
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
       if (!state.activeSessionId) return;
     }
-    // 定时任务引导:引导词只拼进发给模型的 payload,气泡/历史仍只显示用户输入。
-    var payloadText = text;
-    var restrictTools = false;
-    if (state.scheduledTaskPendingGuide) {
-      payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
-      restrictTools = true;
-      state.scheduledTaskPendingGuide = null;
-      state.scheduledTaskCreationSessionId = state.activeSessionId;
-      state.scheduledTaskDraft = null;
-      notify();
-    }
-
-    // 新一轮用户消息 → 先熄灭技能标；本轮若模型再 load_skill 会重新点亮（sticky-ish 生命周期）。
-    state.activeSkill = null;
-
+    var sid = state.activeSessionId;
+    var activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
     var displayText = readyAttachments.length > 0
       ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
       : text;
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
-    clearAttachments();
+    function consumeUiTurnState() {
+      var consumed = {
+        scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
+        scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
+        scheduledTaskDraft: state.scheduledTaskDraft,
+        activeSkill: state.activeSkill,
+      };
+      var payloadText = text;
+      var restrictTools = false;
+      if (state.scheduledTaskPendingGuide) {
+        payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+        restrictTools = true;
+        state.scheduledTaskPendingGuide = null;
+        state.scheduledTaskCreationSessionId = sid;
+        state.scheduledTaskDraft = null;
+      }
+      state.activeSkill = null;
+      return { snapshot: consumed, payloadText: payloadText, restrictTools: restrictTools };
+    }
+    function restoreUiTurnState(consumed) {
+      if (!consumed || state.activeSessionId !== sid) return;
+      state.scheduledTaskPendingGuide = consumed.scheduledTaskPendingGuide;
+      state.scheduledTaskCreationSessionId = consumed.scheduledTaskCreationSessionId;
+      state.scheduledTaskDraft = consumed.scheduledTaskDraft;
+      state.activeSkill = consumed.activeSkill;
+    }
+    function queuePrepared(prepared) {
+      state.queued.push({
+        id: ++context.itemIdSeq,
+        text: prepared.payloadText,
+        displayText: displayText,
+        attachments: attachmentsPayload,
+        meta: meta || null,
+        restrictTools: prepared.restrictTools,
+      });
+      state.attachments = state.attachments.filter(function (attachment) {
+        return readyAttachments.indexOf(attachment) < 0;
+      });
+      notify();
+    }
 
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
-    if (state.busy) {
-      state.queued.push({ id: ++context.itemIdSeq, text: payloadText, displayText: displayText, attachments: attachmentsPayload, meta: meta || null, restrictTools: restrictTools });
-      notify();
+    if (isBusyFor(sid) || state.queued.length > 0) {
+      var queuedPreparation = consumeUiTurnState();
+      queuePrepared(queuedPreparation);
+      if (!isBusyFor(sid)) flushQueued(sid);
+      return;
+    }
+    if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
+        !(await reconcileRemoteTurn(sid))) {
+      if (state.activeSessionId !== sid) return;
+      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      return;
+    }
+    if (state.activeSessionId !== sid) return;
+    if (isBusyFor(sid) || state.queued.length > 0) {
+      var racedQueuePreparation = consumeUiTurnState();
+      queuePrepared(racedQueuePreparation);
+      if (!isBusyFor(sid)) flushQueued(sid);
       return;
     }
 
-    await doSendFor(state.activeSessionId, payloadText, displayText, attachmentsPayload, meta, restrictTools);
+    var preparation = consumeUiTurnState();
+    var accepted = await doSendFor(
+      sid,
+      preparation.payloadText,
+      displayText,
+      attachmentsPayload,
+      meta,
+      preparation.restrictTools,
+    );
+    if (!accepted) {
+      restoreUiTurnState(preparation.snapshot);
+      notify();
+    } else {
+      state.attachments = state.attachments.filter(function (attachment) {
+        return readyAttachments.indexOf(attachment) < 0;
+      });
+      notify();
+    }
   }
   function prefillComposer(text) {
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
@@ -451,6 +610,9 @@
 
     return {
       addChatItem: addChatItem,
+      toolCallAlreadyStarted: toolCallAlreadyStarted,
+      toolCallAlreadyFinished: toolCallAlreadyFinished,
+      hasChatItemForTool: hasChatItemForTool,
       isDuplicateArtifactCard: isDuplicateArtifactCard,
       addSystemItem: addSystemItem,
       compactPruneRollupText: compactPruneRollupText,

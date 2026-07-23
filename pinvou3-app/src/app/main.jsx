@@ -10,7 +10,7 @@ import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/
 import { formatSessionDate } from '../shared/date-utils.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
-import { RemoteControlModal, SettingsView } from '../features/settings/SettingsView.jsx';
+import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
@@ -397,7 +397,13 @@ function defaultModelPresetForCapabilities(capabilities) {
         }
       }, [platformCapabilities.localVllmSupported]);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
-      const [language, setLanguage] = useState('zh');
+      const [language, setLanguage] = useState(() => {
+        if (!isWeb) return 'zh';
+        try {
+          const value = window.localStorage.getItem('pinvou.web.language');
+          return value && dict[value] ? value : 'zh';
+        } catch (_) { return 'zh'; }
+      });
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
@@ -466,13 +472,59 @@ function defaultModelPresetForCapabilities(capabilities) {
         };
       }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+      // 移动壳层只作用于 Web 端紧凑视口：底部 Tab + 顶栏，侧栏只保留抽屉形态。
+      const compactViewport = useCompactViewport();
+      const isCompactShell = isWeb && compactViewport;
+      // iOS Safari 上 100dvh 不等于真实可见高度（动态工具栏/安全区），用 visualViewport 兜底。
+      const visualViewportHeight = useVisualViewportHeight();
+      // iOS Safari 聚焦输入框时会尝试滚动整个文档。紧凑 Web 壳层本身已经按
+      // visualViewport 缩高，若再允许文档级平移，整个应用会被推到键盘上方，只剩白屏。
+      useEffect(() => {
+        if (!isCompactShell) return undefined;
+
+        const html = document.documentElement;
+        const body = document.body;
+        html.classList.add('compact-web-viewport');
+
+        let frame = 0;
+        let settleTimer = 0;
+        const resetDocumentScroll = () => {
+          window.cancelAnimationFrame(frame);
+          window.clearTimeout(settleTimer);
+          const reset = () => {
+            window.scrollTo(0, 0);
+            html.scrollTop = 0;
+            body.scrollTop = 0;
+          };
+          frame = window.requestAnimationFrame(reset);
+          // Safari 的自动聚焦平移可能晚于 focusin/viewport resize，再收敛一次。
+          settleTimer = window.setTimeout(reset, 120);
+        };
+
+        const viewport = window.visualViewport;
+        document.addEventListener('focusin', resetDocumentScroll);
+        viewport?.addEventListener('resize', resetDocumentScroll);
+        viewport?.addEventListener('scroll', resetDocumentScroll);
+        resetDocumentScroll();
+
+        return () => {
+          html.classList.remove('compact-web-viewport');
+          document.removeEventListener('focusin', resetDocumentScroll);
+          viewport?.removeEventListener('resize', resetDocumentScroll);
+          viewport?.removeEventListener('scroll', resetDocumentScroll);
+          window.cancelAnimationFrame(frame);
+          window.clearTimeout(settleTimer);
+        };
+      }, [isCompactShell]);
+      const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+      const canDetachWindows = can('detachWindows');
       const [chatPrefill, setChatPrefill] = useState('');
       const composerPrefillSeenRef = useRef(0);
       const scheduledTaskAutoOpenSeenRef = useRef(null);
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
-      const [remoteOpen, setRemoteOpen] = useState(false);
+      const [webAccessOpen, setWebAccessOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
       const [settingsInitialSection, setSettingsInitialSection] = useState('general');
       const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
@@ -563,8 +615,9 @@ function defaultModelPresetForCapabilities(capabilities) {
         if (accountPopoverOpen && !llmAccountVisible) setAccountPopoverOpen(false);
       }, [accountPopoverOpen, llmAccountVisible]);
 
-      function handleOpenRemoteControl() {
-        setRemoteOpen(true);
+      function handleOpenWebAccess() {
+        if (!can('webAccessAdmin')) return;
+        setWebAccessOpen(true);
       }
 
       function handleActivateSkill(name) {
@@ -596,13 +649,17 @@ function defaultModelPresetForCapabilities(capabilities) {
         }
         // UI 语言/主题:启动时从落盘 settings 恢复一次(此前只写不读,重启即回中文+深色)
         if (!uiPrefsInitRef.current && bs.settings) {
-          const lang = TAG_TO_LANG[bs.settings.language];
-          if (lang && lang !== language) setLanguage(lang);
-          // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
-          bootedLanguageRef.current = lang || 'zh';
-          // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
-          const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
-          if (th !== activeTheme) setActiveTheme(th);
+          if (isWeb) {
+            bootedLanguageRef.current = language;
+          } else {
+            const lang = TAG_TO_LANG[bs.settings.language];
+            if (lang && lang !== language) setLanguage(lang);
+            // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
+            bootedLanguageRef.current = lang || 'zh';
+            // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
+            const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
+            if (th !== activeTheme) setActiveTheme(th);
+          }
           const notifications = bs.settings.notifications || {};
           setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
           uiPrefsInitRef.current = true;
@@ -867,12 +924,20 @@ function defaultModelPresetForCapabilities(capabilities) {
         }
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
+        closeMobileSidebar();
         return true;
       }
 
       function openSettingsSection(section = 'general') {
         setSettingsInitialSection(section);
         return navigateFromScheduledRun('settings');
+      }
+
+      function closeMobileSidebar() {
+        if (!isWeb || typeof window === 'undefined') return;
+        if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
+          setIsSidebarOpen(false);
+        }
       }
 
       function scheduledRunLabel(value) {
@@ -889,6 +954,7 @@ function defaultModelPresetForCapabilities(capabilities) {
         if (!run || !run.sessionId) return;
         if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
           setCurrentView('scheduled');
+          closeMobileSidebar();
           return;
         }
         const task = {
@@ -910,6 +976,7 @@ function defaultModelPresetForCapabilities(capabilities) {
         }
         if (bridge.available) bridge.sessions.createNewSession();
         setCurrentView('chat');
+        closeMobileSidebar();
       }
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
@@ -926,6 +993,7 @@ function defaultModelPresetForCapabilities(capabilities) {
         if (!switched) return;
         setActiveChat(id);
         setCurrentView('chat');
+        closeMobileSidebar();
       }
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
@@ -1235,7 +1303,9 @@ function defaultModelPresetForCapabilities(capabilities) {
         delete topOverrides.search;
         delete topOverrides.notifications;
         const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
-        const nextLanguage = topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans');
+        const nextLanguage = topOverrides.language !== undefined
+          ? topOverrides.language
+          : (isWeb ? (base.language || 'zh-Hans') : (LANG_TO_TAG[language] || 'zh-Hans'));
         const memoryAvailable = nextLanguage === 'zh-Hans';
         const nextMemoryEnabled = memoryAvailable
           ? (topOverrides.memory_enabled !== undefined ? !!topOverrides.memory_enabled : !!base.memory_enabled)
@@ -1255,6 +1325,10 @@ function defaultModelPresetForCapabilities(capabilities) {
 
       function handleSetTheme(th) {
         setActiveTheme(th);
+        if (isWeb) {
+          try { window.localStorage.setItem('pinvou.web.theme', th); } catch (_) {}
+          return;
+        }
         if (bridge.available) {
           bridge.settings.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' }));
         }
@@ -1319,6 +1393,10 @@ function defaultModelPresetForCapabilities(capabilities) {
 
       function handleSetLanguage(lang) {
         setLanguage(lang);
+        if (isWeb) {
+          try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
+          return;
+        }
         if (bridge.available) {
           bridge.settings.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
         }
@@ -1332,7 +1410,7 @@ function defaultModelPresetForCapabilities(capabilities) {
       }
 
       function handleSetPetEnabled(enabled) {
-        if (!bridge.available) return;
+        if (!can('pet') || !bridge.available) return;
         // 单一路径:set_pet_enabled 负责持久化 + 窗口显隐 + 广播
         // pet:enabled_changed(bridge 听到后刷新 settings 副本,防旧值回写)。
         invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
@@ -1416,8 +1494,33 @@ function defaultModelPresetForCapabilities(capabilities) {
         }
       }
 
+      // 移动壳层派生数据：顶栏标题跟随当前视图（对话态显示会话标题）；
+      // 未读红点与侧栏入口同源，避免两套提醒逻辑漂移。
+      const scheduledUnread = !!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns));
+      const mobileTitle = currentView === 'chat'
+        ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+      const mobileNavigate = (view, beforeNavigate) => {
+        setMobileMoreOpen(false);
+        navigateFromScheduledRun(view, beforeNavigate);
+      };
+      const mobileMoreViews = ['search', 'cardpool', 'toolStore', 'monitor', 'settings'];
+      const mobileMoreActive = mobileMoreViews.includes(currentView)
+        || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
+
       return (
-        <div data-testid="app-root" data-current-view={currentView} className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+        <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
+          className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
+          style={isWeb ? {
+            ...(isCompactShell ? { position: 'fixed', inset: 0, width: '100%' } : {}),
+            height: visualViewportHeight ? `${visualViewportHeight}px` : '100dvh',
+            paddingTop: 'env(safe-area-inset-top)',
+            paddingRight: 'env(safe-area-inset-right)',
+            paddingBottom: 'env(safe-area-inset-bottom)',
+            paddingLeft: 'env(safe-area-inset-left)',
+          } : undefined}>
+
+          <WebConnectionStatus theme={activeTheme} />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
           {dragAvatar && (
@@ -1460,15 +1563,30 @@ function defaultModelPresetForCapabilities(capabilities) {
             document.body
           )}
 
-          <TitleBar theme={activeTheme} t={t} />
+          {can('desktopChrome') && <TitleBar theme={activeTheme} t={t} />}
+
+          {isCompactShell && (
+            <MobileTopBar theme={activeTheme} t={t} title={mobileTitle}
+              onMenu={() => setIsSidebarOpen(true)}
+              onNewChat={currentView === 'chat' ? () => handleNewChat() : undefined} />
+          )}
 
           <div className="flex flex-1 min-h-0">
+
+          {isWeb && isSidebarOpen && (
+            <button
+              type="button"
+              aria-label="关闭导航"
+              onClick={() => setIsSidebarOpen(false)}
+              className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
+            />
+          )}
 
           {/* ================= Sidebar (Gemini Style) ================= */}
           <div className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
 
             {/* Header / Logo */}
-            <div className={`px-4 py-4 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
+            <div className={`px-4 py-4 max-sm:px-3 max-sm:py-2 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
               <button
                 data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -1483,7 +1601,7 @@ function defaultModelPresetForCapabilities(capabilities) {
             </div>
 
             {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
-            <div className={`shrink-0 flex flex-col gap-1 mt-3 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
+            <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-1 mt-3 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
@@ -1518,7 +1636,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                     if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
                   });
                 }}
-                dragKind="monitor" dragging={!!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={(geom) => beginTearOff('monitor', undefined, t.monitor, geom)}
+                dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('monitor', undefined, t.monitor, geom) : undefined}
               />
               <NavItem
                 icon={<Layers size={18} />} label={t.cardPool}
@@ -1526,7 +1644,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                dragKind="cardpool" dragging={!!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={(geom) => beginTearOff('cardpool', undefined, t.cardPool, geom)}
+                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
                 icon={<ClipboardList size={18} />} label={t.workflow}
@@ -1534,7 +1652,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('workflow')}
-                dragKind="workflow" dragging={!!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={(geom) => beginTearOff('workflow', undefined, t.workflow, geom)}
+                dragKind={canDetachWindows ? 'workflow' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('workflow', undefined, t.workflow, geom) : undefined}
               />
               <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
@@ -1542,7 +1660,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('toolStore')}
-                dragKind="toolstore" dragging={!!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={(geom) => beginTearOff('toolstore', undefined, t.toolStore, geom)}
+                dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
               />
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
@@ -1550,7 +1668,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
-                dragKind="knowledge" dragging={!!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={(geom) => beginTearOff('knowledge', undefined, t.knowledge, geom)}
+                dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -1571,7 +1689,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
-                <div className="pt-5 pb-2 space-y-4">
+                <div data-testid="sidebar-recents" className="pt-5 pb-2 space-y-4 max-sm:pt-2 max-sm:space-y-2">
                   {pinnedHistory.length > 0 && (
                     <div>
                       <button
@@ -1603,8 +1721,8 @@ function defaultModelPresetForCapabilities(capabilities) {
                                 onTogglePinned={handleToggleSessionPinned}
                                 onOpenFolder={(id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)}
                                 onArchive={handleArchiveSession}
-                                dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                                onPickUp={(geom) => beginTearOff('session', chat.id, item.title, geom)}
+                                dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                                onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, item.title, geom)) : undefined}
                               />
                             );
                           })}
@@ -1637,8 +1755,8 @@ function defaultModelPresetForCapabilities(capabilities) {
                             onTogglePinned={handleToggleSessionPinned}
                             onOpenFolder={(id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)}
                             onArchive={handleArchiveSession}
-                            dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                            onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                            dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                            onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
                           />
                         ))}
                       </div>
@@ -1670,8 +1788,8 @@ function defaultModelPresetForCapabilities(capabilities) {
                               onTogglePinned={handleToggleSessionPinned}
                               onOpenFolder={(id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)}
                               onArchive={handleArchiveSession}
-                              dragging={!!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                              onPickUp={(geom) => beginTearOff('session', chat.id, chat.title, geom)}
+                              dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                              onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
                             />
                           ))}
                         </div>
@@ -1725,7 +1843,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
-                      {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                      {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                     </button>
                     <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
@@ -1765,7 +1883,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
-                      {bs && bs.remoteControl && bs.remoteControl.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                      {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                     </button>
                     <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
@@ -1858,8 +1976,8 @@ function defaultModelPresetForCapabilities(capabilities) {
             {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
-            {remoteOpen && (
-              <RemoteControlModal theme={activeTheme} bs={bs} onClose={() => setRemoteOpen(false)} />
+            {can('webAccessAdmin') && webAccessOpen && (
+              <WebAccessModal theme={activeTheme} bs={bs} onClose={() => setWebAccessOpen(false)} />
             )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
@@ -1913,7 +2031,7 @@ function defaultModelPresetForCapabilities(capabilities) {
             )}
 
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
-            {bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
+            {can('localModelSetup') && bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
                    onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
                 <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
@@ -1997,6 +2115,43 @@ function defaultModelPresetForCapabilities(capabilities) {
 
           </div>
           </div>
+
+          {isCompactShell && (
+            <MobileTabBar theme={activeTheme} tabs={[
+              { key: 'chat', label: t.currentChat, icon: <MessageSquare size={18} />,
+                active: currentView === 'chat' || !!(currentView === 'scheduled' && bs && bs.scheduledRunContext),
+                onClick: () => mobileNavigate('chat') },
+              { key: 'workflow', label: t.workflow, icon: <ClipboardList size={18} />,
+                active: currentView === 'workflow', onClick: () => mobileNavigate('workflow') },
+              { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
+                active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
+              { key: 'more', label: t.mobileMore, icon: <MoreHorizontal size={18} />,
+                active: mobileMoreActive, dot: hasUpdate || scheduledUnread,
+                onClick: () => setMobileMoreOpen(true) },
+            ]} />
+          )}
+
+          {isCompactShell && mobileMoreOpen && (
+            <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
+              { key: 'search', label: t.searchChats, icon: <Search size={18} />,
+                active: currentView === 'search', onClick: () => mobileNavigate('search') },
+              ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
+                active: currentView === 'scheduled', dot: scheduledUnread,
+                onClick: () => mobileNavigate('scheduled') }] : []),
+              { key: 'monitor', label: t.monitor, icon: <BarChart2 size={18} />,
+                active: currentView === 'monitor',
+                onClick: () => mobileNavigate('monitor', () => {
+                  const liveBridge = window.TauriBridge || bridge;
+                  if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
+                }) },
+              { key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
+                active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
+              { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
+                active: currentView === 'toolStore', onClick: () => mobileNavigate('toolStore') },
+              { key: 'settings', label: t.settings, icon: <Settings size={18} />,
+                active: currentView === 'settings', dot: hasUpdate, onClick: () => mobileNavigate('settings') },
+            ]} />
+          )}
 
           <UpdateNoticeButton
             theme={activeTheme}

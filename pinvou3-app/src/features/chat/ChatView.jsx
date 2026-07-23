@@ -2,15 +2,26 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
+import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
+
+const openChatExternalUrl = (url) => {
+  if (isWeb) {
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
+    if (opened) opened.opener = null;
+    return;
+  }
+  invokeTauri('open_external_url', { url }).catch(() => {});
+};
 
 const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const isDark = theme === 'dark';
@@ -85,6 +96,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
     // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.knowledge.mountCollection 先物化 session。
     const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
+      const triggerRef = useRef(null);
       const [collections, setCollections] = useState(null); // null=未加载
       const [installed, setInstalled] = useState(null); // embedding 模型是否已装:null=未知(不闪 gate,mock/旧后端当已装)
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
@@ -119,7 +131,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
       return (
         <div className="relative">
-          <button onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
+          <button ref={triggerRef} onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
             className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
               ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25')
               : modelMissing
@@ -130,10 +142,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
             {compact && active && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#1A73E8] dark:bg-[#A8C7FA] ring-2 ring-white dark:ring-[#161618]"></span>}
           </button>
-          {open && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {modelMissing ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
                 ) : collections === null ? (
@@ -162,9 +172,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     </button>
                   </>
                 )}
-              </div>
-            </>
-          )}
+          </ComposerPopover>
         </div>
       );
     };
@@ -173,6 +181,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
     // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
     const ComposerModeChip = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
+      const triggerRef = useRef(null);
       const ms = (bs && bs.modeState) || { mode: 'yolo' };
       const isPlan = ms.mode === 'plan';
       async function switchTo(target) {
@@ -188,16 +197,14 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
       return (
         <div className="relative">
-          <button onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
+          <button ref={triggerRef} onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
             className={`${COMPOSER_ICON_BUTTON_CLASS} font-semibold ${isPlan ? 'text-[#1A73E8] dark:text-[#A8C7FA]' : ''}`}>
             {isPlan
               ? <ClipboardList size={18} className="shrink-0" />
               : <Zap size={18} className="shrink-0" />}
           </button>
-          {open && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <button onClick={() => switchTo('yolo')} className={optCls}>
                   <span className="flex flex-col items-start min-w-0">
                     <span className="font-semibold">{t.modeYolo}</span>
@@ -212,9 +219,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   </span>
                   {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
                 </button>
-              </div>
-            </>
-          )}
+          </ComposerPopover>
         </div>
       );
     };
@@ -654,6 +659,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handlePaste(e) {
+        if (isWeb) return;
         const items = (e.clipboardData && e.clipboardData.items) || [];
         for (const it of items) {
           if (it.type && it.type.indexOf('image/') === 0) {
@@ -671,6 +677,14 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         }
       }
 
+      function blockWebLocalFileDrop(e) {
+        if (!isWeb) return;
+        const types = Array.from((e.dataTransfer && e.dataTransfer.types) || []);
+        if (!types.includes('Files')) return;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+
       return (
         <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
@@ -683,18 +697,19 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   data-testid="scheduled-run-back"
                   aria-label="返回定时任务运行历史"
                   title="返回定时任务运行历史"
-                  className={`pointer-events-auto h-10 max-w-[520px] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm'}`}>
+                  className={`pointer-events-auto h-10 max-w-[520px] max-sm:max-w-[55vw] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm'}`}>
                   <ArrowLeft size={16} className="shrink-0" />
                   <span className="truncate">{scheduledRunContext.taskName || '定时任务运行'}</span>
-                  <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]'}`}>运行记录</span>
+                  <span className={`shrink-0 text-[12px] max-sm:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]'}`}>运行记录</span>
                 </button>
               )}
             </div>
             <div className="flex items-center gap-2">
+              {/* 窄屏：只留图标+计数（避免被左侧返回按钮挤到换行），文字标签 ≥sm 才显示 */}
               <button
                 onClick={() => setArtifactsOpen(true)}
-                className={`pointer-events-auto px-4 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
-                <Package size={16} /> {t.artifacts}
+                className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
                 {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
               </button>
             </div>
@@ -702,12 +717,16 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
 
           {/* Main Chat Area */}
-          <div ref={scrollRef} style={{ paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }} className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+          {/* Web 有消息时底部留白由列表内的 spacer 承担(WebKit 不把尾部 padding 计入 scrollHeight);
+              空态不滚动无此问题,仍需 paddingBottom 让 justify-center 的欢迎语在悬浮输入框上方居中 */}
+          <div ref={scrollRef} data-testid="chat-scroll"
+            style={(isWeb && hasMessages) ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
               <div className="w-full max-w-[760px] px-4 text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
-                <h1 className={`text-[34px] md:text-[44px] leading-tight font-normal mb-2 whitespace-normal break-words ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
                   {t.chatGreeting}
                 </h1>
               </div>
@@ -742,6 +761,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
+                {/* WebKit does not reliably include trailing padding on an overflow flex
+                    container in scrollHeight. Use a real, non-shrinking flex item so the
+                    final message can always scroll fully above the floating composer. */}
+                {isWeb && (
+                  <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
+                    style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
+                )}
               </div>
             )}
 
@@ -825,7 +851,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
           )}
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} className={`absolute bottom-8 inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
+          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
@@ -874,7 +900,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     : voiceInput.message}
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
-                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && onGotoSettings && (
+                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && canInstallLocalAsr && onGotoSettings && (
                     <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
                   )}
                   {voiceInput.status === 'failed' && (
@@ -889,7 +915,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 </div>
               </div>
             )}
-            {voiceAsrSetup.open && (() => {
+            {voiceAsrSetup.open && !canInstallLocalAsr && (
+              <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
+                <span>语音识别组件尚未安装，请先在桌面端完成安装后再试。</span>
+                <button onClick={() => bridge.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>知道了</button>
+              </div>
+            )}
+            {voiceAsrSetup.open && canInstallLocalAsr && (() => {
               const su = voiceAsrSetup;
               const prog = su.progress || {};
               const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
@@ -1020,7 +1052,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               </div>
             )}
             <div className="flex items-center justify-center mt-3">
-               <p className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+               <p data-testid="chat-disclaimer" className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
             </div>
             </div>
           </div>
@@ -1367,8 +1399,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
             <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
-            {/* iOS 风操作条：hover 气泡时下方浮现。复制=所有 query；编辑重发=仅最新(editable)。 */}
-            <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+            {/* iOS 风操作条：hover 气泡时下方浮现；窄屏无 hover，常显保证触屏可达。复制=所有 query；编辑重发=仅最新(editable)。 */}
+            <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity duration-150">
               <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
                 className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                 {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}

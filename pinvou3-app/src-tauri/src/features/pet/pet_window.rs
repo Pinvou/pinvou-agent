@@ -7,10 +7,7 @@
 //! 漏掉会导致 listen/startDragging 全部静默被拒(宠物不动、拖不了)。
 
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::VecDeque,
-    sync::Mutex,
-};
+use std::{collections::VecDeque, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const PET_LABEL: &str = "pet";
@@ -93,7 +90,6 @@ impl PetNavigationState {
             .map_err(|_| "pet navigation state lock poisoned".to_string())
             .map(|mut pending| pending.take())
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -355,9 +351,9 @@ fn save_state(st: PetWindowState) -> Result<(), String> {
 /// 点 (cx,cy) 是否落在任一显示器矩形内。恢复保存位置前用窗口中心点判定——
 /// 显示器可能被拔掉/换分辨率,落在"不存在的屏"上的宠物等于消失。
 pub fn point_on_any_monitor(cx: i32, cy: i32, monitors: &[(i32, i32, u32, u32)]) -> bool {
-    monitors
-        .iter()
-        .any(|&(x, y, w, h)| crate::features::pet::detach::point_in_rect(cx, cy, x, y, w as i32, h as i32))
+    monitors.iter().any(|&(x, y, w, h)| {
+        crate::features::pet::detach::point_in_rect(cx, cy, x, y, w as i32, h as i32)
+    })
 }
 
 /// 建/显示桌宠窗口。已存在只 show(设置开关反复切换不重建 WebView)。

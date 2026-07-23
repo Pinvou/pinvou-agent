@@ -6,7 +6,10 @@ pub fn engine_binary_name() -> &'static str {
     "sense-voice-main"
 }
 
-pub fn bundled_engine_intact(_path: &std::path::Path, _bundled_dir: Option<&std::path::Path>) -> bool {
+pub fn bundled_engine_intact(
+    _path: &std::path::Path,
+    _bundled_dir: Option<&std::path::Path>,
+) -> bool {
     true
 }
 

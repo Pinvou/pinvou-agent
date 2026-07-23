@@ -201,11 +201,14 @@ pub async fn summon(
     mode: Option<&str>,
 ) -> Result<PinvouReview> {
     // focus = 就近图标锚定的产出物 path（召唤自带作用域，§1）；否则取最后修改的产出物。
-    let artifact_path = focus.map(str::to_string).or_else(|| last_artifact_path(messages));
+    let artifact_path = focus
+        .map(str::to_string)
+        .or_else(|| last_artifact_path(messages));
     // 覆盖体检模式(§coverage,独立入口):查产物"全不全"。复用 build_context(全喂需求+产物文件)，
     // COVERAGE_PROMPT 让模型临场列完整性框架+缺口。不走核账——体检是 Boss 主动的一次性深度动作。
     if mode == Some("coverage") {
-        let raw = model_review(bridge, COVERAGE_PROMPT, &build_context(messages, workspace)).await?;
+        let raw =
+            model_review(bridge, COVERAGE_PROMPT, &build_context(messages, workspace)).await?;
         let mut review = apply_guard(raw, bridge.locale_tag());
         review.artifact_path = artifact_path;
         return Ok(review);
@@ -252,7 +255,10 @@ fn last_artifact_path(messages: &[Message]) -> Option<String> {
     for m in messages {
         for b in &m.content {
             if let ContentBlock::ToolUse { name, input, .. } = b {
-                if matches!(name.as_str(), "write_file" | "edit_file" | "present_artifact") {
+                if matches!(
+                    name.as_str(),
+                    "write_file" | "edit_file" | "present_artifact"
+                ) {
                     if let Some(p) = input.get("path").and_then(Value::as_str) {
                         last = Some(p.to_string());
                     }
@@ -357,7 +363,11 @@ fn ledger_from_entries(
         if rv.get("artifact_path").and_then(Value::as_str)? != artifact_path {
             return None;
         }
-        if rv.get("issues").and_then(Value::as_array).map_or(true, |a| a.is_empty()) {
+        if rv
+            .get("issues")
+            .and_then(Value::as_array)
+            .map_or(true, |a| a.is_empty())
+        {
             return None;
         }
         let kept = rv
@@ -372,7 +382,11 @@ fn ledger_from_entries(
 }
 
 /// 核账上下文：上轮账目 + 当前产物文件真实内容（§3）。核账只对账，不喂全会话。
-fn build_reconcile_context(prior: &[PinvouIssue], messages: &[Message], workspace: &Path) -> String {
+fn build_reconcile_context(
+    prior: &[PinvouIssue],
+    messages: &[Message],
+    workspace: &Path,
+) -> String {
     let mut out = String::from("【上轮账目】\n");
     for (i, it) in prior.iter().enumerate() {
         out.push_str(&format!("{i}. [{}] {}\n", it.severity, it.text));
@@ -430,7 +444,11 @@ fn default_trace(locale_tag: &str, clean: bool) -> String {
     .to_string()
 }
 
-async fn model_review(bridge: &Pinvou3Bridge, prompt: &str, user_content: &str) -> Result<ModelReview> {
+async fn model_review(
+    bridge: &Pinvou3Bridge,
+    prompt: &str,
+    user_content: &str,
+) -> Result<ModelReview> {
     let client = Client::builder()
         .timeout(DEFAULT_TIMEOUT)
         .build()
@@ -700,7 +718,8 @@ fn project(messages: &[Message]) -> String {
                             if let Some(ans) = v.get("answers").and_then(Value::as_array) {
                                 for a in ans {
                                     let id = a.get("id").and_then(Value::as_str).unwrap_or("");
-                                    let label = a.get("label").and_then(Value::as_str).unwrap_or("");
+                                    let label =
+                                        a.get("label").and_then(Value::as_str).unwrap_or("");
                                     decisions.push(format!("{id}={label}"));
                                 }
                             }
@@ -752,7 +771,11 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
         .map(|p| p.id.clone())
         .chain(raw.alternates.iter().cloned())
         .collect();
-    let fallback = raw.personas.first().map(|p| p.id.clone()).unwrap_or_default();
+    let fallback = raw
+        .personas
+        .first()
+        .map(|p| p.id.clone())
+        .unwrap_or_default();
     let mut guard_reasons = Vec::new();
     let issues = raw
         .issues
@@ -948,7 +971,10 @@ mod tests {
             ]}}),
             serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
         ];
-        assert!(ledger_from_entries(&arr, "/p.md", 20).is_none(), "产物改过→重新立账审增量");
+        assert!(
+            ledger_from_entries(&arr, "/p.md", 20).is_none(),
+            "产物改过→重新立账审增量"
+        );
     }
 
     /// 多轮立账:读【最近一轮立账】(悟后重新立的签证账),不是首轮(交通)。
@@ -994,8 +1020,11 @@ mod tests {
         let raw = ModelReview {
             framework: vec!["签证".into(), "保险".into()],
             coverage: vec![PinvouGap {
-                dimension: "签证".into(), coverage: "missing".into(),
-                severity: "high".into(), text: "缺".into(), suggestion: "补".into(),
+                dimension: "签证".into(),
+                coverage: "missing".into(),
+                severity: "high".into(),
+                text: "缺".into(),
+                suggestion: "补".into(),
             }],
             ..Default::default()
         };
@@ -1010,9 +1039,13 @@ mod tests {
     fn output_language_directive_per_locale() {
         let en = output_language_directive("en").expect("en 应有指令");
         assert!(en.contains("English") && en.contains("OVERRIDES"));
-        assert!(output_language_directive("ja").unwrap().contains("Japanese"));
+        assert!(output_language_directive("ja")
+            .unwrap()
+            .contains("Japanese"));
         assert!(
-            output_language_directive("zh-Hans").unwrap().contains("简体中文"),
+            output_language_directive("zh-Hans")
+                .unwrap()
+                .contains("简体中文"),
             "中文也要强制输出语言(实测在英文产物上会漂英文)"
         );
         assert!(output_language_directive("fr").is_none(), "未知回退 no-op");
@@ -1080,9 +1113,21 @@ mod tests {
     #[test]
     fn last_artifact_path_picks_latest_including_edit_file() {
         let messages = vec![
-            assistant_tool("a1", "write_file", json!({"path": "plan.md", "content": "v1"})),
-            assistant_tool("a2", "edit_file", json!({"path": "plan.md", "old_string": "v1", "new_string": "v2"})),
-            assistant_tool("a3", "edit_file", json!({"path": "plan.md", "old_string": "v2", "new_string": "v3"})),
+            assistant_tool(
+                "a1",
+                "write_file",
+                json!({"path": "plan.md", "content": "v1"}),
+            ),
+            assistant_tool(
+                "a2",
+                "edit_file",
+                json!({"path": "plan.md", "old_string": "v1", "new_string": "v2"}),
+            ),
+            assistant_tool(
+                "a3",
+                "edit_file",
+                json!({"path": "plan.md", "old_string": "v2", "new_string": "v3"}),
+            ),
         ];
         // 修 bug 关键：edit_file 也算产物，取最后一次的 path（旧逻辑只认 write_file 会漏）
         assert_eq!(last_artifact_path(&messages), Some("plan.md".to_string()));
@@ -1138,7 +1183,11 @@ mod tests {
         let big = "约束".repeat(FULL_FEED_CHAR_LIMIT); // 远超阈值
         let messages = vec![user_text(&big)];
         let ctx = build_context(&messages, std::path::Path::new("/tmp"));
-        assert!(ctx.starts_with("【Boss 需求】"), "超长应投影: 头部={}", &ctx[..30.min(ctx.len())]);
+        assert!(
+            ctx.starts_with("【Boss 需求】"),
+            "超长应投影: 头部={}",
+            &ctx[..30.min(ctx.len())]
+        );
     }
 
     #[test]

@@ -171,7 +171,10 @@ impl SystemCredentialStore {
     /// 默认降级成明文存储的理由；稳定签名可改善授权体验,安全默认值仍应保持 Keychain。
     fn secrets_for(&self, service: &str) -> Arc<Secrets> {
         let started_at = Instant::now();
-        log::info!("[credential_store] secrets_for lock wait start service={}", service);
+        log::info!(
+            "[credential_store] secrets_for lock wait start service={}",
+            service
+        );
         let mut cache = self.cache.lock().expect("credential store cache lock");
         log::info!(
             "[credential_store] secrets_for lock acquired service={} elapsed_ms={}",
@@ -186,7 +189,10 @@ impl SystemCredentialStore {
             );
             return existing.clone();
         }
-        log::info!("[credential_store] secrets_for cache miss service={}", service);
+        log::info!(
+            "[credential_store] secrets_for cache miss service={}",
+            service
+        );
         let store = DefaultKeyringStore::new(service);
         log::info!("[credential_store] keyring probe start service={}", service);
         let secrets = match store.probe() {
@@ -267,7 +273,9 @@ impl CredentialStore for SystemCredentialStore {
             reference.account,
             started_at.elapsed().as_millis()
         );
-        let result = secrets.set(&reference.account, value).map_err(secrets_error);
+        let result = secrets
+            .set(&reference.account, value)
+            .map_err(secrets_error);
         log::info!(
             "[credential_store] set returned service={} account={} ok={} elapsed_ms={}",
             reference.service,
@@ -310,7 +318,12 @@ impl MemoryCredentialStore {
     }
 
     fn maybe_fail(&self) -> Result<(), CredentialError> {
-        if let Some(message) = self.fail.lock().expect("memory credential fail lock").clone() {
+        if let Some(message) = self
+            .fail
+            .lock()
+            .expect("memory credential fail lock")
+            .clone()
+        {
             return Err(CredentialError::new(message));
         }
         Ok(())
@@ -375,7 +388,8 @@ fn redact_bearer_tokens(input: &str) -> String {
             continue;
         }
         output.push(part);
-        if part.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';')
+        if part
+            .trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';')
             .eq_ignore_ascii_case("bearer")
         {
             redact_next = true;
@@ -410,7 +424,10 @@ mod tests {
         let reference = CredentialReference::for_model("m1");
         assert_eq!(store.get(&reference).unwrap(), None);
         store.set(&reference, "sk-test-secret").unwrap();
-        assert_eq!(store.get(&reference).unwrap().as_deref(), Some("sk-test-secret"));
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-test-secret")
+        );
         store.delete(&reference).unwrap();
         assert_eq!(store.get(&reference).unwrap(), None);
     }
@@ -458,7 +475,8 @@ mod tests {
 
     #[test]
     fn credential_error_redacts_mcp_bearer_tokens() {
-        let err = CredentialError::new("request failed Authorization Bearer qcc-secret-token-1234567890");
+        let err =
+            CredentialError::new("request failed Authorization Bearer qcc-secret-token-1234567890");
         let message = err.user_message();
         assert!(!message.contains("qcc-secret-token"));
         assert!(message.contains("[REDACTED]"));

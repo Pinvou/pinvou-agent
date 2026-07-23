@@ -59,13 +59,25 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .subsec_nanos();
-        let guard = TempDir(
-            std::env::temp_dir().join(format!("audit_test_{}_{}", std::process::id(), nanos)),
-        );
+        let guard = TempDir(std::env::temp_dir().join(format!(
+            "audit_test_{}_{}",
+            std::process::id(),
+            nanos
+        )));
         let dir = guard.0.clone();
         std::fs::create_dir_all(&dir).unwrap();
-        append(&dir, "dispatch", "slide_writer", serde_json::json!({"note":"第一条"}));
-        append(&dir, "token", "slide_writer", serde_json::json!({"input":100,"output":50}));
+        append(
+            &dir,
+            "dispatch",
+            "slide_writer",
+            serde_json::json!({"note":"第一条"}),
+        );
+        append(
+            &dir,
+            "token",
+            "slide_writer",
+            serde_json::json!({"input":100,"output":50}),
+        );
         let content = std::fs::read_to_string(dir.join("workflow_audit.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);

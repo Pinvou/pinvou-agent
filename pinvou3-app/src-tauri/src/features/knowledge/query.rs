@@ -12,7 +12,10 @@ const MAX_KEYWORDS: &[&str] = &["小于", "不到", "最多", "<", "≤"];
 /// 类型关键词 → 扩展名集合。
 const TYPE_KEYWORDS: &[(&str, &[&str])] = &[
     ("截图", &["png", "jpg", "jpeg"]),
-    ("图片", &["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "svg"]),
+    (
+        "图片",
+        &["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "svg"],
+    ),
     ("照片", &["jpg", "jpeg", "png", "heic"]),
     ("image", &["jpg", "jpeg", "png", "gif", "webp", "bmp"]),
     ("视频", &["mp4", "mov", "mkv", "avi", "webm", "flv"]),
@@ -176,7 +179,12 @@ fn detect_time(work: &str) -> Option<(i64, String)> {
             while j < b.len() && b[j] == b' ' {
                 j += 1;
             }
-            for (suffix, slen) in [("天", '天'.len_utf8()), ("日", '日'.len_utf8()), ("days", 4), ("day", 3)] {
+            for (suffix, slen) in [
+                ("天", '天'.len_utf8()),
+                ("日", '日'.len_utf8()),
+                ("days", 4),
+                ("day", 3),
+            ] {
                 if work[j..].starts_with(suffix) {
                     return Some((now() - num * 86400, work[start..j + slen].to_string()));
                 }

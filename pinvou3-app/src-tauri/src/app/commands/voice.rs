@@ -20,7 +20,7 @@ pub struct VoiceCommandError {
 }
 
 impl VoiceCommandError {
-    fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
         Self {
             category: category.to_string(),
             stage: stage.to_string(),

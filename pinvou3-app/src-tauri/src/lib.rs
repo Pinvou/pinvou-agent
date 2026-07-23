@@ -8,10 +8,10 @@
 //! Engine 事件（MessageDelta / ToolCallStarted / ToolCallComplete / TurnComplete）
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
-mod core;
-pub mod platform;
 mod app;
+mod core;
 pub mod features;
+pub mod platform;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use app::commands::attachments::build_message_with_attachments;
@@ -20,9 +20,7 @@ use tauri::Manager;
 
 use crate::app::commands;
 use crate::features::{
-    assistant::{
-        engine_pool::EnginePool, platform::bridge,
-    },
+    assistant::{engine_pool::EnginePool, platform::bridge},
     connectors::{connector_cli, eip, zhidao},
     files::file_watcher,
     knowledge,
@@ -319,15 +317,12 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
-            let remote_control = RemoteControlManager::new_with_attachment_stager(
-                app.handle().clone(),
-                commands::attachments::stage_remote_attachment_source,
-            );
-            let remote_event_transport = remote_control.clone();
+            let remote_control_manager = RemoteControlManager::new(app.handle().clone());
+            let remote_event_transport = remote_control_manager.clone();
             app.handle().manage(platform::app_events::AppEventBus::new(
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
             ));
-            app.handle().manage(remote_control);
+            app.handle().manage(remote_control_manager.clone());
             // 匿名设备遥测：独立于 UI/Engine，失败只写日志；先 manage 再建 EnginePool，
             // 让每个 session forwarder 都能在 TurnStarted/TurnComplete 取到状态。
             match telemetry::TelemetryState::boot(env!("CARGO_PKG_VERSION")) {
@@ -363,18 +358,19 @@ pub fn run() {
                         )),
                     ]
                 });
-            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
-                let mut tools = crate::features::marketplace::disabled_tool_names();
-                let kb_usable = app
-                    .try_state::<knowledge::KnowledgeService>()
-                    .map(|service| service.has_indexed_content() && service.semantic_ready())
-                    .unwrap_or(false);
-                if !kb_usable {
-                    tools.push("kb_search".to_string());
-                    tools.push("kb_open_source".to_string());
-                }
-                tools
-            });
+            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
+                std::sync::Arc::new(|app| {
+                    let mut tools = crate::features::marketplace::disabled_tool_names();
+                    let kb_usable = app
+                        .try_state::<knowledge::KnowledgeService>()
+                        .map(|service| service.has_indexed_content() && service.semantic_ready())
+                        .unwrap_or(false);
+                    if !kb_usable {
+                        tools.push("kb_search".to_string());
+                        tools.push("kb_open_source".to_string());
+                    }
+                    tools
+                });
             match EnginePool::new_with_dependencies(
                 handle.clone(),
                 store_for_engine.clone(),
@@ -400,6 +396,13 @@ pub fn run() {
                     }
                     handle.manage(pool);
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
+                    match remote_control_manager.resume() {
+                        Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("[pinvou3-app] persistent Web access resume failed: {error}")
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("[pinvou3-app] failed to init engine pool: {e:?}");
@@ -614,12 +617,38 @@ pub fn run() {
             commands::runtime::cancel_generation,
             commands::runtime::list_shell_tasks,
             commands::runtime::cancel_shell_task,
-            commands::remote_control::remote_control_start,
-            commands::remote_control::remote_control_stop,
-            commands::remote_control::remote_control_status,
-            commands::remote_control::remote_control_refresh_qr,
-            commands::remote_control::remote_control_publish_user_message,
-            commands::remote_control::remote_control_publish_event,
+            commands::remote_control::web_access_enable,
+            commands::remote_control::web_access_disable,
+            commands::remote_control::web_access_status,
+            commands::remote_control::web_access_rotate,
+            commands::remote_control::web_access_relay_settings,
+            commands::remote_control::web_access_set_relay,
+            commands::remote_control::web_access_reset_relay,
+            commands::remote_control::web_access_bridge_ready,
+            commands::remote_control::web_access_rpc_begin,
+            commands::remote_control::web_access_rpc_respond,
+            commands::remote_control::web_access_publish_event,
+            commands::remote_control::web_access_list_host_files,
+            commands::remote_control::web_access_create_session,
+            commands::remote_control::web_access_load_session_chunk,
+            commands::remote_control::web_access_ingest_file,
+            commands::remote_control::web_access_chat,
+            commands::remote_control::web_access_save_session_messages_chunk,
+            commands::remote_control::web_access_transcribe_voice_audio,
+            commands::remote_control::web_access_start_skill_session,
+            commands::remote_control::web_access_read_artifact_chunk,
+            commands::remote_control::web_access_update_settings,
+            commands::remote_control::web_access_artifact_info,
+            commands::remote_control::web_access_read_artifact_text,
+            commands::remote_control::web_access_write_artifact_text,
+            commands::remote_control::web_access_read_artifact_image_b64,
+            commands::remote_control::web_access_read_artifact_thumbnail,
+            commands::remote_control::web_access_render_artifact_visual,
+            commands::remote_control::web_access_list_deliverables,
+            commands::remote_control::web_access_get_role_prompt,
+            commands::remote_control::web_access_get_role_outputs,
+            commands::remote_control::web_access_get_role_logs,
+            commands::remote_control::web_access_get_gate_report,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
             commands::memory::get_memory_profile,
@@ -843,10 +872,10 @@ mod blocklist_contract {
             "exec_shell_wait",
             // git_status/git_diff/diagnostics 已于 2026-07-03 纯办公定位决策砍入 blocklist（放弃代码辅助），不再要求可见
             "revert_turn",
-            "agent_open",  // subagent spawn(单一 spawn 入口)
-            "agent_eval",  // subagent 收结果
-            "agent_close", // subagent 释放 session
-            "kb_search",   // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
+            "agent_open",     // subagent spawn(单一 spawn 入口)
+            "agent_eval",     // subagent 收结果
+            "agent_close",    // subagent 释放 session
+            "kb_search",      // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
             "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");

@@ -15,11 +15,11 @@ use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConf
 use parking_lot::{Mutex as ParkingMutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::platform::prefs::UserPrefs;
-use crate::features::sessions::SessionStore;
-use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::scheduled::executor::ScheduledChatExecutor;
+use crate::features::sessions::SessionStore;
+use crate::platform::prefs::UserPrefs;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEDULED_RETENTION_INTERVAL: Duration = Duration::from_secs(15);
@@ -2495,7 +2495,8 @@ mod tests {
         assert_ne!(doomed_session, survivor_session, "每次运行是独立对话");
         let doomed_task = doomed.task_id.clone().expect("doomed task");
         let survivor_task = survivor.task_id.clone().expect("survivor task");
-        let workspace = crate::platform::paths::scheduled_task_workspace_dir(&fixture.automation_id);
+        let workspace =
+            crate::platform::paths::scheduled_task_workspace_dir(&fixture.automation_id);
         assert!(workspace.is_dir(), "fixture 应已建出共享工作间");
 
         fixture

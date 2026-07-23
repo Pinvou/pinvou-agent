@@ -61,9 +61,10 @@ telemetry 数据目录独立（`/var/lib/pinvou-telemetry-test`），与生产�
 ./scripts/deploy-remote-relay-test.sh
 ```
 
-脚本会上传**本地工作区**的 `remote-control-relay/` 代码（server.js / web/index.html 等），
-所以验证任何 web 远控改动的流程是：改代码 → 跑脚本 → 真机测。重复执行收敛无副作用。
-默认会先跑本地 `npm test`，可用 `SKIP_LOCAL_TESTS=1` 跳过。
+脚本先用 `/pinvou3/remote-test` base path 构建共享 React UI，再上传**本地工作区**的
+`remote-control-relay/` 服务代码与完整 `web/dist`。所以验证任何 WebUI 改动的流程是：
+改代码 → 跑脚本 → 真机测。重复执行收敛无副作用。默认会先跑本地 `npm test`；只有在已经
+单独完成验证时才可用 `SKIP_LOCAL_TESTS=1` 或 `SKIP_WEB_BUILD=1` 跳过对应步骤。
 
 **更新语义**：每次部署都会显式 `systemctl restart` 测试 relay 实例与隧道（即使已 active），
 保证新代码/新参数真正生效；重启后做本地健康检查，失败时**自动回滚到上一版**
@@ -117,10 +118,10 @@ pinvou3-tauri        # 或 ./pinvou3-app/run-dev.sh 调试构建
 ## 配套自动化测试（无真机时）
 
 - relay 单测：`cd remote-control-relay && npm test`（房间/鉴权/限流/payload 上限等）。
-- 页面 e2e（jsdom 驱动真实 `web/index.html`）：`remote-control-relay/test/mobile-download.test.js`
-  是模板——用 `JSDOM(runScripts:'dangerously')` 加载页面、桩掉 WebSocket/createObjectURL，
-  直接调用页面全局函数（`handleDesktopEvent` / `showPreview` / 按钮 click）断言 DOM 与出站消息。
-  **新 web 功能照此模式加 `test/*.test.js` 即自动进 `npm test`。**
+- 完整 WebUI 浏览器 smoke：`remote-control-relay/test/web-ui.smoke.cjs`，由
+  `npm --prefix pinvou3-app run test:webui` 构建并在桌面/手机视口执行。
+- v2 Relay 与部署契约：`relay.test.js`、`deploy.test.js`、`remote-test-deploy.test.js`；退役的
+  v1 jsdom 页面测试只由 `npm run test:legacy-v1-ui` 显式运行，不进入 v2 默认门禁。
 - desktop 回路 e2e：`pinvou3-app/.../remote_control/manager.rs` 的 `e2e_tests` 模块——
   子进程起真实 node relay + 真实 `relay_client`（WS）+ `RemoteControlManager::new_headless()`，
   tokio-tungstenite 扮演 mobile。缺 node / relay node_modules 时自动跳过，CI 安全。

@@ -8,7 +8,10 @@ pub fn engine_binary_name() -> &'static str {
     "sense-voice-main"
 }
 
-pub fn bundled_engine_intact(_path: &std::path::Path, _bundled_dir: Option<&std::path::Path>) -> bool {
+pub fn bundled_engine_intact(
+    _path: &std::path::Path,
+    _bundled_dir: Option<&std::path::Path>,
+) -> bool {
     true
 }
 
@@ -20,7 +23,11 @@ const ASR_MODEL_SIZE: u64 = 182_278_688;
 const ASR_MODEL_SHA256: &str = "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b";
 
 pub fn asr_tool_path() -> PathBuf {
-    for name in ["PINVOU3_ASR_CMD", "PINVOU3_DEEPSPEECH2_CMD", "PADDLESPEECH_BIN"] {
+    for name in [
+        "PINVOU3_ASR_CMD",
+        "PINVOU3_DEEPSPEECH2_CMD",
+        "PADDLESPEECH_BIN",
+    ] {
         if let Ok(path) = std::env::var(name) {
             if !path.trim().is_empty() {
                 return PathBuf::from(path);

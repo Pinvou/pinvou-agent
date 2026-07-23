@@ -39,6 +39,10 @@ function injectSource() {
       scheduledFor: '2026-07-10T08:00:00Z', createdAt: '2026-07-10T08:00:00Z', unread: true,
       sessionTitle: '每天给我推送时尚新闻', pinned: false, pinnedAt: null
     }];
+    const RUN_MESSAGES = [
+      { role: 'user', content: [{ type: 'text', text: 'Run the daily brief' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Daily brief complete' }] }
+    ];
     const LISTENERS = {};
     let SESSION_SEQ = 0;
     let TASK_SEQ = 0;
@@ -102,10 +106,7 @@ function injectSource() {
           if (args && args.id === 'sched-run-1') {
             return Promise.resolve({
               metadata: { id: 'sched-run-1', title: 'Daily brief run' },
-              messages: [
-                { role: 'user', content: [{ type: 'text', text: 'Run the daily brief' }] },
-                { role: 'assistant', content: [{ type: 'text', text: 'Daily brief complete' }] }
-              ],
+              messages: JSON.parse(JSON.stringify(RUN_MESSAGES)),
               artifacts: []
             });
           }
@@ -188,8 +189,23 @@ function injectSource() {
         case 'edit_last_turn': {
           const sid = args && args.sessionId;
           setTimeout(function() {
+            emit('chat:user_message', {
+              session_id: sid,
+              content: 'Run the daily brief again',
+              operation: 'edit_last',
+              base_transcript_revision: 'scheduled-smoke-before-edit'
+            });
+            emit('chat:turn_started', { session_id: sid });
             emit('chat:delta', { session_id: sid, text: 'Edited brief rerun complete' });
-            emit('chat:done', { session_id: sid });
+            RUN_MESSAGES.splice(0, RUN_MESSAGES.length,
+              { role: 'user', content: [{ type: 'text', text: 'Run the daily brief again' }] },
+              { role: 'assistant', content: [{ type: 'text', text: 'Edited brief rerun complete' }] }
+            );
+            emit('chat:transcript_committed', {
+              session_id: sid,
+              transcript_revision: 'scheduled-smoke-after-edit'
+            });
+            emit('chat:done', { session_id: sid, status: 'Completed', error: null });
           }, 40);
           return Promise.resolve(null);
         }
@@ -269,7 +285,8 @@ function injectSource() {
           LISTENERS[name] = LISTENERS[name] || [];
           LISTENERS[name].push(cb);
           return Promise.resolve(function(){});
-        }
+        },
+        emit: function(name, payload){ emit(name, payload); return Promise.resolve(); }
       },
       window: { getCurrentWindow: function(){ return { minimize(){}, maximize(){}, close(){}, toggleMaximize(){}, isMaximized(){ return Promise.resolve(false); }, onResized(){ return Promise.resolve(function(){}); }, startDragging(){} }; } },
       dialog: { open: function(options){ window.__scheduledTaskTest.dialogCalls.push(options || {}); return Promise.resolve(window.__scheduledTaskTest.folderResult); } }

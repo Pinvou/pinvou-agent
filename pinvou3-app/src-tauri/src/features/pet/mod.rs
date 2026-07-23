@@ -1,4 +1,4 @@
 pub(crate) mod detach;
-mod platform;
 pub(crate) mod pet_window;
+mod platform;
 pub(crate) mod selected_pet;

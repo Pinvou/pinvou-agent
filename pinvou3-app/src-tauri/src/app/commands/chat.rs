@@ -3,6 +3,8 @@ use super::attachments::{
 };
 use super::knowledge::build_kb_agentic_guide;
 use super::prelude::*;
+use crate::features::assistant::engine::TurnReservation;
+use crate::features::assistant::engine_pool::user_display_message;
 
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
@@ -27,9 +29,6 @@ pub async fn chat(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let chat_started_at = std::time::Instant::now();
-    let message_len = message.len();
-    let attachment_count = attachments.as_ref().map_or(0, Vec::len);
     let trimmed = message.trim();
     if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
         return Err("empty message".to_string());
@@ -39,6 +38,40 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    let reservation = pool
+        .reserve_turn(&sid)
+        .map_err(|error| format!("reserve chat turn: {error:#}"))?;
+    chat_with_reservation(
+        message,
+        attachments,
+        sid,
+        restrict_tools,
+        reservation,
+        &pool,
+        &store,
+        &app,
+    )
+    .await
+}
+
+/// Complete a turn after its session was atomically reserved. Web access uses
+/// this seam so attachment-handle resolution cannot race another submission.
+pub(crate) async fn chat_with_reservation(
+    message: String,
+    attachments: Option<Vec<crate::features::files::file_ingest::IngestResult>>,
+    sid: String,
+    restrict_tools: Option<bool>,
+    reservation: TurnReservation,
+    pool: &EnginePool,
+    store: &SessionStore,
+    app: &AppHandle,
+) -> Result<(), String> {
+    if message.trim().is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
+        return Err("empty message".to_string());
+    }
+    let chat_started_at = std::time::Instant::now();
+    let message_len = message.len();
+    let attachment_count = attachments.as_ref().map_or(0, Vec::len);
     log::info!(
         "[pinvou3][chat] request start sid={} message_len={} attachments={}",
         sid,
@@ -67,8 +100,9 @@ pub async fn chat(
     } else {
         "attachments".to_string()
     };
+    let display_content =
+        display_chat_message(&message, attachments.as_deref().unwrap_or_default());
     let raw_message = message.clone();
-    crate::features::assistant::timing::start_turn(&sid);
     let mut full = build_message_with_attachments_in_dir(
         message,
         attachments.unwrap_or_default(),
@@ -82,7 +116,8 @@ pub async fn chat(
     // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
     // MANDATORY 段遵循率衰减(h3c-ppt 跑到 p5+ 后频繁不出 `<phase id=".."/>`
     // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
-    if let Some(injected) = store.take_pending_skill_instruction(&sid) {
+    let pending_injections = store.take_pending_turn_injections(&sid);
+    if let Some(injected) = pending_injections.skill_instruction() {
         full = format!("{injected}\n\n---\n\n{full}");
     }
     // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
@@ -91,13 +126,10 @@ pub async fn chat(
 
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
-    if let Some(body) = store.take_pending_persona_body(&sid) {
+    if let Some(body) = pending_injections.persona_body() {
         full = format!("{body}\n\n---\n\n{full}");
     }
     let memory_enabled = crate::features::memory::memory_enabled();
-    if memory_enabled {
-        crate::features::memory::record_turn_user(&sid, &raw_message);
-    }
     match crate::features::memory::runtime_snapshot(&sid) {
         Ok(snapshot) => {
             let _ = app.emit(
@@ -190,6 +222,7 @@ pub async fn chat(
         }
     }
     let send_started_at = std::time::Instant::now();
+    crate::features::assistant::timing::start_turn(&sid);
     log::info!(
         "[pinvou3][chat] engine send start sid={} mode={:?} content_len={}",
         sid,
@@ -197,15 +230,21 @@ pub async fn chat(
         full.len()
     );
     match pool
-        .send_user_message(
+        .send_reserved_user_message(
             &sid,
             full,
+            user_display_message(display_content),
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
+            reservation,
         )
         .await
     {
         Ok(()) => {
+            pending_injections.commit();
+            if memory_enabled {
+                crate::features::memory::record_turn_user(&sid, &raw_message);
+            }
             log::info!(
                 "[pinvou3][chat] engine send ok sid={} send_elapsed_ms={} total_elapsed_ms={}",
                 sid,
@@ -215,7 +254,11 @@ pub async fn chat(
             Ok(())
         }
         Err(e) => {
-            crate::features::assistant::timing::finish_turn(&sid, "send_error", Some(&format!("{e:?}")));
+            crate::features::assistant::timing::finish_turn(
+                &sid,
+                "send_error",
+                Some(&format!("{e:?}")),
+            );
             log::error!(
                 "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:?}",
                 sid,
@@ -225,6 +268,25 @@ pub async fn chat(
             );
             Err(format!("send_user_message failed: {e:?}"))
         }
+    }
+}
+
+fn display_chat_message(
+    message: &str,
+    attachments: &[crate::features::files::file_ingest::IngestResult],
+) -> String {
+    if attachments.is_empty() {
+        return message.to_string();
+    }
+    let names = attachments
+        .iter()
+        .map(|attachment| attachment.basename.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if message.trim().is_empty() {
+        format!("📎 {names}")
+    } else {
+        format!("{message}\n\n📎 {names}")
     }
 }
 

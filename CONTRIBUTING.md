@@ -22,7 +22,7 @@
 | **Session replay auditor 单测** | fast-gate | session 筛选、工具配对或产物识别回归 → 本地跑 `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` |
 | **Python MCP 测试** | fast-gate | `mcp-servers/*/test_*.py` 挂 → 看 test 输出 |
 | **内置 MCP 协议与产物契约** | fast-gate | 本地跑 `python3 scripts/mcp-server-contract-smoke.py`；检查 5 个本地 server 与 QCC 清单 |
-| **前端逻辑 + Mock GUI + 手机 Remote smoke** | frontend-test（当前暂停） | workflow 定义已接线，但主线暂不执行该 job；提交前必须本地跑 `./scripts/run-user-journey-tests.sh` |
+| **前端逻辑 + Mock GUI + 完整 WebUI smoke** | frontend-test（按前端/Relay 路径触发） | 本地跑 `./scripts/run-user-journey-tests.sh`；WebUI 相关改动另跑 `npm --prefix pinvou3-app run test:webui` |
 | **cargo test --lib** | rust-test | Rust 单测挂 → 本地 `cargo test --lib -- --test-threads=1` 复现(见下) |
 
 > **新单测自动进 CI**:`cargo test --lib`(全跑 `src/` 下所有 `#[test]`)+ `mcp-servers/*/test_*.py`(glob)都是**通配**,新加的测试无需改 workflow 自动被跑。但有两条铁律,否则你的新测试会让 CI 红:

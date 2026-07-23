@@ -88,7 +88,11 @@ pub async fn download_update_package(
     check_update_platform_support()?;
     let dir = paths::updates_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
-    let dest = dir.join(format!("pinvou3_{}_{}.deb", info.latest_version, deb_arch()));
+    let dest = dir.join(format!(
+        "pinvou3_{}_{}.deb",
+        info.latest_version,
+        deb_arch()
+    ));
     let expected = info.sha256.to_lowercase();
 
     if dest.exists() && file_sha256(&dest).as_deref() == Some(expected.as_str()) {

@@ -20,8 +20,8 @@ pub async fn equip_persona(
     persona_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<crate::features::personas::PersonaSummary, String> {
-    let card =
-        crate::features::personas::get(&persona_id).ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
+    let card = crate::features::personas::get(&persona_id)
+        .ok_or_else(|| format!("未知专家面具: {persona_id}"))?;
     let summary = card.summary();
     store.set_pending_persona_body(
         &session_id,
@@ -140,7 +140,10 @@ fn preserve_resolutions(path: &std::path::Path, new: serde_json::Value) -> serde
 }
 
 /// 纯合并逻辑（抽出便于单测）：new 缺 resolution 的条目继承 old 同下标的。
-pub(super) fn merge_resolutions(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
+pub(super) fn merge_resolutions(
+    old: serde_json::Value,
+    mut new: serde_json::Value,
+) -> serde_json::Value {
     use serde_json::Value;
     let old_arr = match old.as_array() {
         Some(a) => a,

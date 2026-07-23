@@ -153,7 +153,9 @@ pub enum HarnessAction {
         description: String,
     },
     AllDone,
-    Blocked { message: String },
+    Blocked {
+        message: String,
+    },
     NotApplicable,
     Error(String),
 }
@@ -223,16 +225,24 @@ pub(crate) fn workflow_root_for(workflow: &str) -> PathBuf {
 }
 
 pub(crate) fn scheduler_path_for(workflow: &str) -> PathBuf {
-    workflow_root_for(workflow).join("scripts").join("scheduler.py")
+    workflow_root_for(workflow)
+        .join("scripts")
+        .join("scheduler.py")
 }
 fn gate_runner_path_for(workflow: &str) -> PathBuf {
-    workflow_root_for(workflow).join("scripts").join("gate_runner.py")
+    workflow_root_for(workflow)
+        .join("scripts")
+        .join("gate_runner.py")
 }
 fn deliverable_validator_path_for(workflow: &str) -> PathBuf {
-    workflow_root_for(workflow).join("scripts").join("validate_deliverable.py")
+    workflow_root_for(workflow)
+        .join("scripts")
+        .join("validate_deliverable.py")
 }
 fn warmup_check_path_for(workflow: &str) -> PathBuf {
-    workflow_root_for(workflow).join("scripts").join("warmup_check.py")
+    workflow_root_for(workflow)
+        .join("scripts")
+        .join("warmup_check.py")
 }
 
 /// 读 agent_registry.json（能力真相源）。失败返回空 Object。
@@ -293,9 +303,15 @@ pub fn read_full_agent_state(workspace: &Path) -> Option<serde_json::Value> {
             "project_dir".into(),
             serde_json::Value::String(project.to_string_lossy().to_string()),
         );
-        obj.insert("scenario".into(), serde_json::Value::String(scenario.clone()));
+        obj.insert(
+            "scenario".into(),
+            serde_json::Value::String(scenario.clone()),
+        );
         let workflow = workflow_name_for_scenario(&scenario);
-        obj.insert("workflow_id".into(), serde_json::Value::String(workflow.clone()));
+        obj.insert(
+            "workflow_id".into(),
+            serde_json::Value::String(workflow.clone()),
+        );
         if let Some(wf) = crate::features::workflow::workflow_registry::discover()
             .into_iter()
             .find(|w| w.id == workflow)
@@ -360,8 +376,8 @@ fn read_last_gate_verdict(project: &Path, role_id: &str) -> Option<String> {
 }
 
 fn count_outputs_present(project: &Path, role_id: &str) -> usize {
-    let registry_path = workflow_root_for(&workflow_of_project(project))
-        .join("agent_registry.json");
+    let registry_path =
+        workflow_root_for(&workflow_of_project(project)).join("agent_registry.json");
     let content = match std::fs::read_to_string(&registry_path) {
         Ok(c) => c,
         Err(_) => return 0,
@@ -568,8 +584,7 @@ pub fn init_project(
     let project = workspace.join(format!("wf-{ts}-{scenario}"));
 
     for sub in ["_state", "_research", "_audit", "配套材料"] {
-        std::fs::create_dir_all(project.join(sub))
-            .map_err(|e| format!("create {sub}: {e}"))?;
+        std::fs::create_dir_all(project.join(sub)).map_err(|e| format!("create {sub}: {e}"))?;
     }
 
     let progress = serde_json::json!({
@@ -579,8 +594,7 @@ pub fn init_project(
     });
     std::fs::write(
         project.join("_state").join("workflow_progress.json"),
-        serde_json::to_string_pretty(&progress)
-            .map_err(|e| format!("serialize progress: {e}"))?,
+        serde_json::to_string_pretty(&progress).map_err(|e| format!("serialize progress: {e}"))?,
     )
     .map_err(|e| format!("write workflow_progress.json: {e}"))?;
 
@@ -622,7 +636,8 @@ pub fn init_project(
 }
 
 fn read_scenario(project: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(project.join("_state").join("workflow_progress.json")).ok()?;
+    let content =
+        std::fs::read_to_string(project.join("_state").join("workflow_progress.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     v.get("scenario")?.as_str().map(String::from)
 }
@@ -678,8 +693,7 @@ pub fn stop_workflow(
                 .map_err(|e| format!("serialize stop marker: {e}"))?,
         )
         .map_err(|e| format!("write stop marker: {e}"))?;
-        std::fs::rename(&tmp_path, &marker_path)
-            .map_err(|e| format!("commit stop marker: {e}"))?;
+        std::fs::rename(&tmp_path, &marker_path).map_err(|e| format!("commit stop marker: {e}"))?;
     }
     log_flow(
         &project,
@@ -774,16 +788,14 @@ fn log_flow(project: &Path, event: &str, extra: &[(&str, &str)]) {
             .and_then(|mut file| file.write_all(line.as_bytes()))
     });
     if let Err(error) = result {
-        eprintln!("[harness] write workflow log failed ({}): {error}", path.display());
+        eprintln!(
+            "[harness] write workflow log failed ({}): {error}",
+            path.display()
+        );
     }
 }
 
-pub(crate) fn record_runtime_failure(
-    workspace: &Path,
-    role_id: &str,
-    stage: &str,
-    error: &str,
-) {
+pub(crate) fn record_runtime_failure(workspace: &Path, role_id: &str, stage: &str, error: &str) {
     let Some(project) = find_project_dir(workspace) else {
         eprintln!("[harness] runtime failure without workflow project: {stage}: {error}");
         return;
@@ -791,12 +803,7 @@ pub(crate) fn record_runtime_failure(
     record_runtime_failure_for_project(&project, role_id, stage, error);
 }
 
-fn record_runtime_failure_for_project(
-    project: &Path,
-    role_id: &str,
-    stage: &str,
-    error: &str,
-) {
+fn record_runtime_failure_for_project(project: &Path, role_id: &str, stage: &str, error: &str) {
     let detail = failure_detail(error);
     let reason = failure_summary(&detail);
     let category = failure_category(&detail);
@@ -898,7 +905,10 @@ fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
         return Err(format!("scheduler.py not found: {}", script.display()));
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let mut full_args = vec![script.to_string_lossy().to_string(), project.to_string_lossy().to_string()];
+    let mut full_args = vec![
+        script.to_string_lossy().to_string(),
+        project.to_string_lossy().to_string(),
+    ];
     full_args.extend(args.iter().map(|s| s.to_string()));
     let arg_refs: Vec<&str> = full_args.iter().map(|s| s.as_str()).collect();
     run_python(&arg_refs, scripts_dir)
@@ -935,7 +945,8 @@ fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
                     "status": "blocked",
                     "error": e,
                     "report_error": report_err,
-                }).to_string()),
+                })
+                .to_string()),
             }
         }
     }
@@ -946,8 +957,8 @@ fn read_warmup_report(project: &Path) -> Result<serde_json::Value, String> {
     if !path.exists() {
         return Err(format!("warmup_report.json missing: {}", path.display()));
     }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read warmup_report.json: {e}"))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("read warmup_report.json: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("parse warmup_report.json: {e}"))
 }
 
@@ -958,11 +969,9 @@ pub(crate) fn warmup_block_reason(report: &serde_json::Value) -> Option<String> 
         .get("checks")
         .and_then(|checks| checks.as_object())
         .and_then(|checks| {
-            checks
-                .values()
-                .find(|check| {
-                    check.get("status").and_then(|value| value.as_str()) == Some("blocked")
-                })
+            checks.values().find(|check| {
+                check.get("status").and_then(|value| value.as_str()) == Some("blocked")
+            })
         })
         .and_then(|check| check.get("details").and_then(|value| value.as_str()))
         .map(str::trim)
@@ -1112,17 +1121,24 @@ pub(crate) fn workflow_failure_reason(workspace: &Path) -> Option<String> {
 fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
     let script = gate_runner_path_for(&workflow_of_project(project));
     if !script.exists() {
-        return Ok(GateResult { verdict: "PASS".into(), findings: vec![] });
+        return Ok(GateResult {
+            verdict: "PASS".into(),
+            findings: vec![],
+        });
     }
     let deck_dir = project.join("HTML_Deck");
     if !deck_dir.exists() {
-        return Ok(GateResult { verdict: "PASS".into(), findings: vec![] });
+        return Ok(GateResult {
+            verdict: "PASS".into(),
+            findings: vec![],
+        });
     }
     let scripts_dir = script.parent().unwrap_or(project);
     let args = vec![
         script.to_string_lossy().to_string(),
         deck_dir.to_string_lossy().to_string(),
-        "--layer".to_string(), "1".to_string(),
+        "--layer".to_string(),
+        "1".to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let out = run_python(&arg_refs, scripts_dir)?;
@@ -1132,7 +1148,10 @@ fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
 fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, String> {
     let script = deliverable_validator_path_for(&workflow_of_project(project));
     if !script.exists() {
-        return Ok(GateResult { verdict: "PASS".into(), findings: vec![] });
+        return Ok(GateResult {
+            verdict: "PASS".into(),
+            findings: vec![],
+        });
     }
     let scripts_dir = script.parent().unwrap_or(project);
     let args = vec![
@@ -1142,23 +1161,50 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
     ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let out = run_python(&arg_refs, scripts_dir)?;
-    let v: serde_json::Value = serde_json::from_str(&out)
-        .map_err(|e| format!("parse deliverable check: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| format!("parse deliverable check: {e}"))?;
 
-    let verdict = v.get("verdict").and_then(|v| v.as_str()).unwrap_or("PASS").to_string();
-    let findings: Vec<GateFinding> = v.get("findings")
+    let verdict = v
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .unwrap_or("PASS")
+        .to_string();
+    let findings: Vec<GateFinding> = v
+        .get("findings")
         .and_then(|f| f.as_array())
         .map(|arr| {
-            arr.iter().filter_map(|item| {
-                Some(GateFinding {
-                    severity: item.get("severity")?.as_str()?.to_string(),
-                    rule: item.get("rule").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                    rollback_scope: item.get("rollback_scope").and_then(|r| r.as_str()).unwrap_or("local").to_string(),
-                    fix_hint: item.get("fix_hint").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                    message: item.get("message").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                    violation_type: item.get("violation_type").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+            arr.iter()
+                .filter_map(|item| {
+                    Some(GateFinding {
+                        severity: item.get("severity")?.as_str()?.to_string(),
+                        rule: item
+                            .get("rule")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        rollback_scope: item
+                            .get("rollback_scope")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("local")
+                            .to_string(),
+                        fix_hint: item
+                            .get("fix_hint")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        message: item
+                            .get("message")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        violation_type: item
+                            .get("violation_type")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
                 })
-            }).collect()
+                .collect()
         })
         .unwrap_or_default();
 
@@ -1169,7 +1215,10 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
             if html_gate.verdict == "FAIL" {
                 let mut combined_findings = findings;
                 combined_findings.extend(html_gate.findings);
-                return Ok(GateResult { verdict: "FAIL".into(), findings: combined_findings });
+                return Ok(GateResult {
+                    verdict: "FAIL".into(),
+                    findings: combined_findings,
+                });
             }
         }
     }
@@ -1178,7 +1227,12 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
 }
 
 fn parse_decision(json: &str) -> Result<SchedulerDecision, String> {
-    serde_json::from_str(json).map_err(|e| format!("parse scheduler: {e}\nraw: {}", truncate_on_char_boundary(json, 200)))
+    serde_json::from_str(json).map_err(|e| {
+        format!(
+            "parse scheduler: {e}\nraw: {}",
+            truncate_on_char_boundary(json, 200)
+        )
+    })
 }
 
 // ── 核心逻辑 ──
@@ -1207,17 +1261,23 @@ pub fn step_fresh(workspace: &Path) -> HarnessAction {
     } else {
         match read_warmup_report(&project) {
             Ok(report) => report.get("status").and_then(|v| v.as_str()) != Some("pass"),
-            Err(_) => true,  // 文件不存在 / parse 失败 → 重跑
+            Err(_) => true, // 文件不存在 / parse 失败 → 重跑
         }
     };
     if needs_warmup {
         match run_warmup(&project) {
             Ok(report) => {
                 if report.get("status").and_then(|v| v.as_str()) != Some("pass") {
-                    return HarnessAction::Blocked { message: report.to_string() };
+                    return HarnessAction::Blocked {
+                        message: report.to_string(),
+                    };
                 }
             }
-            Err(report_or_error) => return HarnessAction::Blocked { message: report_or_error },
+            Err(report_or_error) => {
+                return HarnessAction::Blocked {
+                    message: report_or_error,
+                }
+            }
         }
     }
 
@@ -1257,7 +1317,10 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
                 Err(_) => false,
             };
             if has_output {
-                let _ = run_scheduler(&project, &["--scenario", &scenario, "--gate-wait", running_role]);
+                let _ = run_scheduler(
+                    &project,
+                    &["--scenario", &scenario, "--gate-wait", running_role],
+                );
                 HarnessAction::WaitForHuman {
                     role_id: running_role.to_string(),
                     role_name: running_role.to_string(),
@@ -1274,7 +1337,10 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("[harness] deliverable check error: {e}, treating as PASS");
-                    GateResult { verdict: "PASS".into(), findings: vec![] }
+                    GateResult {
+                        verdict: "PASS".into(),
+                        findings: vec![],
+                    }
                 }
             };
 
@@ -1285,11 +1351,18 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
                 // [拆对话线 C] L1 hard 通过即推进。不再注入品悟 L2 对话型评审
                 // (SDAN/05:soft 不阻断、不打回;唯一硬门 = hard 代码 + 用户)。
                 // 内容质量待 soft 裁决模块(出建议卡片、不阻断)接管,见 docs/SDAN/05。
-                log_flow(&project, "gate_pass", &[("role_id", running_role), ("verdict", &gate_result.verdict)]);
+                log_flow(
+                    &project,
+                    "gate_pass",
+                    &[("role_id", running_role), ("verdict", &gate_result.verdict)],
+                );
                 // [tool 化 2026-06-06] 框架实例化(含 base.css 挂载)已迁到 designer 的
                 // compose_deck tool(SDAN/02 Router 四不:Router 不跑业务脚本)。harness 不再
                 // 在 content_planner 后外部排版——框架由 designer SubAgent 经 compose_deck 出。
-                let _ = run_scheduler(&project, &["--scenario", &scenario, "--complete", running_role]);
+                let _ = run_scheduler(
+                    &project,
+                    &["--scenario", &scenario, "--complete", running_role],
+                );
                 // [B2] 尚书省派完单 → 编译差事图(写 dynamic_routes.json),下一次 --next 才能
                 // 看到差事节点(<bu>#<seq>)。编译失败=派单不合法,记日志后降级(无 dynamic_routes
                 // → WorkflowState 走静态六部兜底,不致命)。
@@ -1325,9 +1398,24 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
 
                 if structural {
                     let rule_id = find_rollback_rule(&gate_result.findings);
-                    log_flow(&project, "rollback", &[("role_id", running_role), ("rule_id", &rule_id)]);
-                    let _ = run_scheduler(&project, &["--scenario", &scenario, "--fail", running_role, "--reason", "gate structural fail"]);
-                    let _ = run_scheduler(&project, &["--scenario", &scenario, "--rollback", &rule_id]);
+                    log_flow(
+                        &project,
+                        "rollback",
+                        &[("role_id", running_role), ("rule_id", &rule_id)],
+                    );
+                    let _ = run_scheduler(
+                        &project,
+                        &[
+                            "--scenario",
+                            &scenario,
+                            "--fail",
+                            running_role,
+                            "--reason",
+                            "gate structural fail",
+                        ],
+                    );
+                    let _ =
+                        run_scheduler(&project, &["--scenario", &scenario, "--rollback", &rule_id]);
 
                     let json = match run_scheduler(&project, &["--scenario", &scenario, "--next"]) {
                         Ok(j) => j,
@@ -1340,10 +1428,22 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
                     dispatch_or_wait(decision, &project, &scenario)
                 } else {
                     // local → 先 fail（累加 retries），再看还能不能重试
-                    let _ = run_scheduler(&project, &["--scenario", &scenario, "--fail", running_role, "--reason", "gate local fail"]);
+                    let _ = run_scheduler(
+                        &project,
+                        &[
+                            "--scenario",
+                            &scenario,
+                            "--fail",
+                            running_role,
+                            "--reason",
+                            "gate local fail",
+                        ],
+                    );
 
                     // 检查 scheduler 状态：如果 retries >= max 则 status=failed，返回 Blocked
-                    let status_json = run_scheduler(&project, &["--scenario", &scenario, "--status"]).unwrap_or_default();
+                    let status_json =
+                        run_scheduler(&project, &["--scenario", &scenario, "--status"])
+                            .unwrap_or_default();
                     let is_failed = status_json.contains(&format!("\"{}\"", "failed"));
 
                     if is_failed {
@@ -1351,7 +1451,9 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
                             message: format!("{} 重试次数用尽", running_role),
                         }
                     } else {
-                        let fix_hints: Vec<String> = gate_result.findings.iter()
+                        let fix_hints: Vec<String> = gate_result
+                            .findings
+                            .iter()
                             .filter(|f| f.severity == "CRITICAL" || f.severity == "WARNING")
                             .map(|f| format!("- {}: {} → {}", f.rule, f.message, f.fix_hint))
                             .collect();
@@ -1365,11 +1467,20 @@ pub fn step_after_role(workspace: &Path, running_role: &str) -> HarnessAction {
                         if role_is_per_page(running_role) {
                             match fetch_batch_tasks(&project, &scenario, running_role) {
                                 Ok(tasks) => build_batch_action(
-                                    &project, &scenario, running_role, running_role, &tasks, &addendum),
+                                    &project,
+                                    &scenario,
+                                    running_role,
+                                    running_role,
+                                    &tasks,
+                                    &addendum,
+                                ),
                                 Err(e) => HarnessAction::Error(e),
                             }
                         } else {
-                            let _ = run_scheduler(&project, &["--scenario", &scenario, "--start", running_role]);
+                            let _ = run_scheduler(
+                                &project,
+                                &["--scenario", &scenario, "--start", running_role],
+                            );
                             spawn_agent_or_error(&project, &scenario, running_role, &addendum)
                         }
                     }
@@ -1401,14 +1512,30 @@ pub fn approve_gate(workspace: &Path, role_id: &str) -> HarnessAction {
         }
     };
     if has_critical {
-        let findings = check.unwrap_or(GateResult { verdict: "FAIL".into(), findings: vec![] });
-        let issues: Vec<String> = findings.findings.iter()
+        let findings = check.unwrap_or(GateResult {
+            verdict: "FAIL".into(),
+            findings: vec![],
+        });
+        let issues: Vec<String> = findings
+            .findings
+            .iter()
             .filter(|f| f.severity == "CRITICAL")
             .map(|f| format!("- {}: {}", f.rule, f.message))
             .collect();
-        log_flow(&project, "gate_fail", &[("role_id", role_id), ("reason", "deliverable check failed on approve")]);
+        log_flow(
+            &project,
+            "gate_fail",
+            &[
+                ("role_id", role_id),
+                ("reason", "deliverable check failed on approve"),
+            ],
+        );
         return HarnessAction::Blocked {
-            message: format!("{} 的交付物不完整，无法通过审批：\n{}", role_id, issues.join("\n")),
+            message: format!(
+                "{} 的交付物不完整，无法通过审批：\n{}",
+                role_id,
+                issues.join("\n")
+            ),
         };
     }
 
@@ -1476,9 +1603,7 @@ fn agent_failed_impl(
                 &fatal_reason,
             ],
         ) {
-            return HarnessAction::Error(format!(
-                "记录模型鉴权失败终态时出错: {scheduler_error}"
-            ));
+            return HarnessAction::Error(format!("记录模型鉴权失败终态时出错: {scheduler_error}"));
         }
         log_flow(
             &project,
@@ -1540,12 +1665,11 @@ fn agent_failed_impl(
         }
     };
     let status = serde_json::from_str::<serde_json::Value>(&status_json).unwrap_or_default();
-    let persisted_progress = std::fs::read_to_string(
-        project.join("_state").join("workflow_progress.json"),
-    )
-    .ok()
-    .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-    .unwrap_or_default();
+    let persisted_progress =
+        std::fs::read_to_string(project.join("_state").join("workflow_progress.json"))
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .unwrap_or_default();
     // workflow_progress.json 是重试计数和终态的持久真相源；scheduler --status
     // 可能只返回展示快照而省略 retries，优先读取持久状态，避免日志错误显示 0/2。
     let role_status = persisted_progress
@@ -1604,7 +1728,9 @@ fn agent_failed_impl(
     );
     if role_is_per_page(role_id) {
         match fetch_batch_tasks(&project, &scenario, role_id) {
-            Ok(tasks) => build_batch_action(&project, &scenario, role_id, role_id, &tasks, &addendum),
+            Ok(tasks) => {
+                build_batch_action(&project, &scenario, role_id, role_id, &tasks, &addendum)
+            }
             Err(e) => HarnessAction::Error(e),
         }
     } else {
@@ -1641,7 +1767,17 @@ pub fn reject_gate(workspace: &Path, role_id: &str, reason: &str) -> HarnessActi
         };
     }
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
-    let _ = run_scheduler(&project, &["--scenario", &scenario, "--fail", role_id, "--reason", reason]);
+    let _ = run_scheduler(
+        &project,
+        &[
+            "--scenario",
+            &scenario,
+            "--fail",
+            role_id,
+            "--reason",
+            reason,
+        ],
+    );
 
     // 用户拒绝 → 角色重新 running，派发同角色 SubAgent 附拒绝原因（Step C）。
     let _ = run_scheduler(&project, &["--scenario", &scenario, "--start", role_id]);
@@ -1660,8 +1796,7 @@ fn read_role_registry_tools(
     // [B2] 差事节点(<bu>#<seq>)的工具/能力按所属部查;非差事原样。
     let bu = bu_of(role_id);
     let role_id = bu.as_str();
-    let reg_path = workflow_root_for(&workflow_of_role(role_id))
-        .join("agent_registry.json");
+    let reg_path = workflow_root_for(&workflow_of_role(role_id)).join("agent_registry.json");
     let content = match std::fs::read_to_string(&reg_path) {
         Ok(c) => c,
         Err(_) => return (Vec::new(), None, None, false),
@@ -1733,14 +1868,16 @@ fn build_static_section(role_id: &str, page_layout: Option<&str>) -> String {
         .and_then(|a| a.get(role_id))
         .and_then(|r| r.get("reads_static"))
         .and_then(|s| s.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     // [per_page] 按该页版式裁剪：只保留 base_css / image_slot_protocol / 该页 tpl_LNN。
     let no_read_keys: std::collections::HashSet<&str> = if let Some(layout) = page_layout {
         let want_tpl = format!("tpl_{layout}"); // "tpl_L01"
-        reads.retain(|k| {
-            k == "base_css" || k == "image_slot_protocol" || k == &want_tpl
-        });
+        reads.retain(|k| k == "base_css" || k == "image_slot_protocol" || k == &want_tpl);
         // base_css 只用于 @import 路径引用，明示别 read_file 它（避免 10KB 进上下文）。
         ["base_css"].into_iter().collect()
     } else {
@@ -1764,8 +1901,12 @@ fn build_static_section(role_id: &str, page_layout: Option<&str>) -> String {
     };
     let mut lines: Vec<String> = Vec::new();
     for key in &reads {
-        let Some(entry) = assets.get(key) else { continue };
-        let Some(rel) = entry.get("path").and_then(|p| p.as_str()) else { continue };
+        let Some(entry) = assets.get(key) else {
+            continue;
+        };
+        let Some(rel) = entry.get("path").and_then(|p| p.as_str()) else {
+            continue;
+        };
         let abs = wf.join(rel);
         // [per_page] 标记为"勿读"的资产(如 base_css)：只给 @import 路径，明示别 read_file，
         // 防止大文件进 step2 上下文。
@@ -1908,7 +2049,13 @@ pub fn record_page_done(workspace: &Path, base_role: &str, page: u32) -> bool {
     let scenario = read_scenario(&project).unwrap_or_else(|| "solution_deck".to_string());
     let json = run_scheduler(
         &project,
-        &["--scenario", &scenario, "--page-done", base_role, &page.to_string()],
+        &[
+            "--scenario",
+            &scenario,
+            "--page-done",
+            base_role,
+            &page.to_string(),
+        ],
     )
     .unwrap_or_default();
     serde_json::from_str::<serde_json::Value>(&json)
@@ -2014,7 +2161,9 @@ fn batch_outputs_record(session_id: &str, base_role: &str, page: u32, outs: &[St
         return;
     }
     if let Ok(mut m) = batch_outputs().lock() {
-        m.entry(pk(session_id, base_role)).or_default().insert(page, outs.to_vec());
+        m.entry(pk(session_id, base_role))
+            .or_default()
+            .insert(page, outs.to_vec());
     }
 }
 
@@ -2022,7 +2171,10 @@ pub fn batch_outputs_for(session_id: &str, base_role: &str, page: u32) -> Vec<St
     batch_outputs()
         .lock()
         .ok()
-        .and_then(|m| m.get(&pk(session_id, base_role)).and_then(|p| p.get(&page).cloned()))
+        .and_then(|m| {
+            m.get(&pk(session_id, base_role))
+                .and_then(|p| p.get(&page).cloned())
+        })
         .unwrap_or_default()
 }
 
@@ -2064,7 +2216,9 @@ pub fn batch_pop_next(session_id: &str, base_role: &str) -> Option<SubAgentTask>
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    let t = q.get_mut(&pk(session_id, base_role)).and_then(|d| d.pop_front());
+    let t = q
+        .get_mut(&pk(session_id, base_role))
+        .and_then(|d| d.pop_front());
     if let Some(ref task) = t {
         fanout_mark(session_id, base_role, task.page, "running"); // 排队页被补派 → running
     }
@@ -2129,7 +2283,11 @@ pub fn page_retry_inc(session_id: &str, base_role: &str, page: u32) -> u32 {
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    let e = m.entry(pk(session_id, base_role)).or_default().entry(page).or_insert(0);
+    let e = m
+        .entry(pk(session_id, base_role))
+        .or_default()
+        .entry(page)
+        .or_insert(0);
     *e += 1;
     *e
 }
@@ -2161,7 +2319,12 @@ fn page_output_rel(base_role: &str, page: u32) -> String {
 /// - `html_page`(缺省)：output_template 反推路径；> min_bytes(900) 且含 contains_any 任一标记。
 /// - `image_file`：按 `outputs`(批内登记的本页全部产物)逐一验 PNG 魔数 + ≥ min_bytes(100KB)，
 ///   全过才算真（挡 LLM 手搓伪图）；登记缺失视为未写成。
-pub fn page_output_is_real(workspace: &Path, base_role: &str, page: u32, outputs: &[String]) -> bool {
+pub fn page_output_is_real(
+    workspace: &Path,
+    base_role: &str,
+    page: u32,
+    outputs: &[String],
+) -> bool {
     let project = match find_project_dir(workspace) {
         Some(p) => p,
         None => return false,
@@ -2201,7 +2364,11 @@ pub fn page_output_is_real(workspace: &Path, base_role: &str, page: u32, outputs
     let markers: Vec<String> = realness
         .and_then(|r| r.get("contains_any"))
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_lowercase())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_lowercase()))
+                .collect()
+        })
         .unwrap_or_else(|| vec!["<h1".into(), "data-page-no".into()]);
     let path = project.join(page_output_rel(base_role, page));
     let content = match std::fs::read_to_string(&path) {
@@ -2348,12 +2515,28 @@ fn build_batch_action(
             "agent_registry.json 缺角色 {base_role} 的 tools 白名单"
         ));
     }
-    log_flow(project, "dispatch_batch",
-             &[("role_id", base_role), ("pages", &sched_tasks.len().to_string())]);
+    log_flow(
+        project,
+        "dispatch_batch",
+        &[
+            ("role_id", base_role),
+            ("pages", &sched_tasks.len().to_string()),
+        ],
+    );
     // 逻辑节点【一次】标记开始（DAG 里仍是单节点）。--batch-total 显式传本批任务数
     // （幂等跳过后的真实 N，≠ outline 页数）供 join 计数 [Codex 评审修复 2026-06-04]。
     let n = sched_tasks.len().to_string();
-    let _ = run_scheduler(project, &["--scenario", scenario, "--start", base_role, "--batch-total", &n]);
+    let _ = run_scheduler(
+        project,
+        &[
+            "--scenario",
+            scenario,
+            "--start",
+            base_role,
+            "--batch-total",
+            &n,
+        ],
+    );
 
     let mut tasks = Vec::with_capacity(sched_tasks.len());
     for t in sched_tasks {
@@ -2414,7 +2597,11 @@ fn dispatch_or_wait(decision: SchedulerDecision, project: &Path, scenario: &str)
             };
             let role_name = decision.role_name.unwrap_or_else(|| role_id.clone());
 
-            log_flow(project, "dispatch", &[("role_id", &role_id), ("role_name", &role_name)]);
+            log_flow(
+                project,
+                "dispatch",
+                &[("role_id", &role_id), ("role_name", &role_name)],
+            );
             let _ = run_scheduler(project, &["--scenario", scenario, "--start", &role_id]);
 
             // [拆对话线 C] 不再走 Step B 品悟口头交代（SDAN/09 取消对话型品悟）。
@@ -2444,7 +2631,10 @@ fn dispatch_or_wait(decision: SchedulerDecision, project: &Path, scenario: &str)
                 Some(r) => r.clone(),
                 None => return HarnessAction::Error("dispatch_batch without role_id".into()),
             };
-            let role_name = decision.role_name.clone().unwrap_or_else(|| base_role.clone());
+            let role_name = decision
+                .role_name
+                .clone()
+                .unwrap_or_else(|| base_role.clone());
             let sched_tasks = decision.tasks.unwrap_or_default();
             build_batch_action(project, scenario, &base_role, &role_name, &sched_tasks, "")
         }
@@ -2592,10 +2782,7 @@ mod tests {
             "report_error": "warmup_report.json missing"
         });
 
-        assert_eq!(
-            warmup_block_reason(&report).as_deref(),
-            Some(expected)
-        );
+        assert_eq!(warmup_block_reason(&report).as_deref(), Some(expected));
     }
 
     #[test]
@@ -2619,7 +2806,8 @@ mod tests {
 
     #[test]
     fn failure_diagnostic_preserves_multiline_reason_and_drops_protocol_sentinel() {
-        let raw = "SubAgent execution failed\nMCP tool filesystem/write_file failed: access denied\n\
+        let raw =
+            "SubAgent execution failed\nMCP tool filesystem/write_file failed: access denied\n\
                    <codewhale:subagent.done status=\"failed\">ignored</codewhale:subagent.done>";
         let detail = failure_detail(raw);
         assert!(detail.contains("MCP tool filesystem/write_file failed: access denied"));
@@ -2685,7 +2873,9 @@ mod tests {
         let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(record["event"], "agent_failed");
         assert_eq!(record["reason"], "HTTP 503 upstream unavailable");
-        assert!(record["timestamp"].as_str().is_some_and(|value| !value.is_empty()));
+        assert!(record["timestamp"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
         assert_eq!(
             read_last_run_ts(&root, "taizi").as_deref(),
             record["timestamp"].as_str()
@@ -2802,7 +2992,10 @@ mod tests {
             "outputs": ["_state/product_brief.md"]
         });
 
-        assert_eq!(build_output_section_from_agent(&agent, &project), String::new());
+        assert_eq!(
+            build_output_section_from_agent(&agent, &project),
+            String::new()
+        );
     }
 
     #[test]
@@ -2811,7 +3004,12 @@ mod tests {
         let section = render_output_section(vec!["_state/product_brief.md".to_string()], &project);
 
         assert!(section.contains("产物地址"));
-        assert!(section.contains(&project.join("_state/product_brief.md").display().to_string()));
+        assert!(section.contains(
+            &project
+                .join("_state/product_brief.md")
+                .display()
+                .to_string()
+        ));
         assert!(section.contains("product_brief.md"));
     }
 
@@ -2838,7 +3036,11 @@ mod tests {
     #[test]
     fn rollback_rule_reads_structured_violation_type() {
         // ① structural finding 带 violation_type → 直接返回该结构化值(不再 substring 猜)。
-        let findings = vec![gf("structural", "slide_file_missing", "narrative_flow_broken")];
+        let findings = vec![gf(
+            "structural",
+            "slide_file_missing",
+            "narrative_flow_broken",
+        )];
         assert_eq!(find_rollback_rule(&findings), "narrative_flow_broken");
     }
 

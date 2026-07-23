@@ -508,9 +508,7 @@ fn detect_hardware_identity(fallback_claim: &str) -> HardwareIdentity {
                         // 与 Linux/Windows 分支一致:过 normalize_hardware_value 占位过滤
                         // (拒绝全零 UUID / FFFFFFFF / ToBeFilledByO.E.M. 等),避免极端
                         // VM/烧录异常把占位 UUID 当真机 ID 上报。
-                        if let Some(v) = normalize_hardware_value(
-                            value.trim().trim_matches('"'),
-                        ) {
+                        if let Some(v) = normalize_hardware_value(value.trim().trim_matches('"')) {
                             return hardware_identity(
                                 format!("macos:ioplatformuuid:{v}"),
                                 "ioplatformuuid",

@@ -3,7 +3,9 @@
 /// 把一个用户上传的文件转成 markdown（或标记不支持），返回 IngestResult。
 /// 前端在 chip 行展示 token 估算 / 警告，发送时拼接 markdown 到 user message。
 #[tauri::command]
-pub async fn ingest_file(path: String) -> Result<crate::features::files::file_ingest::IngestResult, String> {
+pub async fn ingest_file(
+    path: String,
+) -> Result<crate::features::files::file_ingest::IngestResult, String> {
     let p = crate::features::files::file_ingest::validate_path(&path)?;
     Ok(crate::features::files::file_ingest::ingest(&p))
 }
@@ -11,7 +13,8 @@ pub async fn ingest_file(path: String) -> Result<crate::features::files::file_in
 /// 返回系统工具检测结果（pandoc / pdftotext 是否可用）。
 /// 前端启动时调一次，缺工具时给一次性 toast 引导 apt install。
 #[tauri::command]
-pub async fn detect_system_tools() -> Result<crate::features::files::file_ingest::SystemTools, String> {
+pub async fn detect_system_tools(
+) -> Result<crate::features::files::file_ingest::SystemTools, String> {
     Ok(crate::features::files::file_ingest::system_tools())
 }
 
@@ -38,7 +41,12 @@ pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, Stri
     let file_path = match std::fs::read_dir(&upload_dir).ok().and_then(|entries| {
         entries
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_type().map(|kind| kind.is_file()).unwrap_or(false))
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_file())
+                    .unwrap_or(false)
+            })
             .next()
             .map(|entry| entry.path())
     }) {

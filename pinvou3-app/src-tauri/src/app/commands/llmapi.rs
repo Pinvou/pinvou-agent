@@ -27,13 +27,15 @@ pub async fn save_llmapi_user_session(
 }
 
 #[tauri::command]
-pub async fn get_llmapi_status() -> Result<crate::features::llmapi_hub::models::LlmApiStatusResponse, String>
-{
+pub async fn get_llmapi_status(
+) -> Result<crate::features::llmapi_hub::models::LlmApiStatusResponse, String> {
     let started_at = std::time::Instant::now();
     log::info!("[llmapi_hub][commands] get_llmapi_status start");
     let remote = tokio::time::timeout(
         std::time::Duration::from_secs(6),
-        tokio::task::spawn_blocking(crate::features::llmapi_hub::provisioning::status_for_current_user_system),
+        tokio::task::spawn_blocking(
+            crate::features::llmapi_hub::provisioning::status_for_current_user_system,
+        ),
     )
     .await;
 
@@ -75,7 +77,7 @@ pub async fn get_llmapi_status() -> Result<crate::features::llmapi_hub::models::
                 Some(crate::features::llmapi_hub::models::LlmApiErrorCode::Unavailable),
                 Some(format!("后台状态查询任务失败: {err}")),
             )
-                .map_err(|err| err.to_tauri_error())
+            .map_err(|err| err.to_tauri_error())
         }
         Err(_) => {
             log::warn!(
@@ -86,7 +88,7 @@ pub async fn get_llmapi_status() -> Result<crate::features::llmapi_hub::models::
                 Some(crate::features::llmapi_hub::models::LlmApiErrorCode::ServiceUnreachable),
                 Some("后台状态查询超时".to_string()),
             )
-                .map_err(|err| err.to_tauri_error())
+            .map_err(|err| err.to_tauri_error())
         }
     }
 }
@@ -136,8 +138,11 @@ pub async fn retry_llmapi_provisioning(
     pinvou_user_id: String,
     device_binding_id: String,
 ) -> Result<crate::features::llmapi_hub::models::EnsureLlmApiBindingResponse, String> {
-    crate::features::llmapi_hub::provisioning::retry_binding_system(pinvou_user_id, device_binding_id)
-        .map_err(|err| err.to_tauri_error())
+    crate::features::llmapi_hub::provisioning::retry_binding_system(
+        pinvou_user_id,
+        device_binding_id,
+    )
+    .map_err(|err| err.to_tauri_error())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,9 +156,11 @@ pub async fn set_llmapi_user_enabled(
     pinvou_user_id: String,
     enabled: bool,
 ) -> Result<SetLlmApiUserEnabledResponse, String> {
-    let binding =
-        crate::features::llmapi_hub::provisioning::set_user_enabled_system(&pinvou_user_id, enabled)
-            .map_err(|err| err.to_tauri_error())?;
+    let binding = crate::features::llmapi_hub::provisioning::set_user_enabled_system(
+        &pinvou_user_id,
+        enabled,
+    )
+    .map_err(|err| err.to_tauri_error())?;
     Ok(SetLlmApiUserEnabledResponse {
         pinvou_user_id: binding.pinvou_user_id,
         enabled: binding.enabled,
@@ -183,7 +190,9 @@ fn parse_llmapi_provisioning_status(
         "querying_user" | "creating_user" => {
             Ok(crate::features::llmapi_hub::models::ProvisioningStatus::QueryingUser)
         }
-        "creating_token" => Ok(crate::features::llmapi_hub::models::ProvisioningStatus::CreatingToken),
+        "creating_token" => {
+            Ok(crate::features::llmapi_hub::models::ProvisioningStatus::CreatingToken)
+        }
         "configuring_policy" => {
             Ok(crate::features::llmapi_hub::models::ProvisioningStatus::ConfiguringPolicy)
         }

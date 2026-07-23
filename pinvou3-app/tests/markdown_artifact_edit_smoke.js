@@ -131,7 +131,7 @@ function injectSource() {
       var handlers = window.__TAURI_EVENT_HANDLERS__[name] || (window.__TAURI_EVENT_HANDLERS__[name] = []);
       handlers.push(handler);
       return Promise.resolve(function(){ var i = handlers.indexOf(handler); if (i >= 0) handlers.splice(i,1); });
-    }},window:{getCurrentWindow:function(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(function(){});},startDragging(){}};}},dialog:{open:function(){return Promise.resolve(null);}}};
+    },emit:function(){return Promise.resolve();}},window:{getCurrentWindow:function(){return {minimize(){},maximize(){},close(){},toggleMaximize(){},isMaximized(){return Promise.resolve(false);},onResized(){return Promise.resolve(function(){});},startDragging(){}};}},dialog:{open:function(){return Promise.resolve(null);}}};
   })();`;
 }
 

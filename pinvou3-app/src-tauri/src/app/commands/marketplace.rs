@@ -53,7 +53,11 @@ pub(super) struct MarketplaceOAuthLoginRegistration {
 }
 
 impl MarketplaceOAuthLoginCoordinator {
-    pub(super) async fn register(&self, tool_id: &str, request_id: &str) -> MarketplaceOAuthLoginRegistration {
+    pub(super) async fn register(
+        &self,
+        tool_id: &str,
+        request_id: &str,
+    ) -> MarketplaceOAuthLoginRegistration {
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         let (completion_sender, completion) = tokio::sync::watch::channel(false);
         let mut state = self.state.lock().await;
@@ -186,7 +190,8 @@ pub async fn install_marketplace_tool(
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
         for sid in mgr.companion_skills(&tool_id) {
             if let Err(e) =
-                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().install(&sid)
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                    .install(&sid)
             {
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
             }
@@ -420,7 +425,8 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
     mgr.uninstall(&tool_id)?;
     // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
     for sid in companions {
-        let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().uninstall(&sid);
+        let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .uninstall(&sid);
     }
     Ok(())
 }
@@ -431,7 +437,10 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn list_marketplace_skills(
 ) -> Result<Vec<crate::features::marketplace::skill_marketplace::MarketplaceSkillInfo>, String> {
-    Ok(crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().list_skills())
+    Ok(
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .list_skills(),
+    )
 }
 
 #[tauri::command]
@@ -442,7 +451,8 @@ pub async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
 }
 
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
-    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().install(skill_id)?;
+    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .install(skill_id)?;
     // disabled_connectors.json 会保留 `skill:<id>` 的用户选择。技能卸载后启动时，
     // refresh 会因未安装而从底座运行态过滤掉；重装成功后必须立即再推一次，避免
     // composer 显示“已关闭”但模型实际仍能 load_skill。
@@ -479,7 +489,8 @@ pub fn uninstall_marketplace_skill(skill_id: String) -> Result<(), String> {
 }
 
 pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
-    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new().uninstall(skill_id)?;
+    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .uninstall(skill_id)?;
     crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     Ok(())
 }

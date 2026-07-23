@@ -40,15 +40,19 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
 
 #[cfg(target_os = "windows")]
 fn poll_global_mouse(_dev: &()) -> GlobalMouse {
+    use std::mem::MaybeUninit;
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    use std::mem::MaybeUninit;
 
     let mut pt = MaybeUninit::<POINT>::uninit();
     let (x, y) = unsafe {
         if GetCursorPos(pt.as_mut_ptr()) == 0 {
-            return GlobalMouse { x: 0, y: 0, left_down: false };
+            return GlobalMouse {
+                x: 0,
+                y: 0,
+                left_down: false,
+            };
         }
         let pt = pt.assume_init();
         (pt.x, pt.y)
@@ -59,7 +63,11 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn poll_global_mouse(_dev: &()) -> GlobalMouse {
-    GlobalMouse { x: 0, y: 0, left_down: false }
+    GlobalMouse {
+        x: 0,
+        y: 0,
+        left_down: false,
+    }
 }
 
 /// macOS 全局鼠标:CoreGraphics 同步读取(与 Linux device_query / Windows GetCursorPos
@@ -116,7 +124,11 @@ mod macos_mouse {
         unsafe {
             let event = CGEventCreate(core::ptr::null_mut());
             if event.is_null() {
-                return GlobalMouse { x: 0, y: 0, left_down: false };
+                return GlobalMouse {
+                    x: 0,
+                    y: 0,
+                    left_down: false,
+                };
             }
             let loc = CGEventGetLocation(event);
             CFRelease(event);
@@ -126,8 +138,16 @@ mod macos_mouse {
             // 无需 CGEventSourceCreate 分配/释放 source 对象。
             let left_down = CGEventSourceButtonState(HID_SYSTEM_STATE, MOUSE_BUTTON_LEFT);
             GlobalMouse {
-                x: if loc.x.is_finite() { loc.x.round() as i32 } else { 0 },
-                y: if loc.y.is_finite() { loc.y.round() as i32 } else { 0 },
+                x: if loc.x.is_finite() {
+                    loc.x.round() as i32
+                } else {
+                    0
+                },
+                y: if loc.y.is_finite() {
+                    loc.y.round() as i32
+                } else {
+                    0
+                },
                 left_down,
             }
         }
@@ -258,57 +278,57 @@ pub async fn begin_detach_drag(
     let spawn_result = std::thread::Builder::new()
         .name("detach-drag-poll".to_string())
         .spawn(move || {
-        // RAII:无论循环正常退出还是 panic,都复位 DRAG_ACTIVE 并广播 drag-ended,
-        // 防止撕离功能因线程异常而永久卡死(后续所有起手被当"重复"忽略)
-        // 或前端 avatar 永不收起(幽灵光标)。
-        struct DragGuard(AppHandle);
-        impl Drop for DragGuard {
-            fn drop(&mut self) {
-                DRAG_ACTIVE.store(false, Ordering::SeqCst);
-                let _ = self.0.emit("detach:drag-ended", ());
-            }
-        }
-        let _drag_guard = DragGuard(app_for_thread.clone());
-
-        // 平台特定的轮询设备句柄:Linux 是 device_query DeviceState;其它平台不用句柄。
-        #[cfg(target_os = "linux")]
-        let dev = device_query::DeviceState::new();
-        #[cfg(not(target_os = "linux"))]
-        let dev = ();
-
-        let mut was_down = false;
-        let mut idle_ticks = 0u32;
-        loop {
-            let m = poll_global_mouse(&dev);
-            let (mx, my) = (m.x, m.y);
-            let down = m.left_down;
-
-            if down {
-                was_down = true;
-            }
-            if was_down && !down {
-                // 松手:落点在主窗外那一屏 → 最大化建窗;在内 → 取消。
-                let a2 = app_for_thread.clone();
-                let kind2 = kind.clone();
-                let id2 = id.clone();
-                let _ = app_for_thread.run_on_main_thread(move || {
-                    if !main_window_contains(&a2, mx, my) {
-                        let _ = create_detached_at(&a2, &kind2, id2.as_deref(), Some((mx, my)));
-                    }
-                });
-                break;
-            }
-            if !was_down {
-                idle_ticks += 1;
-                if idle_ticks > 250 {
-                    break; // ~3s 没等到按下(异常起手)→ 放弃
+            // RAII:无论循环正常退出还是 panic,都复位 DRAG_ACTIVE 并广播 drag-ended,
+            // 防止撕离功能因线程异常而永久卡死(后续所有起手被当"重复"忽略)
+            // 或前端 avatar 永不收起(幽灵光标)。
+            struct DragGuard(AppHandle);
+            impl Drop for DragGuard {
+                fn drop(&mut self) {
+                    DRAG_ACTIVE.store(false, Ordering::SeqCst);
+                    let _ = self.0.emit("detach:drag-ended", ());
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(12));
-        }
-        // 拖拽结束(落位/取消/超时任一)→ 广播,让前端收起 avatar。
-        // (DRAG_ACTIVE 复位 + drag-ended 广播均由 _drag_guard 的 Drop 保证,panic 安全。)
-    });
+            let _drag_guard = DragGuard(app_for_thread.clone());
+
+            // 平台特定的轮询设备句柄:Linux 是 device_query DeviceState;其它平台不用句柄。
+            #[cfg(target_os = "linux")]
+            let dev = device_query::DeviceState::new();
+            #[cfg(not(target_os = "linux"))]
+            let dev = ();
+
+            let mut was_down = false;
+            let mut idle_ticks = 0u32;
+            loop {
+                let m = poll_global_mouse(&dev);
+                let (mx, my) = (m.x, m.y);
+                let down = m.left_down;
+
+                if down {
+                    was_down = true;
+                }
+                if was_down && !down {
+                    // 松手:落点在主窗外那一屏 → 最大化建窗;在内 → 取消。
+                    let a2 = app_for_thread.clone();
+                    let kind2 = kind.clone();
+                    let id2 = id.clone();
+                    let _ = app_for_thread.run_on_main_thread(move || {
+                        if !main_window_contains(&a2, mx, my) {
+                            let _ = create_detached_at(&a2, &kind2, id2.as_deref(), Some((mx, my)));
+                        }
+                    });
+                    break;
+                }
+                if !was_down {
+                    idle_ticks += 1;
+                    if idle_ticks > 250 {
+                        break; // ~3s 没等到按下(异常起手)→ 放弃
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(12));
+            }
+            // 拖拽结束(落位/取消/超时任一)→ 广播,让前端收起 avatar。
+            // (DRAG_ACTIVE 复位 + drag-ended 广播均由 _drag_guard 的 Drop 保证,panic 安全。)
+        });
     // spawn 失败(线程资源耗尽)时 DRAG_ACTIVE 仍为 true(上面已 swap),需复位,
     // 否则撕离功能永久卡死。emit 让前端收起 avatar。
     if spawn_result.is_err() {

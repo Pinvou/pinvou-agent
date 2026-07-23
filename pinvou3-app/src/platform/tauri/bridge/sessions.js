@@ -25,6 +25,7 @@
     var addSystemItem = context.addSystemItem;
     var turnUsageDirty = context.turnUsageDirty;
     var basename = context.basename;
+    var isAbsPath = context.isAbsPath;
     var filterSessionArtifacts = context.filterSessionArtifacts;
     var scheduleShellPoll = context.scheduleShellPoll;
     var bt = context.bt;
@@ -45,6 +46,15 @@
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
+      localTurnOwned: false,
+      remoteTurnActive: false,
+      remoteTerminalSeen: false,
+      remoteAdmissionKeys: [],
+      deferredRemoteUserEvent: null,
+      remoteBaselineMessageCount: null,
+      remoteBaselineTrusted: false,
+      remoteExpectedAssistantKey: "",
+      sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -287,7 +297,9 @@
   }
   function hydrateWorkingSetFromSaved(buf, saved) {
     if (!buf || !saved) return;
+    var completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
     buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
+    buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
     buf.chatItems = [];
     buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
       var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
@@ -296,6 +308,14 @@
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
     buf.personaEvents = [];
     buf.pinvouReviews = [];
+    if (completedRemoteTurn) {
+      buf.remoteTurnActive = false;
+      buf.remoteTerminalSeen = false;
+      buf.remoteBaselineMessageCount = null;
+      buf.remoteBaselineTrusted = false;
+      buf.remoteExpectedAssistantKey = "";
+      buf.deferredRemoteUserEvent = null;
+    }
     buf.stream = {
       currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
       pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
@@ -450,9 +470,17 @@
     var seen = Object.create(null);
     (durableArtifacts || []).concat(liveArtifacts || []).forEach(function (artifact) {
       var path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      if (!path || seen[path]) return;
-      seen[path] = true;
-      merged.push({ path: path, basename: basename(path) });
+      var identity = basename(path);
+      if (!path || !identity) return;
+      if (seen[identity] !== undefined) {
+        var existingIndex = seen[identity];
+        if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
+          merged[existingIndex] = { path: path, basename: identity };
+        }
+        return;
+      }
+      seen[identity] = merged.length;
+      merged.push({ path: path, basename: identity });
     });
     return merged;
   }
@@ -461,7 +489,10 @@
     if (!item || !item.type) return "";
     if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
     if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
-    if (item.type === "artifact_card") return "artifact:" + String(item.path || "");
+    if (item.type === "artifact_card") return "artifact:" + basename(item.path);
+    if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;
+    if (item.type === "careful_blocked" && item.toolCallId) return "careful_blocked:" + item.toolCallId;
+    if (item.type === "plan_card" && item.planId) return "plan:" + item.planId;
     if (item.type === "user") return "user:" + String(item.text || item.html || "");
     if (item.type === "system") return "system:" + String(item.text || "");
     var stable = Object.assign({}, item);
@@ -473,17 +504,17 @@
 
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
+    var availableByKey = Object.create(null);
+    state.chatItems.forEach(function (item, index) {
+      var key = hydratedChatItemKey(item);
+      if (!key) return;
+      if (!availableByKey[key]) availableByKey[key] = [];
+      availableByKey[key].push(index);
+    });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var existingIndex = -1;
-      if (key) {
-        for (var i = state.chatItems.length - 1; i >= 0; i--) {
-          if (hydratedChatItemKey(state.chatItems[i]) === key) {
-            existingIndex = i;
-            break;
-          }
-        }
-      }
+      var matches = key && availableByKey[key];
+      var existingIndex = matches && matches.length ? matches.shift() : -1;
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {

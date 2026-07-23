@@ -14,8 +14,8 @@
 pub use crate::core::mode_state;
 pub use crate::features::marketplace;
 pub use crate::features::marketplace::skill_marketplace;
-pub use crate::features::sessions;
 pub(crate) use crate::features::runtime_bundle::platform as bundle;
+pub use crate::features::sessions;
 pub use crate::platform::paths;
 pub use crate::platform::prefs;
 
@@ -161,7 +161,11 @@ impl Pinvou3Bridge {
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
             eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
-            crate::platform::startup::mark_with_detail("rust", "bridge_boot:mcp_secret_sync:error", &err);
+            crate::platform::startup::mark_with_detail(
+                "rust",
+                "bridge_boot:mcp_secret_sync:error",
+                &err,
+            );
         }
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:done");
         crate::platform::startup::mark("bridge_boot:prefs_load:start");

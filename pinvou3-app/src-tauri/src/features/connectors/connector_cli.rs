@@ -141,8 +141,16 @@ pub fn b64(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(A[((n >> 18) & 63) as usize] as char);
         out.push(A[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { A[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            A[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -169,7 +177,10 @@ pub fn make_qr(url: &str) -> Option<String> {
         .min_dimensions(220, 220)
         .quiet_zone(true)
         .build();
-    Some(format!("data:image/svg+xml;base64,{}", b64(svg_xml.as_bytes())))
+    Some(format!(
+        "data:image/svg+xml;base64,{}",
+        b64(svg_xml.as_bytes())
+    ))
 }
 
 /// 后台线程:逐行排空一个管道(防写满阻塞),抓到首个本连接器 URL 经 channel 送回。
@@ -281,12 +292,9 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
     });
 
     let (feishu_result, wecom_result, dingtalk_result) = tokio::join!(feishu, wecom, dingtalk);
-    let feishu_visible = feishu_result
-        .map_err(|e| format!("飞书鉴权探测任务失败: {e}"))??;
-    let wecom_visible = wecom_result
-        .map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
-    let dingtalk_visible = dingtalk_result
-        .map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
+    let feishu_visible = feishu_result.map_err(|e| format!("飞书鉴权探测任务失败: {e}"))??;
+    let wecom_visible = wecom_result.map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
+    let dingtalk_visible = dingtalk_result.map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::platform::startup::mark_with_detail(
         "rust",
@@ -340,7 +348,10 @@ mod tests {
     fn make_qr_local_produces_svg_data_url() {
         let url = "https://accounts.feishu.cn/oauth/authorize?client_id=cli_abc&device_code=xyz&scope=a%20b";
         let qr = make_qr(url).expect("本地二维码生成不应失败");
-        assert!(qr.starts_with("data:image/svg+xml;base64,"), "应是 SVG data URL");
+        assert!(
+            qr.starts_with("data:image/svg+xml;base64,"),
+            "应是 SVG data URL"
+        );
         // 解码回 SVG,确认是真实矢量二维码。
         let b64 = qr.trim_start_matches("data:image/svg+xml;base64,");
         let svg = String::from_utf8(b64_decode(b64)).unwrap();

@@ -1039,7 +1039,10 @@ pub async fn open_containing_folder(
     let dir = p
         .parent()
         .ok_or_else(|| format!("no parent dir for {}", p.display()))?;
-    crate::platform::os::open_target(crate::platform::os::external_application_path(dir), "产物所在目录")
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(dir),
+        "产物所在目录",
+    )
 }
 
 /// 在文件管理器里定位 session 文件夹。对标 WorkBuddy:打开所有任务文件夹的上级目录,
@@ -1084,7 +1087,10 @@ pub async fn open_scheduled_task_folder(automation_id: String) -> Result<(), Str
     let dir = crate::platform::paths::scheduled_task_workspace_dir(&automation_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;
-    crate::platform::os::open_target(crate::platform::os::external_application_path(&dir), "定时任务工作区")
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(&dir),
+        "定时任务工作区",
+    )
 }
 
 /// 在 Tauri 新窗口里加载 HTML 产物。绕过 snap 浏览器对 `~/.xxx/` 隐藏目录的沙箱限制。
@@ -1104,7 +1110,10 @@ pub async fn open_artifact_window(
         return Err(format!("not a file: {}", p.display()));
     }
     if crate::platform::os::system_default_open_supported(&p) {
-        return crate::platform::os::open_target(crate::platform::os::external_application_path(&p), "产物");
+        return crate::platform::os::open_target(
+            crate::platform::os::external_application_path(&p),
+            "产物",
+        );
     }
     if crate::platform::os::libreoffice_open_fallback_needed(&p) {
         return open_with_libreoffice(&p);

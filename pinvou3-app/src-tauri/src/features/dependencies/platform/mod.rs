@@ -1,9 +1,9 @@
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(any(target_os = "linux", test))]
 mod linux_packages;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 mod unsupported;
 #[cfg(target_os = "windows")]

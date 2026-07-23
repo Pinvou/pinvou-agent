@@ -31,29 +31,23 @@ static ZHIDAO_SKILL_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/zhidao");
 
 #[cfg(all(windows, target_arch = "x86_64"))]
-static EIP_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
-    "$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/eip/bin"
-);
+static EIP_PLATFORM_BIN_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/eip/bin");
 #[cfg(all(windows, target_arch = "x86_64"))]
-static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
-    "$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/zhidao/bin"
-);
+static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/zhidao/bin");
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-static EIP_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
-    "$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/eip/bin"
-);
+static EIP_PLATFORM_BIN_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/eip/bin");
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
-    "$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/zhidao/bin"
-);
+static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/zhidao/bin");
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-static EIP_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
-    "$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/eip/bin"
-);
+static EIP_PLATFORM_BIN_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/eip/bin");
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> = include_dir!(
-    "$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/zhidao/bin"
-);
+static ZHIDAO_PLATFORM_BIN_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/zhidao/bin");
 
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
@@ -129,7 +123,8 @@ pub const BUNDLE_VERSION: &str = concat!(
 );
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
-pub const INSTRUCTIONS_MD: &str = include_str!("../../../../resources/common/bundle/instructions.md");
+pub const INSTRUCTIONS_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions.md");
 
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
@@ -252,23 +247,29 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-const WEATHER_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/weather/server.py");
+const WEATHER_SERVER_PY: &str =
+    include_str!("../../../../../resources/mcp-servers/weather/server.py");
 const WEATHER_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/weather/manifest.json");
-const IWENCAI_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/iwencai/server.py");
+const IWENCAI_SERVER_PY: &str =
+    include_str!("../../../../../resources/mcp-servers/iwencai/server.py");
 const IWENCAI_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/iwencai/manifest.json");
-const QCC_MANIFEST_JSON: &str = include_str!("../../../../../resources/mcp-servers/qcc/manifest.json");
+const QCC_MANIFEST_JSON: &str =
+    include_str!("../../../../../resources/mcp-servers/qcc/manifest.json");
 const YUANDIAN_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/yuandian-mcp/manifest.json");
 const PATSNAP_SEARCH_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/patsnap-search/manifest.json");
-const OBSIDIAN_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/obsidian/server.py");
+const OBSIDIAN_SERVER_PY: &str =
+    include_str!("../../../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/obsidian/manifest.json");
 const PPTX_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/pptx/server.py");
-const PPTX_MANIFEST_JSON: &str = include_str!("../../../../../resources/mcp-servers/pptx/manifest.json");
-const GONGWEN_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/gongwen/server.py");
+const PPTX_MANIFEST_JSON: &str =
+    include_str!("../../../../../resources/mcp-servers/pptx/manifest.json");
+const GONGWEN_SERVER_PY: &str =
+    include_str!("../../../../../resources/mcp-servers/gongwen/server.py");
 const GONGWEN_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =

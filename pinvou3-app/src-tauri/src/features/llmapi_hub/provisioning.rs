@@ -1882,9 +1882,9 @@ impl IdentityResolver for StaticIdentityResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
     use crate::features::llmapi_hub::adapter::tests::MockLlmApiHubAdapter;
     use crate::features::llmapi_hub::store::MemoryLlmApiBindingStore;
+    use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
 
     fn identity() -> StaticIdentityResolver {
         StaticIdentityResolver(LlmApiIdentity {
@@ -2168,7 +2168,10 @@ mod tests {
 
         let config = ready_model_config(&store, &credentials, &identity()).unwrap();
         assert_eq!(config.provider, "openai");
-        assert_eq!(config.base_url, crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL);
+        assert_eq!(
+            config.base_url,
+            crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL
+        );
         assert_eq!(config.model, crate::features::llmapi_hub::DEFAULT_MODEL);
     }
 
@@ -2184,7 +2187,10 @@ mod tests {
             model.preset,
             crate::platform::prefs::ModelPreset::OpenaiCompatible
         );
-        assert_eq!(model.base_url, crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL);
+        assert_eq!(
+            model.base_url,
+            crate::features::llmapi_hub::DEFAULT_CHAT_BASE_URL
+        );
         assert!(model.credential_ref.is_some());
         assert!(model.api_key.is_empty());
     }
@@ -2196,7 +2202,9 @@ mod tests {
         let adapter = MockLlmApiHubAdapter::default();
         ensure_binding(&store, &credentials, &adapter, &identity()).unwrap();
 
-        let items = crate::features::llmapi_hub::store::admin_overview_items(store.list_bindings().unwrap());
+        let items = crate::features::llmapi_hub::store::admin_overview_items(
+            store.list_bindings().unwrap(),
+        );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].pinvou_user_id, "u_1");
         assert_eq!(items[0].provisioning_status, ProvisioningStatus::Ready);

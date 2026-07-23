@@ -111,7 +111,11 @@ pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        cc::emit(app, "wecom:error", json!({ "phase": "authorize", "message": e }));
+        cc::emit(
+            app,
+            "wecom:error",
+            json!({ "phase": "authorize", "message": e }),
+        );
     }
 }
 
@@ -121,9 +125,9 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("wecom-cli init 启动失败: {e}(需要 wecom-cli；Linux ARM64 会优先使用内置 CLI)"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("wecom-cli init 启动失败: {e}(需要 wecom-cli；Linux ARM64 会优先使用内置 CLI)")
+    })?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -239,7 +243,8 @@ pub fn wecom_skills_should_show() -> bool {
 pub async fn wecom_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = wecom_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_wecom_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_wecom_skills(show);
         show
     })
     .await
@@ -252,7 +257,8 @@ pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_wecom_disabled_flag(!enabled);
         let show = wecom_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_wecom_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_wecom_skills(show);
         show
     })
     .await

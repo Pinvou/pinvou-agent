@@ -30,8 +30,8 @@
 //! ⚠️ ship gate：本迁移与 T6（start_workflow 切新布局）必须同版发布——marker 一次性，
 //! 旧布局写入方还活着时先跑迁移会让新项目滞留旧布局。
 
-use crate::platform::paths;
 use crate::features::workflow::workflow_runs;
+use crate::platform::paths;
 use std::path::{Path, PathBuf};
 
 fn marker_path() -> PathBuf {
@@ -123,7 +123,10 @@ fn derive_title(state_dir: &Path, dir_name: &str) -> String {
 /// 循环至不撞（去重推导确定，续跑仍幂等），保证每个真实项目都被迁移。
 fn migrate_one(src: &Path, dir_name: &str) -> Result<bool, String> {
     let Some(mut run_id) = derive_run_id(dir_name) else {
-        eprintln!("[workflow_migrate] 跳过（目录名无合法时间戳）: {}", src.display());
+        eprintln!(
+            "[workflow_migrate] 跳过（目录名无合法时间戳）: {}",
+            src.display()
+        );
         return Ok(false);
     };
     let mut salt = 1usize;
@@ -457,22 +460,34 @@ mod tests {
             "run_id 推导错: {}",
             runs[0].run_id
         );
-        assert!(crate::features::workflow::workflow_runs::is_valid_run_id(&runs[0].run_id));
+        assert!(crate::features::workflow::workflow_runs::is_valid_run_id(
+            &runs[0].run_id
+        ));
         assert_eq!(runs[0].scenario, "solution_deck");
-        assert!(crate::platform::paths::workflow_project_dir(&runs[0].run_id)
-            .join("_state/workflow_progress.json")
-            .exists());
+        assert!(
+            crate::platform::paths::workflow_project_dir(&runs[0].run_id)
+                .join("_state/workflow_progress.json")
+                .exists()
+        );
         // binding 清掉、宿主**归档**（一律归档不删除——"聊天为空"推不出"目录无价值"）、标记文件存在
         let b = std::fs::read_to_string(
             crate::platform::paths::sessions_root().join("_skill_bindings.json"),
         )
         .unwrap();
         assert!(!b.contains("project_dir"));
-        assert!(!crate::platform::paths::sessions_root().join("s1.json").exists());
+        assert!(!crate::platform::paths::sessions_root()
+            .join("s1.json")
+            .exists());
         assert!(!crate::platform::paths::sessions_root().join("s1").exists());
         let arch = crate::platform::paths::sessions_root().join("_archived_workflow_hosts");
-        assert!(arch.join("s1.json").exists(), "空聊天宿主也必须归档而非删除");
-        assert!(arch.join("s1").is_dir(), "宿主目录（含 workspace 残留物）必须归档");
+        assert!(
+            arch.join("s1.json").exists(),
+            "空聊天宿主也必须归档而非删除"
+        );
+        assert!(
+            arch.join("s1").is_dir(),
+            "宿主目录（含 workspace 残留物）必须归档"
+        );
         assert!(crate::platform::paths::workflows_root()
             .join(".migration_done")
             .exists());
@@ -489,7 +504,12 @@ mod tests {
         assert!(marker.get("deleted_hosts").is_none(), "删除分支已整体移除");
         // 幂等：再跑一次不炸不重复
         migrate_if_needed().unwrap();
-        assert_eq!(crate::features::workflow::workflow_runs::list_runs().unwrap().len(), 1);
+        assert_eq!(
+            crate::features::workflow::workflow_runs::list_runs()
+                .unwrap()
+                .len(),
+            1
+        );
         std::env::remove_var("PINVOU3_HOME");
     }
 
@@ -535,11 +555,13 @@ mod tests {
         assert_eq!(runs[0].status, "running");
         assert_eq!(runs[0].scenario, "internal_quick");
         assert_eq!(runs[0].title, "做一份AI智慧教室解决方案汇报材"); // 前 16 字符（含 A/I）
-        // 宿主归档而非删除
+                                                                     // 宿主归档而非删除
         let arch = crate::platform::paths::sessions_root().join("_archived_workflow_hosts");
         assert!(arch.join("s2.json").exists());
         assert!(arch.join("s2").is_dir());
-        assert!(!crate::platform::paths::sessions_root().join("s2.json").exists());
+        assert!(!crate::platform::paths::sessions_root()
+            .join("s2.json")
+            .exists());
         // project_dir 为 null 的普通聊天 binding 必须保留
         let b = std::fs::read_to_string(
             crate::platform::paths::sessions_root().join("_skill_bindings.json"),
@@ -642,7 +664,9 @@ mod tests {
         let mut tags: Vec<String> = runs
             .iter()
             .map(|r| {
-                assert!(crate::features::workflow::workflow_runs::is_valid_run_id(&r.run_id));
+                assert!(crate::features::workflow::workflow_runs::is_valid_run_id(
+                    &r.run_id
+                ));
                 std::fs::read_to_string(
                     crate::platform::paths::workflow_project_dir(&r.run_id).join("who.txt"),
                 )
@@ -692,8 +716,8 @@ mod tests {
         let marker = crate::platform::paths::workflows_root().join(".migration_done");
         assert!(!marker.exists(), "失败不写 marker（与模块头注释自洽）");
         let pending = crate::platform::paths::workflows_root().join(".pending_hosts.json");
-        let pending_s = std::fs::read_to_string(&pending)
-            .expect(".pending_hosts.json 必须残留供续跑");
+        let pending_s =
+            std::fs::read_to_string(&pending).expect(".pending_hosts.json 必须残留供续跑");
         assert!(pending_s.contains("s9"));
 
         // 清掉障碍重跑 → 续跑步骤 5 成功（此时 bindings 已清空，sid 只能来自 pending 文件）

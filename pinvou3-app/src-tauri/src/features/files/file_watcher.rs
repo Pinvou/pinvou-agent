@@ -84,7 +84,11 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
                 "event": if path.exists() { "upsert" } else { "removed" },
             });
             let _ = app.emit("scheduled_task:run_updated", payload.clone());
-            crate::platform::app_events::forward_app_event(app, "scheduled_task:run_updated", payload);
+            crate::platform::app_events::forward_app_event(
+                app,
+                "scheduled_task:run_updated",
+                payload,
+            );
             continue;
         }
         let Some((session_id, rel)) = parse_session_relative(path, root) else {

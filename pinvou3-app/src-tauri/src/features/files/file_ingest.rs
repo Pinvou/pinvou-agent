@@ -68,12 +68,14 @@ pub fn system_tools() -> SystemTools {
     *SYSTEM_TOOLS.get_or_init(|| SystemTools {
         pandoc: crate::platform::os::pandoc_tool_exists(),
         pdftotext: crate::platform::os::pdf_tool_exists("pdftotext"),
-        libreoffice: crate::platform::os::command_exists("soffice") || crate::platform::os::command_exists("libreoffice"),
+        libreoffice: crate::platform::os::command_exists("soffice")
+            || crate::platform::os::command_exists("libreoffice"),
         tesseract: crate::platform::os::ocr_tool_exists(),
         pdftoppm: crate::platform::os::pdf_tool_exists("pdftoppm"),
         sevenzip: crate::platform::os::archive_tool_exists(),
         python: crate::platform::os::command_exists(&crate::platform::paths::python_command()),
-        msgconvert: !crate::platform::os::msg_converter_required() || crate::platform::os::command_exists("msgconvert"),
+        msgconvert: !crate::platform::os::msg_converter_required()
+            || crate::platform::os::command_exists("msgconvert"),
     })
 }
 
@@ -95,7 +97,8 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         installed,
         apt: apt.into(),
     };
-    let libreoffice = crate::platform::os::command_exists("soffice") || crate::platform::os::command_exists("libreoffice");
+    let libreoffice = crate::platform::os::command_exists("soffice")
+        || crate::platform::os::command_exists("libreoffice");
     let mut items = Vec::new();
     if crate::platform::os::show_pdf_dependency_check() {
         items.push(item(
@@ -120,7 +123,8 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
     if crate::platform::os::show_ocr_dependency_check() {
         items.push(item(
             "ocr",
-            crate::platform::os::ocr_tool_exists() && crate::platform::os::pdf_tool_exists("pdftoppm"),
+            crate::platform::os::ocr_tool_exists()
+                && crate::platform::os::pdf_tool_exists("pdftoppm"),
             crate::platform::os::ocr_dependency_packages(),
         ));
     }
@@ -178,8 +182,8 @@ pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         crate::features::dependencies::install_dependencies(packages)
     })
-        .await
-        .map_err(|e| format!("安装任务失败: {e}"))?
+    .await
+    .map_err(|e| format!("安装任务失败: {e}"))?
 }
 
 /// tesseract 的 `-l` 语言参数。pinvou3 面向国内政企，中文是刚需，所以优先
@@ -282,28 +286,27 @@ fn classify(ext: &str) -> &'static str {
         // 敏感目录,挡不住 ~/certs/server.key 这类文件,故在此补文件级拒绝。
         // 走 "secret" 分类 → secret_placeholder(markdown 恒为 None),不进 sniff。
         // 注意:公钥证书(crt/cer/csr)本身可公开,仍归 text,方便用户问「证书 CN/到期日」。
-        "key" | "pem" | "p12" | "pfx" | "keystore" | "jks" | "kdbx" | "gpg" | "pgp" => {
-            "secret"
-        }
+        "key" | "pem" | "p12" | "pfx" | "keystore" | "jks" | "kdbx" | "gpg" | "pgp" => "secret",
         // 纯文本:文档 + 结构化数据 + 源码 + Web + 配置 + 公钥证书(均为 UTF-8/文本可读)。
         // 未列出的扩展名由 ingest 末尾 sniff_text_or_binary 内容嗅探兜底,故这里只列
         //「确定是文本」的常见格式,不追求穷举 —— 嗅探会接住遗漏(含用户自定义扩展名、
         // 以及无扩展名的 Makefile/Dockerfile/README —— 这些文件 Path::extension() 返回
         // None,根本不会进 classify,故不在此列「扩展名」)。
         "txt" | "md" | "markdown" | "mdx" | "rst" | "org" | "adoc" | "asciidoc" | "tex"
-        | "latex" | "bib" | "text" | "log" | "json" | "jsonl" | "ndjson" | "geojson"
-        | "csv" | "tsv" | "yaml" | "yml" | "toml" | "xml" | "proto" | "graphql" | "gql"
-        | "sql" | "ini" | "conf" | "cfg" | "properties" | "props" | "env" | "editorconfig"
-        | "gradle" | "cmake" | "bazel" | "bzl" | "mk" | "rs" | "py" | "pyi" | "js" | "mjs"
-        | "cjs" | "ts" | "jsx" | "tsx" | "go" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp"
-        | "hh" | "hxx" | "java" | "kt" | "kts" | "scala" | "groovy" | "clj" | "cljs" | "edn"
-        | "el" | "lisp" | "scm" | "rkt" | "r" | "rb" | "php" | "pl" | "pm" | "lua" | "tcl"
-        | "m" | "mm" | "swift" | "dart" | "hs" | "lhs" | "ml" | "mli" | "fs" | "fsx" | "fsi"
-        | "cs" | "vb" | "pas" | "d" | "nim" | "zig" | "v" | "jl" | "ex" | "exs" | "erl"
-        | "hrl" | "f" | "f90" | "f95" | "f03" | "asm" | "s" | "vhdl" | "sv" | "sh" | "bash"
-        | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "html" | "htm" | "xhtml" | "css" | "scss"
-        | "sass" | "less" | "styl" | "vue" | "svelte" | "pug" | "hbs" | "ejs" | "twig"
-        | "crt" | "cer" | "csr" | "wsgi" | "rake" => "text",
+        | "latex" | "bib" | "text" | "log" | "json" | "jsonl" | "ndjson" | "geojson" | "csv"
+        | "tsv" | "yaml" | "yml" | "toml" | "xml" | "proto" | "graphql" | "gql" | "sql" | "ini"
+        | "conf" | "cfg" | "properties" | "props" | "env" | "editorconfig" | "gradle" | "cmake"
+        | "bazel" | "bzl" | "mk" | "rs" | "py" | "pyi" | "js" | "mjs" | "cjs" | "ts" | "jsx"
+        | "tsx" | "go" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "java"
+        | "kt" | "kts" | "scala" | "groovy" | "clj" | "cljs" | "edn" | "el" | "lisp" | "scm"
+        | "rkt" | "r" | "rb" | "php" | "pl" | "pm" | "lua" | "tcl" | "m" | "mm" | "swift"
+        | "dart" | "hs" | "lhs" | "ml" | "mli" | "fs" | "fsx" | "fsi" | "cs" | "vb" | "pas"
+        | "d" | "nim" | "zig" | "v" | "jl" | "ex" | "exs" | "erl" | "hrl" | "f" | "f90" | "f95"
+        | "f03" | "asm" | "s" | "vhdl" | "sv" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat"
+        | "cmd" | "html" | "htm" | "xhtml" | "css" | "scss" | "sass" | "less" | "styl" | "vue"
+        | "svelte" | "pug" | "hbs" | "ejs" | "twig" | "crt" | "cer" | "csr" | "wsgi" | "rake" => {
+            "text"
+        }
         "pdf" => "pdf",
         // 文字：pandoc 原生支持
         "docx" | "odt" => "doc_pandoc",
@@ -324,8 +327,8 @@ fn classify(ext: &str) -> &'static str {
         // 邮件：eml 走 python email 标准库；msg 按 OS 策略解析
         "eml" | "msg" => "email",
         // 音视频：本地语音转录(whisper)尚未部署，先优雅降级标「未处理」
-        "mp4" | "avi" | "mov" | "mkv" | "webm" | "flv" | "wmv" | "m4v" | "mp3" | "wav"
-        | "m4a" | "aac" | "flac" | "ogg" | "wma" => "media",
+        "mp4" | "avi" | "mov" | "mkv" | "webm" | "flv" | "wmv" | "m4v" | "mp3" | "wav" | "m4a"
+        | "aac" | "flac" | "ogg" | "wma" => "media",
         _ => "binary",
     }
 }
@@ -547,8 +550,7 @@ fn libreoffice_convert_text(
 
 /// 极简 base64 标准编码（无换行）。仅为内联图片 data URI 用，不值得引第三方 crate。
 pub fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -557,8 +559,16 @@ pub fn base64_encode(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -580,7 +590,11 @@ fn image_mime(ext: &str) -> &'static str {
 pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读图失败: {e}"))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    Ok(format!("data:{};base64,{}", image_mime(ext), base64_encode(&bytes)))
+    Ok(format!(
+        "data:{};base64,{}",
+        image_mime(ext),
+        base64_encode(&bytes)
+    ))
 }
 
 /// 把 HTML 里指向本地旁置图片的 `src` 引用 base64 内联,产出自包含 HTML。
@@ -674,7 +688,10 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
             .map(|rd| {
                 rd.filter_map(|e| e.ok().map(|e| e.path()))
                     .filter(|p| {
-                        matches!(p.extension().and_then(|e| e.to_str()), Some("html") | Some("htm"))
+                        matches!(
+                            p.extension().and_then(|e| e.to_str()),
+                            Some("html") | Some("htm")
+                        )
                     })
                     .collect()
             })
@@ -684,8 +701,7 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
             .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(stem))
             .or_else(|| htmls.first())
             .ok_or_else(|| "LibreOffice 未产出 HTML".to_string())?;
-        let html = std::fs::read_to_string(pick)
-            .map_err(|e| format!("读取转换 HTML 失败: {e}"))?;
+        let html = std::fs::read_to_string(pick).map_err(|e| format!("读取转换 HTML 失败: {e}"))?;
         Ok(inline_html_images(&html, &tmpdir))
     })();
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -765,7 +781,8 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
                 rd.filter_map(|e| e.ok().map(|e| e.path()))
                     .filter(|p| {
                         p.extension().and_then(|e| e.to_str()) == Some("png")
-                            && p.file_stem().and_then(|s| s.to_str())
+                            && p.file_stem()
+                                .and_then(|s| s.to_str())
                                 .map(|s| s.starts_with("page"))
                                 .unwrap_or(false)
                     })
@@ -936,7 +953,10 @@ fn spreadsheet_text_from_bytes(bytes: Vec<u8>) -> Result<String, String> {
         if c.is_empty() {
             String::new()
         } else {
-            c.to_string().replace(['\n', '\r', '\t'], " ").trim().to_string()
+            c.to_string()
+                .replace(['\n', '\r', '\t'], " ")
+                .trim()
+                .to_string()
         }
     };
 
@@ -1266,12 +1286,7 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
 /// 解压前就拦），通过后解压到临时目录，递归调主 `ingest` 处理每个文件并汇总。
 /// 嵌套压缩包不再展开（防套娃炸弹）。因为复用主 ingest，包里的 PDF/Office/图片
 /// 都会按各自管线（含 OCR）处理。
-fn ingest_archive(
-    path: &Path,
-    basename: String,
-    path_str: String,
-    byte_size: u64,
-) -> IngestResult {
+fn ingest_archive(path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
     const MAX_ENTRIES: usize = 50;
     const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024; // 解压后总量上限，防压缩炸弹
 
@@ -1293,7 +1308,9 @@ fn ingest_archive(
     match archive_list_stats(path) {
         Ok((count, total)) => {
             if count > MAX_ENTRIES {
-                return mk_err(format!("压缩包条目过多（{count} > {MAX_ENTRIES}），拒绝展开"));
+                return mk_err(format!(
+                    "压缩包条目过多（{count} > {MAX_ENTRIES}），拒绝展开"
+                ));
             }
             if total > MAX_TOTAL_BYTES {
                 return mk_err(format!(
@@ -1478,9 +1495,7 @@ fn ingest_email(
         if !tools.msgconvert {
             return mk(
                 None,
-                Some(
-                    ".msg 解析需要: sudo apt install libemail-outlook-message-perl".into(),
-                ),
+                Some(".msg 解析需要: sudo apt install libemail-outlook-message-perl".into()),
             );
         }
         // msgconvert 把 .msg 转成 .eml（输出到 cwd），用临时目录承接再解析。
@@ -1654,7 +1669,12 @@ fn decode_msg_body(outlook: &msg_parser::Outlook) -> String {
 }
 
 fn clean_msg_text(value: &str) -> String {
-    value.chars().filter(|ch| *ch != '\0').collect::<String>().trim().to_string()
+    value
+        .chars()
+        .filter(|ch| *ch != '\0')
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn decode_msg_html_payload(value: &str) -> String {
@@ -1792,11 +1812,11 @@ fn decode_html_entity(entity: &str) -> Option<char> {
         "apos" => Some('\''),
         "nbsp" => Some(' '),
         _ if entity.starts_with("#x") || entity.starts_with("#X") => {
-            u32::from_str_radix(&entity[2..], 16).ok().and_then(char::from_u32)
+            u32::from_str_radix(&entity[2..], 16)
+                .ok()
+                .and_then(char::from_u32)
         }
-        _ if entity.starts_with('#') => {
-            entity[1..].parse::<u32>().ok().and_then(char::from_u32)
-        }
+        _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
         _ => None,
     }
 }
@@ -2113,8 +2133,8 @@ fn decode_text_bytes(bytes: &[u8]) -> (Option<String>, Option<String>) {
             (Some(s.to_string()), None)
         }
         Err(_) => {
-            if let Some(decoded) = encoding_rs::GB18030
-                .decode_without_bom_handling_and_without_replacement(bytes)
+            if let Some(decoded) =
+                encoding_rs::GB18030.decode_without_bom_handling_and_without_replacement(bytes)
             {
                 return (
                     Some(decoded.into_owned()),
@@ -2148,7 +2168,9 @@ pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String>
             bytes.len() as f64 / 1024.0 / 1024.0
         ));
     }
-    let pastes = crate::platform::os::user_home_dir().join(".pinvou3").join("pastes");
+    let pastes = crate::platform::os::user_home_dir()
+        .join(".pinvou3")
+        .join("pastes");
     std::fs::create_dir_all(&pastes).map_err(|e| format!("create pastes dir: {e}"))?;
     let safe_name = sanitize_filename(filename);
     let ts = std::time::SystemTime::now()
@@ -2297,10 +2319,7 @@ mod tests {
     // 旧实现:未知 / 无扩展名 → binary_placeholder → markdown:None,模型完全读不到。
     // 新实现:先嗅探,文本就当文本读,真二进制才降级。这满足「用户应能上传任何文件」。
     fn write_tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "pinvou3-sniff-{}-{name}",
-            std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("pinvou3-sniff-{}-{name}", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
         p
     }
@@ -2310,7 +2329,9 @@ mod tests {
         // NUL 字节 → 二进制(强信号)。
         assert!(looks_like_binary_sample(b"abc\x00def"));
         // 纯文本(含 UTF-8 多字节中文)→ 非二进制。
-        assert!(!looks_like_binary_sample("hello world\n中文测试".as_bytes()));
+        assert!(!looks_like_binary_sample(
+            "hello world\n中文测试".as_bytes()
+        ));
         // 大量控制字符 → 二进制。
         let mut ctrl = vec![0x01u8; 1000];
         ctrl.extend_from_slice(b"text");
@@ -2365,10 +2386,7 @@ mod tests {
         let r = ingest(&p);
         std::fs::remove_file(&p).ok();
         assert_eq!(r.kind, "binary", "含 NUL 的二进制文件应降级 binary");
-        assert!(
-            r.markdown.is_none(),
-            "二进制不得强行 lossy 还原成文本"
-        );
+        assert!(r.markdown.is_none(), "二进制不得强行 lossy 还原成文本");
     }
 
     #[test]
@@ -2432,7 +2450,8 @@ mod tests {
         assert!(r1.markdown.is_none(), "私钥正文不得进 markdown");
 
         // 套了 .txt 外壳的 RSA 私钥:走 ingest_text → 内容侧拦截。
-        let rsa = b"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n";
+        let rsa =
+            b"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n";
         let p2 = write_tmp("backup.txt", rsa);
         let r2 = ingest(&p2);
         std::fs::remove_file(&p2).ok();
@@ -2523,7 +2542,8 @@ mod tests {
         // SVG 是文本 XML:经 `_ =>` sniff → 非二进制 → 读成 text(模型能看懂结构)。
         // 这是 PR 通用化的有意行为(classify 仍返回 binary,但 dispatch 末尾 sniff 兜底)。
         // 锁定该行为,防回归。
-        let svg = b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"><rect/></svg>\n";
+        let svg =
+            b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"><rect/></svg>\n";
         let p = write_tmp("icon.svg", svg);
         let r = ingest(&p);
         std::fs::remove_file(&p).ok();
@@ -2578,8 +2598,14 @@ mod tests {
         let txt = spreadsheet_text_from_bytes(bytes).expect("calamine 应能解析 fixture");
         // 三个工作表标题都要在
         assert!(txt.contains("## 工作表：Cover"), "缺 Cover sheet");
-        assert!(txt.contains("## 工作表：System configuration"), "缺配置表 sheet");
-        assert!(txt.contains("## 工作表：Thermal test result"), "缺温升表 sheet");
+        assert!(
+            txt.contains("## 工作表：System configuration"),
+            "缺配置表 sheet"
+        );
+        assert!(
+            txt.contains("## 工作表：Thermal test result"),
+            "缺温升表 sheet"
+        );
         // 非首表的关键内容（旧 CSV 实现会整段丢失）
         assert!(txt.contains("Ultra 7 258V"), "应抽到第二表的 CPU 型号");
         assert!(txt.contains("83.6"), "应抽到第三表的温度实测值");
@@ -2639,10 +2665,7 @@ mod tests {
             return;
         }
         let home = crate::platform::os::user_home_dir();
-        let file = home.join(format!(
-            "pinvou3-validate-path-{}.txt",
-            std::process::id()
-        ));
+        let file = home.join(format!("pinvou3-validate-path-{}.txt", std::process::id()));
         std::fs::write(&file, "ok").unwrap();
 
         let validated = validate_path(file.to_str().unwrap()).unwrap();
@@ -2676,7 +2699,10 @@ mod tests {
     #[test]
     fn archive_tool_command_uses_os_layer_program() {
         let command = archive_tool_command();
-        assert_eq!(command.get_program(), crate::platform::os::archive_tool_path().as_os_str());
+        assert_eq!(
+            command.get_program(),
+            crate::platform::os::archive_tool_path().as_os_str()
+        );
     }
 
     #[test]
@@ -2687,9 +2713,15 @@ mod tests {
         let has_ocr = deps.iter().any(|item| item.key == "ocr");
         let has_archive = deps.iter().any(|item| item.key == "archive");
         assert_eq!(has_pdf, crate::platform::os::show_pdf_dependency_check());
-        assert_eq!(has_pandoc, crate::platform::os::show_pandoc_dependency_check());
+        assert_eq!(
+            has_pandoc,
+            crate::platform::os::show_pandoc_dependency_check()
+        );
         assert_eq!(has_ocr, crate::platform::os::show_ocr_dependency_check());
-        assert_eq!(has_archive, crate::platform::os::show_archive_dependency_check());
+        assert_eq!(
+            has_archive,
+            crate::platform::os::show_archive_dependency_check()
+        );
 
         if !crate::platform::os::show_pdf_dependency_check() {
             assert!(
@@ -2762,7 +2794,10 @@ mod tests {
     #[test]
     fn msg_text_cleanup_removes_nul_padding() {
         assert_eq!(clean_msg_text("OpenAI\0"), "OpenAI");
-        assert_eq!(clean_msg_text("你的临时 OpenAI 登录代码\0"), "你的临时 OpenAI 登录代码");
+        assert_eq!(
+            clean_msg_text("你的临时 OpenAI 登录代码\0"),
+            "你的临时 OpenAI 登录代码"
+        );
     }
 
     #[test]
@@ -3240,7 +3275,10 @@ mod multi_type_dispatch_e2e {
         std::fs::write(&txt, format!("{marker} 文本正文")).unwrap();
         let ir = ingest(&txt);
         assert_eq!(ir.kind, "text", "txt 必须走 text 分派");
-        assert!(ir.markdown.as_deref().unwrap_or("").contains(marker), "txt 正文必须含 marker");
+        assert!(
+            ir.markdown.as_deref().unwrap_or("").contains(marker),
+            "txt 正文必须含 marker"
+        );
 
         // ── docx:pandoc 分派,正文含 marker(需 pandoc) ──
         if tools.pandoc {
@@ -3312,7 +3350,10 @@ mod multi_type_dispatch_e2e {
                 .status();
             if docx.exists() {
                 let _ = std::process::Command::new("soffice")
-                    .arg(format!("-env:UserInstallation=file://{}/lo2", dir.display()))
+                    .arg(format!(
+                        "-env:UserInstallation=file://{}/lo2",
+                        dir.display()
+                    ))
                     .args(["--headless", "--convert-to", "pdf", "--outdir"])
                     .arg(&dir)
                     .arg(&docx)
@@ -3339,20 +3380,17 @@ mod multi_type_dispatch_e2e {
         // 1x1 灰度 PNG(像素值 0xAA),67 字节:签名 + IHDR + IDAT + IEND,
         // CRC/IDAT 均由 zlib 正确生成,PIL 实测可解码。
         let min_png: Vec<u8> = [
-            0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
-            0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00,
-            0x00, 0x00, 0x3A, 0x7E, 0x9B, 0x55, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54,
-            0x78, 0xDA, 0x63, 0x58, 0x05, 0x00, 0x00, 0xAC, 0x00, 0xAB, 0xCB, 0x83, 0x9E, 0xE6,
-            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+            0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00,
+            0x00, 0x3A, 0x7E, 0x9B, 0x55, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xDA, 0x63, 0x58, 0x05, 0x00, 0x00, 0xAC, 0x00, 0xAB, 0xCB, 0x83, 0x9E, 0xE6, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ]
         .to_vec();
         let png = dir.join("pixel.png");
         std::fs::write(&png, &min_png).unwrap();
         let ir = ingest(&png);
-        assert_eq!(
-            ir.kind, "image",
-            "png 必须走 image 分派(未被降级成 binary)"
-        );
+        assert_eq!(ir.kind, "image", "png 必须走 image 分派(未被降级成 binary)");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

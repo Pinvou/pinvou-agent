@@ -96,7 +96,13 @@ fn resolve_asset(m: &LatestManifest) -> (String, String, u64, String, String) {
             };
             (a.url.clone(), a.sha256.clone(), a.size, ver, notes)
         }
-        _ => (m.url.clone(), m.sha256.clone(), m.size, m.version.clone(), m.notes.clone()),
+        _ => (
+            m.url.clone(),
+            m.sha256.clone(),
+            m.size,
+            m.version.clone(),
+            m.notes.clone(),
+        ),
     }
 }
 
@@ -158,7 +164,10 @@ pub async fn download_update_package(
     const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
     let dir = paths::updates_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
-    let dest = dir.join(format!("pinvou3_{}.dmg", safe_version(&info.latest_version)));
+    let dest = dir.join(format!(
+        "pinvou3_{}.dmg",
+        safe_version(&info.latest_version)
+    ));
     // 下载写入临时文件(.part),校验通过后再原子 rename 到 dest。
     // 直接 File::create(&dest) 会跟随已存在的符号链接(O_CREAT|O_TRUNC|O_WRONLY),
     // 同用户攻击者可在 ~/.pinvou3/updates/ 预置符号链接 → 信任的更新器截断任意用户文件。
@@ -295,8 +304,7 @@ pub async fn download_update_package(
         ));
     }
     // sha256 通过:原子 rename 临时文件 → 目标(rename 替换目录条目,不跟随符号链接)。
-    std::fs::rename(&temp, &dest)
-        .map_err(|e| format!("下载文件重命名失败: {e}"))?;
+    std::fs::rename(&temp, &dest).map_err(|e| format!("下载文件重命名失败: {e}"))?;
     Ok(super::super::DownloadUpdateResult::Path(
         dest.to_string_lossy().into_owned(),
     ))
@@ -443,9 +451,13 @@ pub fn install_downloaded_update(
         .arg(format!("{app_path}/Contents/Info.plist"))
         .output()
         .map_err(|e| format!("PlistBuddy 读取失败: {e}"))?;
-    let bundle_id = String::from_utf8_lossy(&plist_check.stdout).trim().to_string();
+    let bundle_id = String::from_utf8_lossy(&plist_check.stdout)
+        .trim()
+        .to_string();
     if bundle_id != EXPECTED_BUNDLE_ID {
-        return Err(format!("CFBundleIdentifier 不匹配(期望 {EXPECTED_BUNDLE_ID},实际 {bundle_id})"));
+        return Err(format!(
+            "CFBundleIdentifier 不匹配(期望 {EXPECTED_BUNDLE_ID},实际 {bundle_id})"
+        ));
     }
 
     // 缺陷3修复:降级保护。即便 sha256 + bundle_id 都过,攻击者可下放一个真实历史
@@ -469,9 +481,7 @@ pub fn install_downloaded_update(
             ));
         }
         (None, _) => {
-            eprintln!(
-                "macos_update: 下载包版本号 \"{new_ver}\" 非标准 semver,跳过降级校验"
-            );
+            eprintln!("macos_update: 下载包版本号 \"{new_ver}\" 非标准 semver,跳过降级校验");
         }
         _ => {}
     }
@@ -618,7 +628,9 @@ fn available_kib(dir: &Path) -> Option<u64> {
 /// 下载/安装文件路径前必须清洗,防止路径遍历(如 "../../.ssh/x")。semver 解析已能
 /// 挡掉非法版本(使 available=false 不触发下载),但路径构造不应依赖该巧合 —— 纵深防御。
 fn safe_version(v: &str) -> String {
-    v.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect()
+    v.chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect()
 }
 
 /// 校验字符串是否为合法的 sha256 十六进制摘要(64 位小写 hex)。调用方已先 to_lowercase,
@@ -817,7 +829,13 @@ mod tests {
         // 本平台 key 命中且字段完整 → 取 platform 资产(不用顶层),version 也取平台版本。
         let m = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
-            &[("macos-arm64", "https://plat/m.dmg", "mac-hash", 200, "0.7.0")],
+            &[(
+                "macos-arm64",
+                "https://plat/m.dmg",
+                "mac-hash",
+                200,
+                "0.7.0",
+            )],
         );
         let (url, sha, size, ver, _) = resolve_asset(&m);
         assert_eq!(url, "https://plat/m.dmg");
@@ -878,7 +896,13 @@ mod tests {
         // platform notes 非空 → 取 platform notes。
         let mut m = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
-            &[("macos-arm64", "https://plat/m.dmg", "mac-hash", 200, "0.7.0")],
+            &[(
+                "macos-arm64",
+                "https://plat/m.dmg",
+                "mac-hash",
+                200,
+                "0.7.0",
+            )],
         );
         m.notes = "linux changelog".to_string();
         if let Some(a) = m.platforms.get_mut("macos-arm64") {
@@ -890,7 +914,13 @@ mod tests {
         // platform notes 空 → 退顶层。
         let mut m2 = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
-            &[("macos-arm64", "https://plat/m.dmg", "mac-hash", 200, "0.7.0")],
+            &[(
+                "macos-arm64",
+                "https://plat/m.dmg",
+                "mac-hash",
+                200,
+                "0.7.0",
+            )],
         );
         m2.notes = "linux changelog".to_string();
         // platform notes 默认空(Default::default())
@@ -946,11 +976,23 @@ mod tests {
             is_newer(latest, current) && url.ends_with(".dmg")
         };
         // 顶层 .deb(旧 Linux manifest),有新版 → 不应下载(否则 hdiutil 必败)。
-        assert!(!available("https://pinvou.com/pinvou3_0.7.0.deb", "0.7.0", "0.6.0"));
+        assert!(!available(
+            "https://pinvou.com/pinvou3_0.7.0.deb",
+            "0.7.0",
+            "0.6.0"
+        ));
         // 顶层 .dmg → 有新版 → 可用。
-        assert!(available("https://pinvou.com/pinvou3_0.7.0.dmg", "0.7.0", "0.6.0"));
+        assert!(available(
+            "https://pinvou.com/pinvou3_0.7.0.dmg",
+            "0.7.0",
+            "0.6.0"
+        ));
         // 顶层 .pkg → 不可用(hdiutil 不处理 pkg)。
-        assert!(!available("https://pinvou.com/pinvou3_0.7.0.pkg", "0.7.0", "0.6.0"));
+        assert!(!available(
+            "https://pinvou.com/pinvou3_0.7.0.pkg",
+            "0.7.0",
+            "0.6.0"
+        ));
     }
 
     /// 验证 install_downloaded_update 的 dmg 路径解析优先级:
@@ -985,7 +1027,11 @@ mod tests {
 
         // 场景 1:deb_path 存在 → 优先取 deb_path(前端 macOS 走 { debPath } 分支)。
         assert_eq!(
-            resolve(Some("/path/from/deb.dmg"), Some("/other.dmg"), Some("0.7.0")),
+            resolve(
+                Some("/path/from/deb.dmg"),
+                Some("/other.dmg"),
+                Some("0.7.0")
+            ),
             Ok("/path/from/deb.dmg".to_string())
         );
         // 场景 2:deb_path 缺失时回退 installer_path(Windows PreparedUpdate 风格)。
@@ -1005,7 +1051,10 @@ mod tests {
     fn staging_path_scoped_to_current_pid() {
         let p = staging_path();
         let pid = std::process::id();
-        assert!(p.ends_with(&format!(".pinvou3.app.new.{pid}")), "staging={p}");
+        assert!(
+            p.ends_with(&format!(".pinvou3.app.new.{pid}")),
+            "staging={p}"
+        );
         assert!(p.contains(&pid.to_string()));
         // 固定前缀,确认落点在 /Applications(而非可被远程字段污染的任意路径)。
         assert!(p.starts_with("/Applications/.pinvou3.app.new."));

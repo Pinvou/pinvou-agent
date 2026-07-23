@@ -145,12 +145,20 @@ fn run_connect_flow(app: &AppHandle) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
-            cc::emit(app, "feishu:error", json!({ "phase": "register", "message": e }));
+            cc::emit(
+                app,
+                "feishu:error",
+                json!({ "phase": "register", "message": e }),
+            );
             return;
         }
     }
     if let Err(e) = phase_authorize(app) {
-        cc::emit(app, "feishu:error", json!({ "phase": "authorize", "message": e }));
+        cc::emit(
+            app,
+            "feishu:error",
+            json!({ "phase": "authorize", "message": e }),
+        );
     }
 }
 
@@ -161,9 +169,9 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("config init --new 启动失败: {e}(需要 lark-cli；Linux ARM64 会优先使用内置 CLI)"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("config init --new 启动失败: {e}(需要 lark-cli；Linux ARM64 会优先使用内置 CLI)")
+    })?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -221,13 +229,26 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
 /// 段②:`auth login --no-wait --json --recommend` 拿 URL+device_code → 二维码 →
 /// 轮询 `auth login --device-code`(兼容它阻塞或立即返回)直到 user:ready / 超时。
 fn phase_authorize(app: &AppHandle) -> Result<(), String> {
-    let (_ok, so, se) = cc::run(lark(&["auth", "login", "--no-wait", "--json", "--recommend"]))?;
-    let p = cc::parse_json(&so).or_else(|| cc::parse_json(&se)).unwrap_or(Value::Null);
-    let url = ["verification_uri_complete", "verification_url", "verificationUrl", "url"]
-        .iter()
-        .find_map(|k| p.get(*k).and_then(|v| v.as_str()))
-        .map(String::from)
-        .ok_or("auth login 未返回授权链接")?;
+    let (_ok, so, se) = cc::run(lark(&[
+        "auth",
+        "login",
+        "--no-wait",
+        "--json",
+        "--recommend",
+    ]))?;
+    let p = cc::parse_json(&so)
+        .or_else(|| cc::parse_json(&se))
+        .unwrap_or(Value::Null);
+    let url = [
+        "verification_uri_complete",
+        "verification_url",
+        "verificationUrl",
+        "url",
+    ]
+    .iter()
+    .find_map(|k| p.get(*k).and_then(|v| v.as_str()))
+    .map(String::from)
+    .ok_or("auth login 未返回授权链接")?;
     let device_code = ["device_code", "deviceCode"]
         .iter()
         .find_map(|k| p.get(*k).and_then(|v| v.as_str()))
@@ -251,7 +272,13 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_secs(3));
         // 这步可能阻塞到完成、也可能立即返回 pending —— 两种都兼容,靠 auth status 判 ready。
-        let _ = cc::run(lark(&["auth", "login", "--device-code", &device_code, "--json"]));
+        let _ = cc::run(lark(&[
+            "auth",
+            "login",
+            "--device-code",
+            &device_code,
+            "--json",
+        ]));
         if is_user_ready() {
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());
@@ -313,7 +340,8 @@ pub fn feishu_skills_should_show() -> bool {
 pub async fn feishu_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| {
         let show = feishu_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_feishu_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_feishu_skills(show);
         show
     })
     .await
@@ -328,7 +356,8 @@ pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || {
         set_feishu_disabled_flag(!enabled);
         let show = feishu_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths().apply_feishu_skills(show);
+        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_feishu_skills(show);
         show
     })
     .await

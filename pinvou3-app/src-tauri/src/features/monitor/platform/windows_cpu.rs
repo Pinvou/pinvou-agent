@@ -104,8 +104,7 @@ impl PdhCpuCounter {
 
         let path = wide_null(path);
         let mut counter = std::ptr::null_mut();
-        let add_status =
-            unsafe { PdhAddEnglishCounterW(query, path.as_ptr(), 0, &mut counter) };
+        let add_status = unsafe { PdhAddEnglishCounterW(query, path.as_ptr(), 0, &mut counter) };
         if add_status != 0 {
             unsafe {
                 PdhCloseQuery(query);
@@ -128,12 +127,7 @@ impl PdhCpuCounter {
         let mut value_type = 0;
         let mut value = PDH_FMT_COUNTERVALUE::default();
         let value_status = unsafe {
-            PdhGetFormattedCounterValue(
-                self.counter,
-                PDH_FMT_DOUBLE,
-                &mut value_type,
-                &mut value,
-            )
+            PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, &mut value_type, &mut value)
         };
         if value_status != 0 || value.CStatus != 0 {
             return None;

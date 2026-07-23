@@ -3,7 +3,7 @@
 const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', toolStore: '工具商店', cardPool: '专家卡牌池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【设置-任务收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【设置-任务收纳】', archiveSuccessView: '前往查看',
         archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
@@ -280,7 +280,7 @@ const dict = {
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
         archiveSession: 'Hide in Settings', archiveConfirmTitle: 'Hide in Settings?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored in Settings.', archiveConfirmAction: 'Hide',
         archiveSuccess: 'Hidden in Settings', archiveSuccessView: 'View',
         archivedTasks: 'Tasks hidden in Settings', archivedTasksDesc: '', archivedEmpty: 'No hidden tasks yet', restoreArchived: 'Restore to list',
@@ -557,7 +557,7 @@ const dict = {
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
         archiveSession: '設定に隠す', archiveConfirmTitle: '設定に隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、設定から戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '設定に隠しました', archiveSuccessView: '表示',
         archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',

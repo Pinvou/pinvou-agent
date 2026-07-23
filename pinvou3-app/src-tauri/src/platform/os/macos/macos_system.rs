@@ -185,19 +185,43 @@ pub fn ocr_tessdata_dir() -> Option<PathBuf> {
 }
 
 pub fn archive_tool_path() -> PathBuf {
-    if command_exists("7zz") { PathBuf::from("7zz") } else { PathBuf::from("7z") }
+    if command_exists("7zz") {
+        PathBuf::from("7zz")
+    } else {
+        PathBuf::from("7z")
+    }
 }
 
-pub fn ocr_tool_exists() -> bool { command_exists("tesseract") }
-pub fn archive_tool_exists() -> bool { command_exists("7zz") || command_exists("7z") }
-pub fn msg_native_supported() -> bool { false }
-pub fn msg_converter_required() -> bool { true }
-pub fn email_tool_exists() -> bool { command_exists("python3") && command_exists("msgconvert") }
-pub fn show_ocr_dependency_check() -> bool { true }
-pub fn show_archive_dependency_check() -> bool { true }
-pub fn archive_dependency_packages() -> &'static str { "p7zip" }
-pub fn system_default_open_supported(_path: &Path) -> bool { true }
-pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool { false }
+pub fn ocr_tool_exists() -> bool {
+    command_exists("tesseract")
+}
+pub fn archive_tool_exists() -> bool {
+    command_exists("7zz") || command_exists("7z")
+}
+pub fn msg_native_supported() -> bool {
+    false
+}
+pub fn msg_converter_required() -> bool {
+    true
+}
+pub fn email_tool_exists() -> bool {
+    command_exists("python3") && command_exists("msgconvert")
+}
+pub fn show_ocr_dependency_check() -> bool {
+    true
+}
+pub fn show_archive_dependency_check() -> bool {
+    true
+}
+pub fn archive_dependency_packages() -> &'static str {
+    "p7zip"
+}
+pub fn system_default_open_supported(_path: &Path) -> bool {
+    true
+}
+pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool {
+    false
+}
 
 /// command_exists 补查的目录列表(Homebrew bin + cask 应用 MacOS 目录)。
 /// 抽取为常量便于测试验证:确保 cask 目录(LibreOffice)在列表内,

@@ -8,7 +8,10 @@ pub fn engine_binary_name() -> &'static str {
     "pinvou-asr.exe"
 }
 
-pub fn bundled_engine_intact(_path: &std::path::Path, _bundled_dir: Option<&std::path::Path>) -> bool {
+pub fn bundled_engine_intact(
+    _path: &std::path::Path,
+    _bundled_dir: Option<&std::path::Path>,
+) -> bool {
     true
 }
 
@@ -20,14 +23,19 @@ const ASR_MODEL_SIZE: u64 = 254_208_320;
 const ASR_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
 
 pub fn asr_tool_path() -> PathBuf {
-    for name in ["PINVOU3_ASR_CMD", "PINVOU3_DEEPSPEECH2_CMD", "PADDLESPEECH_BIN"] {
+    for name in [
+        "PINVOU3_ASR_CMD",
+        "PINVOU3_DEEPSPEECH2_CMD",
+        "PADDLESPEECH_BIN",
+    ] {
         if let Ok(path) = std::env::var(name) {
             if !path.trim().is_empty() {
                 return PathBuf::from(path);
             }
         }
     }
-    crate::platform::os::windows::bundled_asr_tool_path().unwrap_or_else(|| PathBuf::from("pinvou-asr"))
+    crate::platform::os::windows::bundled_asr_tool_path()
+        .unwrap_or_else(|| PathBuf::from("pinvou-asr"))
 }
 
 pub fn asr_model_spec() -> AsrModelSpec {
@@ -99,9 +107,7 @@ pub fn asr_missing_message() -> &'static str {
     "本地语音识别组件缺失或不可用：运行时缺失时请修复或重新安装 pinvou；仅缺 ASR 模型时可在应用内下载。"
 }
 
-pub async fn reset_microphone_permission(
-    window: tauri::WebviewWindow,
-) -> Result<bool, String> {
+pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
     use webview2_com::{
         Microsoft::Web::WebView2::Win32::{
             ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
@@ -126,7 +132,10 @@ pub async fn reset_microphone_permission(
         .with_webview(move |webview| {
             let callback_sender = Arc::clone(&sender);
             let schedule_result: windows::core::Result<()> = (|| unsafe {
-                let webview13 = webview.controller().CoreWebView2()?.cast::<ICoreWebView2_13>()?;
+                let webview13 = webview
+                    .controller()
+                    .CoreWebView2()?
+                    .cast::<ICoreWebView2_13>()?;
                 let profile = webview13.Profile()?.cast::<ICoreWebView2Profile4>()?;
                 let callback = SetPermissionStateCompletedHandler::create(Box::new(
                     move |completion_result| {
@@ -135,7 +144,8 @@ pub async fn reset_microphone_permission(
                             .unwrap_or_else(|error| error.into_inner())
                             .take()
                         {
-                            let _ = sender.send(completion_result.map_err(|error| error.to_string()));
+                            let _ =
+                                sender.send(completion_result.map_err(|error| error.to_string()));
                         }
                         Ok(())
                     },

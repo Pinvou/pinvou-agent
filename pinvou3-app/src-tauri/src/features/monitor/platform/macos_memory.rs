@@ -62,7 +62,9 @@ fn parse_vm_stat(text: &str) -> Option<RamSnapshot> {
         .lines()
         .find_map(|l| {
             l.split("page size of ").nth(1).and_then(|s| {
-                s.split_whitespace().next().and_then(|n| n.parse::<u64>().ok())
+                s.split_whitespace()
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
             })
         })
         .unwrap_or(fallback_page_size);
@@ -78,15 +80,24 @@ fn parse_vm_stat(text: &str) -> Option<RamSnapshot> {
         let value = || -> Option<u64> {
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
             // 最后一项形如 "10000." 去掉句号
-            parts.last().map(|s| s.trim_end_matches('.'))
+            parts
+                .last()
+                .map(|s| s.trim_end_matches('.'))
                 .and_then(|s| s.parse::<u64>().ok())
         };
-        if trimmed.starts_with("Pages free:") { free = value().unwrap_or(0); }
-        else if trimmed.starts_with("Pages active:") { active = value().unwrap_or(0); }
-        else if trimmed.starts_with("Pages inactive:") { inactive = value().unwrap_or(0); }
-        else if trimmed.starts_with("Pages speculative:") { speculative = value().unwrap_or(0); }
-        else if trimmed.starts_with("Pages wired down:") { wired = value().unwrap_or(0); }
-        else if trimmed.starts_with("Pages occupied by compressor:") { compressor = value().unwrap_or(0); }
+        if trimmed.starts_with("Pages free:") {
+            free = value().unwrap_or(0);
+        } else if trimmed.starts_with("Pages active:") {
+            active = value().unwrap_or(0);
+        } else if trimmed.starts_with("Pages inactive:") {
+            inactive = value().unwrap_or(0);
+        } else if trimmed.starts_with("Pages speculative:") {
+            speculative = value().unwrap_or(0);
+        } else if trimmed.starts_with("Pages wired down:") {
+            wired = value().unwrap_or(0);
+        } else if trimmed.starts_with("Pages occupied by compressor:") {
+            compressor = value().unwrap_or(0);
+        }
     }
     let total_pages = free + active + inactive + speculative + wired + compressor;
     if total_pages == 0 {

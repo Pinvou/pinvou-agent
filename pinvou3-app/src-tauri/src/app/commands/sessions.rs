@@ -17,7 +17,11 @@ pub struct HiddenSessionListItem {
 
 /// 仅普通 chat 会话可用的命令守卫（transcript/产物由前端覆盖持久化的路径）。
 /// 重命名/置顶/归档/删除等元数据操作按 SessionKind 分发，不走这个守卫。
-pub(super) fn ensure_chat_session(store: &SessionStore, id: &str, action: &str) -> Result<(), String> {
+pub(super) fn ensure_chat_session(
+    store: &SessionStore,
+    id: &str,
+    action: &str,
+) -> Result<(), String> {
     match store
         .session_kind(id)
         .map_err(|error| format!("{action}({id}): {error:?}"))?
@@ -28,7 +32,6 @@ pub(super) fn ensure_chat_session(store: &SessionStore, id: &str, action: &str) 
         )),
     }
 }
-
 
 /// 清当前会话历史。
 ///
@@ -106,6 +109,7 @@ pub async fn list_archived_sessions(
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
 #[tauri::command]
 pub async fn create_session(
+    set_active: Option<bool>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
@@ -114,7 +118,9 @@ pub async fn create_session(
     let session = store
         .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:?}"))?;
-    store.set_active(Some(session.metadata.id.clone()));
+    if set_active.unwrap_or(true) {
+        store.set_active(Some(session.metadata.id.clone()));
+    }
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(session.metadata)
@@ -174,6 +180,9 @@ pub async fn delete_session(
     };
     if result.is_ok() {
         pool.forget_session(&id);
+        let payload = serde_json::json!({ "id": &id });
+        let _ = app.emit("session:deleted", payload.clone());
+        crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     }
     result
 }

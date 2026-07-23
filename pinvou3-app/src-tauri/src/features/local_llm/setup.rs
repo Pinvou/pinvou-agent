@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::Emitter;
 
-use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
-use crate::platform::credential_store::CredentialState;
 use crate::features::monitor::{self, VllmStatus};
+use crate::platform::credential_store::CredentialState;
+use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 /// 引导阶段事件名(前端 listen 更新步骤指示 + 计时)。
 const PHASE_EVENT: &str = "vllm-setup:phase";

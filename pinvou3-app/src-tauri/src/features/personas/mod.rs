@@ -17,7 +17,8 @@ use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 编译期内嵌的 agency-agents-zh 数据(含完整 body)。
-const PERSONAS_JSON: &str = include_str!("../../../resources/common/bundle/personas/agency-agents.json");
+const PERSONAS_JSON: &str =
+    include_str!("../../../resources/common/bundle/personas/agency-agents.json");
 
 fn default_source() -> String {
     "builtin".to_string()
@@ -136,7 +137,13 @@ pub fn reload_user() {
 /// 全部卡的轻量摘要(list_personas 用)。内嵌 + 用户,user 在后。
 pub fn all_summaries() -> Vec<PersonaSummary> {
     let mut out: Vec<PersonaSummary> = embedded().iter().map(|c| c.summary()).collect();
-    out.extend(user_lock().read().expect("user lock").iter().map(|c| c.summary()));
+    out.extend(
+        user_lock()
+            .read()
+            .expect("user lock")
+            .iter()
+            .map(|c| c.summary()),
+    );
     out
 }
 
@@ -145,7 +152,12 @@ pub fn get(id: &str) -> Option<PersonaCard> {
     if let Some(c) = embedded().iter().find(|c| c.id == id) {
         return Some(c.clone());
     }
-    user_lock().read().expect("user lock").iter().find(|c| c.id == id).cloned()
+    user_lock()
+        .read()
+        .expect("user lock")
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
 }
 
 // ── 用户卡 CRUD ────────────────────────────────────────────────────
@@ -348,7 +360,11 @@ mod tests {
     #[test]
     fn embedded_parses_and_has_builtin() {
         let cards = embedded();
-        assert!(cards.len() > 150, "应解析出 150+ 张卡, 实际 {}", cards.len());
+        assert!(
+            cards.len() > 150,
+            "应解析出 150+ 张卡, 实际 {}",
+            cards.len()
+        );
         assert!(
             cards.iter().any(|c| c.id == "pinvou-card-creator"),
             "内置卡牌制造专家必须在内嵌源里"
@@ -362,7 +378,11 @@ mod tests {
             assert!(!c.name.is_empty());
             assert!(!c.dept.is_empty());
             assert!(!c.body.is_empty(), "卡必须有 body, 卡={}", c.id);
-            assert_eq!(c.source, "builtin", "内嵌卡 source 应为 builtin, 卡={}", c.id);
+            assert_eq!(
+                c.source, "builtin",
+                "内嵌卡 source 应为 builtin, 卡={}",
+                c.id
+            );
         }
     }
 
@@ -377,7 +397,10 @@ mod tests {
     fn get_finds_builtin_creator() {
         let c = get("pinvou-card-creator").expect("应能查到内置卡");
         assert_eq!(c.name, "卡牌制造专家");
-        assert!(c.body.contains("persona-card"), "创作卡 body 必须引导输出 persona-card 块");
+        assert!(
+            c.body.contains("persona-card"),
+            "创作卡 body 必须引导输出 persona-card 块"
+        );
     }
 
     #[test]
@@ -410,7 +433,10 @@ mod tests {
         let prev = std::env::var("PINVOU3_HOME").ok();
         let tmp = format!(
             "/tmp/pinvou3-persona-test-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         );
         std::env::set_var("PINVOU3_HOME", &tmp);
 
@@ -433,7 +459,10 @@ mod tests {
         let got = get(&sum.id).expect("get after create");
         assert_eq!(got.name, "测试财务顾问");
         assert_eq!(got.source, "user");
-        assert!(all_summaries().iter().any(|s| s.id == sum.id), "list 应含新卡");
+        assert!(
+            all_summaries().iter().any(|s| s.id == sum.id),
+            "list 应含新卡"
+        );
 
         // update
         let usum = update_user_persona(mk(&sum.id, "改名后")).expect("update");

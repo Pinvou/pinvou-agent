@@ -1,4 +1,6 @@
 use super::prelude::*;
+use crate::features::assistant::engine::TurnAdmissionMetadata;
+use crate::features::assistant::engine_pool::user_display_message;
 
 /// 手动触发上下文压缩。用户点 token 进度条 → 立即压缩当前对话历史。
 /// 触发后 engine 会发 CompactionStarted / Completed / Failed 事件，
@@ -73,23 +75,51 @@ pub(super) fn accept_plan_instruction(plan_markdown: &str) -> String {
 #[tauri::command]
 pub async fn accept_plan(
     session_id: String,
+    plan_id: String,
     plan_markdown: String,
+    display_message: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    store
-        .set_mode(&session_id, SerializableMode::Yolo)
+    let mut reservation = pool
+        .reserve_turn(&session_id)
+        .map_err(|error| format!("reserve accept_plan turn: {error:#}"))?;
+    let plan_claim = store
+        .claim_pending_plan(&session_id, &plan_id)
         .map_err(|error| format!("accept_plan({session_id}): {error:#}"))?;
+    let accepted_mode_state = plan_claim.accepted_state().clone();
+    reservation
+        .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
+            plan_id.clone(),
+            accepted_mode_state.clone(),
+        ))
+        .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
     let instruction = accept_plan_instruction(&plan_markdown);
-    pool.send_user_message(
-        &session_id,
-        instruction,
-        SerializableMode::Yolo.to_app_mode(),
-        false,
-    )
-    .await
-    .map_err(|e| format!("accept_plan send_user_message: {e:?}"))?;
-    Ok(store.mode_state(&session_id))
+    let display_content = display_message
+        .map(|message| message.trim().to_string())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "✅ 就这么干".to_string());
+    if let Err(error) = pool
+        .send_reserved_user_message(
+            &session_id,
+            instruction,
+            user_display_message(display_content),
+            SerializableMode::Yolo.to_app_mode(),
+            false,
+            reservation,
+        )
+        .await
+    {
+        let rollback = plan_claim.rollback();
+        return Err(match rollback {
+            Ok(()) => format!("accept_plan send_user_message: {error:?}"),
+            Err(rollback_error) => format!(
+                "accept_plan send_user_message: {error:?}; restore plan claim failed: {rollback_error:#}"
+            ),
+        });
+    }
+    plan_claim.commit();
+    Ok(accepted_mode_state)
 }
 
 /// 超级权限开关：当前用户能否跑 sudo 免密。
@@ -169,10 +199,23 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
+    plan_id: String,
     store: State<'_, SessionStore>,
+    app: AppHandle,
 ) -> Result<SessionModeState, String> {
     // 不动 mode——放弃方案 ≠ 退出 Plan;仅回传当前状态供前端刷新卡片。
-    Ok(store.mode_state(&session_id))
+    let mode_state = store
+        .discard_pending_plan(&session_id, &plan_id)
+        .map_err(|error| format!("discard_plan({session_id}): {error:#}"))?;
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "plan_id": plan_id,
+        "action": "discard_plan",
+        "mode_state": mode_state,
+    });
+    let _ = app.emit("chat:plan_resolved", payload.clone());
+    crate::features::remote_control::forward_app_event(&app, "chat:plan_resolved", payload);
+    Ok(mode_state)
 }
 
 // ===================== request_user_input 工具气泡 =====================

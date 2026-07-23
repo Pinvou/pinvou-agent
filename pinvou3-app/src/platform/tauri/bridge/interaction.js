@@ -17,6 +17,10 @@
     var turnUsageDirty = context.turnUsageDirty;
     var ensureSession = context.ensureSession;
     var sendMessage = context.sendMessage;
+    var getBuffer = context.getBuffer;
+    var reconcileRemoteTurn = context.reconcileRemoteTurn;
+    var isBusyFor = context.isBusyFor;
+    var markRemoteTurn = context.markRemoteTurn;
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
@@ -65,8 +69,14 @@
     }
   }
   function pushUserEcho(text, persist) {
-    addChatItem({ type: "user", text: text, time: timeStr() });
-    if (persist) state.messages.push({ role: "user", content: [{ type: "text", text: text }] });
+    var item = { type: "user", text: text, time: timeStr() };
+    addChatItem(item);
+    var message = null;
+    if (persist) {
+      message = { role: "user", content: [{ type: "text", text: text }] };
+      state.messages.push(message);
+    }
+    return { item: item, message: message };
   }
   function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
 
@@ -89,32 +99,118 @@
     state.modeState = { mode: st.mode || "yolo" };
   }
 
+  function isActionablePlanCard(sid, itemId, planId) {
+    if (!sid || sid !== state.activeSessionId || !itemId || !planId) return false;
+    return state.chatItems.some(function (item) {
+      return item && item.id === itemId && item.type === "plan_card" &&
+        item.cardState === "active" && !item.resolved && String(item.planId || "") === planId;
+    });
+  }
+
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
   // sid 在 entry 捕获一次,thread through 所有 await —— 防用户切 session 后,
   // 后续 UI 写入/IPC 把卡片塞到错误的 session。
-  async function acceptPlan(itemId, planMarkdown, echo) {
+  async function acceptPlan(itemId, planMarkdown, echo, planId) {
     var sid = state.activeSessionId;
     if (!sid) return;
+    var planTicket = String(planId || "").trim();
+    if (!planTicket) {
+      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
+      addSystemItemFor(sid, "⚠️ 方案凭证已失效，请重新生成方案后再执行");
+      notify();
+      return;
+    }
+    var planBuffer = getBuffer(sid);
+    if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      addSystemItemFor(sid, "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      notify();
+      return;
+    }
+    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    if (planBuffer) {
+      planBuffer.localTurnOwned = true;
+      planBuffer.remoteTurnActive = false;
+      planBuffer.remoteTerminalSeen = false;
+    }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
-    runOnSession(sid, function () { pushUserEcho(echo || bt("echoGo"), true); state.busy = true; startThinking(); });
+    var echoEntry = null;
+    var displayEcho = echo || bt("echoGo");
+    runOnSession(sid, function () { echoEntry = pushUserEcho(displayEcho, true); state.busy = true; startThinking(); });
     notify();
     try {
-      var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: planMarkdown || "" });
+      var st = await invoke("accept_plan", {
+        sessionId: sid,
+        planId: planTicket,
+        planMarkdown: planMarkdown || "",
+        displayMessage: displayEcho,
+      });
+      if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       runOnSession(sid, function () { applyModeFromState(st); });
     } catch (e) {
-      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "active", statusLabel: "", resolved: false });
-      runOnSession(sid, function () { state.busy = false; });
+      var errorText = String(e && e.message ? e.message : e || "");
+      var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+      var planNotActive = errorText.indexOf("plan_not_active") >= 0;
+      if (planBuffer) planBuffer.localTurnOwned = false;
+      if (itemId) patchItemByIdFor(sid, itemId, planNotActive
+        ? { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true }
+        : { cardState: "active", statusLabel: "", resolved: false });
+      runOnSession(sid, function () {
+        if (echoEntry) {
+          state.chatItems = state.chatItems.filter(function (item) { return item !== echoEntry.item; });
+          state.messages = state.messages.filter(function (message) { return message !== echoEntry.message; });
+        }
+        state.busy = false;
+        stopThinking();
+      });
+      if (concurrentTurn && planBuffer) markRemoteTurn(sid, planBuffer);
+      try {
+        var currentMode = await invoke("get_mode_state", { sessionId: sid });
+        runOnSession(sid, function () { applyModeFromState(currentMode); });
+      } catch (_) {}
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
     notify();
   }
-  async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true });
-    if (!state.activeSessionId) { notify(); return; }
+  async function discardPlan(itemId, planId) {
+    var sid = state.activeSessionId;
+    var planTicket = String(planId || "").trim();
+    if (!sid || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    patchItemByIdFor(sid, itemId, {
+      cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true,
+      planResolutionConfirmed: false,
+    });
+    notify();
     try {
-      var st = await invoke("discard_plan", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("discardPlanFailed") + e); }
+      var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
+      runOnSession(sid, function () { applyModeFromState(st); });
+      patchItemByIdFor(sid, itemId, { planResolutionConfirmed: true });
+    } catch (e) {
+      var errorText = String(e && e.message ? e.message : e || "");
+      var planNotActive = errorText.indexOf("plan_not_active") >= 0;
+      runOnSession(sid, function () {
+        var card = state.chatItems.find(function (item) {
+          return item && item.id === itemId && item.type === "plan_card" &&
+            String(item.planId || "") === planTicket;
+        });
+        if (!card) return;
+        if (planNotActive) {
+          card.cardState = "frozen";
+          card.resolved = true;
+          card.statusLabel = bt("planHistorical");
+        } else if (!card.planResolutionConfirmed) {
+          card.cardState = "active";
+          card.resolved = false;
+          card.statusLabel = "";
+        }
+      });
+      if (planNotActive) {
+        try {
+          var currentMode = await invoke("get_mode_state", { sessionId: sid });
+          runOnSession(sid, function () { applyModeFromState(currentMode); });
+        } catch (_) {}
+      }
+      addSystemItemFor(sid, bt("discardPlanFailed") + e);
+    }
     notify();
   }
   async function exitPlanToYolo() {
