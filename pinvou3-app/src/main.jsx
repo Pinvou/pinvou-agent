@@ -34,6 +34,21 @@ import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/P
 import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
 
+function emitPetEvent(ev, name, payload) {
+  if (!ev) return Promise.resolve(false);
+  try {
+    if (typeof ev.emitTo === 'function') {
+      return Promise.resolve(ev.emitTo('pet', name, payload));
+    }
+    if (typeof ev.emit === 'function') {
+      return Promise.resolve(ev.emit(name, payload));
+    }
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return Promise.resolve(false);
+}
+
 // 当前平台是否支持本地 vLLM。macOS/Windows 后端已 cfg 掉本地 vLLM 命令(discover_local_vllm /
 // detect_local_vllm_setup 等),前端默认预设与探测入口都据此守卫,避免新用户首启落在
 // 127.0.0.1:8000 永远连不上、或调用不存在的后端命令报错。与 bridge prefs::ModelPreset::default() 对齐。
@@ -749,11 +764,7 @@ function defaultModelPresetForPlatform() {
         if (!ev) return undefined;
         let disposed = false;
         const unlisteners = [];
-        const emitToPet = (name, payload) => (
-          typeof ev.emitTo === 'function'
-            ? ev.emitTo('pet', name, payload)
-            : ev.emit(name, payload)
-        );
+        const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
         ev.listen('chat:done', (event) => {
           if (disposed) return;
           const payload = event.payload || {};
@@ -784,9 +795,7 @@ function defaultModelPresetForPlatform() {
         const ev = window.__TAURI__ && window.__TAURI__.event;
         if (!ev || currentView !== 'chat' || !activeChat) return;
         if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
-        const emit = typeof ev.emitTo === 'function'
-          ? ev.emitTo('pet', 'pet:session_viewed', { session_id: activeChat })
-          : ev.emit('pet:session_viewed', { session_id: activeChat });
+        const emit = emitPetEvent(ev, 'pet:session_viewed', { session_id: activeChat });
         emit.catch(() => {});
       }, [currentView, activeChat]);
 
@@ -796,11 +805,7 @@ function defaultModelPresetForPlatform() {
         const ev = tauri && tauri.event;
         const core = tauri && tauri.core;
         if (!ev || !core) return undefined;
-        const emitToPet = (name, payload) => (
-          typeof ev.emitTo === 'function'
-            ? ev.emitTo('pet', name, payload)
-            : ev.emit(name, payload)
-        );
+        const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
         let disposed = false;
         let consuming = false;
         const unlisteners = [];
@@ -899,9 +904,7 @@ function defaultModelPresetForPlatform() {
         let consuming = false;
         let rerun = false;
         let unlisten = null;
-        const emitToPet = (name, payload) => (
-          typeof ev.emitTo === 'function' ? ev.emitTo('pet', name, payload) : ev.emit(name, payload)
-        );
+        const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
         const consume = async () => {
           if (disposed) return;
           if (consuming) {
