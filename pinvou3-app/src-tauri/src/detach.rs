@@ -41,7 +41,8 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
 #[cfg(target_os = "windows")]
 fn poll_global_mouse(_dev: &()) -> GlobalMouse {
     use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetAsyncKeyState, GetCursorPos, VK_LBUTTON};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     use std::mem::MaybeUninit;
 
     let mut pt = MaybeUninit::<POINT>::uninit();

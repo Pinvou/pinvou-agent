@@ -426,7 +426,7 @@ const FEISHU_STEPS = [
       if (!config) return null;
       const [values, setValues] = useState({});
       const fields = config.fields || [];
-      // required:false 的字段可留空(留空→用内置共享 key);只有 required:true 字段强制填。
+      // required:false 的字段可留空；required:true 字段必须填写后才能连接。
       const canSubmit = fields.every(f => f.required === false || (values[f.key] || '').trim().length > 0);
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -929,6 +929,28 @@ const FEISHU_STEPS = [
             toolId: backendId,
             requestId,
           });
+          if (isCurrentOAuthRequest(backendId, requestId)) {
+            const t = tsToolsData.find(x => x.backendId === backendId);
+            const name = t ? t.title : backendId;
+            clearOAuthRequest(backendId, requestId);
+            setBusyId(null);
+            const outcome = resolveOAuthInstallOutcome(
+              name,
+              { status: 'cancelled', message: '已取消等待浏览器授权，可稍后重新授权。' },
+              {
+                installed: true,
+                mcp_configured: true,
+                oauth_required: true,
+                oauth_token_present: false,
+                status: 'config_installed_auth_pending',
+              }
+            );
+            setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
+            setAlert({ ...outcome.alert, toolId: backendId });
+            if (selectedTool && selectedTool.backendId === backendId) {
+              setSelectedTool(prev => ({ ...prev, ...outcome.selectedToolPatch }));
+            }
+          }
         } catch (err) {
           console.error('cancel_marketplace_tool_oauth_login failed:', err);
           if (isCurrentOAuthRequest(backendId, requestId)) {
@@ -1003,7 +1025,7 @@ const FEISHU_STEPS = [
             const loginResult = await withUiTimeout(
               loginPromise,
               OAUTH_UI_TIMEOUT_MS,
-              oauthUiTimeoutResult(oauthServerName)
+              oauthUiTimeoutResult(t?.oauthServerName || backendId)
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
@@ -1391,6 +1413,7 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
+                message: `尚未连接「${name}」。`,
                 message: `尚未连接「${name}」。`,
               },
             }));

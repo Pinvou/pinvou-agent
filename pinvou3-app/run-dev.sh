@@ -5,18 +5,6 @@ cd "$(dirname "$0")"
 
 OS_NAME="$(uname -s)"
 
-# ── 内置 MCP 共享 key(dev) ─────────────────────────────────
-# 与 release-deb.sh 使用同一个 gitignored 密钥文件。option_env! 在编译时读取，
-# 因此必须在 `tauri dev` 启动 Cargo 之前 export。未配置时保持普通开发模式可用，
-# 仅需要高德天气/同花顺问财/企查查共享额度时才必须填写。
-SECRETS_ENV="../scripts/.builtin-secrets.env"
-if [ -f "$SECRETS_ENV" ]; then
-  set -a
-  . "$SECRETS_ENV"
-  set +a
-  echo "✓ 已加载内置 MCP 共享 key(dev)"
-fi
-
 # 注:源 workflows/ → bundle 嵌入快照的同步已移入 build.rs(任何 cargo build/打包都同步,
 # 不再只覆盖 dev 启动,改完直接 build 也不漂移)。
 

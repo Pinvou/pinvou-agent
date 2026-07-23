@@ -276,7 +276,7 @@ fn remote_validation_user_error(raw: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct BuiltinMcpSecretSpec {
+struct LegacyMcpSecretSpec {
     tool_id: &'static str,
     target: &'static str,
     key: &'static str,
@@ -290,19 +290,19 @@ pub struct McpSecretMigrationResult {
     pub messages: Vec<String>,
 }
 
-fn builtin_mcp_secret_specs() -> &'static [BuiltinMcpSecretSpec] {
+fn legacy_mcp_secret_specs() -> &'static [LegacyMcpSecretSpec] {
     &[
-        BuiltinMcpSecretSpec {
+        LegacyMcpSecretSpec {
             tool_id: "weather",
             target: "env",
             key: "AMAP_KEY",
         },
-        BuiltinMcpSecretSpec {
+        LegacyMcpSecretSpec {
             tool_id: "iwencai",
             target: "env",
             key: "IWENCAI_API_KEY",
         },
-        BuiltinMcpSecretSpec {
+        LegacyMcpSecretSpec {
             tool_id: "qcc",
             target: "header",
             key: "QCC_API_KEY",
@@ -310,19 +310,19 @@ fn builtin_mcp_secret_specs() -> &'static [BuiltinMcpSecretSpec] {
     ]
 }
 
-fn builtin_spec_for_tool(tool_id: &str) -> Option<&'static BuiltinMcpSecretSpec> {
-    builtin_mcp_secret_specs()
+fn legacy_spec_for_tool(tool_id: &str) -> Option<&'static LegacyMcpSecretSpec> {
+    legacy_mcp_secret_specs()
         .iter()
         .find(|spec| spec.tool_id == tool_id)
 }
 
-fn builtin_spec_for_server_name(server_name: &str) -> Option<&'static BuiltinMcpSecretSpec> {
+fn legacy_spec_for_server_name(server_name: &str) -> Option<&'static LegacyMcpSecretSpec> {
     if server_name == "weather" {
-        builtin_spec_for_tool("weather")
+        legacy_spec_for_tool("weather")
     } else if server_name == "iwencai" {
-        builtin_spec_for_tool("iwencai")
+        legacy_spec_for_tool("iwencai")
     } else if server_name.starts_with("qcc-") {
-        builtin_spec_for_tool("qcc")
+        legacy_spec_for_tool("qcc")
     } else {
         None
     }
@@ -376,37 +376,6 @@ pub fn load_disabled_connectors() -> Vec<String> {
 pub fn save_disabled_connectors(ids: &[String]) {
     if let Ok(json) = serde_json::to_string(ids) {
         let _ = std::fs::write(disabled_connectors_path(), json);
-    }
-}
-
-/// 内置共享 key 的编译期注入值:仅当 release 构建 export 了对应 env 才有值。
-/// key 因此不落盘明文、不进 git、不进源码 —— 发布构建在 release-deb.sh 里 export
-/// 真 key(见步8 轮换);开发构建不设则为 None(开发自行配 key 或不用这三个内置工具)。
-fn builtin_shared_secret_value(key: &str) -> Option<&'static str> {
-    let v = match key {
-        "AMAP_KEY" => option_env!("PINVOU3_BUILTIN_AMAP_KEY"),
-        "IWENCAI_API_KEY" => option_env!("PINVOU3_BUILTIN_IWENCAI_KEY"),
-        "QCC_API_KEY" => option_env!("PINVOU3_BUILTIN_QCC_KEY"),
-        _ => None,
-    }?;
-    let v = v.trim();
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
-    }
-}
-
-/// 仅**内置三件套**(精确匹配 tool_id + target + key)才返回共享 key ——
-/// 防自定义/上传工具声明同名 key(AMAP_KEY 等)、用户留空时蹭内置额度。
-fn builtin_shared_secret_value_for(tool_id: &str, target: &str, key: &str) -> Option<&'static str> {
-    let is_builtin = builtin_mcp_secret_specs()
-        .iter()
-        .any(|s| s.tool_id == tool_id && s.target == target && s.key == key);
-    if is_builtin {
-        builtin_shared_secret_value(key)
-    } else {
-        None
     }
 }
 
@@ -698,7 +667,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     pub fn migrate_mcp_plaintext_secrets(&self) -> Result<McpSecretMigrationResult, String> {
         let mut result = McpSecretMigrationResult::default();
-        for spec in builtin_mcp_secret_specs() {
+        for spec in legacy_mcp_secret_specs() {
             let path = self.servers_dir.join(spec.tool_id).join("manifest.json");
             if path.is_file() {
                 self.migrate_manifest_file(&path, spec, &mut result)?;
@@ -815,15 +784,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
                     std::env::set_var(mcp_secret_env_var(key), value);
                     Ok(mcp_secret_placeholder(key))
-                } else if let Some(shared) = builtin_shared_secret_value_for(tool_id, target, key) {
-                    // 内置三件套共享 key 兜底:用户留空即用注入的共享额度(开箱即用)。
-                    // 精确匹配 tool_id+target+key → 自定义工具声明同名 key 不会误拿内置额度。
-                    // 注入时机在此(install/启用),不在启动全量 → 卸载删 secret 后不会被注回。
-                    self.credential_store
-                        .set(&reference, shared)
-                        .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
-                    std::env::set_var(mcp_secret_env_var(key), shared);
-                    Ok(mcp_secret_placeholder(key))
                 } else {
                     Err(mcp_secret_missing_error(tool_id, key))
                 }
@@ -835,7 +795,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     fn migrate_manifest_file(
         &self,
         path: &std::path::Path,
-        spec: &BuiltinMcpSecretSpec,
+        spec: &LegacyMcpSecretSpec,
         result: &mut McpSecretMigrationResult,
     ) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
@@ -881,7 +841,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         };
 
         for (server_name, entry) in servers.iter_mut() {
-            let Some(spec) = builtin_spec_for_server_name(server_name) else {
+            let Some(spec) = legacy_spec_for_server_name(server_name) else {
                 continue;
             };
             if let Some(env) = entry.get_mut("env").and_then(|env| env.as_object_mut()) {
@@ -933,7 +893,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     fn store_migrated_secret(
         &self,
-        spec: &BuiltinMcpSecretSpec,
+        spec: &LegacyMcpSecretSpec,
         value: &str,
         result: &mut McpSecretMigrationResult,
     ) -> Result<(), String> {
@@ -971,7 +931,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// 卸载工具：从 installed.json + mcp.json 中移除
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
         // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
-        // 删不掉不阻断卸载;内置工具重装时 inject_builtin_shared_secrets 会重新注入。
+        // 删不掉不阻断卸载；若用户重新安装并重新填 key，会写入新的系统凭据。
         if let Some(manifest) = self.load_manifest(tool_id) {
             for (target, key) in manifest_secret_targets(&manifest) {
                 let reference = mcp_secret_reference(tool_id, &target, &key);
@@ -1801,7 +1761,7 @@ mod tests {
         });
     }
 
-    /// 远程多 server 连接器可能没有静态 mcp_tools 列表(qcc 即如此)。禁用时必须按
+    /// 远程 server 连接器可能没有静态 mcp_tools 列表(qcc 即如此)。禁用时必须按
     /// server 名生成前缀规则,否则底座仍会暴露该连接器动态发现出来的全部工具。
     #[test]
     fn model_tool_names_generates_prefix_rules_for_remote_servers() {
@@ -1813,24 +1773,21 @@ mod tests {
                 "mcp_tools":[],
                 "command":"python","args":[],
                 "servers":[
-                    {"name":"qcc-company","url":"https://agent.qcc.com/mcp/company/stream"},
-                    {"name":"qcc-risk","url":"https://agent.qcc.com/mcp/risk/stream"},
-                    {"name":"qcc-ipr","url":"https://agent.qcc.com/mcp/ipr/stream"},
-                    {"name":"qcc-operation","url":"https://agent.qcc.com/mcp/operation/stream"}
+                    {
+                        "name":"qcc-company",
+                        "url":"https://agent.qcc.com/mcp/company/stream",
+                        "scopes":["mcp:tools"],
+                        "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
+                    }
                 ]
             }"#;
             std::fs::write(dir.join("manifest.json"), manifest).unwrap();
 
             let mgr = MarketplaceManager::new();
-            // 对齐真实 qcc manifest 的 4 个远程 server —— 每个生成一条前缀规则。
+            // 对齐真实 qcc manifest 的 qcc-company OAuth 远程 server。
             assert_eq!(
                 mgr.model_tool_names(&["qcc".to_string()]),
-                vec![
-                    "mcp_qcc-company_*".to_string(),
-                    "mcp_qcc-risk_*".to_string(),
-                    "mcp_qcc-ipr_*".to_string(),
-                    "mcp_qcc-operation_*".to_string(),
-                ]
+                vec!["mcp_qcc-company_*".to_string()]
             );
         });
     }
@@ -1942,8 +1899,14 @@ mod tests {
             let server = &mcp["servers"]["canva_mcp"];
             assert_eq!(server["url"], "https://mcp.canva.cn/mcp");
             assert_eq!(server["oauth_resource"], "https://mcp.canva.cn/mcp");
-            assert!(server["scopes"].as_array().unwrap().contains(&serde_json::json!("profile:read")));
-            assert!(server["scopes"].as_array().unwrap().contains(&serde_json::json!("design:content:write")));
+            assert!(server["scopes"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("profile:read")));
+            assert!(server["scopes"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("design:content:write")));
             assert!(server.get("headers").is_none());
             assert!(server.get("env_headers").is_none());
             assert!(server.get("bearer_token_env_var").is_none());
@@ -1954,6 +1917,47 @@ mod tests {
             assert_eq!(
                 mgr.model_tool_names(&["canva-mcp".to_string()]),
                 vec!["mcp_canva_mcp_*".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn install_qcc_oauth_server_writes_deepseek_oauth_config() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "qcc",
+                r#"{
+                    "id":"qcc","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "config_fields":[],
+                    "servers":[
+                        {
+                            "name":"qcc-company",
+                            "url":"https://agent.qcc.com/mcp/company/stream",
+                            "scopes":["mcp:tools"],
+                            "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
+                        }
+                    ]
+                }"#,
+            );
+
+            let mgr = MarketplaceManager::new();
+            mgr.install("qcc", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            let server = &mcp["servers"]["qcc-company"];
+            assert_eq!(server["url"], "https://agent.qcc.com/mcp/company/stream");
+            assert_eq!(server["scopes"], serde_json::json!(["mcp:tools"]));
+            assert_eq!(
+                server["oauth_resource"],
+                "https://agent.qcc.com/mcp/company/stream"
+            );
+            assert!(server.get("headers").is_none());
+            assert!(server.get("bearer_token_env_var").is_none());
+            assert_eq!(
+                mgr.oauth_remote_server_name("qcc").as_deref(),
+                Some("qcc-company")
             );
         });
     }
@@ -2440,7 +2444,7 @@ mod tests {
                 }"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            // 不提供 key + keyring 空 + 无内置共享 key(测试 option_env=None)→ install 必失败
+            // 不提供 key + keyring 空 → install 必失败
             assert!(
                 mgr.install("weather-custom", &std::collections::HashMap::new())
                     .is_err(),
@@ -2454,22 +2458,32 @@ mod tests {
     }
 
     #[test]
-    fn shared_secret_bounty_only_matches_exact_builtin_spec() {
-        // 兜底范围收窄:自定义/上传工具声明同名 key 不该拿到内置共享额度。
-        // (内置精确匹配的返回值取决于编译期 option_env,单测环境无 env → 也 None,
-        //  故这里只断言「非精确匹配恒 None」这条安全属性。)
-        assert!(
-            builtin_shared_secret_value_for("evil-tool", "env", "AMAP_KEY").is_none(),
-            "非内置 tool_id 声明 AMAP_KEY 不该匹配内置额度"
-        );
-        assert!(
-            builtin_shared_secret_value_for("weather", "header", "AMAP_KEY").is_none(),
-            "target 不符(内置 weather 是 env)不该匹配"
-        );
-        assert!(
-            builtin_shared_secret_value_for("weather", "env", "OTHER_KEY").is_none(),
-            "key 不符不该匹配"
-        );
+    fn weather_missing_user_key_fails_without_fallback() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+                }"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let err = mgr
+                .install("weather", &std::collections::HashMap::new())
+                .unwrap_err();
+
+            assert!(err.contains("AMAP_KEY"), "错误应提示缺少 AMAP_KEY: {err}");
+            assert!(
+                !mgr.installed_ids().contains(&"weather".to_string()),
+                "缺用户 key 时不应写 installed.json"
+            );
+            assert!(
+                !crate::bridge::paths::mcp_config_path().is_file(),
+                "缺用户 key 时不应写入 mcp.json"
+            );
+        });
     }
 
     #[test]

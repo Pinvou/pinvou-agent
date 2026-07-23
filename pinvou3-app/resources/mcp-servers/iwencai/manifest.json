@@ -23,7 +23,7 @@
     }
   ],
   "config_fields": [
-    { "key": "IWENCAI_API_KEY", "label": "问财 API Key（留空用内置共享额度）", "required": false, "target": "env", "secret": true }
+    { "key": "IWENCAI_API_KEY", "label": "问财 API Key", "required": true, "target": "env", "secret": true }
   ],
   "routing_rules": [
     "股票/股价/行情/涨跌/K线/走势/市盈率/基本面/个股/选股/板块/大盘/指数/宏观/CPI/GDP/公告/财报 → `hithink_*` / `news_search` / `announcement_search`，不要用 `web_search`"
