@@ -3477,6 +3477,9 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://accounts.larksuite.com/",
     // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载
     "https://obsidian.md/",
+    // Canva 可画 MCP 返回的设计编辑链接/预览图资源
+    "https://www.canva.cn/",
+    "https://export-download.canva.cn/",
 ];
 
 /// URL 是否命中外部链接白名单(纯函数,便于单测)。
@@ -5844,6 +5847,33 @@ mod tests {
             .is_some()
     }
 
+    #[test]
+    fn marketplace_oauth_messages_are_connector_neutral() {
+        let (_, connected_message, connected_token) = marketplace_auth_status_fields(
+            true,
+            true,
+            true,
+            Some(deepseek_tui::mcp::oauth::McpAuthStatus::OAuth),
+        );
+        assert!(connected_token);
+        assert!(!connected_message.contains("元典"));
+        assert!(!connected_message.contains("华宇元典"));
+
+        let (_, pending_message, pending_token) =
+            marketplace_auth_status_fields(true, true, true, None);
+        assert!(!pending_token);
+        assert!(!pending_message.contains("元典"));
+        assert!(!pending_message.contains("华宇元典"));
+
+        let error_result = marketplace_oauth_error_result(
+            "canva_mcp".to_string(),
+            anyhow::anyhow!("oauth provider rejected authorization"),
+        );
+        assert_eq!(error_result.status, "provider_error");
+        assert!(!error_result.message.contains("元典"));
+        assert!(!error_result.message.contains("华宇元典"));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn marketplace_auth_status_does_not_treat_missing_or_corrupt_token_as_connected() {
         let _g = crate::bridge::paths::tests::ENV_LOCK
@@ -6745,9 +6775,9 @@ mod tests {
         );
     }
 
-    /// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com /
-    /// app.tavily.com,任何其他 host / 任何其他 scheme(http、file、javascript)都立即
-    /// reject——这是前端 webview 万一被 XSS 的最后一道防线,不许扩大白名单不加测试。
+    /// `open_external_url` 必须只放已审计的外部入口域名,任何其他 host / 任何其他
+    /// scheme(http、file、javascript)都立即 reject——这是前端 webview 万一被 XSS 的
+    /// 最后一道防线,不许扩大白名单不加测试。
     #[tokio::test]
     async fn open_external_url_rejects_off_allowlist_targets() {
         let rejected = [
@@ -6756,6 +6786,8 @@ mod tests {
             "https://metaso.cn.evil.com/",             // 子域钓鱼
             "https://console.bce.baidu.com.evil.com/", // 百度子域钓鱼
             "https://app.tavily.com.evil.com/",        // tavily 子域钓鱼
+            "https://www.canva.cn.evil.com/api/action", // Canva 子域钓鱼
+            "https://export-download.canva.cn.evil.com/x.png", // Canva 资源域钓鱼
             "https://bce.baidu.com/",                  // 非 console 子域,不放行
             "javascript:alert(1)",                     // js scheme
             "file:///etc/passwd",                      // file scheme
@@ -6787,12 +6819,25 @@ mod tests {
         assert!(url_in_external_allowlist(
             "https://open.zhihuiya.com/dashboard/api-keys"
         ));
+        assert!(url_in_external_allowlist(
+            "https://www.canva.cn/api/action?token=abc"
+        ));
+        assert!(url_in_external_allowlist(
+            "https://export-download.canva.cn/example/preview.png"
+        ));
         assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
         assert!(!url_in_external_allowlist(
             "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
         ));
+        assert!(!url_in_external_allowlist(
+            "https://www.canva.cn.evil.com/api/action?token=abc"
+        ));
+        assert!(!url_in_external_allowlist(
+            "https://export-download.canva.cn.evil.com/example/preview.png"
+        ));
         assert!(!url_in_external_allowlist("http://obsidian.md/"));
         assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
+        assert!(!url_in_external_allowlist("http://www.canva.cn/api/action?token=abc"));
         assert!(!url_in_external_allowlist("https://evil.example.com/"));
     }
 
@@ -7600,22 +7645,22 @@ fn marketplace_oauth_error_result(
     } else if lower.contains("timed out waiting for oauth callback") {
         (
             "timeout",
-            "授权超时，未收到浏览器回调。若浏览器停在 open.chineselaw.com/service-error，说明元典授权服务返回失败，请关闭页面后重试。",
+            "授权超时，未收到浏览器回调。请确认浏览器授权是否完成，关闭错误页后可重试。",
         )
     } else if lower.contains("service-error") || lower.contains("status code 404") {
         (
             "service_error",
-            "元典授权服务返回错误或 404，当前未完成授权。请稍后重试，或联系元典开放平台确认该账号/应用权限。",
+            "OAuth 授权服务返回错误或 404，当前未完成授权。请稍后重试，或联系服务方确认该账号/应用权限。",
         )
     } else if lower.contains("oauth provider") || lower.contains("authorization") {
         (
             "provider_error",
-            "元典 OAuth 授权服务拒绝了本次授权，当前未完成连接。请确认账号权限后重试。",
+            "OAuth 授权服务拒绝了本次授权，当前未完成连接。请确认账号权限后重试。",
         )
     } else {
         (
             "failed",
-            "元典授权失败，当前未完成连接。请重试；如仍失败，请保留浏览器错误页和日志。",
+            "OAuth 授权失败，当前未完成连接。请重试；如仍失败，请保留浏览器错误页和日志。",
         )
     };
 
@@ -7656,13 +7701,13 @@ fn marketplace_auth_status_fields(
     {
         (
             "connected",
-            "已完成元典 OAuth 授权，可以在新会话中使用华宇元典法律数据。",
+            "OAuth 授权已完成，可以在新会话中使用该工具。",
             true,
         )
     } else if oauth_required && mcp_configured {
         (
             "config_installed_auth_pending",
-            "已写入 MCP 配置，但尚未完成元典 OAuth 授权。",
+            "已写入 MCP 配置，但尚未完成 OAuth 授权。",
             false,
         )
     } else if oauth_required && installed {
@@ -7672,7 +7717,7 @@ fn marketplace_auth_status_fields(
             false,
         )
     } else if oauth_required {
-        ("not_installed", "尚未连接华宇元典法律数据。", false)
+        ("not_installed", "尚未连接该工具。", false)
     } else if installed {
         ("connected", "工具已安装。", false)
     } else {
@@ -7775,7 +7820,7 @@ pub async fn start_marketplace_tool_oauth_login(
     match login_result {
         Ok(()) => Ok(MarketplaceOAuthLoginResult {
             status: "connected".to_string(),
-            message: "元典 OAuth 授权已完成。".to_string(),
+            message: "OAuth 授权已完成。".to_string(),
             server_name,
         }),
         Err(e) => Ok(marketplace_oauth_error_result(server_name, e)),
