@@ -40,11 +40,17 @@ import json
 import sys
 from pathlib import Path
 
+# Windows 安装包使用 CPython embeddable runtime。其 `python*._pth` 会启用隔离
+# 模式并忽略 PYTHONPATH，因此不能依赖父进程注入脚本目录。显式把当前脚本目录
+# 放进 sys.path，确保直接执行 scheduler.py 时能导入同目录 workflow_state.py。
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
 from workflow_state import WorkflowState
 
-WORKFLOW_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW_ROOT = SCRIPTS_DIR.parent
 ROLES_DIR = WORKFLOW_ROOT / "roles"
-SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
 def load_role_prompt(role_id: str, prompt_file: str | None = None) -> str:

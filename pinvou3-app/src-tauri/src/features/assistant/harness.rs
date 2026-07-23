@@ -602,11 +602,6 @@ pub fn init_project(
     )
     .map_err(|e| format!("write brief.json: {e}"))?;
 
-    // scheduler.py --status 验证项目结构合法。失败不阻塞（目录已建好），仅记日志。
-    if let Err(e) = run_scheduler(&project, &["--scenario", scenario, "--status"]) {
-        eprintln!("[harness::init_project] scheduler --status warning: {e}");
-    }
-
     log_flow(
         &project,
         "project_initialized",
@@ -615,6 +610,13 @@ pub fn init_project(
             ("project_dir", &project.to_string_lossy()),
         ],
     );
+
+    // scheduler.py --status 验证项目结构合法。目录已经初始化，失败不在这里删除项目；
+    // 但必须把完整 stderr 持久化，后续 kick 的 --next 会将同一错误返回给前端。
+    if let Err(e) = run_scheduler(&project, &["--scenario", scenario, "--status"]) {
+        eprintln!("[harness::init_project] scheduler --status warning: {e}");
+        record_runtime_failure_for_project(&project, "", "scheduler_status", &e);
+    }
 
     Ok(project)
 }
@@ -786,11 +788,20 @@ pub(crate) fn record_runtime_failure(
         eprintln!("[harness] runtime failure without workflow project: {stage}: {error}");
         return;
     };
+    record_runtime_failure_for_project(&project, role_id, stage, error);
+}
+
+fn record_runtime_failure_for_project(
+    project: &Path,
+    role_id: &str,
+    stage: &str,
+    error: &str,
+) {
     let detail = failure_detail(error);
     let reason = failure_summary(&detail);
     let category = failure_category(&detail);
     log_flow(
-        &project,
+        project,
         "runtime_failure",
         &[
             ("role_id", role_id),
@@ -815,16 +826,11 @@ fn run_python(args: &[&str], cwd: &Path) -> Result<String, String> {
 }
 
 fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String, String> {
-    // warmup 只做本地前置条件检查，不再请求模型接口。保留解析后的 base_url 用于
-    // 校验配置存在；API Key 不再暴露给 Python 调度/验收子进程。
-    let bridge = crate::features::assistant::platform::bridge::Pinvou3Bridge::boot().ok();
+    // warmup 只做本地前置条件检查，不再请求模型接口。仅轻量读取模型 base_url，
+    // 禁止为每个 Python 子进程重新 boot bridge（会重复解包 bundle、同步凭据和清理文件）。
+    // API Key 不暴露给 Python 调度/验收子进程。
     let base_url = std::env::var("PINVOU3_MODEL_BASE_URL")
-        .unwrap_or_else(|_| {
-            bridge
-                .as_ref()
-                .map(|b| b.base_url())
-                .unwrap_or_else(crate::features::monitor::vllm_base_url)
-        });
+        .unwrap_or_else(|_| crate::features::monitor::vllm_base_url());
     let mut command = crate::platform::process::python_command();
     let program = command.get_program().to_string_lossy().into_owned();
     command
@@ -837,18 +843,53 @@ fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Resu
     let output = crate::platform::process::output_with_timeout(
         command,
         std::time::Duration::from_secs(timeout_secs),
-    )?;
+    )
+    .map_err(|error| {
+        let message = if error.starts_with("spawn ") {
+            format!("工作流 Python 启动失败 (interpreter={program}): {error}")
+        } else if error.contains("timed out") {
+            format!(
+                "工作流 Python 执行超时 (interpreter={program}, timeout={timeout_secs}s): {error}"
+            )
+        } else {
+            format!("工作流 Python 执行失败 (interpreter={program}): {error}")
+        };
+        eprintln!("[harness] {message}");
+        message
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !output.status.success() && !stderr.is_empty() {
-        eprintln!("[harness] {program} exit={} stderr={}", output.status, truncate_on_char_boundary(&stderr, 300));
+        eprintln!(
+            "[harness] {program} exit={} stderr={}",
+            output.status,
+            truncate_on_char_boundary(&stderr, 300)
+        );
     }
 
-    if stdout.trim().is_empty() && !output.status.success() {
-        return Err(format!("{program} failed (exit {}): {}", output.status, truncate_on_char_boundary(&stderr, 500)));
+    if !output.status.success() {
+        let detail = subprocess_failure_detail(&stdout, &stderr);
+        return Err(format!(
+            "工作流 Python 执行失败 (interpreter={program}, exit={}): {detail}",
+            output.status
+        ));
     }
 
     Ok(stdout)
+}
+
+/// 保留调度器 stderr（含 Python traceback）供 flow_log.jsonl 持久化；极少数程序只把
+/// 错误写 stdout，因此 stderr 为空时回退 stdout。两者都有时同时记录，避免误诊。
+fn subprocess_failure_detail(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    let detail = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => "无错误输出".to_string(),
+        (true, false) => stderr.to_string(),
+        (false, true) => stdout.to_string(),
+        (false, false) => format!("stderr:\n{stderr}\nstdout:\n{stdout}"),
+    };
+    truncate_on_char_boundary(&detail, 4000).to_string()
 }
 
 fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
@@ -910,17 +951,32 @@ fn read_warmup_report(project: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_str(&content).map_err(|e| format!("parse warmup_report.json: {e}"))
 }
 
-/// 从 warmup 报告提取一条适合直接展示给用户的阻断原因。优先返回具体检查项，
-/// 避免把整份 JSON 当错误文本塞进弹窗和工作流卡片。
+/// 从 warmup 报告提取一条适合直接展示给用户的阻断原因。优先返回具体检查项；
+/// 解释器未启动、来不及生成检查项时回退底层错误，避免把整份 JSON 塞进界面。
 pub(crate) fn warmup_block_reason(report: &serde_json::Value) -> Option<String> {
-    let checks = report.get("checks")?.as_object()?;
-    checks
-        .values()
-        .find(|check| check.get("status").and_then(|value| value.as_str()) == Some("blocked"))
+    let check_reason = report
+        .get("checks")
+        .and_then(|checks| checks.as_object())
+        .and_then(|checks| {
+            checks
+                .values()
+                .find(|check| {
+                    check.get("status").and_then(|value| value.as_str()) == Some("blocked")
+                })
+        })
         .and_then(|check| check.get("details").and_then(|value| value.as_str()))
         .map(str::trim)
         .filter(|details| !details.is_empty())
-        .map(String::from)
+        .map(String::from);
+
+    check_reason.or_else(|| {
+        report
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|error| !error.is_empty())
+            .map(String::from)
+    })
 }
 
 /// 识别真实模型请求返回的不可重试鉴权/授权错误。底座会把 HTTP 401/403 格式化为
@@ -2500,6 +2556,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workflow_python_command_uses_shared_runtime_resolver() {
+        let command = crate::platform::process::python_command();
+        assert_eq!(
+            command.get_program().to_string_lossy(),
+            crate::platform::paths::python_command()
+        );
+    }
+
+    #[test]
     fn warmup_block_reason_returns_concrete_failed_check() {
         let report = serde_json::json!({
             "status": "blocked",
@@ -2515,6 +2580,21 @@ mod tests {
         assert_eq!(
             warmup_block_reason(&report).as_deref(),
             Some("missing scripts: scheduler.py")
+        );
+    }
+
+    #[test]
+    fn warmup_block_reason_returns_python_launch_error_without_check_report() {
+        let expected = "工作流 Python 启动失败 (interpreter=C:\\Program Files\\pinvou3\\runtime\\python\\pythonw.exe): 系统找不到指定的文件";
+        let report = serde_json::json!({
+            "status": "blocked",
+            "error": expected,
+            "report_error": "warmup_report.json missing"
+        });
+
+        assert_eq!(
+            warmup_block_reason(&report).as_deref(),
+            Some(expected)
         );
     }
 
@@ -2546,6 +2626,41 @@ mod tests {
         assert!(!detail.contains("codewhale"));
         assert_eq!(failure_category(&detail), "permission");
         assert!(failure_summary(&detail).contains("access denied"));
+    }
+
+    #[test]
+    fn subprocess_failure_detail_prefers_stderr_and_keeps_stdout_context() {
+        let detail = subprocess_failure_detail(
+            "partial scheduler output",
+            "Traceback (most recent call last):\nModuleNotFoundError: workflow_state",
+        );
+        assert!(detail.contains("stderr:"));
+        assert!(detail.contains("ModuleNotFoundError: workflow_state"));
+        assert!(detail.contains("stdout:"));
+        assert!(detail.contains("partial scheduler output"));
+    }
+
+    #[test]
+    fn scheduler_runtime_failure_persists_stderr_in_flow_log() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduler-failure-log-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("_state")).unwrap();
+        let error = "工作流 Python 执行失败: Traceback\nModuleNotFoundError: No module named 'workflow_state'";
+
+        record_runtime_failure_for_project(&root, "", "scheduler_kick", error);
+
+        let content = std::fs::read_to_string(root.join("_state").join("flow_log.jsonl")).unwrap();
+        let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record["event"], "runtime_failure");
+        assert_eq!(record["stage"], "scheduler_kick");
+        assert!(record["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("ModuleNotFoundError")));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

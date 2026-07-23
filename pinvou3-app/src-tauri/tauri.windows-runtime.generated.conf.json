@@ -1,0 +1,17 @@
+{
+    "bundle":  {
+                   "resources":  {
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/poppler/":  "runtime/poppler",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/pandoc/":  "runtime/pandoc",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/tesseract/":  "runtime/tesseract",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/python/":  "runtime/python",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/node/":  "runtime/node",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/onnxruntime/":  "runtime/onnxruntime",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/asr/README.md":  "runtime/asr/README.md",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/asr/pinvou-asr.exe":  "runtime/asr/pinvou-asr.exe",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/asr/llama-funasr-sensevoice.exe":  "runtime/asr/llama-funasr-sensevoice.exe",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/asr/models/fsmn-vad.gguf":  "runtime/asr/models/fsmn-vad.gguf",
+                                     "target/windows-runtime/5b77961dea40-0d14c4b67fd6/expanded/7zip/":  "runtime/7zip"
+                                 }
+               }
+}
