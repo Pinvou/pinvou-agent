@@ -11,6 +11,7 @@ const petInteraction = source('src/features/pet/pet-interaction.js');
 const main = source('src/app/main.jsx');
 const chatView = source('src/features/chat/ChatView.jsx');
 const rustPetWindow = source('src-tauri/src/features/pet/pet_window.rs');
+const petCommands = source('src-tauri/src/app/commands/pet.rs');
 const rustLib = source('src-tauri/src/lib.rs');
 
 assert.match(petWindow, /buildAnimationSequence/);
@@ -57,11 +58,15 @@ assert.match(rustPetWindow, /pub async fn take_pet_navigation/);
 assert.match(rustPetWindow, /emit_to\(\s*['"]main['"]/);
 assert.match(rustPetWindow, /pub async fn set_pet_activity_visible/);
 assert.doesNotMatch(rustPetWindow, /PET_MENU_LABEL|show_pet_context_menu|hide_pet_context_menu/);
-assert.match(rustLib, /pet_window::open_main_from_pet/);
-assert.match(rustLib, /pet_window::take_pet_navigation/);
+assert.match(petCommands, /async_command_passthrough!\(pet_domain,\s*open_main_from_pet/);
+assert.match(petCommands, /async_command_passthrough!\(pet_domain,\s*take_pet_navigation/);
+assert.match(petCommands, /async_command_passthrough!\(pet_domain,\s*set_pet_activity_visible/);
+assert.match(rustLib, /commands::pet::open_main_from_pet/);
+assert.match(rustLib, /commands::pet::take_pet_navigation/);
 assert.match(rustLib, /manage\(pet_window::PetNavigationState::default\(\)\)/);
-assert.match(rustLib, /pet_window::set_pet_activity_visible/);
-assert.doesNotMatch(rustLib, /pet_window::(?:show|hide)_pet_context_menu/);
+assert.match(rustLib, /commands::pet::set_pet_activity_visible/);
+assert.doesNotMatch(petCommands, /(?:show|hide)_pet_context_menu/);
+assert.doesNotMatch(rustLib, /commands::pet::(?:show|hide)_pet_context_menu/);
 
 assert.match(main, /listen\(['"]pet:navigation_pending['"]/);
 assert.match(main, /invoke\(['"]take_pet_navigation['"]\)/);
