@@ -13,6 +13,11 @@ test("production deploy builds and replaces the complete shared WebUI dist", asy
   const source = await readFile(deployScript, "utf8");
   assert.match(source, /PINVOU_REMOTE_PUBLIC_BASE_PATH="\$BASE_PATH" npm run build:web/);
   assert.match(source, /tar -czf - -C "\$RELAY_DIR\/web\/dist" \./);
+  assert.match(source, /deploy_output=.*<<'REMOTE'\r?\nset -Eeuo pipefail/);
+  assert.match(source, /tar --no-same-owner --no-same-permissions -xzf "\$web_tmp" -C "\$web_stage"/);
+  assert.match(source, /chown -R root:root "\$web_stage"/);
+  assert.match(source, /find "\$web_stage" -type d -exec chmod 755 \{\} \+/);
+  assert.match(source, /find "\$web_stage" -type f -exec chmod 644 \{\} \+/);
   assert.match(source, /cp -a "\$remote_dir\/web\/dist" "\$backup\/web-dist"/);
   assert.match(source, /mv "\$web_stage" "\$remote_dir\/web\/dist"/);
   assert.match(source, /PINVOU_CONFIRM_PRODUCTION_DEPLOY/);

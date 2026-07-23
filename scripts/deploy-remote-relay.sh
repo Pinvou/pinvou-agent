@@ -127,7 +127,7 @@ scp "$IPV4_DB_CACHE" "$SERVER:$REMOTE_IPV4_DB_TMP"
 scp "$IPV6_DB_CACHE" "$SERVER:$REMOTE_IPV6_DB_TMP"
 
 deploy_output="$(ssh "$SERVER" bash -s -- "$REMOTE_DIR" "$SERVICE" "$STAMP" "$REMOTE_SERVER_TMP" "$REMOTE_TELEMETRY_TMP" "$REMOTE_WEB_TMP" "$REMOTE_STATS_TMP" "$REMOTE_HARDENING_TMP" "$REMOTE_PACKAGE_TMP" "$REMOTE_LOCK_TMP" "$REMOTE_IPV4_DB_TMP" "$REMOTE_IPV6_DB_TMP" <<'REMOTE'
-set -euo pipefail
+set -Eeuo pipefail
 remote_dir="$1"
 service="$2"
 stamp="$3"
@@ -155,7 +155,10 @@ node --check "$telemetry_tmp"
 mkdir -p "$remote_dir/web"
 rm -rf "$web_stage"
 mkdir -p "$web_stage"
-tar -xzf "$web_tmp" -C "$web_stage"
+tar --no-same-owner --no-same-permissions -xzf "$web_tmp" -C "$web_stage"
+chown -R root:root "$web_stage"
+find "$web_stage" -type d -exec chmod 755 {} +
+find "$web_stage" -type f -exec chmod 644 {} +
 rm -f "$web_tmp"
 test -f "$web_stage/index.html"
 test -f "$web_stage/tauri-bridge.js"

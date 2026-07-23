@@ -317,7 +317,7 @@ fn display_chat_message(message: &str, attachments: &[crate::file_ingest::Ingest
         .map(|attachment| attachment.basename.as_str())
         .collect::<Vec<_>>()
         .join(" · ");
-    if message.is_empty() {
+    if message.trim().is_empty() {
         format!("📎 {names}")
     } else {
         format!("{message}\n\n📎 {names}")
@@ -7065,6 +7065,15 @@ mod tests {
             byte_size: 1,
             warning: None,
         }
+    }
+
+    #[test]
+    fn display_chat_message_omits_whitespace_before_attachment_names() {
+        let attachment = mk_attachment("text", "report.txt", 1, 1);
+        assert_eq!(
+            display_chat_message(" \n\t", &[attachment]),
+            "📎 report.txt"
+        );
     }
 
     fn mk_test_ws(tag: &str) -> std::path::PathBuf {
