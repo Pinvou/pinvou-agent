@@ -1,23 +1,21 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, Search, TableIcon, Trash2, X } from '../../components/icons.jsx';
-import { bridge, useBridge } from '../../hooks/useBridge.js';
-import { can, isWeb } from '../../shared/platform.js';
+import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
+import { invokeTauri } from '../../platform/tauri/client.js';
+import { can, isWeb } from '../../shared/platform.js';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
-      const canOpenSystemFiles = can('externalSystemOpen');
-      const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
-      const canPickHostFiles = !isWeb || can('hostFilePicker');
+      const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
+      const inv = invokeTauri;
       const canDownloadArtifacts = !isWeb || can('artifactDownload');
-      const bs = useBridge(); // 取 kbModelSetup 的实时下载进度
-      const inv = (cmd, args) =>
-        (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
-          ? window.__TAURI__.core.invoke(cmd, args)
-          : Promise.reject('no-tauri');
+      const canPickHostFiles = !isWeb || can('hostFilePicker');
+      const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
+      const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
 
       const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 
@@ -110,8 +108,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       ];
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
       const refreshOutputs = useCallback(async () => {
-        const list = bridge && bridge.listDeliverableIndex
-          ? await bridge.listDeliverableIndex().catch(() => [])
+        const list = bridge && bridge.artifacts.listDeliverableIndex
+          ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
           : await inv('list_deliverable_index').catch(() => []);
         const nextList = list || [];
         const nextSig = outputListSig(nextList);
@@ -177,20 +175,20 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         return groups.filter((g) => g.rows.length > 0);
       };
       const openOutputChat = async (o) => {
-        if (bridge && bridge.switchToSession && o.sessionId) {
-          await bridge.switchToSession(o.sessionId);
+        if (bridge && bridge.sessions.switchToSession && o.sessionId) {
+          await bridge.sessions.switchToSession(o.sessionId);
         }
       };
       const continueOutput = async (o) => {
         await openOutputChat(o);
-        if (bridge && bridge.prefillComposer) {
-          bridge.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+        if (bridge && bridge.chat.prefillComposer) {
+          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
       };
       const newOutputProject = async (o) => {
-        if (bridge && bridge.createNewSession) await bridge.createNewSession();
-        if (bridge && bridge.prefillComposer) {
-          bridge.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+        if (bridge && bridge.sessions.createNewSession) await bridge.sessions.createNewSession();
+        if (bridge && bridge.chat.prefillComposer) {
+          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
       };
       const OutputLivePreview = ({ o, onOpen }) => {
@@ -228,23 +226,23 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             if (freshHit) return freshHit;
             try {
               let next = null;
-              if (o.category === 'img' && bridge.readArtifactImageB64) {
-                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path, outputSessionId) };
-              } else if (ext === 'pptx' && bridge.readArtifactThumbnail) {
-                const thumb = await bridge.readArtifactThumbnail(o.path, outputSessionId);
+              if (o.category === 'img' && bridge.artifacts.readArtifactImageB64) {
+                next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(o.path) };
+              } else if (ext === 'pptx' && bridge.artifacts.readArtifactThumbnail) {
+                const thumb = await bridge.artifacts.readArtifactThumbnail(o.path);
                 next = thumb ? { kind: 'image', url: thumb } : null;
               }
-              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.readArtifactText) {
-                next = { kind: 'html', html: await bridge.readArtifactText(o.path, outputSessionId) };
+              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.artifacts.readArtifactText) {
+                next = { kind: 'html', html: await bridge.artifacts.readArtifactText(o.path) };
               }
-              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.renderArtifactVisual) {
-                const visual = await bridge.renderArtifactVisual(o.path, outputSessionId);
+              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
+                const visual = await bridge.artifacts.renderArtifactVisual(o.path);
                 if (visual && visual.mode === 'html' && visual.html) {
                   next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                 }
               }
-              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.readArtifactText) {
-                const text = await bridge.readArtifactText(o.path, outputSessionId);
+              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.artifacts.readArtifactText) {
+                const text = await bridge.artifacts.readArtifactText(o.path);
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
@@ -347,11 +345,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
               if (freshHit) return freshHit;
               try {
                 let next = null;
-                if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext) && bridge.readArtifactImageB64) {
-                  next = { kind: 'image', url: await bridge.readArtifactImageB64(f.path) };
+                if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext) && bridge.artifacts.readArtifactImageB64) {
+                  next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(f.path) };
                 }
-                if (!next && ['html','htm'].includes(ext) && bridge.readArtifactText) {
-                  const html = await bridge.readArtifactText(f.path);
+                if (!next && ['html','htm'].includes(ext) && bridge.artifacts.readArtifactText) {
+                  const html = await bridge.artifacts.readArtifactText(f.path);
                   let bodyText = '';
                   try {
                     const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
@@ -362,13 +360,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     ? { kind: 'text', text: html.slice(0, 1200) }
                     : { kind: 'html', html };
                 }
-                if (!next && ['docx','doc','odt','rtf','xlsx','xls','pptx','ppt','pdf'].includes(ext) && bridge.renderArtifactVisual) {
-                  const visual = await bridge.renderArtifactVisual(f.path);
+                if (!next && ['docx','doc','odt','rtf','xlsx','xls','pptx','ppt','pdf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
+                  const visual = await bridge.artifacts.renderArtifactVisual(f.path);
                   if (visual && visual.mode === 'html' && visual.html) next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                   else if (visual && visual.mode === 'images' && visual.images && visual.images.length) next = { kind: 'image', url: visual.images[0] };
                 }
-                if (!next && ['md','markdown','txt','csv','json','log'].includes(ext) && bridge.readArtifactText) {
-                  const text = await bridge.readArtifactText(f.path);
+                if (!next && ['md','markdown','txt','csv','json','log'].includes(ext) && bridge.artifacts.readArtifactText) {
+                  const text = await bridge.artifacts.readArtifactText(f.path);
                   next = { kind: 'text', text: text.slice(0, 1200) };
                 }
                 if (!next) next = { kind: 'fallback' };
@@ -562,11 +560,15 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const startModelDownload = async () => {
         if (!canInstallKbModel) return;
         try {
-          const st = await bridge.downloadKbModel();
+          const st = await bridge.knowledge.downloadKbModel();
           if (st) { setKbModel(st); kbCache.model = st; }
           loadColls(); // 模型就绪后刷新语义徽标/列表
         } catch (e) {}
       };
+      // 用户恰好在首帧后台加载期间进入知识库时，模型就绪后刷新语义状态徽标。
+      useEffect(() => {
+        if (kbm.startupReady) loadColls();
+      }, [kbm.startupReady, loadColls]);
 
       const indexing = !!(idx && idx.running);
       useEffect(() => {
@@ -603,14 +605,14 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
       const addSources = async (cid) => {
         let paths = [];
-        try { paths = (bridge && bridge.pickFiles) ? await bridge.pickFiles() : []; } catch (e) { paths = []; }
+        try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
         try { setIdx(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch (e) {}
       };
       // 知识库页底部入口：选文件 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
       const dzPick = async () => {
         let paths = [];
-        try { paths = (bridge && bridge.pickFiles) ? await bridge.pickFiles() : []; } catch (e) { paths = []; }
+        try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
         if (colls.length === 1) { try { setIdx(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch (e) {} }
         else { setAddToKb(paths); }
@@ -839,7 +841,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       <button onClick={() => continueOutput(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-[#283650] text-[#8db7ff]' : 'bg-[#e9f1ff] text-[#2f6beb]'}`}>{t.kbOutContinue}</button>
                       <button onClick={() => newOutputProject(o)} className={`h-8 px-3 rounded-full text-[12.5px] font-bold ${isDark ? 'bg-white/[0.075] text-[#dfe3e9]' : 'bg-[#f2f4f8] text-[#444746]'}`}>{t.kbOutNewProject}</button>
                       {canOpenSystemFiles && <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><FolderOpen size={16} /></button>}
-                      {isWeb && canDownloadArtifacts && <button title="下载产物" onClick={() => bridge.downloadArtifact(o.path, o.sessionId || o.session_id)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><Download size={16} /></button>}
+                      {isWeb && canDownloadArtifacts && <button title="下载产物" onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)} className={`w-8 h-8 rounded-lg grid place-items-center ${iconHover}`}><Download size={16} /></button>}
                     </div>
                   );
                   return (

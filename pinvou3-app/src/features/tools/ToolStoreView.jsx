@@ -5,6 +5,7 @@ import { IosSearchField, IosSegmentedControl } from '../../components/IosControl
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
@@ -140,7 +141,7 @@ const FEISHU_STEPS = [
                       <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
                     </div>
                   )}
-                  {flow.qrUrl && <button onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
+                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
                 </div>
               </div>
             </div>
@@ -198,7 +199,7 @@ const FEISHU_STEPS = [
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
     function ensureFeishuListeners() {
       if (feishuConn.listenersReady) return;
-      const ev = window.__TAURI__ && window.__TAURI__.event;
+      const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       feishuConn.listenersReady = true;
       ev.listen('feishu:progress', (e) => {
@@ -228,7 +229,7 @@ const FEISHU_STEPS = [
         feishuConn.stopTick();
         feishuConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
         // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
-        window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+        invokeTauri('feishu_apply_skills').catch(() => {});
         // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
         setTimeout(() => feishuConn.setFlow(null), 1800);
       });
@@ -260,7 +261,7 @@ const FEISHU_STEPS = [
     };
     function ensureWecomListeners() {
       if (wecomConn.listenersReady) return;
-      const ev = window.__TAURI__ && window.__TAURI__.event;
+      const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       wecomConn.listenersReady = true;
       ev.listen('wecom:qr', (e) => {
@@ -276,7 +277,7 @@ const FEISHU_STEPS = [
       ev.listen('wecom:connected', () => {
         wecomConn.stopTick();
         wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
-        window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+        invokeTauri('wecom_apply_skills').catch(() => {});
         setTimeout(() => wecomConn.setFlow(null), 1800);
       });
       ev.listen('wecom:error', (e) => {
@@ -304,7 +305,7 @@ const FEISHU_STEPS = [
     };
     function ensureDingtalkListeners() {
       if (dingtalkConn.listenersReady) return;
-      const ev = window.__TAURI__ && window.__TAURI__.event;
+      const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       dingtalkConn.listenersReady = true;
       ev.listen('dingtalk:qr', (e) => {
@@ -320,7 +321,7 @@ const FEISHU_STEPS = [
       ev.listen('dingtalk:connected', async () => {
         dingtalkConn.stopTick();
         try {
-          await window.__TAURI__.core.invoke('dingtalk_apply_skills');
+          await invokeTauri('dingtalk_apply_skills');
           dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
           setTimeout(() => dingtalkConn.setFlow(null), 1800);
         } catch (e) {
@@ -445,7 +446,7 @@ const FEISHU_STEPS = [
               )}
               {config.configDocUrl && (
                 <button
-                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: config.configDocUrl })}
+                  onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl })}
                   className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
                 >
                   {config.configDocLabel || '查看配置说明'} →
@@ -454,7 +455,7 @@ const FEISHU_STEPS = [
               {/* 引导链接放最上,不夹在输入框中间 */}
               {fields.find(f => f.helpUrl) && (
                 <button
-                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
+                  onClick={() => invokeTauri('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
                   className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
                 >
                   不会建应用？去飞书开放平台建一个 →
@@ -576,7 +577,7 @@ const FEISHU_STEPS = [
       const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
       const refreshFeishu = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('feishu_status');
+          const s = await invokeTauri('feishu_status');
           setFeishuConnected(!!(s && s.connected));
         } catch (e) { console.error('feishu_status failed:', e); }
       };
@@ -588,7 +589,7 @@ const FEISHU_STEPS = [
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
       const refreshWecom = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('wecom_status');
+          const s = await invokeTauri('wecom_status');
           setWecomConnected(!!(s && s.connected));
         } catch (e) { console.error('wecom_status failed:', e); }
       };
@@ -599,7 +600,7 @@ const FEISHU_STEPS = [
       const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
       const refreshDingtalk = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('dingtalk_status');
+          const s = await invokeTauri('dingtalk_status');
           setDingtalkConnected(!!(s && s.connected));
         } catch (e) { console.error('dingtalk_status failed:', e); }
       };
@@ -682,13 +683,13 @@ const FEISHU_STEPS = [
       const [zhidaoSso, setZhidaoSso] = useState(null); // { url, qr } SSO 登录引导弹窗
       const refreshEip = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('eip_status');
+          const s = await invokeTauri('eip_status');
           setEipConnected(!!(s && s.connected));
         } catch (e) { console.error('eip_status failed:', e); }
       };
       const refreshZhidao = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('zhidao_status');
+          const s = await invokeTauri('zhidao_status');
           setZhidaoConnected(!!(s && s.connected));
         } catch (e) { console.error('zhidao_status failed:', e); }
       };
@@ -696,8 +697,7 @@ const FEISHU_STEPS = [
 
       // 企微/EIP/知道 连接编排事件:后端推进度,前端驱动 UI。
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
-        const ev = window.__TAURI__ && window.__TAURI__.event;
+        const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev) return;
         const unlisten = [];
         ev.listen('wecom:qr', (e) => {
@@ -709,7 +709,7 @@ const FEISHU_STEPS = [
         ev.listen('wecom:connected', () => {
           setWecomQr(null); setWecomConnected(true); setBusyId(null);
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见。
-          window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+          invokeTauri('wecom_apply_skills').catch(() => {});
           setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
           notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
@@ -828,7 +828,7 @@ const FEISHU_STEPS = [
       // 从后端加载已安装状态
       const loadBackendState = async () => {
         try {
-          const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+          const list = await invokeTauri('list_marketplace_tools');
           const states = {};
           const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
           list.forEach(t => {
@@ -841,7 +841,7 @@ const FEISHU_STEPS = [
             .filter(tool => tool.oauthMcp && tool.backendId)
             .map(async (tool) => {
               try {
-                const status = await window.__TAURI__.core.invoke('get_marketplace_tool_auth_status', { toolId: tool.backendId });
+                const status = await invokeTauri('get_marketplace_tool_auth_status', { toolId: tool.backendId });
                 return [tool.backendId, status];
               } catch (err) {
                 console.error('get_marketplace_tool_auth_status failed:', tool.backendId, err);
@@ -857,7 +857,7 @@ const FEISHU_STEPS = [
           console.error('list_marketplace_tools failed:', e);
         }
         try {
-          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          const skills = await invokeTauri('list_marketplace_skills');
           setSkillBackend(Array.isArray(skills) ? skills : []);
         } catch (e) {
           console.error('list_marketplace_skills failed:', e);
@@ -886,8 +886,7 @@ const FEISHU_STEPS = [
         const activeRequests = Object.entries(oauthRequestRef.current);
         oauthRequestRef.current = {};
         activeRequests.forEach(([toolId, requestId]) => {
-          window.__TAURI__.core
-            .invoke('cancel_marketplace_tool_oauth_login', { toolId, requestId })
+          invokeTauri('cancel_marketplace_tool_oauth_login', { toolId, requestId })
             .catch(err => console.error('cancel marketplace oauth on unmount failed:', err));
         });
       }, []);
@@ -925,7 +924,7 @@ const FEISHU_STEPS = [
           subtitle: '正在停止浏览器授权等待…',
         }));
         try {
-          await window.__TAURI__.core.invoke('cancel_marketplace_tool_oauth_login', {
+          await invokeTauri('cancel_marketplace_tool_oauth_login', {
             toolId: backendId,
             requestId,
           });
@@ -968,7 +967,7 @@ const FEISHU_STEPS = [
           if (userConfig && Object.keys(userConfig).length > 0) {
             args.config = userConfig;
           }
-          await window.__TAURI__.core.invoke('install_marketplace_tool', args);
+          await invokeTauri('install_marketplace_tool', args);
           if (t?.oauthMcp) {
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             setToolAuthStates(prev => ({
@@ -982,8 +981,7 @@ const FEISHU_STEPS = [
                 message: '正在等待浏览器授权完成。',
               },
             }));
-            const loginPromise = window.__TAURI__.core
-              .invoke('start_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
+            const loginPromise = invokeTauri('start_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
               .catch(err => ({
                 status: 'failed',
                 message: String(err).slice(0, 240),
@@ -1007,13 +1005,11 @@ const FEISHU_STEPS = [
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
-              await window.__TAURI__.core
-                .invoke('cancel_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
+              await invokeTauri('cancel_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
                 .catch(err => console.error('cancel marketplace oauth after UI timeout failed:', err));
             }
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
-            const authStatus = await window.__TAURI__.core
-              .invoke('get_marketplace_tool_auth_status', { toolId: backendId })
+            const authStatus = await invokeTauri('get_marketplace_tool_auth_status', { toolId: backendId })
               .catch((err) => {
                 console.error('get_marketplace_tool_auth_status after oauth failed:', err);
                 return null;
@@ -1056,7 +1052,7 @@ const FEISHU_STEPS = [
         } catch (e) {
           if (t?.oauthMcp && !isCurrentOAuthRequest(backendId, oauthRequestId)) return;
           console.error('install failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e).slice(0, 240), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           if (t?.oauthMcp) {
             if (isCurrentOAuthRequest(backendId, oauthRequestId)) {
@@ -1077,7 +1073,7 @@ const FEISHU_STEPS = [
         setBusyId(backendId);
         try {
           const cmd = isInstalled ? 'uninstall_marketplace_skill' : 'install_marketplace_skill';
-          await window.__TAURI__.core.invoke(cmd, { skillId: backendId });
+          await invokeTauri(cmd, { skillId: backendId });
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: `${isInstalled ? '已卸载' : '已安装'}「${name}」`, isInstall: !isInstalled, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
@@ -1098,7 +1094,7 @@ const FEISHU_STEPS = [
         setBusyId('__upload__');
         setAlert({ loading: true, visible: false, title: '正在导入技能包…', subtitle: '校验并解压中', isInstall: true, isError: false });
         try {
-          const ok = await window.__TAURI__.core.invoke('import_skill_package');
+          const ok = await invokeTauri('import_skill_package');
           if (ok) {
             await loadBackendState();
             setAlert({ visible: true, loading: false, title: '技能包已导入', isInstall: true, isError: false });
@@ -1126,10 +1122,10 @@ const FEISHU_STEPS = [
         try {
           // ① 确保 CLI（B 方案下可能联网安装 ~40s，会 emit feishu:progress step=cli）
           feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
-          await window.__TAURI__.core.invoke('feishu_ensure_cli');
+          await invokeTauri('feishu_ensure_cli');
           feishuConn.setFlow(f => ({ ...(f || {}), active: 'connect', pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done', connect: 'active' } }));
           // ② 连接编排（后端 emit feishu:qr / connected / error）
-          await window.__TAURI__.core.invoke('feishu_connect_begin');
+          await invokeTauri('feishu_connect_begin');
         } catch (e) {
           console.error('feishu connect failed:', e);
           feishuConn.stopTick();
@@ -1143,7 +1139,7 @@ const FEISHU_STEPS = [
       // 取消/关闭流程卡：置取消 + kill 子进程 + 清状态。
       const feishuResetFlow = () => {
         feishuConn.stopTick();
-        window.__TAURI__.core.invoke('feishu_cancel').catch(() => {});
+        invokeTauri('feishu_cancel').catch(() => {});
         feishuConn.setFlow(null); setBusyId(null);
       };
       // 重试：ensure_cli 幂等，直接重跑整个连接流程。
@@ -1151,9 +1147,9 @@ const FEISHU_STEPS = [
       const disconnectFeishu = async () => {
         setBusyId('feishu');
         try {
-          await window.__TAURI__.core.invoke('feishu_logout');
+          await invokeTauri('feishu_logout');
           // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新。
-          await window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+          await invokeTauri('feishu_apply_skills').catch(() => {});
           setFeishuConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开飞书', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1175,10 +1171,10 @@ const FEISHU_STEPS = [
         try {
           // ① 确保 CLI(首次联网装 wecom-cli ~40s)
           wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
-          await window.__TAURI__.core.invoke('wecom_ensure_cli');
+          await invokeTauri('wecom_ensure_cli');
           wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
           // ② 连接编排(后端 emit wecom:qr / connected / error)
-          await window.__TAURI__.core.invoke('wecom_connect_begin');
+          await invokeTauri('wecom_connect_begin');
         } catch (e) {
           console.error('wecom connect failed:', e);
           wecomConn.stopTick();
@@ -1191,16 +1187,16 @@ const FEISHU_STEPS = [
       };
       const wecomResetFlow = () => {
         wecomConn.stopTick();
-        window.__TAURI__.core.invoke('wecom_cancel').catch(() => {});
+        invokeTauri('wecom_cancel').catch(() => {});
         wecomConn.setFlow(null); setBusyId(null);
       };
       const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
         setBusyId('wecom');
         try {
-          await window.__TAURI__.core.invoke('wecom_logout');
+          await invokeTauri('wecom_logout');
           // 断开 → 撤掉技能(should_show 变 false)。
-          await window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+          await invokeTauri('wecom_apply_skills').catch(() => {});
           setWecomConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开企业微信', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1220,9 +1216,9 @@ const FEISHU_STEPS = [
         dingtalkConn.startTick();
         try {
           dingtalkConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
-          await window.__TAURI__.core.invoke('dingtalk_ensure_cli');
+          await invokeTauri('dingtalk_ensure_cli');
           dingtalkConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
-          await window.__TAURI__.core.invoke('dingtalk_connect_begin');
+          await invokeTauri('dingtalk_connect_begin');
         } catch (e) {
           console.error('dingtalk connect failed:', e);
           dingtalkConn.stopTick();
@@ -1235,15 +1231,15 @@ const FEISHU_STEPS = [
       };
       const dingtalkResetFlow = () => {
         dingtalkConn.stopTick();
-        window.__TAURI__.core.invoke('dingtalk_cancel').catch(() => {});
+        invokeTauri('dingtalk_cancel').catch(() => {});
         dingtalkConn.setFlow(null); setBusyId(null);
       };
       const dingtalkRetry = () => { connectDingtalk(); };
       const disconnectDingtalk = async () => {
         setBusyId('dingtalk');
         try {
-          await window.__TAURI__.core.invoke('dingtalk_logout');
-          await window.__TAURI__.core.invoke('dingtalk_apply_skills').catch(() => {});
+          await invokeTauri('dingtalk_logout');
+          await invokeTauri('dingtalk_apply_skills').catch(() => {});
           setDingtalkConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开钉钉', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1259,7 +1255,7 @@ const FEISHU_STEPS = [
       const connectEip = async () => {
         setBusyId('eip');
         try {
-          await window.__TAURI__.core.invoke('eip_connect_begin');
+          await invokeTauri('eip_connect_begin');
           // 后续:eip:sso 出登录地址 → 用户浏览器 SSO 登录 → eip:connected 收尾。
         } catch (e) {
           console.error('eip connect failed:', e);
@@ -1270,7 +1266,7 @@ const FEISHU_STEPS = [
       const disconnectEip = async () => {
         setBusyId('eip');
         try {
-          await window.__TAURI__.core.invoke('eip_logout');
+          await invokeTauri('eip_logout');
           setEipConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开员工门户（EIP）', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1286,7 +1282,7 @@ const FEISHU_STEPS = [
       const connectZhidao = async () => {
         setBusyId('zhidao');
         try {
-          await window.__TAURI__.core.invoke('zhidao_connect_begin');
+          await invokeTauri('zhidao_connect_begin');
         } catch (e) {
           console.error('zhidao connect failed:', e);
           setZhidaoSso(null); setBusyId(null);
@@ -1296,7 +1292,7 @@ const FEISHU_STEPS = [
       const disconnectZhidao = async () => {
         setBusyId('zhidao');
         try {
-          await window.__TAURI__.core.invoke('zhidao_logout');
+          await invokeTauri('zhidao_logout');
           setZhidaoConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开知道知识库', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1358,7 +1354,7 @@ const FEISHU_STEPS = [
           // Obsidian：连接前先探测本机状态——没装/没库就引导，不默默装个用不了的连接器
           if (backendId === 'obsidian') {
             let st = null;
-            try { st = await window.__TAURI__.core.invoke('detect_obsidian'); } catch (e) {}
+            try { st = await invokeTauri('detect_obsidian'); } catch (e) {}
             if (st && st.state && st.state !== 'ok') { setObsidianGuide({ backendId, name, ...st }); return; }
             return doInstall(backendId, {});
           }
@@ -1380,7 +1376,7 @@ const FEISHU_STEPS = [
         // 卸载
         setBusyId(backendId);
         try {
-          await window.__TAURI__.core.invoke('uninstall_marketplace_tool', { toolId: backendId });
+          await invokeTauri('uninstall_marketplace_tool', { toolId: backendId });
           await loadBackendState();
           if (t?.oauthMcp) {
             setToolAuthStates(prev => ({
@@ -1452,17 +1448,17 @@ const FEISHU_STEPS = [
             theme={theme}
             allowDownload={can('localModelSetup')}
             onCancel={() => setObsidianGuide(null)}
-            onDownload={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
+            onDownload={() => invokeTauri('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
             onRetry={async () => {
               let st = null;
-              try { st = await window.__TAURI__.core.invoke('detect_obsidian'); } catch (e) {}
+              try { st = await invokeTauri('detect_obsidian'); } catch (e) {}
               if (st && st.state === 'ok') { const bid = obsidianGuide.backendId; setObsidianGuide(null); doInstall(bid, {}); }
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
-          {externalAuthAvailable && wecomQr && (() => {
-            const cancel = () => { window.__TAURI__.core.invoke('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
+          {wecomQr && (() => {
+            const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1475,14 +1471,14 @@ const FEISHU_STEPS = [
                 <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待授权中…
                 </div>
-                <button onClick={() => { if (wecomQr.url) window.__TAURI__.core.invoke('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
+                <button onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
                 <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
               </div>
             </div>
             ), document.body);
           })()}
-          {externalAuthAvailable && eipSso && (() => {
-            const cancel = () => { window.__TAURI__.core.invoke('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
+          {eipSso && (() => {
+            const cancel = () => { invokeTauri('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1491,7 +1487,7 @@ const FEISHU_STEPS = [
                 {eipSso.qr
                   ? <img src={eipSso.qr} alt="EIP 登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
                   : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
-                <button onClick={() => { if (eipSso.url) window.__TAURI__.core.invoke('open_external_url', { url: eipSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <button onClick={() => { if (eipSso.url) invokeTauri('open_external_url', { url: eipSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
                 <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
                 </div>
@@ -1500,8 +1496,8 @@ const FEISHU_STEPS = [
             </div>
             ), document.body);
           })()}
-          {externalAuthAvailable && zhidaoSso && (() => {
-            const cancel = () => { window.__TAURI__.core.invoke('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
+          {zhidaoSso && (() => {
+            const cancel = () => { invokeTauri('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1510,7 +1506,7 @@ const FEISHU_STEPS = [
                 {zhidaoSso.qr
                   ? <img src={zhidaoSso.qr} alt="知道登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
                   : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
-                <button onClick={() => { if (zhidaoSso.url) window.__TAURI__.core.invoke('open_external_url', { url: zhidaoSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <button onClick={() => { if (zhidaoSso.url) invokeTauri('open_external_url', { url: zhidaoSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
                 <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
                 </div>

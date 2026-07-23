@@ -41,7 +41,7 @@ pinvou3 **fork patch #41**（`DeepSeek-TUI/crates/tui/src/skills/mod.rs:601` `sk
 
 ## 2. 卡牌池 / persona（不是 skill）
 
-- 数据：`pinvou3-app/src-tauri/resources/bundle/personas/agency-agents.json`（Side B，201 个 agency-agents-zh agent，MIT）。
+- 数据：`pinvou3-app/src-tauri/resources/common/bundle/personas/agency-agents.json`（Side B，201 个 agency-agents-zh agent，MIT）。
 - 运行时：`personas.rs:18` `include_str!` **编译进二进制**，首次访问解析进内存 `OnceLock`。**不落盘，~/.pinvou3 里没有**，不被任何 SkillRegistry 发现。
 - 加持机制：选卡 → `equip_persona` 存 per-session active_persona + pending body → 该 session 首条 chat 一次性 prepend 完整 body（`personas::equip_body_injection`）+ 每 turn 注入轻锚点（`equip_anchor`）。详见 `personas.rs`。
 - Side A（card-pool 分支）：pinvou2 agent-market 1078 元数据卡，机制类似但只注入摘要。

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, BrainCircuit, CheckCircle2, Clock, Cpu, Database, RefreshCw, RotateCcw, Server } from '../../components/icons.jsx';
+import { AlertTriangle, Brain, BrainCircuit, CheckCircle2, Clock, Cpu, Database, RefreshCw, RotateCcw, Server } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ListRow, ProgressBar, WidgetCard } from '../workflow/WorkflowView.jsx';
 
@@ -293,19 +293,19 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
       const monitorError = bs && bs.monitorError;
-      const monitorBridgeReady = !!(window.TauriBridge && typeof window.TauriBridge.startMonitorPolling === 'function');
+      const monitorBridgeReady = !!(window.TauriBridge?.monitor && typeof window.TauriBridge.monitor.startMonitorPolling === 'function');
       const loadingValue = !monitorBridgeReady ? '桥接未就绪' : (monitorError ? '读取失败' : '正在读取');
 
       // Start/stop polling when view mounts/unmounts
       useEffect(() => {
         const liveBridge = window.TauriBridge || bridge;
-        if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') {
-          liveBridge.startMonitorPolling();
+        if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') {
+          liveBridge.monitor.startMonitorPolling();
         } else {
           console.warn('[monitor] TauriBridge polling API unavailable');
         }
         return () => {
-          if (liveBridge && typeof liveBridge.stopMonitorPolling === 'function') liveBridge.stopMonitorPolling();
+          if (liveBridge?.monitor && typeof liveBridge.monitor.stopMonitorPolling === 'function') liveBridge.monitor.stopMonitorPolling();
         };
       }, []);
 
@@ -362,7 +362,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         return String(Math.round(n));
       };
       const doClear = useCallback(() => {
-        const reallyClear = () => { if (bridge.available && bridge.clearMonitorStats) bridge.clearMonitorStats(); };
+        const reallyClear = () => { if (bridge.available && bridge.monitor.clearMonitorStats) bridge.monitor.clearMonitorStats(); };
         const raw = vllmRaw;
         if (!raw || reduceMotionRef.current) { reallyClear(); return; }
         const from = { kv: raw.kvPct, ttftS: raw.ttftS, tps: raw.tps, gen: raw.gen || 0, prompt: raw.prompt || 0 };
@@ -445,13 +445,15 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         red: isDark ? '#FF453A' : '#FF3B30',
         gray: isDark ? '#98989D' : '#8E8E93',
       };
+      const cpuAvailable = fmt ? !!fmt.cpuAvailable : false;
+      const computeAvailable = fmt ? !!fmt.computeAvailable : gpuAvailable;
       const processorUtilPct = fmt && fmt.processorUtilPct != null ? fmt.processorUtilPct : 0;
       const gpuSharedMemory = fmt && fmt.gpuSharedMemory ? fmt.gpuSharedMemory : loadingValue;
-      const isLocalProcessor = /intel/i.test(gpuName) || processorUtilPct > 0;
+      const isLocalProcessor = !gpuAvailable && cpuAvailable;
       const isUnifiedGpu = gpuAvailable && !gpuHasVram && !isLocalProcessor;
       const unifiedMemoryPct = isUnifiedGpu ? ramPct : gpuVramPct;
-      const computeDeviceName = isLocalProcessor ? monitorShortProcessorName(gpuName) : gpuName;
-      const processorIcon = monitorProcessorIcon(gpuName);
+      const computeDeviceName = isLocalProcessor ? monitorShortProcessorName((fmt && (fmt.computeName || fmt.cpuName)) || gpuName) : ((fmt && fmt.computeName) || gpuName);
+      const processorIcon = monitorProcessorIcon(computeDeviceName);
       const modelIcon = monitorModelIcon(vllmModel);
       const tokenPair = monitorTokenPair(clearOverride ? clearOverride.tokTotal : vllmTokTotal);
       const ctxNum = typeof vllmMaxLen === 'number' ? vllmMaxLen : parseFloat(String(vllmMaxLen || '').replace(/[^\d.]/g, ''));
@@ -510,7 +512,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                   <MonitorComputeHeader
                     icon={Cpu}
                     title={isLocalProcessor ? t.localProcessor : t.gpu}
-                    device={gpuAvailable ? computeDeviceName : t.gpuUnavail}
+                    device={computeAvailable ? computeDeviceName : t.gpuUnavail}
                     brandIcon={processorIcon}
                   />
                   <div className="flex-1 flex flex-col justify-end mt-4">
@@ -536,7 +538,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                   <div className="flex-1 flex flex-col justify-between">
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-2">
-                        <img src="./brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
+                        <img src="/assets/brand/brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
                         <h2 className="text-xl font-bold">pinvou3-app</h2>
                       </div>
                     </div>
@@ -558,7 +560,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                 </MonitorCard>
 
                 <MonitorCard className="md:col-span-12" highlight>
-                  <MonitorSectionHeader icon={BrainCircuit} title={t.currentModel} />
+                  <MonitorSectionHeader icon={Brain} title={t.currentModel} />
                   <div className="flex justify-between items-start mb-6">
                     <div>
                       <div className="flex items-center gap-3 mb-2">
@@ -628,140 +630,6 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         </div>
       );
 
-      return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
-
-          <div className="w-full max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-6 flex items-end justify-between">
-            <div>
-              <h1 className="text-[32px] font-normal tracking-tight mb-2">{t.sysStatus}</h1>
-              <p className={`text-[15px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.sysDesc}</p>
-            </div>
-            <div className={`flex items-center gap-3 px-5 py-2.5 rounded-full ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-              <div className={`w-2 h-2 rounded-full ${vllmIsRemote ? 'bg-[#9aa1ac]' : (vllmOnline ? 'bg-[#188038] animate-pulse' : 'bg-[#EA4335]')}`}></div>
-              <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{updatedAt}</span>
-              <div className="w-[1px] h-4 bg-gray-400/30 mx-2"></div>
-              <button
-                onClick={() => { if (bridge.available) bridge.startMonitorPolling(); }}
-                className={`hover:rotate-180 transition-transform duration-500 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}
-              >
-                <RefreshCw size={16} />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto py-8 custom-scrollbar">
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 max-w-7xl mx-auto px-6 md:px-10">
-
-              <WidgetCard title={t.gpu} theme={theme}>
-                <div className="mb-10">
-                  <h3 className="text-[28px] font-medium">{gpuAvailable ? computeDeviceName : t.gpuUnavail}</h3>
-                  <p className={`text-[14px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{gpuAvailable ? (gpuHasVram ? '' : t.unifiedMem) : t.noSmi}</p>
-                </div>
-                <div className="space-y-6 mt-auto">
-                  {gpuHasVram ? (
-                    <ProgressBar label={t.vram} value={gpuVram} percentage={gpuVramPct} theme={theme} />
-                  ) : gpuAvailable ? (
-                    <div className={`flex justify-between items-center py-2.5 px-3 rounded-[16px] ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.temp}</span>
-                        <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuTemp || '—'}</span>
-                      </div>
-                      <div className="w-px h-4 bg-gray-400/30"></div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.power}</span>
-                        <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{gpuPower || '—'}</span>
-                      </div>
-                    </div>
-                  ) : null}
-                  <ProgressBar label={t.core} value={gpuAvailable ? gpuUtil : '—'} percentage={gpuAvailable ? gpuUtilPct : 0} theme={theme} />
-                </div>
-              </WidgetCard>
-
-              <WidgetCard title={t.ram} theme={theme}>
-                 <div className="mb-10 flex items-baseline gap-2">
-                  <h3 className="text-[48px] font-normal leading-none tracking-tight">{ramUsedGiB}</h3>
-                  <span className={`text-[16px] font-medium ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>GB {t.used}</span>
-                </div>
-                <div className="space-y-6 mt-auto">
-                  <ProgressBar label={t.physical} value={ramPct + '%'} subValue={ramTotal + ' ' + t.total} percentage={ramPct} theme={theme} color="#0B57D0" />
-                  <ProgressBar label={t.swap} value={swapPct + '%'} subValue={swapTotal} percentage={swapPct} theme={theme} color="#188038" />
-                </div>
-              </WidgetCard>
-
-              <WidgetCard title={t.vllm} theme={theme}>
-                 <div className="flex items-start justify-between mb-8">
-                  <div className="min-w-0">
-                    <h3 className="text-[22px] font-medium mb-1">{vllmModel}</h3>
-                    {vllmModelMismatch && vllmConfiguredModel && (
-                      <p className={`text-[12px] truncate ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
-                        配置: {vllmConfiguredModel}
-                      </p>
-                    )}
-                    <p className={`text-[13px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{vllmUpstream}</p>
-                    <p className={`text-[12px] mt-1 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{vllmTargetKind}</p>
-                    {vllmDiagnostic && (
-                      <p className={`text-[12px] mt-1 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{vllmDiagnostic}</p>
-                    )}
-                    {!vllmDiagnostic && vllmMetricDiagnostic && (
-                      <p className={`text-[12px] mt-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#5F6368]'}`}>{vllmMetricDiagnostic}</p>
-                    )}
-                  </div>
-                  {/* 云端(remote)不做健康探测 → 非在线时不显示徽章(不误报 OFFLINE);
-                      本地仍显示 READY/BUSY/OFFLINE/MISMATCH。 */}
-                  {(!vllmIsRemote || vllmOnline) && (
-                  <div className={`px-3 py-1 rounded-full flex items-center gap-2 ${
-                    vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN'
-                      ? (isDark ? 'bg-[#5C3A1E] text-[#F9AB00]' : 'bg-[#FEF3E8] text-[#B06000]')
-                      : vllmOnline
-                        ? (isDark ? 'bg-[#0F5223] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]')
-                        : (isDark ? 'bg-[#5C2020] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
-                  }`}>
-                    {vllmStatus === 'MISMATCH' || vllmStatus === 'UNKNOWN' || !vllmOnline ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
-                    <span className="text-[11px] font-bold tracking-wider">{vllmStatus}</span>
-                  </div>
-                  )}
-                </div>
-                <div className={`rounded-[16px] p-2 mt-auto ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
-                  <ListRow label={t.ctx} value={String(vllmMaxLen)} theme={theme} />
-                  {vllmCtxWarn && (
-                    <div className={`flex items-start gap-1 px-1 pt-1 pb-1 text-[10px] leading-snug ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
-                      <AlertTriangle size={11} className="shrink-0 mt-[1px]" />
-                      <span>{t.ctxWarn.replace('%s', Math.round(vllmCtxWarn / 1024) + 'k')}</span>
-                    </div>
-                  )}
-                  <ListRow label={t.queue} value={vllmQueue} theme={theme} />
-                  <ListRow label={t.kv} value={clearOverride ? clearOverride.kv : vllmKv} theme={theme} />
-                  <ListRow label={t.ttft} value={clearOverride ? clearOverride.ttft : vllmTtft} theme={theme} />
-                  <ListRow label={t.tps} value={clearOverride ? clearOverride.tps : vllmTps} theme={theme} />
-                  <ListRow label={t.tokTotal} value={clearOverride ? clearOverride.tokTotal : vllmTokTotal} border={false} theme={theme} />
-                </div>
-                <div className="flex items-center justify-between gap-3 mt-3 px-1 min-h-[30px]">
-                  <span className={`text-[12px] flex items-center gap-1.5 min-w-0 ${isDark ? 'text-[#9aa1ac]' : 'text-[#80868B]'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${vllmOnline ? 'bg-[#188038]' : 'bg-[#9aa1ac]'}`}></span>
-                    <span className="truncate">{vllmStatusText}</span>
-                  </span>
-                  <ClearStatsHold theme={theme} t={t} onClear={doClear} />
-                </div>
-                <p className={`text-center text-[11px] mt-3 ${isDark ? 'text-[#7a7d7b]' : 'text-[#9aa1ac]'}`}>{t.clearHint}</p>
-              </WidgetCard>
-
-              <WidgetCard title={t.app} theme={theme}>
-                <div className="mb-8">
-                  <h3 className="text-[22px] font-medium mb-1">pinvou3-app</h3>
-                  <p className={`text-[14px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.appRunning}</p>
-                </div>
-                {/* 不用 mt-auto：右卡内容少，让版本表格紧跟标题，与左卡表格顶部对齐而非沉底 */}
-                <div className={`rounded-[16px] p-2 ${isDark ? 'bg-[#131314]' : 'bg-[#F8F9FA]'}`}>
-                  <ListRow label={t.curVer} value={appVersion} theme={theme} />
-                  <ListRow label={t.uiVer} value={dtVersion} theme={theme} />
-                  <ListRow label={t.uptime} value={uptime} border={false} theme={theme} />
-                </div>
-              </WidgetCard>
-
-            </div>
-          </div>
-        </div>
-      );
     };
 
     // ==========================================

@@ -63,8 +63,8 @@ if [ -n "${MACOS_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] \
 fi
 
 # ── 2. SenseVoice darwin-arm64 前置校验 ────────────────────────────
-ASR_BIN="$APP_DIR/src-tauri/resources/asr/sense-voice-darwin-arm64"
-ASR_LICENSE="$APP_DIR/src-tauri/resources/asr/LICENSE-sense-voice-darwin-arm64"
+ASR_BIN="$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/sense-voice-darwin-arm64"
+ASR_LICENSE="$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/LICENSE-sense-voice-darwin-arm64"
 if [ ! -f "$ASR_BIN" ]; then
   echo "❌ SenseVoice darwin-arm64 缺失: $ASR_BIN" >&2
   echo "   需本机交叉/本地编译 SenseVoice.cpp(-DBUILD_SHARED_LIBS=OFF,Metal 着色器内嵌),"
@@ -81,7 +81,7 @@ if [ ! -f "$ASR_LICENSE" ]; then
 fi
 # 预清 quarantine xattr(防子进程被 Gatekeeper 拦)
 xattr -dr com.apple.quarantine "$ASR_BIN" 2>/dev/null || true
-xattr -dr com.apple.quarantine "$APP_DIR/src-tauri/resources/asr/" 2>/dev/null || true
+xattr -dr com.apple.quarantine "$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/" 2>/dev/null || true
 echo "✓ SenseVoice darwin-arm64 校验通过"
 
 # ── 3. 内置工具共享 key 注入（同 release-deb.sh）─────────────────
@@ -140,7 +140,7 @@ fi
 (
   cd "$APP_DIR"
   npm ci --prefer-offline --no-audit
-  npx tauri build --target aarch64-apple-darwin
+  node scripts/tauri/build.js build --target aarch64-apple-darwin
 )
 
 DMG="$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_${ARCH}.dmg"
@@ -158,7 +158,7 @@ if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
   echo "⚠️  Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
   (
     cd "$APP_DIR"
-    npx tauri build --target aarch64-apple-darwin --bundles dmg
+    node scripts/tauri/build.js build --target aarch64-apple-darwin --bundles dmg
   ) || echo "⚠️  重试仍失败,降级手动 hdiutil 打包"
 fi
 

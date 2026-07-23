@@ -42,7 +42,7 @@ async function pathExists(path) {
 async function ensureMinimalWebDist(t) {
   const dist = join(repoRoot, "remote-control-relay", "web", "dist");
   const index = join(dist, "index.html");
-  const bridge = join(dist, "tauri-bridge.js");
+  const bridge = join(dist, "platform", "tauri", "bridge.js");
   const distExisted = await pathExists(dist);
   const createdFiles = [];
 
@@ -51,11 +51,12 @@ async function ensureMinimalWebDist(t) {
     await writeFile(index, [
       "<!doctype html>",
       '<base href="/pinvou3/remote/">',
-      '<script src="/pinvou3/remote/tauri-bridge.js"></script>',
+      '<script src="/pinvou3/remote/platform/tauri/bridge.js"></script>',
     ].join("\n"));
     createdFiles.push(index);
   }
   if (!(await pathExists(bridge))) {
+    await mkdir(dirname(bridge), { recursive: true });
     await writeFile(bridge, "");
     createdFiles.push(bridge);
   }

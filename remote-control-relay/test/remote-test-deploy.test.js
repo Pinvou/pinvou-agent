@@ -31,7 +31,7 @@ test("remote-test deploy builds and uploads the shared WebUI dist", () => {
   const source = readFileSync(deployScript, "utf8");
   assert.match(source, /PINVOU_REMOTE_PUBLIC_BASE_PATH="\$BASE_PATH" npm run build:web/);
   assert.match(source, /grep -Fq "\$BASE_PATH\/" "\$RELAY_DIR\/web\/dist\/index\.html"/);
-  assert.match(source, /test -f "\$RELAY_DIR\/web\/dist\/tauri-bridge\.js"/);
+  assert.match(source, /test -f "\$RELAY_DIR\/web\/dist\/platform\/tauri\/bridge\.js"/);
   assert.match(source, /package-lock\.json web\/dist web\/stats\.html/);
 });
 

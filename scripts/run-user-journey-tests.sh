@@ -28,6 +28,7 @@ run_optional_skip2() {
 }
 
 run_required node pinvou3-app/tests/render_markdown_smoke.js
+run_required node pinvou3-app/tests/windows_runtime_packaging_contract.test.js
 run_required python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 if ! python3 -c 'import pptx, docx' >/dev/null 2>&1; then
   run_required python3 -m pip install --quiet python-pptx python-docx

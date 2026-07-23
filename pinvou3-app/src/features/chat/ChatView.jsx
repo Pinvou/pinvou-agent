@@ -9,6 +9,8 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 
@@ -18,7 +20,7 @@ const openChatExternalUrl = (url) => {
     if (opened) opened.opener = null;
     return;
   }
-  window.__TAURI__?.core?.invoke('open_external_url', { url }).catch(() => {});
+  invokeTauri('open_external_url', { url }).catch(() => {});
 };
 
 const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
@@ -91,7 +93,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     // 输入框底栏:知识库挂载选择器(与 ComposerModelSelector/ComposerToolMenu 同款 pill,
     // class 暗色策略)。给当前对话挂一个知识集(会话级粘连),挂上后每条消息发送前后端自动
-    // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.mountCollection 先物化 session。
+    // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.knowledge.mountCollection 先物化 session。
     const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
@@ -100,13 +102,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
 
       const loadList = async () => {
-        if (!bridge.available || !bridge.listCollections) { setCollections([]); return; }
-        try { setCollections((await bridge.listCollections()) || []); }
+        if (!bridge.available || !bridge.knowledge.listCollections) { setCollections([]); return; }
+        try { setCollections((await bridge.knowledge.listCollections()) || []); }
         catch (e) { setCollections([]); }
       };
       const refreshInstalled = async () => {
-        if (!bridge.available || !bridge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
-        try { const m = await bridge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
+        if (!bridge.available || !bridge.knowledge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
+        try { const m = await bridge.knowledge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
         catch (e) { setInstalled(true); }
       };
       useEffect(() => { refreshInstalled(); }, []);
@@ -124,8 +126,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
 
       function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
-      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.mountCollection(id); }
-      function unmount() { setOpen(false); if (bridge.available) bridge.unmountCollection(); }
+      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.knowledge.mountCollection(id); }
+      function unmount() { setOpen(false); if (bridge.available) bridge.knowledge.unmountCollection(); }
 
       return (
         <div className="relative">
@@ -186,10 +188,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         setOpen(false);
         if (!bridge.available) return;
         if (target === 'plan' && !isPlan) {
-          await bridge.setPlanModeNext();
+          await bridge.interaction.setPlanModeNext();
         } else if (target === 'yolo' && isPlan) {
-          if (bs && bs.busy) await bridge.cancelGeneration();
-          await bridge.exitPlanToYolo();
+          if (bs && bs.busy) await bridge.chat.cancelGeneration();
+          await bridge.interaction.exitPlanToYolo();
         }
       }
       const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
@@ -224,10 +226,19 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
-      const canPickHostFiles = can('hostFilePicker');
-      const canUseMicrophone = can('browserMicrophone');
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
-      const [inputText, setInputText] = useState('');
+      const [inputText, setInputTextState] = useState('');
+      const [inputLimitReached, setInputLimitReached] = useState(false);
+      const inputTextRef = useRef('');
+      const setInputText = useCallback((valueOrUpdater) => {
+        const rawValue = typeof valueOrUpdater === 'function'
+          ? valueOrUpdater(inputTextRef.current)
+          : valueOrUpdater;
+        const constrained = constrainChatInput(rawValue);
+        inputTextRef.current = constrained.text;
+        setInputTextState(constrained.text);
+        setInputLimitReached(constrained.limitReached);
+      }, []);
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
       const ART_MIN = 360, CHAT_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
@@ -291,7 +302,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
+      const chatRootRef = useRef(null);
       const composerRef = useRef(null);
+      const floatingVoiceRef = useRef(null);
+      const voiceDragRef = useRef({ timer: null, dragging: false, suppressClick: false, pointerId: null, offsetX: 0, offsetY: 0 });
+      const [floatingVoicePos, setFloatingVoicePos] = useState(null);
       useEffect(() => {
         if (!focusComposerTick) return undefined;
         const timer = window.setTimeout(() => {
@@ -329,6 +344,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
+      const formatAttachmentError = (error) => {
+        const raw = String(error || '');
+        if (/under sensitive system dir|crosses sensitive (dir|component)/i.test(raw)) {
+          return t.attachProtectedLocation;
+        }
+        return '';
+      };
       const queued = (bs && bs.queued) || []; // 排队待发消息（当前 session 生成中时积压）
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
@@ -356,9 +378,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         }
       }, [prefill]);
 
-      // Auto-scroll：直接滚内部容器到底（绝不动外层窗口，避免内容被顶到看不见/拉不动）
       const isNearChatBottom = (el) => (el.scrollHeight - el.scrollTop - el.clientHeight) < 96;
 
+      // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -381,6 +403,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       }
 
+      // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -394,7 +417,14 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
-      }, [chatItems.length, chatItems[chatItems.length - 1]?.html, chatItems[chatItems.length - 1]?.output, composerH]);
+      }, [
+        chatItems.length,
+        chatItems[chatItems.length - 1]?.html,
+        chatItems[chatItems.length - 1]?.state === 'running'
+          ? chatItems[chatItems.length - 1]?.output?.length
+          : 0,
+        composerH,
+      ]);
 
       // 切换/加载会话:无条件把新会话滚到最底部(最新消息)并复位 autoScrollRef。
       // 上面的流式 auto-scroll 复用了跨会话持久的 autoScrollRef + 不 remount 的滚动容器,
@@ -419,11 +449,49 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
+      const voiceBusy = voiceInput.status === 'transcribing';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
       const canSend = hasDraftText || hasReadyAttachment;
+      const canFloatingSend = canSend && !voiceActive;
       const canClearInput = hasDraftText && !voiceActive;
+      const [deviceMode, setDeviceMode] = useState(() => {
+        const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
+        const h = typeof window !== 'undefined' ? window.innerHeight : 900;
+        const coarse = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
+        const touch = coarse || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
+        return { w, h, touch };
+      });
+      const isTabletSized = Math.min(deviceMode.w, deviceMode.h) <= 820 || Math.max(deviceMode.w, deviceMode.h) <= 1180;
+      const tabletVoiceMode = deviceMode.touch || isTabletSized;
+      const primaryVoiceDisabled = !bridge.available || voiceBusy;
+      const primaryVoiceLabel = voiceInput.status === 'recording'
+        ? t.voiceStop
+        : voiceInput.status === 'failed'
+          ? t.voiceRetry
+          : voiceInput.status === 'requesting_permission'
+            ? t.voiceCancel
+            : voiceInput.status === 'transcribing'
+              ? t.voiceTranscribing
+              : t.voiceStart;
+      function clampFloatingVoicePos(x, y) {
+        const root = chatRootRef.current;
+        const floater = floatingVoiceRef.current;
+        if (!root || !floater) return { x, y };
+        const rootRect = root.getBoundingClientRect();
+        const floatRect = floater.getBoundingClientRect();
+        const margin = 12;
+        const maxX = Math.max(margin, rootRect.width - floatRect.width - margin);
+        const maxY = Math.max(margin, rootRect.height - floatRect.height - margin);
+        return {
+          x: Math.min(Math.max(x, margin), maxX),
+          y: Math.min(Math.max(y, margin), maxY),
+        };
+      }
+      const floatingVoiceStyle = floatingVoicePos
+        ? { left: floatingVoicePos.x + 'px', top: floatingVoicePos.y + 'px' }
+        : { left: 'calc(100% - 220px)', top: '50%', transform: 'translateY(-50%)' };
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
@@ -441,15 +509,54 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
       }, [justInstalledTool, activeSessionId, draftEpoch]);
 
+      useEffect(() => {
+        const measureDeviceMode = () => {
+          const w = window.innerWidth;
+          const h = window.innerHeight;
+          const coarse = window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
+          const touch = coarse || navigator.maxTouchPoints > 0;
+          setDeviceMode({ w, h, touch });
+        };
+        measureDeviceMode();
+        window.addEventListener('resize', measureDeviceMode);
+        window.addEventListener('orientationchange', measureDeviceMode);
+        const mq = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
+        if (mq && mq.addEventListener) mq.addEventListener('change', measureDeviceMode);
+        return () => {
+          window.removeEventListener('resize', measureDeviceMode);
+          window.removeEventListener('orientationchange', measureDeviceMode);
+          if (mq && mq.removeEventListener) mq.removeEventListener('change', measureDeviceMode);
+        };
+      }, []);
+
+      useEffect(() => {
+        return () => {
+          if (voiceDragRef.current.timer) clearTimeout(voiceDragRef.current.timer);
+        };
+      }, []);
+
+      useEffect(() => {
+        if (!tabletVoiceMode || !floatingVoicePos) return;
+        const raf = requestAnimationFrame(() => {
+          setFloatingVoicePos(pos => pos ? clampFloatingVoicePos(pos.x, pos.y) : pos);
+        });
+        return () => cancelAnimationFrame(raf);
+      }, [tabletVoiceMode, hasDraftText, hasReadyAttachment, deviceMode.w, deviceMode.h]);
+
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
       useEffect(() => {
-        if (bridge.available) bridge.loadSessionModel(activeSessionId);
+        if (bridge.available) bridge.models.loadSessionModel(activeSessionId);
       }, [activeSessionId]);
 
       function handleSend() {
-        // 不再因 busy 拦截:bridge.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
+        // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (!canSend) return;
-        if (bridge.available) bridge.sendMessage(inputText.trim());
+        const constrained = constrainChatInput(inputText);
+        if (constrained.truncated) {
+          setInputText(constrained.text);
+          return;
+        }
+        if (bridge.available) bridge.chat.sendMessage(constrained.text.trim());
         setInputText('');
       }
 
@@ -461,16 +568,82 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handleCancel() {
-        if (bridge.available) bridge.cancelGeneration();
+        if (bridge.available) bridge.chat.cancelGeneration();
       }
 
       function handleVoiceClick() {
-        if (!canUseMicrophone || !bridge.available) return;
-        if (voiceInput.status === 'recording') {
-          bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+        if (voiceDragRef.current.suppressClick) {
+          voiceDragRef.current.suppressClick = false;
           return;
         }
-        bridge.startVoiceInput(inputText, (text) => setInputText(prev => bridge.appendVoiceText(prev, text)));
+        if (!bridge.available) return;
+        if (voiceInput.status === 'requesting_permission') {
+          bridge.voice.cancelVoiceInput();
+          return;
+        }
+        if (voiceBusy) return;
+        if (voiceInput.status === 'recording') {
+          bridge.voice.startVoiceInput(inputText, (text) => setInputText(prev => bridge.voice.appendVoiceText(prev, text)));
+          return;
+        }
+        bridge.voice.startVoiceInput(inputText, (text) => setInputText(prev => bridge.voice.appendVoiceText(prev, text)));
+      }
+
+      function handleFloatingVoicePointerDown(e) {
+        if (!tabletVoiceMode) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        const root = chatRootRef.current;
+        const floater = floatingVoiceRef.current;
+        if (!root || !floater) return;
+        if (voiceDragRef.current.timer) clearTimeout(voiceDragRef.current.timer);
+        const rootRect = root.getBoundingClientRect();
+        const floatRect = floater.getBoundingClientRect();
+        const target = e.currentTarget;
+        const drag = {
+          timer: null,
+          dragging: false,
+          suppressClick: false,
+          pointerId: e.pointerId,
+          offsetX: e.clientX - floatRect.left,
+          offsetY: e.clientY - floatRect.top,
+        };
+        voiceDragRef.current = drag;
+        drag.timer = setTimeout(() => {
+          if (voiceDragRef.current !== drag) return;
+          drag.dragging = true;
+          drag.suppressClick = true;
+          setFloatingVoicePos(clampFloatingVoicePos(floatRect.left - rootRect.left, floatRect.top - rootRect.top));
+          try { target.setPointerCapture(e.pointerId); } catch (_) {}
+        }, 360);
+      }
+
+      function handleFloatingVoicePointerMove(e) {
+        const drag = voiceDragRef.current;
+        if (!drag.dragging || drag.pointerId !== e.pointerId) return;
+        const root = chatRootRef.current;
+        if (!root) return;
+        e.preventDefault();
+        const rootRect = root.getBoundingClientRect();
+        setFloatingVoicePos(clampFloatingVoicePos(
+          e.clientX - rootRect.left - drag.offsetX,
+          e.clientY - rootRect.top - drag.offsetY
+        ));
+      }
+
+      function handleFloatingVoicePointerEnd(e) {
+        const drag = voiceDragRef.current;
+        if (drag.timer) {
+          clearTimeout(drag.timer);
+          drag.timer = null;
+        }
+        const wasDragging = drag.dragging && drag.pointerId === e.pointerId;
+        drag.dragging = false;
+        drag.pointerId = null;
+        if (wasDragging) {
+          e.preventDefault();
+          setTimeout(() => { drag.suppressClick = false; }, 120);
+        }
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
       }
 
       function handleClearInput() {
@@ -479,11 +652,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       function handleVoiceCancel() {
-        if (bridge.available) bridge.cancelVoiceInput();
+        if (bridge.available) bridge.voice.cancelVoiceInput();
       }
 
       function handleVoiceClose() {
-        if (bridge.available) bridge.clearVoiceInput();
+        if (bridge.available) bridge.voice.clearVoiceInput();
       }
 
       function handlePaste(e) {
@@ -498,7 +671,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             reader.onload = () => {
               const bytes = Array.from(new Uint8Array(reader.result));
               const ext = (file.type.split('/')[1] || 'png');
-              if (bridge.available) bridge.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
+              if (bridge.available) bridge.attachments.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
             };
             reader.readAsArrayBuffer(file);
           }
@@ -514,8 +687,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }
 
       return (
-        <div ref={rootRef} onDragOver={blockWebLocalFileDrop} onDrop={blockWebLocalFileDrop} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
-          <div className="flex-1 flex flex-col min-w-0 relative h-full">
+        <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
+          <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
@@ -567,7 +740,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   theme={theme}
                   onSend={(q) => {
                     setWelcomeToolId(null);
-                    if (bridge.available) bridge.sendMessage(q);
+                    if (bridge.available) bridge.chat.sendMessage(q);
                   }}
                 />
               </div>
@@ -585,7 +758,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   return chatItems
                     .filter((item) => !(item.type === 'memory_candidate' && !item.resolved))
                     .map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
+                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
                   ));
                 })()}
                 {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
@@ -628,10 +801,54 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.sendMessage(txt); }} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
+            </div>
+          )}
+          {tabletVoiceMode && (
+            <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
+              <button
+                onClick={handleVoiceClick}
+                onPointerDown={handleFloatingVoicePointerDown}
+                onPointerMove={handleFloatingVoicePointerMove}
+                onPointerUp={handleFloatingVoicePointerEnd}
+                onPointerCancel={handleFloatingVoicePointerEnd}
+                disabled={primaryVoiceDisabled}
+                aria-label={primaryVoiceLabel}
+                title={primaryVoiceLabel}
+                className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-xl backdrop-blur-2xl touch-none select-none ${
+                  voiceRecording
+                    ? 'bg-[#C5221F] text-white shadow-red-500/25 hover:bg-[#A50E0E]'
+                    : voiceBusy
+                      ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] cursor-wait' : 'bg-[#E8F0FE] text-[#174EA6] cursor-wait')
+                      : voiceInput.status === 'failed'
+                        ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82] hover:bg-[#4A2525]' : 'bg-[#FCE8E6] text-[#C5221F] hover:bg-[#FAD2CF]')
+                        : (isDark ? 'bg-[#A8C7FA] text-[#062E6F] hover:bg-[#D3E3FD]' : 'bg-[#0B57D0] text-white hover:bg-[#0842A0] shadow-blue-500/25')
+                } ${primaryVoiceDisabled ? 'opacity-80' : 'active:scale-95'}`}>
+                {voiceRecording ? <StopCircle size={26} /> : <Mic size={26} />}
+              </button>
+              {hasDraftText && (
+                <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-lg backdrop-blur-2xl transition-all ${
+                    canClearInput
+                      ? (isDark ? 'bg-[#161618]/90 border-white/10 text-[#C4C7C5] hover:bg-[#252629]' : 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4]')
+                      : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed opacity-60'
+                  }`}>
+                  <Trash2 size={20} />
+                </button>
+              )}
+              {(hasDraftText || hasReadyAttachment) && (
+                <button onClick={handleSend} disabled={!canFloatingSend} aria-label={t.sendMsg} title={t.sendMsg}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all ${
+                    canFloatingSend
+                      ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white hover:-translate-y-0.5 active:translate-y-0'
+                      : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'
+                  }`}>
+                  <Send size={19} className="translate-x-[1px]" />
+                </button>
+              )}
             </div>
           )}
           {/* Floating Input Area */}
@@ -644,7 +861,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${isDark ? 'bg-[#2A2B2D] text-[#C4C7C5]' : 'bg-[#EAEDF1] text-[#444746]'}`}>
                     <span className="opacity-60">{t.queuedTag}</span>
                     <span className="max-w-[480px] truncate">{q.displayText}</span>
-                    <button onClick={() => bridge.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                    <button onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -660,7 +877,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <span className={a.status === 'error' ? 'text-[#F28B82]' : a.status === 'parsing' ? 'opacity-60' : 'text-[#93D5A6]'}>
                       {a.status === 'parsing' ? t.attachParsing : a.status === 'error' ? t.attachFailed : '✓'}
                     </span>
-                    <button onClick={() => bridge.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                    {a.status === 'error' && formatAttachmentError(a.error) && (
+                      <span title={formatAttachmentError(a.error)} className="min-w-0 max-w-[min(520px,calc(100vw-240px))] truncate text-[#F28B82] opacity-90">
+                        ：{formatAttachmentError(a.error)}
+                      </span>
+                    )}
+                    <button onClick={() => bridge.attachments.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -706,21 +928,35 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
               const missing = (su.status && su.status.missing) || [];
               const needFfmpeg = missing.indexOf('ffmpeg') >= 0;
+              const needModel = missing.indexOf('model') >= 0;
+              const needEngine = missing.indexOf('engine') >= 0 || missing.indexOf('runtime') >= 0;
+              const modelSizeText = (su.status && su.status.engine && needModel && !needFfmpeg) ? '约 254MB' : '约 174-254MB';
               return (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
-                  onClick={() => { if (!su.installing) bridge.closeVoiceAsrSetup(); }}>
+                  onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
                   <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
                     onClick={e => e.stopPropagation()}>
-                    <h3 className="text-[16px] font-semibold mb-2">启用本地语音识别</h3>
-                    <p className="text-[13px] leading-relaxed opacity-80 mb-4">
-                      首次使用需要安装语音识别组件（模型约 174MB{needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。
-                    </p>
+                    <h3 className="text-[16px] font-semibold mb-2">
+                      {su.installing ? '下载语音识别模型' : '启用本地语音识别'}
+                    </h3>
+                    {!su.installing && (
+                      <p className="text-[13px] leading-relaxed opacity-80 mb-4">
+                        {needEngine
+                          ? '本地语音识别运行时缺失，请修复或重新安装应用；仅缺模型时可在这里下载。'
+                          : `首次使用需要下载语音识别模型（${modelSizeText}${needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。`}
+                      </p>
+                    )}
                     {su.installing && (
                       <div className="mb-4">
                         <div className="text-[12px] opacity-70 mb-1">
                           {prog.stage === 'ffmpeg' ? '正在安装 ffmpeg（可能弹系统授权框）…'
                             : prog.stage === 'model' ? ('正在下载模型 ' + (pct != null ? pct + '%' : '…'))
-                            : prog.stage === 'done' ? '完成' : '准备中…'}
+                            : prog.stage === 'verify' ? '正在校验模型完整性…'
+                            : prog.stage === 'cancelling' ? '正在取消下载…'
+                            : prog.stage === 'done' ? '完成'
+                            : prog.stage === 'cancelled' ? '已取消'
+                            : prog.stage === 'failed' ? '下载失败，可重试'
+                            : '准备中…'}
                         </div>
                         <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
                           <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct != null ? pct : 30) + '%' }} />
@@ -729,11 +965,14 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     )}
                     {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => bridge.closeVoiceAsrSetup()} disabled={su.installing}
-                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.installing ? 'opacity-50' : ''}`}>取消</button>
-                      <button onClick={() => bridge.installVoiceAsr()} disabled={su.installing}
-                        className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${su.installing ? 'opacity-50' : ''}`}>
-                        {su.installing ? '安装中…' : '安装'}</button>
+                      <button onClick={() => bridge.voice.cancelVoiceAsrSetup()} disabled={su.cancelling}
+                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.cancelling ? 'opacity-50' : ''}`}>
+                        {su.installing ? (su.cancelling ? '正在取消…' : '取消下载') : '取消'}</button>
+                      {!su.installing && (
+                        <button onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
+                          className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
+                          {!su.status?.installable ? '需要修复安装' : (needModel ? '下载模型' : '安装')}</button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -746,33 +985,40 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
+                maxLength={CHAT_INPUT_MAX_LENGTH}
                 placeholder={t.placeholder}
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
+              {inputLimitReached && (
+                <div role="status" aria-live="polite" data-testid="chat-input-limit-notice"
+                  className={`px-1 pb-1 text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+                  {t.chatInputLimitReached(CHAT_INPUT_MAX_LENGTH.toLocaleString())}
+                </div>
+              )}
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  {canPickHostFiles && <button onClick={() => bridge.available && bridge.pickAndAttach()} title={t.attachAdd}
+                  <button onClick={() => bridge.available && bridge.attachments.pickAndAttach()} title={t.attachAdd}
                     className={COMPOSER_ICON_BUTTON_CLASS}>
                     <Paperclip size={18} />
-                  </button>}
-                  {canUseMicrophone && <button onClick={handleVoiceClick} title={voiceRecording ? t.voiceStop : t.voiceStart}
+                  </button>
+                  <button onClick={handleVoiceClick} disabled={primaryVoiceDisabled} aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
                     className={`${
                       voiceRecording
                         ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
                         : voiceActive
                           ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
                           : COMPOSER_ICON_BUTTON_CLASS
-                    }`}>
+                    } ${primaryVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
                     <Mic size={18} />
-                  </button>}
+                  </button>
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
-                {hasDraftText && (
+                {!tabletVoiceMode && hasDraftText && (
                   <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
@@ -818,11 +1064,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
               <div ref={artColRef} className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
-                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} />
+                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} onGotoSettings={onGotoSettings} />
               </div>
             </>
           )}
-          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} />}
+          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
         </div>
       );
     };
@@ -1107,7 +1353,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.editLastTurn(tx); }
+      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(tx); }
       function copyText() {
         const tx = item.text || '';
         copyClipboardText(tx).then(function (ok) {
@@ -1360,8 +1606,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
-        const draftSaved = pd.draft && bridge.available && bridge.getPersonas
-          && bridge.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
+        const draftSaved = pd.draft && bridge.available && bridge.personas.getPersonas
+          && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
             <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
@@ -1375,7 +1621,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   const href = a.getAttribute('href') || '';
                   if (/^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    openChatExternalUrl(href);
+                    invokeTauri('open_external_url', { url: href }).catch(() => {});
                   }
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
@@ -1470,10 +1716,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <div
                 className="inline-flex items-center gap-1.5 max-w-[360px] px-3 py-1.5 rounded-full text-[12px] text-[#AEB4BC]"
                 title={text}
-                style={{
-                  background: 'rgba(32, 34, 38, 0.54)',
-                  border: '1px solid rgba(255,255,255,0.06)',
-                }}
+                style={{ background: 'rgba(32, 34, 38, 0.54)', border: '1px solid rgba(255,255,255,0.06)' }}
               >
                 <Check size={12} className="shrink-0 text-[#30D158]" />
                 <span className="font-medium text-[#D5D9DE]">已记录近期动态</span>
@@ -1534,6 +1777,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         return (
           <div className="flex justify-end">
             <div
+              data-testid="memory-candidate-card"
+              data-memory-id={item.memoryId || ''}
               className={`max-w-[480px] w-full rounded-[18px] px-4 py-3.5 ${isDark ? 'text-[#F2F3F5]' : 'text-[#F8FAFC]'}`}
               style={{
                 background: 'rgba(32, 34, 38, 0.92)',
@@ -1559,7 +1804,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <button
                       className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
                       title="这次忽略"
-                      onClick={() => window.TauriBridge && window.TauriBridge.ignoreMemoryCandidate(item.memoryId, item.id)}
+                      data-testid="memory-candidate-dismiss"
+                      onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}
                     >
                       <X size={13} />
                     </button>
@@ -1572,9 +1818,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
               {!resolved && (
                 <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
-                  <button className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => window.TauriBridge && window.TauriBridge.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
-                  <button className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => window.TauriBridge && window.TauriBridge.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
-                  <button className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => window.TauriBridge && window.TauriBridge.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
+                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
+                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
+                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
                 </div>
               )}
             </div>

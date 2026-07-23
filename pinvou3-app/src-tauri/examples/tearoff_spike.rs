@@ -3,9 +3,12 @@
 //! 预期：移动鼠标 / 按住左键时下面打印的坐标和 down=true 实时变化(跨 3 屏都更新)。
 //! Ctrl-C 退出。device_query 在 dev-dependencies，对 examples 可见。
 
+#[cfg(target_os = "linux")]
 use device_query::{DeviceQuery, DeviceState, MouseState};
+#[cfg(target_os = "linux")]
 use std::{thread, time::Duration};
 
+#[cfg(target_os = "linux")]
 fn main() {
     let dev = DeviceState::new();
     println!("移动鼠标到不同显示器、按住/松开左键，观察输出。Ctrl-C 退出。");
@@ -20,4 +23,9 @@ fn main() {
         }
         thread::sleep(Duration::from_millis(16)); // ~60Hz
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("tearoff_spike 仅用于 Linux X11 device_query 验证");
 }

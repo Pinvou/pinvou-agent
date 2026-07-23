@@ -100,6 +100,13 @@ function injectSource() {
     function invoke(cmd, args) {
       record(cmd, args);
       switch (cmd) {
+        case 'get_platform_capabilities': return Promise.resolve({
+          os: 'windows',
+          showMegacubeSite: false,
+          showSuperPermissionSettings: false,
+          usesBundledDependencyInstaller: true,
+          taskCompletionNotificationsDefault: true,
+        });
         case 'get_settings': return Promise.resolve(settings);
         case 'update_settings': settings = args.prefs; return Promise.resolve(null);
         case 'save_settings_and_restart': settings = args.prefs; return Promise.resolve(null);
@@ -298,7 +305,7 @@ async function modalWidth(page, headingText) {
       notes: '设置页更新按钮测试',
       platform: 'windows',
     });
-    await window.TauriBridge.checkForUpdate();
+    await window.TauriBridge.updater.checkForUpdate();
   });
   await sleep(500);
   const beforeDownloadCalls = await callCount(page, 'download_update');
@@ -315,13 +322,16 @@ async function modalWidth(page, headingText) {
     };
   });
   const afterDownloadCalls = await callCount(page, 'download_update');
-  rec('①b 设置页下载按钮进入下载态后禁用并显示进度',
+  rec('①b 设置页下载按钮进入下载态后可取消并显示进度',
     beforeDownloadCalls === 0
     && afterDownloadCalls === 1
-    && updateDownloadState.disabled
-    && updateDownloadState.text.includes('下载中 37%')
+    && !updateDownloadState.disabled
+    && updateDownloadState.text.includes('取消下载')
     && updateDownloadState.desc.includes('正在下载更新 37%'),
     JSON.stringify(updateDownloadState));
+  await page.click('#settings-version-update [data-settings-update-action="true"]');
+  await sleep(150);
+  rec('①c 设置页可取消正在进行的更新下载', await callCount(page, 'cancel_download') === 1);
   await page.evaluate(() => window.__SETTINGS_TEST__.resolveDownload());
   await sleep(250);
 
@@ -547,11 +557,17 @@ async function modalWidth(page, headingText) {
   });
   await sleep(600);
   const permToast = await page.evaluate(() => ({
+    showSuperPermissionSettings: !!(window.TauriBridge.state.get('platform').platformCapabilities || {}).showSuperPermissionSettings,
     setCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'set_super_permission'),
     toast: document.body.innerText.includes('pkexec unavailable') || document.body.innerText.includes('无法开启高级执行权限'),
     checked: document.querySelector('[role="switch"]')?.getAttribute('aria-checked'),
+    advancedPermissionVisible: document.body.innerText.includes('高级执行权限'),
+    dependencyCheckVisible: document.body.innerText.includes('依赖体检'),
   }));
-  rec('⑭ 高级权限失败回滚并 toast 提示', permToast.setCall && permToast.toast && permToast.checked === 'false', JSON.stringify(permToast));
+  const permissionPass = permToast.showSuperPermissionSettings
+    ? permToast.setCall && permToast.toast && permToast.checked === 'false'
+    : !permToast.advancedPermissionVisible && permToast.dependencyCheckVisible && !permToast.setCall;
+  rec('⑭ 权限与环境按平台展示并保持失败回滚', permissionPass, JSON.stringify(permToast));
 
   await clickSettingsSection(page, '帮助反馈');
   await clickExact(page, '提交反馈');
@@ -624,7 +640,7 @@ async function modalWidth(page, headingText) {
 
   await page.mouse.click(8, 8);
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat', { timeout: 8000 });
-  await page.evaluate(() => window.TauriBridge && window.TauriBridge.createNewSession && window.TauriBridge.createNewSession());
+  await page.evaluate(() => window.TauriBridge && window.TauriBridge.sessions.createNewSession && window.TauriBridge.sessions.createNewSession());
   await sleep(600);
   const responsiveGreeting = await page.evaluate(() => {
     const greeting = [...document.querySelectorAll('h1')].find(node => {

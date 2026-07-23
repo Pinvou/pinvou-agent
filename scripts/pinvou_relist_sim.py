@@ -8,7 +8,7 @@ import pathlib
 import re
 import urllib.request
 
-RS = pathlib.Path(__file__).resolve().parents[1] / "pinvou3-app/src-tauri/src/pinvou_review.rs"
+RS = pathlib.Path(__file__).resolve().parents[1] / "pinvou3-app/src-tauri/src/features/review/mod.rs"
 SESS = pathlib.Path("/home/hexin/.pinvou3/sessions/nvk85zyp36jd0")
 URL = "http://10.214.74.113:8000/v1/chat/completions"
 MODEL = "qwen36_35b_256k"

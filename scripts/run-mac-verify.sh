@@ -73,8 +73,8 @@ for cli in lark-cli wecom-cli dws; do
 done
 
 echo "=== 5. SenseVoice darwin-arm64 入库校验 ==="
-ASR="$APP_SRC_TAURI/resources/asr/sense-voice-darwin-arm64"
-ASR_LIC="$APP_SRC_TAURI/resources/asr/LICENSE-sense-voice-darwin-arm64"
+ASR="$APP_SRC_TAURI/resources/platforms/macos/aarch64/asr/sense-voice-darwin-arm64"
+ASR_LIC="$APP_SRC_TAURI/resources/platforms/macos/aarch64/asr/LICENSE-sense-voice-darwin-arm64"
 # 入库二进制的 sha256(provenance 见 docs/fork-modifications.md T7 节)。若二进制重新编译,
 # 同步更新此常量与文档,否则这里会报 ⚠ 不匹配 —— 这是预期:提醒重新编译要同步 provenance。
 ASR_SHA256_EXPECTED="7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4"
@@ -104,13 +104,14 @@ fi
 
 echo "=== 6. tauri.conf.json macOS bundle 校验 ==="
 # index() 返回 0(第一个元素)在 jq 中是 truthy(0 非 null/false),但用 != null 更明确。
-if jq -e '(.bundle.targets | index("dmg") != null) and (.bundle.targets | index("app") != null)' "$APP_SRC_TAURI/tauri.conf.json" >/dev/null; then
+MAC_OVERLAY="$APP_SRC_TAURI/config/platforms/macos/tauri.conf.json"
+if jq -e '(.bundle.targets | index("dmg") != null) and (.bundle.targets | index("app") != null)' "$MAC_OVERLAY" >/dev/null; then
     echo "  ✓ tauri.conf.json 已声明 app/dmg targets"
 else
     echo "  ❌ tauri.conf.json 缺少 app/dmg targets" >&2
     VERIFY_FAIL=1
 fi
-if jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' "$APP_SRC_TAURI/tauri.conf.json" >/dev/null; then
+if jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' "$MAC_OVERLAY" >/dev/null; then
     echo "  ✓ minimumSystemVersion=14.0"
 else
     echo "  ⚠ macOS.minimumSystemVersion 不是 14.0"
@@ -118,7 +119,7 @@ fi
 
 echo "=== 7. Info.plist / entitlements.plist 存在校验 ==="
 for f in Info.plist entitlements.plist; do
-    p="$APP_SRC_TAURI/$f"
+    p="$APP_SRC_TAURI/packaging/macos/$f"
     if [ -f "$p" ] && plutil -lint "$p" >/dev/null 2>&1; then
         echo "  ✓ $f"
     else
@@ -128,7 +129,7 @@ for f in Info.plist entitlements.plist; do
 done
 
 # CFBundleIdentifier 值必须与 tauri.conf.json identifier 一致(防 OTA 通道 bundle id 不匹配)。
-BID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_SRC_TAURI/Info.plist" 2>/dev/null || true)"
+BID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_SRC_TAURI/packaging/macos/Info.plist" 2>/dev/null || true)"
 TID="$(jq -r .identifier "$APP_SRC_TAURI/tauri.conf.json" 2>/dev/null || true)"
 if [ -z "$BID" ] || [ -z "$TID" ] || [ "$BID" != "$TID" ]; then
   echo "❌ CFBundleIdentifier($BID) ≠ tauri.conf.json identifier($TID)" >&2

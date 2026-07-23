@@ -8,7 +8,7 @@
 ## 1. 安装
 
 ```bash
-sudo dpkg -i pinvou3_0.6.1_arm64.deb
+sudo dpkg -i pinvou3_0.6.2_arm64.deb
 # 若报依赖缺失，自动补装：
 sudo apt-get install -f
 ```
@@ -94,8 +94,8 @@ Windows 版应用内更新使用 H3C OTA 服务（更新源地址由引导服务
 
 1. 查询更新：`POST /ota/pkg/package/upgrade/check`
 2. 下载更新包：HTTP 下载 zip 到 `~/.pinvou3/updates/`
-3. 解析安装包：解压下载 zip，读取 `OtaInfo.json` 并定位 `.msi`
-4. 启动安装：调用系统 `msiexec /i <msi>`，安装器启动后当前 pinvou3 进程退出
+3. 解析安装包：解压下载 zip，读取 `OtaInfo.json` 并定位 `.msi` 或 NSIS `.exe`
+4. 启动安装：MSI 使用系统被动安装；NSIS EXE 使用 `/P /UPDATE` 显示安装进度并自动开始，无需手动点击按钮。安装器启动后当前 pinvou3 进程退出
 5. 反馈结果：下次启动读取 `~/.pinvou3/updates/update-feedback.json` 并调用 `/ota/pkg/package/updateLog`
 
 可选环境变量：

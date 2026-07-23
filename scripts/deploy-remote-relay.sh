@@ -74,9 +74,9 @@ verify_public() {
     return 1
   fi
   if [[ "$expected" == "release" ]]; then
-    if [[ "$page" != *'<title>PINVOU 智能助手</title>'* \
+    if [[ "$page" != *'<title>PINVOU 智能助手'* \
       || "$page" != *'<base href="/pinvou3/remote/">'* \
-      || "$page" != *'/pinvou3/remote/tauri-bridge.js'* ]]; then
+      || "$page" != *'/pinvou3/remote/platform/tauri/bridge.js'* ]]; then
       VERIFY_ERROR="公网页面未命中完整 WebUI v2 或生产 base path"
       return 1
     fi
@@ -106,9 +106,9 @@ else
   echo "使用已构建并验证的共享 WebUI 产物"
 fi
 test -f "$RELAY_DIR/web/dist/index.html"
-test -f "$RELAY_DIR/web/dist/tauri-bridge.js"
+test -f "$RELAY_DIR/web/dist/platform/tauri/bridge.js"
 grep -Fq '<base href="/pinvou3/remote/">' "$RELAY_DIR/web/dist/index.html"
-grep -Fq '/pinvou3/remote/tauri-bridge.js' "$RELAY_DIR/web/dist/index.html"
+grep -Fq '/pinvou3/remote/platform/tauri/bridge.js' "$RELAY_DIR/web/dist/index.html"
 if [[ "${SKIP_LOCAL_TESTS:-0}" != "1" ]]; then
   (cd "$RELAY_DIR" && npm test)
 fi
@@ -161,9 +161,9 @@ find "$web_stage" -type d -exec chmod 755 {} +
 find "$web_stage" -type f -exec chmod 644 {} +
 rm -f "$web_tmp"
 test -f "$web_stage/index.html"
-test -f "$web_stage/tauri-bridge.js"
+test -f "$web_stage/platform/tauri/bridge.js"
 grep -Fq '<base href="/pinvou3/remote/">' "$web_stage/index.html"
-grep -Fq '/pinvou3/remote/tauri-bridge.js' "$web_stage/index.html"
+grep -Fq '/pinvou3/remote/platform/tauri/bridge.js' "$web_stage/index.html"
 mkdir -p "$backup"
 if [[ -f "$remote_dir/server.js" ]]; then cp -a "$remote_dir/server.js" "$backup/server.js"; else touch "$backup/no-server"; fi
 if [[ -d "$remote_dir/web/dist" ]]; then cp -a "$remote_dir/web/dist" "$backup/web-dist"; else touch "$backup/no-web-dist"; fi

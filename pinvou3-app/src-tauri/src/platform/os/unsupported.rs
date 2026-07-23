@@ -1,0 +1,245 @@
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+pub fn open_target(_target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
+    Err(format!("当前平台不支持系统打开: {label}"))
+}
+
+pub fn reveal_target(target: &Path) -> Result<(), String> {
+    Err(format!(
+        "当前平台不支持文件管理器定位: {}",
+        target.display()
+    ))
+}
+
+pub fn device_serial_number() -> Option<String> {
+    None
+}
+
+pub fn command_exists(_command: &str) -> bool {
+    false
+}
+
+pub fn pandoc_tool_path() -> PathBuf {
+    PathBuf::from("pandoc")
+}
+
+pub fn configure_onnxruntime_dylib() -> Result<(), String> {
+    Ok(())
+}
+
+pub fn obsidian_config_path() -> Option<PathBuf> {
+    None
+}
+
+pub fn libreoffice_tool_path() -> PathBuf {
+    PathBuf::from("soffice")
+}
+
+pub fn ocr_tool_path() -> PathBuf {
+    PathBuf::from("tesseract")
+}
+
+pub fn ocr_tessdata_dir() -> Option<PathBuf> {
+    None
+}
+
+pub fn archive_tool_path() -> PathBuf {
+    PathBuf::from("7z")
+}
+
+pub fn pandoc_tool_exists() -> bool {
+    false
+}
+
+pub fn ocr_tool_exists() -> bool {
+    false
+}
+
+pub fn archive_tool_exists() -> bool {
+    false
+}
+
+pub fn msg_native_supported() -> bool {
+    false
+}
+
+pub fn msg_converter_required() -> bool {
+    false
+}
+
+pub fn email_tool_exists() -> bool {
+    false
+}
+
+pub fn show_pandoc_dependency_check() -> bool {
+    false
+}
+
+pub fn show_ocr_dependency_check() -> bool {
+    false
+}
+
+pub fn show_archive_dependency_check() -> bool {
+    false
+}
+
+pub fn pandoc_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn archive_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn pandoc_missing_message() -> &'static str {
+    "当前平台缺少可用的文档解析组件。"
+}
+
+pub fn libreoffice_missing_message() -> &'static str {
+    "当前平台缺少可用的 Office 文档预览组件。"
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn pdf_tool_path(command: &str) -> PathBuf {
+    PathBuf::from(command)
+}
+
+pub fn pdf_tool_exists(_command: &str) -> bool {
+    false
+}
+
+pub fn show_pdf_dependency_check() -> bool {
+    false
+}
+
+pub fn pdf_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn ocr_dependency_packages() -> &'static str {
+    "tesseract"
+}
+
+pub fn pdf_text_missing_message() -> &'static str {
+    "当前平台缺少可用的 PDF 文本解析组件。"
+}
+
+pub fn pdf_render_missing_message() -> &'static str {
+    "当前平台缺少可用的 PDF 渲染组件。"
+}
+
+pub fn pdf_ocr_missing_message() -> &'static str {
+    "当前平台缺少可用的 PDF OCR 组件。"
+}
+
+pub fn presentation_pdf_missing_message() -> &'static str {
+    "当前平台缺少可用的演示文稿 PDF 文本解析组件。"
+}
+
+pub fn system_default_open_supported(_path: &Path) -> bool {
+    false
+}
+
+pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool {
+    false
+}
+
+pub fn nvidia_smi_candidates() -> Vec<&'static str> {
+    vec!["nvidia-smi"]
+}
+
+pub fn user_home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
+}
+
+pub fn platform_compat_path(value: &str) -> PathBuf {
+    PathBuf::from(value)
+}
+
+pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
+    let home_raw = user_home_dir();
+    let home = platform_compat_path(
+        &std::fs::canonicalize(&home_raw)
+            .unwrap_or_else(|_| home_raw.clone())
+            .to_string_lossy(),
+    );
+    if !canon.starts_with(&home) {
+        return Err(format!("path {} not under $HOME", canon.display()));
+    }
+    Ok(())
+}
+
+pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
+    component == OsStr::new(expected)
+}
+
+pub fn python_command() -> String {
+    if which_in_path("python3") {
+        return "python3".to_string();
+    }
+    if which_in_path("python") {
+        return "python".to_string();
+    }
+    "python3".to_string()
+}
+
+pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
+    Command::new(program)
+}
+
+pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
+
+pub fn kill_pid_tree(pid: u32) {
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+}
+
+fn which_in_path(cmd: &str) -> bool {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir.join(cmd).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn super_permission_is_enabled() -> bool {
+    false
+}
+
+pub fn enable_super_permission() -> Result<(), String> {
+    Err("当前系统不支持 Linux sudo 超级权限开关".to_string())
+}
+
+pub fn disable_super_permission() -> Result<(), String> {
+    Ok(())
+}
+
+pub fn super_permission_turn_reminder() -> &'static str {
+    "当前系统不支持 Linux sudo 超级权限开关。需要管理员权限时,请使用系统提供的管理员方式执行,不要尝试 sudo/apt/systemctl/pkexec。"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_archive_runtime_is_not_advertised() {
+        assert!(!archive_tool_exists());
+        assert!(!show_archive_dependency_check());
+        assert_eq!(archive_dependency_packages(), "");
+        assert_eq!(archive_tool_path(), PathBuf::from("7z"));
+    }
+
+    #[test]
+    fn upload_location_rejects_outside_home() {
+        assert!(validate_upload_location(Path::new("/etc/passwd")).is_err());
+    }
+}

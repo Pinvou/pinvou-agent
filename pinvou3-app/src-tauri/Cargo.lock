@@ -3359,6 +3359,9 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "hf-hub"
@@ -4772,6 +4775,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "msg_parser"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a0453ec98f292962f9972032a09211daaf7482dfbcaed7f9dfa12f0f6a750fb"
+dependencies = [
+ "hex",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "muda"
 version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5473,6 +5489,7 @@ version = "2.0.0-rc.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52afb44b6b0cffa9bf45e4d37e5a4935b0334a51570658e279e9e3e6cf324aa5"
 dependencies = [
+ "libloading 0.8.9",
  "ndarray",
  "ort-sys",
  "tracing",
@@ -5771,6 +5788,7 @@ dependencies = [
  "include_dir",
  "log",
  "md5",
+ "msg_parser",
  "notify",
  "objc2",
  "objc2-app-kit",
@@ -5795,6 +5813,8 @@ dependencies = [
  "tokio-util",
  "walkdir",
  "webkit2gtk",
+ "webview2-com",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
  "zip",
 ]
@@ -6614,6 +6634,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
+import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
@@ -19,7 +20,29 @@ import mimoIcon from '../../brand-icons/mimo.svg';
 import minimaxIcon from '../../brand-icons/minimax.svg';
 import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
-import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { invokeTauri } from '../../platform/tauri/client.js';
+
+function isReadonlyModel(model) {
+  return !!(model && (model.readonly || model.system));
+}
+
+function isBuiltinLlmApiModel(model) {
+  return !!(model && (model.kind === 'builtin_llmapi' || model.id === 'builtin_llmapi'));
+}
+
+function hasLlmApiBackendUser(bs) {
+  const status = bs && bs.llmApiStatus;
+  if (!status || status.backend_user_state === 'not_exists') return false;
+  return status.backend_user_state === 'exists' || !!status.backend_user_exists;
+}
+
+function visibleSortedModels(models, bs) {
+  const allowBuiltin = hasLlmApiBackendUser(bs);
+  return (models || [])
+    .filter(model => model && model.id && (!isBuiltinLlmApiModel(model) || allowBuiltin))
+    .slice()
+    .sort((a, b) => Number(isBuiltinLlmApiModel(b)) - Number(isBuiltinLlmApiModel(a)));
+}
 
 const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
@@ -152,8 +175,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const searchMatch = text => !normalizedQuery || String(text || '').toLowerCase().includes(normalizedQuery);
 
       useEffect(() => {
-        if (!bridge.available || !bridge.loadMemoryOverview) return;
-        bridge.loadMemoryOverview();
+        if (!bridge.available || !bridge.memory.loadMemoryOverview) return;
+        bridge.memory.loadMemoryOverview();
       }, [bs && bs.activeSessionId]);
       useEffect(() => {
         setDraft({
@@ -166,12 +189,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setQuery('');
       }, [tab, open]);
 
-      const reload = () => bridge.available && bridge.loadMemoryOverview && bridge.loadMemoryOverview();
+      const reload = () => bridge.available && bridge.memory.loadMemoryOverview && bridge.memory.loadMemoryOverview();
       const saveProfile = async () => {
-        if (!bridge.available || !bridge.saveMemoryProfilePatch) return;
+        if (!bridge.available || !bridge.memory.saveMemoryProfilePatch) return;
         setSaving(true);
         try {
-          await bridge.saveMemoryProfilePatch({
+          await bridge.memory.saveMemoryProfilePatch({
             call_name: draft.call_name,
             assistant_alias: draft.assistant_alias,
           });
@@ -188,10 +211,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         });
       };
       const saveEdit = async () => {
-        if (!editing || !bridge.updateMemoryItem) return;
+        if (!editing || !bridge.memory.updateMemoryItem) return;
         setSaving(true);
         try {
-          await bridge.updateMemoryItem(editing.kind, editing.id, {
+          await bridge.memory.updateMemoryItem(editing.kind, editing.id, {
             text: editing.text,
           });
           setEditing(null);
@@ -201,14 +224,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       };
       const deleteItem = async item => {
         setMenuFor(null);
-        if (!item || !bridge.deleteMemoryItem) return;
+        if (!item || !bridge.memory.deleteMemoryItem) return;
         if (!window.confirm('删除后这条记忆不会再被使用，确定删除吗？')) return;
-        await bridge.deleteMemoryItem(item.kind, item.id);
+        await bridge.memory.deleteMemoryItem(item.kind, item.id);
       };
       const archiveItem = async item => {
         setMenuFor(null);
-        if (!item || !bridge.archiveRecentWorkMemory) return;
-        await bridge.archiveRecentWorkMemory(item.id);
+        if (!item || !bridge.memory.archiveRecentWorkMemory) return;
+        await bridge.memory.archiveRecentWorkMemory(item.id);
       };
       const activeList = tab === 'recent' ? recentItems : longTermItems;
       const filteredList = activeList.filter(item => searchMatch(item.text || item.content));
@@ -595,7 +618,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function pick(id) {
         setOpen(false);
         if (id === effectiveId) return;
-        if (bridge.available) bridge.switchModel(activeSessionId, id);
+        if (bridge.available) bridge.models.switchModel(activeSessionId, id);
       }
       return (
         <div className="relative px-2 mb-2">
@@ -650,7 +673,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
       if (!savedModels.length) return null;
-      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.switchModel(activeSessionId, id); }
+      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.models.switchModel(activeSessionId, id); }
       return (
         <div className="relative min-w-0">
           <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
@@ -717,8 +740,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       }[statusKey] || { label: String(statusKey), detail: '远程控制状态已更新。', color: '#8A9097' };
 
       useEffect(() => {
-        if (canManageWebAccess && !webAccessActive && bridge.available) {
-          bridge.enableWebAccess().catch(() => {});
+        if (!webAccessActive && bridge.available) {
+          bridge.remoteControl.startRemoteControl(null).catch(() => {});
         }
       }, [canManageWebAccess]);
 
@@ -726,7 +749,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (!bridge.available) return;
         setActionBusy(true);
         try {
-          await bridge.rotateWebAccessLink();
+          await bridge.remoteControl.refreshRemoteControlQr(null);
           setRefreshConfirmOpen(false);
         } catch (_) {
         } finally {
@@ -738,7 +761,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (!bridge.available) return;
         setActionBusy(true);
         try {
-          await bridge.disableWebAccess();
+          await bridge.remoteControl.stopRemoteControl();
           onClose();
         } finally {
           setActionBusy(false);
@@ -748,7 +771,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       async function handleRetryWebAccess() {
         if (!bridge.available) return;
         setActionBusy(true);
-        try { await bridge.enableWebAccess(); }
+        try { await bridge.remoteControl.startRemoteControl(null); }
         catch (_) {}
         finally { setActionBusy(false); }
       }
@@ -943,35 +966,35 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
-          const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+          const list = await invokeTauri('list_marketplace_tools');
           if (isAlive()) setMarketplaceTools(Array.isArray(list) ? list : []);
         } catch (e) { /* ignore */ }
         try {
-          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          const skills = await invokeTauri('list_marketplace_skills');
           if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch (e) { /* ignore */ }
         try {
-          const dis = await window.__TAURI__.core.invoke('get_disabled_connectors');
+          const dis = await invokeTauri('get_disabled_connectors');
           if (isAlive()) setDisabled(new Set(dis || []));
         } catch (e) { /* ignore */ }
         try {
-          const fs = await window.__TAURI__.core.invoke('feishu_skills_state');
+          const fs = await invokeTauri('feishu_skills_state');
           if (isAlive()) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
-          const ws = await window.__TAURI__.core.invoke('wecom_skills_state');
+          const ws = await invokeTauri('wecom_skills_state');
           if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
-          const ds = await window.__TAURI__.core.invoke('dingtalk_skills_state');
+          const ds = await invokeTauri('dingtalk_skills_state');
           if (isAlive()) { setDingtalkOn(!!(ds && ds.connected)); setDingtalkEnabled(!ds || ds.enabled !== false); }
         } catch (e) { /* ignore */ }
         try {
-          const es = await window.__TAURI__.core.invoke('eip_status');
+          const es = await invokeTauri('eip_status');
           if (isAlive()) setEipOn(!!(es && es.connected));
         } catch (e) { /* ignore */ }
         try {
-          const zs = await window.__TAURI__.core.invoke('zhidao_status');
+          const zs = await invokeTauri('zhidao_status');
           if (isAlive()) setZhidaoOn(!!(zs && zs.connected));
         } catch (e) { /* ignore */ }
       }
@@ -990,7 +1013,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setDisabled(next);
         // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
         if (bridge.available) {
-          window.__TAURI__.core.invoke('set_disabled_connectors',
+          invokeTauri('set_disabled_connectors',
             { connectorIds: Array.from(next) }).catch(() => {});
         }
       }
@@ -1067,6 +1090,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     // 添加/编辑模型模态弹窗。
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
+      const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
       const initialCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
       const initialCatalogMatch = initialCatalogGroups.some(group =>
@@ -1074,7 +1098,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       const canSetUpLocalModel = can('localModelSetup');
       const [name, setName] = useState(initial.name || '');
-      const [preset, setPreset] = useState(initial.preset || (/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`) ? 'local_vllm' : 'deepseek'));
+      const [preset, setPreset] = useState(initial.preset || (localVllmSupported ? 'local_vllm' : 'deepseek'));
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
@@ -1099,7 +1123,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function applyCatalogItem(group, item) {
         const p = group.preset;
         setPreset(p);
-        const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS[/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`) ? 'local_vllm' : 'deepseek'];
+        const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS[localVllmSupported ? 'local_vllm' : 'deepseek'];
         const nextModel = item.custom ? '' : (item.model || defs.model);
         setBaseUrl(defs.baseUrl);
         setModel(nextModel);
@@ -1119,7 +1143,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        try { const msg = await bridge.testModelConnection(baseUrl.trim(), keyAction === 'replace' ? apiKey.trim() : '', initial.__new ? null : initial.id); setTestResult({ ok: true, msg: String(msg) }); }
+        try { const msg = await bridge.models.testModelConnection(baseUrl.trim(), keyAction === 'replace' ? apiKey.trim() : '', initial.__new ? null : initial.id); setTestResult({ ok: true, msg: String(msg) }); }
         catch (e) { setTestResult({ ok: false, msg: String(e) }); }
         finally { setTesting(false); }
       }
@@ -1135,10 +1159,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (!canSetUpLocalModel || !bridge.available || detecting) return;
         // macOS/Windows 后端无 discover_local_vllm / detect_local_vllm_setup 命令(已 cfg linux),
         // 此处非 Linux 直接返回,避免 invoke 不存在的命令 reject 报错。
-        if (!/linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`)) return;
+        if (!bridge.available || detecting) return;
+        if (!localVllmSupported) return;
         setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
         try {
-          const result = await bridge.discoverLocalVllm({
+          const result = await bridge.vllm.discoverLocalVllm({
             currentBaseUrl: baseUrl.trim() || null,
             savedBaseUrl: initial.base_url || null,
           });
@@ -1147,7 +1172,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
           else if (online.length === 0) {
             // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
-            const setup = await bridge.detectLocalVllmSetup();
+            const setup = await bridge.vllm.detectLocalVllmSetup();
             const canStart = setup && setup.has_packages &&
               (setup.engine_state ? ['stopped', 'failed'].includes(setup.engine_state) : !setup.vllm_online);
             if (canStart) setOfferSetup(true);
@@ -1185,10 +1210,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const canSave = !!(saveName && model.trim() && baseUrl.trim() && hasUsableApiKey);
       async function toggleApiKeyVisibility() {
         const nextVisible = !showKey;
-        if (nextVisible && hasSavedKey && !apiKey.trim() && credentialState !== 'env_override' && initial.id && bridge.revealModelApiKey) {
+        if (nextVisible && hasSavedKey && !apiKey.trim() && credentialState !== 'env_override' && initial.id && bridge.models.revealModelApiKey) {
           try {
             setKeyRevealError('');
-            const savedKey = await bridge.revealModelApiKey(initial.id);
+            const savedKey = await bridge.models.revealModelApiKey(initial.id);
             if (savedKey) setApiKey(savedKey);
           } catch (error) {
             setKeyRevealError(String(error || '读取 API Key 失败'));
@@ -1262,15 +1287,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       if (initial.__new && pickerOpen) {
         return (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={onCancel}>
-            <div onClick={e => e.stopPropagation()}
+          <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
+            <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
               className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
                   <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>选择模型后再填写必要凭据</p>
                 </div>
-                <button onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
               </div>
               <div className="px-5 py-4">{renderCatalogPicker()}</div>
             </div>
@@ -1278,15 +1303,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         );
       }
       return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
-          <div onClick={e => e.stopPropagation()}
+        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
+          <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
             className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
                 <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${selectedProvider} · ${selectedModelLabel}`}</p>
               </div>
-              <button onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
             </div>
             <div className="space-y-4 px-5 py-4">
               <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'border-white/[0.10] bg-[#2C2C2E]' : 'border-black/[0.08] bg-white'}`}>
@@ -1386,7 +1411,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <div>
                         <div className="text-[13px] leading-relaxed mb-3">{t.vllmSetupDone}</div>
                         <div className="flex justify-end">
-                          <button onClick={() => bridge.available && bridge.restartApp()}
+                          <button onClick={() => bridge.available && bridge.updater.restartApp()}
                             className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
                         </div>
                       </div>
@@ -1397,7 +1422,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                         <div className="flex justify-end gap-2">
                           <button onClick={() => { setBootstrapHere(false); setOfferSetup(false); }}
                             className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
-                          <button onClick={() => bridge.bootstrapLocalVllm()}
+                          <button onClick={() => bridge.vllm.bootstrapLocalVllm()}
                             className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
                         </div>
                       </div>
@@ -1410,7 +1435,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setOfferSetup(false)}
                           className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
-                        <button onClick={() => { setBootstrapHere(true); bridge.bootstrapLocalVllm(); }}
+                        <button onClick={() => { setBootstrapHere(true); bridge.vllm.bootstrapLocalVllm(); }}
                           className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
                       </div>
                     </div>
@@ -1419,7 +1444,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               )}
             </div>
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
-              <button onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cpCancel}</button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cpCancel}</button>
               <button onClick={doSave} disabled={!canSave}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{t.modelSaveBtn}</button>
             </div>
@@ -1430,6 +1455,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
+      const platformCapabilities = (bs && bs.platformCapabilities) || {};
+      const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
+      const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
@@ -1451,6 +1479,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
       const [feedbackNotice, setFeedbackNotice] = useState('');
       const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
+      const [llmApiModelBusy, setLlmApiModelBusy] = useState(false);
+      const llmApiModels = (bs && bs.llmApiModels) || {};
+      const builtinAvailableModels = llmApiModels.available_models || [];
+      const builtinDefaultModel = llmApiModels.default_model || (((bs && bs.settings && bs.settings.advanced && bs.settings.advanced.builtin_llmapi_default_model) || '') || '');
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const archivedSessions = (bs && bs.archivedSessions) || [];
@@ -1492,11 +1524,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (feedbackStatus.state === 'submitted') resetFeedback();
       };
       const pickFeedbackAttachments = async () => {
-        if (!bridge.available || !bridge.pickFeedbackFiles) {
+        if (!bridge.available || !bridge.files.pickFeedbackFiles) {
           setFeedbackStatus({ state: 'failed_validation', message: t.feedbackPickUnavailable, receipt: null });
           return;
         }
-        const paths = await bridge.pickFeedbackFiles();
+        const paths = await bridge.files.pickFeedbackFiles();
         if (!paths || paths.length === 0) return;
         setFeedbackDraft(prev => {
           const next = prev.attachments.slice();
@@ -1529,7 +1561,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         }
         setFeedbackStatus({ state: 'submitting', message: '', receipt: null });
         try {
-          const receipt = await bridge.submitFeedback({
+          const receipt = await bridge.feedback.submitFeedback({
             type: feedbackDraft.type,
             title: feedbackDraft.title.trim() || null,
             description: feedbackDraft.description,
@@ -1558,11 +1590,21 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setArchivedDeleteConfirm(null);
         if (id && onDeleteArchived) onDeleteArchived(id);
       };
+      const refreshBuiltinModels = async () => {
+        if (!bridge.available || !bridge.llmapi.getLlmApiModels) return;
+        setLlmApiModelBusy(true);
+        try { await bridge.llmapi.getLlmApiModels(); } finally { setLlmApiModelBusy(false); }
+      };
+      const setBuiltinDefaultModel = async model => {
+        if (!bridge.available || !bridge.llmapi.setLlmApiDefaultModel || !model) return;
+        setLlmApiModelBusy(true);
+        try { await bridge.llmapi.setLlmApiDefaultModel(model); } finally { setLlmApiModelBusy(false); }
+      };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
         if (!canInstallDependencies || !bridge.available || (bs && (bs.deps || bs.depsChecking))) return;
         let cancelled = false;
-        const run = () => { if (!cancelled) bridge.checkDependencies(); };
+        const run = () => { if (!cancelled) bridge.dependencies.checkDependencies(); };
         if (window.requestIdleCallback) {
           const idleId = window.requestIdleCallback(run, { timeout: 1200 });
           return () => {
@@ -1651,7 +1693,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             : 'bg-[#34C759]/15 text-[#248A3D]'
         }`}>{children}</span>
       );
-      const userModels = visibleUserModels(savedModels || []);
+      const userModels = visibleSortedModels(savedModels || [], bs);
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: '内置搜索' },
         { key: 'metaso', label: '秘塔', desc: '中文搜索服务' },
@@ -1698,7 +1740,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         ...(memory.recent_activity || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'recent_activity', type: '近期动态' })),
       ];
       useEffect(() => {
-        if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.loadMemoryOverview) bridge.loadMemoryOverview();
+        if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.memory.loadMemoryOverview) bridge.memory.loadMemoryOverview();
       }, [activeSection, memoryEnabled]);
       useEffect(() => {
         if (updateFocusTick) setActiveSection('update');
@@ -1723,17 +1765,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (!memoryEditor || !bridge.available) return;
         const text = String(memoryEditor.value || '').trim();
         if (memoryEditor.mode === 'memory') {
-          if (!text || !bridge.updateMemoryItem) return;
-          await bridge.updateMemoryItem(memoryEditor.kind, memoryEditor.id, { text });
+          if (!text || !bridge.memory.updateMemoryItem) return;
+          await bridge.memory.updateMemoryItem(memoryEditor.kind, memoryEditor.id, { text });
         } else if (memoryEditor.mode === 'profile') {
-          if (!bridge.saveMemoryProfilePatch) return;
-          await bridge.saveMemoryProfilePatch({ [memoryEditor.key]: text });
+          if (!bridge.memory.saveMemoryProfilePatch) return;
+          await bridge.memory.saveMemoryProfilePatch({ [memoryEditor.key]: text });
         }
         setMemoryEditor(null);
       };
       const deleteMemoryItem = async item => {
-        if (!bridge.available || !bridge.deleteMemoryItem) return;
-        await bridge.deleteMemoryItem(item.kind, item.id);
+        if (!bridge.available || !bridge.memory.deleteMemoryItem) return;
+        await bridge.memory.deleteMemoryItem(item.kind, item.id);
       };
       const editProfile = key => {
         const label = key === 'call_name' ? '用户称呼' : '助手昵称';
@@ -1750,6 +1792,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const renderModelRows = models => models.length ? models.map(m => {
         const isActive = m.id === activeModelId;
         const isLocal = isLocalModel(m);
+        const isReadonly = isReadonlyModel(m);
         const title = m.model || m.name;
         return (
           <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
@@ -1761,12 +1804,32 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className="flex items-center gap-2 min-w-0">
                 <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</span>
                 {isLocal && <Tag tone="gray">本地模型</Tag>}
+                {isBuiltinLlmApiModel(m) && <Tag tone="gray">内置模型</Tag>}
                 {isActive && <Tag>默认</Tag>}
               </div>
+              {isBuiltinLlmApiModel(m) && (
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className={`text-[12px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.builtinModelSelect}</span>
+                  <select
+                    value={builtinDefaultModel || m.model || ''}
+                    disabled={llmApiModelBusy || builtinAvailableModels.length === 0}
+                    onChange={e => setBuiltinDefaultModel(e.target.value)}
+                    className={`min-w-[220px] max-w-full rounded-lg border px-3 py-1.5 text-[12px] outline-none ${isDark ? 'bg-[#1E1F20] border-white/[0.10] text-[#F2F2F7]' : 'bg-white border-black/[0.12] text-[#1C1C1E]'}`}
+                  >
+                    {builtinAvailableModels.length === 0 ? (
+                      <option value={m.model || ''}>{t.builtinModelEmpty}</option>
+                    ) : builtinAvailableModels.map(model => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                  <button onClick={refreshBuiltinModels} disabled={llmApiModelBusy}
+                    className={`min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-50 ${actionButton('blue')}`}>
+                    {llmApiModelBusy ? t.builtinModelLoading : t.builtinModelRefresh}
+                  </button>
+                </div>
+              )}
             </div>
             <div className="shrink-0 flex items-center gap-2">
-              <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>
-              {models.length > 1 && !isLocal && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+              {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>}
+              {!isReadonly && models.length > 1 && !isLocal && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
             </div>
           </div>
         );
@@ -1774,8 +1837,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
       const selectedPetId = (bs && typeof bs.selectedPet === 'string' && bs.selectedPet) || DEFAULT_PET_ID;
       const handlePetSelect = id => {
-        if (!bridge.available || !bridge.setSelectedPet) return Promise.resolve();
-        return bridge.setSelectedPet(id);
+        if (!bridge.available || !bridge.settings.setSelectedPet) return Promise.resolve();
+        return bridge.settings.setSelectedPet(id);
       };
       const renderGeneral = () => (
         <>
@@ -1828,7 +1891,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <SectionTitle>模型</SectionTitle>
             <Group>
               {renderModelRows(userModels)}
-              <button onClick={() => setEditingModel(newModelDraft('deepseek'))}
+              <button data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
                 className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
                 <Plus size={18} />
                 <span>添加模型</span>
@@ -1922,6 +1985,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const notes = (upd && String(upd.notes || '').trim()) || '暂无更新说明';
         const updateChecking = !!(bs && bs.updateChecking);
         const updateDownloading = !!(bs && bs.updateDownloading);
+        const updateCancelling = !!(bs && bs.updateCancelling);
         const updateReady = !!(bs && bs.updateReady);
         const updateProgress = (bs && bs.updateProgress) || 0;
         const isWindowsUpdate = upd && upd.platform === 'windows';
@@ -1934,19 +1998,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const updateButtonLabel = updateChecking
           ? '检查中…'
           : updateDownloading
-            ? (updateProgress >= 100 ? '安装中…' : `下载中 ${updateProgress}%`)
+            ? (updateProgress >= 100 ? '安装中…' : (updateCancelling ? '取消中…' : '取消下载'))
             : updateReady
               ? (isWindowsUpdate ? '安装器已启动' : '立即重启')
               : (upd && upd.available ? (upd.platform === 'linux' ? '升级并重启' : '下载并安装') : '检查更新');
-        const updateButtonDisabled = !bridge.available || updateChecking || updateDownloading || (updateReady && isWindowsUpdate);
+        const updateButtonDisabled = !bridge.available || updateChecking || updateCancelling || (updateDownloading && updateProgress >= 100) || (updateReady && isWindowsUpdate);
         const handleUpdateAction = () => {
-          if (!bridge.available || updateChecking || updateDownloading) return;
-          if (updateReady) {
-            if (!isWindowsUpdate) bridge.restartApp();
+          if (!bridge.available || updateChecking) return;
+          if (updateDownloading) {
+            if (updateProgress < 100 && !updateCancelling) bridge.updater.cancelUpdate();
             return;
           }
-          if (upd && upd.available) bridge.downloadAndInstallUpdate();
-          else bridge.checkForUpdate();
+          if (updateReady) {
+            if (!isWindowsUpdate) bridge.updater.restartApp();
+            return;
+          }
+          if (upd && upd.available) bridge.updater.downloadAndInstallUpdate();
+          else bridge.updater.checkForUpdate();
         };
         return (
           <div ref={versionUpdateRef} id="settings-version-update">
@@ -1966,13 +2034,57 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           </div>
         );
       };
-      const renderPermissions = () => (
-        <IOSSection title="系统">
-          <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
-            <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
-          </IOSRow>
-        </IOSSection>
-      );
+      const renderPermissions = () => {
+        const deps = (bs && bs.deps) || [];
+        const checking = !!(bs && bs.depsChecking);
+        const installing = !!(bs && bs.depsInstalling);
+        const installError = bs && bs.depsInstallError;
+        const missing = deps.filter(dep => !dep.installed);
+        const checked = deps.length > 0;
+        const busy = checking || installing;
+        return (
+          <>
+            {showSuperPermissionSettings && (
+              <IOSSection title="系统">
+                <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
+                  <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
+                </IOSRow>
+              </IOSSection>
+            )}
+            <div id="settings-dependencies">
+              <IOSSection
+                title={t.depCheckTitle}
+                footer={usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote}
+              >
+                <IOSRow
+                  label={checking ? t.depChecking : (!checked ? t.depCheckTitle : (missing.length ? `${missing.length}${t.depMissingSuffix}` : t.depAllOk))}
+                  desc={installing ? t.depInstalling : (installError ? String(installError) : '')}
+                >
+                  <button
+                    onClick={() => bridge.available && bridge.dependencies.checkDependencies()}
+                    disabled={!bridge.available || busy}
+                    className={`h-9 px-4 rounded-full text-[14px] font-semibold disabled:opacity-50 ${isDark ? 'bg-white/[0.08] text-[#0A84FF]' : 'bg-[#E5E5EA] text-[#007AFF]'}`}
+                  >{checking ? t.depChecking : t.depRecheck}</button>
+                </IOSRow>
+                {missing.map(dep => (
+                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={dep.apt || ''}>
+                    <Tag tone="gray">缺失</Tag>
+                  </IOSRow>
+                ))}
+                {missing.length > 0 && (
+                  <IOSRow label={usesBundledDependencyInstaller ? '安装缺失依赖' : t.depGoInstall}>
+                    <button
+                      onClick={() => bridge.available && bridge.dependencies.installDependencies()}
+                      disabled={!bridge.available || busy}
+                      className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-50"
+                    >{installing ? t.depInstalling : t.depInstallBtn}</button>
+                  </IOSRow>
+                )}
+              </IOSSection>
+            </div>
+          </>
+        );
+      };
       const renderHelp = () => (
         <IOSSection>
           <IOSRow label="提交问题或建议" desc="支持图片和视频附件，提交前会显示隐私提示">
@@ -2065,7 +2177,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 }
                 setRestartDialog(null);
               }} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>稍后</button>
-              <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">现在重启</button>
+              <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">现在重启</button>
             </div>
           </div>
         </div>
