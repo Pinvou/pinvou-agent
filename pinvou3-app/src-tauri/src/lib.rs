@@ -787,6 +787,7 @@ mod blocklist_contract {
             "agent_eval",  // subagent 收结果
             "agent_close", // subagent 释放 session
             "kb_search",   // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
+            "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }
