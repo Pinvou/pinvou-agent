@@ -27,7 +27,10 @@ include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.1", features = [] }
+# macos-private-api: 必须与 tauri.conf.json 的 app.macOSPrivateApi=true 同时开启
+# (tauri-build 强制两者一致)。解锁 macOS 上 WebviewWindowBuilder::transparent()
+# (pet_window.rs:388 桌宠窗口需要)。非 mac 平台该 feature 是 no-op。
+tauri = { version = "2.11.1", features = ["macos-private-api"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -104,15 +107,35 @@ futures-util = "0.3"
 rand = "0.9"
 base64 = "0.22"
 
-# 多窗口撕离(Phase 2):运行期读 X11 全局鼠标坐标+左键状态,驱动鬼影跨屏跟随+松手落位。
-# 详见 src/detach.rs begin_detach_drag;spike example 也复用。Wayland 下不可用 → 降级(Task 8)。
-device_query = "2"
-
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
+# macOS 桌伴窗口策略补丁(pet_window.rs):
+# - NSWindowCollectionBehavior 跨 Space/全屏保持可见(TAO 只设 level,没设 collectionBehavior)
+# - NSStatusWindowLevel 提升桌宠浮在全屏 App 之上
+# detach.rs 的撕离拖拽已改用 CoreGraphics FFI(不再依赖 objc2 NSEvent global monitor)。
+# objc2 0.6.x 是 tao 0.35.2 的传递依赖,这里显式声明只是为了把 major/minor
+# 提升到**直接依赖**(否则它只是传递依赖,Cargo 不会按 app 的意愿解析)。
+# 注意:这些是 caret 版本(objc2 = "0.6" 允许 0.6.x 内任意 minor/patch 升级),
+# **不是** ABI 严格锁——严格锁应写成 `=0.6.4`。caret 版本只保证对齐到同一 major:
+# objc2 0.6.x / objc2-app-kit 0.3.x / objc2-foundation 0.3.x,与 tao 0.35.2
+# 期望的 objc2 family major 一致即可。具体 patch 由 Cargo.lock 在 lockfile 阶段
+# 固定(当前 0.6.4 / 0.3.2)。如未来需要绝对复现同一 ABI,改为精确锁 `=0.6.4`。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
+# 多窗口撕离(detach.rs begin_detach_drag):X11 全局鼠标坐标+左键状态,
+# 驱动鬼影跨屏跟随 + 松手落位。Wayland 下不可用 → 降级(后续 task)。
+device_query = "2"

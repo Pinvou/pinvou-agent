@@ -215,3 +215,34 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
     ]
 }
+
+// ====== file_ingest.rs 跨平台缺失消息 + 依赖包名 ======
+
+pub fn libreoffice_missing_message() -> &'static str {
+    "需要 LibreOffice；请从 https://www.libreoffice.org 下载安装。"
+}
+
+pub fn sevenzip_missing_message() -> &'static str {
+    "压缩包解析需要 7-Zip；请从 https://www.7-zip.org 下载安装。"
+}
+
+pub fn python3_missing_message() -> &'static str {
+    "邮件解析需要 Python 3；请从 https://www.python.org/downloads 下载安装。"
+}
+
+pub fn msgconvert_missing_message() -> &'static str {
+    ".msg 解析需要 msgconvert（Perl 模块 Email::Outlook::Message）；请通过 Perl 安装此模块。"
+}
+
+pub fn libreoffice_dependency_packages() -> &'static str {
+    // Windows 无一键安装（install_dependencies 直接返回"不支持"），返回空串。
+    ""
+}
+
+pub fn sevenzip_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    ""
+}

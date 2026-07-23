@@ -90,12 +90,56 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     super::super::platform::nvidia_smi_candidates()
 }
 
+pub fn libreoffice_missing_message() -> &'static str {
+    super::super::platform::libreoffice_missing_message()
+}
+
+pub fn sevenzip_missing_message() -> &'static str {
+    super::super::platform::sevenzip_missing_message()
+}
+
+pub fn python3_missing_message() -> &'static str {
+    super::super::platform::python3_missing_message()
+}
+
+pub fn msgconvert_missing_message() -> &'static str {
+    super::super::platform::msgconvert_missing_message()
+}
+
+pub fn libreoffice_dependency_packages() -> &'static str {
+    super::super::platform::libreoffice_dependency_packages()
+}
+
+pub fn sevenzip_dependency_packages() -> &'static str {
+    super::super::platform::sevenzip_dependency_packages()
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    super::super::platform::email_dependency_packages()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn nvidia_smi_candidates_starts_with_generic_command() {
+    fn nvidia_smi_candidates_starts_with_generic_command_on_linux() {
+        assert_eq!(nvidia_smi_candidates().first().copied(), Some("nvidia-smi"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nvidia_smi_candidates_is_empty_on_macos() {
+        // Mac 无 NVIDIA 驱动;平台实现正确返回空 Vec。
+        assert!(nvidia_smi_candidates().is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn nvidia_smi_candidates_includes_windows_paths_on_windows() {
+        // Windows 实现返回 nvidia-smi + 两个 Windows 路径,非空。
+        assert!(!nvidia_smi_candidates().is_empty());
         assert_eq!(nvidia_smi_candidates().first().copied(), Some("nvidia-smi"));
     }
 

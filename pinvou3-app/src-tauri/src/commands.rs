@@ -194,8 +194,9 @@ pub(crate) async fn chat_with_reservation(
         }
     }
     // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
-    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
-    // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
+    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道;需要命中
+    // 附近上下文时用 kb_open_source,不直接打开二进制原文件。不再自动注入片段(注入式已
+    // 废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
     //
     // 关键防线:kb_search 的可见性是 engine config.disallowed_tools 控制的,而知识库模型/
     // 索引状态可能在 engine spawn 后才变化。挂集 turn 先刷新 live engine 的工具门控;
@@ -254,8 +255,10 @@ fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
         "<system-reminder>\n\
          本会话挂载了知识集《{title}》。涉及用户本地资料/文档的问题,你**必须先调用 \
          `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
-         内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。与本地资料无关的闲聊/\
-         常识问题不必检索,正常回答即可。\n\
+         内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
+         只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\
+         DOCX/PPTX 等来源调用 `read_file` 或用 shell 全量展开。与本地资料无关的闲聊/常识\
+         问题不必检索,正常回答即可。\n\
          </system-reminder>"
     )
 }
@@ -762,6 +765,9 @@ fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     prefs.sanitize_plaintext_api_keys();
+    // migrate/sanitize 后补一次真实回读,确保写盘的 credential_state 反映存储实际内容
+    // (避免 keep_existing 时 credential_ref 存在但存储为空 → 写入假阳性 Configured)。
+    prefs.refresh_credential_states_with_store(&store);
     Ok(prefs)
 }
 
@@ -865,14 +871,31 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
+/// 解析当前交互会话真正绑定的模型。会话绑定失效时与 EnginePool 一致回退全局默认，
+/// 避免 API Key gate 按全局模型判断、实际请求却由另一条会话模型发出。
+fn session_model_from_prefs(
+    prefs: &UserPrefs,
+    session_model_id: Option<&str>,
+) -> Option<SavedModel> {
+    session_model_id.and_then(|id| prefs.model_by_id(id).cloned())
+}
+
 #[tauri::command]
 pub async fn get_effective_model_config(
+    session_id: Option<String>,
     pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
 ) -> Result<EffectiveModelConfig, String> {
-    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),boot 快照会过时。
+    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),并真实回读系统凭据存储。
+    // 不能只信 settings.json 中持久化的 credential_state：Keychain/Secret Service/
+    // Credential Manager 条目可能已被外部删除或授权已失效。
     let mut bridge = pool.bridge.clone();
-    bridge.prefs = UserPrefs::load();
-    bridge.session_model = None; // 全局视角,不绑定具体 session
+    bridge.prefs = refresh_safe_prefs(UserPrefs::load());
+    let session_model_id = session_id
+        .as_deref()
+        .and_then(|id| store.session_model_id(id));
+    bridge.session_model = session_model_from_prefs(&bridge.prefs, session_model_id.as_deref());
+
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -880,32 +903,38 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
         env_overrides.push("base_url".to_string());
     }
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    let env_api_key = std::env::var("DEEPSEEK_API_KEY")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if env_api_key {
         env_overrides.push("api_key".to_string());
     }
     if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
         env_overrides.push("provider".to_string());
     }
-    let preset = bridge
-        .prefs
-        .active_model()
-        .map(|m| m.preset)
+    let effective = bridge.effective_model_owned();
+    let preset = effective
+        .as_ref()
+        .map(|model| model.preset)
         .unwrap_or_default()
         .as_str();
-    let active = bridge.prefs.active_model();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
         base_url: bridge.base_url(),
         api_key: String::new(),
-        credential_state: if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+        credential_state: if env_api_key {
             CredentialState::EnvOverride
         } else {
-            active
-                .map(|m| m.credential_state)
+            effective
+                .as_ref()
+                .map(|model| model.credential_state)
                 .unwrap_or(CredentialState::Missing)
         },
-        has_secret: active.map(|m| m.has_secret).unwrap_or(false),
+        has_secret: effective
+            .as_ref()
+            .map(|model| model.has_secret)
+            .unwrap_or(false),
         provider: bridge.provider(),
         env_overrides,
     })
@@ -1410,7 +1439,27 @@ pub async fn transcribe_voice_audio(
                 .map(|text| LocalAsrOutput { text })
                 .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
         } else {
-            run_local_asr_cli(&wav_path)
+            // macOS 特判:引擎就位但模型未下载(用户刚装好的正常窗口)。此前直接走
+            // run_local_asr_cli,它用 pinvou-asr shim 协议(asr --model ... --input)spawn
+            // sense-voice 引擎本体 —— 引擎不认这个参数 → 非零退出 → 用户看到困惑的 "ASR
+            // failed (exit N)"。改为返回明确的"模型未下载"错误。
+            #[cfg(target_os = "macos")]
+            if crate::os::asr_bundled_runtime_status().is_none()
+                && crate::voice_asr::engine_path().is_file()
+                && !crate::voice_asr::model_path().is_file()
+            {
+                Err(VoiceCommandError::new(
+                    "recognition_failed",
+                    "transcribing",
+                    "本地语音识别模型未下载。请在设置页下载语音模型后重试。".to_string(),
+                ))
+            } else {
+                run_local_asr_cli(&wav_path)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                run_local_asr_cli(&wav_path)
+            }
         };
         let _ = std::fs::remove_file(&wav_path);
         result
@@ -1489,12 +1538,14 @@ pub async fn get_monitor_snapshot(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(target_os = "linux")]
 pub struct DiscoverLocalVllmRequest {
     pub current_base_url: Option<String>,
     pub saved_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg(target_os = "linux")]
 pub struct LocalVllmCandidate {
     pub base_url: String,
     pub status: VllmStatus,
@@ -1503,11 +1554,13 @@ pub struct LocalVllmCandidate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg(target_os = "linux")]
 pub struct LocalVllmDiscovery {
     pub candidates: Vec<LocalVllmCandidate>,
 }
 
 /// 手动探测本机 vLLM。只探小白名单候选地址；不做端口扫描,不探局域网。
+#[cfg(target_os = "linux")]
 #[tauri::command]
 pub async fn discover_local_vllm(
     request: Option<DiscoverLocalVllmRequest>,
@@ -1535,6 +1588,7 @@ pub async fn discover_local_vllm(
     Ok(LocalVllmDiscovery { candidates })
 }
 
+#[cfg(target_os = "linux")]
 fn push_local_vllm_candidate(out: &mut Vec<String>, raw: Option<&str>) {
     let Some(raw) = raw else {
         return;
@@ -1547,6 +1601,7 @@ fn push_local_vllm_candidate(out: &mut Vec<String>, raw: Option<&str>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -1937,7 +1992,8 @@ pub async fn apply_disabled_connectors(
 /// 计算当前应「对模型隐藏」的工具全名**完整列表**(小写)。
 ///
 /// 因 `EnginePool::set_disallowed_all` 是**全量替换** `config.disallowed_tools`,任何调用方
-/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库不可用时)`kb_search`。
+/// 都必须传完整列表,不能传增量。组成 = 市场连接器开关禁用的工具名 +(知识库不可用时)
+/// `kb_search`/`kb_open_source`。
 /// 知识库"可用" = 有已入库内容 **且** embedding 模型已就绪(semantic_ready)。embedding 模型按需
 /// 下载,没装时知识库走完全门控 → kb_search 进列表 → 模型目录里看不到 → AI 不再宣称能本地检索;
 /// 库删光文件后同理。KnowledgeService state 取不到时保守隐藏(宁可少功能不误宣传)。
@@ -1949,6 +2005,7 @@ pub fn compute_disallowed_tools(app: &AppHandle) -> Vec<String> {
         .unwrap_or(false);
     if !kb_usable {
         tools.push("kb_search".to_string());
+        tools.push("kb_open_source".to_string());
     }
     tools
 }
@@ -4382,6 +4439,11 @@ pub async fn summon_pinvou(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    // preflight:需要鉴权的模型但 API Key 缺失 → 直接返回友好错误,而不是让空 key
+    // 打到云端变 401。local_vllm 与 loopback OpenAI-compatible 服务允许无鉴权。
+    if pool.bridge.api_key_required() && pool.bridge.api_key().trim().is_empty() {
+        return Err("未配置 API Key，请先在「设置 → 模型」中配置。".to_string());
+    }
     let session = store
         .load(&sid)
         .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
@@ -5801,6 +5863,102 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
+    fn model_fixture(
+        id: &str,
+        preset: crate::bridge::prefs::ModelPreset,
+        base_url: &str,
+        credential_state: CredentialState,
+    ) -> SavedModel {
+        SavedModel {
+            id: id.to_string(),
+            name: id.to_string(),
+            preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: format!("{id}-wire"),
+            base_url: base_url.to_string(),
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state,
+            has_secret: credential_state == CredentialState::Configured,
+            credential_action: None,
+        }
+    }
+
+    #[test]
+    fn api_key_gate_model_resolution_prefers_session_over_global_cloud() {
+        use crate::bridge::prefs::ModelPreset;
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models = vec![
+            model_fixture(
+                "global-cloud",
+                ModelPreset::Deepseek,
+                "https://api.deepseek.com",
+                CredentialState::Missing,
+            ),
+            model_fixture(
+                "session-local",
+                ModelPreset::OpenaiCompatible,
+                "http://127.0.0.1:11434/v1",
+                CredentialState::Missing,
+            ),
+        ];
+        prefs.advanced.active_model_id = Some("global-cloud".to_string());
+
+        let selected = session_model_from_prefs(&prefs, Some("session-local"))
+            .expect("session model should resolve");
+        assert_eq!(selected.id, "session-local");
+        assert_eq!(selected.base_url, "http://127.0.0.1:11434/v1");
+    }
+
+    #[test]
+    fn api_key_gate_model_resolution_prefers_session_cloud_over_global_local() {
+        use crate::bridge::prefs::ModelPreset;
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models = vec![
+            model_fixture(
+                "global-local",
+                ModelPreset::LocalVllm,
+                "http://127.0.0.1:8000/v1",
+                CredentialState::Missing,
+            ),
+            model_fixture(
+                "session-cloud",
+                ModelPreset::Deepseek,
+                "https://api.deepseek.com",
+                CredentialState::Missing,
+            ),
+        ];
+        prefs.advanced.active_model_id = Some("global-local".to_string());
+
+        let selected = session_model_from_prefs(&prefs, Some("session-cloud"))
+            .expect("session model should resolve");
+        assert_eq!(selected.id, "session-cloud");
+        assert_eq!(selected.credential_state, CredentialState::Missing);
+    }
+
+    #[test]
+    fn api_key_gate_model_resolution_falls_back_when_session_binding_is_stale() {
+        use crate::bridge::prefs::ModelPreset;
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models = vec![model_fixture(
+            "global-cloud",
+            ModelPreset::Deepseek,
+            "https://api.deepseek.com",
+            CredentialState::Configured,
+        )];
+        prefs.advanced.active_model_id = Some("global-cloud".to_string());
+
+        assert!(session_model_from_prefs(&prefs, Some("deleted-model")).is_none());
+        assert_eq!(
+            prefs.active_model().map(|model| model.id.as_str()),
+            Some("global-cloud")
+        );
+    }
+
     #[test]
     fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {
         use deepseek_tui::mcp::oauth::McpAuthStatus;
@@ -6521,12 +6679,15 @@ mod tests {
         assert!(msg.contains("立即开始执行"), "缺少明确执行信号");
     }
 
-    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
+    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 按需 kb_open_source + 禁止二进制
+    /// read_file + 无依据说不知道;空名兜底。
     #[test]
     fn agentic_guide_mentions_collection_and_kb_search() {
         let g = build_kb_agentic_guide(Some("硬件资料"));
         assert!(g.contains("《硬件资料》"));
         assert!(g.contains("kb_search"));
+        assert!(g.contains("kb_open_source"));
+        assert!(g.contains("不要对 XLSX/"));
         assert!(g.contains("绝不凭记忆编造"));
         assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
     }

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.pinvou.pinvou3</string>
+    <key>CFBundleName</key>
+    <string>pinvou3</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>pinvou3 需要访问麦克风以提供语音输入功能。</string>
+    <!-- 不设 LSUIElement：主窗口要进 Dock（与 Linux/Windows 一致） -->
+</dict>
+</plist>

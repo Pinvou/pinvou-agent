@@ -7,7 +7,13 @@
 //! 漏掉会导致 listen/startDragging 全部静默被拒(宠物不动、拖不了)。
 
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const PET_LABEL: &str = "pet";
@@ -27,6 +33,7 @@ const PET_ACTIVITY_GAP_H: f64 = 12.0;
 const PET_CHARACTER_BOTTOM: f64 = 8.0;
 const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 1.2;
+const MAIN_FOCUS_RAISE_HOLD_MS: u64 = 180;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PetNavigationRequest {
@@ -72,6 +79,7 @@ impl PetScheduledRunNavigation {
 #[derive(Default)]
 pub struct PetNavigationState {
     pending: Mutex<Option<PetNavigationRequest>>,
+    focus_raise_generation: Arc<AtomicU64>,
 }
 
 impl PetNavigationState {
@@ -89,6 +97,18 @@ impl PetNavigationState {
             .lock()
             .map_err(|_| "pet navigation state lock poisoned".to_string())
             .map(|mut pending| pending.take())
+    }
+
+    fn next_focus_raise_generation(&self) -> (u64, Arc<AtomicU64>) {
+        let generation = self
+            .focus_raise_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        (generation, Arc::clone(&self.focus_raise_generation))
+    }
+
+    fn focus_raise_is_current(counter: &AtomicU64, generation: u64) -> bool {
+        counter.load(Ordering::Acquire) == generation
     }
 }
 
@@ -400,6 +420,10 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     // Linux/X11 下 builder 在窗口 map 之前写入的 always_on_top 可能丢失，
     // 必须在窗口已显示后再向窗口管理器重申一次。
     show_and_keep_above(&win)?;
+    // macOS:pet 策略必须在 show_and_keep_above 之后执行——后者调 set_always_on_top(true),
+    // tao 0.35.2 在 macOS 上实现为 setLevel(NSFloatingWindowLevel=3),会覆盖策略设的
+    // NSStatusWindowLevel(=25)。最后执行确保策略的更高 level 不被覆盖(桌宠浮在全屏 App 上)。
+    apply_macos_pet_window_policy(&win);
     Ok(())
 }
 
@@ -972,13 +996,31 @@ pub async fn open_main_from_pet(
     })?;
     // X11 焦点抢占保护:实测(GB10) show/unminimize/set_focus 全部返回 Ok,
     // 但 WM 拒绝把主窗口提到前台,只打 demand-attention——用户看到"点了没反应"。
-    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前,聚焦后立即交还。
+    // raise 不受焦点保护限制:瞬时置顶把窗口强制提前。取消置顶不能紧跟
+    // set_focus 同步执行;X11/Mutter 上主窗口可能尚未完成激活,立刻撤销会让
+    // 激活点击落到下层窗口(常见表现:下层窗口收到点击后 Pinvou 又最小化)。
     let _ = main.set_always_on_top(true);
+    #[cfg(target_os = "linux")]
+    if let Err(error) = app.emit_to("main", "pet:activation_guard", ()) {
+        eprintln!("[pet nav] emit activation guard failed: {error}");
+    }
     let focus_result = main.set_focus().map_err(|error| {
         let msg = format!("focus main window failed: {error}");
         eprintln!("[pet nav] {msg}");
         msg
     });
+    #[cfg(target_os = "linux")]
+    {
+        let (generation, counter) = navigation.next_focus_raise_generation();
+        let raised_main = main.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(MAIN_FOCUS_RAISE_HOLD_MS)).await;
+            if PetNavigationState::focus_raise_is_current(&counter, generation) {
+                let _ = raised_main.set_always_on_top(false);
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
     let _ = main.set_always_on_top(false);
     focus_result?;
     app.emit_to("main", "pet:navigation_pending", ())
@@ -1014,6 +1056,66 @@ pub async fn take_pet_reply(
     replies: State<'_, PetReplyState>,
 ) -> Result<Option<PetReplyRequest>, String> {
     replies.take()
+}
+
+/// macOS 桌伴窗口策略补丁:
+/// 1. NSWindowCollectionBehavior 跨 Space/全屏保持可见(TAO 只设了 level,没设 collectionBehavior)
+/// 2. 单窗口级不抢 Dock(不动 app 级 LSUIElement,主窗口保持进 Dock)
+///
+/// Tauri 的 `WebviewWindow::always_on_top(true)` 只调 `setLevel:`,缺这条 collectionBehavior
+/// 会导致桌伴在用户切 Space / 进全屏 App 时被遮挡。这里直接对底层 NSWindow 补一次。
+#[cfg(target_os = "macos")]
+fn apply_macos_pet_window_policy(win: &tauri::WebviewWindow) {
+    // NSWindow 属性变更必须在主线程。本函数可能从 async Tauri 命令(worker 线程)调用。
+    // 先检查是否已在主线程(如 setup 钩子);若是则同步执行,否则 marshal 到主线程。
+    // 此前用 MainThreadMarker 做哨兵"非主线程就 return",导致经 set_pet_enabled
+    // (async 命令,在 tokio worker 线程)拉起的桌宠窗口永远跳过策略 → 不跨 Space/全屏。
+    if objc2::MainThreadMarker::new().is_some() {
+        apply_macos_pet_window_policy_impl(win);
+    } else {
+        let app = win.app_handle().clone();
+        let win_clone = win.clone();
+        if let Err(e) = app.run_on_main_thread(move || {
+            apply_macos_pet_window_policy_impl(&win_clone);
+        }) {
+            eprintln!("[pet] apply_macos_pet_window_policy marshal 到主线程失败: {e}(桌宠可能不跨 Space/全屏)");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_pet_window_policy_impl(win: &tauri::WebviewWindow) {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior, NSStatusWindowLevel};
+
+    // tauri 2.11.1 的 WebviewWindow::ns_window() 返回的是 autoreleased 指针
+    // (Tauri 内部用 Retained::autorelease_ptr 传出,寄生于当前 autorelease pool)。
+    // retain_autoreleased 命中 objc2 的 fast autorelease 优化并转为强引用,
+    // 由 Retained<NSWindow> 的 Drop 在作用域结束自动 release。
+    let raw: *mut std::ffi::c_void = match win.ns_window() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let ns_window: Retained<NSWindow> = match unsafe { Retained::retain_autoreleased(raw.cast()) } {
+        Some(w) => w,
+        None => return,
+    };
+    // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
+    // = 跨 Space 可见 + 不参与 Exposé 空间切换 + 全屏 App 之上可见
+    let behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::Stationary
+        | NSWindowCollectionBehavior::FullScreenAuxiliary;
+    ns_window.setCollectionBehavior(behavior);
+    // 提升窗口 level:FullScreenAuxiliary 只决定能否进入全屏 Space,不决定层叠顺序。
+    // Tauri always_on_top 设的是 NSFloatingWindowLevel(=3),远低于全屏 App 的 level。
+    // 提到 NSStatusWindowLevel(=25) 确保桌宠浮在全屏 App 之上。
+    // 用 crate 命名常量而非魔法数字,避免 Apple 调整枚举值时埋雷。
+    ns_window.setLevel(NSStatusWindowLevel);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_macos_pet_window_policy(_win: &tauri::WebviewWindow) {
+    // no-op on non-macOS
 }
 
 #[cfg(test)]
@@ -1088,6 +1190,26 @@ mod tests {
         state.replace(request.clone()).unwrap();
         assert_eq!(state.take().unwrap(), Some(request));
         assert_eq!(state.take().unwrap(), None);
+    }
+
+    #[test]
+    fn latest_focus_raise_generation_owns_delayed_clear() {
+        let state = PetNavigationState::default();
+        let (first, first_counter) = state.next_focus_raise_generation();
+        assert!(PetNavigationState::focus_raise_is_current(
+            &first_counter,
+            first
+        ));
+
+        let (second, second_counter) = state.next_focus_raise_generation();
+        assert!(
+            !PetNavigationState::focus_raise_is_current(&first_counter, first),
+            "an earlier wakeup must not clear a newer raise"
+        );
+        assert!(PetNavigationState::focus_raise_is_current(
+            &second_counter,
+            second
+        ));
     }
 
     #[test]

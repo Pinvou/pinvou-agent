@@ -92,11 +92,10 @@ test('KB snapshot 渲染列表,点击触发 mount_kb_collection,kb_mount_changed
   const { window, sent, close } = createPage();
   t.after(close);
 
-  // 审查 #6:kb_search 只在 Plan 模式可用,chip 默认禁用。先注入一份 kb_search_available
-  // 的 chips_snapshot,模拟 Plan 模式 + KB 就绪,让 chip 解锁、sheet 允许挂载。
+  // kb_search 在所有模式注册；模拟默认 Yolo 模式 + KB 就绪，chip 应解锁并允许挂载。
   window.handleDesktopEvent({
     type: 'chips_snapshot',
-    payload: { kb_search_available: true, mode: 'plan', mounted_collection: null },
+    payload: { kb_search_available: true, mode: 'yolo', mounted_collection: null },
   });
   // 打开知识库 sheet(会发 list_kb_collections)。
   window.openSheet('knowledge');
@@ -135,19 +134,19 @@ test('KB snapshot 渲染列表,点击触发 mount_kb_collection,kb_mount_changed
   assert.match(chipText, /Alpha KB/, 'chip 应显示挂载中的 collection 名');
 });
 
-// 审查 #6 回归:kb_search 不可用时(非 Plan 模式),KB chip 必须置灰,sheet 不允许挂载。
-test('kb_search_available=false(Yolo)时 KB chip 禁用 + sheet 挂载点击不发 mount_kb_collection', (t) => {
+// 知识库索引或 embedding 未就绪时，KB chip 必须置灰，sheet 不允许挂载。
+test('kb_search_available=false 时 KB chip 禁用 + sheet 挂载点击不发 mount_kb_collection', (t) => {
   const { window, sent, close } = createPage();
   t.after(close);
 
-  // 非 Plan 模式(Yolo):kb_search 未注册到模型。
+  // Yolo 模式本身可用；false 仅表示知识库索引或 embedding 尚未就绪。
   window.handleDesktopEvent({
     type: 'chips_snapshot',
     payload: { kb_search_available: false, mode: 'yolo', mounted_collection: null },
   });
   const chip = window.document.getElementById('knowledgeChip');
-  assert.ok(chip.disabled, '非 Plan 模式下 knowledgeChip 必须禁用(审查 #6)');
-  assert.match(chip.title || '', /Plan/, 'chip title 应提示切到 Plan 模式');
+  assert.ok(chip.disabled, 'kb_search 不可用时 knowledgeChip 必须禁用');
+  assert.match(chip.title || '', /暂不可用/, 'chip title 应提示知识库暂不可用');
 
   // 打开 sheet 注入 KB 快照:即便有 collection,点击也不应发 mount_kb_collection。
   window.openSheet('knowledge');
@@ -159,9 +158,9 @@ test('kb_search_available=false(Yolo)时 KB chip 禁用 + sheet 挂载点击不�
       mounted_collection_id: null,
     },
   });
-  // sheet 顶部应有「不支持知识库检索」提示。
+  // sheet 顶部应有「知识库检索暂不可用」提示。
   const bodyText = window.document.getElementById('sheetBody').textContent;
-  assert.match(bodyText, /不支持知识库检索/, 'sheet 应提示当前模式不可用');
+  assert.match(bodyText, /知识库检索暂不可用/, 'sheet 应提示知识库暂不可用');
   // 点击 collection 条目:不应发 mount_kb_collection(UI 侧预挡,服务端也会拒)。
   findSheetItemByTitle(window, 'X KB').click();
   const mountAction = sent.find(

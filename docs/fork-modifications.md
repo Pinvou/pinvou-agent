@@ -3,16 +3,16 @@
 > 本文是 pinvou3 对 DeepSeek-TUI（CodeWhale）底座 fork 的单一现状清单。
 > 基线、主题边界、守护指纹和每次 sync 结论都以本文与 `docs/fork-policy.md` 为准。
 
-## 0. 当前状态（2026-07-17 · v0.9.0）
+## 0. 当前状态（2026-07-23 · v0.9.0）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| fork 分支 | `codex/sync-v0.9.0`，当前 head `4cff0b9e6e1d` |
-| 组织方式 | **6 个长期主题 commit**，按耦合边界维护；不再保留 C1–C12 / W1–W13 批量编号 |
-| drift | 对 `v0.9.0`：**+3260 / -539，53 文件** |
-| 守护 | `scripts/fork-guard.sh`：43 条主题指纹 + submodule/app `forkguard_` 行为测试 |
-| app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译 |
+| fork 分支 | `pinvou3-clean`，当前 head `612fd2e5773c` |
+| 组织方式 | **6 个长期主题 commit + 1 个父仓主题（T7 macOS）**；T7 不动 fork，仅父仓平台抽象 |
+| drift | 对 `v0.9.0`：**+3447 / -557，53 文件**（T7 不增加 fork drift，零 fork 改动） |
+| 守护 | `scripts/fork-guard.sh`：45 条主题指纹 + submodule/app `forkguard_` 行为测试 |
+| app 状态 | `pinvou3-tauri` 主库 Linux/macOS 均编译通过，lib test target 可完整编译；macOS 适配在父仓 `feat/macos` 分支 |
 
 ### 软上限评估
 
@@ -26,7 +26,7 @@
 
 后续减量优先级：先推动 T6 宿主接口和 T2 通用安全修复上游化，再评估 T4 automation 通用部分；T3/T5 的 pinvou3 产品语义继续留 fork。
 
-## 1. 六个长期主题
+## 1. 六个长期 fork 主题 + 一个父仓主题（T7）
 
 ### T1 `embed`：v0.9.0 宿主 library facade
 
@@ -78,16 +78,16 @@
 ### T5 `fork`：宿主编排、工作流完成闸与可取消登录
 
 - **commit**：`add065123 feat(fork): 适配宿主编排与工作流完成闸`
-- **核心文件**：`core/engine.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`。
+- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/engine/tests.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`。
 - **内容**：
-  - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools。
+  - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools；宿主注入工具在 Plan / Agent / Yolo 三种 turn registry 中统一注册，避免非 Plan 分支提前返回时丢失 `kb_search`。
   - `SpawnSubAgent` 接受 role、allowed tools、max steps、output schema、expects-file-output。
   - 合成 `submit_output` 工具；递归校验有限 JSON schema，只允许声明的安全相对路径落盘；最多 3 次催交后 fail-closed。
   - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成。
   - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
-- **守护**：结构化 schema/安全路径、批量取消、OAuth drop-before-return 回归。
+- **守护**：宿主额外工具全模式注册、结构化 schema/安全路径、批量取消、OAuth drop-before-return 回归。
 
 ### T6 `embed`：宿主路由、预算与 shared automation 接口
 
@@ -99,6 +99,38 @@
   - route 已显式声明 output 时，以“请求意图与 route 上限的较小值”为准；只有 route 未声明时才使用模型名推断的 4K 兼容 fallback。
   - 公开 `reconcile_run_statuses_shared`，宿主不再持 automation mutex 等待 task-manager I/O。
 - **为什么单列**：这是可上游化的宿主 API 面，与 pinvou3 私有产品逻辑解耦；后续最优先提上游。
+
+### T7 macOS 平台目标支持 (2026-07)
+
+**不在 fork 内做任何改动** —— fork 已通过 `crates/tui/Cargo.toml:112` 声明
+`[target.'cfg(target_os = "macos")'.dependencies]`，macos 平台原生编译通过。
+pinvou3-app 在父仓内通过 `pinvou3-app/src-tauri/src/os/macos/` 实现平台抽象，
+包括 `macos_path` / `macos_system` / `macos_dependency` / `macos_memory` /
+`macos_permission` / `macos_update` 六个模块（对齐 `os/linux/` 与 `os/windows/`）。
+其他 Mac 专属补丁（`pet_window.rs` collectionBehavior、`detach.rs` CoreGraphics 全局光标轮询、
+`voice_asr.rs` engine_binary_name、`telemetry.rs` IOPlatformUUID 等）也全在父仓内，
+通过 `#[cfg(target_os = "macos")]` 闸住，对 Linux/Windows 主线零影响。
+
+#### SenseVoice darwin-arm64 二进制 provenance
+
+入库文件 `pinvou3-app/src-tauri/resources/asr/sense-voice-darwin-arm64`（1,888,176 字节，
+Mach-O arm64，静态链接，Metal 着色器内嵌），源自上游 [`lovemefan/SenseVoice.cpp`](https://github.com/lovemefan/SenseVoice.cpp)。
+
+| 项 | 值 |
+|---|---|
+| 上游仓库 | https://github.com/lovemefan/SenseVoice.cpp |
+| 上游最近 commit（编译期参考锚点） | `6503f51c2357034e1443c86dabeb24ad026c4b45`（2025-12-19，main HEAD at 文档编写时）|
+| 构建命令 | `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON` && `cmake --build build -j --target sense-voice` |
+| 构建环境 | Apple Silicon (arm64)，`MACOSX_DEPLOYMENT_TARGET=14.0`，Xcode + Metal SDK；产物仅链系统框架（Accelerate/Metal/MetalKit/Foundation/CoreFoundation/libSystem/libobjc/libc++），无第三方 dylib |
+| sha256（本入库文件） | `7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4` |
+| LICENSE | `resources/asr/LICENSE-sense-voice-darwin-arm64`（上游 MIT，Copyright (c) 2024 lovemefan） |
+
+> 复现说明：上游 `--depth 1` 拉取会得到浮动的 main HEAD；如需严格复现本二进制，请 pin 到上述 commit 再构建。
+> 校验：`scripts/run-mac-verify.sh` 与 `scripts/release-macos.sh` 均做存在性 + `Mach-O arm64` 文件类型校验。
+> 引入真签名后，建议在安装侧补 `codesign --verify` 校验该二进制的完整性。
+
+**无需新增 fork-guard 指纹**（fork 代码零改动）。`./scripts/fork-guard.sh --fast`
+在 macOS 适配 PR 上仍然通过。
 
 ## 2. v0.9.0 已 harvest / 不再重打
 
