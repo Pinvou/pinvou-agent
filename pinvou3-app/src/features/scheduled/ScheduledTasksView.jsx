@@ -1468,10 +1468,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           )}
           <div className="h-full w-full overflow-hidden p-4 sm:p-6 lg:p-10" data-testid="scheduled-list">
             <div className="relative mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col overflow-hidden">
-              <header data-testid="scheduled-list-intro" className="mb-4 flex shrink-0 flex-col items-start justify-between gap-4 px-2 sm:flex-row sm:items-center">
+              <header data-testid="scheduled-list-intro" className={`mb-4 flex shrink-0 flex-col items-start justify-between gap-4 border-b px-2 pb-6 sm:flex-row sm:items-center ${iosSeparator}`}>
                 <div className="min-w-0">
                   <h1 className={`truncate text-[32px] font-normal tracking-tight ${bodyText}`}>定时任务</h1>
-                  <p className={`mt-1 text-sm font-medium leading-5 ${mutedValue}`}>按计划运行自动化流程，高效管理时间。</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <button type="button"

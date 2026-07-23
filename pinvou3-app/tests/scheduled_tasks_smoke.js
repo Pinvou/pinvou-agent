@@ -307,6 +307,24 @@ async function clickExactText(page, text) {
   }, text);
 }
 
+async function openScheduledNav(page) {
+  const clicked = await page.evaluate(() => {
+    const el = document.querySelector('[data-nav="scheduled"]') ||
+      document.querySelector('[title="定时任务"]') ||
+      [...document.querySelectorAll('span,div,button,a')]
+        .find(node => (node.textContent || '').trim() === '定时任务');
+    if (!el) return false;
+    el.click();
+    return true;
+  });
+  if (!clicked) {
+    const snapshot = await page.evaluate(() => (document.body.innerText || '').slice(0, 500));
+    throw new Error('missing scheduled nav item: ' + snapshot);
+  }
+  await page.waitForSelector('[data-testid="scheduled-page"]', { timeout: 10000 });
+  return true;
+}
+
 (async () => {
   const { server, url } = await startUiTestServer();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-scheduled-tasks-'));
@@ -347,7 +365,7 @@ async function clickExactText(page, text) {
   });
   await sleep(300);
 
-  const navClicked = await clickExactText(page, '定时任务');
+  const navClicked = await openScheduledNav(page);
   await sleep(500);
   const defaultState = await page.evaluate(() => ({
     navClicked: !!document.querySelector('[data-testid="scheduled-page"]'),
@@ -360,6 +378,7 @@ async function clickExactText(page, text) {
     sampleTextPresent: /每日项目状态提醒|每周资料整理提醒|项目A/.test(document.body.innerText)
   }));
   await page.evaluate(() => { window.__scheduledTaskTest.invokes = []; });
+  await page.waitForSelector('[data-testid="scheduled-template-daily-brief"]', { timeout: 10000 });
   await page.click('[data-testid="scheduled-template-daily-brief"]');
   await page.waitForSelector('[data-testid="scheduled-create-dialog"]', { timeout: 10000 });
   const templateDraftState = await page.evaluate(() => {
@@ -474,7 +493,7 @@ async function clickExactText(page, text) {
     hasDailyBrief: !!document.querySelector('[data-testid="scheduled-template-daily-brief"]')
   }));
   await page.evaluate(() => window.TauriBridge.loadScheduledTaskRecentRuns());
-  await page.waitForFunction(() => document.body.innerText.includes('定时任务记录'), { timeout: 10000 });
+  await page.waitForFunction(() => document.body.innerText.includes('任务列表'), { timeout: 10000 });
   await page.waitForSelector('[data-testid="scheduled-run-sidebar-item"]', { timeout: 10000 });
   await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
   await page.waitForSelector('[data-testid="scheduled-run-sidebar-menu"]', { timeout: 10000 });
@@ -517,7 +536,7 @@ async function clickExactText(page, text) {
     return invokes.some(x => x.cmd === 'set_session_pinned' && x.args && x.args.id === 'sched-run-1' && x.args.pinned === true);
   }, { timeout: 10000 });
   const sidebarRecordPinnedState = await page.evaluate(() => ({
-    pinnedGroupHasRecord: document.body.innerText.includes('置顶任务') &&
+    pinnedGroupHasRecord: document.body.innerText.includes('任务列表') &&
       document.body.innerText.includes('重命名后的时尚新闻记录'),
     noTaskPinCommand: !((window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [])
       .some(x => x.cmd === 'set_scheduled_task_pinned')
@@ -543,7 +562,7 @@ async function clickExactText(page, text) {
     recordStillVisible: document.body.innerText.includes('重命名后的时尚新闻记录'),
     listStillVisible: !!document.querySelector('[data-testid="scheduled-list"]')
   }));
-  await clickExactText(page, '定时任务');
+  await openScheduledNav(page);
   await page.waitForSelector('[data-testid="scheduled-list"]', { timeout: 10000 });
   await page.evaluate(() => {
     const buttons = Array.from(document.querySelectorAll('button[aria-label^="查看定时任务"]'));

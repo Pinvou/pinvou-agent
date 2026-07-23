@@ -46,6 +46,7 @@ function injectSource() {
     window.__TAURI_EVENT_HANDLERS__={};
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
+    const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
     let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
     let ARCHIVED_SESSIONS=[];
     window.__SHELL_JOBS__=[{
@@ -95,7 +96,7 @@ function injectSource() {
         case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
-        case 'list_workflows': return Promise.resolve([]);
+        case 'list_workflows': return Promise.resolve([WF_TEMPLATE]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_session_persona_events': return Promise.resolve([]);
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
@@ -199,10 +200,58 @@ async function expand(page) {
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
 
-  // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
+  await expand(page); await sleep(300);
+  const sidebarTaskShell = await page.evaluate(() => ({
+    hasTaskList: document.body.innerText.includes('任务列表'),
+    hasPinnedGroup: document.body.innerText.includes('置顶任务'),
+    hasRegularGroup: /任务 \(\d+\)/.test(document.body.innerText),
+    hasFilterButton: !!document.querySelector('[data-testid="sidebar-task-filter"]'),
+  }));
+  rec('①a 侧边栏任务合并为单一任务列表',
+    sidebarTaskShell.hasTaskList && !sidebarTaskShell.hasPinnedGroup && !sidebarTaskShell.hasRegularGroup && sidebarTaskShell.hasFilterButton,
+    JSON.stringify(sidebarTaskShell));
+  await page.click('[data-testid="sidebar-task-filter"]'); await sleep(200);
+  const sidebarTaskFilterMenu = await page.evaluate(() => {
+    const menu = document.querySelector('[data-testid="sidebar-task-filter-menu"]');
+    const text = menu ? menu.textContent || '' : '';
+    return {
+      exists: !!menu,
+      hasAll: text.includes('全部'),
+      hasPinned: text.includes('置顶'),
+      hasScheduled: text.includes('定时任务'),
+      hasPinnedFirst: text.includes('置顶优先'),
+      hasRecent: text.includes('最近更新'),
+      hasCurrentChat: text.includes('当前会话'),
+      hasRegularChat: text.includes('普通会话'),
+    };
+  });
+  rec('①a-1 任务筛选弹层只保留有效筛选与排序项',
+    sidebarTaskFilterMenu.exists && sidebarTaskFilterMenu.hasAll && sidebarTaskFilterMenu.hasPinned &&
+    sidebarTaskFilterMenu.hasScheduled && sidebarTaskFilterMenu.hasPinnedFirst && sidebarTaskFilterMenu.hasRecent &&
+    !sidebarTaskFilterMenu.hasCurrentChat && !sidebarTaskFilterMenu.hasRegularChat,
+    JSON.stringify(sidebarTaskFilterMenu));
+  await page.keyboard.press('Escape'); await sleep(200);
+
+  // ①b 工作流入口已合入专家池：从「专家池 > 专家团队」进入三省六部运行态，
+  // 仍可停止并预填原需求重开。
   page.on('dialog', async dialog => { await dialog.accept(); });
   await expand(page); await sleep(300);
-  await page.evaluate(() => document.querySelector('[data-nav="workflow"]')?.click()); await sleep(700);
+  await page.evaluate(() => document.querySelector('[data-nav="cardpool"]')?.click()); await sleep(700);
+  const expertPoolShell = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return {
+      hasWorkflowNav: !!document.querySelector('[data-nav="workflow"]'),
+      hasExpertPool: text.includes('专家池'),
+      hasIndividualTab: text.includes('个人专家'),
+      hasTeamTab: text.includes('专家团队'),
+      view: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
+    };
+  });
+  rec('①b-0 工作流入口合入专家池并显示双 Tab',
+    !expertPoolShell.hasWorkflowNav && expertPoolShell.hasExpertPool && expertPoolShell.hasIndividualTab &&
+    expertPoolShell.hasTeamTab && expertPoolShell.view === 'cardpool',
+    JSON.stringify(expertPoolShell));
+  await clickText(page, '专家团队'); await sleep(700);
   const stopButton = await page.evaluate(() => {
     const button = document.querySelector('[data-testid="workflow-stop-restart"]');
     if (!button) return false;
