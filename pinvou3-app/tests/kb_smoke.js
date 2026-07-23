@@ -111,7 +111,7 @@ async function clickContains(page, sel, text) {
 
   const filesView = await page.evaluate(() => {
     const x = document.body.innerText;
-    return { entered: x.includes('本地文件与知识库'), subFiles: x.includes('本地文件管理'), subKb: x.includes('知识库'),
+    return { entered: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'knowledge' || x.includes('本地文件与知识库'), subFiles: x.includes('本地文件管理'), subKb: x.includes('知识库'),
       cats: x.includes('文档') && x.includes('PDF') && x.includes('图片'),
       fileRow: x.includes('季度财报.xlsx') || x.includes('合作协议.pdf') };
   });
