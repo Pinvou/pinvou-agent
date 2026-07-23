@@ -42,7 +42,7 @@
     // Resolve beside this bootstrap script, not beside the current SPA route.
     // This keeps extensionless deep links on the same `/pinvou3/remote/ws`
     // endpoint instead of accidentally appending `ws` to the route.
-    const url = new URL("ws", scriptUrl);
+    const url = new URL("../../ws", scriptUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.search = "";
     url.hash = "";

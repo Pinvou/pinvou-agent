@@ -34,6 +34,10 @@ CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 PROHIBITED_DESCRIPTIONS = {"update", "fix bug", "修改代码", "测试"}
 FORBIDDEN_ENDING_PUNCTUATION = set("。.，,；;、！!？?：:")
 DOC_PATH = "docs/Git Commit 信息规范文档.md"
+# #235 首次把这条门禁带入 main；此前 Windows 分支累积的提交不回写历史。
+# 新门禁只约束该快照之后的非 merge 提交，避免 GitHub 自动 merge commit
+# 和合流前的历史提交永久打红 main。
+LEGACY_HISTORY_CUTOFF = "deae3ca0141390c06e14aa93610645088b8966d4"
 
 
 def clean_commit_message(raw: str) -> list[str]:
@@ -93,7 +97,14 @@ def validate_file(path: Path) -> list[str]:
 
 
 def validate_range(base: str, head: str) -> list[str]:
-    commit_list = git("log", "--format=%H", f"{base}..{head}")
+    commit_list = git(
+        "log",
+        "--no-merges",
+        "--format=%H",
+        f"{base}..{head}",
+        "--not",
+        LEGACY_HISTORY_CUTOFF,
+    )
     commits = [line for line in commit_list.splitlines() if line]
     errors: list[str] = []
 

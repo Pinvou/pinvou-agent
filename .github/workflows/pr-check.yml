@@ -5,8 +5,8 @@ name: PR Check
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust/依赖、L1 harness 或前端改动,给编译/前端 job 做 paths filter。
 # - frontend-test:前端/Relay/WebUI 逻辑、构建及拆分后的 Bridge 浏览器 smoke。
-# - rust-test / windows-rust-test:**仅当改了 Rust/Cargo/submodule 才跑**，分别在
-#   Linux 与 Windows 原生 runner 编译，形成双平台目标门禁。
+# - rust-test:改了 Rust/Cargo/submodule 的 PR 跑 Linux 编译。
+# - windows-rust-test:只在 main push 跑，不作为 PR 合入门禁。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
@@ -438,7 +438,8 @@ jobs:
   windows-rust-test:
     name: windows-rust-test
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
+    # 跨平台构建不作为 PR 检测项；合入 main 后再做 Windows 原生验证。
+    if: ${{ !cancelled() && github.event_name == 'push' }}
     runs-on: windows-latest
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only

@@ -713,7 +713,7 @@ const WidgetCard = ({ title, children, theme }) => {
     // [2026-06-07 #18/#20] 生图引擎面板：客户选 provider + 填自己的 key（不用白浪的）。
     // (ImageProviderPanel 已随 h3c-ppt 工作流 2026-06-11 存档下线:仅 illustrator 角色用)
 
-    const CardDrawer = ({ roleId, projectDir, failureReason, theme, onClose }) => {
+    const CardDrawer = ({ roleId, projectDir, sessionId, failureReason, theme, onClose }) => {
       const isDark = theme === 'dark';
       const [info, setInfo] = useState({ loading: false, error: null, data: null });
       const [outputs, setOutputs] = useState({ loading: false, error: null, data: null });
@@ -1366,7 +1366,7 @@ const WidgetCard = ({ title, children, theme }) => {
               <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} />
             </div>
           )}
-          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.workflow.closeWorkflowDrawer()} />}
+          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} sessionId={run.sessionId} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.workflow.closeWorkflowDrawer()} />}
           {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} onClose={() => setMemorialOpen(false)} />}
           {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
         </div>

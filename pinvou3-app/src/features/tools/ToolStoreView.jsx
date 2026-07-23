@@ -6,6 +6,7 @@ import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
+import { can } from '../../shared/platform.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
 

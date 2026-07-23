@@ -10,7 +10,7 @@
     "serve:src": "vite",
     "build:ui": "vite build",
     "build:web": "vite build --mode web",
-    "lint:ui": "eslint src/app src/pet-main.jsx src/components src/features src/hooks src/platform src/shared",
+    "lint:ui": "eslint src/app src/components src/features src/hooks src/platform src/shared",
     "check:architecture": "python ../scripts/architecture-guard.py",
     "build": "node scripts/tauri/build.js build",
     "build:msi": "node scripts/tauri/build.js build --bundles msi",

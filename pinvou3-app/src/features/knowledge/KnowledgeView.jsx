@@ -15,6 +15,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const canDownloadArtifacts = !isWeb || can('artifactDownload');
       const canPickHostFiles = !isWeb || can('hostFilePicker');
       const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
+      const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
 
       const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 

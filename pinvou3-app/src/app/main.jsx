@@ -4,15 +4,19 @@ import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
+import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
+import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate } from '../shared/date-utils.js';
+import { can, isWeb } from '../shared/platform.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
+import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import {
   emitTauri,
@@ -1583,10 +1587,19 @@ function defaultModelPresetForCapabilities(capabilities) {
           )}
 
           {/* ================= Sidebar (Gemini Style) ================= */}
-          <div className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
+          <div
+            data-testid="app-sidebar"
+            style={isCompactShell ? {
+              display: isSidebarOpen ? 'flex' : 'none',
+              position: 'fixed',
+              left: 0,
+              top: 48,
+              bottom: 56,
+            } : undefined}
+            className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
 
             {/* Header / Logo */}
-            <div className={`px-4 py-4 max-sm:px-3 max-sm:py-2 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
+            <div className={`px-4 py-4 max-sm:px-3 max-sm:py-0 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
               <button
                 data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -1838,7 +1851,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 {!isSidebarOpen && (
                   <>
                     <button
-                      onClick={handleOpenRemoteControl}
+                      onClick={handleOpenWebAccess}
                       title="手机远程控制（扫码或链接）"
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
@@ -1878,7 +1891,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                 {isSidebarOpen && (
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={handleOpenRemoteControl}
+                      onClick={handleOpenWebAccess}
                       title="手机远程控制（扫码或链接）"
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >

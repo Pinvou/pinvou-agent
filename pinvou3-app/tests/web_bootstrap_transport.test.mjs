@@ -170,6 +170,7 @@ async function connectWithCapabilities(events, listener) {
   await client.policyPromise;
 
   const firstSocket = MockWebSocket.instances[0];
+  assert.equal(firstSocket.url, 'wss://relay.test/pinvou3/remote/ws');
   firstSocket.open();
   firstSocket.message({ type: 'error', code: 'endpoint_not_found' });
   assert.equal(timers.length, 1);

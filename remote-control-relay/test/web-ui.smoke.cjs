@@ -457,7 +457,7 @@ async function main() {
     )));
   const exactFixedAssets = [
     `${basePath}/platform/web/bootstrap.js`,
-    `${basePath}/tauri-bridge.js`,
+    `${basePath}/platform/tauri/bridge.js`,
     `${basePath}/platform/web/access-policy.json`,
   ];
   record('extensionless SPA 深链仍连接固定 base WebSocket 并加载固定资源',

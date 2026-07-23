@@ -1,11 +1,11 @@
 import { defineConfig } from 'eslint/config';
 
 const browserGlobals = Object.fromEntries([
-  'Blob', 'CustomEvent', 'DOMParser', 'Event', 'FileReader', 'Image', 'TextEncoder',
+  'Blob', 'CustomEvent', 'DOMParser', 'Event', 'FileReader', 'Image', 'TextDecoder', 'TextEncoder',
   'IntersectionObserver', 'ResizeObserver', 'URL', 'URLSearchParams',
-  'cancelAnimationFrame', 'clearInterval', 'clearTimeout', 'console', 'crypto', 'document', 'fetch',
+  'WebSocket', 'atob', 'btoa', 'cancelAnimationFrame', 'clearInterval', 'clearTimeout', 'console', 'crypto', 'document', 'fetch',
   'localStorage', 'navigator', 'performance', 'requestAnimationFrame',
-  'sessionStorage', 'setInterval', 'setTimeout', 'structuredClone', 'window',
+  'queueMicrotask', 'sessionStorage', 'setInterval', 'setTimeout', 'structuredClone', 'window',
   'DOMPurify', 'marked',
 ].map(name => [name, 'readonly']));
 

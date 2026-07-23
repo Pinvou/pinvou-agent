@@ -226,6 +226,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun }) => {
       const isDark = theme === 'dark';
+      const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const [inputText, setInputTextState] = useState('');
       const [inputLimitReached, setInputLimitReached] = useState(false);
       const inputTextRef = useRef('');

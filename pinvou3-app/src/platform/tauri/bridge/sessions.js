@@ -329,10 +329,14 @@
     var knownCount = Number(meta.message_count || 0);
     if (buf.busy) return;
     if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
-    if (!buf.loadedFromDisk && (buf.messages.length || buf.chatItems.length) && (!knownCount || buf.messages.length >= knownCount)) return;
+    if (!buf.loadedFromDisk && buf.messages.length && (!knownCount || buf.messages.length >= knownCount)) return;
     var saved = await invoke("load_session", { id: sid, setActive: false });
-    var savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
-    if ((buf.messages.length || buf.chatItems.length) && savedCount <= buf.messages.length) {
+    var savedMessages = saved && Array.isArray(saved.messages) ? saved.messages : [];
+    var savedMetadataCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
+    var savedCount = Math.max(Number.isFinite(savedMetadataCount) ? savedMetadataCount : 0, savedMessages.length);
+    // Shell 轮询等后台展示项会先写入 chatItems，但不代表会话正文已经加载。
+    // 只有内存里确有 transcript messages 且不短于磁盘版本时，才能跳过 hydration。
+    if (buf.messages.length && savedCount <= buf.messages.length) {
       buf.loadedFromDisk = true;
       return;
     }

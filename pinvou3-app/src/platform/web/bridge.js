@@ -664,6 +664,15 @@
     for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
+  function encodeBase64Bytes(bytes) {
+    var binary = "";
+    var chunkSize = 0x8000;
+    for (var offset = 0; offset < bytes.length; offset += chunkSize) {
+      var chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    return window.btoa(binary);
+  }
   async function loadSessionForClient(sid, setActive) {
     if (!IS_WEB) return invoke("load_session", { id: sid, setActive: !!setActive });
     var offset = 0;

@@ -157,7 +157,16 @@
     return true;
   }
 
-  listen("chat:user_message", function (e) {
+  listen("chat:user_message", async function (e) {
+    var payload = e && e.payload || {};
+    var sid = payload.session_id || state.activeSessionId;
+    if (sid && sid !== state.activeSessionId) {
+      try { await ensureSessionBufferLoaded(sid); }
+      catch (err) {
+        console.warn("chat session hydrate failed", err);
+        return;
+      }
+    }
     applyRemoteUserMessageEvent(e, false);
   });
 
