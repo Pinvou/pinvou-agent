@@ -608,6 +608,11 @@ const AcFmtIcon = ({ kind, className }) => (
 
     const TsActionBtn = ({ tool, busy, onAction, size = 'sm' }) => {
       const isLg = size === 'lg';
+      const actionAttrs = {
+        'data-testid': 'tool-store-action',
+        'data-tool-id': tool.backendId || '',
+        'data-tool-title': tool.title || '',
+      };
       if (tool.builtin) {
         return (
           <span className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-slate-100 dark:bg-[#2C2C2E] text-slate-500 dark:text-slate-400 whitespace-nowrap`}>内置 · 已启用</span>
@@ -615,14 +620,14 @@ const AcFmtIcon = ({ kind, className }) => (
       }
       if (!tool.backendId) {
         return (
-          <button disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
+          <button {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
             即将上线
           </button>
         );
       }
       if (busy) {
         return (
-          <button disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
+          <button {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
             ...
           </button>
         );
@@ -630,6 +635,7 @@ const AcFmtIcon = ({ kind, className }) => (
       if (tool.installed) {
         return (
           <button
+            {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
@@ -641,6 +647,7 @@ const AcFmtIcon = ({ kind, className }) => (
         const retry = tool.authStatus && tool.authStatus !== 'not_installed';
         return (
           <button
+            {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
           >
@@ -651,6 +658,7 @@ const AcFmtIcon = ({ kind, className }) => (
       const hasConfig = tool.configFields && tool.configFields.length > 0;
       return (
         <button
+          {...actionAttrs}
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >

@@ -126,13 +126,17 @@ async function search(page, query) {
   await input.type(query);
   await sleep(180);
 }
-async function action(page, query, label) {
+async function action(page, query, label, backendId = '') {
   await search(page, query);
-  const ok = await page.evaluate((query, label) => {
+  const ok = await page.evaluate((query, label, backendId) => {
     const buttons=[...document.querySelectorAll('button')].filter(b=>(b.textContent||'').trim()===label && !b.disabled);
+    if (backendId) {
+      const exact = buttons.find(b => b.getAttribute('data-tool-id') === backendId);
+      if (exact) { exact.scrollIntoView({block:'center'}); exact.click(); return true; }
+    }
     const button=buttons.find(b=>{let p=b;for(let i=0;i<7&&p;i++,p=p.parentElement)if((p.textContent||'').includes(query))return true;return false;}) || (buttons.length===1?buttons[0]:null);
     if(!button)return false;button.scrollIntoView({block:'center'});button.click();return true;
-  }, query, label);
+  }, query, label, backendId);
   if (!ok) throw new Error(`${query} 找不到操作按钮 ${label}`);
   await sleep(220);
 }
@@ -180,13 +184,13 @@ async function closeDetail(page, title) {
   })).then(detail => JSON.stringify({ detail: JSON.parse(detail), errors: errors.slice(0, 5) }));
   rec('工具商店真实页面加载', toolStoreLoaded, navDebug);
 
-  for (const [query,id] of [['高德天气','weather'],['同花顺问财','iwencai'],['企查查','qcc'],['PPT 生成','pptx'],['公文写作','gongwen']]) {
-    await action(page,query,'安装'); await dismiss(page);
+  for (const [query,id,buttonId] of [['高德天气','weather','weather'],['同花顺问财','iwencai','iwencai'],['企查查','qcc','qcc'],['PPT 生成','pptx','pptx'],['公文写作','gongwen','government-writing']]) {
+    await action(page,query,'安装',buttonId); await dismiss(page);
     const installed=await page.evaluate(id=>!!window.__TOOL_STORE_TEST__.installed[id],id);
     rec(`${query} 经 UI 安装`,installed);
   }
 
-  await action(page,'智慧芽专利&文献','配置');
+  await action(page,'智慧芽专利&文献','配置','patsnap-search');
   rec('智慧芽安装前展示 API Key 配置',await page.evaluate(()=>{
     const input=document.querySelector('input[type="password"][placeholder="粘贴你的智慧芽 API Key"]');
     return document.body.innerText.includes('填写智慧芽 API Key')&&!!input;
@@ -199,21 +203,21 @@ async function closeDetail(page, title) {
     return window.__TOOL_STORE_TEST__.installed['patsnap-search']&&call?.args?.config?.PATSNAP_API_KEY==='patsnap-test-token';
   }));
 
-  await action(page,'Obsidian 知识库','安装');
+  await action(page,'Obsidian 知识库','安装','obsidian');
   rec('Obsidian 缺库时先展示引导',await page.evaluate(()=>document.body.innerText.includes('还没有笔记库')));
   await clickExact(page,'我已新建，重新检测'); await sleep(250); await dismiss(page);
   rec('Obsidian 重检成功后安装',await page.evaluate(()=>!!window.__TOOL_STORE_TEST__.installed.obsidian&&window.__TOOL_STORE_TEST__.obsidianChecks===2));
 
   await search(page,'党政机关公文写作');
   rec('公文配套技能与 MCP 安装态联动',await page.evaluate(()=>[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='卸载')));
-  await action(page,'数据分析可视化','安装'); await dismiss(page);
+  await action(page,'数据分析可视化','安装','visualizer'); await dismiss(page);
   rec('独立可视化技能经 UI 安装',await page.evaluate(()=>window.__TOOL_STORE_TEST__.skills.visualizer));
 
-  await action(page,'高德天气','卸载'); await dismiss(page);
+  await action(page,'高德天气','卸载','weather'); await dismiss(page);
   rec('MCP 经 UI 卸载并刷新状态',await page.evaluate(()=>!window.__TOOL_STORE_TEST__.installed.weather));
 
   const composerChangedBeforeYuandian = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
-  await action(page,'华宇元典法律数据','连接');
+  await action(page,'华宇元典法律数据','连接','yuandian-mcp');
   rec('元典写配置阶段不可取消',await page.evaluate(()=>document.body.innerText.includes('正在写入 MCP 配置')&&![...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
   await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
   rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接「华宇元典法律数据」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
@@ -237,7 +241,7 @@ async function closeDetail(page, title) {
     ['H3C 知道 · 内部知识库','zhidao','zhidao:connected',['zhidao_connect_begin']],
   ];
   for(const [query,id,event,commands] of connectors){
-    await action(page,query,'连接');
+    await action(page,query,'连接',id);
     await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);
     await sleep(180); await dismiss(page);
     const info=await page.evaluate(({commands})=>({calls:commands.every(c=>window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd===c)),seen:window.__TOOL_STORE_TEST__.calls.map(x=>x.cmd)}),{commands});
