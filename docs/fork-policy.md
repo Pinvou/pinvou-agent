@@ -6,7 +6,7 @@
 ## 0. 当前基线与组织方式
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f`。
-- 生产 fork 分支：`pinvou3-clean`，当前 head `e8976947d9ad`。
+- 生产 fork 分支：`pinvou3-clean`，当前 head `c32bb73f4605`。
 - fork 不再按历史 C1–C12 / W1–W13 批量编号维护，当前只保留 **6 个长期主题**：
 
   1. 宿主 library facade
@@ -36,7 +36,7 @@ Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands、MCP client、
 - 总 drift 软上限：1500 行。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须在 `fork-modifications.md` 记录：为什么不能放 app/skill/MCP、哪些已 harvest、后续减量顺序。
-- 当前 v0.9.0 re-fork 为 `+4601/-567，55 文件`，已经完成强制评估；结论见修改清单 §0。
+- 当前 v0.9.0 re-fork 为 `+3668/-558，53 文件`，已经完成强制评估；结论见修改清单 §0。
 
 ### 1.3 主题提交
 

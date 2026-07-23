@@ -14,17 +14,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::sync::Arc;
 
 use anyhow::Result;
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::{Op, UserInputProvenance};
 use deepseek_tui::models::Message;
-use deepseek_tui::tools::shell::{
-    new_shared_shell_manager, SharedShellManager, ShellStatus,
-};
+use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
@@ -769,103 +766,6 @@ pub(crate) async fn apply_harness_action(
 /// 判据(plan_ready / M2 / M3)也全部基于本 `session_id`,不再读全局 `store.active_id()`
 /// (并发下 active 会变,读全局会把判据算到错误 session 上)。返回 forwarder 的
 /// `JoinHandle`,EnginePool 回收 session 时 `abort()` 它。
-fn emit_shell_task_status(
-    app: &AppHandle,
-    session_id: &str,
-    tool_id: &str,
-    task_id: &str,
-    status: ShellStatus,
-    exit_code: Option<i32>,
-    stdout_tail: &str,
-    stderr_tail: &str,
-) {
-    let payload = json!({
-        "session_id": session_id,
-        "tool_id": tool_id,
-        "task_id": task_id,
-        "status": format!("{status:?}"),
-        "exit_code": exit_code,
-        "stdout_tail": stdout_tail,
-        "stderr_tail": stderr_tail,
-    });
-    let _ = app.emit("chat:shell_task_status", payload.clone());
-    crate::platform::app_events::forward_app_event(app, "chat:shell_task_status", payload);
-}
-
-/// Observe a detached process independently from the Engine turn. A weak
-/// manager reference avoids extending a reclaimed session's process lifetime.
-fn watch_background_shell(
-    app: AppHandle,
-    shell_manager: Weak<std::sync::Mutex<deepseek_tui::tools::shell::ShellManager>>,
-    session_id: String,
-    tool_id: String,
-    task_id: String,
-) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let Some(shell_manager) = shell_manager.upgrade() else {
-                emit_shell_task_status(
-                    &app,
-                    &session_id,
-                    &tool_id,
-                    &task_id,
-                    ShellStatus::Killed,
-                    None,
-                    "",
-                    "Shell task owner was reclaimed",
-                );
-                break;
-            };
-            let snapshot = match shell_manager.lock() {
-                Ok(mut manager) => manager
-                    .list_jobs()
-                    .into_iter()
-                    .find(|job| job.id == task_id),
-                Err(_) => {
-                    emit_shell_task_status(
-                        &app,
-                        &session_id,
-                        &tool_id,
-                        &task_id,
-                        ShellStatus::Failed,
-                        None,
-                        "",
-                        "Shell manager lock poisoned",
-                    );
-                    break;
-                }
-            };
-            let Some(snapshot) = snapshot else {
-                emit_shell_task_status(
-                    &app,
-                    &session_id,
-                    &tool_id,
-                    &task_id,
-                    ShellStatus::Failed,
-                    None,
-                    "",
-                    "Shell task disappeared before completion",
-                );
-                break;
-            };
-            if snapshot.status != ShellStatus::Running {
-                emit_shell_task_status(
-                    &app,
-                    &session_id,
-                    &tool_id,
-                    &task_id,
-                    snapshot.status,
-                    snapshot.exit_code,
-                    &snapshot.stdout_tail,
-                    &snapshot.stderr_tail,
-                );
-                break;
-            }
-        }
-    });
-}
-
 fn spawn_event_forwarder(
     app: AppHandle,
     handle: EngineHandle,
@@ -883,6 +783,11 @@ fn spawn_event_forwarder(
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
         Arc::new(Mutex::new(TurnPlanTracker::default()));
+    let shell_output = crate::features::assistant::shell_output::ShellOutputMonitor::spawn(
+        app.clone(),
+        &shell_manager,
+        session_id.clone(),
+    );
     tauri::async_runtime::spawn(async move {
         // [B2] 完成账本:agent_id -> 决策 role。dedup——同一 agent_id 重复
         // AgentComplete 时跳过推进(防双推进)。角色重派(gate 失败/回滚)得新
@@ -942,29 +847,12 @@ fn spawn_event_forwarder(
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
                     crate::features::memory::record_turn_tool_start(&session_id, &name, &input);
+                    shell_output.tool_started(&id, &name, &input);
                     tool_inputs.insert(id.clone(), (name.clone(), input.clone()));
                     let payload =
                         json!({ "session_id": session_id, "id": id, "name": name, "args": input });
                     let _ = app.emit("chat:tool_start", payload.clone());
                     crate::platform::app_events::forward_app_event(&app, "chat:tool_start", payload);
-                }
-                Event::ToolCallOutput {
-                    id,
-                    stream,
-                    content,
-                } => {
-                    let stream = match stream {
-                        deepseek_tui::tools::spec::ToolOutputStream::Stdout => "stdout",
-                        deepseek_tui::tools::spec::ToolOutputStream::Stderr => "stderr",
-                    };
-                    let payload = json!({
-                        "session_id": session_id,
-                        "id": id,
-                        "stream": stream,
-                        "content": content,
-                    });
-                    let _ = app.emit("chat:tool_delta", payload.clone());
-                    crate::platform::app_events::forward_app_event(&app, "chat:tool_delta", payload);
                 }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
@@ -972,12 +860,10 @@ fn spawn_event_forwarder(
                         Ok(r) => (r.content, true, r.metadata),
                         Err(e) => (format!("{e:?}"), false, None),
                     };
-                    let background_task_id = if name == "exec_shell"
-                        && metadata
-                            .as_ref()
-                            .and_then(|value| value.get("backgrounded"))
-                            .and_then(serde_json::Value::as_bool)
-                            == Some(true)
+                    let background_task_id = if matches!(
+                        name.as_str(),
+                        "exec_shell" | "task_shell_start"
+                    )
                         && metadata
                             .as_ref()
                             .and_then(|value| value.get("status"))
@@ -992,6 +878,7 @@ fn spawn_event_forwarder(
                     } else {
                         None
                     };
+                    shell_output.tool_completed(&id, background_task_id.as_deref());
                     let tracked_input = tool_inputs
                         .remove(&id)
                         .map(|(_, input)| input)
@@ -1076,15 +963,6 @@ fn spawn_event_forwarder(
                     });
                     let _ = app.emit("chat:tool_end", payload.clone());
                     crate::platform::app_events::forward_app_event(&app, "chat:tool_end", payload);
-                    if let Some(task_id) = background_task_id {
-                        watch_background_shell(
-                            app.clone(),
-                            Arc::downgrade(&shell_manager),
-                            session_id.clone(),
-                            id,
-                            task_id,
-                        );
-                    }
                 }
                 Event::UserInputRequired { id, request } => {
                     if scheduled_profile.is_some() && scheduled_unattended.load(Ordering::Acquire) {
