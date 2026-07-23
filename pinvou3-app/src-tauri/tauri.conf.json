@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "beforeDevCommand": "vite",
