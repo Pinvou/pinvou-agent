@@ -202,7 +202,7 @@ pub async fn install_marketplace_tool(
     .map_err(|e| format!("任务执行失败: {e}"))?
 }
 
-fn marketplace_oauth_error_result(
+pub(super) fn marketplace_oauth_error_result(
     server_name: String,
     error: anyhow::Error,
 ) -> MarketplaceOAuthLoginResult {
@@ -213,22 +213,22 @@ fn marketplace_oauth_error_result(
     } else if lower.contains("timed out waiting for oauth callback") {
         (
             "timeout",
-            "授权超时，未收到浏览器回调。若浏览器停在 open.chineselaw.com/service-error，说明元典授权服务返回失败，请关闭页面后重试。",
+            "授权超时，未收到浏览器回调。请确认浏览器授权是否完成，关闭错误页后可重试。",
         )
     } else if lower.contains("service-error") || lower.contains("status code 404") {
         (
             "service_error",
-            "元典授权服务返回错误或 404，当前未完成授权。请稍后重试，或联系元典开放平台确认该账号/应用权限。",
+            "OAuth 授权服务返回错误或 404，当前未完成授权。请稍后重试，或联系服务方确认该账号/应用权限。",
         )
     } else if lower.contains("oauth provider") || lower.contains("authorization") {
         (
             "provider_error",
-            "元典 OAuth 授权服务拒绝了本次授权，当前未完成连接。请确认账号权限后重试。",
+            "OAuth 授权服务拒绝了本次授权，当前未完成连接。请确认账号权限后重试。",
         )
     } else {
         (
             "failed",
-            "元典授权失败，当前未完成连接。请重试；如仍失败，请保留浏览器错误页和日志。",
+            "OAuth 授权失败，当前未完成连接。请重试；如仍失败，请保留浏览器错误页和日志。",
         )
     };
 
@@ -269,13 +269,13 @@ pub(super) fn marketplace_auth_status_fields(
     {
         (
             "connected",
-            "已完成元典 OAuth 授权，可以在新会话中使用华宇元典法律数据。",
+            "OAuth 授权已完成，可以在新会话中使用该工具。",
             true,
         )
     } else if oauth_required && mcp_configured {
         (
             "config_installed_auth_pending",
-            "已写入 MCP 配置，但尚未完成元典 OAuth 授权。",
+            "已写入 MCP 配置，但尚未完成 OAuth 授权。",
             false,
         )
     } else if oauth_required && installed {
@@ -285,7 +285,7 @@ pub(super) fn marketplace_auth_status_fields(
             false,
         )
     } else if oauth_required {
-        ("not_installed", "尚未连接华宇元典法律数据。", false)
+        ("not_installed", "尚未连接该工具。", false)
     } else if installed {
         ("connected", "工具已安装。", false)
     } else {
@@ -388,7 +388,7 @@ pub async fn start_marketplace_tool_oauth_login(
     match login_result {
         Ok(()) => Ok(MarketplaceOAuthLoginResult {
             status: "connected".to_string(),
-            message: "元典 OAuth 授权已完成。".to_string(),
+            message: "OAuth 授权已完成。".to_string(),
             server_name,
         }),
         Err(e) => Ok(marketplace_oauth_error_result(server_name, e)),

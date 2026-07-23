@@ -27,9 +27,11 @@ function injectSource() {
     const TOOL_META={
       weather:['高德天气',[]],iwencai:['同花顺问财',[]],qcc:['企查查',[]],
       'patsnap-search':['智慧芽专利&文献融合检索',[]],
+      'canva-mcp':['Canva 可画',[]],
       'yuandian-mcp':['华宇元典法律数据',[]],
       obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
     };
+    const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp'};
     const state=window.__TOOL_STORE_TEST__={
       installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,eip:false,zhidao:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
@@ -65,21 +67,22 @@ function injectSource() {
           return Promise.resolve(state.oauthAuth[args.toolId] || {
             installed,
             mcp_configured: installed,
-            oauth_required: args.toolId==='yuandian-mcp',
+            oauth_required: !!OAUTH_SERVERS[args.toolId],
             oauth_token_present: false,
             status: installed ? 'config_installed_auth_pending' : 'not_installed',
-            message: installed ? '已写入 MCP 配置，但尚未完成元典 OAuth 授权。' : '尚未连接华宇元典法律数据。',
+            server_name: OAUTH_SERVERS[args.toolId],
+            message: installed ? '已写入 MCP 配置，但尚未完成 OAuth 授权。' : '尚未连接该工具。',
           });
         }
         case 'list_marketplace_skills': return Promise.resolve(skills());
         case 'install_marketplace_tool':
-          if(args.toolId==='yuandian-mcp') return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
+          if(OAUTH_SERVERS[args.toolId]) return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
           state.installed[args.toolId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_tool': state.installed[args.toolId]=false; return Promise.resolve(null);
         case 'start_marketplace_tool_oauth_login': return new Promise(resolve=>{state.oauthRequests[args.requestId]={toolId:args.toolId,resolve};});
         case 'cancel_marketplace_tool_oauth_login': {
           const request=state.oauthRequests[args.requestId];
-          if(request&&request.toolId===args.toolId){delete state.oauthRequests[args.requestId];request.resolve({status:'cancelled',message:'已取消等待浏览器授权',server_name:args.toolId});}
+          if(request&&request.toolId===args.toolId){delete state.oauthRequests[args.requestId];request.resolve({status:'cancelled',message:'已取消等待浏览器授权',server_name:OAUTH_SERVERS[args.toolId]});}
           return Promise.resolve(true);
         }
         case 'install_marketplace_skill': state.skills[args.skillId]=true; return Promise.resolve(null);
@@ -212,7 +215,7 @@ async function closeDetail(page, title) {
   await action(page,'华宇元典法律数据','连接');
   rec('元典写配置阶段不可取消',await page.evaluate(()=>document.body.innerText.includes('正在写入 MCP 配置')&&![...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
   await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
-  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接元典法律')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接「华宇元典法律数据」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
   await clickExact(page,'取消'); await sleep(180);
   rec('元典取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
     const calls=window.__TOOL_STORE_TEST__.calls;

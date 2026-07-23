@@ -896,6 +896,9 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://accounts.larksuite.com/",
     // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载
     "https://obsidian.md/",
+    // Canva 可画 MCP 返回的设计编辑链接/预览图资源
+    "https://www.canva.cn/",
+    "https://export-download.canva.cn/",
 ];
 
 /// URL 是否命中外部链接白名单(纯函数,便于单测)。

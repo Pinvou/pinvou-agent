@@ -7249,7 +7249,6 @@
     setTimeout(init, 0);
   }
 })();
-
 /**
  * Adapt the Web transport to the same domain API and state slices consumed by
  * the desktop UI. The legacy flat object stays private to this platform layer.
@@ -7352,4 +7351,3 @@
     dependencies: domain(["checkDependencies", "installDependencies"])
   };
 })();
-

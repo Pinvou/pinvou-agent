@@ -49,6 +49,33 @@ fn marketplace_auth_status_requires_mcp_config_for_oauth_connected() {
     assert!(!token_present);
 }
 
+#[test]
+fn marketplace_oauth_messages_are_connector_neutral() {
+    let (_, connected_message, connected_token) = marketplace_auth_status_fields(
+        true,
+        true,
+        true,
+        Some(deepseek_tui::mcp::oauth::McpAuthStatus::OAuth),
+    );
+    assert!(connected_token);
+    assert!(!connected_message.contains("元典"));
+    assert!(!connected_message.contains("华宇元典"));
+
+    let (_, pending_message, pending_token) =
+        marketplace_auth_status_fields(true, true, true, None);
+    assert!(!pending_token);
+    assert!(!pending_message.contains("元典"));
+    assert!(!pending_message.contains("华宇元典"));
+
+    let error_result = marketplace_oauth_error_result(
+        "canva_mcp".to_string(),
+        anyhow::anyhow!("oauth provider rejected authorization"),
+    );
+    assert_eq!(error_result.status, "provider_error");
+    assert!(!error_result.message.contains("元典"));
+    assert!(!error_result.message.contains("华宇元典"));
+}
+
 struct TempPinvou3Home {
     root: PathBuf,
     previous: Option<String>,
@@ -1111,23 +1138,25 @@ fn merge_covers_recommendations_field() {
     );
 }
 
-/// `open_external_url` 必须只放 metaso.cn / open.bochaai.com / console.bce.baidu.com /
-/// app.tavily.com,任何其他 host / 任何其他 scheme(http、file、javascript)都立即
-/// reject——这是前端 webview 万一被 XSS 的最后一道防线,不许扩大白名单不加测试。
+/// `open_external_url` 必须只放已审计的外部入口域名,任何其他 host / 任何其他
+/// scheme(http、file、javascript)都立即 reject——这是前端 webview 万一被 XSS 的
+/// 最后一道防线,不许扩大白名单不加测试。
 #[tokio::test]
 async fn open_external_url_rejects_off_allowlist_targets() {
     let rejected = [
-        "http://metaso.cn/",                       // 非 https
-        "https://evil.example.com/",               // host 不在白名单
-        "https://metaso.cn.evil.com/",             // 子域钓鱼
-        "https://console.bce.baidu.com.evil.com/", // 百度子域钓鱼
-        "https://app.tavily.com.evil.com/",        // tavily 子域钓鱼
-        "https://bce.baidu.com/",                  // 非 console 子域,不放行
-        "javascript:alert(1)",                     // js scheme
-        "file:///etc/passwd",                      // file scheme
-        "https://google.com/",                     // 任何第三方域
-        "",                                        // 空串
-        "metaso.cn/",                              // 缺 scheme
+        "http://metaso.cn/",                               // 非 https
+        "https://evil.example.com/",                       // host 不在白名单
+        "https://metaso.cn.evil.com/",                     // 子域钓鱼
+        "https://console.bce.baidu.com.evil.com/",         // 百度子域钓鱼
+        "https://app.tavily.com.evil.com/",                // tavily 子域钓鱼
+        "https://www.canva.cn.evil.com/api/action",        // Canva 子域钓鱼
+        "https://export-download.canva.cn.evil.com/x.png", // Canva 资源域钓鱼
+        "https://bce.baidu.com/",                          // 非 console 子域,不放行
+        "javascript:alert(1)",                             // js scheme
+        "file:///etc/passwd",                              // file scheme
+        "https://google.com/",                             // 任何第三方域
+        "",                                                // 空串
+        "metaso.cn/",                                      // 缺 scheme
     ];
     for url in rejected {
         let err = open_external_url(url.to_string()).await.err();
@@ -1153,12 +1182,27 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://open.zhihuiya.com/dashboard/api-keys"
     ));
+    assert!(url_in_external_allowlist(
+        "https://www.canva.cn/api/action?token=abc"
+    ));
+    assert!(url_in_external_allowlist(
+        "https://export-download.canva.cn/example/preview.png"
+    ));
     assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
     assert!(!url_in_external_allowlist(
         "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
     ));
+    assert!(!url_in_external_allowlist(
+        "https://www.canva.cn.evil.com/api/action?token=abc"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://export-download.canva.cn.evil.com/example/preview.png"
+    ));
     assert!(!url_in_external_allowlist("http://obsidian.md/"));
     assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
+    assert!(!url_in_external_allowlist(
+        "http://www.canva.cn/api/action?token=abc"
+    ));
     assert!(!url_in_external_allowlist("https://evil.example.com/"));
 }
 
