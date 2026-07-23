@@ -413,7 +413,13 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                       />
                     ) : null}
                     <div className="flex shrink-0 items-center justify-end gap-3">
-                      <button onClick={() => { setActiveTab('individual'); setMyOnly(!myOnly); }}
+                      <button
+                        data-testid="my-personas-toggle"
+                        data-active={myOnly ? 'true' : 'false'}
+                        onClick={() => {
+                          setActiveTab('individual');
+                          setMyOnly(activeTab === 'individual' ? !myOnly : true);
+                        }}
                         className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap ${isDark ? 'bg-[#2C2C2E] text-white hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD]'}`}>
                         <User size={14} className="mr-2 opacity-70" />
                         {t.cpMyCards}

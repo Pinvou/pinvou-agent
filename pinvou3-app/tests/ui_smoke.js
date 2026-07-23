@@ -251,6 +251,26 @@ async function expand(page) {
     !expertPoolShell.hasWorkflowNav && expertPoolShell.hasExpertPool && expertPoolShell.hasIndividualTab &&
     expertPoolShell.hasTeamTab && expertPoolShell.view === 'cardpool',
     JSON.stringify(expertPoolShell));
+  const myPersonasToggle = await page.evaluate(async () => {
+    const button = document.querySelector('[data-testid="my-personas-toggle"]');
+    if (!button) return { found: false };
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return { found: true, active: button.getAttribute('data-active') };
+  });
+  await clickText(page, '专家团队'); await sleep(700);
+  const myPersonasFromTeam = await page.evaluate(async () => {
+    const button = document.querySelector('[data-testid="my-personas-toggle"]');
+    if (!button) return { found: false };
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const current = document.querySelector('[data-testid="my-personas-toggle"]');
+    return { found: true, active: current?.getAttribute('data-active') };
+  });
+  rec('①b-1 从专家团队返回“我的专家”保持筛选开启',
+    myPersonasToggle.found && myPersonasToggle.active === 'true' &&
+    myPersonasFromTeam.found && myPersonasFromTeam.active === 'true',
+    JSON.stringify({ initial: myPersonasToggle, fromTeam: myPersonasFromTeam }));
   await clickText(page, '专家团队'); await sleep(700);
   const stopButton = await page.evaluate(() => {
     const button = document.querySelector('[data-testid="workflow-stop-restart"]');

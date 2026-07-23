@@ -92,6 +92,8 @@ const oauthUiTimeoutResult = (serverName) => ({
   server_name: serverName,
 });
 
+const oauthServerNameForTool = (tool) => tool?.oauthServerName || tool?.serverName || null;
+
 const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
   let timeoutId = null;
   const timeoutPromise = new Promise(resolve => {
@@ -960,7 +962,7 @@ const FEISHU_STEPS = [
         });
       }, []);
 
-      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成元典 OAuth 授权。') => {
+      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成 OAuth 授权。') => {
         setToolAuthStates(prev => ({
           ...prev,
           [backendId]: {
@@ -1017,11 +1019,15 @@ const FEISHU_STEPS = [
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
+        const oauthServerName = t?.oauthMcp ? oauthServerNameForTool(t) : null;
+        if (t?.oauthMcp && !oauthServerName) {
+          setAlert({ visible: true, loading: false, title: 'OAuth 配置错误', subtitle: `「${name}」未声明 MCP server name，无法发起授权。`, isInstall: false, isError: true });
+          return;
+        }
         const oauthRequestId = t?.oauthMcp ? beginOAuthRequest(backendId) : null;
         setBusyId(backendId);
         if (t?.oauthMcp) {
-          const loadingTitle = backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`;
-          setAlert({ loading: true, visible: false, title: loadingTitle, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
+          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
         } else if (hasConfig) {
           setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在校验 API Key 与远程工具…', isInstall: true, isError: false });
         } else if (hasPipDeps) {
@@ -1051,12 +1057,12 @@ const FEISHU_STEPS = [
               .catch(err => ({
                 status: 'failed',
                 message: String(err).slice(0, 240),
-                server_name: backendId,
+                server_name: oauthServerName,
               }));
             setAlert({
               loading: true,
               visible: false,
-              title: backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`,
+              title: `正在连接「${name}」`,
               subtitle: '已打开浏览器，正在等待授权…',
               isInstall: true,
               isError: false,
@@ -1067,7 +1073,7 @@ const FEISHU_STEPS = [
             const loginResult = await withUiTimeout(
               loginPromise,
               OAUTH_UI_TIMEOUT_MS,
-              oauthUiTimeoutResult('yuandian_mcp')
+              oauthUiTimeoutResult(oauthServerName)
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
@@ -1455,7 +1461,7 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
-                message: '尚未连接华宇元典法律数据。',
+                message: `尚未连接「${name}」。`,
               },
             }));
           }

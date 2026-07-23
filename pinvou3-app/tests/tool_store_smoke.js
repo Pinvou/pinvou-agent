@@ -255,6 +255,22 @@ async function closeDetail(page, title) {
   rec('元典未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeYuandian));
   await dismiss(page);
 
+  const composerChangedBeforeCanva = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
+  await action(page,'Canva 可画','连接','canva-mcp');
+  rec('Canva 写配置阶段使用自身名称',await page.evaluate(()=>document.body.innerText.includes('正在连接「Canva 可画」')&&document.body.innerText.includes('正在写入 MCP 配置')));
+  await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
+  rec('Canva OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接「Canva 可画」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  await clickExact(page,'取消'); await sleep(180);
+  rec('Canva 取消命令保持工具与 requestId 一致',await page.evaluate(()=>{
+    const calls=window.__TOOL_STORE_TEST__.calls;
+    const start=[...calls].reverse().find(x=>x.cmd==='start_marketplace_tool_oauth_login');
+    const cancel=[...calls].reverse().find(x=>x.cmd==='cancel_marketplace_tool_oauth_login');
+    return !!start&&!!cancel&&start.args.toolId==='canva-mcp'&&cancel.args.toolId==='canva-mcp'&&start.args.requestId===cancel.args.requestId;
+  }));
+  rec('Canva 取消授权后保持待授权态',await page.evaluate(()=>window.__TOOL_STORE_TEST__.installed['canva-mcp']&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='重新授权')));
+  rec('Canva 未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeCanva));
+  await dismiss(page);
+
   const connectors=[
     ['飞书（Lark）','feishu','feishu:connected',['feishu_ensure_cli','feishu_connect_begin']],
     ['企业微信','wecom','wecom:connected',['wecom_ensure_cli','wecom_connect_begin']],

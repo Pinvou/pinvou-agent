@@ -80,7 +80,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [outQuery, setOutQuery] = useState('');
       const [outView, setOutView] = useState('list');
       const [outSortDir, setOutSortDir] = useState('desc');
-      const [outputPreviewPath, setOutputPreviewPath] = useState(null);
+      const [outputPreview, setOutputPreview] = useState(null);
       const outPreviewCache = useRef({});
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
@@ -231,7 +231,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       const OutputLivePreview = ({ o, onOpen }) => {
         const ext = String(o.ext || '').toLowerCase();
-        const cacheKey = `${o.path}|${o.mtime || 0}`;
+        const outputSessionId = o.sessionId || o.session_id || null;
+        const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
         const boxRef = useRef(null);
         const [visible, setVisible] = useState(false);
         const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
@@ -264,22 +265,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             try {
               let next = null;
               if (o.category === 'img' && bridge.readArtifactImageB64) {
-                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path) };
+                next = { kind: 'image', url: await bridge.readArtifactImageB64(o.path, outputSessionId) };
               } else if (ext === 'pptx' && bridge.readArtifactThumbnail) {
-                const thumb = await bridge.readArtifactThumbnail(o.path);
+                const thumb = await bridge.readArtifactThumbnail(o.path, outputSessionId);
                 next = thumb ? { kind: 'image', url: thumb } : null;
               }
               if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.readArtifactText) {
-                next = { kind: 'html', html: await bridge.readArtifactText(o.path) };
+                next = { kind: 'html', html: await bridge.readArtifactText(o.path, outputSessionId) };
               }
               if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.renderArtifactVisual) {
-                const visual = await bridge.renderArtifactVisual(o.path);
+                const visual = await bridge.renderArtifactVisual(o.path, outputSessionId);
                 if (visual && visual.mode === 'html' && visual.html) {
                   next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
                 }
               }
               if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.readArtifactText) {
-                const text = await bridge.readArtifactText(o.path);
+                const text = await bridge.readArtifactText(o.path, outputSessionId);
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
@@ -293,7 +294,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, o.path, o.category, ext, runQueuedPreview]);
+        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
 
         const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
@@ -372,6 +373,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           const hit = outPreviewCache.current[cacheKey];
           if (hit) { setPv(hit); return () => { alive = false; }; }
           if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
+          // 本机知识文件不是 Session 产物；Web 端不读取任意主机路径。
+          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
           setPv({ loading: true });
           setFrameReady(false);
           const timer = setTimeout(() => {
@@ -807,7 +810,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               <span className="text-center">{t.kbOutColActions || '操作'}</span>
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
-                              <div key={f.path} onClick={() => setOutputPreviewPath(f.path)}
+                              <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
                                 className="group py-4 border-b cursor-pointer"
                                 style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
                                   <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
@@ -943,7 +946,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   return (
                                     <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 ${isDark ? 'bg-[#1C1C1E] border-white/[0.055] hover:bg-[#202124] hover:border-white/[0.09]' : 'bg-white border-black/[0.045] hover:border-black/[0.075]'}`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>
-                                      <OutputLivePreview o={o} onOpen={() => setOutputPreviewPath(o.path)} />
+                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
                                       <div className="px-5 pb-4">
                                         <div className="flex items-start gap-3 pt-1">
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
@@ -990,7 +993,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               {activeOutputs.map((o) => {
                                 const meta = outCatMeta(o.category);
                                 return (
-                                  <div key={o.path} onClick={() => setOutputPreviewPath(o.path)}
+                                  <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
                                     className="group py-4 border-b cursor-pointer"
                                     style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
                                     <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
@@ -1044,7 +1047,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 })()}
               </div>
             )}
-            {outputPreviewPath && <FilePreviewModal path={outputPreviewPath} theme={theme} onClose={() => setOutputPreviewPath(null)} />}
+            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} onClose={() => setOutputPreview(null)} />}
 
             {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
             {sub === 'kb' && !modelInstalled && (

@@ -37,6 +37,9 @@ function injectSource() {
       {path:'/home/x/合作协议.pdf',name:'合作协议.pdf',ext:'pdf',size:1800000,mtime:1700000000,isDir:false},
       {path:'/home/x/访谈纪要.md',name:'访谈纪要.md',ext:'md',size:48000,mtime:1700000000,isDir:false}
     ];
+    const OUTPUTS=[
+      {path:'/home/x/session-b/跨会话报告.md',name:'跨会话报告.md',ext:'md',category:'doc',sessionId:'session-b',source:'会话 B',size:1200,mtime:1700000000}
+    ];
     function invoke(cmd,args){
       window.__KB_CALLS__.push({cmd:cmd,args:args||null});
       switch(cmd){
@@ -53,6 +56,7 @@ function injectSource() {
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
         case 'list_workflows': return Promise.resolve([]);
+        case 'list_deliverable_index': return Promise.resolve(OUTPUTS);
         // ---- kb_* ----
         case 'kb_scan_status': return Promise.resolve({running:false,phase:'done',scanned:1248,dedupDone:0,dedupTotal:0});
         case 'kb_stats': return Promise.resolve({totalFiles:1248,totalBytes:9e9,hashed:1248,duplicateGroups:3,duplicateFiles:7,duplicateWastedBytes:1048576});
@@ -101,11 +105,37 @@ async function clickContains(page, sel, text) {
   await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
   await sleep(1500);
 
+  await page.evaluate(() => {
+    window.__OUTPUT_PREVIEW_READS__ = [];
+    window.TauriBridge.readArtifactText = async (path, sessionId) => {
+      window.__OUTPUT_PREVIEW_READS__.push({ kind: 'text', path, sessionId });
+      return '# 跨会话报告';
+    };
+    window.TauriBridge.artifactInfo = async (path, sessionId) => {
+      window.__OUTPUT_PREVIEW_READS__.push({ kind: 'info', path, sessionId });
+      return { exists: true, kind: 'md', size: 1200 };
+    };
+  });
+
   // 切到「本地知识」视图
   await page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) b.click(); });
   await sleep(400);
   const entered = await clickContains(page, 'button,div,span,a', '本地知识');
   await sleep(700);
+  await page.waitForFunction(() => document.body.innerText.includes('跨会话报告.md'), { timeout: 5000 }).catch(() => {});
+  await sleep(300);
+  await clickContains(page, 'div', '跨会话报告.md');
+  await sleep(300);
+  const outputPreviewSession = await page.evaluate(() => {
+    const calls = window.__OUTPUT_PREVIEW_READS__ || [];
+    return {
+      live: calls.some(c => c.kind === 'text' && c.path.endsWith('跨会话报告.md') && c.sessionId === 'session-b'),
+      modal: calls.some(c => c.kind === 'info' && c.path.endsWith('跨会话报告.md') && c.sessionId === 'session-b'),
+      calls,
+    };
+  });
+  rec('⓪ 产出物预览始终携带所属会话', outputPreviewSession.live && outputPreviewSession.modal, JSON.stringify(outputPreviewSession));
+  await clickContains(page, 'button', '✕'); await sleep(200);
   await clickContains(page, 'button', '本地文件管理');
   await sleep(1500);
 
