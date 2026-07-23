@@ -526,11 +526,11 @@ const WidgetCard = ({ title, children, theme }) => {
         let alive = true;
         (async () => {
           try {
-            const info = await bridge.artifacts.artifactInfo(path);
+            const info = await bridge.artifacts.artifactInfo(path, sessionId);
             if (!alive) return;
             if (!info || !info.exists) { setPv({ missing: true }); return; }
             if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-              let text = await bridge.artifacts.readArtifactText(path);
+              let text = await bridge.artifacts.readArtifactText(path, sessionId);
               if (!alive) return;
               let kind = info.kind;
               if (/\.json$/i.test(path)) {
@@ -538,10 +538,10 @@ const WidgetCard = ({ title, children, theme }) => {
               }
               setPv({ kind, text });
             } else if (info.kind === 'image') {
-              try { const dataUrl = await bridge.artifacts.readArtifactImageB64(path); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
+              try { const dataUrl = await bridge.artifacts.readArtifactImageB64(path, sessionId); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
               catch (e2) { if (alive) setPv({ kind: 'image', imgErr: String(e2) }); }
             } else {
-              const visual = bridge.artifacts.renderArtifactVisual ? await bridge.artifacts.renderArtifactVisual(path) : null;
+              const visual = bridge.artifacts.renderArtifactVisual ? await bridge.artifacts.renderArtifactVisual(path, sessionId) : null;
               if (!alive) return;
               setPv({ kind: info.kind || 'other', visual });
             }
@@ -558,7 +558,7 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
               <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={path}>{base}</span>
               <div className="flex items-center gap-2">
-                <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>↗ 外部</button>
+                {(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{isWeb ? '↓ 下载' : '↗ 外部'}</button>}
                 <button onClick={onClose} className={`w-7 h-7 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
               </div>
             </div>
@@ -572,7 +572,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">图片读取失败: {pv.imgErr}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
                 : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
                 : pv.visual && pv.visual.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(pv.visual.images || []).map((src, i) => <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />)}</div>
-                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p><button onClick={() => bridge.artifacts.openArtifactExternal(path)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>↗ 外部打开</button></div>}
+                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p>{(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{isWeb ? '↓ 下载产物' : '↗ 外部打开'}</button>}</div>}
             </div>
           </div>
         </div>
@@ -610,7 +610,7 @@ const WidgetCard = ({ title, children, theme }) => {
         (async () => {
           try {
             const path = (projectDir || '').replace(/\/$/, '') + '/final_report.md';
-            const text = await bridge.artifacts.readArtifactText(path);
+            const text = await bridge.artifacts.readArtifactText(path, sessionId);
             if (alive) setSt({ loading: false, text: text || '', error: null });
           } catch (e) { if (alive) setSt({ loading: false, text: '', error: String(e) }); }
         })();
@@ -1373,10 +1373,14 @@ const WidgetCard = ({ title, children, theme }) => {
       );
     };
 
+    const ExpertTeamsPanel = ({ bs, theme, t }) => (
+      <WorkflowView bs={bs} theme={theme} t={t} />
+    );
+
 
     // ==========================================
     // 撕离窗口(tear-off):同一个 index.html 以 ?detached=1&kind=&id= 启动,只挂载该面板,无侧边栏。
     // 窗口间强独立:各自 useBridge()/init(),不做 live 数据同步(真相源在后端,进程内共享)。
     // ==========================================
 
-export { WidgetCard, ProgressBar, ListRow, UI_STATES, toUiState, AGENT_NAME_MAP, layoutForRun, formatWorkflowLogRecord, workflowLogText, AgentAvatar, FanoutGrid, AgentCard, AgentPipelineView, FilePreviewModal, ImperialMemorialModal, CardDrawer, WfUserInputCard, GateApprovalCard, InteractionArea, NewTaskModal, TemplateCard, WorkflowView };
+export { WidgetCard, ProgressBar, ListRow, UI_STATES, toUiState, AGENT_NAME_MAP, layoutForRun, formatWorkflowLogRecord, workflowLogText, AgentAvatar, FanoutGrid, AgentCard, AgentPipelineView, FilePreviewModal, ImperialMemorialModal, CardDrawer, WfUserInputCard, GateApprovalCard, InteractionArea, NewTaskModal, TemplateCard, WorkflowView, ExpertTeamsPanel };

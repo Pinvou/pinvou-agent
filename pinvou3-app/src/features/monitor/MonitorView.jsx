@@ -474,16 +474,21 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         <div className="flex-1 w-full h-full overflow-y-auto custom-scrollbar">
           <div className="min-h-full bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] p-4 sm:p-6 lg:p-10 font-sans selection:bg-blue-500/30 relative overflow-hidden transition-colors duration-500">
             <div className="max-w-[1400px] mx-auto relative z-10 space-y-6">
-              <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 px-2 mb-4">
+              <header
+                className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 pb-6 mb-4 border-b"
+                style={{ borderColor: isDark ? 'rgba(255,255,255,.10)' : 'rgba(198,198,200,.55)' }}
+              >
                 <div>
-                  <h1 className="text-[32px] font-normal tracking-tight mb-2 text-black/90 dark:text-white/90">{t.sysStatus}</h1>
-                  <div className="flex items-center gap-2.5 bg-black/[0.04] dark:bg-white/[0.06] px-3 py-1.5 rounded-full w-fit">
-                    <span className="relative flex h-2 w-2">
-                      <span className={`animate-ping absolute h-full w-full rounded-full ${vllmOnline ? 'bg-[#34C759] dark:bg-[#30D158]' : 'bg-[#8E8E93]'} opacity-60`} />
-                      <span className={`relative h-2 w-2 rounded-full ${vllmOnline ? 'bg-[#34C759] dark:bg-[#30D158]' : 'bg-[#8E8E93]'}`} />
-                    </span>
-                    <span className="text-[11px] font-bold tracking-[0.15em] uppercase text-black/50 dark:text-white/50">{!monitorBridgeReady ? '监控桥接未就绪：请确认打开的是 Tauri 应用窗口' : (monitorError ? `监控读取失败：${monitorError}` : t.sysDesc)}</span>
-                  </div>
+                  <h1 className="text-[26px] font-normal tracking-tight text-black/90 dark:text-white/90">{t.sysStatus}</h1>
+                  {(!monitorBridgeReady || monitorError) && (
+                    <div className="mt-2 flex items-center gap-2.5 bg-black/[0.04] dark:bg-white/[0.06] px-3 py-1.5 rounded-full w-fit">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute h-full w-full rounded-full bg-[#8E8E93] opacity-60" />
+                        <span className="relative h-2 w-2 rounded-full bg-[#8E8E93]" />
+                      </span>
+                      <span className="text-[11px] font-bold tracking-[0.15em] uppercase text-black/50 dark:text-white/50">{!monitorBridgeReady ? '监控桥接未就绪：请确认打开的是 Tauri 应用窗口' : `监控读取失败：${monitorError}`}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1.5 bg-white/60 dark:bg-[#1C1C1E] backdrop-blur-[40px] rounded-full p-1.5 shadow-[0_4px_20px_rgb(0,0,0,0.04)] dark:shadow-[0_18px_46px_rgba(0,0,0,0.5)] ring-1 ring-black/[0.03] dark:ring-white/[0.055]">
