@@ -342,10 +342,16 @@ pub fn run() {
             startup::mark("engine_pool:start");
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
                 std::sync::Arc::new(|app, session_id| {
-                    vec![std::sync::Arc::new(knowledge::KbSearchTool::new(
-                        app.clone(),
-                        session_id.to_string(),
-                    ))]
+                    vec![
+                        std::sync::Arc::new(knowledge::KbSearchTool::new(
+                            app.clone(),
+                            session_id.to_string(),
+                        )),
+                        std::sync::Arc::new(knowledge::KbOpenSourceTool::new(
+                            app.clone(),
+                            session_id.to_string(),
+                        )),
+                    ]
                 });
             let tool_policy: crate::features::assistant::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
                 let mut tools = crate::features::marketplace::disabled_tool_names();
@@ -355,6 +361,7 @@ pub fn run() {
                     .unwrap_or(false);
                 if !kb_usable {
                     tools.push("kb_search".to_string());
+                    tools.push("kb_open_source".to_string());
                 }
                 tools
             });
@@ -830,6 +837,7 @@ mod blocklist_contract {
             "agent_eval",  // subagent 收结果
             "agent_close", // subagent 释放 session
             "kb_search",   // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
+            "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }

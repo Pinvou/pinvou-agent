@@ -114,8 +114,9 @@ pub async fn chat(
         }
     }
     // Agentic RAG:该 session 挂了知识集 → 每 turn prepend Self-RAG 自检引导,让模型自己
-    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道。不再自动
-    // 注入片段(注入式已废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
+    // 调 kb_search 工具(engine 已注入)检索、严格基于结果作答、无依据就说不知道;需要命中
+    // 附近上下文时用 kb_open_source,不直接打开二进制原文件。不再自动注入片段(注入式已
+    // 废弃)。collection_name 是单行查询,直接调即可(非大查询不必 spawn)。
     //
     // 关键防线:kb_search 的可见性是 engine config.disallowed_tools 控制的,而知识库模型/
     // 索引状态可能在 engine spawn 后才变化。挂集 turn 先刷新 live engine 的工具门控;

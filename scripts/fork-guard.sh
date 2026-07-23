@@ -56,6 +56,8 @@ fingerprints=(
   "T4|强制审批不可被 auto approve 绕过   |DeepSeek-TUI/crates/tui/src/core/engine/turn_loop.rs|registered_tool_approval_force_prompt"
 
   "T5|宿主工具硬白名单                   |DeepSeek-TUI/crates/tui/src/core/engine.rs|pub tool_whitelist: Option<HashSet<String>>"
+  "T5|宿主额外工具覆盖全部模式           |DeepSeek-TUI/crates/tui/src/core/engine/tool_setup.rs|fn append_host_extra_tools"
+  "T5|宿主额外工具全模式回归             |DeepSeek-TUI/crates/tui/src/core/engine/tests.rs|fn forkguard_host_extra_tools_register_in_all_modes"
   "T5|SpawnSubAgent 工作流契约            |DeepSeek-TUI/crates/tui/src/core/ops.rs|expects_file_output: bool"
   "T5|结构化产出提交工具                 |DeepSeek-TUI/crates/tui/src/tools/subagent/mod.rs|const SUBMIT_OUTPUT_TOOL: &str = \"submit_output\";"
   "T5|结构化产出安全路径回归             |DeepSeek-TUI/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"

@@ -763,12 +763,15 @@ use std::path::{Path, PathBuf};
         assert!(msg.contains("立即开始执行"), "缺少明确执行信号");
     }
 
-    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 无依据说不知道;空名兜底。
+    /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 按需 kb_open_source + 禁止二进制
+    /// read_file + 无依据说不知道;空名兜底。
     #[test]
     fn agentic_guide_mentions_collection_and_kb_search() {
         let g = build_kb_agentic_guide(Some("硬件资料"));
         assert!(g.contains("《硬件资料》"));
         assert!(g.contains("kb_search"));
+        assert!(g.contains("kb_open_source"));
+        assert!(g.contains("不要对 XLSX/"));
         assert!(g.contains("绝不凭记忆编造"));
         assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
     }
