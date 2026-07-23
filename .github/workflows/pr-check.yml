@@ -6,6 +6,8 @@ name: PR Check
 # - frontend-test:前端/Relay/WebUI 改动时跑 lint、构建、逻辑测试和浏览器旅程。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
 #   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
+# - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
+# - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
 # 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
@@ -20,6 +22,8 @@ on:
     branches: [main]
     # closed 事件会进入同一个 concurrency group，及时取消已合并/关闭 PR 的旧任务。
     types: [opened, synchronize, reopened, closed]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]   # 暖 cache:见上方 Cache 策略
 
@@ -34,22 +38,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 检测本 PR 改了哪些类别,给 rust-test 做条件触发(非 Rust PR 跳过编译)。
+  # PR 按路径选择检查；Merge Queue 对最新 main 组合跑完整检查。
   changes:
     name: changes
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      l1: ${{ steps.filter.outputs.l1 }}
-      pet: ${{ steps.filter.outputs.pet }}
-      frontend: ${{ steps.filter.outputs.frontend }}
-      diff_viewer: ${{ steps.filter.outputs.diff_viewer }}
-      relay: ${{ steps.filter.outputs.relay }}
+      rust: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.rust }}
+      l1: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.l1 }}
+      pet: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.pet }}
+      frontend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.frontend }}
+      diff_viewer: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.diff_viewer }}
+      relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
+        if: github.event_name == 'pull_request'
         with:
           filters: |
             rust:
@@ -128,8 +133,7 @@ jobs:
 
   fast-gate:
     name: fast-gate
-    # 只在 PR 跑:fork 合规联动比对 origin/${base_ref},push 事件 base_ref 为空会炸。
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (含 submodule,fork 为 public 直接拉)
@@ -142,7 +146,11 @@ jobs:
         run: ./scripts/fork-guard.sh --fast
 
       - name: fork 合规联动 (gitlink ↔ fork-modifications)
-        run: ./scripts/ci-fork-link-check.sh "origin/${{ github.base_ref }}"
+        env:
+          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}
+        run: |
+          base_ref="${BASE_REF#refs/heads/}"
+          ./scripts/ci-fork-link-check.sh "origin/$base_ref"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -169,7 +177,7 @@ jobs:
   frontend-test:
     name: frontend-test
     needs: changes
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -221,7 +229,7 @@ jobs:
   relay-test:
     name: relay-test
     needs: changes
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.relay == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.relay == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -244,7 +252,7 @@ jobs:
   diff-viewer-test:
     name: diff-viewer-test
     needs: changes
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.diff_viewer == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.diff_viewer == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -275,7 +283,7 @@ jobs:
   pet-frontend-test:
     name: pet-frontend-test
     needs: changes
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.pet == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.pet == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -394,3 +402,50 @@ jobs:
           cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib automation_manager -- --test-threads=1
           cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --lib task_manager -- --test-threads=1
           cargo test --manifest-path DeepSeek-TUI/Cargo.toml -p codewhale-tui --test task_executor_contract -- --test-threads=1
+
+  required-gate:
+    name: required-gate
+    needs:
+      - changes
+      - fast-gate
+      - frontend-test
+      - relay-test
+      - diff-viewer-test
+      - pet-frontend-test
+      - rust-test
+    if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 汇总所有适用检查
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          FAST_GATE_RESULT: ${{ needs.fast-gate.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-test.result }}
+          RELAY_RESULT: ${{ needs.relay-test.result }}
+          DIFF_VIEWER_RESULT: ${{ needs.diff-viewer-test.result }}
+          PET_RESULT: ${{ needs.pet-frontend-test.result }}
+          RUST_RESULT: ${{ needs.rust-test.result }}
+        run: |
+          if [[ "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
+            echo "基础检查失败: changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
+            exit 1
+          fi
+
+          failed=0
+          for item in \
+            "frontend-test:$FRONTEND_RESULT" \
+            "relay-test:$RELAY_RESULT" \
+            "diff-viewer-test:$DIFF_VIEWER_RESULT" \
+            "pet-frontend-test:$PET_RESULT" \
+            "rust-test:$RUST_RESULT"; do
+            name="${item%%:*}"
+            result="${item#*:}"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "$name 未通过: $result" >&2
+                failed=1
+                ;;
+            esac
+          done
+          [[ "$failed" -eq 0 ]]
