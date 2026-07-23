@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Server, User, XIcon, Zap } from '../../components/icons.jsx';
-import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
+import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
@@ -40,6 +40,51 @@ const PlatformToolAction = (props) => {
     );
   }
   return <TsActionBtn {...props} />;
+};
+
+const THIRD_PARTY_TOOL_LOGOS = {
+  weather: 'assets/tool-icons/amap-user-v3.png',
+  iwencai: 'assets/tool-icons/iwencai-user-v3.png',
+  feishu: 'assets/tool-icons/wb-feishu.svg',
+  wecom: 'assets/tool-icons/wecom-user.png',
+  dingtalk: 'assets/tool-icons/dingtalk-user-v2.png',
+  qcc: 'assets/tool-icons/qcc-user.png',
+  'patsnap-search': 'assets/tool-icons/wb-patsnap-search.png',
+  obsidian: 'assets/tool-icons/obsidian.ico',
+  eip: 'assets/tool-icons/h3c-user-v2.png',
+  zhidao: 'assets/tool-icons/h3c-user-v2.png',
+  'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',
+  3: 'assets/tool-icons/wb-qq-mail.png',
+  4: 'assets/tool-icons/wb-ima-mcp.png',
+  5: 'assets/tool-icons/wb-lexiang.png',
+  6: 'assets/tool-icons/wb-tencent-docs.png',
+  8: 'assets/tool-icons/wecom-user.png',
+  11: 'assets/tool-icons/wb-tapd.png',
+  12: 'assets/tool-icons/wb-cnb-api.svg',
+};
+
+const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/h3c-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-yuandian-mcp.svg', 'assets/tool-icons/wecom-user.png']);
+const CROPPED_TILE_LOGOS = new Set(['assets/tool-icons/wb-yuandian-mcp.svg']);
+
+const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallbackSize = 30, fallbackStrokeWidth = 1.5, children }) => {
+  const Icon = tool.icon;
+  const isFullTileLogo = tool.logoSrc && FULL_TILE_LOGOS.has(tool.logoSrc);
+  const cropTileLogo = tool.logoSrc && CROPPED_TILE_LOGOS.has(tool.logoSrc);
+  return (
+    <div className={`relative flex items-center justify-center overflow-hidden ${tool.logoSrc ? `${isFullTileLogo ? 'bg-transparent' : 'bg-white dark:bg-white'} text-slate-900` : `${tool.color} text-white`} ${className}`}>
+      {tool.logoSrc ? (
+        <img
+          src={tool.logoSrc}
+          alt=""
+          className={isFullTileLogo ? `h-full w-full rounded-[inherit] object-cover ${cropTileLogo ? 'scale-[1.22]' : ''}` : `object-contain ${imageClassName}`}
+          loading="lazy"
+        />
+      ) : (
+        <Icon size={fallbackSize} strokeWidth={fallbackStrokeWidth} />
+      )}
+      {children}
+    </div>
+  );
 };
 
 const oauthUiTimeoutResult = (serverName) => ({
@@ -140,7 +185,7 @@ const FEISHU_STEPS = [
                       <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
                     </div>
                   )}
-                  {flow.qrUrl && <button onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
+                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
                 </div>
               </div>
             </div>
@@ -198,7 +243,7 @@ const FEISHU_STEPS = [
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
     function ensureFeishuListeners() {
       if (feishuConn.listenersReady) return;
-      const ev = window.__TAURI__ && window.__TAURI__.event;
+      const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       feishuConn.listenersReady = true;
       ev.listen('feishu:progress', (e) => {
@@ -228,7 +273,7 @@ const FEISHU_STEPS = [
         feishuConn.stopTick();
         feishuConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
         // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
-        window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+        invokeTauri('feishu_apply_skills').catch(() => {});
         // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
         setTimeout(() => feishuConn.setFlow(null), 1800);
       });
@@ -260,7 +305,7 @@ const FEISHU_STEPS = [
     };
     function ensureWecomListeners() {
       if (wecomConn.listenersReady) return;
-      const ev = window.__TAURI__ && window.__TAURI__.event;
+      const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       wecomConn.listenersReady = true;
       ev.listen('wecom:qr', (e) => {
@@ -276,7 +321,7 @@ const FEISHU_STEPS = [
       ev.listen('wecom:connected', () => {
         wecomConn.stopTick();
         wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
-        window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+        invokeTauri('wecom_apply_skills').catch(() => {});
         setTimeout(() => wecomConn.setFlow(null), 1800);
       });
       ev.listen('wecom:error', (e) => {
@@ -304,7 +349,7 @@ const FEISHU_STEPS = [
     };
     function ensureDingtalkListeners() {
       if (dingtalkConn.listenersReady) return;
-      const ev = window.__TAURI__ && window.__TAURI__.event;
+      const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       dingtalkConn.listenersReady = true;
       ev.listen('dingtalk:qr', (e) => {
@@ -320,7 +365,7 @@ const FEISHU_STEPS = [
       ev.listen('dingtalk:connected', async () => {
         dingtalkConn.stopTick();
         try {
-          await window.__TAURI__.core.invoke('dingtalk_apply_skills');
+          await invokeTauri('dingtalk_apply_skills');
           dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
           setTimeout(() => dingtalkConn.setFlow(null), 1800);
         } catch (e) {
@@ -445,7 +490,7 @@ const FEISHU_STEPS = [
               )}
               {config.configDocUrl && (
                 <button
-                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: config.configDocUrl })}
+                  onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl })}
                   className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
                 >
                   {config.configDocLabel || '查看配置说明'} →
@@ -454,7 +499,7 @@ const FEISHU_STEPS = [
               {/* 引导链接放最上,不夹在输入框中间 */}
               {fields.find(f => f.helpUrl) && (
                 <button
-                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
+                  onClick={() => invokeTauri('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
                   className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
                 >
                   不会建应用？去飞书开放平台建一个 →
@@ -567,6 +612,7 @@ const FEISHU_STEPS = [
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
       const isCard = viewMode === 'card';
       const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
+      const showFeaturedCollections = isCard && searchQuery === '' && activeCategory === 'all';
       // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
       const LOCAL_TOOLS = ['pptx', 'gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
@@ -576,7 +622,7 @@ const FEISHU_STEPS = [
       const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
       const refreshFeishu = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('feishu_status');
+          const s = await invokeTauri('feishu_status');
           setFeishuConnected(!!(s && s.connected));
         } catch (e) { console.error('feishu_status failed:', e); }
       };
@@ -588,7 +634,7 @@ const FEISHU_STEPS = [
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
       const refreshWecom = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('wecom_status');
+          const s = await invokeTauri('wecom_status');
           setWecomConnected(!!(s && s.connected));
         } catch (e) { console.error('wecom_status failed:', e); }
       };
@@ -599,11 +645,24 @@ const FEISHU_STEPS = [
       const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
       const refreshDingtalk = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('dingtalk_status');
+          const s = await invokeTauri('dingtalk_status');
           setDingtalkConnected(!!(s && s.connected));
         } catch (e) { console.error('dingtalk_status failed:', e); }
       };
       useEffect(() => { refreshDingtalk(); }, []);
+
+      useEffect(() => {
+        const urls = [
+          'assets/h3c-banner.jpg',
+          ...tsFeaturedCollections.map((item) => item.img),
+          ...tsSkillsData.map((item) => item.todayImg),
+        ].filter(Boolean);
+        urls.forEach((src) => {
+          const img = new Image();
+          img.decoding = 'async';
+          img.src = src;
+        });
+      }, []);
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
@@ -682,13 +741,13 @@ const FEISHU_STEPS = [
       const [zhidaoSso, setZhidaoSso] = useState(null); // { url, qr } SSO 登录引导弹窗
       const refreshEip = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('eip_status');
+          const s = await invokeTauri('eip_status');
           setEipConnected(!!(s && s.connected));
         } catch (e) { console.error('eip_status failed:', e); }
       };
       const refreshZhidao = async () => {
         try {
-          const s = await window.__TAURI__.core.invoke('zhidao_status');
+          const s = await invokeTauri('zhidao_status');
           setZhidaoConnected(!!(s && s.connected));
         } catch (e) { console.error('zhidao_status failed:', e); }
       };
@@ -696,8 +755,7 @@ const FEISHU_STEPS = [
 
       // 企微/EIP/知道 连接编排事件:后端推进度,前端驱动 UI。
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
-        const ev = window.__TAURI__ && window.__TAURI__.event;
+        const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev) return;
         const unlisten = [];
         ev.listen('wecom:qr', (e) => {
@@ -709,7 +767,7 @@ const FEISHU_STEPS = [
         ev.listen('wecom:connected', () => {
           setWecomQr(null); setWecomConnected(true); setBusyId(null);
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见。
-          window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+          invokeTauri('wecom_apply_skills').catch(() => {});
           setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
           notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
@@ -757,6 +815,7 @@ const FEISHU_STEPS = [
         return {
           ...t,
           category: CAT_BY_ID[t.id] || t.category,
+          logoSrc: THIRD_PARTY_TOOL_LOGOS[t.backendId] || THIRD_PARTY_TOOL_LOGOS[t.id] || null,
           installed: t.feishuCli
             ? feishuConnected
             : t.wecomCli
@@ -808,8 +867,14 @@ const FEISHU_STEPS = [
       // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
+      const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
+      const visibleCategories = tsCategories.filter(cat => cat.id === 'all' || listItems.some(tool => (
+        isLaunchedTool(tool)
+        && (cat.id === 'h3c' ? (tool.category === 'h3c' || !!tool.internal) : tool.category === cat.id)
+      )));
       const PIN = ['government-writing', 'pptx', 'visualizer'];
       const filteredTools = sourceItems.filter(tool => {
+        if (!isLaunchedTool(tool)) return false;
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
         if (installedOnly && !isCard) return matchesSearch && tool.installed;
@@ -824,11 +889,16 @@ const FEISHU_STEPS = [
         if (!a.installed && b.installed) return 1;
         return 0;
       });
+      useEffect(() => {
+        if (!isCard && !installedOnly && !searching && activeCategory !== 'all' && !visibleCategories.some(cat => cat.id === activeCategory)) {
+          setActiveCategory('all');
+        }
+      }, [activeCategory, installedOnly, isCard, searching, visibleCategories]);
 
       // 从后端加载已安装状态
       const loadBackendState = async () => {
         try {
-          const list = await window.__TAURI__.core.invoke('list_marketplace_tools');
+          const list = await invokeTauri('list_marketplace_tools');
           const states = {};
           const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
           list.forEach(t => {
@@ -841,7 +911,7 @@ const FEISHU_STEPS = [
             .filter(tool => tool.oauthMcp && tool.backendId)
             .map(async (tool) => {
               try {
-                const status = await window.__TAURI__.core.invoke('get_marketplace_tool_auth_status', { toolId: tool.backendId });
+                const status = await invokeTauri('get_marketplace_tool_auth_status', { toolId: tool.backendId });
                 return [tool.backendId, status];
               } catch (err) {
                 console.error('get_marketplace_tool_auth_status failed:', tool.backendId, err);
@@ -857,7 +927,7 @@ const FEISHU_STEPS = [
           console.error('list_marketplace_tools failed:', e);
         }
         try {
-          const skills = await window.__TAURI__.core.invoke('list_marketplace_skills');
+          const skills = await invokeTauri('list_marketplace_skills');
           setSkillBackend(Array.isArray(skills) ? skills : []);
         } catch (e) {
           console.error('list_marketplace_skills failed:', e);
@@ -886,8 +956,7 @@ const FEISHU_STEPS = [
         const activeRequests = Object.entries(oauthRequestRef.current);
         oauthRequestRef.current = {};
         activeRequests.forEach(([toolId, requestId]) => {
-          window.__TAURI__.core
-            .invoke('cancel_marketplace_tool_oauth_login', { toolId, requestId })
+          invokeTauri('cancel_marketplace_tool_oauth_login', { toolId, requestId })
             .catch(err => console.error('cancel marketplace oauth on unmount failed:', err));
         });
       }, []);
@@ -925,7 +994,7 @@ const FEISHU_STEPS = [
           subtitle: '正在停止浏览器授权等待…',
         }));
         try {
-          await window.__TAURI__.core.invoke('cancel_marketplace_tool_oauth_login', {
+          await invokeTauri('cancel_marketplace_tool_oauth_login', {
             toolId: backendId,
             requestId,
           });
@@ -990,7 +1059,7 @@ const FEISHU_STEPS = [
           if (userConfig && Object.keys(userConfig).length > 0) {
             args.config = userConfig;
           }
-          await window.__TAURI__.core.invoke('install_marketplace_tool', args);
+          await invokeTauri('install_marketplace_tool', args);
           if (t?.oauthMcp) {
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             setToolAuthStates(prev => ({
@@ -1004,8 +1073,7 @@ const FEISHU_STEPS = [
                 message: '正在等待浏览器授权完成。',
               },
             }));
-            const loginPromise = window.__TAURI__.core
-              .invoke('start_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
+            const loginPromise = invokeTauri('start_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
               .catch(err => ({
                 status: 'failed',
                 message: String(err).slice(0, 240),
@@ -1029,13 +1097,11 @@ const FEISHU_STEPS = [
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
-              await window.__TAURI__.core
-                .invoke('cancel_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
+              await invokeTauri('cancel_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
                 .catch(err => console.error('cancel marketplace oauth after UI timeout failed:', err));
             }
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
-            const authStatus = await window.__TAURI__.core
-              .invoke('get_marketplace_tool_auth_status', { toolId: backendId })
+            const authStatus = await invokeTauri('get_marketplace_tool_auth_status', { toolId: backendId })
               .catch((err) => {
                 console.error('get_marketplace_tool_auth_status after oauth failed:', err);
                 return null;
@@ -1078,7 +1144,7 @@ const FEISHU_STEPS = [
         } catch (e) {
           if (t?.oauthMcp && !isCurrentOAuthRequest(backendId, oauthRequestId)) return;
           console.error('install failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e).slice(0, 240), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           if (t?.oauthMcp) {
             if (isCurrentOAuthRequest(backendId, oauthRequestId)) {
@@ -1099,7 +1165,7 @@ const FEISHU_STEPS = [
         setBusyId(backendId);
         try {
           const cmd = isInstalled ? 'uninstall_marketplace_skill' : 'install_marketplace_skill';
-          await window.__TAURI__.core.invoke(cmd, { skillId: backendId });
+          await invokeTauri(cmd, { skillId: backendId });
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: `${isInstalled ? '已卸载' : '已安装'}「${name}」`, isInstall: !isInstalled, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
@@ -1120,7 +1186,7 @@ const FEISHU_STEPS = [
         setBusyId('__upload__');
         setAlert({ loading: true, visible: false, title: '正在导入技能包…', subtitle: '校验并解压中', isInstall: true, isError: false });
         try {
-          const ok = await window.__TAURI__.core.invoke('import_skill_package');
+          const ok = await invokeTauri('import_skill_package');
           if (ok) {
             await loadBackendState();
             setAlert({ visible: true, loading: false, title: '技能包已导入', isInstall: true, isError: false });
@@ -1148,10 +1214,10 @@ const FEISHU_STEPS = [
         try {
           // ① 确保 CLI（B 方案下可能联网安装 ~40s，会 emit feishu:progress step=cli）
           feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
-          await window.__TAURI__.core.invoke('feishu_ensure_cli');
+          await invokeTauri('feishu_ensure_cli');
           feishuConn.setFlow(f => ({ ...(f || {}), active: 'connect', pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done', connect: 'active' } }));
           // ② 连接编排（后端 emit feishu:qr / connected / error）
-          await window.__TAURI__.core.invoke('feishu_connect_begin');
+          await invokeTauri('feishu_connect_begin');
         } catch (e) {
           console.error('feishu connect failed:', e);
           feishuConn.stopTick();
@@ -1165,7 +1231,7 @@ const FEISHU_STEPS = [
       // 取消/关闭流程卡：置取消 + kill 子进程 + 清状态。
       const feishuResetFlow = () => {
         feishuConn.stopTick();
-        window.__TAURI__.core.invoke('feishu_cancel').catch(() => {});
+        invokeTauri('feishu_cancel').catch(() => {});
         feishuConn.setFlow(null); setBusyId(null);
       };
       // 重试：ensure_cli 幂等，直接重跑整个连接流程。
@@ -1173,9 +1239,9 @@ const FEISHU_STEPS = [
       const disconnectFeishu = async () => {
         setBusyId('feishu');
         try {
-          await window.__TAURI__.core.invoke('feishu_logout');
+          await invokeTauri('feishu_logout');
           // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新。
-          await window.__TAURI__.core.invoke('feishu_apply_skills').catch(() => {});
+          await invokeTauri('feishu_apply_skills').catch(() => {});
           setFeishuConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开飞书', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1197,10 +1263,10 @@ const FEISHU_STEPS = [
         try {
           // ① 确保 CLI(首次联网装 wecom-cli ~40s)
           wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
-          await window.__TAURI__.core.invoke('wecom_ensure_cli');
+          await invokeTauri('wecom_ensure_cli');
           wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
           // ② 连接编排(后端 emit wecom:qr / connected / error)
-          await window.__TAURI__.core.invoke('wecom_connect_begin');
+          await invokeTauri('wecom_connect_begin');
         } catch (e) {
           console.error('wecom connect failed:', e);
           wecomConn.stopTick();
@@ -1213,16 +1279,16 @@ const FEISHU_STEPS = [
       };
       const wecomResetFlow = () => {
         wecomConn.stopTick();
-        window.__TAURI__.core.invoke('wecom_cancel').catch(() => {});
+        invokeTauri('wecom_cancel').catch(() => {});
         wecomConn.setFlow(null); setBusyId(null);
       };
       const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
         setBusyId('wecom');
         try {
-          await window.__TAURI__.core.invoke('wecom_logout');
+          await invokeTauri('wecom_logout');
           // 断开 → 撤掉技能(should_show 变 false)。
-          await window.__TAURI__.core.invoke('wecom_apply_skills').catch(() => {});
+          await invokeTauri('wecom_apply_skills').catch(() => {});
           setWecomConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开企业微信', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1242,9 +1308,9 @@ const FEISHU_STEPS = [
         dingtalkConn.startTick();
         try {
           dingtalkConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
-          await window.__TAURI__.core.invoke('dingtalk_ensure_cli');
+          await invokeTauri('dingtalk_ensure_cli');
           dingtalkConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
-          await window.__TAURI__.core.invoke('dingtalk_connect_begin');
+          await invokeTauri('dingtalk_connect_begin');
         } catch (e) {
           console.error('dingtalk connect failed:', e);
           dingtalkConn.stopTick();
@@ -1257,15 +1323,15 @@ const FEISHU_STEPS = [
       };
       const dingtalkResetFlow = () => {
         dingtalkConn.stopTick();
-        window.__TAURI__.core.invoke('dingtalk_cancel').catch(() => {});
+        invokeTauri('dingtalk_cancel').catch(() => {});
         dingtalkConn.setFlow(null); setBusyId(null);
       };
       const dingtalkRetry = () => { connectDingtalk(); };
       const disconnectDingtalk = async () => {
         setBusyId('dingtalk');
         try {
-          await window.__TAURI__.core.invoke('dingtalk_logout');
-          await window.__TAURI__.core.invoke('dingtalk_apply_skills').catch(() => {});
+          await invokeTauri('dingtalk_logout');
+          await invokeTauri('dingtalk_apply_skills').catch(() => {});
           setDingtalkConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开钉钉', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1281,7 +1347,7 @@ const FEISHU_STEPS = [
       const connectEip = async () => {
         setBusyId('eip');
         try {
-          await window.__TAURI__.core.invoke('eip_connect_begin');
+          await invokeTauri('eip_connect_begin');
           // 后续:eip:sso 出登录地址 → 用户浏览器 SSO 登录 → eip:connected 收尾。
         } catch (e) {
           console.error('eip connect failed:', e);
@@ -1292,7 +1358,7 @@ const FEISHU_STEPS = [
       const disconnectEip = async () => {
         setBusyId('eip');
         try {
-          await window.__TAURI__.core.invoke('eip_logout');
+          await invokeTauri('eip_logout');
           setEipConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开员工门户（EIP）', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1308,7 +1374,7 @@ const FEISHU_STEPS = [
       const connectZhidao = async () => {
         setBusyId('zhidao');
         try {
-          await window.__TAURI__.core.invoke('zhidao_connect_begin');
+          await invokeTauri('zhidao_connect_begin');
         } catch (e) {
           console.error('zhidao connect failed:', e);
           setZhidaoSso(null); setBusyId(null);
@@ -1318,7 +1384,7 @@ const FEISHU_STEPS = [
       const disconnectZhidao = async () => {
         setBusyId('zhidao');
         try {
-          await window.__TAURI__.core.invoke('zhidao_logout');
+          await invokeTauri('zhidao_logout');
           setZhidaoConnected(false);
           setAlert({ visible: true, loading: false, title: '已断开知道知识库', isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1380,7 +1446,7 @@ const FEISHU_STEPS = [
           // Obsidian：连接前先探测本机状态——没装/没库就引导，不默默装个用不了的连接器
           if (backendId === 'obsidian') {
             let st = null;
-            try { st = await window.__TAURI__.core.invoke('detect_obsidian'); } catch (e) {}
+            try { st = await invokeTauri('detect_obsidian'); } catch (e) {}
             if (st && st.state && st.state !== 'ok') { setObsidianGuide({ backendId, name, ...st }); return; }
             return doInstall(backendId, {});
           }
@@ -1402,7 +1468,7 @@ const FEISHU_STEPS = [
         // 卸载
         setBusyId(backendId);
         try {
-          await window.__TAURI__.core.invoke('uninstall_marketplace_tool', { toolId: backendId });
+          await invokeTauri('uninstall_marketplace_tool', { toolId: backendId });
           await loadBackendState();
           if (t?.oauthMcp) {
             setToolAuthStates(prev => ({
@@ -1475,17 +1541,17 @@ const FEISHU_STEPS = [
             theme={theme}
             allowDownload={can('localModelSetup')}
             onCancel={() => setObsidianGuide(null)}
-            onDownload={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
+            onDownload={() => invokeTauri('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
             onRetry={async () => {
               let st = null;
-              try { st = await window.__TAURI__.core.invoke('detect_obsidian'); } catch (e) {}
+              try { st = await invokeTauri('detect_obsidian'); } catch (e) {}
               if (st && st.state === 'ok') { const bid = obsidianGuide.backendId; setObsidianGuide(null); doInstall(bid, {}); }
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
-          {externalAuthAvailable && wecomQr && (() => {
-            const cancel = () => { window.__TAURI__.core.invoke('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
+          {wecomQr && (() => {
+            const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1498,14 +1564,14 @@ const FEISHU_STEPS = [
                 <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待授权中…
                 </div>
-                <button onClick={() => { if (wecomQr.url) window.__TAURI__.core.invoke('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
+                <button onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
                 <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
               </div>
             </div>
             ), document.body);
           })()}
-          {externalAuthAvailable && eipSso && (() => {
-            const cancel = () => { window.__TAURI__.core.invoke('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
+          {eipSso && (() => {
+            const cancel = () => { invokeTauri('eip_cancel').catch(() => {}); setEipSso(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1514,7 +1580,7 @@ const FEISHU_STEPS = [
                 {eipSso.qr
                   ? <img src={eipSso.qr} alt="EIP 登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
                   : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
-                <button onClick={() => { if (eipSso.url) window.__TAURI__.core.invoke('open_external_url', { url: eipSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <button onClick={() => { if (eipSso.url) invokeTauri('open_external_url', { url: eipSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
                 <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
                 </div>
@@ -1523,8 +1589,8 @@ const FEISHU_STEPS = [
             </div>
             ), document.body);
           })()}
-          {externalAuthAvailable && zhidaoSso && (() => {
-            const cancel = () => { window.__TAURI__.core.invoke('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
+          {zhidaoSso && (() => {
+            const cancel = () => { invokeTauri('zhidao_cancel').catch(() => {}); setZhidaoSso(null); setBusyId(null); };
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[360px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1533,7 +1599,7 @@ const FEISHU_STEPS = [
                 {zhidaoSso.qr
                   ? <img src={zhidaoSso.qr} alt="知道登录二维码" className="w-52 h-52 rounded-2xl border border-slate-200 dark:border-white/10 bg-white" />
                   : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[13px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5">二维码生成中…</div>}
-                <button onClick={() => { if (zhidaoSso.url) window.__TAURI__.core.invoke('open_external_url', { url: zhidaoSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
+                <button onClick={() => { if (zhidaoSso.url) invokeTauri('open_external_url', { url: zhidaoSso.url }); }} className="mt-4 px-6 py-2.5 rounded-full text-[14px] font-semibold bg-blue-600 hover:bg-blue-700 text-white">在浏览器打开登录</button>
                 <div className="flex items-center gap-1.5 mt-5 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待登录中…
                 </div>
@@ -1542,52 +1608,64 @@ const FEISHU_STEPS = [
             </div>
             ), document.body);
           })()}
-          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar">
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
 
             {/* Header */}
-            <header className="bg-white/80 dark:bg-[#131314]/80 px-4 backdrop-blur-2xl transition-colors sm:px-6 lg:px-10">
-              <div className="w-full max-w-[1400px] mx-auto border-b border-slate-200/50 px-2 dark:border-white/10">
-                <div className="flex flex-col gap-3 pt-12 pb-6 lg:flex-row lg:items-center lg:justify-between">
-                <h1 className="shrink-0 whitespace-nowrap text-[32px] font-normal tracking-tight">工具商店</h1>
-                <div className={`flex min-w-0 flex-col gap-3 lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end ${installedOnly ? 'hidden' : ''}`}>
-                  <IosSearchField
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="搜索 MCP、API 或工作流工具"
-                    isDark={isDark}
-                    compact
-                    className="w-full min-w-[220px] lg:w-[360px] lg:flex-none"
-                  />
-                  {/* 已安装入口;进「我的工具」后隐藏 */}
-                  <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
-                    className="inline-flex h-9 shrink-0 items-center justify-center rounded-full bg-[#E9E9EB] px-4 text-[13px] font-semibold text-[#1D1D1F] shadow-sm transition-colors hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
-                    <User size={14} className="mr-2 opacity-70" />
-                    我的工具
-                  </button>
-                  <IosSegmentedControl
-                    value={viewMode}
-                    onChange={(next) => { setViewMode(next); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
-                    isDark={isDark}
-                    compact
-                    segments={[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }]}
-                  />
-                </div>
+            <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
+              <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
+                <div className="flex items-center justify-between gap-4">
+                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">工具商店</h1>
+                  <div className={`ml-8 flex min-w-0 flex-1 items-center justify-end gap-3 ${installedOnly ? 'hidden' : ''}`}>
+                    <div className="relative group min-w-0 max-w-[520px] flex-1">
+                      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8E8E93] group-focus-within:text-blue-500 transition-colors" size={18} />
+                      <input
+                        data-testid="tool-store-search"
+                        type="text"
+                        placeholder="搜索连接器、skill、插件等"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="h-9 w-full rounded-[14px] border-none bg-slate-100 pl-10 pr-4 text-[13px] font-normal outline-none transition-all placeholder:text-[#8E8E93] focus:ring-0 dark:bg-[rgba(118,118,128,.24)] text-slate-900 dark:text-white"
+                      />
+                    </div>
+                    <div className="flex shrink-0 items-center justify-end gap-3">
+                      <div className="flex h-9 shrink-0 items-center rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
+                        {[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }].map(seg => (
+                          <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
+                            className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                              viewMode === seg.key
+                                ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                                : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
+                            }`}>
+                            <seg.Icon size={14} className="mr-2 opacity-70" />
+                            {seg.label}
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
+                        className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                        <User size={14} className="mr-2 opacity-70" />
+                        <span>我的工具</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </header>
 
             {/* Main scrollable area */}
             <main className="flex-1">
-              <div className="max-w-[1400px] mx-auto px-6 md:px-10 py-8 space-y-12">
+              <div className={`max-w-[1400px] mx-auto ${isCard ? 'py-8 space-y-12' : 'pt-5 pb-8 space-y-6'}`}>
+
                 {/* Featured carousel */}
-                {isCard && searchQuery === '' && activeCategory === 'all' && (
-                  <section
-                    className="relative group/featured"
-                    onMouseEnter={() => setIsFeaturedHovered(true)}
-                    onMouseLeave={() => setIsFeaturedHovered(false)}
-                  >
+                <section
+                  hidden={!showFeaturedCollections}
+                  className={`relative group/featured ${showFeaturedCollections ? '' : 'hidden'}`}
+                  aria-hidden={!showFeaturedCollections}
+                  onMouseEnter={() => setIsFeaturedHovered(true)}
+                  onMouseLeave={() => setIsFeaturedHovered(false)}
+                >
                     <div className="flex items-end justify-between mb-5">
-                      <h2 className="text-2xl font-bold tracking-tight">精选连接器</h2>
+                      <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">精选连接器</h2>
                     </div>
 
                     <button
@@ -1614,7 +1692,7 @@ const FEISHU_STEPS = [
                           onClick={() => setShowH3cModal(true)}
                           className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl transition-all duration-500"
                         >
-                          <img src="assets/h3c-banner.jpg" alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                          <img src="assets/h3c-banner.jpg" alt="" loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/15 to-black/70" />
                           <div className="relative p-8 text-white">
                             <div className="flex items-center justify-between mb-4">
@@ -1650,7 +1728,7 @@ const FEISHU_STEPS = [
                             className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
                           >
                             {collection.img
-                              ? <img src={collection.img} alt="" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                              ? <img src={collection.img} alt="" loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                               : <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />}
                             <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60" />
 
@@ -1663,9 +1741,7 @@ const FEISHU_STEPS = [
                             {featTool && (
                               <div className="absolute bottom-6 left-6 right-6 z-10">
                                 <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center gap-4 transition-transform group-hover:-translate-y-1">
-                                  <div className={`w-14 h-14 rounded-[14px] flex items-center justify-center flex-shrink-0 ${featTool.color} text-white shadow-inner`}>
-                                    <featTool.icon size={26} strokeWidth={1.5} />
-                                  </div>
+                                  <TsToolIcon tool={featTool} className="h-14 w-14 flex-shrink-0 rounded-[14px] shadow-inner" imageClassName="h-9 w-9" fallbackSize={26} />
                                   <div className="flex-1 min-w-0">
                                     <h4 className="text-base font-bold text-white truncate drop-shadow-sm">{featTool.title}</h4>
                                     <p className="text-xs text-white/70 truncate flex items-center gap-1.5">
@@ -1680,13 +1756,12 @@ const FEISHU_STEPS = [
                         );
                       })}
                     </div>
-                  </section>
-                )}
+                </section>
 
                 {/* Category filter + tool list */}
                 <section>
-                  <div className={`flex flex-col gap-4 mb-6 ${isCard ? '' : 'pb-2'}`}>
-                    {(installedOnly || searchQuery || isCard) && (
+                  <div className={`flex flex-col gap-4 mb-6 ${!isCard && !installedOnly && !searching ? '' : 'sm:flex-row sm:items-end justify-between'} ${isCard ? '' : 'pb-5'}`}>
+                    {(isCard || installedOnly || searching) && (
                       <div className="flex items-center gap-3">
                         {installedOnly && (
                           <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
@@ -1694,25 +1769,25 @@ const FEISHU_STEPS = [
                             <ChevronLeft size={20} />
                           </button>
                         )}
-                        <h2 className="text-2xl font-bold tracking-tight">
+                        <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">
                           {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : '检索结果')}
                         </h2>
                       </div>
                     )}
                     {!isCard && !installedOnly && (
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar">
-                        {tsCategories.map((cat) => {
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
+                        {visibleCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
                               key={cat.id}
                               onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
-                              className="h-9 shrink-0 whitespace-nowrap rounded-full px-3.5 text-[13px] font-semibold transition-colors"
+                              className="h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors"
                               style={isActive
                                 ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
                                 : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}
                             >
-                              {cat.id === 'all' ? '全部工具' : cat.label}
+                              {cat.label}
                             </button>
                           );
                         })}
@@ -1722,7 +1797,7 @@ const FEISHU_STEPS = [
 
                   {filteredTools.length > 0 ? (
                     (isSkillTab && !searching) ? (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-7">
+                    <div key="tool-store-card-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 pb-7">
                       {filteredTools.map((tool) => {
                         const v = tool.todayVariant || 'fallback';
                         const bar = (
@@ -1733,30 +1808,30 @@ const FEISHU_STEPS = [
                           </div>
                         );
                         return (
-                          <div key={tool.id} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
+                          <div key={`card-${tool.id}`} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
                             {v === 'light' ? (
                               <>
                                 <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
                                 {bar}
                               </>
                             ) : v === 'drama' ? (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/40" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em]">{tool.todayLabel}</p></div>
                                 <div className="absolute bottom-0 left-0 p-6"><h2 className="text-white text-[32px] font-bold leading-[1.05] tracking-tight drop-shadow mb-2 whitespace-pre-line">{tool.todayTitle}</h2><p className="text-white/85 text-[14px] font-medium">{tool.subtitle}</p></div>
                               </>
                             ) : v === 'appbar' ? (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/10 to-black/35" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
                                 {bar}
                               </>
                             ) : v === 'appimg' ? (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/5 to-black/80" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
                                 <div className="absolute bottom-0 left-0 right-0 p-6 flex items-center gap-3">
@@ -1777,7 +1852,7 @@ const FEISHU_STEPS = [
                               </>
                             ) : (
                               <>
-                                {tool.todayImg && <img src={tool.todayImg} className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
+                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70" />
                                 <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
                                 <p className="absolute bottom-5 left-6 right-6 text-white/90 text-[14px] font-medium leading-snug">{tool.subtitle}</p>
@@ -1788,19 +1863,14 @@ const FEISHU_STEPS = [
                       })}
                     </div>
                     ) : (
-                    <div className="grid gap-x-10 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                    <div key="tool-store-list-grid" className="grid gap-x-10 gap-y-0" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
                       {filteredTools.map((tool) => (
                         <div
-                          key={tool.id}
+                          key={`list-${tool.id}`}
                           onClick={() => setSelectedTool(tool)}
-                          className="group flex items-center gap-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1C1C1E]/50 rounded-2xl px-3 -mx-3 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
+                          className="group flex items-center gap-4 py-3 cursor-pointer px-3 border-b border-slate-100 dark:border-white/5 last:border-0"
                         >
-                          <div className={`relative w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
-                            <tool.icon size={30} strokeWidth={1.5} />
-                            {tool.internal && (
-                              <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
-                            )}
-                          </div>
+                          <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30} />
                           <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
                             <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                             <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
@@ -1867,10 +1937,7 @@ const FEISHU_STEPS = [
                   <div className="space-y-4">
                     {visibleInternalTools.map(t => (
                       <div key={t.id} className="flex items-start gap-4">
-                        <div className={`relative w-[56px] h-[56px] rounded-[14px] flex items-center justify-center flex-shrink-0 ${t.color} text-white shadow-sm`}>
-                          <t.icon size={26} strokeWidth={1.5} />
-                          <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
-                        </div>
+                        <TsToolIcon tool={t} className="h-14 w-14 flex-shrink-0 rounded-[14px] border border-black/5 shadow-sm dark:border-white/5" />
                         <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
                           <div className="flex justify-between items-center gap-2 mb-1">
                             <h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{t.title}</h4>
@@ -1910,9 +1977,7 @@ const FEISHU_STEPS = [
 
                 <div className="overflow-y-auto p-6 sm:p-10 no-scrollbar pt-12">
                   <div className="flex flex-col sm:flex-row items-start gap-6 sm:gap-8 mb-8">
-                    <div className={`w-28 h-28 sm:w-32 sm:h-32 rounded-[28px] sm:rounded-[32px] flex items-center justify-center flex-shrink-0 ${selectedTool.color} shadow-md border border-black/5 dark:border-white/5`}>
-                      <selectedTool.icon size={56} strokeWidth={1.5} className="text-white" />
-                    </div>
+                    <TsToolIcon tool={selectedTool} className="h-28 w-28 flex-shrink-0 rounded-[28px] border border-black/5 shadow-md sm:h-32 sm:w-32 sm:rounded-[32px] dark:border-white/5" imageClassName="h-20 w-20 sm:h-24 sm:w-24" fallbackSize={56} />
                     <div className="flex-1">
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>

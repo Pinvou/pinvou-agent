@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = fs.readFileSync(path.join(root, 'src', 'web-bootstrap.js'), 'utf8');
+const source = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
 
 function bootClient() {
   const storage = new Map();
@@ -91,7 +91,7 @@ function bootClient() {
 
   const context = {
     window,
-    document: { currentScript: { src: 'https://relay.test/pinvou3/remote/web-bootstrap.js' } },
+    document: { currentScript: { src: 'https://relay.test/pinvou3/remote/platform/web/bootstrap.js' } },
     sessionStorage: {
       getItem(key) { return storage.has(key) ? storage.get(key) : null; },
       setItem(key, value) { storage.set(key, String(value)); },
@@ -124,7 +124,7 @@ function bootClient() {
     },
     queueMicrotask,
   };
-  vm.runInNewContext(source, context, { filename: 'web-bootstrap.js' });
+  vm.runInNewContext(source, context, { filename: 'platform/web/bootstrap.js' });
   return { window, storage, dispatched, timers, MockWebSocket };
 }
 
@@ -170,6 +170,7 @@ async function connectWithCapabilities(events, listener) {
   await client.policyPromise;
 
   const firstSocket = MockWebSocket.instances[0];
+  assert.equal(firstSocket.url, 'wss://relay.test/pinvou3/remote/ws');
   firstSocket.open();
   firstSocket.message({ type: 'error', code: 'endpoint_not_found' });
   assert.equal(timers.length, 1);

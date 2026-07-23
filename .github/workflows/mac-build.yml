@@ -112,7 +112,7 @@ jobs:
       - name: Tauri bundle smoke (验证 dmg/app 打包,仅 main push)
         if: github.ref == 'refs/heads/main'
         working-directory: pinvou3-app
-        run: npx tauri build --target aarch64-apple-darwin
+        run: node scripts/tauri/build.js build --target aarch64-apple-darwin
         continue-on-error: true
 
       # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(sha256/plist/bundle targets)。

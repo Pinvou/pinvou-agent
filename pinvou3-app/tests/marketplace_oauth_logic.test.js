@@ -6,6 +6,7 @@ const vm = require('vm');
 
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'tools', 'oauth-marketplace-logic.js');
 const code = fs.readFileSync(logicPath, 'utf8').replace(/\bexport\s+/g, '');
+const toolStoreView = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
 const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(`${code}\nthis.resolveOAuthInstallOutcome = resolveOAuthInstallOutcome;`, ctx, {
@@ -20,6 +21,12 @@ const connectedAuth = { mcp_configured: true, oauth_token_present: true, status:
 function assertNoYuandian(value) {
   assert.doesNotMatch(JSON.stringify(value), /元典|华宇元典/);
 }
+
+assert.match(toolStoreView, /const oauthServerNameForTool = \(tool\) => tool\?\.oauthServerName \|\| tool\?\.serverName \|\| null;/);
+assert.match(toolStoreView, /server_name: oauthServerName/);
+assert.match(toolStoreView, /oauthUiTimeoutResult\(oauthServerName\)/);
+assert.doesNotMatch(toolStoreView, /oauthUiTimeoutResult\('yuandian_mcp'\)/);
+assert.doesNotMatch(toolStoreView, /尚未完成元典 OAuth|尚未连接华宇元典/);
 
 let pending = resolveOAuthInstallOutcome(
   toolName,

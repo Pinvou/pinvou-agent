@@ -160,7 +160,7 @@ jobs:
           VERSION: ${{ needs.check-version-bump.outputs.version }}
         run: |
           set -euo pipefail
-          npx tauri build --target aarch64-apple-darwin
+          node scripts/tauri/build.js build --target aarch64-apple-darwin
 
           DMG="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_aarch64.dmg"
           APP_BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/pinvou3.app"
@@ -171,7 +171,7 @@ jobs:
           # 本 workflow 产出可用 dmg 作 artifact,不能用 continue-on-error,必须带兜底。
           if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
             echo "⚠️ Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
-            npx tauri build --target aarch64-apple-darwin --bundles dmg || echo "⚠️ 重试仍失败,降级手动 hdiutil"
+            node scripts/tauri/build.js build --target aarch64-apple-darwin --bundles dmg || echo "⚠️ 重试仍失败,降级手动 hdiutil"
           fi
 
           # 重试后仍无 dmg:手动 hdiutil 兜底(无 Finder 图标美化,但 dmg 功能完整)。

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
-    // 开发源 workflows/ → resources/bundle/(include_dir! 嵌入源)同步。放 build.rs 而非
+    // 开发源 workflows/ → resources/common/bundle/(include_dir! 嵌入源)同步。放 build.rs 而非
     // run-dev.sh:任何 cargo build/打包都同步,改完直接 build 也不漂移(run-dev.sh 只覆盖
     // dev 启动)。引擎脚本(_engine/scripts 排 test_*)拷进每个 workflow 的 scripts/,对齐
     // scheduler.py 的 WORKFLOW_ROOT=parent.parent 路径假设。内容比较,源未变不写盘。
@@ -16,8 +16,8 @@ fn main() {
     //   - deny_sensitive_paths.sh：敏感目录/命令硬拦截 hook（只改它也要落盘）
     let mut hashed = Vec::new();
     for f in [
-        "resources/bundle/instructions.md",
-        "resources/bundle/deny_sensitive_paths.sh",
+        "resources/common/bundle/instructions.md",
+        "resources/common/bundle/deny_sensitive_paths.sh",
     ] {
         println!("cargo:rerun-if-changed={f}");
         hashed.extend(std::fs::read(f).unwrap_or_else(|_| panic!("{f} must exist")));
@@ -31,12 +31,21 @@ fn main() {
     // 因引用 env! 而重编 → include_dir! 重读，保证编译嵌入永远新鲜；并对每个文件发
     // rerun-if-changed 触发 build.rs 重跑。
     // (h3c-ppt 已下线存档 2026-06-11,恢复时在此加回一行 hash_dir)
-    let sansheng_workflow_hash = hash_dir(Path::new("resources/bundle/workflow/sansheng-liubu"));
+    let sansheng_workflow_hash =
+        hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
     println!("cargo:rustc-env=BUNDLE_WORKFLOW_HASH_SANSHENG={sansheng_workflow_hash:016x}");
-    let connector_cli_hash = hash_dir(Path::new("resources/bundle/connectors"));
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("target OS is set by Cargo");
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("target arch is set by Cargo");
+    let platform_bundle = PathBuf::from("resources/platforms")
+        .join(target_os)
+        .join(target_arch)
+        .join("bundle");
+    let connector_cli_hash = hash_dir(&platform_bundle.join("connectors"));
     println!("cargo:rustc-env=BUNDLE_CONNECTOR_CLI_HASH={connector_cli_hash:016x}");
-    let h3c_cli_hash = hash_dir(Path::new("resources/bundle/eip"))
-        ^ hash_dir(Path::new("resources/bundle/zhidao"));
+    let h3c_cli_hash = hash_dir(Path::new("resources/common/bundle/eip"))
+        ^ hash_dir(Path::new("resources/common/bundle/zhidao"))
+        ^ hash_dir(&platform_bundle.join("eip"))
+        ^ hash_dir(&platform_bundle.join("zhidao"));
     println!("cargo:rustc-env=BUNDLE_H3C_CLI_HASH={h3c_cli_hash:016x}");
     tauri_build::build();
 }
@@ -97,7 +106,7 @@ fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
 fn sync_workflow_bundle() {
     let data_src = Path::new("../../workflows/sansheng-liubu");
     let engine_src = Path::new("../../workflows/_engine/scripts");
-    let dst = Path::new("resources/bundle/workflow/sansheng-liubu");
+    let dst = Path::new("resources/common/bundle/workflow/sansheng-liubu");
     if !data_src.is_dir() || !dst.is_dir() {
         return;
     }

@@ -2,13 +2,29 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") resolve(address.port);
+        else reject(new Error("failed to allocate test port"));
+      });
+    });
+  });
+}
+
 const relayDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const port = 20_000 + Math.floor(Math.random() * 10_000);
+const port = await getFreePort();
 const httpUrl = `http://127.0.0.1:${port}`;
 const wsUrl = `ws://127.0.0.1:${port}/pinvou3/remote/ws`;
 const enrollmentToken = "test-enrollment-token-at-least-24";
@@ -21,18 +37,26 @@ let relayStatePath;
 
 function waitForOutput(child, pattern, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
     const timer = setTimeout(() => reject(new Error(`relay startup timeout: ${pattern}`)), timeoutMs);
     const onData = (chunk) => {
       const text = String(chunk);
+      stdout += text;
       if (!pattern.test(text)) return;
       clearTimeout(timer);
       child.stdout.off("data", onData);
+      child.stderr.off("data", onErr);
       resolve(text);
     };
+    const onErr = (chunk) => { stderr += String(chunk); };
     child.stdout.on("data", onData);
+    child.stderr.on("data", onErr);
     child.once("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error(`relay exited during startup: ${code}`));
+      child.stdout.off("data", onData);
+      child.stderr.off("data", onErr);
+      reject(new Error(`relay exited during startup: ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
     });
   });
 }
@@ -158,7 +182,7 @@ async function stopRelay(child) {
 }
 
 async function spawnRelay(env = {}) {
-  const isolatedPort = 30_000 + Math.floor(Math.random() * 10_000);
+  const isolatedPort = await getFreePort();
   const statePath = env.PINVOU_REMOTE_STATE_PATH
     || join(testRoot, `relay-state-${isolatedPort}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   const child = spawn(process.execPath, [join(relayDir, "server.js")], {

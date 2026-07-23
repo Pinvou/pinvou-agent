@@ -40,7 +40,7 @@ Web 端在 <640px 紧凑视口启用移动壳层：隐藏侧栏窄轨，改为�
 代码位置：
 
 - `pinvou3-app/src/`：共享 React UI、平台能力门控、浏览器 bridge；
-- `pinvou3-app/src/web-access-policy.json`：Web 可调用命令和可订阅事件白名单；
+- `pinvou3-app/src/platform/web/access-policy.json`：Web 可调用命令和可订阅事件白名单；
 - `pinvou3-app/src-tauri/src/remote_control/`：持久 endpoint、RPC 去重、事件序列与重放；
 - `remote-control-relay/server.js`：静态站点和 WebSocket v2 Relay；
 - `remote-control-relay/PROTOCOL.md`：线上消息格式的单一协议说明。
@@ -126,12 +126,12 @@ Relay 不分配业务事件序号、不维护 Session snapshot、不解释 RPC c
 
 ## 6. WebBridge 与权限
 
-浏览器先同步加载 `web-bootstrap.js`，再加载原有 `tauri-bridge.js`。WebBootstrap 提供受限的
+浏览器先同步加载 `platform/web/bootstrap.js`，再加载拆分后的 Tauri Bridge。WebBootstrap 提供受限的
 Tauri 形状接口，让共享 UI 继续通过 `invoke/listen` 工作；真正的调用会成为 v2 RPC。
 
 权限在两端收口：
 
-- 浏览器只发送 `web-access-policy.json` 允许的 command/event；
+- 浏览器只发送 `platform/web/access-policy.json` 允许的 command/event；
 - Rust WebAccessManager 再次校验同一白名单；
 - 桌面 WebView 代理只执行 Rust 已接受的业务命令并回传结果；
 - Relay 只按协议消息类型转发，不获得任意 Tauri invoke 能力。

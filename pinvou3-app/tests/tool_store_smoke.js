@@ -106,6 +106,19 @@ function injectSource() {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const TOOL_STORE_SEARCH_SELECTOR = '[data-testid="tool-store-search"], input[placeholder="搜索连接器、skill、插件等"], input[placeholder="搜索 MCP、API 或工作流工具"]';
+async function getToolStoreSearchInput(page) {
+  const input = await page.$(TOOL_STORE_SEARCH_SELECTOR);
+  if (input) return input;
+  const handle = await page.evaluateHandle(() => (
+    [...document.querySelectorAll('input')]
+      .find(el => (el.getAttribute('placeholder') || '').includes('搜索'))
+      || null
+  ));
+  const el = handle.asElement();
+  if (!el) await handle.dispose();
+  return el;
+}
 async function clickExact(page, text) {
   const ok = await page.evaluate(t => {
     const els = [...document.querySelectorAll('button,span,div,a')].filter(el => (el.textContent || '').trim() === t);
@@ -116,7 +129,7 @@ async function clickExact(page, text) {
   if (!ok) throw new Error(`找不到可点击文本: ${text}`);
 }
 async function search(page, query) {
-  const input = await page.$('input[placeholder="搜索 MCP、API 或工作流工具"]');
+  const input = await getToolStoreSearchInput(page);
   if (!input) throw new Error('工具商店搜索框未渲染');
   await input.click();
   await page.keyboard.down('Control');
@@ -126,13 +139,17 @@ async function search(page, query) {
   await input.type(query);
   await sleep(180);
 }
-async function action(page, query, label) {
+async function action(page, query, label, backendId = '') {
   await search(page, query);
-  const ok = await page.evaluate((query, label) => {
+  const ok = await page.evaluate((query, label, backendId) => {
     const buttons=[...document.querySelectorAll('button')].filter(b=>(b.textContent||'').trim()===label && !b.disabled);
+    if (backendId) {
+      const exact = buttons.find(b => b.getAttribute('data-tool-id') === backendId);
+      if (exact) { exact.scrollIntoView({block:'center'}); exact.click(); return true; }
+    }
     const button=buttons.find(b=>{let p=b;for(let i=0;i<7&&p;i++,p=p.parentElement)if((p.textContent||'').includes(query))return true;return false;}) || (buttons.length===1?buttons[0]:null);
     if(!button)return false;button.scrollIntoView({block:'center'});button.click();return true;
-  }, query, label);
+  }, query, label, backendId);
   if (!ok) throw new Error(`${query} 找不到操作按钮 ${label}`);
   await sleep(220);
 }
@@ -171,8 +188,14 @@ async function closeDetail(page, title) {
     el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
     return true;
   });
-  await page.waitForFunction(() => !!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]'), { timeout: 10000 }).catch(() => {});
-  const toolStoreLoaded = await page.evaluate((navClicked)=>navClicked&&document.body.innerText.includes('工具商店')&&!!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]'), navClicked);
+  await page.waitForFunction((selector) => (
+    !!document.querySelector(selector)
+    || [...document.querySelectorAll('input')].some(el => (el.getAttribute('placeholder') || '').includes('搜索'))
+  ), { timeout: 10000 }, TOOL_STORE_SEARCH_SELECTOR).catch(() => {});
+  const toolStoreLoaded = await page.evaluate((navClicked, selector)=>navClicked&&document.body.innerText.includes('工具商店')&&(
+    !!document.querySelector(selector)
+    || [...document.querySelectorAll('input')].some(el => (el.getAttribute('placeholder') || '').includes('搜索'))
+  ), navClicked, TOOL_STORE_SEARCH_SELECTOR);
   const navDebug = toolStoreLoaded ? '' : await page.evaluate(() => JSON.stringify({
     currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') || null,
     navs: [...document.querySelectorAll('[data-nav]')].map(node => ({ nav: node.getAttribute('data-nav'), text: (node.textContent || '').trim(), title: node.getAttribute('title') || '' })),
@@ -180,7 +203,7 @@ async function closeDetail(page, title) {
   })).then(detail => JSON.stringify({ detail: JSON.parse(detail), errors: errors.slice(0, 5) }));
   rec('工具商店真实页面加载', toolStoreLoaded, navDebug);
 
-  await action(page,'高德天气','配置');
+  await action(page,'高德天气','配置','weather');
   rec('高德天气安装前展示必填 Key 配置',await page.evaluate(()=>{
     const input=document.querySelector('input[type="password"][placeholder="粘贴高德 Web 服务 Key"]');
     return document.body.innerText.includes('高德天气 Key')&&!!input;
@@ -193,7 +216,7 @@ async function closeDetail(page, title) {
     return window.__TOOL_STORE_TEST__.installed.weather&&call?.args?.config?.AMAP_KEY==='amap-test-token';
   }));
 
-  await action(page,'同花顺问财','配置');
+  await action(page,'同花顺问财','配置','iwencai');
   rec('同花顺问财安装前展示必填 Key 配置',await page.evaluate(()=>{
     const input=document.querySelector('input[type="password"][placeholder="粘贴 IWENCAI_API_KEY"]');
     return document.body.innerText.includes('问财 Key')&&!!input;
@@ -207,7 +230,7 @@ async function closeDetail(page, title) {
   }));
 
   const composerChangedBeforeQcc = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
-  await action(page,'企查查','连接');
+  await action(page,'企查查','连接','qcc');
   rec('企查查走 OAuth 且不展示 API Key 输入',await page.evaluate(()=>document.body.innerText.includes('正在连接「企查查」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')&&!document.querySelector('input[type="password"]')));
   await clickExact(page,'取消'); await sleep(180);
   rec('企查查取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
@@ -220,13 +243,13 @@ async function closeDetail(page, title) {
   rec('企查查未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeQcc));
   await dismiss(page);
 
-  for (const [query,id] of [['PPT 生成','pptx'],['公文写作','gongwen']]) {
-    await action(page,query,'安装'); await dismiss(page);
+  for (const [query,id,buttonId] of [['PPT 生成','pptx','pptx'],['公文写作','gongwen','government-writing']]) {
+    await action(page,query,'安装',buttonId); await dismiss(page);
     const installed=await page.evaluate(id=>!!window.__TOOL_STORE_TEST__.installed[id],id);
     rec(`${query} 经 UI 安装`,installed);
   }
 
-  await action(page,'智慧芽专利&文献','配置');
+  await action(page,'智慧芽专利&文献','配置','patsnap-search');
   rec('智慧芽安装前展示 API Key 配置',await page.evaluate(()=>{
     const input=document.querySelector('input[type="password"][placeholder="粘贴你的智慧芽 API Key"]');
     return document.body.innerText.includes('填写智慧芽 API Key')&&!!input;
@@ -239,24 +262,28 @@ async function closeDetail(page, title) {
     return window.__TOOL_STORE_TEST__.installed['patsnap-search']&&call?.args?.config?.PATSNAP_API_KEY==='patsnap-test-token';
   }));
 
-  await action(page,'Obsidian 知识库','安装');
+  await action(page,'Obsidian 知识库','安装','obsidian');
   rec('Obsidian 缺库时先展示引导',await page.evaluate(()=>document.body.innerText.includes('还没有笔记库')));
   await clickExact(page,'我已新建，重新检测'); await sleep(250); await dismiss(page);
   rec('Obsidian 重检成功后安装',await page.evaluate(()=>!!window.__TOOL_STORE_TEST__.installed.obsidian&&window.__TOOL_STORE_TEST__.obsidianChecks===2));
 
   await search(page,'党政机关公文写作');
   rec('公文配套技能与 MCP 安装态联动',await page.evaluate(()=>[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='卸载')));
-  await action(page,'数据分析可视化','安装'); await dismiss(page);
+  await action(page,'数据分析可视化','安装','visualizer'); await dismiss(page);
   rec('独立可视化技能经 UI 安装',await page.evaluate(()=>window.__TOOL_STORE_TEST__.skills.visualizer));
 
-  await action(page,'高德天气','卸载'); await dismiss(page);
+  await action(page,'高德天气','卸载','weather'); await dismiss(page);
   rec('MCP 经 UI 卸载并刷新状态',await page.evaluate(()=>!window.__TOOL_STORE_TEST__.installed.weather));
 
   const composerChangedBeforeYuandian = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
-  await action(page,'华宇元典法律数据','连接');
+  await action(page,'华宇元典法律数据','连接','yuandian-mcp');
   rec('元典写配置阶段不可取消',await page.evaluate(()=>document.body.innerText.includes('正在写入 MCP 配置')&&![...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
   await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
-  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接「华宇元典法律数据」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>{
+    const text = document.body.innerText;
+    return (text.includes('正在连接元典法律') || text.includes('正在连接「华宇元典法律数据」'))
+      && [...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消');
+  }));
   await clickExact(page,'取消'); await sleep(180);
   rec('元典取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
     const calls=window.__TOOL_STORE_TEST__.calls;
@@ -269,6 +296,22 @@ async function closeDetail(page, title) {
   rec('元典未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeYuandian));
   await dismiss(page);
 
+  const composerChangedBeforeCanva = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
+  await action(page,'Canva 可画','连接','canva-mcp');
+  rec('Canva 写配置阶段使用自身名称',await page.evaluate(()=>document.body.innerText.includes('正在连接「Canva 可画」')&&document.body.innerText.includes('正在写入 MCP 配置')));
+  await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
+  rec('Canva OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接「Canva 可画」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  await clickExact(page,'取消'); await sleep(180);
+  rec('Canva 取消命令保持工具与 requestId 一致',await page.evaluate(()=>{
+    const calls=window.__TOOL_STORE_TEST__.calls;
+    const start=[...calls].reverse().find(x=>x.cmd==='start_marketplace_tool_oauth_login');
+    const cancel=[...calls].reverse().find(x=>x.cmd==='cancel_marketplace_tool_oauth_login');
+    return !!start&&!!cancel&&start.args.toolId==='canva-mcp'&&cancel.args.toolId==='canva-mcp'&&start.args.requestId===cancel.args.requestId;
+  }));
+  rec('Canva 取消授权后保持待授权态',await page.evaluate(()=>window.__TOOL_STORE_TEST__.installed['canva-mcp']&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='重新授权')));
+  rec('Canva 未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeCanva));
+  await dismiss(page);
+
   const connectors=[
     ['飞书（Lark）','feishu','feishu:connected',['feishu_ensure_cli','feishu_connect_begin']],
     ['企业微信','wecom','wecom:connected',['wecom_ensure_cli','wecom_connect_begin']],
@@ -277,7 +320,7 @@ async function closeDetail(page, title) {
     ['H3C 知道 · 内部知识库','zhidao','zhidao:connected',['zhidao_connect_begin']],
   ];
   for(const [query,id,event,commands] of connectors){
-    await action(page,query,'连接');
+    await action(page,query,'连接',id);
     await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);
     await sleep(180); await dismiss(page);
     const info=await page.evaluate(({commands})=>({calls:commands.every(c=>window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd===c)),seen:window.__TOOL_STORE_TEST__.calls.map(x=>x.cmd)}),{commands});

@@ -57,7 +57,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide }) => {
+    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings }) => {
       const isDark = theme === 'dark';
       const canOpenContainingFolder = can('externalSystemOpen');
       const canDownloadArtifacts = can('artifactDownload');
@@ -85,7 +85,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         let cancelled = false;
         (async () => {
           const entries = await Promise.all(artifacts.map(async (a) => {
-            try { return [a.path, await bridge.artifactInfo(a.path, a.sessionId || activeSessionId)]; }
+            try { return [a.path, await bridge.artifacts.artifactInfo(a.path)]; }
             catch (_) { return [a.path, null]; }
           }));
           if (cancelled) return;
@@ -135,14 +135,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         setPv({ loading: true });
         setExternalUpdateBlocked(false);
         try {
-          const info = await bridge.artifactInfo(a.path, selected.sessionId);
+          const info = await bridge.artifacts.artifactInfo(a.path);
           if (!info || !info.exists) { setPv({ missing: true, info }); return; }
           if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-            const text = await bridge.readArtifactText(a.path, selected.sessionId);
+            const text = await bridge.artifacts.readArtifactText(a.path);
             setPv({ kind: info.kind, text, info });
           } else {
             // image / pdf / docx / xlsx / legacy_office / binary → 后端可视化转换
-            const visual = await bridge.renderArtifactVisual(a.path, selected.sessionId);
+            const visual = await bridge.artifacts.renderArtifactVisual(a.path);
             setPv({ kind: info.kind, visual, info });
           }
         } catch (e) { setPv({ error: String(e) }); }
@@ -195,6 +195,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       }, [bs?.artifactChange?.seq]);
 
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
+      const dependencyCheckButton = (message) => (
+        needsDependencyCheck(message) && onGotoSettings
+          ? <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20 text-[#E3E3E3]' : 'bg-black/5 hover:bg-black/10 text-[#1F1F1F]'}`}>{t.depGoInstall || t.depInstallBtn}</button>
+          : null
+      );
       const tabBtn = (key, label) => {
         const active = tab === key;
         const disabled = key === 'preview' && !sel;
@@ -251,7 +257,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'html') {
           return (
             <div className="flex flex-col gap-2 h-full">
-              {vis.warning && <div className={`text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}>⚠️ {vis.warning}</div>}
+              {vis.warning && <div className={`flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
             </div>
@@ -260,7 +266,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'images') {
           return (
             <div className="flex flex-col items-center gap-3">
-              {vis.warning && <div className={`self-start text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}>⚠️ {vis.warning}</div>}
+              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               {(vis.images || []).map((src, i) => (
                 <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />
               ))}
@@ -273,9 +279,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             {sel ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" /> : <span className="text-[44px]">📎</span>}
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
+            {vis && dependencyCheckButton(vis.warning)}
             {(!isWeb || canDownloadArtifacts) && (
-              <button onClick={() => sel && bridge.openArtifactExternal(sel.path, sel.sessionId)} className={cardBtnCls(isDark, 'primary')}>
-                {isWeb ? '下载产物' : t.apBtnOpen}
+              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
+                {t.apBtnOpen}
               </button>
             )}
           </div>
@@ -314,7 +321,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
-                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.openContainingFolder(a.path); }}
+                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
                           className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#1E1F20] text-[#C4C7C5]' : 'hover:bg-white text-[#444746]'}`}><FolderOpen size={16} /></button>
                         }
                       </div>
@@ -346,15 +353,17 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
                       {(!isWeb || canDownloadArtifacts) && (
-                        <button onClick={() => bridge.openArtifactExternal(sel.path, sel.sessionId)}
+                        <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark, 'primary')}`}>
-                          {isWeb ? <Download size={15} /> : <ExternalLink size={15} />} {isWeb ? '下载' : t.apBtnOpen}
+                          <ExternalLink size={15} /> {t.apBtnOpen}
                         </button>
                       )}
-                      {canOpenContainingFolder && <button onClick={() => bridge.openContainingFolder(sel.path)}
-                        className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark)}`}>
-                        <FolderOpen size={15} /> {t.apBtnLocate}
-                      </button>}
+                      {canOpenContainingFolder && (
+                        <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
+                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark)}`}>
+                          <FolderOpen size={15} /> {t.apBtnLocate}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </>

@@ -50,7 +50,7 @@ if (!fs.existsSync(webIndex)) {
   console.error('FAIL: WebUI dist is missing; run `npm --prefix pinvou3-app run build:web` first');
   process.exit(1);
 }
-const webPolicy = JSON.parse(fs.readFileSync(path.join(webDist, 'web-access-policy.json'), 'utf8'));
+const webPolicy = JSON.parse(fs.readFileSync(path.join(webDist, 'platform', 'web', 'access-policy.json'), 'utf8'));
 
 const port = 30_000 + Math.floor(Math.random() * 10_000);
 const basePath = '/pinvou3/remote';
@@ -277,7 +277,7 @@ async function waitForSharedUi(page, width, height) {
   assert.ok(layout.rootWidth >= width - 2, JSON.stringify(layout));
   assert.ok(layout.rootHeight >= height - 2, JSON.stringify(layout));
   assert.ok(layout.scrollWidth <= width + 4, JSON.stringify(layout));
-  assert.ok(layout.scripts.some(src => /web-bootstrap\.js(?:$|\?)/.test(src)), JSON.stringify(layout.scripts));
+  assert.ok(layout.scripts.some(src => /platform\/web\/bootstrap\.js(?:$|\?)/.test(src)), JSON.stringify(layout.scripts));
   assert.ok(layout.scripts.some(src => /main[^/]*\.js(?:$|\?)/.test(src)), JSON.stringify(layout.scripts));
   return layout;
 }
@@ -456,9 +456,9 @@ async function main() {
         && !Object.hasOwn(message, 'room_id')
     )));
   const exactFixedAssets = [
-    `${basePath}/web-bootstrap.js`,
-    `${basePath}/tauri-bridge.js`,
-    `${basePath}/web-access-policy.json`,
+    `${basePath}/platform/web/bootstrap.js`,
+    `${basePath}/platform/tauri/bridge.js`,
+    `${basePath}/platform/web/access-policy.json`,
   ];
   record('extensionless SPA 深链仍连接固定 base WebSocket 并加载固定资源',
     browserWebSocketUrls.length >= 2

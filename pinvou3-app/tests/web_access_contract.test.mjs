@@ -4,9 +4,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const bridge = fs.readFileSync(path.join(root, 'src', 'tauri-bridge.js'), 'utf8');
-const bootstrap = fs.readFileSync(path.join(root, 'src', 'web-bootstrap.js'), 'utf8');
-const commands = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'commands.rs'), 'utf8');
+const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
+const bridge = [
+  fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
+  fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
+  ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
+    .filter(name => name.endsWith('.js'))
+    .sort()
+    .map(name => fs.readFileSync(path.join(bridgeRoot, 'bridge', name), 'utf8')),
+].join('\n');
+const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
+const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
+const commands = fs.readdirSync(commandsRoot)
+  .filter(name => name.endsWith('.rs'))
+  .sort()
+  .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
+  .join('\n');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
 const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
@@ -16,7 +29,7 @@ const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowle
 const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
 const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
 const chatView = fs.readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
-const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'web-access-policy.json'), 'utf8'));
+const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
 
@@ -59,8 +72,8 @@ assert.match(bootstrap, /state_ready: stateReady/);
 assert.match(bootstrap, /markStateReady\(\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
-const main = fs.readFileSync(path.join(root, 'src', 'main.jsx'), 'utf8');
-assert.match(main, /pinvou:web-capabilities/);
+const main = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+assert.match(bootstrap, /pinvou:web-capabilities/);
 assert.match(bridge, /if \(!IS_WEB && !isDetachedWindow\) registerWebAccessDesktopProxy\(\)/);
 assert.match(bridge, /eventForwardersReady/);
 assert.match(bridge, /listen\("chat:user_message"/);
@@ -121,7 +134,7 @@ assert.match(settingsView, /const canSwitchModels = can\('sessionModelSwitch'\);
 assert.match(settingsView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.match(settingsView, /disabled=\{!canMutateToolStore\}/);
 assert.match(settingsView, /if \(!canMutateToolStore\) return;/);
-assert.match(settingsView, /bridge\.switchModel\(activeSessionId, id\)/);
+assert.match(settingsView, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
@@ -131,10 +144,28 @@ assert.match(workflowView, /can\('artifactDownload'\)/);
 assert.match(workflowView, /can\('hostFilePicker'\)/);
 assert.match(knowledgeView, /const canDownloadArtifacts = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(knowledgeView, /const canPickHostFiles = !isWeb \|\| can\('hostFilePicker'\);/);
+assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.session_id \|\| null;/);
+assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$\{o\.path\}\|\$\{o\.mtime \|\| 0\}`;/);
+assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
+  'output previews must authorize every Web artifact read with the owning session');
+assert.match(knowledgeView, /<FilePreviewModal path=\{outputPreview\.path\} sessionId=\{outputPreview\.sessionId\}/);
+assert.match(knowledgeView, /if \(isWeb\) \{ setPv\(\{ kind: 'fallback' \}\);/,
+  'WebUI must not treat arbitrary local knowledge paths as session artifacts');
 assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);
 assert.match(connectionStatus, /BLOCKING[\s\S]*incompatible_desktop/);
+assert.match(settingsView, />手机远程控制</);
+assert.match(settingsView, />远程控制链接</);
+assert.match(settingsView, />刷新二维码</);
+assert.doesNotMatch(settingsView, />刷新链接</);
+assert.doesNotMatch(settingsView, /Relay 服务器/);
+assert.doesNotMatch(settingsView, /getWebRelaySettings/);
+assert.match(main, /title="手机远程控制（扫码或链接）"/);
+for (const source of [settingsView, connectionStatus]) {
+  assert.doesNotMatch(source, /WebUI/,
+    'user-facing remote control copy must not expose the WebUI implementation name');
+}
 assert.match(chatView, /data-testid="chat-bottom-spacer"[\s\S]{0,180}className="w-full shrink-0"/,
   'WebUI must use a real flex item for composer clearance because iOS Safari may omit trailing overflow padding');
 assert.match(chatView, /style=\{\(isWeb && hasMessages\) \? undefined : \{ paddingBottom:/,

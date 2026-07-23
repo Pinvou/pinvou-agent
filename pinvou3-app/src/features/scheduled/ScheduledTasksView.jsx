@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Play, Plus, Trash2, X } from '../../components/icons.jsx';
-import { bridge, useBridge } from '../../hooks/useBridge.js';
+import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { isBuiltInModelOption, visibleUserModels } from '../../shared/model-options.js';
 import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
@@ -372,8 +372,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     };
 
     const ScheduledTasksView = ({ theme, t, onOpenChat }) => {
-      const bs = useBridge();
-      const appState = bs || (bridge?.getState ? bridge.getState() : {});
+      const bs = useBridgeState(['scheduled', 'models']);
+      const appState = bs || {};
       const realTasks = appState.scheduledTasks || [];
       const rawSelectedDetail = appState.scheduledTaskDetail || null;
       const rawRuns = appState.scheduledTaskRuns || [];
@@ -416,8 +416,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const mountedRef = useRef(true);
 
       useEffect(() => {
-        if (!bridge || !bridge.refreshScheduledTaskData) return;
-        const refresh = () => bridge.refreshScheduledTaskData(20).catch(() => {});
+        if (!bridge || !bridge.scheduled.refreshScheduledTaskData) return;
+        const refresh = () => bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
         refresh();
         const timer = setInterval(() => {
           refresh();
@@ -554,22 +554,22 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             const invalid = ['name', 'prompt', 'rrule'].some(key =>
               Object.prototype.hasOwnProperty.call(patch, key) && !String(patch[key] || '').trim()
             );
-            if (!taskId || invalid || !Object.keys(patch).length || !bridge || !bridge.updateScheduledTask) return null;
+            if (!taskId || invalid || !Object.keys(patch).length || !bridge || !bridge.scheduled.updateScheduledTask) return null;
             pendingPatchRef.current = {};
-            return bridge.updateScheduledTask(taskId, patch);
+            return bridge.scheduled.updateScheduledTask(taskId, patch);
           }).catch(() => {});
         };
       }, []);
 
       function persistDetailPatch(taskId, patch) {
-        if (!taskId || !bridge || !bridge.updateScheduledTask || !Object.keys(patch || {}).length) {
+        if (!taskId || !bridge || !bridge.scheduled.updateScheduledTask || !Object.keys(patch || {}).length) {
           return Promise.resolve({ok: true, skipped: true});
         }
         const payload = {...patch};
         const sequence = ++saveSequenceRef.current;
         Object.keys(payload).forEach(key => { latestFieldSequenceRef.current[key] = sequence; });
         if (mountedRef.current) setSaveState('saving');
-        const request = saveChainRef.current.catch(() => {}).then(() => bridge.updateScheduledTask(taskId, payload)).then(updated => {
+        const request = saveChainRef.current.catch(() => {}).then(() => bridge.scheduled.updateScheduledTask(taskId, payload)).then(updated => {
           if (mountedRef.current && editTaskIdRef.current === taskId && sequence === saveSequenceRef.current) {
             setSaveState(Object.keys(pendingPatchRef.current).length ? 'editing' : 'saved');
           }
@@ -671,14 +671,14 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           return;
         }
         if (!(await flushBeforeAction())) return;
-        if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(id);
-        if (id && bridge && bridge.refreshScheduledTaskData) bridge.refreshScheduledTaskData(20).catch(() => {});
+        if (bridge && bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(id);
+        if (id && bridge && bridge.scheduled.refreshScheduledTaskData) bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
       }
 
       async function startTemplate(template) {
         if (!(await flushBeforeAction())) return;
         if (previewMode) setPreviewSelectedId(null);
-        else if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+        else if (bridge && bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);
         setCreateScheduleRepeatIntent(null);
         setCreateForm({
           templateId: template.id,
@@ -692,7 +692,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       async function startBlankTask() {
         if (!(await flushBeforeAction())) return;
         if (previewMode) setPreviewSelectedId(null);
-        else if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+        else if (bridge && bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);
         setCreateScheduleRepeatIntent(null);
         setCreateForm({
           name: '',
@@ -728,9 +728,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           setCreateScheduleRepeatIntent(null);
           return;
         }
-        if (!bridge || !bridge.createScheduledTask) return;
+        if (!bridge || !bridge.scheduled.createScheduledTask) return;
         try {
-          await bridge.createScheduledTask({
+          await bridge.scheduled.createScheduledTask({
             templateId: createForm.templateId || undefined,
             name,
             prompt,
@@ -741,7 +741,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             paused: !!createForm.paused,
             selectAfterCreate: false,
           });
-          if (bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+          if (bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);
           setCreateForm(null);
           setCreateScheduleRepeatIntent(null);
         } catch (_) {}
@@ -762,9 +762,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       async function confirmDeleteTask(e, task) {
         if (e) e.stopPropagation();
         const id = task && task.id;
-        if (!bridge || !bridge.deleteScheduledTask || busyAction) return;
+        if (!bridge || !bridge.scheduled.deleteScheduledTask || busyAction) return;
         try {
-          await bridge.deleteScheduledTask(id);
+          await bridge.scheduled.deleteScheduledTask(id);
           setDeleteConfirmTask(null);
         } catch (_) {}
       }
@@ -781,8 +781,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         if (!bridge) return;
         try {
           if (!(await flushBeforeAction())) return;
-          if (task.status === 'active' && bridge.pauseScheduledTask) await bridge.pauseScheduledTask(task.id);
-          if (task.status !== 'active' && bridge.resumeScheduledTask) await bridge.resumeScheduledTask(task.id);
+          if (task.status === 'active' && bridge.scheduled.pauseScheduledTask) await bridge.scheduled.pauseScheduledTask(task.id);
+          if (task.status !== 'active' && bridge.scheduled.resumeScheduledTask) await bridge.scheduled.resumeScheduledTask(task.id);
         } catch (_) {}
       }
 
@@ -792,23 +792,23 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }
 
       async function startChatCreation() {
-        if (!bridge || !bridge.startScheduledTaskChat) {
+        if (!bridge || !bridge.scheduled.startScheduledTaskChat) {
           if (onOpenChat) onOpenChat();
           return;
         }
         try {
           if (!(await flushBeforeAction())) return;
-          const started = await bridge.startScheduledTaskChat();
+          const started = await bridge.scheduled.startScheduledTaskChat();
           if (started && onOpenChat) onOpenChat();
         } catch (_) {}
       }
 
       async function runTaskNow(id) {
         const editingThisTask = editTaskIdRef.current === id && !!detailForm;
-        if (!bridge || !bridge.runScheduledTaskNow || busyAction || (editingThisTask && !detailFormIsValid)) return;
+        if (!bridge || !bridge.scheduled.runScheduledTaskNow || busyAction || (editingThisTask && !detailFormIsValid)) return;
         try {
           if (!(await flushBeforeAction())) return;
-          await bridge.runScheduledTaskNow(id);
+          await bridge.scheduled.runScheduledTaskNow(id);
         } catch (_) {}
       }
 
@@ -816,14 +816,14 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         if (busyAction) return;
         if (!(await flushBeforeAction())) return;
         if (previewMode) setPreviewSelectedId(null);
-        else if (bridge && bridge.selectScheduledTask) bridge.selectScheduledTask(null);
+        else if (bridge && bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);
       }
 
       async function openRunChat(run) {
-        if (!run || !run.sessionId || !bridge || !bridge.openScheduledRunChat) return;
+        if (!run || !run.sessionId || !bridge || !bridge.scheduled.openScheduledRunChat) return;
         try {
           if (!(await flushBeforeAction())) return;
-          const opened = await bridge.openScheduledRunChat(run, detail || selected);
+          const opened = await bridge.scheduled.openScheduledRunChat(run, detail || selected);
           if (!opened) return;
         } catch (_) {}
       }
@@ -1376,14 +1376,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   <span className={`font-medium ${bodyText}`}>立即运行</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
                 </button>
-                {canOpenTaskFolder && (
-                  <button type="button" data-testid="scheduled-open-folder"
-                    onClick={() => bridge && bridge.openScheduledTaskFolder && bridge.openScheduledTaskFolder(selected.id)}
-                    className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
-                    <span className={`font-medium ${bodyText}`}>打开文件夹</span>
-                    <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
-                  </button>
-                )}
+                <button type="button" data-testid="scheduled-open-folder"
+                  onClick={() => bridge && bridge.artifacts.openScheduledTaskFolder && bridge.artifacts.openScheduledTaskFolder(selected.id)}
+                  className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
+                  <span className={`font-medium ${bodyText}`}>打开文件夹</span>
+                  <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
+                </button>
               </div>
 
               <section>
@@ -1468,10 +1466,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           )}
           <div className="h-full w-full overflow-hidden p-4 sm:p-6 lg:p-10" data-testid="scheduled-list">
             <div className="relative mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col overflow-hidden">
-              <header data-testid="scheduled-list-intro" className="mb-4 flex shrink-0 flex-col items-start justify-between gap-4 px-2 sm:flex-row sm:items-center">
+              <header data-testid="scheduled-list-intro" className={`mb-4 flex shrink-0 flex-col items-start justify-between gap-4 border-b pb-6 sm:flex-row sm:items-center ${iosSeparator}`}>
                 <div className="min-w-0">
-                  <h1 className={`truncate text-[32px] font-normal tracking-tight ${bodyText}`}>定时任务</h1>
-                  <p className={`mt-1 text-sm font-medium leading-5 ${mutedValue}`}>按计划运行自动化流程，高效管理时间。</p>
+                  <h1 className={`truncate text-[26px] font-normal tracking-tight ${bodyText}`}>定时任务</h1>
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <button type="button"
