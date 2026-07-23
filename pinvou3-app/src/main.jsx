@@ -475,10 +475,12 @@ function defaultModelPresetForPlatform() {
         }
       }, [bs]);
 
-      // HMR/旧前端状态可能仍停在 scheduled；入口关闭时立即回到普通聊天页。
+      // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
           setCurrentView('chat');
+        } else if (currentView === 'workflow') {
+          setCurrentView('cardpool');
         }
       }, [currentView]);
 
@@ -639,10 +641,70 @@ function defaultModelPresetForPlatform() {
       }
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
-      const [historyOpen, setHistoryOpen] = useState({ pinned: true, scheduledRuns: true, regular: true });
+      const [taskListFilter, setTaskListFilter] = useState('all');
+      const [taskListSort, setTaskListSort] = useState('pinned_first');
+      const [taskFilterOpen, setTaskFilterOpen] = useState(false);
+      const taskFilterRef = useRef(null);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+
+      useEffect(() => {
+        if (!taskFilterOpen) return undefined;
+        const closeOnPointerDown = (event) => {
+          if (taskFilterRef.current && !taskFilterRef.current.contains(event.target)) {
+            setTaskFilterOpen(false);
+          }
+        };
+        const closeOnEscape = (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setTaskFilterOpen(false);
+          }
+        };
+        document.addEventListener('pointerdown', closeOnPointerDown);
+        window.addEventListener('keydown', closeOnEscape);
+        return () => {
+          document.removeEventListener('pointerdown', closeOnPointerDown);
+          window.removeEventListener('keydown', closeOnEscape);
+        };
+      }, [taskFilterOpen]);
+
+      const sidebarTaskFilterOptions = [
+        { id: 'all', label: t.sidebarTaskFilterAll || '全部' },
+        { id: 'pinned', label: t.sidebarTaskFilterPinned || '置顶' },
+        { id: 'scheduled', label: t.sidebarTaskFilterScheduled || '定时任务' },
+      ];
+      const sidebarTaskSortOptions = [
+        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst || '置顶优先' },
+        { id: 'recent', label: t.sidebarTaskSortRecent || '最近更新' },
+      ];
+      const allSidebarTasks = pinnedHistory
+        .map((chat) => {
+          const run = chat.scheduledRun || scheduledRunBySessionId[chat.id];
+          const item = decorateScheduledRunChat(chat, run);
+          return { ...item, taskKind: run ? 'scheduled' : 'regular' };
+        })
+        .concat(regularHistory.map(chat => ({ ...chat, taskKind: 'regular' })))
+        .concat(scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })));
+      const sidebarTaskHistory = allSidebarTasks
+        .filter((chat) => {
+          if (taskListFilter === 'pinned') return !!chat.pinned;
+          if (taskListFilter === 'scheduled') return chat.taskKind === 'scheduled';
+          return true;
+        })
+        .sort((a, b) => {
+          if (taskListSort === 'pinned_first' && !!a.pinned !== !!b.pinned) {
+            return a.pinned ? -1 : 1;
+          }
+          const aTime = (taskListSort === 'pinned_first' && a.pinned)
+            ? (a.pinnedAt || a.updatedAt)
+            : (a.updatedAt || a.pinnedAt);
+          const bTime = (taskListSort === 'pinned_first' && b.pinned)
+            ? (b.pinnedAt || b.updatedAt)
+            : (b.updatedAt || b.pinnedAt);
+          return String(bTime || '').localeCompare(String(aTime || ''));
+        });
 
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
@@ -1400,14 +1462,6 @@ function defaultModelPresetForPlatform() {
                 dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
-                icon={<ClipboardList size={18} />} label={t.workflow}
-                active={currentView === 'workflow'}
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('workflow')}
-                dragKind={canDetachWindows ? 'workflow' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'workflow:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('workflow', undefined, t.workflow, geom) : undefined}
-              />
-              <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
                 active={currentView === 'toolStore'}
                 theme={activeTheme}
@@ -1442,113 +1496,93 @@ function defaultModelPresetForPlatform() {
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
-                <div data-testid="sidebar-recents" className="pt-5 pb-2 space-y-4 max-sm:pt-2 max-sm:space-y-2">
-                  {pinnedHistory.length > 0 && (
-                    <div>
+                <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
+                  <div ref={taskFilterRef} className="relative mb-2">
+                    <div className={`h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold ${
+                      activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
+                    }`}>
+                      <span className="truncate">
+                        {t.sidebarTaskList || '任务列表'} ({sidebarTaskHistory.length})
+                      </span>
                       <button
                         type="button"
-                        onClick={() => setHistoryOpen(prev => ({ ...prev, pinned: !prev.pinned }))}
-                        className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                        data-testid="sidebar-task-filter"
+                        onClick={() => setTaskFilterOpen(v => !v)}
+                        title={t.sidebarTaskFilter || '筛选'}
+                        className={`w-7 h-7 -mr-2 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                          taskFilterOpen
+                            ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
+                            : (activeTheme === 'dark' ? 'hover:bg-[#282A2C]' : 'hover:bg-[#E1E5EA]')
+                        }`}
                       >
-                        <span className="truncate">{t.pinnedTasks} ({pinnedHistory.length})</span>
-                        <ChevronDown size={16} className={`shrink-0 transition-transform ${historyOpen.pinned ? '' : '-rotate-90'}`} />
+                        <Filter size={15} />
                       </button>
-                      {historyOpen.pinned && (
-                        <div className="mt-1 space-y-px">
-                          {pinnedHistory.map((chat) => {
-                            const run = scheduledRunBySessionId[chat.id];
-                            const item = decorateScheduledRunChat(chat, run);
-                            return (
-                              <RecentItem
-                                key={chat.id}
-                                chat={item}
-                                theme={activeTheme}
-                                t={t}
-                                active={run
-                                  ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
-                                  : activeChat === chat.id && currentView === 'chat'}
-                                personaTarget={!run && activeChat === chat.id && currentView === 'cardpool'}
-                                onSelect={run ? () => handleOpenScheduledRunShortcut(run) : handleSwitchSession}
-                                onRename={handleRenameSession}
-                                onDelete={handleDeleteSession}
-                                onTogglePinned={handleToggleSessionPinned}
-                                onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
-                                onArchive={handleArchiveSession}
-                                dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                                onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, item.title, geom)) : undefined}
-                              />
-                            );
-                          })}
-                        </div>
-                      )}
                     </div>
-                  )}
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => setHistoryOpen(prev => ({ ...prev, regular: !prev.regular }))}
-                      className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-                    >
-                      <span className="truncate">{t.regularTasks} ({regularHistory.length})</span>
-                      <ChevronDown size={16} className={`shrink-0 transition-transform ${historyOpen.regular ? '' : '-rotate-90'}`} />
-                    </button>
-                    {historyOpen.regular && (
-                      <div className="mt-1 space-y-px">
-                        {regularHistory.map((chat) => (
-                          <RecentItem
-                            key={chat.id}
-                            chat={chat}
-                            theme={activeTheme}
-                            t={t}
-                            active={activeChat === chat.id && currentView === 'chat'}
-                            personaTarget={activeChat === chat.id && currentView === 'cardpool'}
-                            onSelect={handleSwitchSession}
-                            onRename={handleRenameSession}
-                            onDelete={handleDeleteSession}
-                            onTogglePinned={handleToggleSessionPinned}
-                            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
-                            onArchive={handleArchiveSession}
-                            dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                            onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
-                          />
+                    {taskFilterOpen && (
+                      <div
+                        data-testid="sidebar-task-filter-menu"
+                        className={`absolute right-0 top-9 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${
+                          activeTheme === 'dark' ? 'border-white/10 bg-[#202124]' : 'border-black/10 bg-white'
+                        }`}
+                      >
+                        <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${activeTheme === 'dark' ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                          {t.sidebarTaskFilter || '筛选'}
+                        </div>
+                        {sidebarTaskFilterOptions.map(option => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => setTaskListFilter(option.id)}
+                            className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
+                          >
+                            <span className="w-4 shrink-0">{taskListFilter === option.id && <Check size={13} />}</span>
+                            <span className="truncate">{option.label}</span>
+                          </button>
+                        ))}
+                        <div className={`my-1 h-px ${activeTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`} />
+                        <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${activeTheme === 'dark' ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                          {t.sidebarTaskSort || '排序'}
+                        </div>
+                        {sidebarTaskSortOptions.map(option => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => setTaskListSort(option.id)}
+                            className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
+                          >
+                            <span className="w-4 shrink-0">{taskListSort === option.id && <Check size={13} />}</span>
+                            <span className="truncate">{option.label}</span>
+                          </button>
                         ))}
                       </div>
                     )}
                   </div>
-                  {scheduledRunHistory.length > 0 && (
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => setHistoryOpen(prev => ({ ...prev, scheduledRuns: !prev.scheduledRuns }))}
-                        className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-                      >
-                        <span className="truncate">定时任务记录 ({scheduledRunHistory.length})</span>
-                        <ChevronDown size={16} className={`shrink-0 transition-transform ${historyOpen.scheduledRuns ? '' : '-rotate-90'}`} />
-                      </button>
-                      {historyOpen.scheduledRuns && (
-                        <div className="mt-1 space-y-px">
-                          {scheduledRunHistory.map((chat) => (
-                            <RecentItem
-                              key={`${chat.scheduledRun.automationId || ''}:${chat.scheduledRun.id || chat.id}`}
-                              chat={chat}
-                              theme={activeTheme}
-                              t={t}
-                              active={!!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)}
-                              personaTarget={false}
-                              onSelect={() => handleOpenScheduledRunShortcut(chat.scheduledRun)}
-                              onRename={handleRenameSession}
-                              onDelete={handleDeleteSession}
-                              onTogglePinned={handleToggleSessionPinned}
-                              onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
-                              onArchive={handleArchiveSession}
-                              dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                              onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <div className="space-y-0.5">
+                    {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map((chat) => (
+                      <RecentItem
+                        key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : chat.id}
+                        chat={chat}
+                        theme={activeTheme}
+                        t={t}
+                        active={chat.scheduledRun
+                          ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+                          : activeChat === chat.id && currentView === 'chat'}
+                        personaTarget={!chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+                        onSelect={chat.scheduledRun ? () => handleOpenScheduledRunShortcut(chat.scheduledRun) : handleSwitchSession}
+                        onRename={handleRenameSession}
+                        onDelete={handleDeleteSession}
+                        onTogglePinned={handleToggleSessionPinned}
+                        onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.revealSessionFolder && bridge.revealSessionFolder(id)) : undefined}
+                        onArchive={handleArchiveSession}
+                        dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                        onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
+                      />
+                    )) : (
+                      <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                        {t.sidebarTaskEmpty || '暂无任务'}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -1836,8 +1870,8 @@ function defaultModelPresetForPlatform() {
               { key: 'chat', label: t.currentChat, icon: <MessageSquare size={18} />,
                 active: currentView === 'chat' || !!(currentView === 'scheduled' && bs && bs.scheduledRunContext),
                 onClick: () => mobileNavigate('chat') },
-              { key: 'workflow', label: t.workflow, icon: <ClipboardList size={18} />,
-                active: currentView === 'workflow', onClick: () => mobileNavigate('workflow') },
+              { key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
+                active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
               { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
                 active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
               { key: 'more', label: t.mobileMore, icon: <MoreHorizontal size={18} />,
