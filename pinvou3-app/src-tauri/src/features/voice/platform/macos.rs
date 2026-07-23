@@ -1,10 +1,10 @@
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use super::super::voice_asr::{self, AsrModelSpec};
+use super::voice_asr_speech;
 
 const ASR_MODEL_URL: &str =
     "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
@@ -70,11 +70,18 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    let path = asr_tool_path();
-    path.is_file()
-        && std::fs::metadata(path)
-            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+    // macOS 二期改走系统 Speech 框架（voice_asr_speech），不再依赖 SenseVoice 引擎。
+    // 体检项用 speech_available() 判断系统 Speech 服务是否就绪，而非查引擎文件。
+    speech_available()
+}
+
+/// 探测系统 Speech 识别器是否可用（默认 locale）。
+///
+/// 委托给 `voice_asr_speech::speech_available`——创建默认 locale 的 recognizer 并读
+/// `isAvailable`（recognizer 创建成功但服务临时不可用时 isAvailable=false）。**不在此处
+/// 阻塞请求授权**：首次语音输入时由 Tauri 命令上下文触发。
+pub fn speech_available() -> bool {
+    voice_asr_speech::speech_available()
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {
@@ -82,32 +89,45 @@ pub fn asr_bundled_runtime_status() -> Option<bool> {
 }
 
 pub fn asr_dependency_installable() -> bool {
-    asr_tool_exists()
+    // macOS 走系统 Speech，无需安装额外依赖。
+    speech_available()
 }
 
 pub fn asr_install_unavailable_message() -> &'static str {
-    "本地语音识别引擎未随应用提供，请重新安装 pinvou3。"
+    "macOS 使用系统语音识别框架，无需安装额外组件。如不可用，请检查「系统设置 > 隐私与安全性 > 语音识别」是否已授权。"
 }
 
-pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
-    if !asr_tool_exists() {
-        return Err(asr_install_unavailable_message().to_string());
-    }
-    if !voice_asr::ffmpeg_available() {
-        crate::features::dependencies::install_dependencies(vec!["ffmpeg".to_string()])?;
-    }
-    if !voice_asr::model_available() {
-        voice_asr::download_current_model(&app).await?;
-    }
+pub async fn install_asr_runtime(_app: tauri::AppHandle) -> Result<(), String> {
+    // macOS 走系统 Speech 框架，无需安装引擎/模型/ffmpeg。
     Ok(())
 }
 
 pub fn asr_dependency_packages() -> &'static str {
-    "ffmpeg"
+    // macOS 系统内置 Speech 框架，无外部依赖包。
+    ""
 }
 
 pub fn asr_missing_message() -> &'static str {
-    "缺少本地语音识别组件，请重新安装应用或在设置页补齐模型。"
+    "macOS 使用系统语音识别框架。如不可用，请检查系统设置中的语音识别权限。"
+}
+
+/// 用系统 Speech 框架识别临时 wav 文件。
+///
+/// macOS 不走内置 SenseVoice：系统 Speech 框架零体积、跨架构、开箱即用。
+/// 返回 `Some` 表示 macOS 始终走系统 Speech（失败时由调用方回退 CLI）。
+///
+/// `locale_tag` 决定识别语言（跟随 UI 语言偏好，而非系统默认 locale——
+/// 后者可能是 en-US，把中文音频当英文解析出无意义字母）。
+pub fn recognize_native(
+    wav_path: &std::path::Path,
+    locale_tag: &str,
+) -> Option<Result<String, String>> {
+    Some(voice_asr_speech::transcribe_with_speech(wav_path, locale_tag))
+}
+
+/// 原生识别后端的来源标签（用于前端展示/日志区分）。
+pub fn native_recognition_source() -> &'static str {
+    "system_speech"
 }
 
 pub async fn reset_microphone_permission(_window: tauri::WebviewWindow) -> Result<bool, String> {

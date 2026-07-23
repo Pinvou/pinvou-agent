@@ -107,6 +107,22 @@ pub fn asr_missing_message() -> &'static str {
     "本地语音识别组件缺失或不可用：运行时缺失时请修复或重新安装 pinvou；仅缺 ASR 模型时可在应用内下载。"
 }
 
+/// Windows 用内置 SenseVoice 引擎识别（区别于 macOS 的系统 Speech）。
+///
+/// 引擎/模型就绪时走内置 Rust 转码+识别；否则返回 `None`，由调用方回退 CLI。
+pub fn recognize_native(wav_path: &std::path::Path, _locale_tag: &str) -> Option<Result<String, String>> {
+    if asr_tool_exists() {
+        Some(voice_asr::transcribe(wav_path))
+    } else {
+        None
+    }
+}
+
+/// 原生识别后端的来源标签（用于前端展示/日志区分）。
+pub fn native_recognition_source() -> &'static str {
+    "pinvou-webview-sensevoice-local"
+}
+
 pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
     use webview2_com::{
         Microsoft::Web::WebView2::Win32::{

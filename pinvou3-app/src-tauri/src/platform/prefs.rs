@@ -78,6 +78,20 @@ impl Language {
         }
     }
 
+    /// macOS Speech 框架（`SFSpeechRecognizer`）识别用的 locale 标识（BCP 47）。
+    ///
+    /// **UI 语言 = 语音识别语言**：保持一致,避免「中文 UI 但用系统默认 locale
+    /// （可能是 en-US）识别」→ 中文语音被当英文解析、产出无意义英文字母的错配。
+    /// 选 `zh-CN` 而非 `zh-Hans-CN`：Speech 框架对 `zh-CN` 的识别模型质量与
+    /// on-device 支持最好。映射可单测,无设备依赖。
+    pub fn speech_recognition_locale(self) -> &'static str {
+        match self {
+            Language::ZhHans => "zh-CN",
+            Language::En => "en-US",
+            Language::Ja => "ja-JP",
+        }
+    }
+
     /// pinvou3 补丁:底座 `locale_reinforcement_preamble` 对 `en` 返回 `None`
     /// (英文是模型默认语言,底座认为无需强化)。但 pinvou3 的 system prompt 主体
     /// (instructions.md)整份是中文,会把模型的回复语言拽回中文 —— 故英文 UI 下
@@ -1208,6 +1222,15 @@ mod tests {
         assert_eq!(Language::ZhHans.locale_tag(), "zh-Hans");
         assert_eq!(Language::En.locale_tag(), "en");
         assert_eq!(Language::Ja.locale_tag(), "ja");
+    }
+
+    #[test]
+    fn speech_recognition_locale_maps_to_speech_framework_ids() {
+        // macOS Speech 框架的 locale 必须是它支持的 BCP 47 标识;
+        // 与 UI 语言保持一致,避免「中文 UI 但英文识别」错配。
+        assert_eq!(Language::ZhHans.speech_recognition_locale(), "zh-CN");
+        assert_eq!(Language::En.speech_recognition_locale(), "en-US");
+        assert_eq!(Language::Ja.speech_recognition_locale(), "ja-JP");
     }
 
     #[test]
