@@ -562,7 +562,13 @@ fn platform_ram_snapshot() -> Option<RamSnapshot> {
     crate::os::platform::ram_snapshot()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn platform_ram_snapshot() -> Option<RamSnapshot> {
+    // Mac 上无 /proc/meminfo;走 os::platform::ram_snapshot(macos_memory 解析 vm_stat)。
+    crate::os::platform::ram_snapshot()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn platform_ram_snapshot() -> Option<RamSnapshot> {
     None
 }
@@ -621,6 +627,13 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
 }
 
 /// 兼容旧调用。优先用于本地 vLLM 探测；active-model 面板走 `active_model_snapshot()`。
+///
+/// 闸到 Linux:Mac/Windows 不支持本地 vLLM,该 wrapper 没有合法 caller——
+/// 唯一两个 caller(`commands::discover_local_vllm` 和
+/// `local_vllm_setup::probe_online`)本身都 cfg(target_os = "linux")。
+/// 真正的 active-model 探测走 `active_model_snapshot()` + `snapshot_for_model_config()`,
+/// 后者跨平台保留(也服务远程 provider)。
+#[cfg(target_os = "linux")]
 pub async fn vllm_snapshot(
     upstream: &str,
     configured_model: Option<String>,

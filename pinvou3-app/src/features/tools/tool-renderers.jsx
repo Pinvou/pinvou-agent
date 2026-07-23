@@ -328,8 +328,8 @@ const ToolOutput = ({ item, isDark, t }) => {
       );
     };
 
-    // 检阅 loading:本地模型 5-30s,iOS 旋转菊花 spinner + 计时 + 安抚文字,别让 Boss 干等焦虑。
-    const PinvouLoading = ({ isWu, isDark, t }) => {
+    // 检阅 loading:本地模型 5-30s / 在线模型通常更快,iOS 旋转菊花 spinner + 计时 + 安抚文字,别让 Boss 干等焦虑。
+    const PinvouLoading = ({ isWu, isDark, t, isLocal }) => {
       const [secs, setSecs] = useState(0);
       useEffect(() => {
         const b = setInterval(() => setSecs(s => s + 1), 1000);
@@ -352,19 +352,19 @@ const ToolOutput = ({ item, isDark, t }) => {
             {isWu ? t.pvLoadingWuSub : t.pvLoadingPinSub}
             {secs > 0 && <span className="ml-1.5 tabular-nums opacity-70">{secs}s</span>}
           </div>
-          <div className={`text-[12px] mt-1 ${muted}`} style={{ opacity: 0.6 }}>{t.pvLoadingHint}</div>
+          <div className={`text-[12px] mt-1 ${muted}`} style={{ opacity: 0.6 }}>{t.pvLoadingHint(isLocal)}</div>
         </div>
       );
     };
 
     // 检阅结果卡（在底部 sheet 内渲染，无外层卡框；品=橙 / 悟=紫，与产物卡一致）。
-    const PinvouSummonCard = ({ item, theme, t }) => {
+    const PinvouSummonCard = ({ item, theme, t, isLocal }) => {
       const isDark = theme === 'dark';
       const isWu = !!item.coverage; // 悟=发散(coverage)；品=查错
       const role = pvRole(isWu, isDark);
       const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
       const body = isDark ? 'text-[#fff]' : 'text-[#000]';
-      if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} />;
+      if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} isLocal={isLocal} />;
       if (item.error) return (
         <div className="py-2">
           <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>Pinvou {role.name}</span></div>
@@ -408,7 +408,7 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     const PlanCard = ({ item, theme, t, onPrefill }) => {
       const isDark = theme === 'dark';
-      const active = item.cardState === 'active' && !item.resolved;
+      const active = item.cardState === 'active' && !item.resolved && !!item.planId;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
           <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.planReady}</div>
@@ -422,9 +422,9 @@ const ToolOutput = ({ item, isDark, t }) => {
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planNext}</span>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.acceptPlan(item.id, item.planMarkdown)}>{t.planGo}</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
               <button className={cardBtnCls(isDark)} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>{t.planDrop}</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
             </div>
           ) : (
             <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{item.statusLabel}</div>

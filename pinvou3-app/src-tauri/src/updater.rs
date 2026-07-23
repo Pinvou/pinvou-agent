@@ -51,6 +51,33 @@ pub struct UpdateInfo {
     pub platform: String,
     #[serde(default)]
     pub ota_host: String,
+    /// 多平台清单:`{ "macos-arm64": PlatformAsset, "linux-arm64": ..., ... }`。
+    /// 旧版 latest.json 没这字段 → 空 map → 调用方回退到顶层 url/sha256/size。
+    #[serde(default)]
+    pub platforms: std::collections::HashMap<String, PlatformAsset>,
+}
+
+/// 多平台更新清单的单平台资产。`latest.json` 的 `platforms` map 每个值用这个类型。
+/// 客户端按 `build_platform_key()` 选自己平台的资产;缺失则回退到顶层 url/sha256/size。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlatformAsset {
+    pub url: String,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub restart_after_install: bool,
+    #[serde(default)]
+    pub notes: String,
+    /// 本平台资产自己的版本号。各平台独立发版(Mac 先发 0.7.0、Linux 还在 0.6.3)时,
+    /// 客户端用**本平台**版本判要不要升级,而不是读顶层 .version —— 后者代表「最近一次
+    /// Linux 发版」,Mac 客户端读它会被误导。旧 manifest / 旧 platform 条目无此字段 → 空
+    /// 串 → 调用方回退到顶层 version(向后兼容)。
+    #[serde(default)]
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +106,18 @@ pub struct PendingUpdateReportResult {
 #[tauri::command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// 根据 std::env::consts 拼 `"macos-arm64"` / `"linux-arm64"` / `"linux-x86_64"` / `"windows-x86_64"`。
+/// 与 `latest.json` 的 `platforms` map key 对齐。arch 归一:aarch64→arm64、x86_64→x86_64、其它原样。
+pub fn build_platform_key() -> String {
+    let os = std::env::consts::OS;
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x86_64",
+        other => other,
+    };
+    format!("{os}-{arch}")
 }
 
 /// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
@@ -144,4 +183,71 @@ pub async fn report_pending_update_result() -> Result<PendingUpdateReportResult,
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
     crate::os::report_pending_update_result_info(&client, env!("CARGO_PKG_VERSION")).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_platform_key_matches_expected() {
+        let key = build_platform_key();
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                key == "linux-arm64" || key == "linux-x86_64",
+                "unexpected linux platform key: {key}"
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                key == "macos-arm64" || key == "macos-x86_64",
+                "unexpected macos platform key: {key}"
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert!(
+                key == "windows-x86_64" || key == "windows-arm64",
+                "unexpected windows platform key: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn update_info_platforms_defaults_empty() {
+        // 旧版 latest.json(无 platforms 字段)反序列化应得空 map,不报错。
+        let json = r#"{
+            "available": true,
+            "current_version": "0.1.0",
+            "latest_version": "0.2.0",
+            "notes": "",
+            "pub_date": "",
+            "url": "https://example.com/p.pkg",
+            "sha256": "abc",
+            "size": 0
+        }"#;
+        let info: UpdateInfo = serde_json::from_str(json).unwrap();
+        assert!(info.platforms.is_empty());
+    }
+
+    #[test]
+    fn platform_asset_roundtrip() {
+        let asset = PlatformAsset {
+            url: "https://example.com/m.dmg".to_string(),
+            format: "dmg".to_string(),
+            sha256: "deadbeef".to_string(),
+            size: 1024,
+            restart_after_install: false,
+            notes: "mac only".to_string(),
+            version: "0.7.0".to_string(),
+        };
+        let json = serde_json::to_string(&asset).unwrap();
+        let back: PlatformAsset = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.url, asset.url);
+        assert_eq!(back.size, 1024);
+        assert_eq!(back.format, "dmg");
+        assert_eq!(back.version, "0.7.0");
+    }
 }

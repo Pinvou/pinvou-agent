@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Briefcase, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Video, Wrench, XIcon, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
 
 const AcFmtIcon = ({ kind, className }) => (
@@ -20,7 +21,8 @@ const AcFmtIcon = ({ kind, className }) => (
       const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
       const basename = (String(path).split(/[\\/]/).pop()) || '';
       const title = item.title || basename || t.artifactLabel;
-      const open = () => { if (bridge.available && path) bridge.openArtifactExternal(path, item.sessionId); };
+      const canOpenArtifact = !isWeb || can('artifactDownload');
+      const open = () => { if (canOpenArtifact && bridge.available && path) bridge.openArtifactExternal(path, item.sessionId); };
 
       // 封面缩略图：仅 pptx 异步抽取（Rust read_artifact_thumbnail 读 docProps/thumbnail.jpeg → data URL）。
       // 拿不到则 hasCover=false，走紧凑态。本地数据、无外链。
@@ -29,10 +31,10 @@ const AcFmtIcon = ({ kind, className }) => (
         let alive = true;
         setCoverUrl(null);
         if (kind === 'pptx' && bridge.available && bridge.readArtifactThumbnail && path) {
-          bridge.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
+          bridge.readArtifactThumbnail(path, item.sessionId).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
         }
         return () => { alive = false; };
-      }, [path, kind]);
+      }, [path, kind, item.sessionId]);
       const hasCover = !!coverUrl;
 
       return (
@@ -41,7 +43,7 @@ const AcFmtIcon = ({ kind, className }) => (
 
             {/* 封面区域 */}
             {hasCover ? (
-              <div className="relative group/cover cursor-pointer rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02]" onClick={open}>
+              <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
                 <div className="w-full aspect-[16/9] relative">
                   <img src={coverUrl} alt="Cover" className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
                 </div>
@@ -61,13 +63,13 @@ const AcFmtIcon = ({ kind, className }) => (
             )}
 
             {/* 标题与打开按钮区 */}
-            <div onClick={open} className="px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header cursor-pointer">
+            <div onClick={canOpenArtifact ? open : undefined} className={`px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header ${canOpenArtifact ? 'cursor-pointer' : ''}`}>
               <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
                 {title}
               </h2>
-              <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label="打开">
+              {canOpenArtifact && <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label="打开">
                 <AcArrowUpRight className="w-[18px] h-[18px]" />
-              </button>
+              </button>}
             </div>
 
             {/* 智能操作区：品 / 悟，横排单行、无副标题；仅最新产物显示 */}

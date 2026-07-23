@@ -73,26 +73,70 @@ if [ ! -f "$DEB" ]; then
   exit 1
 fi
 
-# ── 3. 生成 latest.json ───────────────────────────────────────────
+# ── 3. 合并 latest.json(保留其它平台条目,只更新顶层 Linux 字段) ──────
+# 修复「Linux 发版抹掉 platforms.macos-arm64」:此前用 `jq -n` 从零生成 latest.json,
+# 会清掉 platforms 下所有非 Linux 条目 → Mac 客户端回退到顶层(此时是 Linux deb)→
+# 把 .deb 当 dmg 下。改为:拉远端 latest.json → 只覆盖顶层 version/url/sha256/size →
+# 推回。platforms.macos-arm64 / windows-x86_64 等条目原样保留。
 SHA256=$(sha256sum "$DEB" | awk '{print $1}')
 SIZE=$(stat -c%s "$DEB")
 PUB_DATE=$(date -u +%FT%TZ)
-TMP_JSON=$(mktemp)
-jq -n \
-  --arg version "$VERSION" --arg notes "$NOTES" --arg pub_date "$PUB_DATE" \
-  --arg url "$BASE_URL/pinvou3_${VERSION}_${ARCH}.deb" --arg sha256 "$SHA256" \
-  --argjson size "$SIZE" \
-  '{version: $version, notes: $notes, pub_date: $pub_date, url: $url, sha256: $sha256, size: $size}' \
-  > "$TMP_JSON"
-echo "--- latest.json ---"
-cat "$TMP_JSON"
+DEB_URL="$BASE_URL/pinvou3_${VERSION}_${ARCH}.deb"
+
+TMP_REMOTE=$(mktemp)
+TMP_JSON_NEW=$(mktemp)
+TMP_ERR=$(mktemp)
+trap 'rm -f "$TMP_REMOTE" "$TMP_JSON_NEW" "$TMP_ERR"' EXIT
+
+# 拉远端 latest.json(与 release-macos.sh 同款加固):SSH 探测本身失败必须中止,
+# 只有远端明确返回 missing 才能按首发场景使用 {}。不能用 `|| true`,否则网络/
+# 权限故障会被伪装成文件不存在,随后覆盖掉其它平台条目。
+if ! REMOTE_STATE=$(ssh "$SERVER" \
+  "if [ -f '$REMOTE_DIR/latest.json' ]; then printf '%s\\n' exists; else printf '%s\\n' missing; fi" \
+  2>"$TMP_ERR"); then
+  echo "❌ 无法探测远端 latest.json(SSH/权限/网络异常),中止发布:" >&2
+  cat "$TMP_ERR" >&2
+  exit 1
+fi
+if [ "$REMOTE_STATE" = "exists" ]; then
+  if ! ssh "$SERVER" "cat $REMOTE_DIR/latest.json" >"$TMP_REMOTE" 2>"$TMP_ERR"; then
+    echo "❌ 远端 latest.json 存在但读取失败(权限不足/网络中断?),中止以免破坏清单:" >&2
+    cat "$TMP_ERR" >&2
+    exit 1
+  fi
+  if ! jq -e . "$TMP_REMOTE" >/dev/null 2>&1; then
+    echo "❌ 远端 latest.json 非合法 JSON,中止以免破坏清单:" >&2
+    head -c 200 "$TMP_REMOTE" >&2
+    exit 1
+  fi
+elif [ "$REMOTE_STATE" = "missing" ]; then
+  echo "⚠️  远端 latest.json 不存在(首发场景),用空对象 {} 起步" >&2
+  echo '{}' > "$TMP_REMOTE"
+else
+  echo "❌ 远端 latest.json 探测返回异常结果: $REMOTE_STATE" >&2
+  exit 1
+fi
+jq --arg ver "$VERSION" --arg url "$DEB_URL" --arg sha "$SHA256" --arg size "$SIZE" \
+   --arg date "$PUB_DATE" --arg notes "$NOTES" '
+  .version = $ver |
+  .pub_date = $date |
+  .notes = $notes |
+  .url = $url |
+  .sha256 = $sha |
+  .size = ($size | tonumber) |
+  .platforms = (.platforms // {})
+' "$TMP_REMOTE" > "$TMP_JSON_NEW"
+
+echo "--- latest.json (顶层 + 各平台节) ---"
+jq '{version, url, sha256, size, macos_arm64: .platforms["macos-arm64"] | {version,url,sha256} , linux_arm64: .platforms["linux-arm64"]}' "$TMP_JSON_NEW"
 
 # ── 4. 上传：先 deb 后 latest.json ────────────────────────────────
 # 顺序关键:清单最后传,避免清单已指向新版而 deb 还没传完,客户端 404。
+# 原子上传清单(与 release-macos.sh 一致):先传临时文件名 → 远端 mv 原子重命名,
+# 避免网络中断导致远端 latest.json 被截断成半份坏 JSON。
 rsync -avz --progress "$DEB" "$SERVER:$REMOTE_DIR/"
-rsync -avz "$TMP_JSON" "$SERVER:$REMOTE_DIR/latest.json"
-ssh "$SERVER" "chmod 644 $REMOTE_DIR/latest.json"
-rm -f "$TMP_JSON"
+rsync -avz "$TMP_JSON_NEW" "$SERVER:$REMOTE_DIR/latest.json.new"
+ssh "$SERVER" "mv '$REMOTE_DIR/latest.json.new' '$REMOTE_DIR/latest.json' && chmod 644 '$REMOTE_DIR/latest.json'"
 
 echo "=== 发布完成 ==="
 echo "清单: $BASE_URL/latest.json"

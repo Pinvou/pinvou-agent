@@ -148,3 +148,33 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         "/usr/local/bin/nvidia-smi",
     ]
 }
+
+// ====== file_ingest.rs 跨平台缺失消息 + 依赖包名 ======
+
+pub fn libreoffice_missing_message() -> &'static str {
+    "需要 LibreOffice，请运行: sudo apt install libreoffice"
+}
+
+pub fn sevenzip_missing_message() -> &'static str {
+    "压缩包解析需要 7z: sudo apt install p7zip-full"
+}
+
+pub fn python3_missing_message() -> &'static str {
+    "邮件解析需要 python3，请运行: sudo apt install python3"
+}
+
+pub fn msgconvert_missing_message() -> &'static str {
+    ".msg 解析需要: sudo apt install libemail-outlook-message-perl"
+}
+
+pub fn libreoffice_dependency_packages() -> &'static str {
+    "libreoffice"
+}
+
+pub fn sevenzip_dependency_packages() -> &'static str {
+    "p7zip-full"
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    "python3 libemail-outlook-message-perl"
+}

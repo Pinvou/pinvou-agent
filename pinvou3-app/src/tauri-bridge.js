@@ -20,6 +20,13 @@
   const { invoke } = TAURI.core;
   const { listen } = TAURI.event;
   const dialogOpen = TAURI.dialog?.open;
+  const PLATFORM = window.PinvouPlatform || { kind: "desktop", capabilities: {} };
+  const IS_WEB = PLATFORM.kind === "web" || PLATFORM.isWeb === true;
+  function hasCapability(name) {
+    if (IS_WEB && typeof PLATFORM.can === "function") return PLATFORM.can(name) === true;
+    if (IS_WEB) return !!(PLATFORM.capabilities && PLATFORM.capabilities[name] === true);
+    return !PLATFORM.capabilities || PLATFORM.capabilities[name] !== false;
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -57,6 +64,7 @@
   // return before chat listeners, session loading, polling, or update checks.
   const locationSearch = String((window.location && window.location.search) || "");
   const isPetWindow = /(?:^|[?&])window=pet(?:&|$)/.test(locationSearch);
+  const isDetachedWindow = /(?:^|[?&])detached=1(?:&|$)/.test(locationSearch);
   if (isPetWindow) {
     window.TauriBridge = {
       available: false,
@@ -168,15 +176,15 @@
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
     updateInfo: null,
-    remoteControl: {
+    webAccess: {
       active: false,
-      room_id: null,
-      session_id: null,
+      endpoint_id: null,
       url: null,
+      qr_data_url: null,
       status: "idle",
       relay_url: "",
+      web_client_connected: false,
       last_error: null,
-      pairing: null,
       starting: false,
     },
     updateChecking: false,
@@ -241,6 +249,8 @@
     scheduledTaskPendingGuide: null,
   };
   var initPromise = null;
+  var webInitRetryArmed = false;
+  var webInitRetryHandler = null;
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
   var personaPoolCache = [];
   var SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
@@ -357,6 +367,7 @@
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
+  var authoritativeTranscriptSyncs = Object.create(null);
   var scheduledRunSessionOwners = Object.create(null);
   var scheduledRunOpenInFlight = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
@@ -372,6 +383,15 @@
     return {
       messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
+      localTurnOwned: false,
+      remoteTurnActive: false,
+      remoteTerminalSeen: false,
+      remoteAdmissionKeys: [],
+      deferredRemoteUserEvent: null,
+      remoteBaselineMessageCount: null,
+      remoteBaselineTrusted: false,
+      remoteExpectedAssistantKey: "",
+      sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
@@ -418,7 +438,9 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      pruneScheduledRunSessionOwner(id);
+      // The owner tombstone has its own bounded LRU and must outlive a
+      // presentation-buffer eviction. Otherwise a stale `running` list row can
+      // resurrect a run that already emitted chat:done.
       overflow -= 1;
     }
   }
@@ -470,10 +492,6 @@
   }
   function isProtectedScheduledRunOwner(id) {
     return scheduledRunOwnerPriority(id) > 1;
-  }
-  function pruneScheduledRunSessionOwner(id) {
-    if (!scheduledRunSessionOwners[id] || isProtectedScheduledRunOwner(id, null)) return;
-    delete scheduledRunSessionOwners[id];
   }
   function pruneScheduledRunSessionOwners() {
     var ids = Object.keys(scheduledRunSessionOwners);
@@ -614,7 +632,9 @@
   }
   function hydrateWorkingSetFromSaved(buf, saved) {
     if (!buf || !saved) return;
+    var completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
     buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
+    buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
     buf.chatItems = [];
     buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
       var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
@@ -623,10 +643,65 @@
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
     buf.personaEvents = [];
     buf.pinvouReviews = [];
+    if (completedRemoteTurn) {
+      buf.remoteTurnActive = false;
+      buf.remoteTerminalSeen = false;
+      buf.remoteBaselineMessageCount = null;
+      buf.remoteBaselineTrusted = false;
+      buf.remoteExpectedAssistantKey = "";
+      buf.deferredRemoteUserEvent = null;
+    }
     buf.stream = {
       currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
       pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
     };
+  }
+  function decodeBase64Bytes(encoded) {
+    var binary = window.atob(String(encoded || ""));
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  async function loadSessionForClient(sid, setActive) {
+    if (!IS_WEB) return invoke("load_session", { id: sid, setActive: !!setActive });
+    var offset = 0;
+    var total = null;
+    var payload = null;
+    var downloadId = null;
+    var maxSessionBytes = 256 * 1024 * 1024;
+    while (true) {
+      var chunk = await invoke("web_access_load_session_chunk", {
+        id: sid,
+        downloadId: downloadId,
+        offset: offset,
+        limit: 256 * 1024,
+      });
+      var chunkOffset = Number(chunk && chunk.offset);
+      var chunkTotal = Number(chunk && chunk.total);
+      var chunkDownloadId = String((chunk && (chunk.download_id || chunk.downloadId)) || "");
+      if (!Number.isSafeInteger(chunkOffset) || chunkOffset !== offset ||
+          !Number.isSafeInteger(chunkTotal) || chunkTotal < 0 || chunkTotal > maxSessionBytes ||
+          !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
+        throw new Error("桌面端返回了无效的会话分块");
+      }
+      downloadId = chunkDownloadId;
+      if (total === null) {
+        total = chunkTotal;
+        payload = new Uint8Array(total);
+      } else if (chunkTotal !== total) {
+        throw new Error("读取期间会话数据发生变化，请重试");
+      }
+      var data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
+      if (offset + data.length > total) throw new Error("会话分块超出声明长度");
+      payload.set(data, offset);
+      offset += data.length;
+      if (chunk.eof) {
+        if (offset !== total) throw new Error("会话分块提前结束");
+        break;
+      }
+      if (!data.length) throw new Error("会话分块没有前进");
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
   }
   async function ensureSessionBufferLoaded(sid) {
     if (!sid) return;
@@ -637,7 +712,7 @@
     if (buf.busy) return;
     if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
     if (!buf.loadedFromDisk && (buf.messages.length || buf.chatItems.length) && (!knownCount || buf.messages.length >= knownCount)) return;
-    var saved = await invoke("load_session", { id: sid, setActive: false });
+    var saved = await loadSessionForClient(sid, false);
     var savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
     if ((buf.messages.length || buf.chatItems.length) && savedCount <= buf.messages.length) {
       buf.loadedFromDisk = true;
@@ -662,7 +737,12 @@
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = id;
     var buf = sessionStates[id];
-    if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
+    if (!buf || (opts && opts.fresh)) {
+      buf = sessionStates[id] = freshBuffer();
+      // `fresh` is used for a Session this client just created, so its empty
+      // buffer is authoritative rather than an event-created partial cache.
+      if (opts && opts.fresh) buf.loadedFromDisk = true;
+    }
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
     state.artifacts = filterSessionArtifacts(state.artifacts, id);
@@ -691,9 +771,35 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
+  function markRemoteTurn(sid, buf) {
+    if (!sid || !buf || buf.localTurnOwned) return;
+    if (!buf.remoteTurnActive) {
+      var meta = state.sessions.find(function (session) { return session.id === sid; });
+      buf.remoteBaselineTrusted = !!buf.loadedFromDisk;
+      buf.remoteBaselineMessageCount = buf.loadedFromDisk
+        ? (buf.messages || []).length
+        : Number(meta && meta.message_count);
+      if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
+      buf.remoteExpectedAssistantKey = "";
+      buf.remoteTerminalSeen = false;
+    }
+    buf.remoteTurnActive = true;
+    buf.busy = true;
+    if (sid === state.activeSessionId) {
+      state.busy = true;
+      if (!state.thinking.active) startThinking();
+    }
+  }
   function onSessionEvent(e, fn) {
     var sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
-    if (sid && sid !== state.activeSessionId) getBuffer(sid);
+    if (sid) {
+      var eventBuffer = getBuffer(sid);
+      var eventName = String((e && e.event) || "");
+      var isTurnEvent = /chat:(user_message|turn_started|delta|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
+      if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
+        markRemoteTurn(sid, eventBuffer);
+      }
+    }
     var isBg = sid && sid !== state.activeSessionId;
     runSyncOnSession(sid, fn);
     if (isBg) notify();
@@ -707,7 +813,8 @@
     );
   }
 
-  // 落盘指定 session 的 messages + artifacts(active 用工作集,后台用其 buffer)。
+  // Transcript persistence is authoritative in Rust. The UI only persists the
+  // presentation-side artifact index and derives the optional auto-title.
   async function persistMessagesFor(sid) {
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
@@ -716,14 +823,10 @@
     var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
-    var backendOwnsTranscript = isScheduledRunSession(sid);
     try {
-      if (!backendOwnsTranscript) {
-        await invoke("save_session_messages", { id: sid, messages: msgs });
-      }
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!backendOwnsTranscript && (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
@@ -736,6 +839,128 @@
     } catch (e) { console.warn("persist failed", e); }
   }
 
+  async function reconcileRemoteTurn(sid) {
+    if (!sid) return true;
+    var buf = sessionStates[sid];
+    if (!buf || (!buf.remoteTurnActive && !buf.remoteTerminalSeen)) return true;
+    if (!buf.remoteTerminalSeen && isBusyFor(sid)) return false;
+    if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
+    // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
+    // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
+    // 已完整显示的流式 assistant 气泡一闪覆盖掉。以终态前的本地工作集作为
+    // authority barrier：消息数不能倒退，且最后一条 assistant 必须已进入快照。
+    var expectedAssistantKey = buf.remoteTerminalSeen
+      ? String(buf.remoteExpectedAssistantKey || "")
+      : "";
+    var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
+      ? buf.messages.length
+      : 0;
+    var sync = (async function () {
+      for (var attempt = 0; attempt < 6; attempt++) {
+        if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        try {
+          var saved = await loadSessionForClient(sid, false);
+          if (!saved || !Array.isArray(saved.messages)) continue;
+          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          if (expectedAssistantKey) {
+            var hasExpectedAssistant = saved.messages.some(function (message) {
+              return message && message.role === "assistant" &&
+                hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
+            });
+            if (!hasExpectedAssistant) continue;
+          }
+          runSyncOnSession(sid, function () {
+            // The durable transcript already reconstructs user/assistant/tool
+            // items. Preserve only presentation-side cards; otherwise a client
+            // joining mid-turn appends its replayed tail after the full answer.
+            var rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+            var resolvedPlanTickets = Object.create(null);
+            var activePlanCards = Object.create(null);
+            rawLiveChatItems.forEach(function (item) {
+              if (!item || item.type !== "plan_card") return;
+              var key = planCardHydrationKey(item);
+              if (!key) return;
+              if (!item.resolved && item.cardState === "active" && item.planId) {
+                if (!activePlanCards[key]) activePlanCards[key] = [];
+                activePlanCards[key].push(item);
+                return;
+              }
+              if (!item.planId) return;
+              if (!resolvedPlanTickets[key]) resolvedPlanTickets[key] = [];
+              resolvedPlanTickets[key].push(String(item.planId));
+            });
+            var liveChatItems = rawLiveChatItems.filter(function (item) {
+              if (!item || item.type === "user" || item.type === "assistant" || item.type === "tool") return false;
+              // Plan cards need semantic matching by their plan snapshot. Their
+              // generic hydration key includes ticket/action state and would
+              // append an active live duplicate after the durable frozen card.
+              if (item.type === "plan_card") return false;
+              return true;
+            });
+            state.messages = saved.messages;
+            state.artifacts = filterSessionArtifacts(
+              mergeHydratedArtifacts(saved.artifacts, state.artifacts),
+              sid,
+            );
+            resetPendingAssistant();
+            state.chatItems = [];
+            rerenderFromMessages();
+            // A plan ticket is transport metadata rather than model context, so
+            // the durable transcript cannot reconstruct it on its own. Carry
+            // active state or resolved tickets onto the matching canonical card,
+            // newest-to-newest for repeated identical plans.
+            for (var planIndex = state.chatItems.length - 1; planIndex >= 0; planIndex--) {
+              var hydratedPlan = state.chatItems[planIndex];
+              if (!hydratedPlan || hydratedPlan.type !== "plan_card") continue;
+              var hydratedKey = planCardHydrationKey(hydratedPlan);
+              var activeQueue = hydratedKey && activePlanCards[hydratedKey];
+              if (activeQueue && activeQueue.length) {
+                var liveActivePlan = activeQueue.pop();
+                hydratedPlan.planId = String(liveActivePlan.planId);
+                hydratedPlan.cardState = "active";
+                hydratedPlan.resolved = false;
+                hydratedPlan.statusLabel = liveActivePlan.statusLabel || "";
+                hydratedPlan.planResolutionConfirmed = !!liveActivePlan.planResolutionConfirmed;
+                continue;
+              }
+              var ticketQueue = hydratedKey && resolvedPlanTickets[hydratedKey];
+              if (!hydratedPlan.planId && ticketQueue && ticketQueue.length) hydratedPlan.planId = ticketQueue.pop();
+            }
+            var unmatchedActivePlans = [];
+            Object.keys(activePlanCards).forEach(function (key) {
+              (activePlanCards[key] || []).forEach(function (item) { unmatchedActivePlans.push(item); });
+            });
+            mergeHydratedChatItems(unmatchedActivePlans, 0);
+            mergeHydratedChatItems(liveChatItems, 0);
+            currentStreamId = 0;
+            currentStreamText = "";
+            pendingAssistantText = "";
+            pendingAssistantBlocks = [];
+            state.busy = false;
+            stopThinking();
+          });
+          buf.loadedFromDisk = true;
+          buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || buf.sessionRevision || "");
+          buf.localTurnOwned = false;
+          buf.remoteTurnActive = false;
+          buf.remoteTerminalSeen = false;
+          buf.remoteBaselineMessageCount = null;
+          buf.remoteBaselineTrusted = false;
+          buf.remoteExpectedAssistantKey = "";
+          buf.deferredRemoteUserEvent = null;
+          buf.busy = false;
+          if (sid === state.activeSessionId) saveWorkingSetTo(buf);
+          notify();
+          return true;
+        } catch (_) {}
+      }
+      return false;
+    })();
+    authoritativeTranscriptSyncs[sid] = sync;
+    try { return await sync; }
+    finally { if (authoritativeTranscriptSyncs[sid] === sync) delete authoritativeTranscriptSyncs[sid]; }
+  }
+
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
   function snapshotState() {
@@ -743,78 +968,6 @@
       try { return structuredClone(state); } catch (_) {}
     }
     return JSON.parse(JSON.stringify(state));
-  }
-  function cloneJson(value, fallback) {
-    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
-    catch (_) { return fallback; }
-  }
-  function remoteWorkingSetFor(sid) {
-    if (!sid) return null;
-    if (sid === state.activeSessionId) {
-      saveWorkingSetTo(getBuffer(sid));
-      return {
-        messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
-        busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
-      };
-    }
-    return sessionStates[sid] || null;
-  }
-  function remoteArtifactSnapshot(artifacts) {
-    return (Array.isArray(artifacts) ? artifacts : []).map(function (a) {
-      var p = a && (a.path || a.path_tail || a.storage_path || "");
-      return {
-        id: (a && a.id) || "",
-        basename: (a && a.basename) || basename(p),
-        path: p,
-        path_tail: p,
-        kind: (a && a.kind) || "",
-        byte_size: (a && a.byte_size) || 0,
-        created_at: (a && a.created_at) || "",
-      };
-    }).filter(function (a) { return !!(a.path || a.basename); });
-  }
-  function buildRemoteLiveSnapshot(sid) {
-    var ws = remoteWorkingSetFor(sid);
-    if (!ws) return null;
-    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
-    var msgs = cloneJson(ws.messages, []);
-    var chatItems = cloneJson(ws.chatItems, []);
-    return {
-      snapshot_source: "live",
-      session: {
-        id: sid,
-        title: meta.title || "新对话",
-        status: ws.busy ? "running" : "idle",
-        updated_at: meta.updated_at || "",
-        message_count: meta.message_count || msgs.length || chatItems.length || 0,
-      },
-      messages: msgs.map(function (m, idx) {
-        var blocks = Array.isArray(m.content) ? m.content : [];
-        return {
-          index: idx,
-          role: m.role,
-          content: blocks.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text || ""; }).join(""),
-          blocks: blocks,
-        };
-      }),
-      chat_items: chatItems,
-      artifacts: remoteArtifactSnapshot(filterSessionArtifacts(ws.artifacts, sid)),
-      busy: !!ws.busy,
-      thinking: cloneJson(ws.thinking, null),
-      plan_snapshot: cloneJson(ws.planSnapshot, null),
-    };
-  }
-  async function publishRemoteLiveSnapshot(sid) {
-    try { await ensureSessionBufferLoaded(sid); }
-    catch (err) { console.warn("remote snapshot hydrate failed", err); }
-    var snapshot = buildRemoteLiveSnapshot(sid);
-    if (!snapshot) return false;
-    await invoke("remote_control_publish_event", {
-      sessionId: sid,
-      kind: "session_snapshot",
-      payload: snapshot,
-    });
-    return true;
   }
   function notify() {
     if (suppressNotify) return;
@@ -1615,6 +1768,39 @@
     item.id = ++itemIdSeq;
     state.chatItems.push(item);
   }
+  function messageHasToolBlock(type, toolCallId) {
+    if (!toolCallId) return false;
+    // Replayed events belong to the current tail in practice. Scan backwards so
+    // long-running Sessions do not pay a full-history walk on every tool frame.
+    for (var i = state.messages.length - 1; i >= 0; i--) {
+      var blocks = state.messages[i] && state.messages[i].content;
+      if (!Array.isArray(blocks)) continue;
+      for (var j = blocks.length - 1; j >= 0; j--) {
+        var block = blocks[j];
+        if (!block || block.type !== type) continue;
+        if ((type === "tool_use" ? block.id : block.tool_use_id) === toolCallId) return true;
+      }
+    }
+    return false;
+  }
+  function toolCallAlreadyStarted(toolCallId) {
+    if (!toolCallId) return false;
+    if ((pendingAssistantBlocks || []).some(function (block) {
+      return block && block.type === "tool_use" && block.id === toolCallId;
+    })) return true;
+    if (state.chatItems.some(function (item) {
+      return item && item.type === "tool" && item.toolId === toolCallId;
+    })) return true;
+    return messageHasToolBlock("tool_use", toolCallId);
+  }
+  function toolCallAlreadyFinished(toolCallId) {
+    return messageHasToolBlock("tool_result", toolCallId);
+  }
+  function hasChatItemForTool(type, toolCallId) {
+    return !!toolCallId && state.chatItems.some(function (item) {
+      return item && item.type === type && item.toolCallId === toolCallId;
+    });
+  }
   // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
   // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
   // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
@@ -1752,8 +1938,9 @@
     if (state.activeSessionId) return state.activeSessionId;
     // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
     try {
-      var meta = await invoke("create_session");
+      var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
       switchActiveTo(meta.id, { fresh: true });
+      getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
       await refreshHistoryList();
       await syncModeState();
       await syncActivePersona();
@@ -1773,6 +1960,65 @@
       return;
     }
     addSystemItem(bt("loadChatFailed") + error);
+  }
+
+  function invokeOutcome(command, args) {
+    return invoke(command, args).then(function (value) {
+      return { ok: true, value: value };
+    }, function (error) {
+      return { ok: false, error: error };
+    });
+  }
+
+  // The transcript is the only navigation-critical payload. Fetch the four
+  // presentation-only states in parallel and commit them once, guarded by the
+  // switch token so a slow response cannot leak into a newer active Session.
+  async function syncSessionPresentationState(sessionId, requestToken) {
+    var results = await Promise.all([
+      invokeOutcome("get_mode_state", { sessionId: sessionId }),
+      invokeOutcome("get_active_persona", { sessionId: sessionId }),
+      invokeOutcome("session_mounted_collection", { sessionId: sessionId }),
+      invokeOutcome("get_memory_overview", { sessionId: sessionId }),
+    ]);
+    if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return false;
+
+    var mode = results[0];
+    var persona = results[1];
+    var collection = results[2];
+    var memory = results[3];
+    state.modeState = mode.ok && mode.value
+      ? { mode: mode.value.mode || "yolo" }
+      : { mode: "yolo" };
+    state.activePersona = persona.ok ? (persona.value || null) : null;
+    state.mountedCollection = collection.ok && collection.value != null ? collection.value : null;
+    if (memory.ok) {
+      applyMemoryOverview(memory.value);
+      rehydratePendingMemoryCandidates(memory.value);
+    } else {
+      state.memory = Object.assign({}, state.memory, {
+        loading: false,
+        error: String(memory.error || "memory overview unavailable"),
+      });
+    }
+    notify();
+    return true;
+  }
+
+  function beginSessionPresentationSync(sessionId, requestToken) {
+    state.memory = Object.assign({}, state.memory, { loading: true, error: null });
+    return syncSessionPresentationState(sessionId, requestToken).catch(function (error) {
+      if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return;
+      state.memory = Object.assign({}, state.memory, { loading: false, error: String(error) });
+      notify();
+      return false;
+    });
+  }
+
+  function publishSessionTranscriptReady(options) {
+    if (options && typeof options.onTranscriptReady === "function") {
+      options.onTranscriptReady();
+    }
+    notify();
   }
 
   function hydratedMessageKey(message, hideInternalEnvelope) {
@@ -1818,9 +2064,20 @@
     var seen = Object.create(null);
     (durableArtifacts || []).concat(liveArtifacts || []).forEach(function (artifact) {
       var path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      if (!path || seen[path]) return;
-      seen[path] = true;
-      merged.push({ path: path, basename: basename(path) });
+      var identity = basename(path);
+      if (!path || !identity) return;
+      if (seen[identity] !== undefined) {
+        // The durable transcript commonly stores a relative write_file path while
+        // artifact:disk has already supplied the absolute path. They are the same
+        // presentation object; retain the path that can actually be opened.
+        var existingIndex = seen[identity];
+        if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
+          merged[existingIndex] = { path: path, basename: identity };
+        }
+        return;
+      }
+      seen[identity] = merged.length;
+      merged.push({ path: path, basename: identity });
     });
     return merged;
   }
@@ -1829,7 +2086,10 @@
     if (!item || !item.type) return "";
     if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
     if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
-    if (item.type === "artifact_card") return "artifact:" + String(item.path || "");
+    if (item.type === "artifact_card") return "artifact:" + basename(item.path);
+    if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;
+    if (item.type === "careful_blocked" && item.toolCallId) return "careful_blocked:" + item.toolCallId;
+    if (item.type === "plan_card" && item.planId) return "plan:" + item.planId;
     if (item.type === "user") return "user:" + String(item.text || item.html || "");
     if (item.type === "system") return "system:" + String(item.text || "");
     var stable = Object.assign({}, item);
@@ -1841,17 +2101,17 @@
 
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
+    var availableByKey = Object.create(null);
+    state.chatItems.forEach(function (item, index) {
+      var key = hydratedChatItemKey(item);
+      if (!key) return;
+      if (!availableByKey[key]) availableByKey[key] = [];
+      availableByKey[key].push(index);
+    });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var existingIndex = -1;
-      if (key) {
-        for (var i = state.chatItems.length - 1; i >= 0; i--) {
-          if (hydratedChatItemKey(state.chatItems[i]) === key) {
-            existingIndex = i;
-            break;
-          }
-        }
-      }
+      var matches = key && availableByKey[key];
+      var existingIndex = matches && matches.length ? matches.shift() : -1;
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
@@ -1876,6 +2136,15 @@
       return false;
     }
     if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
+    var existingBuffer = sessionStates[id];
+    if (existingBuffer && (existingBuffer.remoteTurnActive ||
+        (!existingBuffer.loadedFromDisk &&
+          (existingBuffer.busy || existingBuffer.messages.length || existingBuffer.chatItems.length)))) {
+      // Events can arrive for a running background Session before this Web
+      // client has loaded its durable history. Merge that live tail onto a
+      // desktop snapshot instead of treating the partial buffer as complete.
+      hydrateLiveSession = true;
+    }
     if (id === state.activeSessionId && !forceDurableLoad && !hydrateLiveSession) {
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null;
@@ -1885,22 +2154,30 @@
     // 多 session 并发:切换【不再 cancel】旧 session —— 它在自己的 engine 上继续跑,
     // 工作集存进 sessionStates 后台累积。切回来能看到完整(含切走期间产生的)内容。
     // 已有 buffer(切过/在跑)→ 直接换工作集;没有 → load_session 建 buffer + 重渲染。
-    if (sessionStates[id] && !forceDurableLoad && !hydrateLiveSession) {
+    if (sessionStates[id] && sessionStates[id].loadedFromDisk &&
+        !forceDurableLoad && !hydrateLiveSession) {
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态
       switchActiveTo(id, null);
-      await syncModeState();
-      await syncActivePersona();
-      await syncMountedCollection();
-      await loadMemoryOverview({ rehydratePending: true });
+      var cachedPresentationSync = beginSessionPresentationSync(id, requestToken);
+      publishSessionTranscriptReady(options);
+      await cachedPresentationSync;
       if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== id) return false;
-      notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return true;
     }
     var saved;
+    var personaEvents;
+    var pinvouReviews;
     try {
-      saved = await invoke("load_session", { id: id });
+      var primary = await Promise.all([
+        loadSessionForClient(id, !IS_WEB),
+        invoke("get_session_persona_events", { sessionId: id }).catch(function () { return []; }),
+        invoke("get_session_pinvou_reviews", { sessionId: id }).catch(function () { return []; }),
+      ]);
+      saved = primary[0];
+      personaEvents = primary[1] || [];
+      pinvouReviews = primary[2] || [];
     } catch (e) {
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
@@ -1910,12 +2187,6 @@
       reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
       return false;
     }
-
-    var personaEvents = [];
-    var pinvouReviews = [];
-    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
-    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
-    if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
@@ -1948,11 +2219,14 @@
       } else {
         resetPendingAssistant();
       }
+      liveBuffer.loadedFromDisk = true;
+      liveBuffer.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       saveWorkingSetTo(liveBuffer);
     } else {
       loadWorkingSetFrom(sessionStates[id] = freshBuffer());
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       sessionStates[id].loadedFromDisk = true;
+      sessionStates[id].sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
       resetPendingAssistant();
@@ -1961,12 +2235,14 @@
       state.artifacts = filterSessionArtifacts(state.artifacts, state.activeSessionId);
       rerenderFromMessages();
     }
-    await syncModeState();
-    await syncActivePersona();
-    await syncMountedCollection();
-    await loadMemoryOverview({ rehydratePending: true });
+    // The full-load path rebuilds tool cards after the active workspace is
+    // selected. Start Shell reconciliation only after that rebuild; polling
+    // earlier can attach task ids to a transient card which hydration replaces.
+    scheduleShellPoll(id, true);
+    var presentationSync = beginSessionPresentationSync(id, requestToken);
+    publishSessionTranscriptReady(options);
+    await presentationSync;
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
-    notify();
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     return true;
   }
@@ -1994,6 +2270,17 @@
     var returnSessionId = state.scheduledRunContext
       ? state.scheduledRunContext.returnSessionId
       : state.activeSessionId;
+    var automationId = (run && run.automationId) || (task && task.id) || null;
+    var runId = (run && (run.runId || run.id)) || null;
+    var scheduledContext = {
+      sessionId: sessionId,
+      returnSessionId: returnSessionId,
+      automationId: automationId,
+      runId: runId,
+      taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
+      model: (task && task.model) || null,
+      mode: "yolo",
+    };
     var liveBuffer = sessionStates[sessionId];
     var hasLiveTurn = !!(liveBuffer && (
       liveBuffer.busy ||
@@ -2006,6 +2293,9 @@
     var switched = await switchToSessionInternal(sessionId, true, "scheduled", {
       forceDurableLoad: forceDurableLoad,
       hydrateLiveSession: !isTerminalRun,
+      onTranscriptReady: function () {
+        state.scheduledRunContext = scheduledContext;
+      },
     });
     if (!switched) {
       rollbackScheduledOpenActivation(openActivation);
@@ -2014,17 +2304,6 @@
     }
     if (forceDurableLoad) markScheduledInitialTurnTerminal(sessionId);
     else scheduledRunBuffer(sessionId);
-    var automationId = (run && run.automationId) || (task && task.id) || null;
-    var runId = (run && (run.runId || run.id)) || null;
-    state.scheduledRunContext = {
-      sessionId: sessionId,
-      returnSessionId: returnSessionId,
-      automationId: automationId,
-      runId: runId,
-      taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
-      model: (task && task.model) || null,
-      mode: "yolo",
-    };
     // 先发布完整会话视图；只有已完成的运行才持久化为已查看。
     notify();
     if (automationId && runId && runStatus === "completed") {
@@ -2095,23 +2374,35 @@
     loadWorkingSetFrom(freshBuffer());
   }
 
+  // Session storage is authoritative in Rust, but every desktop/Web frontend
+  // owns a separate presentation index. Apply the committed deletion event
+  // idempotently in either client so a remote delete cannot leave an ENOENT
+  // sidebar row behind in the other one.
+  function applyDeletedSession(id) {
+    if (typeof id !== "string" || !id) return false;
+    invalidateScheduledRecentRunsForSession(id);
+    purgeSessionBuffer(id);
+    state.sessions = state.sessions.filter(function (session) { return session.id !== id; });
+    state.archivedSessions = (state.archivedSessions || []).filter(function (session) {
+      return session.id !== id;
+    });
+    state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    notify();
+    return true;
+  }
+
   async function deleteSession(id) {
     invalidateScheduledRecentRunsForSession(id);
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id: id });
-      // 统一清理工作集、实时状态、定时创建上下文与当前视图，避免手写字段漂移。
-      purgeSessionBuffer(id);
-      state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
-      state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
-      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      notify();
+      applyDeletedSession(id);
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
     }
@@ -2399,7 +2690,10 @@
             var blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
               updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
-              addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
+              addChatItem({
+                type: "careful_blocked", toolCallId: c.tool_use_id,
+                args: tm.args, metadata: blockedMd, time: "",
+              });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
               var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
@@ -2901,44 +3195,84 @@
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
+    var turnOwnerBuffer = getBuffer(sid);
+    var submittedMessage = null;
+    var submittedUserItemId = 0;
+    var submittedStreamId = 0;
+    if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
+      return Promise.reject(new Error("该会话正在同步另一端完成的回合，请稍后重试"));
+    }
+    if (turnOwnerBuffer) {
+      turnOwnerBuffer.localTurnOwned = true;
+      turnOwnerBuffer.remoteTurnActive = false;
+      turnOwnerBuffer.remoteTerminalSeen = false;
+    }
     runSyncOnSession(sid, function () {
       var uitem = { type: "user", text: displayText, time: timeStr() };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
-      state.messages.push({ role: "user", content: [{ type: "text", text: displayText }] });
+      submittedUserItemId = uitem.id;
+      submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
+      state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
       currentStreamText = "";
       currentStreamId = ++itemIdSeq;
+      submittedStreamId = currentStreamId;
       state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
-    publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
-    return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
+    var chatCommand = IS_WEB ? "web_access_chat" : "chat";
+    var chatArgs = IS_WEB
+      ? {
+          message: text,
+          attachmentHandles: (attachmentsPayload || []).map(function (attachment) {
+            return attachment && attachment.handle;
+          }).filter(Boolean),
+          sessionId: sid,
+          restrictTools: !!restrictTools,
+        }
+      : { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools };
+    return invoke(chatCommand, chatArgs)
+      .then(function () {
+        if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        return true;
+      })
       .catch(function (err) {
+        var errorText = String(err && err.message ? err.message : err || "");
+        var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
+          state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
+          state.chatItems = state.chatItems.filter(function (item) {
+            return item.id !== submittedUserItemId && item.id !== submittedStreamId;
+          });
+          resetPendingAssistant();
           state.busy = false;
-          state.chatItems = state.chatItems.filter(function (item) { return item.id !== currentStreamId || item.html; });
+          stopThinking();
+        });
+        var deferredApplied = applyDeferredRemoteUserMessage(sid, turnOwnerBuffer);
+        if (concurrentTurn && turnOwnerBuffer && !deferredApplied) markRemoteTurn(sid, turnOwnerBuffer);
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
         });
         notify();
-        flushQueued(sid);
         if (surfaceFailure) throw err;
+        return false;
       });
-  }
-  function publishRemoteUserMessage(sid, content, clientMessageId) {
-    if (!sid || !content) return;
-    invoke("remote_control_publish_user_message", {
-      sessionId: sid,
-      content: content,
-      clientMessageId: clientMessageId || null,
-    }).catch(function () { /* 没开远控时静默跳过 */ });
   }
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
   // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
   function flushQueued(sid) {
+    var pendingBuffer = sessionStates[sid];
+    if (pendingBuffer && pendingBuffer.remoteTurnActive) {
+      reconcileRemoteTurn(sid).then(function (ready) {
+        if (ready) flushQueued(sid);
+      }).catch(function () {});
+      return;
+    }
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
@@ -2951,7 +3285,15 @@
     var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
-    doSendFor(sid, text, displayText, attachments, meta, restrictTools);
+    doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
+      .catch(function () {
+        var retryQueue = sid === state.activeSessionId
+          ? state.queued
+          : (sessionStates[sid] && sessionStates[sid].queued);
+        if (!retryQueue) return;
+        Array.prototype.unshift.apply(retryQueue, items);
+        notify();
+      });
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
@@ -2963,7 +3305,9 @@
     if (!exists) throw new Error("目标会话不存在");
 
     await ensureSessionBufferLoaded(sid);
-    if (isBusyFor(sid)) {
+    var targetBuffer = getBuffer(sid);
+    var targetQueue = targetBuffer && targetBuffer.queued;
+    if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++itemIdSeq,
@@ -2975,6 +3319,26 @@
         });
       });
       notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
+      return { accepted: true, queued: true };
+    }
+    if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      throw new Error("目标会话仍在同步另一端完成的回合");
+    }
+    targetBuffer = getBuffer(sid);
+    if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
+      runSyncOnSession(sid, function () {
+        state.queued.push({
+          id: ++itemIdSeq,
+          text: content,
+          displayText: content,
+          attachments: [],
+          meta: meta || null,
+          restrictTools: false,
+        });
+      });
+      notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
       return { accepted: true, queued: true };
     }
     var completion = doSendFor(sid, content, content, [], meta || null, false, true)
@@ -2999,37 +3363,99 @@
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
       if (!state.activeSessionId) return;
     }
-    // 定时任务引导:引导词只拼进发给模型的 payload,气泡/历史仍只显示用户输入。
-    var payloadText = text;
-    var restrictTools = false;
-    if (state.scheduledTaskPendingGuide) {
-      payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
-      restrictTools = true;
-      state.scheduledTaskPendingGuide = null;
-      state.scheduledTaskCreationSessionId = state.activeSessionId;
-      state.scheduledTaskDraft = null;
-      notify();
-    }
-
-    // 新一轮用户消息 → 先熄灭技能标；本轮若模型再 load_skill 会重新点亮（sticky-ish 生命周期）。
-    state.activeSkill = null;
-
+    var sid = state.activeSessionId;
+    var activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
     var displayText = readyAttachments.length > 0
       ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
       : text;
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
-    clearAttachments();
+    function consumeUiTurnState() {
+      var consumed = {
+        scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
+        scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
+        scheduledTaskDraft: state.scheduledTaskDraft,
+        activeSkill: state.activeSkill,
+      };
+      var payloadText = text;
+      var restrictTools = false;
+      // 定时任务引导只进入模型 payload；准入失败时由下面的 snapshot 恢复。
+      if (state.scheduledTaskPendingGuide) {
+        payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+        restrictTools = true;
+        state.scheduledTaskPendingGuide = null;
+        state.scheduledTaskCreationSessionId = sid;
+        state.scheduledTaskDraft = null;
+      }
+      // 新一轮先熄灭技能标；本轮 load_skill 会重新点亮。
+      state.activeSkill = null;
+      return { snapshot: consumed, payloadText: payloadText, restrictTools: restrictTools };
+    }
+    function restoreUiTurnState(consumed) {
+      if (!consumed || state.activeSessionId !== sid) return;
+      state.scheduledTaskPendingGuide = consumed.scheduledTaskPendingGuide;
+      state.scheduledTaskCreationSessionId = consumed.scheduledTaskCreationSessionId;
+      state.scheduledTaskDraft = consumed.scheduledTaskDraft;
+      state.activeSkill = consumed.activeSkill;
+    }
+    function queuePrepared(prepared) {
+      state.queued.push({
+        id: ++itemIdSeq,
+        text: prepared.payloadText,
+        displayText: displayText,
+        attachments: attachmentsPayload,
+        meta: meta || null,
+        restrictTools: prepared.restrictTools,
+      });
+      state.attachments = state.attachments.filter(function (attachment) {
+        return readyAttachments.indexOf(attachment) < 0;
+      });
+      notify();
+    }
 
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
-    if (state.busy) {
-      state.queued.push({ id: ++itemIdSeq, text: payloadText, displayText: displayText, attachments: attachmentsPayload, meta: meta || null, restrictTools: restrictTools });
-      notify();
+    if (isBusyFor(sid) || state.queued.length > 0) {
+      var queuedPreparation = consumeUiTurnState();
+      queuePrepared(queuedPreparation);
+      if (!isBusyFor(sid)) flushQueued(sid);
+      return;
+    }
+    if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
+        !(await reconcileRemoteTurn(sid))) {
+      if (state.activeSessionId !== sid) return;
+      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      return;
+    }
+    // The authoritative hydrate above is asynchronous. Never let an input that
+    // originated in Session A drift into Session B if the user navigated away.
+    if (state.activeSessionId !== sid) return;
+    if (isBusyFor(sid) || state.queued.length > 0) {
+      var racedQueuePreparation = consumeUiTurnState();
+      queuePrepared(racedQueuePreparation);
+      if (!isBusyFor(sid)) flushQueued(sid);
       return;
     }
 
-    await doSendFor(state.activeSessionId, payloadText, displayText, attachmentsPayload, meta, restrictTools);
+    var preparation = consumeUiTurnState();
+    var accepted = await doSendFor(
+      sid,
+      preparation.payloadText,
+      displayText,
+      attachmentsPayload,
+      meta,
+      preparation.restrictTools,
+    );
+    if (!accepted) {
+      restoreUiTurnState(preparation.snapshot);
+      notify();
+    } else {
+      // Do not clear files selected while the admission RPC was in flight.
+      state.attachments = state.attachments.filter(function (attachment) {
+        return readyAttachments.indexOf(attachment) < 0;
+      });
+      notify();
+    }
   }
   function prefillComposer(text) {
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
@@ -3161,36 +3587,130 @@
     }
   }
 
-  // ── Persist messages ─────────────────────────────────────────────
-  async function persistMessages() {
-    if (!state.activeSessionId) return;
-    if (isScheduledRunSession(state.activeSessionId)) return;
-    try {
-      await invoke("save_session_messages", { id: state.activeSessionId, messages: state.messages });
-      // artifacts 一起落盘，重启/切换 session 后能恢复
-      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
-      // Auto-title
-      var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[state.activeSessionId])) {
-        var firstUser = state.messages.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
-          await invoke("rename_session", { id: state.activeSessionId, title: newTitle });
-          meta.title = newTitle;
-          delete personaPlaceholderTitles[state.activeSessionId]; // 已被对话内容命名,卸下占位标记
-        }
-      }
-    } catch (e) {
-      console.warn("persist failed", e);
-    }
-  }
-
   // ── Event listeners ──────────────────────────────────────────────
+  listen("session:deleted", function (e) {
+    applyDeletedSession(e && e.payload && e.payload.id);
+  });
+
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
+  function applyRemoteUserMessageEvent(e, force) {
+    var payload = e && e.payload || {};
+    var sid = payload.session_id || state.activeSessionId;
+    if (!sid) return false;
+    var userBuffer = getBuffer(sid);
+    if (!userBuffer) return false;
+    if (userBuffer.localTurnOwned && !force) {
+      // Usually this is the acknowledgement for our optimistic bubble. Keep
+      // it briefly so a losing admission race can replay the competing UI's
+      // event after its own RPC returns session_turn_in_progress.
+      userBuffer.deferredRemoteUserEvent = e;
+      return false;
+    }
+    var content = String(payload.content || "");
+    var operation = String(payload.operation || "append");
+    var action = String(payload.action || "");
+    var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
+    var baseRevision = String(payload.base_transcript_revision || "");
+    var admissionKey = baseRevision
+      ? operation + ":" + baseRevision
+      : (e && e.id ? "event:" + e.id : "");
+    if (admissionKey && userBuffer.remoteAdmissionKeys.indexOf(admissionKey) >= 0) return false;
+    if (admissionKey) {
+      userBuffer.remoteAdmissionKeys.push(admissionKey);
+      if (userBuffer.remoteAdmissionKeys.length > 32) userBuffer.remoteAdmissionKeys.shift();
+    }
+    var lastUserText = "";
+    for (var messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
+      var candidate = userBuffer.messages[messageIndex];
+      if (candidate && candidate.role === "user") {
+        lastUserText = userMessageDisplayText(candidate.content || [], false);
+        break;
+      }
+    }
+    var snapshotAlreadyCoversTurn = !!(
+      userBuffer.loadedFromDisk && baseRevision && userBuffer.sessionRevision &&
+      userBuffer.sessionRevision !== baseRevision && lastUserText === content
+    );
+    markRemoteTurn(sid, userBuffer);
+    runSyncOnSession(sid, function () {
+      if (action === "accept_plan") {
+        state.chatItems.forEach(function (item) {
+          if (item && item.type === "plan_card" && item.cardState === "active" && !item.resolved &&
+              (!actionPlanId || String(item.planId || "") === actionPlanId)) {
+            item.cardState = "approved";
+            item.resolved = true;
+            item.statusLabel = bt("approved");
+          }
+        });
+        var acceptedMode = payload.mode_state || payload.modeState;
+        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+      }
+      if (!snapshotAlreadyCoversTurn) {
+        if (operation === "edit_last") {
+          for (var index = state.chatItems.length - 1; index >= 0; index--) {
+            if (state.chatItems[index] && state.chatItems[index].type === "user") {
+              state.chatItems.splice(index);
+              break;
+            }
+          }
+          resetPendingAssistant();
+        }
+        addChatItem({ type: "user", text: content, time: timeStr() });
+      }
+      state.busy = true;
+      if (!state.thinking.active) startThinking();
+      currentStreamText = "";
+      currentStreamId = 0;
+    });
+    notify();
+    return true;
+  }
+
+  function planCardHydrationKey(item) {
+    if (!item || item.type !== "plan_card") return "";
+    if (item.planMarkdown) return "markdown:" + String(item.planMarkdown);
+    try {
+      return "snapshot:" + JSON.stringify({ plan: item.plan || null, todos: item.todos || null });
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function applyDeferredRemoteUserMessage(sid, buf) {
+    if (!buf || !buf.deferredRemoteUserEvent) return false;
+    var deferredEvent = buf.deferredRemoteUserEvent;
+    buf.deferredRemoteUserEvent = null;
+    return applyRemoteUserMessageEvent(deferredEvent, true);
+  }
+
+  listen("chat:user_message", function (e) {
+    applyRemoteUserMessageEvent(e, false);
+  });
+
+  listen("chat:transcript_committed", function (e) {
+    var payload = e && e.payload || {};
+    var sid = payload.session_id || state.activeSessionId;
+    if (!sid) return;
+    var committedBuffer = getBuffer(sid);
+    if (!committedBuffer) return;
+    var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
+    if (revision) committedBuffer.sessionRevision = revision;
+    if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
+      reconcileRemoteTurn(sid).then(function (ready) {
+        if (ready) flushQueued(sid);
+      }).catch(function () {});
+    }
+  });
+
+  listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
+    state.busy = true;
+    if (!state.thinking.active) startThinking();
+    notify();
+  }); });
+
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
     var text = e.payload && e.payload.text || "";
     pendingAssistantText += text;
@@ -3270,6 +3790,10 @@
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    // Relay reconnects and the desktop event bridge may replay the last frame.
+    // Tool-call ids are durable identities, so never create a second message/card
+    // for the same call. Normal repeated calls have distinct ids and remain visible.
+    if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     toolMeta[p.id] = { name: p.name, args: p.args };
     thinkingTool(p.name);
@@ -3314,6 +3838,7 @@
 
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    if (toolCallAlreadyFinished(p.id)) return;
     var meta = toolMeta[p.id];
     thinkingIdle();
     var resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
@@ -3413,7 +3938,12 @@
     // Careful hook：DeepSeek-TUI shell.rs 拦截 Dangerous → 红色拦截卡
     var md = p.metadata;
     if (md && md.safety_level === "dangerous" && md.blocked) {
-      addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
+      if (!hasChatItemForTool("careful_blocked", p.id)) {
+        addChatItem({
+          type: "careful_blocked", toolCallId: p.id,
+          args: meta && meta.args, metadata: md, time: timeStr(),
+        });
+      }
     }
 
     // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
@@ -3457,11 +3987,24 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    var knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
+    var scheduledDoneSession = isScheduledRunSession(sid);
+    if (sid && sid !== state.activeSessionId && !sessionStates[sid] &&
+        !knownDoneSession && !scheduledDoneSession) {
+      // A stale/malformed terminal for an unknown ordinary Session must not
+      // allocate a background buffer or persist the active Session into it.
+      return;
+    }
+    var doneBuffer = sid ? getBuffer(sid) : null;
+    if (doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
+      // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+      // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+      if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
@@ -3493,15 +4036,41 @@
       currentStreamText = "";
       currentStreamId = 0;
     });
+    if (doneBuffer) {
+      // Rust has already committed the final transcript before chat:done. Keep
+      // both UIs behind a short authority barrier until that snapshot is loaded.
+      var finalAssistantMessage = null;
+      for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
+        if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
+          finalAssistantMessage = doneBuffer.messages[doneMessageIndex];
+          break;
+        }
+      }
+      doneBuffer.remoteExpectedAssistantKey = finalAssistantMessage
+        ? hydratedMessageKey(finalAssistantMessage, isScheduledRunSession(sid))
+        : "";
+      if (doneBuffer.localTurnOwned) doneBuffer.deferredRemoteUserEvent = null;
+      doneBuffer.localTurnOwned = false;
+      doneBuffer.remoteTurnActive = true;
+      doneBuffer.remoteTerminalSeen = true;
+      doneBuffer.busy = false;
+      if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
+    }
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
+      var reconciled = await reconcileRemoteTurn(sid);
+      if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
+      if (!reconciled) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。");
+        });
+      }
       notify();
-      publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
-      flushQueued(sid);
+      if (reconciled) flushQueued(sid);
     })();
   });
 
@@ -3545,6 +4114,7 @@
         state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
+    if (hasChatItemForTool("user_input", p.id)) return;
     addChatItem({
       type: "user_input", toolCallId: p.id, questions: questions,
       resolved: false, cardState: "active", time: timeStr(),
@@ -3558,6 +4128,10 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) addSystemItem("⚠️ " + error);
+    // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+    // 兜底启动检测被绕过/中途删 key 的场景。
+    // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+    if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
@@ -3575,62 +4149,6 @@
       // (file_watcher 递归会推 tmp/ _state/ 等子目录与 infra 文件 → 此处兜住)。
       if (isDeliverable(p.path) || findPresentedArtifact(p.path)) trackArtifact(p.path);
     });
-  });
-
-  listen("remote_control:mobile_user_message", async function (e) {
-    var p = e.payload || {};
-    var sid = p.session_id;
-    var content = (p.content || "").trim();
-    var attachments = p.attachments || [];
-    // 允许纯附件消息(content 为空但 attachments 非空),对齐 Group E user_message 改造。
-    if (!sid || (!content && !attachments.length)) return;
-    try { await ensureSessionBufferLoaded(sid); }
-    catch (err) {
-      console.warn("remote session hydrate failed", err);
-      return;
-    }
-    var attachmentNames = attachments.map(function (attachment) {
-      return attachment && attachment.basename;
-    }).filter(Boolean);
-    var displayText = attachmentNames.length
-      ? content + (content ? "\n\n" : "") + "📎 " + attachmentNames.join(" · ")
-      : content;
-    if (isBusyFor(sid)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++itemIdSeq,
-          text: content,
-          displayText: displayText,
-          attachments: attachments,
-          meta: { remoteClientMessageId: p.client_message_id || null },
-        });
-      });
-      notify();
-      return;
-    }
-    doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
-  });
-
-  // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到
-  // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
-  // 让 chip 上的工具开关计数立即同步。
-  listen("remote_control:tools_changed", function () {
-    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
-  });
-
-  // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
-  // 桌面前端 state.mountedCollection(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
-  // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
-  // payload 形状:{ session_id, collection_id } 或 { session_id, collection_id: null }。
-  // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
-  listen("remote_control:kb_mount_changed", function (e) {
-    var p = e && e.payload;
-    if (!p || !state.activeSessionId) return;
-    if (p.session_id !== state.activeSessionId) return;
-    var cid = (p.collection_id == null) ? null : p.collection_id;
-    if (state.mountedCollection === cid) return;
-    state.mountedCollection = cid;
-    notify();
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
@@ -3669,6 +4187,12 @@
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
+    var planId = String(p.plan_id || p.planId || "").trim();
+    var readyMode = p.mode_state || p.modeState;
+    if (readyMode) applyModeFromState(readyMode);
+    if (planId && state.chatItems.some(function (item) {
+      return item && item.type === "plan_card" && String(item.planId || "") === planId;
+    })) return;
     // 新方案出现 → 旧的 active 方案卡冻结
     state.chatItems.forEach(function (it) {
       if (it.type === "plan_card" && it.cardState === "active") {
@@ -3678,10 +4202,36 @@
     var snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
     addChatItem({
       type: "plan_card", plan: snaps.plan, todos: snaps.todos,
-      planMarkdown: composePlanMarkdown(snaps), cardState: "active", statusLabel: "", time: timeStr(),
+      planMarkdown: composePlanMarkdown(snaps), planId: planId || null,
+      cardState: planId ? "active" : "frozen", resolved: !planId,
+      planResolutionConfirmed: false,
+      statusLabel: planId ? "" : bt("planHistorical"), time: timeStr(),
     });
     notify();
   }); });
+
+  // A discard is a shared plan-state transition but not a model turn. Apply it
+  // directly to the matching ticket without marking the Session busy or adding
+  // a synthetic user bubble.
+  listen("chat:plan_resolved", function (e) {
+    var p = e && e.payload || {};
+    var sid = p.session_id || state.activeSessionId;
+    var planId = String(p.plan_id || p.planId || "").trim();
+    if (!sid || !planId) return;
+    runSyncOnSession(sid, function () {
+      state.chatItems.forEach(function (item) {
+        if (item && item.type === "plan_card" && String(item.planId || "") === planId) {
+          item.cardState = "frozen";
+          item.resolved = true;
+          item.planResolutionConfirmed = true;
+          item.statusLabel = bt("planDiscarded");
+        }
+      });
+      var resolvedMode = p.mode_state || p.modeState;
+      if (resolvedMode) applyModeFromState(resolvedMode);
+    });
+    notify();
+  });
 
   // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
   // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
@@ -3904,6 +4454,9 @@
     if (!state.workflow.run.sessionId || p.session_id !== state.workflow.run.sessionId) return;
     if (state.workflow.run.status === "stopped") return;
     var qs = p.questions || []; if (!Array.isArray(qs) || !qs.length) return;
+    if ((state.workflow.run.cards || []).some(function (card) {
+      return card && card.kind === "user_input" && card.toolCallId === p.id;
+    })) return;
     pushRunCard({ kind: "user_input", toolCallId: p.id, questions: qs, resolved: false });
     notify();
   });
@@ -4214,10 +4767,15 @@
   async function setSelectedPet(id) {
     return await invoke("set_selected_pet", { id: id });
   }
-  async function loadEffectiveModelConfig() {
+  async function loadEffectiveModelConfig(sessionId) {
+    var requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
     try {
-      state.effectiveModelConfig = await invoke("get_effective_model_config");
+      var config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
+      // 快速切会话时，旧请求可能晚于新请求返回；禁止旧会话配置覆盖当前遮罩状态。
+      if ((state.activeSessionId || null) !== requestedSessionId) return;
+      state.effectiveModelConfig = config;
     } catch (e) {
+      if ((state.activeSessionId || null) !== requestedSessionId) return;
       state.effectiveModelConfig = null;
     }
     notify();
@@ -4225,7 +4783,7 @@
   async function saveSettings(prefs) {
     const previous = state.settings;
     try {
-      await invoke("update_settings", { prefs: prefs });
+      await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { prefs: prefs });
       state.settings = prefs;
       notify();
       return true;
@@ -4322,8 +4880,10 @@
     state.vllmSetupDismissed = true;
     notify();
   }
-  async function getEffectiveModelConfig() {
-    return await invoke("get_effective_model_config");
+  async function getEffectiveModelConfig(sessionId) {
+    return await invoke("get_effective_model_config", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
   }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
@@ -4342,6 +4902,7 @@
  async function saveModel(model) {
    await invoke("save_model", { model: model });
    await loadModels();
+   await loadEffectiveModelConfig();
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
@@ -4349,25 +4910,42 @@
  async function deleteModel(id) {
    await invoke("delete_model", { id: id });
    await loadModels();
+   await loadEffectiveModelConfig();
   }
   async function setActiveModel(id) {
     await invoke("set_active_model", { id: id });
     await loadModels();
+    await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
   async function loadSessionModel(sessionId) {
-    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
+    var requestedSessionId = sessionId || null;
+    var modelId = null;
+    var config = null;
     try {
-      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
-    } catch (e) { state.currentSessionModelId = null; }
+      var results = await Promise.all([
+        requestedSessionId
+          ? invoke("get_session_model_id", { sessionId: requestedSessionId }).catch(function () { return null; })
+          : Promise.resolve(null),
+        invoke("get_effective_model_config", { sessionId: requestedSessionId }).catch(function () { return null; }),
+      ]);
+      modelId = results[0];
+      config = results[1];
+    } catch (e) {
+      modelId = null;
+      config = null;
+    }
+    // ChatView effect 可能并发加载相邻两个会话；只提交仍为当前会话的结果。
+    if ((state.activeSessionId || null) !== requestedSessionId) return;
+    state.currentSessionModelId = modelId;
+    state.effectiveModelConfig = config;
     notify();
   }
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
   async function switchModel(sessionId, modelId) {
     if (sessionId) {
       await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
-      state.currentSessionModelId = modelId;
-      notify();
+      await loadSessionModel(sessionId);
     } else {
       await setActiveModel(modelId);
     }
@@ -4426,8 +5004,14 @@
     }
   }
   function pushUserEcho(text, persist) {
-    addChatItem({ type: "user", text: text, time: timeStr() });
-    if (persist) state.messages.push({ role: "user", content: [{ type: "text", text: text }] });
+    var item = { type: "user", text: text, time: timeStr() };
+    var message = null;
+    addChatItem(item);
+    if (persist) {
+      message = { role: "user", content: [{ type: "text", text: text }] };
+      state.messages.push(message);
+    }
+    return { item: item, message: message };
   }
   function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
 
@@ -4714,32 +5298,126 @@
     state.modeState = { mode: st.mode || "yolo" };
   }
 
+  function isActionablePlanCard(sid, itemId, planId) {
+    if (!sid || sid !== state.activeSessionId || !itemId || !planId) return false;
+    return state.chatItems.some(function (item) {
+      return item && item.id === itemId && item.type === "plan_card" &&
+        item.cardState === "active" && !item.resolved && String(item.planId || "") === planId;
+    });
+  }
+
   // ── Plan/YOLO 命令 ───────────────────────────────────────────────
   // sid 在 entry 捕获一次,thread through 所有 await —— 防用户切 session 后,
   // 后续 UI 写入/IPC 把卡片塞到错误的 session。
-  async function acceptPlan(itemId, planMarkdown, echo) {
+  async function acceptPlan(itemId, planMarkdown, echo, planId) {
     var sid = state.activeSessionId;
     if (!sid) return;
+    var planTicket = String(planId || "").trim();
+    if (!planTicket) {
+      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
+      addSystemItemFor(sid, "⚠️ 方案凭证已失效，请重新生成方案后再执行");
+      notify();
+      return;
+    }
+    var planBuffer = getBuffer(sid);
+    if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      addSystemItemFor(sid, "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      notify();
+      return;
+    }
+    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    if (planBuffer) {
+      planBuffer.localTurnOwned = true;
+      planBuffer.remoteTurnActive = false;
+      planBuffer.remoteTerminalSeen = false;
+    }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
-    runOnSession(sid, function () { pushUserEcho(echo || bt("echoGo"), true); state.busy = true; startThinking(); });
+    var echoEntry = null;
+    var displayEcho = echo || bt("echoGo");
+    runOnSession(sid, function () {
+      echoEntry = pushUserEcho(displayEcho, true);
+      state.busy = true;
+      startThinking();
+    });
     notify();
     try {
-      var st = await invoke("accept_plan", { sessionId: sid, planMarkdown: planMarkdown || "" });
+      var st = await invoke("accept_plan", {
+        sessionId: sid,
+        planMarkdown: planMarkdown || "",
+        displayMessage: displayEcho,
+        planId: planTicket,
+      });
+      if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       runOnSession(sid, function () { applyModeFromState(st); });
     } catch (e) {
-      if (itemId) patchItemByIdFor(sid, itemId, { cardState: "active", statusLabel: "", resolved: false });
-      runOnSession(sid, function () { state.busy = false; });
+      var errorText = String(e && e.message ? e.message : e || "");
+      var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+      var planNotActive = errorText.indexOf("plan_not_active") >= 0;
+      if (planBuffer) planBuffer.localTurnOwned = false;
+      if (itemId) {
+        patchItemByIdFor(sid, itemId, planNotActive
+          ? { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true }
+          : { cardState: "active", statusLabel: "", resolved: false });
+      }
+      runOnSession(sid, function () {
+        if (echoEntry) {
+          state.chatItems = state.chatItems.filter(function (item) { return item !== echoEntry.item; });
+          state.messages = state.messages.filter(function (message) { return message !== echoEntry.message; });
+        }
+        state.busy = false;
+        stopThinking();
+      });
+      var deferredApplied = applyDeferredRemoteUserMessage(sid, planBuffer);
+      if (concurrentTurn && planBuffer && !deferredApplied) markRemoteTurn(sid, planBuffer);
+      try {
+        var currentMode = await invoke("get_mode_state", { sessionId: sid });
+        runOnSession(sid, function () { applyModeFromState(currentMode); });
+      } catch (_) {}
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
     notify();
   }
-  async function discardPlan(itemId) {
-    if (itemId) patchItemById(itemId, { cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true });
-    if (!state.activeSessionId) { notify(); return; }
+  async function discardPlan(itemId, planId) {
+    var sid = state.activeSessionId;
+    var planTicket = String(planId || "").trim();
+    if (!sid || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    patchItemByIdFor(sid, itemId, {
+      cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true,
+      planResolutionConfirmed: false,
+    });
+    // Reflect the user's decision immediately. The remote invoke may remain
+    // pending until its transport timeout when the desktop disconnects.
+    notify();
     try {
-      var st = await invoke("discard_plan", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("discardPlanFailed") + e); }
+      var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
+      runOnSession(sid, function () { applyModeFromState(st); });
+    } catch (e) {
+      var errorText = String(e && e.message ? e.message : e || "");
+      var planNotActive = errorText.indexOf("plan_not_active") >= 0;
+      runOnSession(sid, function () {
+        var card = state.chatItems.find(function (item) {
+          return item && item.id === itemId && item.type === "plan_card" &&
+            String(item.planId || "") === planTicket;
+        });
+        if (!card) return;
+        if (planNotActive) {
+          card.cardState = "frozen";
+          card.resolved = true;
+          card.statusLabel = bt("planHistorical");
+        } else if (!card.planResolutionConfirmed) {
+          card.cardState = "active";
+          card.resolved = false;
+          card.statusLabel = "";
+        }
+      });
+      if (planNotActive) {
+        try {
+          var currentMode = await invoke("get_mode_state", { sessionId: sid });
+          runOnSession(sid, function () { applyModeFromState(currentMode); });
+        } catch (_) {}
+      }
+      addSystemItemFor(sid, bt("discardPlanFailed") + e);
+    }
     notify();
   }
   async function exitPlanToYolo() {
@@ -4801,6 +5479,31 @@
     if (state.busy || !state.activeSessionId) return;
     newText = (newText || "").trim();
     if (!newText) return;
+    var sid = state.activeSessionId;
+    var editBuffer = getBuffer(sid);
+    if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      notify();
+      return;
+    }
+    // Re-check after the asynchronous reconciliation: the user may have
+    // switched Session or another turn may have started in the meantime.
+    if (state.activeSessionId !== sid || state.busy) return;
+    var previous = {
+      messages: state.messages.slice(),
+      chatItems: state.chatItems.slice(),
+      busy: state.busy,
+      thinking: Object.assign({}, state.thinking),
+      currentStreamText: currentStreamText,
+      currentStreamId: currentStreamId,
+      pendingAssistantText: pendingAssistantText,
+      pendingAssistantBlocks: pendingAssistantBlocks.slice(),
+    };
+    if (editBuffer) {
+      editBuffer.localTurnOwned = true;
+      editBuffer.remoteTurnActive = false;
+      editBuffer.remoteTerminalSeen = false;
+    }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
@@ -4816,14 +5519,34 @@
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
     state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    if (editBuffer) saveWorkingSetTo(editBuffer);
     notify();
-    turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
+    turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
+    emitPetEvent("pet:turn_start", sid);
     try {
-      await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
+      await invoke("edit_last_turn", { newMessage: newText, sessionId: sid });
+      if (editBuffer) editBuffer.deferredRemoteUserEvent = null;
     } catch (e) {
-      addSystemItem("⚠️ " + e);
-      state.busy = false;
+      var errorText = String(e && e.message ? e.message : e || "");
+      var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+      emitPetEvent("pet:turn_end", sid);
+      if (editBuffer) editBuffer.localTurnOwned = false;
+      runSyncOnSession(sid, function () {
+        state.messages = previous.messages;
+        state.chatItems = previous.chatItems;
+        state.busy = previous.busy;
+        state.thinking = previous.thinking;
+        currentStreamText = previous.currentStreamText;
+        currentStreamId = previous.currentStreamId;
+        pendingAssistantText = previous.pendingAssistantText;
+        pendingAssistantBlocks = previous.pendingAssistantBlocks;
+      });
+      if (state.activeSessionId === sid && editBuffer) saveWorkingSetTo(editBuffer);
+      var deferredApplied = applyDeferredRemoteUserMessage(sid, editBuffer);
+      if (concurrentTurn && editBuffer && !deferredApplied) markRemoteTurn(sid, editBuffer);
+      runSyncOnSession(sid, function () { addSystemItem("⚠️ " + e); });
       notify();
+      flushQueued(sid);
     }
   }
   async function compactNow() {
@@ -4831,22 +5554,53 @@
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────
-  function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
-  function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
-  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path: path, content: content }); }
-  function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
+  function invokeArtifact(nativeCommand, webCommand, path, sessionId, extra) {
+    var args = Object.assign({ path: path }, extra || {});
+    if (IS_WEB) {
+      args.sessionId = sessionId || state.activeSessionId;
+      return invoke(webCommand, args);
+    }
+    return invoke(nativeCommand, args);
+  }
+  function artifactInfo(path, sessionId) {
+    return invokeArtifact("artifact_info", "web_access_artifact_info", path, sessionId);
+  }
+  function readArtifactText(path, sessionId) {
+    return invokeArtifact("read_artifact_text", "web_access_read_artifact_text", path, sessionId);
+  }
+  function writeArtifactText(path, content, sessionId) {
+    return invokeArtifact("write_artifact_text", "web_access_write_artifact_text", path, sessionId, { content: content });
+  }
+  function readArtifactImageB64(path, sessionId) {
+    return invokeArtifact("read_artifact_image_b64", "web_access_read_artifact_image_b64", path, sessionId);
+  }
   // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
-  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
-  function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
+  function readArtifactThumbnail(path, sessionId) {
+    return invokeArtifact("read_artifact_thumbnail", "web_access_read_artifact_thumbnail", path, sessionId).catch(function () { return null; });
+  }
+  function renderArtifactVisual(path, sessionId) {
+    return invokeArtifact("render_artifact_visual", "web_access_render_artifact_visual", path, sessionId);
+  }
   function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId: automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openInSystem(path) {
+    if (IS_WEB) return downloadArtifact(path, null);
+    return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+  }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
-  function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openExternalUrl(url) {
+    if (IS_WEB) {
+      var opened = window.open(url, "_blank", "noopener,noreferrer");
+      return Promise.resolve(!!opened);
+    }
+    return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+  }
   // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
-  function listDeliverables(projectDir) {
-    return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
+  function listDeliverables(projectDir, sessionId) {
+    var command = IS_WEB ? "web_access_list_deliverables" : "list_deliverables";
+    var args = IS_WEB ? { sessionId: sessionId || state.workflow.run.sessionId } : { projectDir: projectDir };
+    return invoke(command, args).catch(function () { return []; });
   }
   function deliverableCategory(path) {
     var ext = (String(path || "").split(".").pop() || "").toLowerCase();
@@ -4890,7 +5644,7 @@
         } catch (_) {}
       }
       var info = null;
-      try { info = await artifactInfo(path); } catch (_) {}
+      try { info = await artifactInfo(path, x.sessionId); } catch (_) {}
       var ext = (String(path).split(".").pop() || "").toLowerCase();
       return {
         name: x.name || basename(path),
@@ -4913,9 +5667,100 @@
   // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
   // session 才解析得准(否则相对路径被拼到错的 workspace 报 not a file)。绝对路径无视它。
   function openArtifactExternal(path, sessionId) {
+    if (IS_WEB) return downloadArtifact(path, sessionId);
     var ext = (String(path).split(".").pop() || "").toLowerCase();
     var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
     return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+  }
+
+  var MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+  function webArtifactDownloadLimitError(size) {
+    var suffix = Number.isSafeInteger(size) && size >= 0
+      ? "（当前文件 " + (size / (1024 * 1024)).toFixed(1) + " MiB）"
+      : "";
+    return new Error("WebUI 单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。");
+  }
+
+  async function downloadArtifact(path, sessionId) {
+    if (IS_WEB && !hasCapability("artifactDownload")) {
+      addSystemItem("⚠️ 当前桌面端不支持 WebUI 产物下载，请更新桌面端后重试。");
+      return false;
+    }
+    try {
+      return await downloadArtifactRaw(path, sessionId);
+    } catch (e) {
+      addSystemItem("⚠️ 产物下载失败: " + String((e && e.message) || e));
+      return false;
+    }
+  }
+
+  async function downloadArtifactRaw(path, sessionId) {
+    if (!IS_WEB || !hasCapability("artifactDownload")) {
+      throw new Error("当前环境未启用 WebUI 产物下载能力");
+    }
+    var resolvedSessionId = sessionId || state.activeSessionId || null;
+    var info = await artifactInfo(path, resolvedSessionId);
+    if (!info || info.exists === false) throw new Error("产物不存在或已被移除");
+    var expectedSize = Number(info.size);
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+      throw new Error("桌面端返回了无效的产物大小，已停止下载");
+    }
+    if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
+      throw webArtifactDownloadLimitError(expectedSize);
+    }
+    var offset = 0;
+    var chunks = [];
+    var filename = basename(path) || "artifact";
+    while (true) {
+      var part = await invoke("web_access_read_artifact_chunk", {
+        path: path,
+        sessionId: resolvedSessionId,
+        offset: offset,
+        limit: 262144,
+      });
+      if (!part) throw new Error("Artifact download returned no data");
+      var partOffset = Number(part.offset);
+      var partSize = Number(part.size);
+      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
+          !Number.isSafeInteger(partSize) || partSize < 0) {
+        throw new Error("桌面端返回了无效的产物分块，已停止下载");
+      }
+      if (partSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
+        throw webArtifactDownloadLimitError(partSize);
+      }
+      if (partSize !== expectedSize) {
+        throw new Error("产物在下载期间发生变化，请重试");
+      }
+      filename = part.name || filename;
+      var encoded = String(part.data_base64 || part.dataBase64 || "");
+      var binary = atob(encoded);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (!bytes.length && !part.eof) throw new Error("Artifact download made no progress");
+      if (bytes.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset) {
+        throw webArtifactDownloadLimitError(offset + bytes.length);
+      }
+      if (offset + bytes.length > expectedSize) {
+        throw new Error("桌面端返回的产物数据超过声明大小，已停止下载");
+      }
+      chunks.push(bytes);
+      offset += bytes.length;
+      if (part.eof) {
+        if (offset !== expectedSize) throw new Error("产物下载不完整，请重试");
+        break;
+      }
+    }
+    var blob = new Blob(chunks, { type: "application/octet-stream" });
+    var objectUrl = URL.createObjectURL(blob);
+    var anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
+    return true;
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
@@ -4924,7 +5769,7 @@
     var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
     state.attachments.push(att); notify();
     try {
-      var result = await invoke("ingest_file", { path: path });
+      var result = await invoke(IS_WEB ? "web_access_ingest_file" : "ingest_file", { path: path });
       att.status = "ready"; att.result = result;
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
@@ -5022,7 +5867,7 @@
       for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
-  initAttachmentDrop();
+  if (!IS_WEB) initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
@@ -5172,30 +6017,9 @@
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
-  listen("remote_control:status", function (e) {
-    state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
+  listen("web_access:status", function (e) {
+    state.webAccess = Object.assign({}, state.webAccess, e.payload || {});
     notify();
-  });
-  listen("remote_control:snapshot_requested", function (e) {
-    var sid = e && e.payload && e.payload.session_id;
-    if (!sid) return;
-    publishRemoteLiveSnapshot(sid).catch(function () {});
-  });
-  listen("remote_control:session_created", function (e) {
-    var s = e && e.payload && e.payload.session;
-    if (s && s.id) {
-      getBuffer(s.id);
-      if (!state.sessions.some(function (item) { return item.id === s.id; })) {
-        state.sessions.unshift({
-          id: s.id,
-          title: s.title || "新对话",
-          updated_at: s.updated_at || "",
-          message_count: s.message_count || 0,
-        });
-      }
-      notify();
-    }
-    refreshHistoryList().then(function () { notify(); }).catch(function () {});
   });
   async function loadAppVersion() {
     try {
@@ -5224,11 +6048,17 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;macOS 下载 dmg 后
+  // hdiutil attach + cp -R 并自动重启(与 Linux 同型);Windows 下载 zip 后解析 MSI,
   // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    // macOS 与 Linux 一样安装后自动重启:app.restart() 按路径 exec,
+    // bundle 被替换后该路径已指向新文件,spawn 新进程即加载新版(inode 语义与 Linux 同)。
+    // Ok(false) 表示「安装完成,进程未退出,由前端决定 restart」,不是「需手动重启」。
+    // 唯一不自动重启的是 Windows(MSI 安装器接管,后端 Ok(true)→app.exit)。
+    var shouldRestartAfterInstall =
+      state.updateInfo.platform === "linux" || state.updateInfo.platform === "macos";
     var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
@@ -5238,7 +6068,9 @@
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {
-        await invoke("install_update", { debPath: downloadResult });
+        // Linux/macOS:download_update 返回纯路径字符串(JSON untagged),走 debPath 分支。
+        // 传 info 让 macOS 后端做安装前 sha256 复验(TOCTOU 纵深防御);Linux 后端目前忽略此参数。
+        await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
       }
       state.updateReady = true;
       installed = true;
@@ -5265,52 +6097,67 @@
     invoke("report_pending_update_result").catch(function () { /* 静默重试,不阻塞启动 */ });
   }
 
-  // ── Remote Control: 当前 session 手机远控 ───────────────────────
-  async function refreshRemoteControlStatus() {
+  // ── Persistent instance-scoped Web access ──────────────────────
+  async function refreshWebAccessStatus() {
     try {
-      var status = await invoke("remote_control_status");
-      state.remoteControl = Object.assign({}, state.remoteControl, status || {});
+      var status = await invoke("web_access_status");
+      state.webAccess = Object.assign({}, state.webAccess, status || {});
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { last_error: String(e) });
+      state.webAccess = Object.assign({}, state.webAccess, { last_error: String(e) });
     }
     notify();
   }
-  async function startRemoteControl(sessionId) {
-    state.remoteControl = Object.assign({}, state.remoteControl, { starting: true, last_error: null });
+  async function enableWebAccess() {
+    state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
     notify();
     try {
-      var info = await invoke("remote_control_start", { sessionId: sessionId || null });
-      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, starting: false, last_error: null });
-      await refreshRemoteControlStatus();
+      var info = await invoke("web_access_enable");
+      state.webAccess = Object.assign({}, state.webAccess, info || {}, { active: true, starting: false, last_error: null });
+      await refreshWebAccessStatus();
       return info;
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { active: false, starting: false, status: "error", last_error: String(e) });
+      state.webAccess = Object.assign({}, state.webAccess, { active: false, starting: false, status: "error", last_error: String(e) });
       notify();
       throw e;
     }
   }
-  async function stopRemoteControl() {
+  async function disableWebAccess() {
     try {
-      await invoke("remote_control_stop");
+      await invoke("web_access_disable");
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
+      state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(e) });
       notify();
       throw e;
     }
-    state.remoteControl = Object.assign({}, state.remoteControl, { active: false, pairing: null, status: "stopped" });
+    state.webAccess = Object.assign({}, state.webAccess, { active: false, endpoint_id: null, url: null, qr_data_url: null, status: "stopped" });
     notify();
   }
-  async function refreshRemoteControlQr(sessionId) {
+  async function rotateWebAccessLink() {
     try {
-      var info = await invoke("remote_control_refresh_qr", { sessionId: sessionId || null });
-      state.remoteControl = Object.assign({}, state.remoteControl, info || {}, { active: true, pairing: info, last_error: null });
-      await refreshRemoteControlStatus();
+      var info = await invoke("web_access_rotate");
+      state.webAccess = Object.assign({}, state.webAccess, info || {}, { active: true, last_error: null });
+      await refreshWebAccessStatus();
       return info;
     } catch (e) {
-      state.remoteControl = Object.assign({}, state.remoteControl, { status: "error", last_error: String(e) });
+      state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(e) });
       notify();
       throw e;
     }
+  }
+  // 自定义 Relay 服务器：查询/保存/恢复默认。保存与恢复在已启用时会触发后端
+  // refresh（旧链接失效、新链接换服务器），所以随后同步一次 webAccess 状态。
+  async function getWebRelaySettings() {
+    return invoke("web_access_relay_settings");
+  }
+  async function setWebRelayAddress(address) {
+    var info = await invoke("web_access_set_relay", { address: address });
+    await refreshWebAccessStatus();
+    return info;
+  }
+  async function resetWebRelayAddress() {
+    var info = await invoke("web_access_reset_relay");
+    await refreshWebAccessStatus();
+    return info;
   }
 
   // ── 依赖体检 ─────────────────────────────────────────────────────
@@ -5530,13 +6377,18 @@
       }
       var pcm = downsamplePcm(raw, session.sampleRate, 16000);
       var wav = encodeWav(pcm, 16000);
-      var bytes = Array.from(new Uint8Array(wav));
-      var res = await invoke("transcribe_voice_audio", {
-        request: {
-          audio_bytes: bytes,
-          session_id: session.sessionId,
-        },
-      });
+      var wavBytes = new Uint8Array(wav);
+      var res = IS_WEB
+        ? await invoke("web_access_transcribe_voice_audio", {
+            audioBase64: encodeBase64Bytes(wavBytes),
+            sessionId: session.sessionId,
+          })
+        : await invoke("transcribe_voice_audio", {
+            request: {
+              audio_bytes: Array.from(wavBytes),
+              session_id: session.sessionId,
+            },
+          });
       if (activeVoiceInput !== session) return;
       var text = String((res && res.text) || "").trim();
       if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
@@ -5618,12 +6470,40 @@
       return;
     }
 
+    // iOS/WebKit 只允许在用户点击的同步调用栈里启动 AudioContext。Web 端先在任何
+    // await 之前创建并 resume，后续依赖检测和麦克风授权完成后复用这个 context。
+    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var primedAudioContext = null;
+    var primedAudioResume = null;
+    if (IS_WEB && AudioCtor) {
+      try {
+        primedAudioContext = new AudioCtor();
+        primedAudioResume = primedAudioContext.state === "suspended"
+          ? primedAudioContext.resume().catch(function () {})
+          : Promise.resolve();
+      } catch (_) {
+        primedAudioContext = null;
+        primedAudioResume = null;
+      }
+    }
+
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
       var asrStatus = await invoke("voice_asr_status");
       // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
       // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
       if (asrStatus && !asrStatus.ready) {
+        if (IS_WEB) {
+          if (primedAudioContext) primedAudioContext.close().catch(function () {});
+          setVoiceInputStatus("failed", {
+            message: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
+            error: "voice_asr_not_ready",
+            category: "dependency_unavailable",
+            stage: "dependency",
+            completedAt: Date.now(),
+          });
+          return;
+        }
         state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
         notify();
         return;
@@ -5632,7 +6512,6 @@
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
     var session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
@@ -5641,6 +6520,7 @@
       chunks: [],
       sampleRate: 16000,
       startedAt: Date.now(),
+      audioContext: primedAudioContext,
     };
     activeVoiceInput = session;
     setVoiceInputStatus("requesting_permission", {
@@ -5670,7 +6550,12 @@
         cleanupVoiceInputSession(session);
         return;
       }
-      session.audioContext = new AudioCtor();
+      session.audioContext = session.audioContext || new AudioCtor();
+      if (primedAudioResume) await primedAudioResume;
+      if (session.audioContext.state === "suspended") await session.audioContext.resume();
+      if (session.audioContext.state !== "running") {
+        throw { category: "recording_failed", stage: "recording", message: "浏览器未允许启动音频采集，请再次点击麦克风。" };
+      }
       session.sampleRate = session.audioContext.sampleRate || 16000;
       session.source = session.audioContext.createMediaStreamSource(session.stream);
       session.processor = session.audioContext.createScriptProcessor(4096, 1, 1);
@@ -5766,7 +6651,7 @@
   }
   async function activateSkill(name) {
     try {
-      var res = await invoke("start_skill_session", { name: name });
+      var res = await invoke(IS_WEB ? "web_access_start_skill_session" : "start_skill_session", { name: name, setActive: !IS_WEB });
       var skill = res.skill || {};
       var meta = res.session || res.metadata || {};
       state.activeSessionId = meta.id || state.activeSessionId;
@@ -5845,10 +6730,26 @@
     notify();
   }
   // 抽屉数据：按 role 拉产出 / gate / 日志（projectDir 来自 run）。
-  function getRolePrompt(roleId, projectDir) { return invoke("get_role_prompt", { roleId: roleId, projectDir: projectDir || null }); }
-  function getRoleOutputs(roleId) { return invoke("get_role_outputs", { roleId: roleId, projectDir: state.workflow.run.projectDir }); }
-  function getGateReport(roleId) { return invoke("get_gate_report", { roleId: roleId, projectDir: state.workflow.run.projectDir }); }
-  function getRoleLogs(roleId, tail) { return invoke("get_role_logs", { roleId: roleId, projectDir: state.workflow.run.projectDir, tail: tail || 50 }); }
+  function workflowReadArgs(roleId, projectDir, extra) {
+    return Object.assign(
+      IS_WEB
+        ? { roleId: roleId, sessionId: state.workflow.run.sessionId }
+        : { roleId: roleId, projectDir: projectDir || state.workflow.run.projectDir || null },
+      extra || {}
+    );
+  }
+  function getRolePrompt(roleId, projectDir) {
+    return invoke(IS_WEB ? "web_access_get_role_prompt" : "get_role_prompt", workflowReadArgs(roleId, projectDir));
+  }
+  function getRoleOutputs(roleId) {
+    return invoke(IS_WEB ? "web_access_get_role_outputs" : "get_role_outputs", workflowReadArgs(roleId));
+  }
+  function getGateReport(roleId) {
+    return invoke(IS_WEB ? "web_access_get_gate_report" : "get_gate_report", workflowReadArgs(roleId));
+  }
+  function getRoleLogs(roleId, tail) {
+    return invoke(IS_WEB ? "web_access_get_role_logs" : "get_role_logs", workflowReadArgs(roleId, null, { tail: tail || 50 }));
+  }
   // 交互卡动作
   async function submitWorkflowUserInput(cardId, toolCallId, answers) {
     try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
@@ -5927,11 +6828,165 @@
   }
 
   // ── Init ─────────────────────────────────────────────────────────
+  // The desktop WebView remains the only process allowed to invoke application
+  // commands. Rust validates first; this policy check makes the JS boundary
+  // explicit as defence in depth.
+  var webAccessProxyStarted = false;
+  var webAccessEventForwarders = {};
+  var webAccessPolicyPromise = null;
+  var webAccessBridgeGeneration = (function () {
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        return "webview_" + window.crypto.randomUUID().replace(/-/g, "_");
+      }
+    } catch (_) {}
+    return "webview_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+  })();
+  function loadWebAccessPolicy() {
+    if (webAccessPolicyPromise) return webAccessPolicyPromise;
+    var url = new URL("web-access-policy.json", document.baseURI);
+    webAccessPolicyPromise = fetch(url, { cache: "no-store" }).then(function (response) {
+      if (!response.ok) throw new Error("Web access policy unavailable (" + response.status + ")");
+      return response.json();
+    }).then(function (policy) {
+      return {
+        commands: new Set(policy.allowed_commands || []),
+        events: new Set(policy.allowed_events || []),
+      };
+    });
+    return webAccessPolicyPromise;
+  }
+  function webAccessPayload(event) {
+    return event && Object.prototype.hasOwnProperty.call(event, "payload") ? event.payload : (event || {});
+  }
+  function webAccessRespond(requestId, ok, result, error) {
+    return invoke("web_access_rpc_respond", {
+      requestId: requestId,
+      generation: webAccessBridgeGeneration,
+      ok: !!ok,
+      result: result === undefined ? null : result,
+      error: error ? String(error) : null,
+    }).catch(function (respondError) {
+      console.warn("[WebAccess] failed to send RPC response", respondError);
+    });
+  }
+  async function registerWebAccessDesktopProxy() {
+    // Some bridge unit tests execute this file in a minimal VM without browser
+    // networking globals. The real desktop WebView always provides `fetch`.
+    if (IS_WEB || isDetachedWindow || webAccessProxyStarted || typeof fetch !== "function") return;
+    webAccessProxyStarted = true;
+    var policyReady = loadWebAccessPolicy();
+    // Install every allowlisted desktop-side forwarder before the bridge
+    // readiness ACK. Browser subscriptions can otherwise race the async
+    // Tauri `listen()` call and lose workflow events emitted in that gap.
+    var eventForwardersReady = policyReady.then(function (policy) {
+      return Promise.all(Array.from(policy.events).map(function (name) {
+        if (webAccessEventForwarders[name]) return Promise.resolve();
+        return listen(name, function (appEvent) {
+          invoke("web_access_publish_event", {
+            event: name,
+            payload: appEvent ? appEvent.payload : null,
+          }).catch(function () {});
+        }).then(function (unlisten) {
+          webAccessEventForwarders[name] = unlisten;
+        });
+      }));
+    });
+
+    var rpcListenerReady = listen("web_access:rpc_request", async function (event) {
+      var request = webAccessPayload(event);
+      var requestId = request.request_id || request.requestId || request.id;
+      var requestGeneration = request.bridge_generation || request.bridgeGeneration;
+      if (!requestId || requestGeneration !== webAccessBridgeGeneration) return;
+      var mayExecute = false;
+      try {
+        mayExecute = await invoke("web_access_rpc_begin", {
+          requestId: requestId,
+          generation: webAccessBridgeGeneration,
+        });
+      } catch (error) {
+        console.warn("[WebAccess] RPC begin barrier failed", error);
+        return;
+      }
+      if (!mayExecute) return;
+
+      var policy;
+      try { policy = await policyReady; }
+      catch (error) {
+        console.error("[WebAccess] policy load failed", error);
+        await webAccessRespond(requestId, false, null, error);
+        return;
+      }
+      var command = String(request.command || "");
+      if (!policy.commands.has(command)) {
+        await webAccessRespond(requestId, false, null, "WebUI command is not allowed: " + command);
+        return;
+      }
+      if (command === "__dialog_open") {
+        await webAccessRespond(requestId, false, null, "WebUI uses the remote host file picker");
+        return;
+      }
+      try {
+        var result = await invoke(command, request.args || {});
+        await webAccessRespond(requestId, true, result, null);
+      } catch (error) {
+        await webAccessRespond(requestId, false, null, error && error.message ? error.message : error);
+      }
+    });
+    rpcListenerReady.catch(function (error) { console.error("[WebAccess] RPC listener failed", error); });
+
+    var subscribeListenerReady = listen("web_access:event_subscribe", async function (event) {
+      var policy;
+      try { policy = await policyReady; }
+      catch (error) { console.error("[WebAccess] policy load failed", error); return; }
+      var name = String(webAccessPayload(event).event || "");
+      if (!name || !policy.events.has(name)) return;
+      await eventForwardersReady;
+    });
+    subscribeListenerReady.catch(function (error) { console.error("[WebAccess] subscribe listener failed", error); });
+
+    // Forwarders remain installed for the lifetime of the authoritative main
+    // WebView. The Rust manager filters delivery per current Web lease.
+    var unsubscribeListenerReady = listen("web_access:event_unsubscribe", function () {});
+    unsubscribeListenerReady.catch(function (error) { console.error("[WebAccess] unsubscribe listener failed", error); });
+
+    Promise.all([policyReady, eventForwardersReady, rpcListenerReady, subscribeListenerReady, unsubscribeListenerReady]).then(function () {
+      return invoke("web_access_bridge_ready", { generation: webAccessBridgeGeneration });
+    }).catch(function (error) {
+      console.error("[WebAccess] desktop bridge readiness failed", error);
+    });
+  }
+
+  if (!IS_WEB && !isDetachedWindow) registerWebAccessDesktopProxy();
+
+  function disarmWebInitRetry() {
+    if (!webInitRetryArmed || !webInitRetryHandler) return;
+    window.removeEventListener("pinvou:web-connection", webInitRetryHandler);
+    webInitRetryArmed = false;
+    webInitRetryHandler = null;
+  }
+
+  function armWebInitRetry() {
+    if (!IS_WEB || webInitRetryArmed) return;
+    webInitRetryArmed = true;
+    webInitRetryHandler = function (event) {
+      var status = event && event.detail && event.detail.status;
+      if (status !== "connected") return;
+      disarmWebInitRetry();
+      window.setTimeout(function () {
+        init().catch(function (error) {
+          console.warn("[TauriBridge] Web init retry failed", error);
+        });
+      }, 0);
+    };
+    window.addEventListener("pinvou:web-connection", webInitRetryHandler);
+  }
+
   async function init() {
     if (initPromise) return initPromise;
-    initPromise = (async function () {
+    var attempt = (async function () {
     await loadSettings();
-    await loadSelectedPet();
+    if (hasCapability("pet")) await loadSelectedPet();
     await loadEffectiveModelConfig();
     await loadAppVersion();
     await loadModels();
@@ -5942,22 +6997,47 @@
       loadScheduledTaskRecentRuns().catch(function () {});
     });
     enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
-    await refreshSuperPerm();
+    // Browser readiness is two-phase: the first barrier negotiates installed
+    // desktop capabilities so these RPCs can run; only after the durable
+    // Session index is loaded may the desktop replay live turn events.
+    if (IS_WEB && window.PinvouWebClient && typeof window.PinvouWebClient.markStateReady === "function") {
+      window.PinvouWebClient.markStateReady();
+    }
+    if (hasCapability("superPermission")) await refreshSuperPerm();
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
-    reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
-    checkForUpdateSilently(); // fire-and-forget,不阻塞启动
-    refreshRemoteControlStatus(); // fire-and-forget
+    if (hasCapability("appUpdate")) {
+      reportPendingUpdateResult();
+      checkForUpdateSilently();
+    }
+    if (hasCapability("webAccessAdmin")) refreshWebAccessStatus();
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
     })();
+    initPromise = attempt.then(function (result) {
+      disarmWebInitRetry();
+      return result;
+    }, function (error) {
+      // A rejected Promise must not permanently poison every later init call.
+      // Keep replay closed and retry only after the browser observes a fresh
+      // connected transition; durable state must succeed before state_ready.
+      var client = IS_WEB && window.PinvouWebClient;
+      if (client && !client.stateReady) {
+        initPromise = null;
+        armWebInitRetry();
+      }
+      throw error;
+    });
     return initPromise;
   }
 
   // ── Expose API ───────────────────────────────────────────────────
   window.TauriBridge = {
     available: true,
+    platform: PLATFORM.kind || "desktop",
+    capabilities: PLATFORM.capabilities || {},
+    hasCapability: hasCapability,
     subscribe: subscribe,
     getState: function () { return snapshotState(); },
     init: init,
@@ -6028,10 +7108,13 @@
     testSearchProvider: testSearchProvider,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
-    startRemoteControl: startRemoteControl,
-    stopRemoteControl: stopRemoteControl,
-    refreshRemoteControlQr: refreshRemoteControlQr,
-    refreshRemoteControlStatus: refreshRemoteControlStatus,
+    enableWebAccess: enableWebAccess,
+    disableWebAccess: disableWebAccess,
+    rotateWebAccessLink: rotateWebAccessLink,
+    refreshWebAccessStatus: refreshWebAccessStatus,
+    getWebRelaySettings: getWebRelaySettings,
+    setWebRelayAddress: setWebRelayAddress,
+    resetWebRelayAddress: resetWebRelayAddress,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
@@ -6061,6 +7144,7 @@
     openScheduledTaskFolder: openScheduledTaskFolder,
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
+    downloadArtifact: downloadArtifact,
     listDeliverables: listDeliverables,
     listDeliverableIndex: listDeliverableIndex,
     openExternalUrl: openExternalUrl,
@@ -6134,6 +7218,27 @@
     checkDependencies: checkDependencies,
     installDependencies: installDependencies,
   };
+
+  if (IS_WEB) {
+    window.addEventListener("pinvou:web-connection", function (event) {
+      if (!event || !event.detail || event.detail.status !== "connected") return;
+      Object.keys(sessionStates).forEach(function (sid) {
+        var buf = sessionStates[sid];
+        if (!buf) return;
+        if (buf.remoteTerminalSeen || (buf.remoteTurnActive && !buf.busy)) {
+          reconcileRemoteTurn(sid).then(function (ready) {
+            if (ready) flushQueued(sid);
+          }).catch(function () {});
+        } else if (!buf.busy && buf.queued && buf.queued.length) {
+          flushQueued(sid);
+        }
+      });
+    });
+  }
+
+  if (IS_WEB && window.PinvouWebClient && typeof window.PinvouWebClient.markFrontendReady === "function") {
+    window.PinvouWebClient.markFrontendReady();
+  }
 
   // Auto-init after DOM ready
   if (document.readyState === "loading") {

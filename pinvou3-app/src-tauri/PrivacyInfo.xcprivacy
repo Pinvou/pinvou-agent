@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      隐私清单:声明本应用使用的、Apple 要求申报的 "Required Reason API" 类型。
+      参考 https://developer.apple.com/documentation/bundleresources/privacy_manifest_files
+      与 https://developer.apple.com/documentation/bundleresources/privacy_manifest_files/describing_use_of_required_reason_api
+
+      本应用不收集用户数据上报第三方;遥测仅采集机器指纹(IOPlatformUUID 哈希后的
+      device id / token),走自建服务端,用于设备去重,可通过环境变量
+      PINVOU_TELEMETRY_DISABLED=1 完全关闭(见 telemetry.rs:120)。
+    -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <!--
+          DiskSpace:OTA 安装前预检可用磁盘(df / statvfs),磁盘不足时向用户提示。
+          reason E174.1(向设备使用者展示可用磁盘空间信息)。
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>E174.1</string>
+            </array>
+        </dict>
+        <!--
+          FileTimestamp:OTA 下载文件、ASR 临时音频、会话 artifacts 的创建/修改时间。
+          会话列表与产物页面向用户展示 updated_at(session metadata 时间戳),
+          reason C617.1(向设备使用者展示时间戳信息)。
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
+            </array>
+        </dict>
+        <!--
+          SystemBootTime:vm_stat / sysctl 读系统启动时间用于内存监控(计算运行时长),
+          reason 35F9.1(测量 app 在前台使用期间事件之间经过的时间)。
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- 不跟踪用户跨 app / 网站行为。 -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <!-- 不使用跟踪域(NSPrivacyTracking 仅在配 SDK 时相关)。 -->
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <!--
+      收集的数据类型:仅遥测设备指纹(IOPlatformUUID 哈希后上报自建服务端,用于设备去重),
+      归类 NSPrivacyCollectedDataTypeDeviceID。
+      - Linked=false:不与用户身份关联。
+      - Tracking=false:不用于跨 app/网站跟踪。
+      - Purpose=AppFunctionality:防重复注册 / 设备配额,属于 app 功能本身。
+      用户可通过 PINVOU_TELEMETRY_DISABLED=1 关闭(telemetry.rs:120)。
+    -->
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeDeviceID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

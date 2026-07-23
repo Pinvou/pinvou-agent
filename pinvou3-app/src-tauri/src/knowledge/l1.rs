@@ -65,6 +65,7 @@ pub struct Document {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkHit {
+    pub document_id: i64,
     pub text: String,
     pub score: f64,
     pub doc_name: String,
@@ -191,7 +192,8 @@ impl L1Store {
 
     // ───────────────────────── 文档 ─────────────────────────
 
-    /// 库里是否存在任意已入库文档（任一知识集）。用于「知识库为空时隐藏 kb_search 工具」门控：
+    /// 库里是否存在任意已入库文档（任一知识集）。用于「知识库为空时隐藏
+    /// kb_search/kb_open_source 工具」门控：
     /// 删光所有文件后不让模型目录里还留着检索工具。EXISTS 子查询走索引，常数时间。
     pub fn has_any_document(&self) -> rusqlite::Result<bool> {
         self.conn
@@ -228,6 +230,59 @@ impl L1Store {
             })
         };
         let rows = stmt.query_map(params![collection_id, lim], map)?;
+        rows.collect()
+    }
+
+    /// 按 id 读取当前知识集内的一份文档。`collection_id` 是权限边界：即使调用方猜到
+    /// 其他知识集的 document id，也不会拿到路径或内容。
+    pub fn document_in_collection(
+        &self,
+        collection_id: i64,
+        document_id: i64,
+    ) -> rusqlite::Result<Option<Document>> {
+        let c = self.conn.lock();
+        c.query_row(
+            "SELECT d.id,d.collection_id,c.name,d.path,d.name,d.ext,d.size,d.mtime,d.parse_status,d.n_chunks \
+             FROM documents d JOIN collections c ON c.id=d.collection_id \
+             WHERE d.id=?1 AND d.collection_id=?2 AND d.parse_status='parsed'",
+            params![document_id, collection_id],
+            |r| {
+                Ok(Document {
+                    id: r.get(0)?,
+                    collection_id: r.get(1)?,
+                    coll_name: r.get(2)?,
+                    path: r.get(3)?,
+                    name: r.get(4)?,
+                    ext: r.get(5)?,
+                    size: r.get(6)?,
+                    mtime: r.get(7)?,
+                    parse_status: r.get(8)?,
+                    n_chunks: r.get(9)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// 分页读取某份已解析文档的 chunk 快照。这里只查数据库，不重新打开原始 Office/PDF
+    /// 文件；二进制解析已经在建索引时由 `file_ingest` 完成。
+    pub fn document_chunk_window(
+        &self,
+        collection_id: i64,
+        document_id: i64,
+        start_ord: i64,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<(i64, String)>> {
+        let c = self.conn.lock();
+        let mut stmt = c.prepare(
+            "SELECT k.ord,k.text FROM chunks k JOIN documents d ON d.id=k.document_id \
+             WHERE k.document_id=?1 AND k.collection_id=?2 AND d.collection_id=?2 \
+               AND k.ord>=?3 ORDER BY k.ord LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![document_id, collection_id, start_ord.max(0), limit as i64],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         rows.collect()
     }
 
@@ -396,23 +451,23 @@ impl L1Store {
 
     // ───────────────────────── 检索（全文，Phase 3 升级为混合） ─────────────────────────
 
-
     /// 全文：≥3 字符走 FTS5 trigram(bm25)，1-2 字符 LIKE 兜底。
     fn search_fts(&self, collection_id: i64, q: &str, lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
         let c = self.conn.lock();
         let map = |r: &rusqlite::Row| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {
-                text: r.get(0)?,
-                score: r.get(1)?,
-                doc_name: r.get(2)?,
-                doc_path: r.get(3)?,
-                ord: r.get(4)?,
+                document_id: r.get(0)?,
+                text: r.get(1)?,
+                score: r.get(2)?,
+                doc_name: r.get(3)?,
+                doc_path: r.get(4)?,
+                ord: r.get(5)?,
             })
         };
         if q.chars().count() >= 3 {
             let m = format!("\"{}\"", q.replace('"', "\"\""));
             let mut stmt = c.prepare(
-                "SELECT k.text, bm25(chunks_fts) AS score, d.name, d.path, k.ord \
+                "SELECT d.id,k.text,bm25(chunks_fts) AS score,d.name,d.path,k.ord \
                  FROM chunks_fts JOIN chunks k ON k.id=chunks_fts.rowid \
                  JOIN documents d ON d.id=k.document_id \
                  WHERE k.collection_id=?1 AND chunks_fts MATCH ?2 \
@@ -423,7 +478,7 @@ impl L1Store {
         } else {
             let like = format!("%{}%", q.replace('%', "").replace('_', ""));
             let mut stmt = c.prepare(
-                "SELECT k.text, 0.0 AS score, d.name, d.path, k.ord \
+                "SELECT d.id,k.text,0.0 AS score,d.name,d.path,k.ord \
                  FROM chunks k JOIN documents d ON d.id=k.document_id \
                  WHERE k.collection_id=?1 AND k.text LIKE ?2 LIMIT ?3",
             )?;
@@ -436,24 +491,35 @@ impl L1Store {
     fn search_vec(&self, collection_id: i64, qv: &[f32], lim: usize) -> rusqlite::Result<Vec<ChunkHit>> {
         let c = self.conn.lock();
         let mut stmt = c.prepare(
-            "SELECT k.text, k.vec, d.name, d.path, k.ord \
+            "SELECT d.id,k.text,k.vec,d.name,d.path,k.ord \
              FROM chunks k JOIN documents d ON d.id=k.document_id \
              WHERE k.collection_id=?1 AND k.vec IS NOT NULL",
         )?;
         let rows = stmt.query_map(params![collection_id], |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, String>(2)?,
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })?;
         let mut scored: Vec<(f32, ChunkHit)> = Vec::new();
         for row in rows {
-            let (text, blob, doc_name, doc_path, ord) = row?;
+            let (document_id, text, blob, doc_name, doc_path, ord) = row?;
             let s = embed::cosine(qv, &embed::blob_to_vec(&blob));
-            scored.push((s, ChunkHit { text, score: s as f64, doc_name, doc_path, ord }));
+            scored.push((
+                s,
+                ChunkHit {
+                    document_id,
+                    text,
+                    score: s as f64,
+                    doc_name,
+                    doc_path,
+                    ord,
+                },
+            ));
         }
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(scored.into_iter().take(lim).map(|(_, h)| h).collect())
@@ -513,16 +579,21 @@ impl L1Store {
     ) -> rusqlite::Result<Vec<ChunkHit>> {
         // path -> (最高分, doc_name, 命中 ord 列表)；order 记录首次出现顺序以保相关性序。
         let mut order: Vec<String> = Vec::new();
-        let mut by_doc: HashMap<String, (f64, String, Vec<i64>)> = HashMap::new();
+        let mut by_doc: HashMap<String, (i64, f64, String, Vec<i64>)> = HashMap::new();
         for h in hits {
             let e = by_doc.entry(h.doc_path.clone()).or_insert_with(|| {
                 order.push(h.doc_path.clone());
-                (f64::NEG_INFINITY, h.doc_name.clone(), Vec::new())
+                (
+                    h.document_id,
+                    f64::NEG_INFINITY,
+                    h.doc_name.clone(),
+                    Vec::new(),
+                )
             });
-            if h.score > e.0 {
-                e.0 = h.score;
+            if h.score > e.1 {
+                e.1 = h.score;
             }
-            e.2.push(h.ord);
+            e.3.push(h.ord);
         }
         let c = self.conn.lock();
         let mut stmt = c.prepare(
@@ -531,7 +602,7 @@ impl L1Store {
         )?;
         let mut out: Vec<ChunkHit> = Vec::new();
         for path in order {
-            let (best, doc_name, ords) = by_doc.remove(&path).expect("aggregated");
+            let (document_id, best, doc_name, ords) = by_doc.remove(&path).expect("aggregated");
             // 命中 ord 各自 ±radius 的并集（去重、有序）。
             let mut want: BTreeSet<i64> = BTreeSet::new();
             for o in ords {
@@ -563,6 +634,7 @@ impl L1Store {
             }
             if !text.trim().is_empty() {
                 out.push(ChunkHit {
+                    document_id,
                     text,
                     score: best,
                     doc_name,
@@ -670,9 +742,9 @@ mod tests {
         assert!(l1.list_collections().unwrap().is_empty());
     }
 
-    /// kb_search 门控核心:has_any_document 反映"库里有没有文档"。空知识集不算;
+    /// kb_search/kb_open_source 门控核心:has_any_document 反映"库里有没有文档"。空知识集不算;
     /// 删文档 / 删知识集后都应归 false —— 对应 kb_remove_document / kb_collection_delete
-    /// 删后 refresh_kb_tool_gate 把 kb_search 加进 disallowed（库空就该隐藏检索工具）。
+    /// 删后 refresh_kb_tool_gate 把两个知识工具加进 disallowed（库空就该隐藏）。
     #[test]
     fn has_any_document_reflects_emptiness() {
         let l1 = mem();
@@ -695,6 +767,47 @@ mod tests {
         assert!(l1.has_any_document().unwrap());
         l1.delete_collection(cid).unwrap();
         assert!(!l1.has_any_document().unwrap(), "删知识集应连带清空文档");
+    }
+
+    #[test]
+    fn document_window_is_scoped_to_collection_and_pageable() {
+        let l1 = mem();
+        let allowed = l1.create_collection("已挂载", None, None).unwrap();
+        let other = l1.create_collection("未挂载", None, None).unwrap();
+        let doc = l1
+            .upsert_document(
+                allowed,
+                "/tmp/report.xlsx",
+                "report.xlsx",
+                Some("xlsx"),
+                10,
+                0,
+            )
+            .unwrap();
+        let chunks = ["chunk-0", "chunk-1", "chunk-2", "chunk-3"].map(str::to_string);
+        l1.replace_doc_chunks(doc, allowed, &chunks, None).unwrap();
+        l1.set_doc_status(doc, "parsed", chunks.len());
+
+        let metadata = l1
+            .document_in_collection(allowed, doc)
+            .unwrap()
+            .expect("document in mounted collection");
+        assert_eq!(metadata.id, doc);
+        assert_eq!(metadata.n_chunks, 4);
+        assert!(
+            l1.document_in_collection(other, doc).unwrap().is_none(),
+            "same document id must not cross collection boundary"
+        );
+
+        let page = l1.document_chunk_window(allowed, doc, 1, 2).unwrap();
+        assert_eq!(
+            page,
+            vec![(1, "chunk-1".to_string()), (2, "chunk-2".to_string())]
+        );
+        assert!(l1
+            .document_chunk_window(other, doc, 0, 8)
+            .unwrap()
+            .is_empty());
     }
 
     /// 热加载槽:set_embedder 换值,L1Store clone 共享同一槽(下载完成后所有在跑线程见新);

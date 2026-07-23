@@ -64,6 +64,7 @@ pub async fn check_for_update_info(
         update_type: String::new(),
         platform: "linux".to_string(),
         ota_host: String::new(),
+        platforms: std::collections::HashMap::new(),
     })
 }
 

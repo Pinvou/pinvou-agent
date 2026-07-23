@@ -213,6 +213,7 @@ pub async fn check_for_update_info(
         update_type: info.update_type,
         platform: "windows".to_string(),
         ota_host: info.ota_host,
+        platforms: std::collections::HashMap::new(),
     })
 }
 

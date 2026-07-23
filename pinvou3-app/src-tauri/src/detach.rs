@@ -10,6 +10,129 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 /// 同一时刻只允许一个撕离拖拽,防止多个跟随循环并存。
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// 全局鼠标状态(坐标 + 左键按下)。三平台轮询封装。
+/// - Linux: device_query X11
+/// - macOS: NSEvent 全局监听线程写的原子快照(见 macos_mouse 模块)
+/// - Windows: GetCursorPos + GetAsyncKeyState 同步读
+pub struct GlobalMouse {
+    pub x: i32,
+    pub y: i32,
+    pub left_down: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn poll_global_mouse(dev: &device_query::DeviceState) -> GlobalMouse {
+    use device_query::DeviceQuery;
+    let m = dev.get_mouse();
+    GlobalMouse {
+        x: m.coords.0,
+        y: m.coords.1,
+        left_down: *m.button_pressed.get(1).unwrap_or(&false),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn poll_global_mouse(_dev: &()) -> GlobalMouse {
+    // CoreGraphics 同步读全局光标(与 Linux device_query / Windows GetCursorPos 同构):
+    // 任意线程可调、免授权(仅键盘态/事件合成才需 Accessibility)、无需事件监听器。
+    macos_mouse::poll()
+}
+
+#[cfg(target_os = "windows")]
+fn poll_global_mouse(_dev: &()) -> GlobalMouse {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetAsyncKeyState, GetCursorPos, VK_LBUTTON};
+    use std::mem::MaybeUninit;
+
+    let mut pt = MaybeUninit::<POINT>::uninit();
+    let (x, y) = unsafe {
+        if GetCursorPos(pt.as_mut_ptr()) == 0 {
+            return GlobalMouse { x: 0, y: 0, left_down: false };
+        }
+        let pt = pt.assume_init();
+        (pt.x, pt.y)
+    };
+    let left_down = unsafe { (GetAsyncKeyState(VK_LBUTTON as i32) as u16) & 0x8000 != 0 };
+    GlobalMouse { x, y, left_down }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn poll_global_mouse(_dev: &()) -> GlobalMouse {
+    GlobalMouse { x: 0, y: 0, left_down: false }
+}
+
+/// macOS 全局鼠标:CoreGraphics 同步读取(与 Linux device_query / Windows GetCursorPos
+/// 同构)。撕离拖拽的轮询线程直接调用,无需主线程调度、无事件监听器(因此也不会泄漏)。
+///
+/// 为什么不用 NSEvent global monitor:addGlobalMonitorForEventsMatchingMask 只收**其它
+/// 应用**的事件,而撕离拖拽从 pinvou 自身 WebView 发起,事件派发给本 app,全局监听收不
+/// 到 → 拖拽期间坐标/按键态永不更新,松手检测失效。CoreGraphics 读的是硬件级全局光标,
+/// 与哪个 app 拥有焦点无关,正符合撕离场景。
+///
+/// 坐标系:CGEventGetLocation 返回主屏左上原点、Y 向下(与 X11 / Win32 一致),下游
+/// main_window_contains / create_detached_at 按 Tauri PhysicalPosition(左上原点)工作,
+/// 因此**无需 Y 翻转**(此前 NSEvent monitor 是左下原点才需翻转)。
+///
+/// 权限:鼠标位置/按键态的只读查询免授权(仅键盘态查询与事件合成才需 Accessibility /
+/// Input Monitoring),可在任意线程调用。
+#[cfg(target_os = "macos")]
+mod macos_mouse {
+    use super::GlobalMouse;
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+
+    /// CGEventSourceStateID:kCGEventSourceStateHIDSystemState = 1。
+    /// 取 HID 硬件状态(而非本 app 会话状态),确保拖拽时光标按下态不被 app 捕获掩盖。
+    const HID_SYSTEM_STATE: i32 = 1;
+    /// CGMouseButton:kCGMouseButtonLeft = 0。
+    const MOUSE_BUTTON_LEFT: u32 = 0;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventCreate(source: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+        // CGEventSourceButtonState 第一参数是 CGEventSourceStateID(int32 枚举值,如
+        // kCGEventSourceStateHIDSystemState = 1),**不是** CGEventSourceRef 指针。
+        // 此前误声明为 *mut c_void 并先 CGEventSourceCreate 再传入,arm64 ABI 下
+        // 堆指针低 32 位被当作 stateID 读取(非法枚举值),导致恒返回 false →
+        // macOS 撕离拖拽 100% 失效。直接传整数枚举值即可,无需分配 source 对象。
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *mut std::ffi::c_void);
+    }
+
+    /// 同步读全局鼠标位置 + 左键按下态。任意线程可调,免授权。任一 CG 调用失败(罕见,
+    /// 如 window server 异常)返回零值快照,轮询循环下一轮重试,不会崩溃。
+    pub(super) fn poll() -> GlobalMouse {
+        unsafe {
+            let event = CGEventCreate(core::ptr::null_mut());
+            if event.is_null() {
+                return GlobalMouse { x: 0, y: 0, left_down: false };
+            }
+            let loc = CGEventGetLocation(event);
+            CFRelease(event);
+
+            // CGEventCreate 返回的位置反映当前光标;按键态直接从 HID 源读。
+            // CGEventSourceButtonState 吃 CGEventSourceStateID(int32 枚举值),
+            // 无需 CGEventSourceCreate 分配/释放 source 对象。
+            let left_down = CGEventSourceButtonState(HID_SYSTEM_STATE, MOUSE_BUTTON_LEFT);
+            GlobalMouse {
+                x: if loc.x.is_finite() { loc.x.round() as i32 } else { 0 },
+                y: if loc.y.is_finite() { loc.y.round() as i32 } else { 0 },
+                left_down,
+            }
+        }
+    }
+}
+
 /// 撕离窗口 label。Tauri label 仅允许 a-zA-Z0-9-_，故 id 用 16 位 hex 哈希而非原样拼接，
 /// 避免 id 里的非法字符 / 冲突。同一 (kind,id) → 同一 label，用于去重 + 聚焦。
 pub fn detached_label(kind: &str, id: Option<&str>) -> String {
@@ -127,26 +250,49 @@ pub async fn begin_detach_drag(
         return Ok(()); // 已有拖拽进行中,忽略重复起手
     }
 
-    // device_query 硬件状态轮询(独立 OS 线程);窗口操作 marshal 回主线程。
-    std::thread::spawn(move || {
-        use device_query::{DeviceQuery, DeviceState};
-        let dev = DeviceState::new();
+    // 硬件状态轮询(独立 OS 线程);窗口操作 marshal 回主线程。
+    // macOS:轮询线程直接调 CoreGraphics 同步读全局光标(免主线程、免事件监听),
+    // 无需像旧 NSEvent 方案那样在起手时 run_on_main_thread 装监听器。
+    // 用 Builder::spawn(返回 Result)而非 thread::spawn(失败直接 panic),
+    // 失败时复位 DRAG_ACTIVE + emit drag-ended,避免撕离功能永久卡死。
+    let app_for_thread = app.clone();
+    let spawn_result = std::thread::Builder::new()
+        .name("detach-drag-poll".to_string())
+        .spawn(move || {
+        // RAII:无论循环正常退出还是 panic,都复位 DRAG_ACTIVE 并广播 drag-ended,
+        // 防止撕离功能因线程异常而永久卡死(后续所有起手被当"重复"忽略)
+        // 或前端 avatar 永不收起(幽灵光标)。
+        struct DragGuard(AppHandle);
+        impl Drop for DragGuard {
+            fn drop(&mut self) {
+                DRAG_ACTIVE.store(false, Ordering::SeqCst);
+                let _ = self.0.emit("detach:drag-ended", ());
+            }
+        }
+        let _drag_guard = DragGuard(app_for_thread.clone());
+
+        // 平台特定的轮询设备句柄:Linux 是 device_query DeviceState;其它平台不用句柄。
+        #[cfg(target_os = "linux")]
+        let dev = device_query::DeviceState::new();
+        #[cfg(not(target_os = "linux"))]
+        let dev = ();
+
         let mut was_down = false;
         let mut idle_ticks = 0u32;
         loop {
-            let m = dev.get_mouse();
-            let (mx, my) = m.coords;
-            let down = *m.button_pressed.get(1).unwrap_or(&false);
+            let m = poll_global_mouse(&dev);
+            let (mx, my) = (m.x, m.y);
+            let down = m.left_down;
 
             if down {
                 was_down = true;
             }
             if was_down && !down {
                 // 松手:落点在主窗外那一屏 → 最大化建窗;在内 → 取消。
-                let a2 = app.clone();
+                let a2 = app_for_thread.clone();
                 let kind2 = kind.clone();
                 let id2 = id.clone();
-                let _ = app.run_on_main_thread(move || {
+                let _ = app_for_thread.run_on_main_thread(move || {
                     if !main_window_contains(&a2, mx, my) {
                         let _ = create_detached_at(&a2, &kind2, id2.as_deref(), Some((mx, my)));
                     }
@@ -162,9 +308,14 @@ pub async fn begin_detach_drag(
             std::thread::sleep(std::time::Duration::from_millis(12));
         }
         // 拖拽结束(落位/取消/超时任一)→ 广播,让前端收起 avatar。
-        let _ = app.emit("detach:drag-ended", ());
-        DRAG_ACTIVE.store(false, Ordering::SeqCst);
+        // (DRAG_ACTIVE 复位 + drag-ended 广播均由 _drag_guard 的 Drop 保证,panic 安全。)
     });
+    // spawn 失败(线程资源耗尽)时 DRAG_ACTIVE 仍为 true(上面已 swap),需复位,
+    // 否则撕离功能永久卡死。emit 让前端收起 avatar。
+    if spawn_result.is_err() {
+        DRAG_ACTIVE.store(false, Ordering::SeqCst);
+        let _ = app.emit("detach:drag-ended", ());
+    }
 
     Ok(())
 }

@@ -2,18 +2,21 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <base href="%BASE_URL%">
   <title>PINVOU 智能助手</title>
   <!-- Tailwind 仍使用本地离线 runtime；后续单独迁移预编译样式。 -->
-  <script src="/vendor/tailwind.js"></script>
+  <script src="%BASE_URL%vendor/tailwind.js"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="/vendor/marked.min.js"></script>
-  <script src="/vendor/purify.min.js"></script>
+  <script src="%BASE_URL%vendor/marked.min.js"></script>
+  <script src="%BASE_URL%vendor/purify.min.js"></script>
 </head>
 <body class="m-0 p-0">
   <div id="root"></div>
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
-  <script src="/tauri-bridge.js"></script>
+  <script src="%BASE_URL%web-bootstrap.js"></script>
+  <script src="%BASE_URL%web-host-file-picker.js"></script>
+  <script src="%BASE_URL%tauri-bridge.js"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
       const isPetWindow = new URLSearchParams(window.location.search).get('window') === 'pet';
@@ -30,8 +33,8 @@
       }
     });
   </script>
-  <script src="/personas-i18n.js"></script>
-  <script src="/update-notice-logic.js"></script>
+  <script src="%BASE_URL%personas-i18n.js"></script>
+  <script src="%BASE_URL%update-notice-logic.js"></script>
   <script type="module" src="/main.jsx"></script>
 </body>
 </html>

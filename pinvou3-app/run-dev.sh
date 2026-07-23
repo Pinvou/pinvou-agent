@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+OS_NAME="$(uname -s)"
+
 # ── 内置 MCP 共享 key(dev) ─────────────────────────────────
 # 与 release-deb.sh 使用同一个 gitignored 密钥文件。option_env! 在编译时读取，
 # 因此必须在 `tauri dev` 启动 Cargo 之前 export。未配置时保持普通开发模式可用，
@@ -24,12 +26,15 @@ fi
 # export PINVOU3_SKIP_WARMUP=1。
 export PINVOU3_SKIP_WARMUP="${PINVOU3_SKIP_WARMUP:-0}"
 
-# ── 远程 vLLM 连接(明文 HTTP)─────────────────────────────────────
+# ── 远程 vLLM 连接(明文 HTTP,仅 Linux 内网机)─────────────────────
 # 底座默认拒绝对非 loopback 的明文 http:// 发请求(client.rs validate_base_url_security),
 # 且 reqwest 默认协议协商在某些网关下会 502。开发机连内网 GB10(http://10.214.74.113:8000)
 # 必须显式放行明文 HTTP + 钉死 HTTP/1.1。可在外部 export 覆盖。
-export DEEPSEEK_ALLOW_INSECURE_HTTP="${DEEPSEEK_ALLOW_INSECURE_HTTP:-1}"
-export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
+# macOS 走远程 HTTPS API,不需要这两项,跳过。
+if [ "$OS_NAME" = "Linux" ]; then
+  export DEEPSEEK_ALLOW_INSECURE_HTTP="${DEEPSEEK_ALLOW_INSECURE_HTTP:-1}"
+  export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
+fi
 
 # ── L1 知识库语义检索：本地 embedding 模型目录 ──────────────────────
 # 配了就启用 fastembed 进程内向量化(bge-m3 int8 单文件
@@ -37,6 +42,7 @@ export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
 # 升级为 fts+向量 RRF 混合;不配/加载失败则降级为纯全文 fts。模型目录需含
 # 单文件 ONNX + tokenizer.json/config.json/special_tokens_map.json/tokenizer_config.json。
 # (生产 deb 的模型下载/配置入口=设置页"知识库模型"卡,Phase 3 收尾待做。)
+# 三平台共用(bge-m3 是工具模型非 LLM,Mac/Win/Linux 完全等效)。
 export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bge-m3}"
 
 # ── 三省六部「网页类」预置模板 seed 源(dev)──────────────────────────
@@ -44,11 +50,20 @@ export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bg
 # resource_dir)。目录需含 package.json + 预装 node_modules(离线可 npm run build 出单文件)。
 export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-template}"
 
-# ── 手机远控一期 relay ───────────────────────────────────────────
-# dev 默认走公网域名中继，手机无需和桌面在同一局域网。仍可在外部 export 覆盖：
-#   PINVOU_REMOTE_PUBLIC_URL=http://10.x.x.x:8787
-#   PINVOU_REMOTE_RELAY_WS_URL=ws://10.x.x.x:8787/ws
-export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://pinvou.com/pinvou3/remote}"
-export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-wss://pinvou.com/pinvou3/remote/ws}"
+# ── 完整 WebUI v2 relay ──────────────────────────────────────────
+# 仅本地开发启动默认走组内 remote-test 中继，避免调试版本误连生产 8787。
+# 正式安装包不经过本脚本，使用 Rust 内置的 /pinvou3/remote；外部覆盖时 public
+# 页面和 WebSocket 都必须保留 Relay 的公开 base path：
+#   PINVOU_REMOTE_PUBLIC_URL=http://10.x.x.x:8787/pinvou3/remote
+#   PINVOU_REMOTE_RELAY_WS_URL=ws://10.x.x.x:8787/pinvou3/remote/ws
+export PINVOU_REMOTE_PUBLIC_URL="${PINVOU_REMOTE_PUBLIC_URL:-https://pinvou.com/pinvou3/remote-test}"
+export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-wss://pinvou.com/pinvou3/remote-test/ws}"
+
+# ── macOS 提示 ───────────────────────────────────────────────────
+# Mac 不需要 webkit/fcitx/X11 相关 env(那些在 lib.rs RELEASE_ENV_DEFAULTS Linux 段)。
+# 此处无需额外 Mac 专属 export,直接落到 tauri dev 即可。
+if [ "$OS_NAME" = "Darwin" ]; then
+  echo "✓ macOS dev 模式(跳过 Linux 内网 vLLM/WebKit env)"
+fi
 
 exec npx tauri dev "$@"
