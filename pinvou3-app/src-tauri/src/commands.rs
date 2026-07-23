@@ -828,14 +828,31 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
+/// 解析当前交互会话真正绑定的模型。会话绑定失效时与 EnginePool 一致回退全局默认，
+/// 避免 API Key gate 按全局模型判断、实际请求却由另一条会话模型发出。
+fn session_model_from_prefs(
+    prefs: &UserPrefs,
+    session_model_id: Option<&str>,
+) -> Option<SavedModel> {
+    session_model_id.and_then(|id| prefs.model_by_id(id).cloned())
+}
+
 #[tauri::command]
 pub async fn get_effective_model_config(
+    session_id: Option<String>,
     pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
 ) -> Result<EffectiveModelConfig, String> {
-    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),boot 快照会过时。
+    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),并真实回读系统凭据存储。
+    // 不能只信 settings.json 中持久化的 credential_state：Keychain/Secret Service/
+    // Credential Manager 条目可能已被外部删除或授权已失效。
     let mut bridge = pool.bridge.clone();
-    bridge.prefs = UserPrefs::load();
-    bridge.session_model = None; // 全局视角,不绑定具体 session
+    bridge.prefs = refresh_safe_prefs(UserPrefs::load());
+    let session_model_id = session_id
+        .as_deref()
+        .and_then(|id| store.session_model_id(id));
+    bridge.session_model = session_model_from_prefs(&bridge.prefs, session_model_id.as_deref());
+
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -843,32 +860,38 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
         env_overrides.push("base_url".to_string());
     }
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    let env_api_key = std::env::var("DEEPSEEK_API_KEY")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if env_api_key {
         env_overrides.push("api_key".to_string());
     }
     if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
         env_overrides.push("provider".to_string());
     }
-    let preset = bridge
-        .prefs
-        .active_model()
-        .map(|m| m.preset)
+    let effective = bridge.effective_model_owned();
+    let preset = effective
+        .as_ref()
+        .map(|model| model.preset)
         .unwrap_or_default()
         .as_str();
-    let active = bridge.prefs.active_model();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
         base_url: bridge.base_url(),
         api_key: String::new(),
-        credential_state: if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+        credential_state: if env_api_key {
             CredentialState::EnvOverride
         } else {
-            active
-                .map(|m| m.credential_state)
+            effective
+                .as_ref()
+                .map(|model| model.credential_state)
                 .unwrap_or(CredentialState::Missing)
         },
-        has_secret: active.map(|m| m.has_secret).unwrap_or(false),
+        has_secret: effective
+            .as_ref()
+            .map(|model| model.has_secret)
+            .unwrap_or(false),
         provider: bridge.provider(),
         env_overrides,
     })
@@ -5733,6 +5756,102 @@ pub async fn list_session_skill_bindings(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    fn model_fixture(
+        id: &str,
+        preset: crate::bridge::prefs::ModelPreset,
+        base_url: &str,
+        credential_state: CredentialState,
+    ) -> SavedModel {
+        SavedModel {
+            id: id.to_string(),
+            name: id.to_string(),
+            preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: format!("{id}-wire"),
+            base_url: base_url.to_string(),
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state,
+            has_secret: credential_state == CredentialState::Configured,
+            credential_action: None,
+        }
+    }
+
+    #[test]
+    fn api_key_gate_model_resolution_prefers_session_over_global_cloud() {
+        use crate::bridge::prefs::ModelPreset;
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models = vec![
+            model_fixture(
+                "global-cloud",
+                ModelPreset::Deepseek,
+                "https://api.deepseek.com",
+                CredentialState::Missing,
+            ),
+            model_fixture(
+                "session-local",
+                ModelPreset::OpenaiCompatible,
+                "http://127.0.0.1:11434/v1",
+                CredentialState::Missing,
+            ),
+        ];
+        prefs.advanced.active_model_id = Some("global-cloud".to_string());
+
+        let selected = session_model_from_prefs(&prefs, Some("session-local"))
+            .expect("session model should resolve");
+        assert_eq!(selected.id, "session-local");
+        assert_eq!(selected.base_url, "http://127.0.0.1:11434/v1");
+    }
+
+    #[test]
+    fn api_key_gate_model_resolution_prefers_session_cloud_over_global_local() {
+        use crate::bridge::prefs::ModelPreset;
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models = vec![
+            model_fixture(
+                "global-local",
+                ModelPreset::LocalVllm,
+                "http://127.0.0.1:8000/v1",
+                CredentialState::Missing,
+            ),
+            model_fixture(
+                "session-cloud",
+                ModelPreset::Deepseek,
+                "https://api.deepseek.com",
+                CredentialState::Missing,
+            ),
+        ];
+        prefs.advanced.active_model_id = Some("global-local".to_string());
+
+        let selected = session_model_from_prefs(&prefs, Some("session-cloud"))
+            .expect("session model should resolve");
+        assert_eq!(selected.id, "session-cloud");
+        assert_eq!(selected.credential_state, CredentialState::Missing);
+    }
+
+    #[test]
+    fn api_key_gate_model_resolution_falls_back_when_session_binding_is_stale() {
+        use crate::bridge::prefs::ModelPreset;
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models = vec![model_fixture(
+            "global-cloud",
+            ModelPreset::Deepseek,
+            "https://api.deepseek.com",
+            CredentialState::Configured,
+        )];
+        prefs.advanced.active_model_id = Some("global-cloud".to_string());
+
+        assert!(session_model_from_prefs(&prefs, Some("deleted-model")).is_none());
+        assert_eq!(
+            prefs.active_model().map(|model| model.id.as_str()),
+            Some("global-cloud")
+        );
+    }
 
     #[test]
     fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {

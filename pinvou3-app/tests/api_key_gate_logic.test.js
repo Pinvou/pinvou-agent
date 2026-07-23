@@ -6,6 +6,7 @@ const vm = require('vm');
 
 const sourcePath = path.join(__dirname, '..', 'src', 'hooks', 'useBridge.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
+const bridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'tauri-bridge.js'), 'utf8');
 const start = source.indexOf('function baseUrlIsLoopback(');
 const end = source.indexOf('\nexport {', start);
 
@@ -65,5 +66,17 @@ assert.strictEqual(
   true,
 );
 assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'scheduled', true), false);
+
+// 会话切换/热切模型必须把 sessionId 传给后端重新解析真正生效的模型，不能继续沿用全局默认。
+assert.match(
+  bridgeSource,
+  /invoke\("get_effective_model_config", \{ sessionId: requestedSessionId \}\)/,
+  'loadSessionModel must refresh effective config for the requested session',
+);
+assert.match(
+  bridgeSource,
+  /await loadSessionModel\(sessionId\)/,
+  'switchModel must refresh the session-scoped credential gate after switching',
+);
 
 console.log('api_key_gate_logic: ok');

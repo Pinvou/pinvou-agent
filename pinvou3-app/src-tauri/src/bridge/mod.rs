@@ -420,7 +420,9 @@ impl Pinvou3Bridge {
     /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
     pub fn api_key(&self) -> String {
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
-            return v;
+            if !v.trim().is_empty() {
+                return v;
+            }
         }
         if let Some(m) = self.effective_model() {
             let store = SystemCredentialStore::new();
@@ -2330,6 +2332,21 @@ mod tests {
         assert_eq!(bridge.provider(), "env-provider");
         assert_eq!(bridge.base_url(), "http://env:8000/v1");
         assert_eq!(bridge.api_key(), "env-key");
+    }
+
+    #[test]
+    fn empty_api_key_env_does_not_hide_saved_credential() {
+        let _env = EnvGuard::new(&["DEEPSEEK_API_KEY"]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "custom-openai-model",
+            "https://api.openai.com/v1",
+            "saved-key",
+        );
+        std::env::set_var("DEEPSEEK_API_KEY", "  ");
+        assert_eq!(bridge.api_key(), "saved-key");
     }
 
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
