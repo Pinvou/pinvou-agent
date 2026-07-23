@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const logicPath = path.join(__dirname, '..', 'src', 'update-notice-logic.js');
+const logicPath = path.join(__dirname, '..', 'src', 'features', 'updater', 'update-notice-logic.js');
 const code = fs.readFileSync(logicPath, 'utf8');
 const ctx = {
   window: {},

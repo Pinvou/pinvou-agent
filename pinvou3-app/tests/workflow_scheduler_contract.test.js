@@ -4,29 +4,43 @@ const path = require("path");
 
 const appRoot = path.resolve(__dirname, "..");
 const harness = fs.readFileSync(
-  path.join(appRoot, "src-tauri", "src", "harness.rs"),
+  path.join(
+    appRoot,
+    "src-tauri",
+    "src",
+    "features",
+    "assistant",
+    "harness.rs",
+  ),
   "utf8",
 );
 const commands = fs.readFileSync(
-  path.join(appRoot, "src-tauri", "src", "commands.rs"),
+  path.join(
+    appRoot,
+    "src-tauri",
+    "src",
+    "app",
+    "commands",
+    "workflows.rs",
+  ),
   "utf8",
 );
 
 const runCommand = harness.slice(
-  harness.indexOf("fn run_cmd_with_timeout"),
+  harness.indexOf("fn run_python_with_timeout"),
   harness.indexOf("fn run_scheduler"),
 );
-assert.ok(runCommand, "run_cmd_with_timeout implementation must exist");
+assert.ok(runCommand, "run_python_with_timeout implementation must exist");
 assert.ok(
   !runCommand.includes("Pinvou3Bridge::boot"),
   "workflow Python subprocesses must not boot the bridge or re-extract the bundle",
 );
 assert.ok(
-  runCommand.includes("crate::monitor::vllm_base_url"),
+  runCommand.includes("crate::features::monitor::vllm_base_url"),
   "workflow Python subprocesses must resolve model configuration without bridge boot",
 );
 assert.ok(
-  runCommand.includes("if !status.success()"),
+  runCommand.includes("if !output.status.success()"),
   "every non-zero Python exit must be treated as an error even when stdout is non-empty",
 );
 assert.ok(
@@ -44,7 +58,9 @@ assert.ok(
   "kick_workflow must explicitly match scheduler errors",
 );
 assert.ok(
-  kickWorkflow.includes('record_runtime_failure(&ws, "", "scheduler_kick", &error)'),
+  kickWorkflow.includes("record_runtime_failure(") &&
+    kickWorkflow.includes('"scheduler_kick"') &&
+    kickWorkflow.includes("&error"),
   "kick_workflow must persist scheduler stderr to flow_log.jsonl",
 );
 assert.ok(

@@ -394,7 +394,7 @@ async function rec(results, name, pass, detail) {
   await page.keyboard.press('Enter');
   await sleep(600);
   const prefill = await page.evaluate(() => {
-    const st = window.TauriBridge.getState();
+    const st = window.TauriBridge.state.get('chat');
     return {
       prefill: st.composerPrefill && st.composerPrefill.text,
       sent: window.__MD_SENT__.length,

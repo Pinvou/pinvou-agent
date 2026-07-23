@@ -493,11 +493,11 @@ const WidgetCard = ({ title, children, theme }) => {
         let alive = true;
         (async () => {
           try {
-            const info = await bridge.artifactInfo(path);
+            const info = await bridge.artifacts.artifactInfo(path);
             if (!alive) return;
             if (!info || !info.exists) { setPv({ missing: true }); return; }
             if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-              let text = await bridge.readArtifactText(path);
+              let text = await bridge.artifacts.readArtifactText(path);
               if (!alive) return;
               let kind = info.kind;
               if (/\.json$/i.test(path)) {
@@ -505,10 +505,10 @@ const WidgetCard = ({ title, children, theme }) => {
               }
               setPv({ kind, text });
             } else if (info.kind === 'image') {
-              try { const dataUrl = await bridge.readArtifactImageB64(path); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
+              try { const dataUrl = await bridge.artifacts.readArtifactImageB64(path); if (alive) setPv({ kind: 'image', dataUrl: dataUrl }); }
               catch (e2) { if (alive) setPv({ kind: 'image', imgErr: String(e2) }); }
             } else {
-              const visual = bridge.renderArtifactVisual ? await bridge.renderArtifactVisual(path) : null;
+              const visual = bridge.artifacts.renderArtifactVisual ? await bridge.artifacts.renderArtifactVisual(path) : null;
               if (!alive) return;
               setPv({ kind: info.kind || 'other', visual });
             }
@@ -525,7 +525,7 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
               <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={path}>{base}</span>
               <div className="flex items-center gap-2">
-                <button onClick={() => bridge.openArtifactExternal && bridge.openArtifactExternal(path)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>↗ 外部</button>
+                <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>↗ 外部</button>
                 <button onClick={onClose} className={`w-7 h-7 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
               </div>
             </div>
@@ -533,13 +533,13 @@ const WidgetCard = ({ title, children, theme }) => {
               {pv.loading ? <div className={`text-[13px] ${dim}`}>加载中…</div>
                 : pv.missing ? <div className={`text-[13px] ${dim}`}>文件不存在或已被删除</div>
                 : pv.error ? <div className="text-[13px] text-[#F28B82]">读取失败: {pv.error}</div>
-                : pv.kind === 'md' ? <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(pv.text || '') }} />
+                : pv.kind === 'md' ? <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(pv.text || '') }} />
                 : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} />
                 : (pv.kind === 'json' || pv.kind === 'text') ? <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>
                 : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">图片读取失败: {pv.imgErr}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
                 : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
                 : pv.visual && pv.visual.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(pv.visual.images || []).map((src, i) => <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />)}</div>
-                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p><button onClick={() => bridge.openArtifactExternal(path)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>↗ 外部打开</button></div>}
+                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p><button onClick={() => bridge.artifacts.openArtifactExternal(path)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>↗ 外部打开</button></div>}
             </div>
           </div>
         </div>
@@ -557,8 +557,8 @@ const WidgetCard = ({ title, children, theme }) => {
       useEffect(() => {
         let alive = true;
         const dir = (projectDir || '').replace(/\/$/, '');
-        if (dir && bridge.listDeliverables) {
-          bridge.listDeliverables(dir).then((r) => {
+        if (dir && bridge.artifacts.listDeliverables) {
+          bridge.artifacts.listDeliverables(dir).then((r) => {
             if (alive) setDeliv({ products: (r && r.products) || [], papers: (r && r.papers) || [] });
           });
         }
@@ -577,7 +577,7 @@ const WidgetCard = ({ title, children, theme }) => {
         (async () => {
           try {
             const path = (projectDir || '').replace(/\/$/, '') + '/final_report.md';
-            const text = await bridge.readArtifactText(path);
+            const text = await bridge.artifacts.readArtifactText(path);
             if (alive) setSt({ loading: false, text: text || '', error: null });
           } catch (e) { if (alive) setSt({ loading: false, text: '', error: String(e) }); }
         })();
@@ -609,7 +609,7 @@ const WidgetCard = ({ title, children, theme }) => {
               <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-5 min-w-0">
                 {st.loading ? <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">展卷中…</div>
                   : st.error ? <div className="text-[13px] text-center py-10" style={{ color: '#8a1c1c' }}>奏折读取失败：{st.error}</div>
-                  : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown(st.text) }} />
+                  : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(st.text) }} />
                   : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
               </div>
               {deliv.products.length > 0 && (
@@ -623,7 +623,7 @@ const WidgetCard = ({ title, children, theme }) => {
                           : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文书';
                         const sz = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
                         return (
-                          <button key={f.path} onClick={() => bridge.openArtifactExternal(f.path)} title={'打开:' + (f.title || f.name)}
+                          <button key={f.path} onClick={() => bridge.artifacts.openArtifactExternal(f.path)} title={'打开:' + (f.title || f.name)}
                             style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                               animation: `chest-item-pop .45s cubic-bezier(.3,1.4,.5,1) ${i * 0.09}s both` }}>
                             {/* 展开的小卷轴(斜 45° 视角):两端轴杆 + 中间纸面写标题 */}
@@ -695,10 +695,10 @@ const WidgetCard = ({ title, children, theme }) => {
             .then((d) => { if (alive) setter({ loading: false, error: null, data: d }); })
             .catch((e) => { if (alive) setter({ loading: false, error: String(e), data: null }); });
         };
-        run(() => bridge.getRolePrompt(roleId, projectDir), setInfo);
-        run(() => bridge.getRoleOutputs(roleId), setOutputs);
-        run(() => bridge.getGateReport(roleId), setGate);
-        run(() => bridge.getRoleLogs(roleId, 60), setLogs);
+        run(() => bridge.workflow.getRolePrompt(roleId, projectDir), setInfo);
+        run(() => bridge.workflow.getRoleOutputs(roleId), setOutputs);
+        run(() => bridge.workflow.getGateReport(roleId), setGate);
+        run(() => bridge.workflow.getRoleLogs(roleId, 60), setLogs);
         return () => { alive = false; };
       }, [roleId, projectDir]);
       if (!roleId) return null;
@@ -827,7 +827,7 @@ const WidgetCard = ({ title, children, theme }) => {
                         <span className="shrink-0">{fileIcon(f.basename)}</span>
                         <span onClick={() => f.path && setPreviewPath(f.path)} title="点击预览" className={`flex-1 truncate text-[13px] cursor-pointer hover:underline ${titleCls}`}>{f.basename || '(未命名)'}</span>
                         {f.path && (
-                          <button title="外部打开" onClick={() => bridge.available && bridge.openArtifactExternal && bridge.openArtifactExternal(f.path)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>↗</button>
+                          <button title="外部打开" onClick={() => bridge.available && bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(f.path)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>↗</button>
                         )}
                       </div>
                     ))}
@@ -892,7 +892,7 @@ const WidgetCard = ({ title, children, theme }) => {
         const ot = otherText.slice(); ot[qi] = val; setOtherText(ot);
         const next = answers.slice(); next[qi] = val.trim() ? { id: questions[qi].id, label: '其他', value: val.trim() } : null; setAnswers(next);
       }
-      function submit() { if (locked) return; if (!answers.every(a => a != null)) return; bridge.submitWorkflowUserInput(card.cardId, card.toolCallId, answers); }
+      function submit() { if (locked) return; if (!answers.every(a => a != null)) return; bridge.workflow.submitWorkflowUserInput(card.cardId, card.toolCallId, answers); }
       const canSubmit = answers.length > 0 && answers.every(a => a != null);
       if (locked) {
         const cancelled = card.cardState === 'cancelled';
@@ -911,7 +911,7 @@ const WidgetCard = ({ title, children, theme }) => {
             <button disabled={matState.busy}
               onClick={async () => {
                 setMatState({ busy: true, names: matState.names });
-                try { const added = await bridge.pickAndAddMaterials(); setMatState({ busy: false, names: matState.names.concat(added || []) }); }
+                try { const added = await bridge.workflow.pickAndAddMaterials(); setMatState({ busy: false, names: matState.names.concat(added || []) }); }
                 catch (e) { setMatState({ busy: false, names: matState.names }); }
               }}
               className={`px-3 py-1.5 rounded-[10px] text-[13px] border transition-colors disabled:opacity-50 ${isDark ? 'border-[#A8C7FA]/40 text-[#A8C7FA] hover:bg-[#A8C7FA]/10' : 'border-[#0B57D0]/30 text-[#0B57D0] hover:bg-[#0B57D0]/5'}`}>
@@ -992,16 +992,16 @@ const WidgetCard = ({ title, children, theme }) => {
               className={`w-full rounded-[10px] p-2 text-[13px] outline-none border mb-2 ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
           )}
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button className={cardBtnCls(isDark)} onClick={() => card.roleId && bridge.selectWorkflowRole(card.roleId)}>📄 查看产出</button>
+            <button className={cardBtnCls(isDark)} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>📄 查看产出</button>
             {rejecting ? (
               <React.Fragment>
                 <button className={cardBtnCls(isDark)} onClick={() => { setRejecting(false); setReason(''); }}>取消</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>✕ 确认打回</button>
+                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>✕ 确认打回</button>
               </React.Fragment>
             ) : (
               <React.Fragment>
                 <button className={cardBtnCls(isDark)} onClick={() => setRejecting(true)}>✕ 打回</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.approveWorkflowGate(card.cardId, card.roleId)}>✓ 通过</button>
+                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>✓ 通过</button>
               </React.Fragment>
             )}
           </div>
@@ -1030,8 +1030,8 @@ const WidgetCard = ({ title, children, theme }) => {
                     <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{card.text || '🎉 工作流完成'}</div>
                     <div className={`text-[12px] mb-3 break-all ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{card.path}</div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button className={cardBtnCls(isDark)} onClick={() => bridge.openContainingFolder(card.path)}>📁 打开所在文件夹</button>
-                      <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.openArtifactExternal(card.path)}>▶ 打开成品</button>
+                      <button className={cardBtnCls(isDark)} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>📁 打开所在文件夹</button>
+                      <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>▶ 打开成品</button>
                     </div>
                   </div>
                 ) : null}
@@ -1059,10 +1059,10 @@ const WidgetCard = ({ title, children, theme }) => {
       const [error, setError] = useState('');
       const baseName = (p) => { const s = String(p).replace(/\\/g, '/').split('/'); return s[s.length - 1] || p; };
       async function pickAttachments() {
-        if (picking || starting || !bridge.pickFiles) return;
+        if (picking || starting || !bridge.files.pickFiles) return;
         setPicking(true);
         try {
-          const paths = await bridge.pickFiles();
+          const paths = await bridge.files.pickFiles();
           if (paths && paths.length) setFiles(prev => { const seen = new Set(prev); return prev.concat(paths.filter(p => !seen.has(p))); });
         } catch (e) { setError('选文件失败: ' + String((e && e.message) || e)); }
         finally { setPicking(false); }
@@ -1071,10 +1071,10 @@ const WidgetCard = ({ title, children, theme }) => {
         if (starting) return;
         setStarting(true); setError('');
         try {
-          const res = await bridge.startWorkflowTask(scenario, { user_request_raw: briefText });
+          const res = await bridge.workflow.startWorkflowTask(scenario, { user_request_raw: briefText });
           if (res) {
-            if (wfUi.attachments && files.length && bridge.addMaterialsToSession) {
-              try { await bridge.addMaterialsToSession(res.session_id, files); }
+            if (wfUi.attachments && files.length && bridge.workflow.addMaterialsToSession) {
+              try { await bridge.workflow.addMaterialsToSession(res.session_id, files); }
               catch (e) { console.warn('附件拷贝失败(不阻塞启动):', e); }   // 素材失败不挡启动
             }
             onStarted(res); onClose();
@@ -1183,7 +1183,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const [newTaskWorkflow, setNewTaskWorkflow] = useState(null);
       useEffect(() => {
         let on = true;
-        if (bridge.listWorkflows) bridge.listWorkflows().then(ws => { if (on) setWorkflows(ws || []); });
+        if (bridge.workflow.listWorkflows) bridge.workflow.listWorkflows().then(ws => { if (on) setWorkflows(ws || []); });
         return () => { on = false; };
       }, []);
       // 当前 run 所属的工作流对象(看板内"+新建任务"用它的表单)
@@ -1269,7 +1269,7 @@ const WidgetCard = ({ title, children, theme }) => {
       // 刷新/重启后内存卡已清空,旧逻辑找不到卡就静默失效,正是"点了没反应"的根因)。
       const approveRole = (rid) => {
         const c = (run.cards || []).find((c) => c.kind === 'gate' && c.roleId === rid && !c.resolved);
-        const p = bridge.approveWorkflowGate(c ? c.cardId : null, rid);
+        const p = bridge.workflow.approveWorkflowGate(c ? c.cardId : null, rid);
         // 三省六部的回奏(终审)准奏 → 立刻展卷(快路径;状态驱动的 effect 是兜底)
         if (memorialRoleId && (rid === memorialRoleId || String(rid).indexOf(memorialRoleId) === 0)) {
           Promise.resolve(p).then(() => setMemorialOpen(true));
@@ -1277,7 +1277,7 @@ const WidgetCard = ({ title, children, theme }) => {
       };
       // 失败节点"🔄 重跑"→ 重置该角色为 pending(清重试)后续跑,上游已完成节点不重跑。
       const retryRole = (rid) => {
-        if (bridge.available && bridge.retryWorkflowRole) bridge.retryWorkflowRole(rid);
+        if (bridge.available && bridge.workflow.retryWorkflowRole) bridge.workflow.retryWorkflowRole(rid);
       };
       const openRestart = (brief) => {
         setRestartBrief(brief || '');
@@ -1285,11 +1285,11 @@ const WidgetCard = ({ title, children, theme }) => {
         setShowNewTask(true);
       };
       const stopAndRestart = async () => {
-        if (stopping || !bridge.stopWorkflowTask) return;
+        if (stopping || !bridge.workflow.stopWorkflowTask) return;
         if (!window.confirm('停止后，当前任务不会再继续派发。已生成的文件会保留，你可以修改原需求后重新开始。')) return;
         setStopping(true);
         try {
-          const result = await bridge.stopWorkflowTask('user_stopped_for_restart');
+          const result = await bridge.workflow.stopWorkflowTask('user_stopped_for_restart');
           const brief = result && result.brief && result.brief.user_request_raw;
           openRestart(typeof brief === 'string' ? brief : '');
         } catch (e) {
@@ -1325,14 +1325,14 @@ const WidgetCard = ({ title, children, theme }) => {
           </div>
           <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
             <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentErrors={agentErrors} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme}
-              onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.selectWorkflowRole(rid)} />
+              onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.workflow.selectWorkflowRole(rid)} />
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
             <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
               <InteractionArea cards={run.cards || []} theme={theme} />
             </div>
           )}
-          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.closeWorkflowDrawer()} />}
+          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.workflow.closeWorkflowDrawer()} />}
           {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} onClose={() => setMemorialOpen(false)} />}
           {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
         </div>

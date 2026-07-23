@@ -14,6 +14,7 @@ const scheduler = path.join(
   appRoot,
   "src-tauri",
   "resources",
+  "common",
   "bundle",
   "workflow",
   "sansheng-liubu",

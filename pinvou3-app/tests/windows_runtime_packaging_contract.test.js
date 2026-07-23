@@ -4,11 +4,26 @@ const path = require("path");
 
 const appRoot = path.resolve(__dirname, "..");
 const runtimeScript = fs.readFileSync(
-  path.join(appRoot, "scripts", "windows-runtime-submodule.ps1"),
+  path.join(
+    appRoot,
+    "src-tauri",
+    "packaging",
+    "windows",
+    "runtime",
+    "scripts",
+    "resolve-runtime.ps1",
+  ),
   "utf8",
 );
 const installerHooks = fs.readFileSync(
-  path.join(appRoot, "src-tauri", "resources", "windows", "nsis", "installer-hooks.nsh"),
+  path.join(
+    appRoot,
+    "src-tauri",
+    "packaging",
+    "windows",
+    "nsis",
+    "installer-hooks.nsh",
+  ),
   "utf8",
 );
 
@@ -16,6 +31,8 @@ const stagedBootstrapper =
   "${__FILEDIR__}\\..\\..\\..\\windows-runtime\\nsis\\vc_redist\\VC_redist.x64.exe";
 const removedBootstrapper =
   "${__FILEDIR__}\\..\\..\\..\\..\\resources\\windows\\vc_redist\\VC_redist.x64.exe";
+const removedArchitectureBootstrapper =
+  "${__FILEDIR__}\\..\\..\\..\\..\\packaging\\windows\\vc_redist\\VC_redist.x64.exe";
 
 assert.ok(
   installerHooks.includes(stagedBootstrapper),
@@ -24,6 +41,10 @@ assert.ok(
 assert.ok(
   !installerHooks.includes(removedBootstrapper),
   "NSIS hook must not reference the deleted source-tree vc_redist directory",
+);
+assert.ok(
+  !installerHooks.includes(removedArchitectureBootstrapper),
+  "NSIS hook must not reference an unstaged packaging/windows vc_redist directory",
 );
 
 assert.ok(

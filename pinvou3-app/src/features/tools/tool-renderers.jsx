@@ -110,7 +110,7 @@ const ToolOutput = ({ item, isDark, t }) => {
         setCancelling(true);
         setShellCancelError('');
         try {
-          await bridge.cancelShellTask(item.sessionId, item.taskId);
+          await bridge.chat.cancelShellTask(item.sessionId, item.taskId);
         } catch (error) {
           console.warn('cancel shell task failed', error);
           setShellCancelError(`${t.shellCancelFailed || t.toolFailed}: ${String(error)}`);
@@ -302,7 +302,7 @@ const ToolOutput = ({ item, isDark, t }) => {
           else if (a === 'ask') actions.push({ t: 'ask', topic: it.raw.topic || it.head });
           else if (a === 'fill') actions.push({ t: 'fill', dimension: it.raw.dimension || '', suggestion: it.raw.suggestion || '' });
         });
-        bridge.resolvePinvouReview(resolutions, actions);
+        bridge.interaction.resolvePinvouReview(resolutions, actions);
       };
       return (
         <div>
@@ -340,7 +340,7 @@ const ToolOutput = ({ item, isDark, t }) => {
                 {t.pvHandToAi(activeCount)}
               </button>
             )}
-            <button onClick={() => bridge.available && bridge.dismissPinvouReview()} title={t.pvSkipTitle}
+            <button onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} title={t.pvSkipTitle}
               className={`px-4 py-2 rounded-full text-[14px] font-medium transition-colors ${isDark ? 'text-[#EBEBF5]/70 hover:bg-white/5' : 'text-[#3C3C43]/70 hover:bg-black/5'}`}>
               {t.pvSkip}
             </button>
@@ -443,9 +443,9 @@ const ToolOutput = ({ item, isDark, t }) => {
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planNext}</span>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.acceptPlan(item.id, item.planMarkdown)}>{t.planGo}</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown)}>{t.planGo}</button>
               <button className={cardBtnCls(isDark)} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.discardPlan(item.id)}>{t.planDrop}</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.interaction.discardPlan(item.id)}>{t.planDrop}</button>
             </div>
           ) : (
             <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{item.statusLabel}</div>
@@ -469,8 +469,8 @@ const ToolOutput = ({ item, isDark, t }) => {
             <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
+              <button className={cardBtnCls(isDark)} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>
@@ -563,7 +563,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       function commit(next) {
         setAnswers(next);
         if (next.every(a => a != null)) {
-          bridge.submitUserInput(item.id, item.toolCallId, next, questions);
+          bridge.interaction.submitUserInput(item.id, item.toolCallId, next, questions);
         }
       }
 

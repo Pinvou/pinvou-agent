@@ -149,7 +149,7 @@ exec /usr/bin/pinvou3-tauri "$@"
 - `web-template` 内的 esbuild 是 ARM64 二进制，x86_64 上的网页类任务可能报 `Exec format error`：
 
   ```text
-  pinvou3-app/src-tauri/resources/web-template/node_modules/esbuild/bin/esbuild
+  pinvou3-app/src-tauri/resources/common/web-template/node_modules/esbuild/bin/esbuild
   ```
 
 - `Cargo.toml` 声明最低 Rust 1.88，但 `notify-rust 4.18.0` 要求 Rust 1.89，需要统一版本口径。

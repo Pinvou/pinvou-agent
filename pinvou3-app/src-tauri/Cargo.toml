@@ -100,6 +100,9 @@ walkdir = "2"
 # 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热
 # 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
 calamine = "0.26"
+# 文本附件编码兜底：把国内常见 GBK / GB18030 文件真正转成 UTF-8，
+# 避免 `from_utf8_lossy` 把中文正文替换成一串 U+FFFD。
+encoding_rs = "0.8"
 
 # CLI 连接器(飞书/企微)扫码授权:把授权 URL 渲染成二维码(SVG data URL,前端 <img> 直显)。
 # 纯 Rust,不依赖各 CLI 自带的 qrcode 子命令(wecom-cli 就没有)。关默认的 image 渲染器

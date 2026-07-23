@@ -6,7 +6,14 @@ const path = require("node:path");
 const {
   loadBuiltinSecrets,
   parseEnvFile,
-} = require("../scripts/tauri-build-with-secrets.js");
+} = require("../scripts/tauri/builtin-secrets.js");
+const { platformConfigPath } = require("../scripts/tauri/platform-config.js");
+
+for (const platform of ["win32", "linux", "darwin"]) {
+  const configPath = platformConfigPath(platform);
+  assert.ok(fs.existsSync(configPath), `${platform} Tauri overlay must exist`);
+  assert.doesNotThrow(() => JSON.parse(fs.readFileSync(configPath, "utf8")));
+}
 
 const parsed = parseEnvFile(`
 # comment

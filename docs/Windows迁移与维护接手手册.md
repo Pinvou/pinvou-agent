@@ -240,7 +240,7 @@ workflow:* 事件推前端看板
 
 - 开发源：`workflows/sansheng-liubu/`
 - 引擎脚本：`workflows/_engine/scripts/`
-- 打包快照：`pinvou3-app/src-tauri/resources/bundle/workflow/sansheng-liubu/`
+- 打包快照：`pinvou3-app/src-tauri/resources/common/bundle/workflow/sansheng-liubu/`
 - 同步逻辑：`pinvou3-app/src-tauri/build.rs::sync_workflow_bundle`
 
 Windows 风险：
