@@ -1317,10 +1317,14 @@ const WidgetCard = ({ title, children, theme }) => {
       );
     };
 
+    const ExpertTeamsPanel = ({ bs, theme, t }) => (
+      <WorkflowView bs={bs} theme={theme} t={t} />
+    );
+
 
     // ==========================================
     // 撕离窗口(tear-off):同一个 index.html 以 ?detached=1&kind=&id= 启动,只挂载该面板,无侧边栏。
     // 窗口间强独立:各自 useBridge()/init(),不做 live 数据同步(真相源在后端,进程内共享)。
     // ==========================================
 
-export { WidgetCard, ProgressBar, ListRow, UI_STATES, toUiState, AGENT_NAME_MAP, layoutForRun, AgentAvatar, FanoutGrid, AgentCard, AgentPipelineView, FilePreviewModal, ImperialMemorialModal, CardDrawer, WfUserInputCard, GateApprovalCard, InteractionArea, NewTaskModal, TemplateCard, WorkflowView };
+export { WidgetCard, ProgressBar, ListRow, UI_STATES, toUiState, AGENT_NAME_MAP, layoutForRun, AgentAvatar, FanoutGrid, AgentCard, AgentPipelineView, FilePreviewModal, ImperialMemorialModal, CardDrawer, WfUserInputCard, GateApprovalCard, InteractionArea, NewTaskModal, TemplateCard, WorkflowView, ExpertTeamsPanel };

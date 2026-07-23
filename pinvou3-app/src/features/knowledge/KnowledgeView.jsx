@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2, X } from '../../components/icons.jsx';
 import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridge } from '../../hooks/useBridge.js';
+import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
 
@@ -9,6 +10,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
     const KnowledgeView = ({ theme, t }) => {
       const isDark = theme === 'dark';
+      const canOpenSystemFiles = can('externalSystemOpen');
+      const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
+      const canPickHostFiles = !isWeb || can('hostFilePicker');
+      const canDownloadArtifacts = !isWeb || can('artifactDownload');
       const bs = useBridge(); // 取 kbModelSetup 的实时下载进度
       const inv = (cmd, args) =>
         (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
@@ -18,8 +23,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
 
       // ---------- 共用 ----------
-      const openFile = (p) => inv('open_in_system', { path: p }).catch(() => {});
-      const openFolder = (p) => inv('open_containing_folder', { path: p }).catch(() => {});
+      const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
+      const openFolder = (p) => canOpenSystemFiles ? inv('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
       const fmtSize = (b) => {
         if (b == null) return '';
         if (b < 1024) return b + ' B';
@@ -597,6 +602,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         : dlProg.stage === 'done' ? t.kbModelStageDone
         : t.kbModelStageDownload;
       const startModelDownload = async () => {
+        if (!canInstallKbModel) return;
         try {
           const st = await bridge.downloadKbModel();
           if (st) { setKbModel(st); kbCache.model = st; }
@@ -638,6 +644,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       // 点知识库卡片=就地聚焦该集(再点同卡/「全部」取消),下方文件表随之切换。不再跳二级详情页。
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
       const addSources = async (cid) => {
+        if (!canPickHostFiles) return;
         let paths = [];
         try { paths = (bridge && bridge.pickFiles) ? await bridge.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
@@ -645,6 +652,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       // 知识库页底部入口：选文件 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
       const dzPick = async () => {
+        if (!canPickHostFiles) return;
         let paths = [];
         try { paths = (bridge && bridge.pickFiles) ? await bridge.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
@@ -819,14 +827,18 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                       className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
                                       <Plus size={15} />
                                     </button>
-                                    <button onClick={(e2) => { e2.stopPropagation(); openFile(f.path); }}
-                                      className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
-                                      {t.kbOpen}
-                                    </button>
-                                    <button title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
-                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
-                                      <FolderOpen size={15} />
-                                    </button>
+                                      {canOpenSystemFiles && (
+                                        <>
+                                          <button onClick={(e2) => { e2.stopPropagation(); openFile(f.path); }}
+                                            className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                                            {t.kbOpen}
+                                          </button>
+                                          <button title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                            <FolderOpen size={15} />
+                                          </button>
+                                        </>
+                                      )}
                                   </div>
                                   <div className="col-span-2 text-[12px] md:hidden" style={{ color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}>
                                     {fmtSize(f.size)} · {fmtDate(f.mtime)}
@@ -880,10 +892,18 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#D1D1D6] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
                         {t.kbOutNewProject}
                       </button>
-                      <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
-                        className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
-                        <FolderOpen size={15} />
-                      </button>
+                      {canOpenSystemFiles && (
+                        <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
+                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                          <FolderOpen size={15} />
+                        </button>
+                      )}
+                      {isWeb && canDownloadArtifacts && bridge && bridge.downloadArtifact && (
+                        <button title="下载产物" onClick={() => bridge.downloadArtifact(o.path, o.sessionId || o.session_id)}
+                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                          <Download size={15} />
+                        </button>
+                      )}
                     </div>
                   );
                   return (
@@ -995,10 +1015,18 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                           className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#D1D1D6] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
                                           {t.kbOutNewProject}
                                         </button>
-                                        <button title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
-                                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
-                                          <FolderOpen size={15} />
-                                        </button>
+                                        {canOpenSystemFiles && (
+                                          <button title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                            <FolderOpen size={15} />
+                                          </button>
+                                        )}
+                                        {isWeb && canDownloadArtifacts && bridge && bridge.downloadArtifact && (
+                                          <button title="下载产物" onClick={(e) => { e.stopPropagation(); bridge.downloadArtifact(o.path, o.sessionId || o.session_id); }}
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                            <Download size={15} />
+                                          </button>
+                                        )}
                                       </div>
                                       <div className="col-span-2 text-[12px] md:hidden" style={{ color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}>
                                         {fmtOutputDate(o.mtime)}
@@ -1182,7 +1210,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         </>}
                       </div>
                       {activeColl && <div className="flex items-center gap-2 shrink-0">
-                        <button onClick={() => addSources(activeColl.id)} disabled={indexing} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${indexing ? 'opacity-60 cursor-default' : ''} ${soft}`}>
+                            <button onClick={() => addSources(activeColl.id)} disabled={indexing || !canPickHostFiles} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${(indexing || !canPickHostFiles) ? 'opacity-60 cursor-default' : ''} ${soft}`}>
                           {indexing ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />}
                           {indexing ? `${t.kbIndexing} ${idx.done}/${idx.total}` : t.kbAddFiles}
                         </button>
@@ -1220,7 +1248,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               </div>
                             ) : (
                               <div className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>
+                              {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>}
                                 <button title={t.kbRemove} onClick={() => setConfirmDoc(d.id)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
                               </div>
                             )}
@@ -1234,7 +1262,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
                 {/* 加入知识库入口：点击选文件(单知识集直接加，多个弹选择) */}
                 <div onClick={dzPick}
-                  className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed cursor-pointer transition-colors ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
+                  className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${canPickHostFiles ? 'cursor-pointer' : 'cursor-default opacity-60'} ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
                   <Plus size={16} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
                 </div>
