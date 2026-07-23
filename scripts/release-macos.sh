@@ -1,5 +1,5 @@
 #!/bin/bash
-# pinvou3 macOS 发布脚本：构建 dmg → 合并 latest.json platforms.macos-arm64 → rsync 上传。
+# pinvou3 macOS 发布脚本：构建 universal dmg → 合并 latest.json platforms.macos-universal + macos-arm64 → rsync 上传。
 # 用法: ./scripts/release-macos.sh "本次更新说明"
 #
 # 发版前置:
@@ -18,20 +18,29 @@ if [ -z "$NOTES" ]; then
   exit 1
 fi
 
-# ── 0. 平台 guard(脚本用 BSD stat/xattr/codesign,只在 macOS arm64 跑) ────
-# 架构也校验:构建钉死 aarch64-apple-darwin(本机即 arm64),在 Intel Mac 上跑会
-# 因 rustup 未装该 target 报错或走交叉编译产出意外结果。
-if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
-  echo "❌ 本脚本仅支持 macOS arm64(Apple Silicon)运行(用到 stat -f%z / xattr / codesign / notarytool + aarch64 target)" >&2
-  exit 1
-fi
-
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$REPO_ROOT/pinvou3-app"
 SERVER="admin@8.218.49.20"
 REMOTE_DIR="/var/www/pinvou3"
 BASE_URL="https://pinvou.com/pinvou3"
-ARCH="aarch64"
+ARCH="universal"
+
+# 平台守卫:本脚本仅 macOS 可跑(universal dmg 打包依赖 macOS linker/hdiutil/codesign)。
+# 在 Linux 上误跑会一路到 tauri build 才报底层链接错误,这里前置给出清晰提示。
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "❌ 本脚本仅 macOS 可跑(当前: $(uname -s))。Linux 发版请用 release-deb.sh。" >&2
+  exit 1
+fi
+
+# universal 构建内部跑两次 cargo(aarch64 + x86_64)+ lipo 合成,故两个 rust target 都
+# 必须已装。本地开发者首次发版若缺 x86_64-apple-darwin,会在构建中途以 E0463 报错退出;
+# 这里前置预检 + 自动补装,给出更友好的 DX(同 CI 的双 target 安装步骤)。
+for t in aarch64-apple-darwin x86_64-apple-darwin; do
+  if ! rustup target list --installed 2>/dev/null | grep -q "^$t "; then
+    echo "⚠️  缺 rust target $t,自动安装(universal 构建需要双 target)..."
+    rustup target add "$t"
+  fi
+done
 
 # 部署目标:与 tauri.conf.json minimumSystemVersion / Info.plist LSMinimumSystemVersion
 # 一致(14.0)。build.rs 不注入此变量;不显式 export 会用 rustc/链接器默认值(往往当前
@@ -53,7 +62,7 @@ if [ "$V_TAURI" != "$V_CARGO" ] || [ "$V_TAURI" != "$V_NPM" ]; then
   exit 1
 fi
 VERSION="$V_TAURI"
-echo "=== 发布 pinvou3 v$VERSION (macOS arm64) ==="
+echo "=== 发布 pinvou3 v$VERSION (macOS universal) ==="
 
 # 签名/公证就绪判断(4 个凭证齐全),构建与公证步骤复用,避免条件判断重复导致不一致。
 SIGN_READY=0
@@ -108,7 +117,7 @@ fi
 
 # ── 4. 构建 dmg ────────────────────────────────────────────────────
 # 与 release-deb.sh 对齐:每次发布先 npm ci,避免新增前端依赖时生成坏包或 beforeBuildCommand 失败。
-# Mac 构建钉死 aarch64-apple-darwin(本机即 arm64)。
+# Mac 构建钉死 universal-apple-darwin(arm64 + x86_64 双切片,可在 Apple Silicon 与 Intel Mac 跑)。
 # 若设了 MACOS_SIGNING_IDENTITY,转发给 Tauri bundler 让它在打包内部签 .app
 # (codesign dmg 包装层不能让内部 .app 通过 notarytool)。
 if [ "$SIGN_READY" = 1 ]; then
@@ -140,11 +149,11 @@ fi
 (
   cd "$APP_DIR"
   npm ci --prefer-offline --no-audit
-  node scripts/tauri/build.js build --target aarch64-apple-darwin
+  node scripts/tauri/build.js build --target universal-apple-darwin
 )
 
-DMG="$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_${ARCH}.dmg"
-APP_BUNDLE="$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/pinvou3.app"
+DMG="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_${ARCH}.dmg"
+APP_BUNDLE="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app"
 
 # dmg 打包偶发失败兜底:
 #   Tauri 的 bundle_dmg.sh(基于 create-dmg)调 osascript 做 Finder 图标排版美化。
@@ -158,7 +167,7 @@ if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
   echo "⚠️  Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
   (
     cd "$APP_DIR"
-    node scripts/tauri/build.js build --target aarch64-apple-darwin --bundles dmg
+    node scripts/tauri/build.js build --target universal-apple-darwin --bundles dmg
   ) || echo "⚠️  重试仍失败,降级手动 hdiutil 打包"
 fi
 
@@ -189,6 +198,25 @@ if [ ! -f "$DMG" ]; then
   exit 1
 fi
 
+# ── 3.5 universal 双切片完整性校验 ──────────────────────────────────
+# 防御性校验:确保产出的 .app 主二进制同时含 arm64 + x86_64 切片。
+# 正常 tauri universal 构建在缺 target/切片时会硬失败,故此处触发概率低;但代价
+# 非对称 —— 若因 bundler 异常产出 arm64-only 却退出 0,会被标 universal 上传,
+# 导致 Intel 用户「校验通过地装上跑不起来的 app」。上传前硬校验,缺任一切片即中止。
+APP_BIN="$APP_BUNDLE/Contents/MacOS/pinvou3"
+if [ -f "$APP_BIN" ]; then
+  LIPO_OUT="$(lipo -info "$APP_BIN" 2>&1 || true)"
+  if echo "$LIPO_OUT" | grep -q 'arm64' && echo "$LIPO_OUT" | grep -q 'x86_64'; then
+    echo "✓ universal 双切片就绪 (arm64 + x86_64)"
+  else
+    echo "❌ 产物非 universal(缺 arm64 或 x86_64 切片):$LIPO_OUT" >&2
+    echo "   检查 aarch64-apple-darwin / x86_64-apple-darwin 两个 target 是否都已安装。" >&2
+    exit 1
+  fi
+else
+  echo "⚠️  $APP_BIN 不存在,跳过双切片校验(继续,后续公证/上传可能失败)" >&2
+fi
+
 # ── 5. 公证 + staple（条件触发；签名已在 build 阶段内联完成）──────
 # 凭证就绪时 export 这 4 个 env 即可自动 notarytool + staple。
 # 未设则发未签名 dmg,文档说明用户首次执行 xattr -dr com.apple.quarantine。
@@ -217,13 +245,14 @@ else
   echo "    dmg 用户首次需执行: xattr -dr com.apple.quarantine '/Applications/pinvou3.app'" >&2
 fi
 
-# ── 6. 合并 latest.json 的 platforms.macos-arm64 条目(保留顶层 Linux 字段) ──
+# ── 6. 合并 latest.json 的 platforms.macos-universal + macos-arm64 条目(保留顶层 Linux 字段) ──
 # 字段策略(修复「Mac 发版破坏 Linux 客户端」):
 # - 顶层 .version / .url / .sha256 / .size **一律不动**:顶层代表「最近一次 Linux 发版」,
 #   旧 Linux 客户端(只读顶层)据此判断/下载。若 Mac 发版去 bump 顶层 .version 却保留旧
 #   Linux deb 的 url,Linux 客户端会「看到新版 → 重复下载旧 deb」无限循环。
-# - Mac 自己的版本写进 platforms["macos-arm64"].version;macos_update.rs 的 is_newer 读
-#   本平台 version(为空才退顶层),Mac 客户端据此看到自己的新版,与 Linux 互不干扰。
+# - Mac 自己的版本写进 platforms["macos-universal"] 与 platforms["macos-arm64"].version;
+#   macos_update.rs 的 is_newer 读本平台 version(为空才退顶层),Mac 客户端据此看到自己的新版,与 Linux 互不干扰。
+#   macos-arm64 为旧 arm64-only 客户端向后兼容(指向同一 universal dmg,含 arm64 切片可跑)。
 # - platforms.linux-arm64/windows-x86_64 等其他平台字段不覆盖。
 SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
 SIZE=$(stat -f%z "$DMG")
@@ -231,7 +260,7 @@ PUB_DATE=$(date -u +%FT%TZ)
 DMG_NAME=$(basename "$DMG")
 DMG_URL="$BASE_URL/$DMG_NAME"
 
-# 拉远端 latest.json,合并 macos-arm64 条目,推回(不覆盖其他平台字段)。
+# 拉远端 latest.json,合并 macos-universal + macos-arm64 条目,推回(不覆盖其他平台字段)。
 TMP_JSON=$(mktemp)
 TMP_JSON_NEW=$(mktemp)
 TMP_ERR=$(mktemp)
@@ -277,19 +306,25 @@ jq --arg ver "$VERSION" --arg url "$DMG_URL" --arg sha "$SHA256" --arg size "$SI
   # 顶层 .pub_date / .version / .url / .sha256 / .size **一律不动**:
   # 顶层代表最近一次 Linux 发版,旧 Linux 客户端据此判断/下载。Mac 发版只写 platforms 节。
   .platforms = (.platforms // {}) |
-  .platforms["macos-arm64"] = {
-    "version": $ver,
-    "url": $url,
-    "format": "dmg",
-    "sha256": $sha,
-    "size": ($size | tonumber),
-    "restart_after_install": false,
-    "notes": $notes,
-    "pub_date": $date
-  }' "$TMP_JSON" > "$TMP_JSON_NEW"
+  # 新 universal 客户端读 macos-universal;旧 arm64-only 客户端读 macos-arm64。
+  # 两通道指向同一 universal dmg(universal 含 arm64 切片,旧 arm64 客户端装了也能跑)。
+  (
+    {
+      "version": $ver,
+      "url": $url,
+      "format": "dmg",
+      "sha256": $sha,
+      "size": ($size | tonumber),
+      "restart_after_install": false,
+      "notes": $notes,
+      "pub_date": $date
+    }
+  ) as $entry |
+  .platforms["macos-universal"] = $entry |
+  .platforms["macos-arm64"] = $entry' "$TMP_JSON" > "$TMP_JSON_NEW"
 
-echo "--- latest.json (顶层 + macos-arm64 节) ---"
-jq '{version, url, sha256, size, macos_arm64: .platforms["macos-arm64"], linux_arm64: .platforms["linux-arm64"]}' "$TMP_JSON_NEW"
+echo "--- latest.json (顶层 + macos-universal/macos-arm64 节) ---"
+jq '{version, url, sha256, size, macos_universal: .platforms["macos-universal"], macos_arm64: .platforms["macos-arm64"], linux_arm64: .platforms["linux-arm64"]}' "$TMP_JSON_NEW"
 
 # ── 7. 上传：先 dmg 后 latest.json ────────────────────────────────
 # 顺序关键:清单最后传,避免清单已指向新版而 dmg 还没传完,客户端 404。
@@ -302,4 +337,4 @@ ssh "$SERVER" "mv '$REMOTE_DIR/latest.json.new' '$REMOTE_DIR/latest.json' && chm
 echo "=== 发布完成 ==="
 echo "DMG: $DMG_URL"
 echo "清单: $BASE_URL/latest.json"
-curl -fsS "$BASE_URL/latest.json" | jq '{version, macos_arm64: .platforms["macos-arm64"] | {url, sha256}}' || echo "(线上验证失败,检查 nginx)"
+curl -fsS "$BASE_URL/latest.json" | jq '{version, macos_universal: .platforms["macos-universal"] | {url, sha256}, macos_arm64: .platforms["macos-arm64"] | {url, sha256}}' || echo "(线上验证失败,检查 nginx)"

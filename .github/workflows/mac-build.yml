@@ -2,11 +2,11 @@ name: mac-build
 
 # macOS arm64 编译验证工作流(独立于 pr-check.yml 的秒级 fast-gate,不挤 ubuntu runner)。
 # 仅在相关改动进入 main 后触发,不作为 PR 检测项。
-# runner:macos-14(GitHub-hosted Apple Silicon,M Series)。
+# runner:macos-15(GitHub-hosted Apple Silicon,M Series;钉死大版本号以保证可复现)。
 #
 # 与 pr-check.yml 的 rust-test 关系:
 # - rust-test 在 ubuntu 上跑完整 lib tests(含 Linux-only eip/zhidao 等),是主线 gate。
-# - mac-build 在 macos-14 上只跑 cargo check + cargo test --lib + cargo build --release,
+# - mac-build 在 macos-15 上只跑 cargo check + cargo test --lib + cargo build --release,
 #   验证 macOS 平台目标零回归。
 # - mac-build 不跑 relay e2e(那需要 remote-control-relay 的 node_modules,mac-build 不装
 #   该依赖)。因此不设 PINVOU_REQUIRE_REMOTE_E2E,让 e2e 测试在缺依赖时静默跳过而非 panic。
@@ -33,10 +33,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 50
     env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Checkout (含 submodule)
@@ -47,7 +47,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          # 装双 target:tauri universal 构建内部跑两次 cargo(aarch64+x86_64)+ lipo 合并,
+          # 故两套 target triple 都得装。cargo check/test/build 仍走 host(aarch64,编译快)。
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Rust cache
         # 本工作流仅在 main 上运行,统一写入 main 作用域缓存。
@@ -59,7 +61,7 @@ jobs:
 
       # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
       # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
-      # runner 目前是 macos-14(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
+      # runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
       # 注入,cargo build --release 会硬失败(该 step 无 continue-on-error)。
       # 同 release-macos.sh 的 workaround;详见该脚本「问题 A」注释。等上游修后可移除。
       - name: macOS 27+ strip workaround
@@ -112,14 +114,18 @@ jobs:
       - name: Tauri bundle smoke (验证 dmg/app 打包,仅 main push)
         if: github.ref == 'refs/heads/main'
         working-directory: pinvou3-app
-        run: node scripts/tauri/build.js build --target aarch64-apple-darwin
+        # universal-apple-darwin 是 Tauri 专属 target(内部跑 aarch64+x86_64 两次 cargo + lipo),
+        # 不是合法 rustc target triple;故 cargo check/test/build 仍用 host(aarch64),
+        # 仅此处 tauri 构建用 universal,产出可在 Intel + Apple Silicon 通用运行的 dmg/app。
+        run: node scripts/tauri/build.js build --target universal-apple-darwin
         continue-on-error: true
 
-      # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(sha256/plist/bundle targets)。
-      # 核心校验失败会 exit 1,挡 build(此前 continue-on-error 让 sha256/plist 失败也变绿)。
-      # if: always():上游 cargo check/test/build 失败时仍跑 verify,确保 sha256/plist/bundle
-      #   target/CFBundleIdentifier 核心校验不被 skip(verify 内部自带 --skip-test,不依赖上游产物)。
+      # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(plist/usage-key/bundle targets)。
+      # 核心校验失败会 exit 1,挡 build(此前 continue-on-error 让核心校验失败也变绿)。
+      # if: always():上游 cargo check/test/build 失败时仍跑 verify,确保 plist(NSSpeech/
+      #   NSMicrophone usage description)/bundle targets/CFBundleIdentifier 核心校验不被 skip
+      #   (verify 内部自带 --skip-test,不依赖上游产物)。
       # --skip-test:上游已跑 cargo check+test,verify 不重复(省 ~10min),只跑探测 + 核心校验。
-      - name: Verify 脚本 (sha256/plist/bundle targets 校验)
+      - name: Verify 脚本 (plist/usage-key/bundle targets 校验)
         if: always()
         run: ./scripts/run-mac-verify.sh --skip-test

@@ -68,7 +68,7 @@
     "test:user-journey": "../scripts/run-user-journey-tests.sh"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^10.6.0",
     "puppeteer-core": "^25.3.0",

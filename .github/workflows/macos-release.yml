@@ -97,10 +97,10 @@ jobs:
     name: 构建 macOS dmg
     needs: check-version-bump
     if: needs.check-version-bump.outputs.version_bumped == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 50
     env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v4
@@ -110,7 +110,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          # 装双 target:tauri universal 构建内部跑两次 cargo(aarch64+x86_64)+ lipo 合并。
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -120,7 +121,7 @@ jobs:
 
       # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
       # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
-      # runner 目前是 macos-14(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
+      # runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
       # 注入,tauri build 会硬失败。同 release-macos.sh / mac-build.yml 的 workaround。
       - name: macOS 27+ strip workaround
         run: |
@@ -160,10 +161,12 @@ jobs:
           VERSION: ${{ needs.check-version-bump.outputs.version }}
         run: |
           set -euo pipefail
-          node scripts/tauri/build.js build --target aarch64-apple-darwin
+          # universal-apple-darwin 是 Tauri 合成 target(内部跑 aarch64+x86_64 两次 cargo + lipo),
+          # 产出可在 Intel + Apple Silicon 通用运行的 dmg/app。
+          node scripts/tauri/build.js build --target universal-apple-darwin
 
-          DMG="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_aarch64.dmg"
-          APP_BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/pinvou3.app"
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_universal.dmg"
+          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app"
 
           # dmg 打包偶发失败兜底(同 release-macos.sh 的三级策略):
           # bundle_dmg.sh 调 osascript 做 Finder 图标美化,CI 无 head 交互环境下偶尔失败
@@ -171,7 +174,7 @@ jobs:
           # 本 workflow 产出可用 dmg 作 artifact,不能用 continue-on-error,必须带兜底。
           if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
             echo "⚠️ Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
-            node scripts/tauri/build.js build --target aarch64-apple-darwin --bundles dmg || echo "⚠️ 重试仍失败,降级手动 hdiutil"
+            node scripts/tauri/build.js build --target universal-apple-darwin --bundles dmg || echo "⚠️ 重试仍失败,降级手动 hdiutil"
           fi
 
           # 重试后仍无 dmg:手动 hdiutil 兜底(无 Finder 图标美化,但 dmg 功能完整)。
@@ -193,19 +196,25 @@ jobs:
 
           test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
 
-          # 校验 + 写 checksum 文件(随 artifact 附带)
-          cd src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
-          SHA=$(shasum -a 256 "pinvou3_${VERSION}_aarch64.dmg" | awk '{print $1}')
+          # 校验 universal dmg 双架构完整性 + 写 checksum 文件(随 artifact 附带)
+          BIN="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+          echo "lipo 校验 universal 双切片:"
+          lipo "$BIN" -info || { echo "❌ universal 二进制校验失败"; exit 1; }
+          lipo "$BIN" -verify_arch x86_64 arm64 || { echo "❌ universal 缺 x86_64 或 arm64 切片"; exit 1; }
+          echo "✓ universal 双切片齐全 (arm64 + x86_64)"
+
+          cd src-tauri/target/universal-apple-darwin/release/bundle/dmg
+          SHA=$(shasum -a 256 "pinvou3_${VERSION}_universal.dmg" | awk '{print $1}')
           echo "dmg sha256: $SHA"
-          echo "$SHA  pinvou3_${VERSION}_aarch64.dmg" > "pinvou3_${VERSION}_aarch64.dmg.sha256"
-          ls -lh "pinvou3_${VERSION}_aarch64.dmg"
+          echo "$SHA  pinvou3_${VERSION}_universal.dmg" > "pinvou3_${VERSION}_universal.dmg.sha256"
+          ls -lh "pinvou3_${VERSION}_universal.dmg"
 
       - name: 上传 dmg artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pinvou3-macos-${{ needs.check-version-bump.outputs.version }}-aarch64
+          name: pinvou3-macos-${{ needs.check-version-bump.outputs.version }}-universal
           path: |
-            pinvou3-app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_aarch64.dmg
-            pinvou3-app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_aarch64.dmg.sha256
+            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_universal.dmg
+            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_universal.dmg.sha256
           retention-days: 90
           if-no-files-found: error

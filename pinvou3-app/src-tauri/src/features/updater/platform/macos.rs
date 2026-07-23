@@ -48,7 +48,7 @@ struct LatestManifest {
     pub sha256: String,
     #[serde(default)]
     pub size: u64,
-    /// 多平台清单(可选):`{ "macos-arm64": PlatformAsset, "linux-arm64": ..., ... }`。
+    /// 多平台清单(可选):`{ "macos-universal": PlatformAsset, "linux-arm64": ..., ... }`。
     /// 旧版 latest.json 没这字段 → 空 map → 回退到顶层 url/sha256/size。
     #[serde(default)]
     pub platforms: std::collections::HashMap<String, super::super::PlatformAsset>,
@@ -729,7 +729,7 @@ mod tests {
             "sha256": "abc",
             "size": 100,
             "platforms": {
-                "macos-arm64": {
+                "macos-universal": {
                     "url": "https://example.com/m.dmg",
                     "format": "dmg",
                     "sha256": "mac-hash",
@@ -744,7 +744,7 @@ mod tests {
         }"#;
         let m: LatestManifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.platforms.len(), 2);
-        let mac = m.platforms.get("macos-arm64").unwrap();
+        let mac = m.platforms.get("macos-universal").unwrap();
         assert_eq!(mac.url, "https://example.com/m.dmg");
         assert_eq!(mac.format, "dmg");
         assert_eq!(mac.size, 200);
@@ -830,7 +830,7 @@ mod tests {
         let m = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
             &[(
-                "macos-arm64",
+                "macos-universal",
                 "https://plat/m.dmg",
                 "mac-hash",
                 200,
@@ -861,7 +861,7 @@ mod tests {
         // sha256 必校验失败且无兜底(此前的真实缺陷)。
         let m = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
-            &[("macos-arm64", "https://plat/m.dmg", "", 200, "0.7.0")],
+            &[("macos-universal", "https://plat/m.dmg", "", 200, "0.7.0")],
         );
         let (url, sha, size, _, _) = resolve_asset(&m);
         assert_eq!(url, "https://top/x.dmg");
@@ -871,7 +871,7 @@ mod tests {
         // url 空同理回退。
         let m2 = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
-            &[("macos-arm64", "", "mac-hash", 200, "0.7.0")],
+            &[("macos-universal", "", "mac-hash", 200, "0.7.0")],
         );
         let (url2, _, _, _, _) = resolve_asset(&m2);
         assert_eq!(url2, "https://top/x.dmg");
@@ -883,7 +883,7 @@ mod tests {
     fn resolve_asset_empty_platform_version_falls_back_to_top() {
         let m = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
-            &[("macos-arm64", "https://plat/m.dmg", "mac-hash", 200, "")],
+            &[("macos-universal", "https://plat/m.dmg", "mac-hash", 200, "")],
         );
         let (_, _, _, ver, _) = resolve_asset(&m);
         assert_eq!(ver, "9.9.9");
@@ -897,7 +897,7 @@ mod tests {
         let mut m = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
             &[(
-                "macos-arm64",
+                "macos-universal",
                 "https://plat/m.dmg",
                 "mac-hash",
                 200,
@@ -905,7 +905,7 @@ mod tests {
             )],
         );
         m.notes = "linux changelog".to_string();
-        if let Some(a) = m.platforms.get_mut("macos-arm64") {
+        if let Some(a) = m.platforms.get_mut("macos-universal") {
             a.notes = "mac changelog".to_string();
         }
         let (_, _, _, _, notes) = resolve_asset(&m);
@@ -915,7 +915,7 @@ mod tests {
         let mut m2 = manifest_for_resolve(
             ("https://top/x.dmg", "top-hash", 100),
             &[(
-                "macos-arm64",
+                "macos-universal",
                 "https://plat/m.dmg",
                 "mac-hash",
                 200,
