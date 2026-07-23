@@ -31,6 +31,7 @@ pub struct PlatformCapabilities {
     pub show_super_permission_settings: bool,
     pub uses_bundled_dependency_installer: bool,
     pub task_completion_notifications_default: bool,
+    pub local_vllm_supported: bool,
 }
 
 impl PlatformCapabilities {
@@ -43,6 +44,7 @@ impl PlatformCapabilities {
             uses_bundled_dependency_installer: capabilities.uses_bundled_dependency_installer,
             task_completion_notifications_default: capabilities
                 .task_completion_notifications_default,
+            local_vllm_supported: capabilities.local_vllm_supported,
         }
     }
 }

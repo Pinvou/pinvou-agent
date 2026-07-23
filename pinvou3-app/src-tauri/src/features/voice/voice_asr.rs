@@ -52,12 +52,13 @@ pub fn current_model_spec() -> AsrModelSpec {
 /// 引擎可执行：优先 `~/.pinvou3/asr/`（按需/手动装的），回退打包资源目录。
 /// 打包资源目录由 [`set_bundled_engine_dir`] 在启动时注入（需要 AppHandle）。
 pub fn engine_path() -> PathBuf {
-    let local = asr_dir().join("sense-voice-main");
+    let name = super::platform::engine_binary_name();
+    let local = asr_dir().join(name);
     if local.is_file() {
         return local;
     }
     if let Some(dir) = bundled_engine_dir() {
-        let bundled = dir.join("sense-voice-main");
+        let bundled = dir.join(name);
         if bundled.is_file() {
             return bundled;
         }
@@ -88,6 +89,11 @@ pub fn set_bundled_engine_dir(dir: PathBuf) {
 
 fn bundled_engine_dir() -> Option<PathBuf> {
     BUNDLED_ENGINE_DIR.get().cloned()
+}
+
+fn bundled_engine_intact(path: &Path) -> bool {
+    let bundled_dir = bundled_engine_dir();
+    super::platform::bundled_engine_intact(path, bundled_dir.as_deref())
 }
 
 pub fn ffmpeg_available() -> bool {
@@ -451,6 +457,12 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     // 钉死 CWD 到可写的 asr_dir,让这个副产物落在那里、不污染源码树。
     let work_dir = asr_dir();
     let _ = std::fs::create_dir_all(&work_dir);
+    if !bundled_engine_intact(&engine) {
+        return Err(
+            "本地语音识别引擎完整性校验失败，已拒绝执行；请重新安装 pinvou3。"
+                .to_string(),
+        );
+    }
     let out = Command::new(&engine)
         .current_dir(&work_dir)
         .arg("-m")

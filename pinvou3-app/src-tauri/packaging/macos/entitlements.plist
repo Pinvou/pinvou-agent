@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  entitlements.plist —— macOS 代码签名 entitlements。
+
+  当前状态(ad-hoc 签名):
+    tauri.conf.json 的 mac.signingIdentity = "-"(ad-hoc),未启用 Hardened Runtime,
+    此时本文件中的 entitlements 不强制生效(ad-hoc 签名不要求 hardenedRuntime)。
+    故目前只声明了音频输入这一项,供后续直接复用。
+
+  接入 Developer ID 公证时的路线(后续 PR):
+    1. tauri.conf.json: mac.hardenedRuntime = true(公证要求 Hardened Runtime)。
+    2. 评估是否需要补充以下条目(按实际运行情况决定,不要无脑全开):
+       - com.apple.security.cs.allow-jit         (JIT 执行;仅当 app 进程内跑 JIT 才需要)
+       - com.apple.security.cs.disable-library-validation (禁用库签名校验;通常不需要)
+       注意:SenseVoice 是**独立子进程**(bundled Mach-O,自行加载),app 主进程不需要
+       allow-unsigned-executable-memory;若子进程被阻断,优先给子进程单独签 + 加 entitlement,
+       而非放宽主进程。
+    3. com.apple.security.device.audio-input **必须保留**(ASR 麦克风采集必需,不能删)。
+
+  本文件只加注释说明未来路线,不新增 key。
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

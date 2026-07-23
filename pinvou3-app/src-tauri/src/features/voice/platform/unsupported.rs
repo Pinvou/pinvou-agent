@@ -2,6 +2,14 @@ use std::path::PathBuf;
 
 use super::super::voice_asr::AsrModelSpec;
 
+pub fn engine_binary_name() -> &'static str {
+    "sense-voice-main"
+}
+
+pub fn bundled_engine_intact(_path: &std::path::Path, _bundled_dir: Option<&std::path::Path>) -> bool {
+    true
+}
+
 pub fn asr_tool_path() -> PathBuf {
     PathBuf::from("paddlespeech")
 }

@@ -1,0 +1,233 @@
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use super::macos_path;
+
+/// 校验路径存在且至少有一个可执行位(owner/group/other 任一有 x bit)。
+/// 与 Linux 侧 `which` 自带的可执行性校验对齐:`command_exists` 此前只调
+/// `Path::is_file()`,若目录里有同名但无执行权限的残留文件(手动 touch、
+/// 损坏的 brew 链接、备份)会误判依赖存在 → 依赖体检假阳性。
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
+    Command::new("/usr/bin/open")
+        .arg(target.as_ref())
+        .spawn()
+        .map_err(|e| format!("系统打开失败({label}): {e}"))?;
+    Ok(())
+}
+
+pub fn reveal_target(target: &Path) -> Result<(), String> {
+    Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(target)
+        .spawn()
+        .map_err(|error| format!("文件管理器定位失败: {error}"))?;
+    Ok(())
+}
+
+pub fn device_serial_number() -> Option<String> {
+    None
+}
+
+pub fn command_exists(command: &str) -> bool {
+    // 从 dmg/Finder 启动的 GUI 进程不继承 shell 的 PATH,/opt/homebrew/bin(Apple Silicon)
+    // 与 /usr/local/bin(Intel) 不在 GUI 进程 PATH 内 → `which` 找不到 brew 装的 pandoc/
+    // poppler/tesseract/soffice,依赖体检系统性误报"缺失"。先走 `which`,命中即返回;
+    // 未命中再补查这两个标准 Homebrew 目录(macOS 适配最常见的实战坑)。
+    if Command::new("/usr/bin/which")
+        .arg(command)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        let path = Path::new(dir).join(command);
+        // is_file() 后再校验可执行位:避免同名无执行权限的残留(手动 touch、
+        // 损坏的 brew 链接、备份)被误判为依赖就位。与 Linux 侧 `which` 对齐。
+        if path.is_file() && is_executable(&path) {
+            return true;
+        }
+    }
+    // cask 类 GUI 应用(如 LibreOffice)装在 /Applications/*.app/Contents/MacOS/,
+    // 不在 Homebrew bin 目录,也不在 GUI 进程 PATH 内 → 依赖体检系统性误报缺失。
+    for cask_dir in ["/Applications/LibreOffice.app/Contents/MacOS"] {
+        let path = Path::new(cask_dir).join(command);
+        if path.is_file() && is_executable(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn pandoc_tool_path() -> PathBuf {
+    macos_path::pandoc_tool_path()
+}
+
+pub fn pandoc_tool_exists() -> bool {
+    command_exists("pandoc")
+}
+
+pub fn show_pandoc_dependency_check() -> bool {
+    true
+}
+
+pub fn pandoc_dependency_packages() -> &'static str {
+    "pandoc"
+}
+
+pub fn pandoc_missing_message() -> &'static str {
+    "缺少 pandoc。可通过 Homebrew 安装（brew install pandoc），或从 https://pandoc.org/installing.html 下载。"
+}
+
+pub fn pdf_tool_path(command: &str) -> PathBuf {
+    PathBuf::from(command)
+}
+
+pub fn pdf_tool_exists(command: &str) -> bool {
+    command_exists(command)
+}
+
+pub fn show_pdf_dependency_check() -> bool {
+    true
+}
+
+pub fn pdf_dependency_packages() -> &'static str {
+    "poppler"
+}
+
+pub fn ocr_dependency_packages() -> &'static str {
+    // 包含 tesseract-lang:Homebrew 的 tesseract formula 默认只装英文语言数据,
+    // pinvou3 面向国内政企(中文是刚需),缺 tesseract-lang 时中文 OCR 不可用。
+    // tesseract-lang 已在 macos_dependency.rs 的 KNOWN_DEP_PACKAGES 白名单内。
+    "tesseract tesseract-lang"
+}
+
+pub fn pdf_text_missing_message() -> &'static str {
+    "缺少 PDF 文本解析组件 pdftotext。可通过 Homebrew 安装（brew install poppler），或从 https://poppler.freedesktop.org 下载。"
+}
+
+pub fn pdf_render_missing_message() -> &'static str {
+    "缺少 PDF 渲染组件 pdftoppm。可通过 Homebrew 安装（brew install poppler），或从 https://poppler.freedesktop.org 下载。"
+}
+
+pub fn pdf_ocr_missing_message() -> &'static str {
+    "缺少 OCR 组件 tesseract。可通过 Homebrew 安装（brew install tesseract），或从 https://tesseract-ocr.github.io 下载。"
+}
+
+pub fn presentation_pdf_missing_message() -> &'static str {
+    "缺少生成 PDF 所需的 LibreOffice。可通过 Homebrew 安装（brew install --cask libreoffice），或从 https://www.libreoffice.org/download 下载。"
+}
+
+// ====== file_ingest.rs 跨平台缺失消息 + 依赖包名 ======
+// file_ingest.rs 原先在所有平台上硬编码 "sudo apt install ..." 文案,
+// macOS/Windows 用户看到 Linux apt 指令会产生误导。以下函数让每个平台
+// 给出自己正确的安装指引,跟已有的 pdf_text_missing_message 等同模式。
+
+pub fn libreoffice_missing_message() -> &'static str {
+    "需要 LibreOffice。可通过 Homebrew 安装（brew install --cask libreoffice），或从 https://www.libreoffice.org/download 下载。"
+}
+
+pub fn sevenzip_missing_message() -> &'static str {
+    "压缩包解析需要 7-Zip。可通过 Homebrew 安装（brew install p7zip），或从 https://www.7-zip.org 下载。"
+}
+
+pub fn python3_missing_message() -> &'static str {
+    "邮件解析需要 python3。macOS 自带 python3（需安装 Xcode Command Line Tools：xcode-select --install）；如仍缺失可从 https://www.python.org/downloads 下载。"
+}
+
+pub fn msgconvert_missing_message() -> &'static str {
+    ".msg 邮件解析需要 msgconvert（Perl 模块 Email::Outlook::Message）。Homebrew 无对应 formula，请运行：sudo cpan -i Email::Outlook::Message，或改用其他工具转换 .msg 文件。"
+}
+
+pub fn libreoffice_dependency_packages() -> &'static str {
+    "libreoffice"
+}
+
+pub fn sevenzip_dependency_packages() -> &'static str {
+    "p7zip"
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    // msgconvert 需要 Perl 模块 Email::Outlook::Message，Homebrew 无对应 formula，
+    // 无法一键安装。返回空串 → check_dependencies 的 apt 字段为空 → 前端不显示
+    // 「一键安装」按钮，用户按 msgconvert_missing_message 的指引手动安装。
+    ""
+}
+
+/// Mac 无 NVIDIA 驱动。
+pub fn nvidia_smi_candidates() -> Vec<&'static str> {
+    Vec::new()
+}
+
+pub fn libreoffice_tool_path() -> PathBuf {
+    if command_exists("soffice") {
+        PathBuf::from("soffice")
+    } else {
+        PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS/soffice")
+    }
+}
+
+pub fn ocr_tool_path() -> PathBuf {
+    PathBuf::from("tesseract")
+}
+
+pub fn ocr_tessdata_dir() -> Option<PathBuf> {
+    None
+}
+
+pub fn archive_tool_path() -> PathBuf {
+    if command_exists("7zz") { PathBuf::from("7zz") } else { PathBuf::from("7z") }
+}
+
+pub fn ocr_tool_exists() -> bool { command_exists("tesseract") }
+pub fn archive_tool_exists() -> bool { command_exists("7zz") || command_exists("7z") }
+pub fn msg_native_supported() -> bool { false }
+pub fn msg_converter_required() -> bool { true }
+pub fn email_tool_exists() -> bool { command_exists("python3") && command_exists("msgconvert") }
+pub fn show_ocr_dependency_check() -> bool { true }
+pub fn show_archive_dependency_check() -> bool { true }
+pub fn archive_dependency_packages() -> &'static str { "p7zip" }
+pub fn system_default_open_supported(_path: &Path) -> bool { true }
+pub fn libreoffice_open_fallback_needed(_path: &Path) -> bool { false }
+
+/// command_exists 补查的目录列表(Homebrew bin + cask 应用 MacOS 目录)。
+/// 抽取为常量便于测试验证:确保 cask 目录(LibreOffice)在列表内,
+/// 否则 office 文档转换会被系统性误判为依赖缺失。
+#[cfg(test)]
+const EXTRA_LOOKUP_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/Applications/LibreOffice.app/Contents/MacOS",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 确保 command_exists 的补查目录列表包含 cask 应用路径(LibreOffice)。
+    /// 若有人误删该路径,此测试会失败 → 防止 office 文档转换功能回归。
+    #[test]
+    fn extra_lookup_dirs_includes_cask_paths() {
+        assert!(
+            EXTRA_LOOKUP_DIRS.contains(&"/Applications/LibreOffice.app/Contents/MacOS"),
+            "LibreOffice cask 路径必须在补查目录列表内,否则 office 文档转换不可用"
+        );
+        assert!(
+            EXTRA_LOOKUP_DIRS.contains(&"/opt/homebrew/bin"),
+            "Apple Silicon Homebrew 路径必须在补查目录列表内"
+        );
+        assert!(
+            EXTRA_LOOKUP_DIRS.contains(&"/usr/local/bin"),
+            "Intel Mac Homebrew 路径必须在补查目录列表内"
+        );
+    }
+}

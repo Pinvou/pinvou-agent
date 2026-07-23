@@ -4,6 +4,14 @@ use std::time::Duration;
 
 use super::super::voice_asr::{self, AsrModelSpec};
 
+pub fn engine_binary_name() -> &'static str {
+    "pinvou-asr.exe"
+}
+
+pub fn bundled_engine_intact(_path: &std::path::Path, _bundled_dir: Option<&std::path::Path>) -> bool {
+    true
+}
+
 const ASR_MODEL_URL: &str =
     "https://www.modelscope.cn/models/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/master/sensevoice-small-q8.gguf";
 const ASR_MODEL_MIRROR_URL: &str =

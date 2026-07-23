@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
-import { bridge } from '../../hooks/useBridge.js';
+import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
@@ -335,6 +335,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       }, []);
       const chatItems = bs ? bs.chatItems : [];
       const busy = bs ? bs.busy : false;
+      const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
       const formatAttachmentError = (error) => {
@@ -740,7 +741,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
                   ));
                 })()}
-                {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} />}
+                {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
               </div>
             )}
 
@@ -1386,7 +1387,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     // 思考指示器：Braille 转圈 + 思考中/调用工具 + 计时（每阶段切换重置）
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    const ThinkingBubble = ({ thinking, theme, t }) => {
+    const ThinkingBubble = ({ thinking, theme, t, isLocal }) => {
       const isDark = theme === 'dark';
       const [frame, setFrame] = useState(0);
       const [elapsed, setElapsed] = useState(0);
@@ -1405,7 +1406,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (phase === 'tool' && toolName) {
         text = t.thinkingCall(toolName, elapsed);
       } else {
-        const suffix = elapsed >= 120 ? ` · ${t.hintSlow120}` : elapsed >= 30 ? ` · ${t.hintSlow30}` : '';
+        const suffix = elapsed >= 120 ? ` · ${t.hintSlow120(isLocal)}` : elapsed >= 30 ? ` · ${t.hintSlow30(isLocal)}` : '';
         text = `${t.thinkingLabel}... ${elapsed}s${suffix}`;
       }
       return (

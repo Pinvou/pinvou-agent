@@ -5,6 +5,8 @@ use tauri::AppHandle;
 
 use super::super::{DownloadUpdateResult, PendingUpdateReportResult, UpdateInfo};
 
+pub fn cleanup_stale_backup() {}
+
 pub async fn check_for_update_info(
     _client: &reqwest::Client,
     current_version: &str,

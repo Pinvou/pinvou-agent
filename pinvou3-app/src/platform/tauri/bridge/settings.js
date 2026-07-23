@@ -49,9 +49,12 @@
   async function setSelectedPet(id) {
     return await invoke("set_selected_pet", { id: id });
   }
-  async function loadEffectiveModelConfig() {
+  async function loadEffectiveModelConfig(sessionId) {
+    var requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
     try {
-      state.effectiveModelConfig = await invoke("get_effective_model_config");
+      var config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
+      if (requestedSessionId !== (state.activeSessionId || null)) return;
+      state.effectiveModelConfig = config;
     } catch (e) {
       state.effectiveModelConfig = null;
     }
@@ -62,6 +65,7 @@
     try {
       await invoke("update_settings", { prefs: prefs });
       state.settings = prefs;
+      await loadEffectiveModelConfig();
       notify();
       return true;
     } catch (e) {
@@ -318,8 +322,10 @@
     state.vllmSetupDismissed = true;
     notify();
   }
-  async function getEffectiveModelConfig() {
-    return await invoke("get_effective_model_config");
+  async function getEffectiveModelConfig(sessionId) {
+    return await invoke("get_effective_model_config", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
   }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
@@ -338,6 +344,7 @@
  async function saveModel(model) {
    await invoke("save_model", { model: model });
    await loadModels();
+   await loadEffectiveModelConfig();
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
@@ -345,25 +352,32 @@
  async function deleteModel(id) {
    await invoke("delete_model", { id: id });
    await loadModels();
+   await loadEffectiveModelConfig();
   }
   async function setActiveModel(id) {
     await invoke("set_active_model", { id: id });
     await loadModels();
+    await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
   async function loadSessionModel(sessionId) {
-    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
-    try {
-      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
-    } catch (e) { state.currentSessionModelId = null; }
+    var requestedSessionId = sessionId || null;
+    var results = await Promise.all([
+      requestedSessionId
+        ? invoke("get_session_model_id", { sessionId: requestedSessionId }).catch(function () { return null; })
+        : Promise.resolve(null),
+      invoke("get_effective_model_config", { sessionId: requestedSessionId }).catch(function () { return null; }),
+    ]);
+    if (requestedSessionId !== (state.activeSessionId || null)) return;
+    state.currentSessionModelId = results[0];
+    state.effectiveModelConfig = results[1];
     notify();
   }
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
   async function switchModel(sessionId, modelId) {
     if (sessionId) {
       await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
-      state.currentSessionModelId = modelId;
-      notify();
+      await loadSessionModel(sessionId);
     } else {
       await setActiveModel(modelId);
     }

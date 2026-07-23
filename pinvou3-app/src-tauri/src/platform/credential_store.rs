@@ -163,6 +163,12 @@ impl SystemCredentialStore {
     }
 
     /// 取(或惰性构造 + 缓存)某 keyring service 对应的 Secrets 后端。
+    ///
+    /// 所有桌面平台策略一致:优先系统凭据存储(macOS Keychain / Windows Credential
+    /// Manager / Linux Secret Service),只有 `probe()` 明确失败时才回退文件存储。
+    ///
+    /// macOS ad-hoc 构建的签名身份不稳定,可能让 Keychain 再次请求授权,但这不应成为
+    /// 默认降级成明文存储的理由；稳定签名可改善授权体验,安全默认值仍应保持 Keychain。
     fn secrets_for(&self, service: &str) -> Arc<Secrets> {
         let started_at = Instant::now();
         log::info!("[credential_store] secrets_for lock wait start service={}", service);
@@ -203,6 +209,7 @@ impl SystemCredentialStore {
                 Secrets::file_backed()
             }
         };
+
         let arc = Arc::new(secrets);
         cache.insert(service.to_string(), arc.clone());
         log::info!(

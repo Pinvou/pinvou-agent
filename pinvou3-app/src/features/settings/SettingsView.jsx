@@ -5,7 +5,7 @@ import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationC
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
-import { bridge } from '../../hooks/useBridge.js';
+import { bridge, isLocalModel } from '../../hooks/useBridge.js';
 import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
@@ -1072,13 +1072,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     // 添加/编辑模型模态弹窗。
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
+      const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
       const initialCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
       const initialCatalogMatch = initialCatalogGroups.some(group =>
         group.preset === initial.preset && group.items.some(item => !item.custom && item.model === initial.model)
       );
       const [name, setName] = useState(initial.name || '');
-      const [preset, setPreset] = useState(initial.preset || 'local_vllm');
+      const [preset, setPreset] = useState(initial.preset || (localVllmSupported ? 'local_vllm' : 'deepseek'));
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
@@ -1103,7 +1104,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function applyCatalogItem(group, item) {
         const p = group.preset;
         setPreset(p);
-        const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS.local_vllm;
+        const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS[localVllmSupported ? 'local_vllm' : 'deepseek'];
         const nextModel = item.custom ? '' : (item.model || defs.model);
         setBaseUrl(defs.baseUrl);
         setModel(nextModel);
@@ -1136,7 +1137,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
       async function handleDetect() {
+        // macOS/Windows 后端无 discover_local_vllm / detect_local_vllm_setup 命令(已 cfg linux),
+        // 此处非 Linux 直接返回,避免 invoke 不存在的命令 reject 报错。
         if (!bridge.available || detecting) return;
+        if (!localVllmSupported) return;
         setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
         try {
           const result = await bridge.vllm.discoverLocalVllm({
@@ -1663,7 +1667,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         }`}>{children}</span>
       );
       const userModels = visibleSortedModels(savedModels || [], bs);
-      const isLocalModel = model => model && (model.preset === 'local_vllm' || /127\.0\.0\.1|localhost/i.test(model.base_url || ''));
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: '内置搜索' },
         { key: 'metaso', label: '秘塔', desc: '中文搜索服务' },

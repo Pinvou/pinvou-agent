@@ -395,6 +395,10 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
     // Linux/X11 下 builder 在窗口 map 之前写入的 always_on_top 可能丢失，
     // 必须在窗口已显示后再向窗口管理器重申一次。
     show_and_keep_above(&win)?;
+    // macOS:pet 策略必须在 show_and_keep_above 之后执行——后者调 set_always_on_top(true),
+    // tao 0.35.2 在 macOS 上实现为 setLevel(NSFloatingWindowLevel=3),会覆盖策略设的
+    // NSStatusWindowLevel(=25)。最后执行确保策略的更高 level 不被覆盖(桌宠浮在全屏 App 上)。
+    super::platform::apply_pet_window_policy(&win);
     Ok(())
 }
 

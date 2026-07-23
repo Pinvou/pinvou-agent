@@ -181,6 +181,7 @@
       showSuperPermissionSettings: false,
       usesBundledDependencyInstaller: false,
       taskCompletionNotificationsDefault: true,
+      localVllmSupported: false,
     },
     settings: null,
     selectedPet: "lingling",

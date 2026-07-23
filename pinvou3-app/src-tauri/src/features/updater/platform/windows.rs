@@ -14,6 +14,8 @@ use zip::ZipArchive;
 use super::windows_domain_bootstrap;
 use crate::platform::paths;
 
+pub fn cleanup_stale_backup() {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowsInstallerKind {
     Msi,
@@ -219,6 +221,7 @@ pub async fn check_for_update_info(
         update_type: info.update_type,
         platform: "windows".to_string(),
         ota_host: info.ota_host,
+        platforms: std::collections::HashMap::new(),
     })
 }
 

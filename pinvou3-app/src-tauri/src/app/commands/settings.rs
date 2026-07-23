@@ -21,6 +21,7 @@ fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     prefs.sanitize_plaintext_api_keys();
+    prefs.refresh_credential_states_with_store(&store);
     Ok(prefs)
 }
 
@@ -124,14 +125,26 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
+fn session_model_from_prefs(
+    prefs: &UserPrefs,
+    session_model_id: Option<&str>,
+) -> Option<SavedModel> {
+    session_model_id.and_then(|id| prefs.model_by_id(id).cloned())
+}
+
 #[tauri::command]
 pub async fn get_effective_model_config(
+    session_id: Option<String>,
     pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
 ) -> Result<EffectiveModelConfig, String> {
-    // 读 disk 最新 prefs(GUI 可能刚改过模型/默认),boot 快照会过时。
+    // 读 disk 最新 prefs，并按当前会话解析真正绑定的模型。
     let mut bridge = pool.bridge.clone();
-    bridge.prefs = UserPrefs::load();
-    bridge.session_model = None; // 全局视角,不绑定具体 session
+    bridge.prefs = refresh_safe_prefs(UserPrefs::load());
+    let session_model_id = session_id
+        .as_deref()
+        .and_then(|id| store.session_model_id(id));
+    bridge.session_model = session_model_from_prefs(&bridge.prefs, session_model_id.as_deref());
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -139,32 +152,38 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
         env_overrides.push("base_url".to_string());
     }
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    let env_api_key = std::env::var("DEEPSEEK_API_KEY")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if env_api_key {
         env_overrides.push("api_key".to_string());
     }
     if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
         env_overrides.push("provider".to_string());
     }
-    let preset = bridge
-        .prefs
-        .active_model()
-        .map(|m| m.preset)
+    let effective = bridge.effective_model_owned();
+    let preset = effective
+        .as_ref()
+        .map(|model| model.preset)
         .unwrap_or_default()
         .as_str();
-    let active = bridge.prefs.active_model();
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
         base_url: bridge.base_url(),
         api_key: String::new(),
-        credential_state: if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+        credential_state: if env_api_key {
             CredentialState::EnvOverride
         } else {
-            active
-                .map(|m| m.credential_state)
+            effective
+                .as_ref()
+                .map(|model| model.credential_state)
                 .unwrap_or(CredentialState::Missing)
         },
-        has_secret: active.map(|m| m.has_secret).unwrap_or(false),
+        has_secret: effective
+            .as_ref()
+            .map(|model| model.has_secret)
+            .unwrap_or(false),
         provider: bridge.provider(),
         env_overrides,
     })

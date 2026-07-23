@@ -152,8 +152,18 @@ pub fn select_builtin_llmapi_model(
         .unwrap_or_else(|| BUILTIN_LLMAPI_DEFAULT_MODEL.to_string())
 }
 impl Default for ModelPreset {
+    /// 平台感知默认预设:macOS/Windows 无本地 vLLM 支持(相关后端命令已 cfg 掉),
+    /// 默认到 DeepSeek 远程 API,否则新用户首启即落在 127.0.0.1:8000 永远连不上。
+    /// Linux 保持 LocalVllm(麒麟环境默认有本地大模型)。
     fn default() -> Self {
-        ModelPreset::LocalVllm
+        #[cfg(target_os = "linux")]
+        {
+            ModelPreset::LocalVllm
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            ModelPreset::Deepseek
+        }
     }
 }
 impl ModelPreset {
@@ -672,12 +682,11 @@ impl UserPrefs {
             }
             let key = model.api_key.trim().to_string();
             if key.is_empty() {
-                if model.credential_ref.is_some() {
-                    model.has_secret = true;
-                    if model.credential_state == CredentialState::Missing {
-                        model.credential_state = CredentialState::Configured;
-                    }
-                } else {
+                // 明文 key 为空(keep_existing 场景):不盲改 credential_state。
+                // 凭据是否真的存在由后续 refresh_credential_states_with_store 真实
+                // 回读存储判定——此前这里"只看 credential_ref 存在就标 Configured"
+                // 会导致存储里是空值却显示"已配置"(假阳性 → 401)。
+                if model.credential_ref.is_none() {
                     result.skipped_count += 1;
                 }
                 model.clear_plaintext_key();
@@ -767,12 +776,7 @@ impl UserPrefs {
             });
             match action {
                 CredentialEditAction::KeepExisting => {
-                    if credential.credential_ref.is_some() {
-                        credential.has_secret = true;
-                        if credential.credential_state == CredentialState::Missing {
-                            credential.credential_state = CredentialState::Configured;
-                        }
-                    }
+                    // keep_existing:不盲改 credential_state,留给 refresh 真实回读判定。
                     credential.clear_plaintext_key();
                 }
                 CredentialEditAction::Replace => {
@@ -831,15 +835,14 @@ impl UserPrefs {
     }
 
     pub fn sanitize_plaintext_api_keys(&mut self) {
+        // 只清空内存里的明文 key 字段。credential_state / has_secret 的权威判定
+        // 交给 `refresh_credential_states_with_store`(它真实回读存储校验非空)。
+        // 此前这里会"只看 credential_ref 存在就把 Missing 盲改回 Configured",
+        // 导致 refresh 刚校准出的 Missing 被覆盖 → 假阳性(Keychain 存空值却显示
+        // "已配置") → 云端调用拿空 key → 401。
         self.search.api_key = None;
         for credential in self.search.credentials.values_mut() {
             credential.clear_plaintext_key();
-            if credential.credential_ref.is_some()
-                && credential.credential_state == CredentialState::Missing
-            {
-                credential.credential_state = CredentialState::Configured;
-                credential.has_secret = true;
-            }
         }
         self.advanced.custom_api_key = None;
         for model in &mut self.advanced.saved_models {
@@ -851,11 +854,6 @@ impl UserPrefs {
                 continue;
             }
             model.clear_plaintext_key();
-            if model.credential_ref.is_some() && model.credential_state == CredentialState::Missing
-            {
-                model.credential_state = CredentialState::Configured;
-                model.has_secret = true;
-            }
         }
     }
 
@@ -961,10 +959,11 @@ mod tests {
         prefs.migrate_models();
         assert_eq!(prefs.advanced.saved_models.len(), 1);
         let m = &prefs.advanced.saved_models[0];
-        assert_eq!(m.preset, ModelPreset::LocalVllm);
-        assert_eq!(m.model, "qwen36_35b_256k");
-        assert_eq!(m.context_window_tokens, Some(262_144));
-        assert_eq!(m.max_output_tokens, Some(24_576));
+        // 默认预设平台感知(Linux→LocalVllm,macOS/Windows→Deepseek),见 ModelPreset::default()。
+        // 各平台默认模型/上下文随之不同,这里按平台分别断言。
+        let expected_preset = ModelPreset::default();
+        assert_eq!(m.preset, expected_preset);
+        assert_eq!(m.model, expected_preset.default_model());
         assert_eq!(prefs.advanced.active_model_id.as_deref(), Some("default"));
         assert_eq!(prefs.active_model().map(|m| m.id.as_str()), Some("default"));
     }
@@ -1367,5 +1366,38 @@ mod tests {
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.search.provider, SearchProvider::Bing);
         assert!(prefs.search.api_key.is_none());
+    }
+
+    /// 回归:credential_ref 存在但存储里是空值时,credential_state 必须是 Missing,
+    /// 不能被假阳性地标成 Configured(根因:macOS Keychain 存空值 + 旧 sanitize 盲置)。
+    #[test]
+    fn refresh_does_not_mark_configured_when_store_value_is_empty() {
+        use crate::platform::credential_store::{CredentialReference, MemoryCredentialStore};
+
+        // 存储里有 credential_ref 指向的条目,但值为空字符串。
+        let store = MemoryCredentialStore::default();
+        let reference = CredentialReference::for_model("default");
+        store.set(&reference, "").unwrap(); // 空值!
+
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        // 模拟"之前保存过 key"的状态:有 ref + state 曾被标 Configured。
+        let model = &mut prefs.advanced.saved_models[0];
+        model.credential_ref = Some(reference);
+        model.credential_state = CredentialState::Configured;
+        model.has_secret = true;
+
+        // refresh 真实回读 → 发现空值 → 标 Missing。
+        prefs.refresh_credential_states_with_store(&store);
+        // sanitize 不应再把 Missing 盲改回 Configured(这是之前的 bug)。
+        prefs.sanitize_plaintext_api_keys();
+
+        let model = &prefs.advanced.saved_models[0];
+        assert_eq!(
+            model.credential_state,
+            CredentialState::Missing,
+            "空值存储不应被标为 Configured(假阳性会导致云端调用拿空 key → 401)"
+        );
+        assert!(!model.has_secret);
     }
 }

@@ -74,10 +74,10 @@
     state.updateChecking = false; notify();
   }
   // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
-  // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
+  // 安装器启动成功后 Windows 退出当前进程；Linux/macOS 在安装后由前端重启。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    var shouldRestartAfterInstall = state.updateInfo.platform !== "windows";
     var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
@@ -87,7 +87,7 @@
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {
-        await invoke("install_update", { debPath: downloadResult });
+        await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
       }
       state.updateReady = true;
       installed = true;

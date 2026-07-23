@@ -147,6 +147,14 @@ fn ensure_release_env() {
                 dirs.push(home.join(".npm-global").join("bin"));
                 dirs.push(home.join(".local").join("bin"));
             }
+            #[cfg(target_os = "macos")]
+            {
+                dirs.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+                dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+                dirs.push(std::path::PathBuf::from(
+                    "/Applications/LibreOffice.app/Contents/MacOS",
+                ));
+            }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
                 env::set_var("PATH", joined);
@@ -244,6 +252,8 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            #[cfg(target_os = "macos")]
+            features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -439,7 +449,7 @@ pub fn run() {
             // ~/.pinvou3/knowledge/models/bge-m3。setup 只打开数据库并以 embedder=None 注册服务；
             // React 首帧后再调用 kb_model_load_after_first_frame，通过 spawn_blocking 后台加载。
             // 模型没装/加载失败时维持完全门控，不阻断启动；下载完成仍可热加载。
-            // 语音识别引擎 sense-voice-main 随 deb 打包,容错同 bge-m3 的资源布局,
+            // 语音识别引擎随平台安装包打包,容错同 bge-m3 的资源布局,
             // 注入给 voice_asr 作为 ~/.pinvou3/asr/ 之外的回退查找目录。
             if let Some(asr_res) = app.path().resource_dir().ok().and_then(|res| {
                 [
@@ -447,7 +457,7 @@ pub fn run() {
                     res.join("resources").join("runtime").join("asr"),
                 ]
                 .into_iter()
-                .find(|d| d.join("sense-voice-main").exists())
+                .find(|d| d.join(features::voice::engine_binary_name()).exists())
             }) {
                 features::voice::set_bundled_engine_dir(asr_res);
             }

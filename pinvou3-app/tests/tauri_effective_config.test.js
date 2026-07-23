@@ -78,8 +78,9 @@ assert.ok(
 );
 
 const macos = composeEffectiveConfig([platformConfigPath("darwin")]).effectiveConfig;
-assert.deepEqual(macos.bundle.targets, ["dmg"]);
+assert.deepEqual(macos.bundle.targets, ["app", "dmg"]);
 assert.ok(macos.bundle.resources["resources/common/web-template/"]);
+assert.ok(macos.bundle.resources["resources/platforms/macos/aarch64/asr/"]);
 
 const nullRemoval = mergeConfig(
   { bundle: { resources: { common: "common-target", runtime: "runtime-target" } } },

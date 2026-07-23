@@ -4,6 +4,14 @@ use tauri::Emitter;
 
 use super::super::voice_asr::{self, AsrModelSpec};
 
+pub fn engine_binary_name() -> &'static str {
+    "sense-voice-main"
+}
+
+pub fn bundled_engine_intact(_path: &std::path::Path, _bundled_dir: Option<&std::path::Path>) -> bool {
+    true
+}
+
 const ASR_MODEL_URL: &str =
     "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
 const ASR_MODEL_MIRROR_URL: &str =

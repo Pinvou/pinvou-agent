@@ -13,6 +13,8 @@ use crate::platform::paths;
 
 const UPDATE_MANIFEST_URL: &str = "https://pinvou.com/pinvou3/latest.json";
 
+pub fn cleanup_stale_backup() {}
+
 fn manifest_url() -> String {
     std::env::var("PINVOU3_UPDATE_URL").unwrap_or_else(|_| UPDATE_MANIFEST_URL.to_string())
 }
@@ -64,6 +66,7 @@ pub async fn check_for_update_info(
         update_type: String::new(),
         platform: "linux".to_string(),
         ota_host: String::new(),
+        platforms: std::collections::HashMap::new(),
     })
 }
 

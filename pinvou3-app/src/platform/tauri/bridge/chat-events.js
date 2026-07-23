@@ -33,6 +33,18 @@
     var shouldUseToolOutputAsArtifact = context.shouldUseToolOutputAsArtifact;
     var presentArtifactAbsPath = context.presentArtifactAbsPath;
     var extractArtifactPath = context.extractArtifactPath;
+
+    function refreshEffectiveModelConfigAfterAuthError(error) {
+      if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
+      var requestedSessionId = state.activeSessionId || null;
+      invoke("get_effective_model_config", { sessionId: requestedSessionId })
+        .then(function (config) {
+          if (requestedSessionId !== (state.activeSessionId || null)) return;
+          state.effectiveModelConfig = config;
+          notify();
+        })
+        .catch(function () {});
+    }
     var markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     var trackArtifact = context.trackArtifact;
     var untrackArtifact = context.untrackArtifact;
@@ -318,6 +330,7 @@
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
+      refreshEffectiveModelConfigAfterAuthError(error);
       if (error) addSystemItem("⚠️ " + error);
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
@@ -414,6 +427,7 @@
   listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
+    refreshEffectiveModelConfigAfterAuthError(error);
     if (error) addSystemItem("⚠️ " + error);
   }); });
 
