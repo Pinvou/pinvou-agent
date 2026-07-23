@@ -552,7 +552,8 @@ async fn memory_llm_uses_profile_in_fresh_session() {
         AppMode::Yolo,
         None,
         true,
-    );
+    )
+    .expect("build memory probe op");
     handle.send(op).await.expect("send memory probe");
 
     let (answer, elapsed) = collect_answer(&handle, Duration::from_secs(90)).await;
@@ -609,7 +610,8 @@ async fn memory_llm_current_instruction_overrides_memory() {
         AppMode::Yolo,
         None,
         true,
-    );
+    )
+    .expect("build override probe op");
     handle.send(op).await.expect("send override probe");
     let (answer, elapsed) = collect_answer(&handle, Duration::from_secs(90)).await;
 
@@ -647,12 +649,15 @@ async fn memory_llm_one_off_task_does_not_create_long_term_memory() {
     let dt_config = bridge.build_dt_config();
     let handle = spawn_engine(cfg, &dt_config);
 
-    let op = bridge.build_send_message_op(
-        "这是一次性临时任务：今天午饭我可能吃面。不要把它当长期偏好。请只回答“收到”。".to_string(),
-        AppMode::Yolo,
-        None,
-        true,
-    );
+    let op = bridge
+        .build_send_message_op(
+            "这是一次性临时任务：今天午饭我可能吃面。不要把它当长期偏好。请只回答“收到”。"
+                .to_string(),
+            AppMode::Yolo,
+            None,
+            true,
+        )
+        .expect("build one-off probe op");
     handle.send(op).await.expect("send one-off probe");
     let (_answer, _elapsed) = collect_answer(&handle, Duration::from_secs(90)).await;
 
@@ -685,6 +690,7 @@ async fn memory_llm_review_cleans_profile_and_rejects_question() {
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).expect("create workspace");
     let bridge = Pinvou3Bridge::boot_with_workspace(ws).expect("boot bridge");
+    let session_id = "memory/e2e:review-clean";
 
     let question = memory::review_turn_candidates_with_llm(
         &bridge,
@@ -693,6 +699,7 @@ async fn memory_llm_review_cleans_profile_and_rejects_question() {
             assistant: "你是小猪。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review question");
@@ -711,6 +718,7 @@ async fn memory_llm_review_cleans_profile_and_rejects_question() {
             assistant: "好的，我记住了。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review explicit profile");
@@ -741,6 +749,7 @@ async fn memory_llm_realistic_effect_snapshot() {
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).expect("create workspace");
     let bridge = Pinvou3Bridge::boot_with_workspace(ws).expect("boot bridge");
+    let session_id = "memory/e2e:realistic-effect";
 
     let question = memory::review_turn_candidates_with_llm(
         &bridge,
@@ -749,6 +758,7 @@ async fn memory_llm_realistic_effect_snapshot() {
             assistant: "你是小猪。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review question");
@@ -762,6 +772,7 @@ async fn memory_llm_realistic_effect_snapshot() {
             assistant: "好的，以后我称呼你欣哥，你叫我小猪。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review profile");
@@ -773,6 +784,7 @@ async fn memory_llm_realistic_effect_snapshot() {
             assistant: "收到，后续我会按这个回答风格处理。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review preference");
@@ -785,6 +797,7 @@ async fn memory_llm_realistic_effect_snapshot() {
             assistant: "明白，这属于你近期正在推进的 pinvou 记忆系统工作。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review current focus");
@@ -801,6 +814,7 @@ async fn memory_llm_realistic_effect_snapshot() {
             ],
             delivery_complete: true,
         },
+        session_id,
     )
     .await
     .expect("review delivery");
@@ -918,6 +932,7 @@ async fn memory_llm_background_project_midterm_snapshot() {
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).expect("create workspace");
     let bridge = Pinvou3Bridge::boot_with_workspace(ws).expect("boot bridge");
+    let session_id = "memory/e2e:background-project-midterm";
 
     let user_background = memory::review_turn_candidates_with_llm(
         &bridge,
@@ -927,6 +942,7 @@ async fn memory_llm_background_project_midterm_snapshot() {
             assistant: "收到，这属于你的长期工作背景，我会按记忆策略整理。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review user background");
@@ -940,6 +956,7 @@ async fn memory_llm_background_project_midterm_snapshot() {
                 .to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review project background");
@@ -952,6 +969,7 @@ async fn memory_llm_background_project_midterm_snapshot() {
             assistant: "明白，这是你近期正在推进的 pinvou 记忆系统验证工作。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
+        session_id,
     )
     .await
     .expect("review midterm current focus");
@@ -969,6 +987,7 @@ async fn memory_llm_background_project_midterm_snapshot() {
             ],
             delivery_complete: true,
         },
+        session_id,
     )
     .await
     .expect("review midterm recent activity");
