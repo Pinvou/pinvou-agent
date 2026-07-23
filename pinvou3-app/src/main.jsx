@@ -5,7 +5,7 @@ import './styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from './components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from './components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from './components/VllmSetupProgress.jsx';
-import { bridge, useBridge, activeModelIsLocal } from './hooks/useBridge.js';
+import { bridge, useBridge, activeModelIsLocal, shouldShowApiKeyGate } from './hooks/useBridge.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from './shared/i18n.js';
 import { formatSessionDate } from './shared/date-utils.js';
 import { KnowledgeView } from './features/knowledge/KnowledgeView.jsx';
@@ -1549,16 +1549,14 @@ function defaultModelPresetForPlatform() {
               </div>
             )}
 
-            {/* API Key 拦截遮罩 —— 云端模型未配 key 时盖住聊天界面,强制先配置。
+            {/* API Key 拦截遮罩 —— 云端模型未配 key 时只盖住聊天界面,强制先配置。
                 根因:此前前后端都无 key gate,空 key 打云端 → 401 静默无回应。
-                条件:credential_state 为 missing 或 unavailable 且非本地 vllm 模型(后者走
-                LOCAL_VLLM_API_KEY 免鉴权)。unavailable 同样需拦截:macOS 上用户在 Keychain
+                设置页必须保持可操作,否则“去配置”后遮罩仍在,用户反而无法录入 Key。
+                条件:credential_state 为 missing 或 unavailable 且非本地模型。本地 vLLM
+                和 loopback OpenAI-compatible 端点允许无鉴权。unavailable 同样需拦截:macOS 上用户在 Keychain
                 授权弹窗点"拒绝"时 credential_state 变 unavailable(见 prefs.rs:785),
                 此时不盖遮罩用户仍可发消息 → 命中 Keychain 错误,与 missing 同等后果。 */}
-            {bridge.available && bs && bs.effectiveModelConfig
-              && (bs.effectiveModelConfig.credential_state === 'missing'
-                || bs.effectiveModelConfig.credential_state === 'unavailable')
-              && bs.effectiveModelConfig.preset !== 'local_vllm' && (
+            {shouldShowApiKeyGate(bs, currentView, bridge.available) && (
               <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
                 <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>

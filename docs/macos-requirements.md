@@ -105,7 +105,6 @@ xcode-select --install
 
 - **OTA 无独立签名验证**：更新通道的 `latest.json` 仅靠 sha256 自校验 + CFBundleIdentifier 字符串校验 + PlistBuddy 字段校验，没有 minisign / Developer ID 离线签名。攻击者若控制 pinvou.com 分发域名，理论上可投递伪造的 manifest + dmg。计划后续引入 manifest 离线签名 + 客户端验签。
 
-- **凭证明文存储**：为绕开 ad-hoc 签名导致的 Keychain ACL 频繁弹窗，macOS 路径的 API Key 临时以明文存于 `~/.pinvou3/secrets/<service>.json`（目录 `0700` / 文件 `0600`，见 `src-tauri/src/credential_store.rs`）。接入稳定签名身份后将切回 Keychain。
+- **Keychain 授权提示**：macOS 与 Linux/Windows 采用同一安全策略，API Key 优先写入系统凭据存储（macOS Keychain）；仅在系统凭据存储确实不可用时回退文件存储。当前 ad-hoc 签名的开发/测试构建身份不稳定，重建后可能再次触发 Keychain 授权提示；接入稳定签名身份后可改善这一体验。
 
 - **Intel Mac 不支持**：仅打包 arm64 语音识别引擎（SenseVoice darwin-arm64），Intel Mac（x86_64）的语音输入不可用（其余功能正常）。详见上方「系统要求」。
-

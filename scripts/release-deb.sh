@@ -88,11 +88,17 @@ TMP_JSON_NEW=$(mktemp)
 TMP_ERR=$(mktemp)
 trap 'rm -f "$TMP_REMOTE" "$TMP_JSON_NEW" "$TMP_ERR"' EXIT
 
-# 拉远端 latest.json(与 release-macos.sh 同款加固):先用 ssh test -f 判断文件存在,
-# 仅当文件确实不存在时用 {} 首发;cat 失败但文件存在(权限/网络)→ 中止。
-# 避免部分写出/网络抖动/权限不足被静默回退成 {} 后清光其它平台(macos-arm64 等)。
-REMOTE_EXISTS=$(ssh "$SERVER" "test -f $REMOTE_DIR/latest.json && echo yes" 2>/dev/null || true)
-if [ "$REMOTE_EXISTS" = "yes" ]; then
+# 拉远端 latest.json(与 release-macos.sh 同款加固):SSH 探测本身失败必须中止,
+# 只有远端明确返回 missing 才能按首发场景使用 {}。不能用 `|| true`,否则网络/
+# 权限故障会被伪装成文件不存在,随后覆盖掉其它平台条目。
+if ! REMOTE_STATE=$(ssh "$SERVER" \
+  "if [ -f '$REMOTE_DIR/latest.json' ]; then printf '%s\\n' exists; else printf '%s\\n' missing; fi" \
+  2>"$TMP_ERR"); then
+  echo "❌ 无法探测远端 latest.json(SSH/权限/网络异常),中止发布:" >&2
+  cat "$TMP_ERR" >&2
+  exit 1
+fi
+if [ "$REMOTE_STATE" = "exists" ]; then
   if ! ssh "$SERVER" "cat $REMOTE_DIR/latest.json" >"$TMP_REMOTE" 2>"$TMP_ERR"; then
     echo "❌ 远端 latest.json 存在但读取失败(权限不足/网络中断?),中止以免破坏清单:" >&2
     cat "$TMP_ERR" >&2
@@ -103,9 +109,12 @@ if [ "$REMOTE_EXISTS" = "yes" ]; then
     head -c 200 "$TMP_REMOTE" >&2
     exit 1
   fi
-else
+elif [ "$REMOTE_STATE" = "missing" ]; then
   echo "⚠️  远端 latest.json 不存在(首发场景),用空对象 {} 起步" >&2
   echo '{}' > "$TMP_REMOTE"
+else
+  echo "❌ 远端 latest.json 探测返回异常结果: $REMOTE_STATE" >&2
+  exit 1
 fi
 jq --arg ver "$VERSION" --arg url "$DEB_URL" --arg sha "$SHA256" --arg size "$SIZE" \
    --arg date "$PUB_DATE" --arg notes "$NOTES" '

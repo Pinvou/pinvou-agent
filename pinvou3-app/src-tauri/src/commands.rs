@@ -4315,10 +4315,9 @@ pub async fn summon_pinvou(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    // preflight:云端模型但 API Key 缺失 → 直接返回友好错误,而不是让空 key 打到
-    // 云端变 401(根因:macOS Keychain 存空值 + 假阳性,详见 credential_store.rs)。
-    // 本地 vllm 走 LOCAL_VLLM_API_KEY 兜底,放行。
-    if pool.bridge.provider() != "vllm" && pool.bridge.api_key().trim().is_empty() {
+    // preflight:需要鉴权的模型但 API Key 缺失 → 直接返回友好错误,而不是让空 key
+    // 打到云端变 401。local_vllm 与 loopback OpenAI-compatible 服务允许无鉴权。
+    if pool.bridge.api_key_required() && pool.bridge.api_key().trim().is_empty() {
         return Err("未配置 API Key，请先在「设置 → 模型」中配置。".to_string());
     }
     let session = store

@@ -240,10 +240,16 @@ trap 'rm -f "$TMP_JSON" "$TMP_JSON_NEW" "$TMP_ERR"' EXIT
 # ⚠️ 此前的 `ssh cat ... || echo '{}'` 会把任何拉取失败(网络抖动/部分写出/ssh 中断/
 # 权限不足)静默回退成空对象 {},随后 jq 合并只写 macos-arm64 → 顶层 url/sha256 与其它
 # 平台(linux-arm64 等)全丢 → scp 推回 → Linux 客户端自动更新 404 直到下次 Linux 发版。
-# 改为:先用 ssh test -f 判断文件是否存在;仅当文件确实不存在时用 {} 首发;cat 失败但
-# 文件存在(权限/网络)→ 中止。
-REMOTE_EXISTS=$(ssh "$SERVER" "test -f $REMOTE_DIR/latest.json && echo yes" 2>/dev/null || true)
-if [ "$REMOTE_EXISTS" = "yes" ]; then
+# 改为:SSH 探测本身失败立即中止;仅当远端明确返回 missing 时用 {} 首发;cat 失败但
+# 文件存在(权限/网络)同样中止。
+if ! REMOTE_STATE=$(ssh "$SERVER" \
+  "if [ -f '$REMOTE_DIR/latest.json' ]; then printf '%s\\n' exists; else printf '%s\\n' missing; fi" \
+  2>"$TMP_ERR"); then
+  echo "❌ 无法探测远端 latest.json(SSH/权限/网络异常),中止发布:" >&2
+  cat "$TMP_ERR" >&2
+  exit 1
+fi
+if [ "$REMOTE_STATE" = "exists" ]; then
   if ! ssh "$SERVER" "cat $REMOTE_DIR/latest.json" >"$TMP_JSON" 2>"$TMP_ERR"; then
     echo "❌ 远端 latest.json 存在但读取失败(权限不足/网络中断?),中止以免破坏清单:" >&2
     cat "$TMP_ERR" >&2
@@ -259,9 +265,12 @@ if [ "$REMOTE_EXISTS" = "yes" ]; then
     echo "⚠️  远端 latest.json 缺顶层 url/sha256(旧 Linux 客户端会无法下载 deb)" >&2
     echo "    若有意停发顶层字段请确认,否则中止并修复远端清单。" >&2
   fi
-else
+elif [ "$REMOTE_STATE" = "missing" ]; then
   echo "⚠️  远端 latest.json 不存在(首发场景),用空对象 {} 起步" >&2
   echo '{}' > "$TMP_JSON"
+else
+  echo "❌ 远端 latest.json 探测返回异常结果: $REMOTE_STATE" >&2
+  exit 1
 fi
 jq --arg ver "$VERSION" --arg url "$DMG_URL" --arg sha "$SHA256" --arg size "$SIZE" \
    --arg date "$PUB_DATE" --arg notes "$NOTES" '

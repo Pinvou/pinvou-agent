@@ -68,6 +68,22 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
     )
 }
 
+fn base_url_uses_loopback(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| {
+            let host = host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.');
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+}
+
 fn official_deepseek_model_name(model: &str) -> String {
     let model = wire_model_for_provider(ApiProvider::Deepseek, model);
     match model.to_ascii_lowercase().as_str() {
@@ -378,6 +394,12 @@ impl Pinvou3Bridge {
             return m.base_url.clone();
         }
         self.default_base_url_for_preset()
+    }
+
+    /// 是否要求用户配置 API Key。local_vllm 和明确指向本机 loopback 的
+    /// OpenAI-compatible 服务允许无鉴权；云端/局域网地址默认仍要求 Key。
+    pub fn api_key_required(&self) -> bool {
+        self.provider() != "vllm" && !base_url_uses_loopback(&self.base_url())
     }
 
     /// 各厂商默认 API base URL。
@@ -1236,6 +1258,37 @@ mod tests {
             credential_action: None,
         }];
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
+    }
+
+    #[test]
+    fn api_key_requirement_allows_only_vllm_or_loopback_without_key() {
+        assert!(base_url_uses_loopback("http://localhost:8000/v1"));
+        assert!(base_url_uses_loopback("http://localhost.:8000/v1"));
+        assert!(base_url_uses_loopback("http://127.0.0.42:8000/v1"));
+        assert!(base_url_uses_loopback("http://[::1]:8000/v1"));
+        assert!(!base_url_uses_loopback("https://localhost.example.com/v1"));
+        assert!(!base_url_uses_loopback("https://127.0.0.10.example.com/v1"));
+        assert!(!base_url_uses_loopback("not a url"));
+
+        let mut local_compatible = fixture_bridge();
+        set_active_model(
+            &mut local_compatible,
+            ModelPreset::OpenaiCompatible,
+            "custom-local-model",
+            "http://127.0.0.1:9000/v1",
+            "",
+        );
+        assert!(!local_compatible.api_key_required());
+
+        let mut cloud_compatible = fixture_bridge();
+        set_active_model(
+            &mut cloud_compatible,
+            ModelPreset::OpenaiCompatible,
+            "custom-cloud-model",
+            "https://gateway.example.com/v1",
+            "",
+        );
+        assert!(cloud_compatible.api_key_required());
     }
 
     /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:
