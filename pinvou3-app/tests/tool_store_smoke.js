@@ -238,7 +238,11 @@ async function closeDetail(page, title) {
   await action(page,'华宇元典法律数据','连接','yuandian-mcp');
   rec('元典写配置阶段不可取消',await page.evaluate(()=>document.body.innerText.includes('正在写入 MCP 配置')&&![...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
   await page.evaluate(()=>window.__TOOL_STORE_TEST__.finishOAuthInstall()); await sleep(180);
-  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>document.body.innerText.includes('正在连接「华宇元典法律数据」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')));
+  rec('元典 OAuth loading 弹窗可取消',await page.evaluate(()=>{
+    const text = document.body.innerText;
+    return (text.includes('正在连接元典法律') || text.includes('正在连接「华宇元典法律数据」'))
+      && [...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消');
+  }));
   await clickExact(page,'取消'); await sleep(180);
   rec('元典取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
     const calls=window.__TOOL_STORE_TEST__.calls;
