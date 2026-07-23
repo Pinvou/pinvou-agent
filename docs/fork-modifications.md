@@ -3,15 +3,15 @@
 > 本文是 pinvou3 对 DeepSeek-TUI（CodeWhale）底座 fork 的单一现状清单。
 > 基线、主题边界、守护指纹和每次 sync 结论都以本文与 `docs/fork-policy.md` 为准。
 
-## 0. 当前状态（2026-07-21 · v0.9.0）
+## 0. 当前状态（2026-07-23 · v0.9.0）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| fork 分支 | `codex/sync-v0.9.0`，当前 head `4cff0b9e6e1d` |
+| fork 分支 | `pinvou3-clean`，当前 head `612fd2e5773c` |
 | 组织方式 | **6 个长期主题 commit + 1 个父仓主题（T7 macOS）**；T7 不动 fork，仅父仓平台抽象 |
-| drift | 对 `v0.9.0`：**+3260 / -539，53 文件**（T7 不增加 fork drift，零 fork 改动） |
-| 守护 | `scripts/fork-guard.sh`：43 条指纹(34 条 T1–T6 主题 + 9 条 app 行为)+ submodule/app `forkguard_` 行为测试 |
+| drift | 对 `v0.9.0`：**+3447 / -557，53 文件**（T7 不增加 fork drift，零 fork 改动） |
+| 守护 | `scripts/fork-guard.sh`：45 条主题指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库 Linux/macOS 均编译通过，lib test target 可完整编译；macOS 适配在父仓 `feat/macos` 分支 |
 
 ### 软上限评估
@@ -78,16 +78,16 @@
 ### T5 `fork`：宿主编排、工作流完成闸与可取消登录
 
 - **commit**：`add065123 feat(fork): 适配宿主编排与工作流完成闸`
-- **核心文件**：`core/engine.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`。
+- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/engine/tests.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`。
 - **内容**：
-  - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools。
+  - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools；宿主注入工具在 Plan / Agent / Yolo 三种 turn registry 中统一注册，避免非 Plan 分支提前返回时丢失 `kb_search`。
   - `SpawnSubAgent` 接受 role、allowed tools、max steps、output schema、expects-file-output。
   - 合成 `submit_output` 工具；递归校验有限 JSON schema，只允许声明的安全相对路径落盘；最多 3 次催交后 fail-closed。
   - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成。
   - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
-- **守护**：结构化 schema/安全路径、批量取消、OAuth drop-before-return 回归。
+- **守护**：宿主额外工具全模式注册、结构化 schema/安全路径、批量取消、OAuth drop-before-return 回归。
 
 ### T6 `embed`：宿主路由、预算与 shared automation 接口
 

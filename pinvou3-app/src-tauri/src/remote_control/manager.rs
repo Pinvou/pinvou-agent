@@ -814,17 +814,6 @@ impl RemoteControlManager {
                     self.send_error("kb_not_ready", "embedding 模型未就绪,知识库暂不可用");
                     return;
                 }
-                // kb_search 工具只在 Plan 模式注册到 turn registry(见 chips_snapshot 里
-                // kb_search_available 的注释)。非 Plan 模式(Yolo / Coverage 等)挂载
-                // collection 不会让模型真检索,chip 会显示「挂载成功」但实际无效 —— 拒绝并
-                // 给出明确文案,让 mobile 提示用户切到 Plan 模式(PR #213 审查 #6)。
-                if store.mode_state(&active_session_id).mode != SerializableMode::Plan {
-                    self.send_error(
-                        "kb_search_unavailable",
-                        "当前模式不支持知识库检索,请切到 Plan 模式后再挂载",
-                    );
-                    return;
-                }
                 // 拒绝挂载空集合(规范 §3 决策:doc_count==0 视为空)。
                 let non_empty = knowledge
                     .l1()
@@ -1436,19 +1425,14 @@ impl RemoteControlManager {
         let effective_model_id = effective_model.map(|m| m.id.clone());
         let effective_model_name = effective_model.map(|m| m.name.clone());
         let global_model_id = prefs.advanced.active_model_id.clone();
-        // KB chip 是否真实可用(PR #213 审查 #6):kb_search 工具只在 Plan 模式注册到
-        // turn registry(DeepSeek-TUI tool_setup.rs 的 `if mode != AppMode::Plan` 早返回),
-        // Yolo / 其它非 Plan 模式下挂载 collection 不会让模型真的能检索 —— chip 会
-        // 显示「已挂载」但实际无效。这里把「Plan 模式且有内容且 embedding 就绪」作为
-        // kb_search_available 下发,mobile 据此禁用 / 置灰 KB chip,避免误导用户。
-        // 注意:这是临时产品收敛(根因是 fork 的 extra_tools 只在 Plan 注册,改 fork 超本 PR 范围)。
-        let kb_search_available = mode_state.mode == SerializableMode::Plan
-            && self
-                .app
-                .as_ref()
-                .and_then(|app| app.try_state::<crate::knowledge::KnowledgeService>())
-                .map(|s| s.has_indexed_content() && s.semantic_ready())
-                .unwrap_or(false);
+        // kb_search 已由底座在 Plan / Agent / Yolo 的 turn registry 中统一注册。
+        // 这里只按知识库自身状态门控:有已入库内容且 embedding 就绪即可使用。
+        let kb_search_available = self
+            .app
+            .as_ref()
+            .and_then(|app| app.try_state::<crate::knowledge::KnowledgeService>())
+            .map(|s| s.has_indexed_content() && s.semantic_ready())
+            .unwrap_or(false);
         room.sender
             .send(RelayOutbound::Envelope(envelope(
                 &room.room_id,

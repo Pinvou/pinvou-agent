@@ -221,8 +221,9 @@ impl AppEngine {
             .unwrap_or_else(|| bridge.session_workspace(session_id));
         let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
         engine_config.runtime_services.shell_manager = Some(shell_manager);
-        // Agentic RAG:给该 session 的 engine 注入 kb_search 工具(持 session_id,execute 时
-        // 查该会话挂载的知识集)。工具常驻所有会话,挂没挂集由其运行时判断。
+        // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
+        // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
+        // 运行时判断。
         engine_config
             .extra_tools
             .0
@@ -230,9 +231,12 @@ impl AppEngine {
                 app.clone(),
                 session_id.to_string(),
             )));
-        // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search。compute 返回**完整**列表
-        // (已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,让新会话天生正确
-        // ——空知识库就看不到 kb_search,不会宣称能本地检索。
+        engine_config.extra_tools.0.push(std::sync::Arc::new(
+            crate::knowledge::KbOpenSourceTool::new(app.clone(), session_id.to_string()),
+        ));
+        // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search/kb_open_source。compute 返回
+        // **完整**列表(已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,
+        // 让新会话天生正确——空知识库就看不到知识工具,不会宣称能本地检索。
         let disallowed = crate::commands::compute_disallowed_tools(&app);
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can

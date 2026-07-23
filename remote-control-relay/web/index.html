@@ -825,13 +825,12 @@
         } else {
           el.knowledgeChip.textContent = '📚 知识库';
         }
-        // kb_search 工具只在 Plan 模式注册(PR #213 审查 #6):非 Plan 模式下挂载无效,
-        // chip 必须置灰并带 title 提示,避免用户挂上后以为能检索实际却无效。
+        // 后端按知识库索引与 embedding 就绪状态下发可用性；所有工作模式语义一致。
         const kbAvailable = !!(state.chips && state.chips.kb_search_available);
         el.knowledgeChip.disabled = !joined || state.replaced || !kbAvailable;
         el.knowledgeChip.title = kbAvailable
           ? ''
-          : '当前模式不支持知识库检索,请切到 Plan 模式';
+          : '知识库检索暂不可用,请确认已有索引内容且 Embedding 模型已就绪';
       }
       if (el.toolsChip) {
         const all = (state.tools && state.tools.all) || [];
@@ -1176,12 +1175,11 @@
       const mountedItem = mounted
         ? collections.find(c => c && c.id === mounted)
         : null;
-      // 非 Plan 模式下 kb_search 未注册到模型(PR #213 审查 #6):置顶提示 + 禁用挂载,
-      // 避免用户挂上「看似成功实际无效」的 collection。已挂载的仍允许摘挂。
+      // 知识库或 embedding 未就绪时置顶提示并禁用新挂载；已挂载的仍允许摘挂。
       if (!kbAvailable) {
         const warn = document.createElement('div');
         warn.className = 'empty-panel';
-        warn.textContent = '当前模式不支持知识库检索(仅 Plan 模式可用),请切到 Plan 模式后再挂载。';
+        warn.textContent = '知识库检索暂不可用,请确认已有索引内容且 Embedding 模型已就绪。';
         el.sheetBody.appendChild(warn);
       }
       if (mounted) {
@@ -1221,7 +1219,7 @@
               sendAction('unmount_kb_collection', {});
               closeSheet();
             } else if (kbAvailable) {
-              // 非 Plan 模式(kb_search 未注册)禁用挂载:服务端也会拒绝,这里先挡 UI。
+              // 知识库未就绪时服务端也会拒绝,这里先挡 UI。
               sendAction('mount_kb_collection', { collection_id: c.id });
               closeSheet();
             }
