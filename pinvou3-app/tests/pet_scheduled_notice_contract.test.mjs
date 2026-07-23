@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const petWindow = readFileSync(new URL('../src/features/pet/PetWindow.jsx', import.meta.url), 'utf8');
 const petCss = readFileSync(new URL('../src/features/pet/pet.css', import.meta.url), 'utf8');
-const main = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
-const rust = readFileSync(new URL('../src-tauri/src/pet_window.rs', import.meta.url), 'utf8');
+const main = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
+const rust = readFileSync(new URL('../src-tauri/src/features/pet/pet_window.rs', import.meta.url), 'utf8');
 
 assert.match(petWindow, /isScheduledSessionPayload/);
 assert.match(
@@ -24,7 +24,7 @@ assert.match(rust, /pub scheduled_run:\s*Option<PetScheduledRunNavigation>/);
 assert.match(rust, /scheduled_run:\s*Option<PetScheduledRunNavigation>/);
 
 assert.match(main, /request\.scheduled_run\s*\|\|\s*request\.scheduledRun/);
-assert.match(main, /bridge\.openScheduledRunChat/);
+assert.match(main, /bridge\.scheduled\.openScheduledRunChat/);
 assert.match(main, /setCurrentView\(['"]scheduled['"]\)/);
 assert.match(main, /pet:scheduled_notice_opened/);
 assert.match(main, /pet:scheduled_notice_open_failed/);

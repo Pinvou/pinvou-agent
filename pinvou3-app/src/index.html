@@ -4,19 +4,180 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <base href="%BASE_URL%">
-  <title>PINVOU 智能助手</title>
+  <title>PINVOU 智能助手（内测版）</title>
+  <script>
+    // Collect startup timing before any vendor or application module loads.
+    // Batches are forwarded to Rust so release builds retain the timeline.
+    (function () {
+      var entries = [];
+      var sent = 0;
+      var flushInFlight = false;
+      var flushTimer = null;
+      var longTaskCount = 0;
+      var resourceCount = 0;
+      var resourceObserver = null;
+      var windowShownMarked = false;
+
+      function markAt(stage, sinceNavigationMs, detail) {
+        var entry = {
+          stage: String(stage),
+          detail: detail == null ? "" : String(detail),
+          since_navigation_ms: Math.max(0, Number(sinceNavigationMs) || 0),
+        };
+        entries.push(entry);
+        console.info("[startup] +" + entry.since_navigation_ms.toFixed(3) + "ms " + entry.stage, entry.detail);
+        scheduleFlush(0);
+      }
+
+      function mark(stage, detail) {
+        markAt(stage, performance.now(), detail);
+      }
+
+      function resourceName(value) {
+        try {
+          var parts = new URL(value, location.href).pathname.split("/").filter(Boolean);
+          return parts.slice(-2).join("/") || "document";
+        } catch (_) {
+          return "unknown";
+        }
+      }
+
+      function scheduleFlush(delay) {
+        if (flushTimer != null) return;
+        flushTimer = setTimeout(function () {
+          flushTimer = null;
+          flush();
+        }, delay || 0);
+      }
+
+      function flush() {
+        var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (!invoke || flushInFlight || sent >= entries.length) return;
+        var batch = entries.slice(sent);
+        flushInFlight = true;
+        invoke("report_frontend_startup", { entries: batch }).then(function () {
+          sent += batch.length;
+          flushInFlight = false;
+          if (sent < entries.length) scheduleFlush(0);
+        }).catch(function () {
+          flushInFlight = false;
+          scheduleFlush(250);
+        });
+      }
+
+      function markWindowShown() {
+        if (windowShownMarked || document.visibilityState !== "visible") return;
+        windowShownMarked = true;
+        mark("window_shown", "signal=first_visible_animation_frame visibility=" + document.visibilityState + " focused=" + document.hasFocus());
+      }
+
+      window.__PINVOU_STARTUP__ = { mark: mark, markAt: markAt, flush: flush, entries: entries };
+      mark("html:head_start");
+      requestAnimationFrame(markWindowShown);
+      document.addEventListener("visibilitychange", function () {
+        mark("document:visibility_changed", "state=" + document.visibilityState);
+        if (document.visibilityState === "visible") requestAnimationFrame(markWindowShown);
+      });
+      document.addEventListener("DOMContentLoaded", function () {
+        mark("dom:content_loaded_listener_begin", "listener registered before application modules");
+      });
+      window.addEventListener("load", function () {
+        mark("window:load");
+        setTimeout(function () {
+          var nav = performance.getEntriesByType && performance.getEntriesByType("navigation")[0];
+          if (!nav) return;
+          markAt("navigation:response_start", nav.responseStart, "protocol=" + (nav.nextHopProtocol || "unknown"));
+          markAt("navigation:dom_interactive", nav.domInteractive);
+          markAt("navigation:dom_content_loaded", nav.domContentLoadedEventEnd);
+          markAt("navigation:load_event_end", nav.loadEventEnd || performance.now());
+        }, 0);
+      });
+      window.addEventListener("error", function (event) {
+        mark("window:error", event && event.message ? event.message : "unknown error");
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        mark("window:unhandled_rejection", String(event && event.reason || "unknown rejection"));
+      });
+      if (window.PerformanceObserver) {
+        try {
+          new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (entry.name === "first-paint") {
+                markAt("first_paint", entry.startTime, "source=paint_timing");
+              } else if (entry.name === "first-contentful-paint") {
+                markAt("first_contentful_paint", entry.startTime, "source=paint_timing");
+                if (resourceObserver) resourceObserver.disconnect();
+              }
+            });
+          }).observe({ type: "paint", buffered: true });
+        } catch (_) {}
+        try {
+          new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (longTaskCount++ < 20) {
+                markAt("browser:long_task", entry.startTime + entry.duration, "start_ms=" + entry.startTime.toFixed(1) + " duration_ms=" + entry.duration.toFixed(1));
+              }
+            });
+          }).observe({ type: "longtask", buffered: true });
+        } catch (_) {}
+        try {
+          resourceObserver = new PerformanceObserver(function (list) {
+            list.getEntries().forEach(function (entry) {
+              if (entry.initiatorType !== "script" && entry.initiatorType !== "link") return;
+              if (resourceCount++ >= 40) return;
+              markAt(
+                "resource:loaded",
+                entry.responseEnd || (entry.startTime + entry.duration),
+                "name=" + resourceName(entry.name) +
+                  " type=" + (entry.initiatorType || "unknown") +
+                  " start_ms=" + entry.startTime.toFixed(1) +
+                  " duration_ms=" + entry.duration.toFixed(1) +
+                  " transfer_bytes=" + (entry.transferSize || 0) +
+                  " decoded_bytes=" + (entry.decodedBodySize || 0)
+              );
+            });
+          });
+          resourceObserver.observe({ type: "resource", buffered: true });
+        } catch (_) {}
+      }
+    })();
+  </script>
   <!-- Tailwind 仍使用本地离线 runtime；后续单独迁移预编译样式。 -->
-  <script src="%BASE_URL%vendor/tailwind.js"></script>
+  <script>__PINVOU_STARTUP__.mark('html:startup_observers_ready');</script>
+  <script src="%BASE_URL%vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:tailwind_error')"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="%BASE_URL%vendor/marked.min.js"></script>
-  <script src="%BASE_URL%vendor/purify.min.js"></script>
+  <script src="%BASE_URL%vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:marked_error')"></script>
+  <script src="%BASE_URL%vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:purify_error')"></script>
+  <script>__PINVOU_STARTUP__.mark('html:head_end');</script>
 </head>
 <body class="m-0 p-0">
+  <script>__PINVOU_STARTUP__.mark('html:body_start');</script>
   <div id="root"></div>
+  <script>__PINVOU_STARTUP__.mark('dom:root_created');</script>
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
-  <script src="%BASE_URL%web-bootstrap.js"></script>
-  <script src="%BASE_URL%web-host-file-picker.js"></script>
-  <script src="%BASE_URL%tauri-bridge.js"></script>
+  <script src="%BASE_URL%platform/web/bootstrap.js"></script>
+  <script src="%BASE_URL%platform/web/host-file-picker.js"></script>
+  <script src="%BASE_URL%platform/web/bridge.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/artifact-tracker.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/chat.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/chat-events.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/sessions.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/terminal.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/scheduled.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/monitor.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/settings.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/memory.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/artifacts.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/personas.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/updater.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/remote-control.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/dependencies.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/voice.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/knowledge-model.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/interaction.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/workflow-runtime.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/workflow.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
       const isPetWindow = new URLSearchParams(window.location.search).get('window') === 'pet';
@@ -33,8 +194,8 @@
       }
     });
   </script>
-  <script src="%BASE_URL%personas-i18n.js"></script>
-  <script src="%BASE_URL%update-notice-logic.js"></script>
-  <script type="module" src="/main.jsx"></script>
+  <script src="%BASE_URL%features/personas/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
+  <script src="%BASE_URL%features/updater/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
+  <script type="module" src="/app/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
 </body>
 </html>

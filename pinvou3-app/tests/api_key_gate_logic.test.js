@@ -6,7 +6,10 @@ const vm = require('vm');
 
 const sourcePath = path.join(__dirname, '..', 'src', 'hooks', 'useBridge.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
-const bridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'tauri-bridge.js'), 'utf8');
+const bridgeSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'),
+  'utf8',
+);
 const start = source.indexOf('function baseUrlIsLoopback(');
 const end = source.indexOf('\nexport {', start);
 

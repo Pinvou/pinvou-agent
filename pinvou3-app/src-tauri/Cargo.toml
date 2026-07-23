@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.6.3"
+version = "0.6.4"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = ""
@@ -9,6 +9,16 @@ rust-version = "1.88"
 # 主 binary 是 Tauri app(src/main.rs);src/bin/dump_system_prompt.rs 是 dev 工具,
 # 加这个键让 `cargo run`(不带 --bin)默认跑主 app,不再因为多 bin 报错。
 default-run = "pinvou3-tauri"
+autobins = false
+
+[[bin]]
+name = "pinvou3-tauri"
+path = "src/main.rs"
+
+[[bin]]
+name = "dump_system_prompt"
+path = "src/bin/dump_system_prompt.rs"
+required-features = ["dev-tools"]
 
 [lib]
 name = "pinvou3_lib"
@@ -17,6 +27,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = ["local-embed"]
 local-embed = ["dep:fastembed"]
+dev-tools = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
@@ -27,10 +38,7 @@ include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-# macos-private-api: 必须与 tauri.conf.json 的 app.macOSPrivateApi=true 同时开启
-# (tauri-build 强制两者一致)。解锁 macOS 上 WebviewWindowBuilder::transparent()
-# (pet_window.rs:388 桌宠窗口需要)。非 mac 平台该 feature 是 no-op。
-tauri = { version = "2.11.1", features = ["macos-private-api"] }
+tauri = "2.11.1"
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -58,7 +66,7 @@ codewhale-secrets = { path = "../../DeepSeek-TUI/crates/secrets" }
 codewhale-config = { path = "../../DeepSeek-TUI/crates/config" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
 
 # Updater 用：下载 deb 的 sha256 校验；Windows OTA 包使用 zip + MD5；
 # 产物卡封面也会读 .pptx(zip)里的 docProps/thumbnail.jpeg。
@@ -78,6 +86,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 notify = "6"
+msg_parser = "0.3.0"
 
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
 # rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
@@ -88,8 +97,6 @@ walkdir = "2"
 
 # 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
-fastembed = { version = "4", optional = true }
-
 # 电子表格解析（file_ingest 用）：纯 Rust 读 xlsx/xls/ods 的**全部工作表**。
 # 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热
 # 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
@@ -120,17 +127,19 @@ base64 = "0.22"
 # 期望的 objc2 family major 一致即可。具体 patch 由 Cargo.lock 在 lockfile 阶段
 # 固定(当前 0.6.4 / 0.3.2)。如未来需要绝对复现同一 ABI,改为精确锁 `=0.6.4`。
 [target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2.11.1", features = ["macos-private-api"] }
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Win32_Storage_FileSystem",
-    "Win32_System_SystemInformation",
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-] }
+fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+webview2-com = "0.38.2"
+windows = "0.61.3"
+
+[target.'cfg(not(windows))'.dependencies]
+fastembed = { version = "4", optional = true }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。

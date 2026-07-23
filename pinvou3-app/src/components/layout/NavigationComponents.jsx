@@ -351,6 +351,8 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
                 </button>
                 <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Edit2 size={13} /></button>
+                <button title={t.archiveSession} onClick={(e) => { e.stopPropagation(); onArchive && onArchive(chat.id); }}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Archive size={13} /></button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
                   className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Trash2 size={13} /></button>
                 <div className="relative">

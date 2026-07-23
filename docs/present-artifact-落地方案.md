@@ -30,7 +30,7 @@
 
 ### 2.1 新建:MCP server(零依赖 python stdio)
 
-`pinvou3-app/src-tauri/resources/bundle/mcp-servers/present_artifact_server.py`(新建,~80 行)
+`pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/present_artifact_server.py`(新建,~80 行)
 
 - 协议:stdio JSON-RPC(MCP `initialize` / `tools/list` / `tools/call`),只用 python stdlib,不引第三方 SDK → deb 分发只需 `python3`(对齐 memory:依赖型能力走 deb Depends)
 - 暴露一个工具 `present_artifact`,input schema:
@@ -69,7 +69,7 @@
 
 ### 2.4 prompt 引导
 
-`pinvou3-app/src-tauri/resources/bundle/instructions.md` 加一小段:产出 html/markdown/图片等**给客户看的成品**后,立刻调 `present_artifact`(传 path + 中文 title);中间文件/配置/脚本**不要**调。
+`pinvou3-app/src-tauri/resources/common/bundle/instructions.md` 加一小段:产出 html/markdown/图片等**给客户看的成品**后,立刻调 `present_artifact`(传 path + 中文 title);中间文件/配置/脚本**不要**调。
 
 ---
 
@@ -126,9 +126,9 @@ Pinvou 产出成品.html → 调 present_artifact{path,title}
 
 | 文件 | 类型 | fork? |
 |---|---|---|
-| `resources/bundle/mcp-servers/present_artifact_server.py` | 新建 ~80 行 | 否 |
+| `resources/common/bundle/mcp-servers/present_artifact_server.py` | 新建 ~80 行 | 否 |
 | `~/.pinvou3/bundle/mcp.json`(默认在 `bundle.rs` DEFAULT_MCP_JSON) | 改默认 | 否 |
-| `resources/bundle/instructions.md` | 加引导段 | 否 |
+| `resources/common/bundle/instructions.md` | 加引导段 | 否 |
 | `src/tauri-bridge.js` | tool_end 分支 + rerender 还原 | 否 |
 | `src/index.html` | ArtifactCard 组件 + dispatcher | 否 |
 | `src-tauri/src/bridge/bundle.rs` | mcp.json 默认写入逻辑 + base 指纹 bump | 否(app 层) |

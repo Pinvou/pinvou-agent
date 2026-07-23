@@ -5,9 +5,10 @@ function source(relativePath) {
   return readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8');
 }
 
-const selectedPetRust = source('src-tauri/src/selected_pet.rs');
+const selectedPetRust = source('src-tauri/src/features/pet/selected_pet.rs');
+const petCommands = source('src-tauri/src/app/commands/pet.rs');
 const rustLib = source('src-tauri/src/lib.rs');
-const bridge = source('src/tauri-bridge.js');
+const bridge = source('src/platform/tauri/bridge.js') + source('src/platform/tauri/bridge/settings.js');
 const petWindow = source('src/features/pet/PetWindow.jsx');
 const manifest = JSON.parse(source('src/features/pet/pet-manifest.json'));
 
@@ -27,8 +28,16 @@ assert.deepEqual(
 );
 assert.deepEqual(manifestIds, ['lingling', 'langlang', 'ace-taffy']);
 
-assert.match(rustLib, /selected_pet::get_selected_pet/);
-assert.match(rustLib, /selected_pet::set_selected_pet/);
+assert.match(
+  petCommands,
+  /sync_command_passthrough!\(selected_pet_domain,\s*get_selected_pet/,
+);
+assert.match(
+  petCommands,
+  /sync_command_passthrough!\(selected_pet_domain,\s*set_selected_pet/,
+);
+assert.match(rustLib, /commands::pet::get_selected_pet/);
+assert.match(rustLib, /commands::pet::set_selected_pet/);
 assert.match(selectedPetRust, /["']pet:selected_changed["']/);
 assert.match(bridge, /["']pet:selected_changed["']/);
 

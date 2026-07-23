@@ -5,6 +5,7 @@
  *   ① resumeWorkflowOnBoot:有僵尸 run 时启动仍落草稿页(activeSessionId=null)+ 只挂看板,不劫持聊天会话。
  *   ② 工具商店渲染出 Obsidian 与钉钉连接器卡。
  *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
+ *   ④ 记忆候选事件渲染卡片，且确认/忽略/不再提示分别调用正确后端命令。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
  */
@@ -44,6 +45,7 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
+    window.__TAURI_INVOKES__=[];
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
@@ -66,17 +68,40 @@ function injectSource() {
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
     function invoke(cmd,args){
+      window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
+        case 'get_llmapi_status': return window.__LLMAPI_STATUS_ERROR__
+          ? Promise.reject(new Error('temporary llmapi status failure'))
+          : Promise.resolve(window.__LLMAPI_STATUS__ || {
+              backend_user_exists:false,
+              backend_user_state:'not_exists',
+              stale:false
+            });
+        case 'get_llmapi_models': return window.__LLMAPI_MODELS_ERROR__
+          ? Promise.reject(new Error('temporary llmapi models failure'))
+          : Promise.resolve(window.__LLMAPI_MODELS__ || {available_models:[],default_model:''});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_archived_sessions': return Promise.resolve(ARCHIVED_SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
+        case 'get_memory_overview': return Promise.resolve({profile:null,preferences:[],work_context:[],current_focus:[],recent_activity:[],recent_work:[],pending:[],never:[],runtime:null,snapshot_path:''});
+        case 'confirm_pending_memory': return Promise.resolve({value:true});
+        case 'ignore_pending_memory': return Promise.resolve({value:true});
+        case 'never_pending_memory': return Promise.resolve({value:true});
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(ZOMBIE);
         case 'get_workflow_state': return Promise.resolve(WF_STATE);
+        case 'get_role_logs': return Promise.resolve([
+          {timestamp:'2026-07-21T10:00:00+08:00',event:'agent_failed',role_id:'taizi',agent_id:'agent_diag01',category:'permission',reason:'未产出任何文件；最后一次工具错误: tool write_file failed: access denied',detail:'Tool write_file is not permitted for the read-only custom role'},
+          {timestamp:'2026-07-21T10:00:01+08:00',event:'agent_failure_terminal',role_id:'taizi',reason:'重试次数已用尽',attempt:'3',max_retries:'3'},
+        ]);
+        case 'start_workflow': return Promise.resolve({session_id:'s-kick-fail',project_dir:'/x/kick-fail'});
+        case 'kick_workflow': return window.__KICK_WORKFLOW_ERROR__
+          ? Promise.reject(new Error('模型服务预检失败：HTTP 401'))
+          : Promise.resolve('spawning');
         case 'stop_workflow': window.__STOP_WORKFLOW_ARGS__=args; return Promise.resolve({ok:true,session_id:'s-zombie',scenario:'sansheng_liubu',brief:{user_request_raw:'原始三省六部需求'}});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
@@ -161,7 +186,7 @@ async function expand(page) {
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check'], userDataDir: PROFILE });
   const page = await browser.newPage();
   const errs = [];
-  page.on('pageerror', e => errs.push(e.message));
+  page.on('pageerror', e => errs.push(e.stack || e.message));
   await page.evaluateOnNewDocument(injectSource());
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await page.goto(INDEX, { waitUntil: 'networkidle0' });
@@ -195,7 +220,7 @@ async function expand(page) {
 
   // ① 启动落草稿页(僵尸 run 不劫持)
   const st = await page.evaluate(() => {
-    const s = window.TauriBridge.getState();
+    const s = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']);
     return { activeSessionId: s.activeSessionId, wfActive: !!(s.workflow && s.workflow.run && s.workflow.run.active), wfSid: s.workflow && s.workflow.run && s.workflow.run.sessionId };
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
@@ -234,6 +259,100 @@ async function expand(page) {
 
   // ①b 工作流入口已合入专家池：从「专家池 > 专家团队」进入三省六部运行态，
   // 仍可停止并预填原需求重开。
+  const llmApiCacheFallback = await page.evaluate(async () => {
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: true,
+      backend_user_state: 'exists',
+      stale: false,
+      provisioning_status: 'ready',
+    };
+    window.__LLMAPI_MODELS__ = {
+      available_models: ['deepseek-v4-flash'],
+      default_model: 'deepseek-v4-flash',
+    };
+    await window.TauriBridge.llmapi.getLlmApiStatus();
+    await window.TauriBridge.llmapi.getLlmApiModels();
+
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: false,
+      backend_user_state: 'unknown',
+      stale: true,
+      provisioning_status: 'not_started',
+    };
+    await window.TauriBridge.llmapi.getLlmApiStatus();
+    const retainedAfterUnknown = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']);
+    const keptOnUnknown = retainedAfterUnknown.llmApiStatus
+      && retainedAfterUnknown.llmApiStatus.backend_user_state === 'exists';
+
+    window.__LLMAPI_STATUS_ERROR__ = true;
+    window.__LLMAPI_MODELS_ERROR__ = true;
+    await window.TauriBridge.llmapi.getLlmApiStatus().catch(() => {});
+    await window.TauriBridge.llmapi.getLlmApiModels().catch(() => {});
+    const retained = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']);
+    const keptExisting = retained.llmApiStatus && retained.llmApiStatus.backend_user_exists === true;
+    const keptModels = retained.llmApiModels && retained.llmApiModels.default_model === 'deepseek-v4-flash';
+
+    window.__LLMAPI_STATUS_ERROR__ = false;
+    window.__LLMAPI_STATUS__ = {
+      backend_user_exists: false,
+      backend_user_state: 'not_exists',
+      stale: false,
+      provisioning_status: 'not_started',
+      last_error_code: 'service_disabled',
+    };
+    await window.TauriBridge.llmapi.getLlmApiStatus();
+    const clearedWhenAuthoritative = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).llmApiModels === null;
+    return { keptOnUnknown, keptExisting, keptModels, clearedWhenAuthoritative };
+  });
+  rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在或禁用时清理',
+    llmApiCacheFallback.keptOnUnknown && llmApiCacheFallback.keptExisting
+      && llmApiCacheFallback.keptModels && llmApiCacheFallback.clearedWhenAuthoritative,
+    JSON.stringify(llmApiCacheFallback));
+
+  // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
+  // 只有显式点击“取消”才关闭。
+  const modelModalOpened = await page.evaluate(() => {
+    const nav = document.querySelector('[data-testid="nav-settings"]');
+    if (!nav) return false;
+    nav.click();
+    return true;
+  });
+  await sleep(700);
+  const modelModalOutsideClick = await page.evaluate(async () => {
+    const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const modelSection = [...document.querySelectorAll('aside button')]
+      .find(button => (button.textContent || '').trim() === '模型');
+    if (modelSection) {
+      modelSection.click();
+      await settle();
+    }
+    const add = document.querySelector('[data-testid="settings-model-add"]');
+    if (!add) return { addFound: false, opened: false, stayedOpen: false, cancelled: false };
+    add.click();
+    await settle();
+    const backdrop = document.querySelector('[data-testid="model-form-backdrop"]');
+    const opened = !!document.querySelector('[data-testid="model-form-dialog"]');
+    if (backdrop) backdrop.click();
+    await settle();
+    const stayedOpen = !!document.querySelector('[data-testid="model-form-dialog"]');
+    const cancel = document.querySelector('[data-testid="model-form-cancel"]');
+    if (cancel) cancel.click();
+    await settle();
+    return {
+      addFound: true,
+      opened,
+      stayedOpen,
+      cancelled: !document.querySelector('[data-testid="model-form-dialog"]'),
+    };
+  });
+  rec(
+    '模型编辑弹窗点击外部不关闭且显式取消仍可关闭',
+    modelModalOpened && modelModalOutsideClick.addFound && modelModalOutsideClick.opened
+      && modelModalOutsideClick.stayedOpen && modelModalOutsideClick.cancelled,
+    JSON.stringify(modelModalOutsideClick),
+  );
+
+  // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
   page.on('dialog', async dialog => { await dialog.accept(); });
   await expand(page); await sleep(300);
   await page.evaluate(() => document.querySelector('[data-nav="cardpool"]')?.click()); await sleep(700);
@@ -280,7 +399,7 @@ async function expand(page) {
   });
   await sleep(700);
   const stopped = await page.evaluate(() => ({
-    status: window.TauriBridge.getState().workflow.run.status,
+    status: window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).workflow.run.status,
     sessionId: window.__STOP_WORKFLOW_ARGS__ && window.__STOP_WORKFLOW_ARGS__.sessionId,
     brief: (document.querySelector('textarea') || {}).value || '',
   }));
@@ -295,7 +414,7 @@ async function expand(page) {
         roles: { taizi: { name: '太子', status: 'running' }, zhongshu: { name: '中书', status: 'reviewing' } },
       } });
     }
-    const run = window.TauriBridge.getState().workflow.run;
+    const run = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).workflow.run;
     return { status: run.status, taizi: run.agents.taizi.status, zhongshu: run.agents.zhongshu.status };
   });
   rec(
@@ -306,6 +425,81 @@ async function expand(page) {
     JSON.stringify(stoppedAfterLateSnapshot),
   );
   await clickText(page, '取消'); await sleep(300);
+
+  // ①d kick 失败必须 reject 给新建任务弹窗，不能把“项目已创建”误当成启动成功。
+  const kickFailure = await page.evaluate(async () => {
+    window.__KICK_WORKFLOW_ERROR__ = true;
+    let error = '';
+    try {
+      await window.TauriBridge.workflow.startWorkflowTask('sansheng_liubu', { user_request_raw: '测试启动失败' });
+    } catch (e) {
+      error = String((e && e.message) || e);
+    }
+    window.__KICK_WORKFLOW_ERROR__ = false;
+    return {
+      error,
+      calls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'start_workflow' || call.cmd === 'kick_workflow').map(call => call.cmd),
+    };
+  });
+  rec(
+    '①d kick失败向调用方透传具体错误',
+    kickFailure.error.includes('HTTP 401')
+      && kickFailure.calls.slice(-2).join(',') === 'start_workflow,kick_workflow',
+    JSON.stringify(kickFailure),
+  );
+
+  // ①e 后端 blocked 事件和持久化 full_state 都必须把看板置为 blocked，并显示原因。
+  const blockedState = await page.evaluate(async () => {
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:project_started'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', project_dir: '/x/blocked', scenario: 'sansheng_liubu' } });
+    }
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:blocked'] || [])) {
+      await handler({ payload: { session_id: 's-blocked', status: 'blocked', stage: 'warmup', message: 'HTTP 401: authorization failed' } });
+    }
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [])) {
+      await handler({ payload: {
+        session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed',
+        ui: { agentDefs: [{ id: 'taizi', name: '太子', desc: '接旨', color: '#8a1c1c' }], lanes: [{ title: '接旨', agents: ['taizi'] }] },
+        roles: { taizi: { name: '太子', status: 'failed', error: '模型服务鉴权失败：HTTP 401 authorization failed' } },
+      } });
+    }
+    const run = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).workflow.run;
+    return {
+      status: run.status,
+      agentError: run.agents.taizi && run.agents.taizi.error,
+      blockedCards: (run.cards || []).filter(card => card.workflowBlocked).map(card => card.text),
+    };
+  });
+  rec(
+    '①e 预热失败显示权威阻塞状态且不重复错误卡',
+    blockedState.status === 'blocked'
+      && blockedState.blockedCards.length === 1
+      && String(blockedState.blockedCards[0] || '').includes('HTTP 401')
+      && String(blockedState.agentError || '').includes('HTTP 401'),
+    JSON.stringify(blockedState),
+  );
+
+  // ①f 失败角色详情必须同时展示权威 error 和可读的结构化运行日志。
+  const failureDiagnostics = await page.evaluate(async () => {
+    window.TauriBridge.workflow.selectWorkflowRole('taizi');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return {
+      reason: (document.querySelector('[data-testid="workflow-failure-reason"]') || {}).textContent || '',
+      card: (document.querySelector('[data-testid="workflow-agent-error-taizi"]') || {}).textContent || '',
+      body: document.body.innerText,
+    };
+  });
+  rec(
+    '①f 失败角色展示具体原因和结构化运行日志',
+    failureDiagnostics.reason.includes('HTTP 401')
+      && failureDiagnostics.card.includes('HTTP 401')
+      && failureDiagnostics.body.includes('Tool write_file is not permitted')
+      && failureDiagnostics.body.includes('类型: 工具权限')
+      && failureDiagnostics.body.includes('Agent: agent_diag01')
+      && failureDiagnostics.body.includes('重试: 3/3'),
+    JSON.stringify(failureDiagnostics),
+  );
+  await page.evaluate(() => window.TauriBridge.workflow.closeWorkflowDrawer()); await sleep(100);
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
@@ -341,10 +535,10 @@ async function expand(page) {
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
   const restored = await page.evaluate(() => {
     const text = document.body.innerText;
-    const artifactPaths = window.TauriBridge.getState().chatItems
+    const artifactPaths = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems
       .filter(item => item.type === 'artifact_card')
       .map(item => item.path);
-    const restoredShellCards = window.TauriBridge.getState().chatItems.filter(item =>
+    const restoredShellCards = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.filter(item =>
       item.type === 'tool' && item.name === 'exec_shell' && item.args && item.args.command === 'history-shell');
     return {
       history: text.includes('整理纪要'),
@@ -370,12 +564,175 @@ async function expand(page) {
       for (const handler of handlers) await handler({ payload });
     }
     await emit('chat:tool_start', { session_id:'s1', id:'live-shell', name:'exec_shell', args:{ command:'validator --json' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'live-shell', stream:'stdout', content:'downloaded 42%\n' + Array.from({ length: 80 }, (_, i) => 'progress line ' + i).join('\n') + '\nlive progress tail' });
+  });
+  await sleep(200);
+  const liveShell = await page.evaluate(() => {
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'live-shell');
+    return {
+      running: item && item.state === 'running',
+      output: item && item.output,
+      visible: document.body.innerText.includes('downloaded 42%'),
+    };
+  });
+  rec('live exec_shell output is visible before tool_end', liveShell.running && liveShell.output.includes('downloaded 42%') && liveShell.visible, JSON.stringify(liveShell));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'live-shell-wait', name:'exec_shell_wait', args:{ task_id:'shell-task-1', wait:true } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'live-shell-wait', stream:'stdout', content:'tick 42\n' });
+  });
+  await sleep(100);
+  const liveShellWait = await page.evaluate(() => {
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'live-shell-wait');
+    return {
+      running: item && item.state === 'running',
+      output: item && item.output,
+      visible: document.body.innerText.includes('tick 42'),
+    };
+  });
+  rec('live exec_shell_wait output is visible before tool_end', liveShellWait.running && liveShellWait.output.includes('tick 42') && liveShellWait.visible, JSON.stringify(liveShellWait));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'split-terminal', name:'exec_shell', args:{ command:'split terminal frames' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'line one\r' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'\nDownloading 10%\r' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'Downloading \u001b[3' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'2m90%\u001b[0' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal', stream:'stdout', content:'m' });
+  });
+  await sleep(100);
+  const splitTerminal = await page.evaluate(() => {
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal');
+    return item && item.output;
+  });
+  rec('terminal parser preserves CRLF and ANSI state across live chunks',
+    splitTerminal === 'line one\nDownloading 90%' && !splitTerminal.includes('\u001b') && !splitTerminal.includes('10%'),
+    JSON.stringify(splitTerminal));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'split-terminal-stderr', name:'exec_shell', args:{ command:'split stderr style' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'\u001b[3' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'1m错误\u001b[0' });
+    await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'m' });
+  });
+  const splitTerminalStderr = await page.evaluate(() => {
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal-stderr');
+    return item && item.output;
+  });
+  rec('terminal parser preserves stderr ANSI state across live chunks',
+    splitTerminalStderr === '[STDERR] 错误' && !splitTerminalStderr.includes('\u001b'),
+    JSON.stringify(splitTerminalStderr));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
+    await emit('chat:tool_start', { session_id:'s1', id:'background-shell', name:'exec_shell', args:{ command:'winget install WPS' } });
+    await emit('chat:tool_delta', { session_id:'s1', id:'background-shell', stream:'stdout', content:'\u001b[32mDownloading 10%\u001b[0m\rDownloading 90%' });
+    await emit('chat:tool_end', {
+      session_id:'s1', id:'background-shell', success:true, output:'Command started in background',
+      metadata:{ backgrounded:true, status:'Running', task_id:'shell-bg-1' }
+    });
+    await emit('chat:done', { session_id:'s1', status:'Completed' });
+  });
+  await sleep(150);
+  const backgroundShell = await page.evaluate(() => {
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
+    const button = document.querySelector('[data-testid="cancel-shell-task"][data-shell-task-id="shell-bg-1"]');
+    if (button) button.click();
+    return {
+      running: item && item.state === 'running' && item.background === true,
+      taskId: item && item.taskId,
+      output: item && item.output,
+      button: !!button,
+    };
+  });
+  await sleep(50);
+  const backgroundCancelInvoke = await page.evaluate(() => window.__TAURI_INVOKES__.some(entry =>
+    entry.cmd === 'cancel_shell_task' && entry.args.sessionId === 's1' && entry.args.taskId === 'shell-bg-1'));
+  rec('background shell survives chat:done, collapses terminal progress, and cancels by task id',
+    backgroundShell.running && backgroundShell.taskId === 'shell-bg-1' &&
+      backgroundShell.output.includes('Downloading 90%') && !backgroundShell.output.includes('10%') &&
+      backgroundShell.button && backgroundCancelInvoke,
+    JSON.stringify({ backgroundShell, backgroundCancelInvoke }));
+  await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['chat:shell_task_status'] || [];
+    for (const handler of handlers) await handler({ payload: {
+      session_id:'s1', tool_id:'background-shell', task_id:'shell-bg-1', status:'Killed', exit_code:null,
+      stdout_tail:'Downloading 90%\nDownloaded final tail',
+      stderr_tail:'installer warning from final stderr'
+    }});
+  });
+  const backgroundKilled = await page.evaluate(() => {
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
+    return {
+      terminal: item && item.state === 'failed' && item.shellStatus === 'Killed' && item.background === false,
+      output: item && item.output,
+    };
+  });
+  rec('background shell terminal event reconciles final stdout and stderr tails',
+    backgroundKilled.terminal &&
+      backgroundKilled.output === 'Downloading 90%\nDownloaded final tail\n[STDERR] installer warning from final stderr',
+    JSON.stringify(backgroundKilled));
+  await page.evaluate(async () => {
+    async function emit(name, payload) {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    }
     await emit('chat:tool_end', { session_id:'s1', id:'live-shell', success:true, output:'{"ok":true,"path":"live-validator-fake.html"}' });
+    await emit('chat:tool_end', { session_id:'s1', id:'live-shell-wait', success:true, output:'tick 42\ntick 100\n' });
     await emit('chat:tool_start', { session_id:'s1', id:'live-mcp', name:'mcp_gongwen_make_gongwen', args:{} });
     await emit('chat:tool_end', { session_id:'s1', id:'live-mcp', success:true, output:'{"path":"live-report.docx"}' });
   });
-  const liveArtifacts = await page.evaluate(() => window.TauriBridge.getState().artifacts.map(item => item.path));
+  const liveArtifacts = await page.evaluate(() => window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).artifacts.map(item => item.path));
   rec('③b 实时 tool_end 不跟踪 shell path、保留 MCP 产物', liveArtifacts.includes('live-report.docx') && !liveArtifacts.includes('live-validator-fake.html'), JSON.stringify(liveArtifacts));
+
+  // ④ 后端 pending 事件必须直达 React 候选卡；三个决策按钮必须调用各自命令。
+  async function emitMemoryCandidate(id, text) {
+    await page.evaluate(async ({ id, text }) => {
+      const handlers = window.__TAURI_EVENT_HANDLERS__['chat:memory_write'] || [];
+      for (const handler of handlers) {
+        await handler({ payload: { session_id: 's1', events: [{ action: 'pending', kind: 'preference', id, text }] } });
+      }
+    }, { id, text });
+    await sleep(250);
+  }
+  async function clickMemoryAction(id, testId) {
+    return page.evaluate(({ id, testId }) => {
+      const card = document.querySelector(`[data-testid="memory-candidate-card"][data-memory-id="${id}"]`);
+      const button = card && card.querySelector(`[data-testid="${testId}"]`);
+      if (!button) return false;
+      button.click();
+      return true;
+    }, { id, testId });
+  }
+  await emitMemoryCandidate('mem-confirm', '回答默认先给结论');
+  const candidateVisible = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="memory-candidate-card"][data-memory-id="mem-confirm"]');
+    return !!card && card.textContent.includes('记忆候选') && card.textContent.includes('回答默认先给结论');
+  });
+  const confirmClicked = await clickMemoryAction('mem-confirm', 'memory-candidate-confirm');
+  await emitMemoryCandidate('mem-ignore', '回答尽量简洁');
+  const ignoreClicked = await clickMemoryAction('mem-ignore', 'memory-candidate-ignore');
+  await emitMemoryCandidate('mem-never', '不要使用过多术语');
+  const neverClicked = await clickMemoryAction('mem-never', 'memory-candidate-never');
+  await sleep(350);
+  const memoryCommands = await page.evaluate(() => window.__TAURI_INVOKES__
+    .filter(call => ['confirm_pending_memory', 'ignore_pending_memory', 'never_pending_memory'].includes(call.cmd))
+    .map(call => `${call.cmd}:${call.args.id}`));
+  rec('④ 记忆候选卡渲染+三个决策动作贯通', candidateVisible && confirmClicked && ignoreClicked && neverClicked &&
+    memoryCommands.includes('confirm_pending_memory:mem-confirm') &&
+    memoryCommands.includes('ignore_pending_memory:mem-ignore') &&
+    memoryCommands.includes('never_pending_memory:mem-never'), JSON.stringify(memoryCommands));
 
   // ShellManager 快照轮询：按 task_id 更新同一卡片、明确标注 tail 省略、取消直达 kill，
   // 终态展示退出码且不依赖 chat:done。
@@ -390,13 +747,13 @@ async function expand(page) {
   });
   await sleep(700);
   const shellRunning = await page.evaluate(() => {
-    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    const item=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
     return item && {state:item.state,taskId:item.taskId,output:item.output};
   });
-  await page.evaluate(() => window.TauriBridge.cancelShellTask('s1','task-live-1'));
+  await page.evaluate(() => window.TauriBridge.chat.cancelShellTask('s1','task-live-1'));
   await sleep(700);
   const shellCancelled = await page.evaluate(() => {
-    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    const item=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
     return {item:item&&{state:item.state,exitCode:item.exitCode,output:item.output},args:window.__CANCEL_SHELL_ARGS__};
   });
   rec('③c Shell 实时 tail、省略标记、task_id 取消与退出码',
@@ -423,7 +780,7 @@ async function expand(page) {
   });
   await sleep(700);
   const ambiguousBeforeEnd = await page.evaluate(() => {
-    const items=window.TauriBridge.getState().chatItems;
+    const items=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems;
     return ['dup-tool-a','dup-tool-b'].map(id => {
       const item=items.find(it=>it.toolId===id); return item && item.taskId;
     });
@@ -437,7 +794,7 @@ async function expand(page) {
   });
   await sleep(500);
   const shellIdentity = await page.evaluate(() => {
-    const items=window.TauriBridge.getState().chatItems;
+    const items=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems;
     const a=items.filter(it=>it.taskId==='task-dup-a');
     const b=items.filter(it=>it.taskId==='task-dup-b');
     const done=items.find(it=>it.taskId==='task-detached-done');
@@ -452,7 +809,7 @@ async function expand(page) {
 
   const unchangedPollNotifications = await page.evaluate(async () => {
     let count=0;
-    const unsubscribe=window.TauriBridge.subscribe(() => { count+=1; });
+    const unsubscribe=window.TauriBridge.state.subscribe('chat', () => { count+=1; });
     await new Promise(resolve=>setTimeout(resolve,650));
     unsubscribe();
     return count;
@@ -475,16 +832,16 @@ async function expand(page) {
     cancelFailureState.visible && cancelFailureState.retryable, JSON.stringify(cancelFailureState));
   await page.evaluate(() => { window.__CANCEL_SHELL_ERROR__=false; });
 
-  // ④ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
-  await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
+  // ⑤ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
+  await page.evaluate(() => window.TauriBridge.interaction.summonPinvou('/home/x/会议纪要.md'));
   await sleep(900);
   const modal = await page.evaluate(() => {
     const txt = document.body.innerText;
     return { trace: txt.includes('有几点确认'), adopt: txt.includes('采纳建议'), skip: txt.includes('跳过'), persona: txt.includes('旅行规划') };
   });
-  rec('④ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
+  rec('⑤ 品悟检阅卡本地化渲染(t 线程通)', modal.trace && modal.adopt && modal.skip, JSON.stringify(modal));
 
-  // ⑤ composer 模式 chip:渲染 + 默认 YOLO + 下拉两项 + 点 Plan 真切到 Plan(防 setPlanModeNext 草稿态静默 return 回归)
+  // ⑥ composer 模式 chip:渲染 + 默认 YOLO + 下拉两项 + 点 Plan 真切到 Plan(防 setPlanModeNext 草稿态静默 return 回归)
   const chip = await page.evaluate(() => {
     // title 前缀匹配:compact 下 chip 收成图标(无可见文字),且 title 现含当前模式名 → 用 title 判模式
     const b = document.querySelector('[title^="切换工作模式"]');
@@ -504,7 +861,7 @@ async function expand(page) {
     const b = document.querySelector('[title^="切换工作模式"]');
     return b ? (b.getAttribute('title') || '').trim() : '';
   });
-  rec('⑤ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
+  rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
   // ⑤b 收纳成功 toast 的「前往查看」必须直达设置页数据管理，且按钮不折行。
   await expand(page); await sleep(200);
@@ -551,7 +908,7 @@ async function expand(page) {
 
   // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });
-  await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
+  await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
   await sleep(300);
   const startingSetup = await page.evaluate(() => document.body.innerText.includes('启用本地大模型'));
   rec('⑥ MegaCube 引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
@@ -564,7 +921,7 @@ async function expand(page) {
   });
   await sleep(3300);
   const timedOutSetup = await page.evaluate(() => {
-    const setup = window.TauriBridge.getState().vllmSetup || {};
+    const setup = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).vllmSetup || {};
     return {
       popup: document.body.innerText.includes('启用本地大模型'),
       state: setup.engine_state,
@@ -578,7 +935,7 @@ async function expand(page) {
     window.__VLLM_STATE__ = 'stopped';
   });
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
-  await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
+  await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
   await sleep(500);
   const setup = await page.evaluate(() => {
     const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());

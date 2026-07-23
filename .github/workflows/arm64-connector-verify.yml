@@ -7,9 +7,9 @@ on:
       - builtin-linux-arm64-connectors
     paths:
       - ".github/workflows/arm64-connector-verify.yml"
-      - "pinvou3-app/src-tauri/resources/bundle/connectors/**"
-      - "pinvou3-app/src-tauri/src/bridge/paths.rs"
-      - "pinvou3-app/src-tauri/src/connector_cli.rs"
+      - "pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/**"
+      - "pinvou3-app/src-tauri/src/platform/paths.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
 
 jobs:
   verify-linux-arm64-connectors:
@@ -27,15 +27,15 @@ jobs:
       - name: Inspect bundled binaries
         run: |
           set -eux
-          file pinvou3-app/src-tauri/resources/bundle/connectors/linux-arm64/bin/lark-cli
-          file pinvou3-app/src-tauri/resources/bundle/connectors/linux-arm64/bin/wecom-cli
+          file pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/lark-cli
+          file pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/wecom-cli
 
       - name: Simulate app extraction
         run: |
           set -eux
           mkdir -p "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin"
-          cp pinvou3-app/src-tauri/resources/bundle/connectors/linux-arm64/bin/lark-cli "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
-          cp pinvou3-app/src-tauri/resources/bundle/connectors/linux-arm64/bin/wecom-cli "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
+          cp pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/lark-cli "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
+          cp pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/wecom-cli "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
           chmod 755 "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/lark-cli"
           chmod 755 "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/wecom-cli"
 

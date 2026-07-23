@@ -2,7 +2,7 @@
 # 发布知识库 embedding 模型(bge-m3)到 OTA 源 —— **一次性 / 模型变更才跑**。
 # 模型不再随 deb 打包(见 release-deb.sh §1.5),客户端在知识库页按需下载部署。
 # 流程: 组装 → 打 tar.gz → 算 sha256/size → 上传 → 打印常量供回填到
-#       pinvou3-app/src-tauri/src/knowledge/model_download.rs(MODEL_SHA256 / MODEL_TARGZ_SIZE)。
+#       pinvou3-app/src-tauri/src/features/knowledge/model_download.rs(MODEL_SHA256 / MODEL_TARGZ_SIZE)。
 #
 # 用法: ./scripts/release-kb-model.sh
 #   源目录默认 ~/models/bge-m3,可用 PINVOU3_KB_EMBED_MODEL_DIR 覆盖。
@@ -51,7 +51,7 @@ ssh "$SERVER" "chmod 644 $REMOTE_DIR/bge-m3.tar.gz"
 
 echo "=== 发布完成: $BASE_URL/bge-m3.tar.gz ==="
 echo
-echo "👉 回填到 pinvou3-app/src-tauri/src/knowledge/model_download.rs(随本次模型变更同 PR):"
+echo "👉 回填到 pinvou3-app/src-tauri/src/features/knowledge/model_download.rs(随本次模型变更同 PR):"
 echo "   const MODEL_SHA256: &str = \"$SHA256\";"
 echo "   const MODEL_TARGZ_SIZE: u64 = $SIZE;"
 echo

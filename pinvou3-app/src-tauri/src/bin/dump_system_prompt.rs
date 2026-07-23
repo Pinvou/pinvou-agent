@@ -16,7 +16,7 @@ use deepseek_tui::memory;
 use deepseek_tui::prompts::{self, PromptSessionContext};
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
-use pinvou3_lib::bridge::Pinvou3Bridge;
+use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 
 fn main() -> Result<()> {
     // session id 走临时值,避免污染真实 sessions/

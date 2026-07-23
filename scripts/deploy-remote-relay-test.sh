@@ -233,7 +233,7 @@ else
   echo "使用已构建并验证的共享 WebUI 产物"
 fi
 test -f "$RELAY_DIR/web/dist/index.html"
-test -f "$RELAY_DIR/web/dist/tauri-bridge.js"
+test -f "$RELAY_DIR/web/dist/platform/tauri/bridge.js"
 grep -Fq "$BASE_PATH/" "$RELAY_DIR/web/dist/index.html"
 if [[ "${SKIP_LOCAL_TESTS:-0}" != "1" ]]; then
   (cd "$RELAY_DIR" && npm test)
@@ -529,7 +529,8 @@ public_verify() {
   health="$(curl -fsS --max-time 10 "$PUBLIC_URL/healthz")" || return 1
   echo "$health" | node -e 'const h=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!h.ok||!("room_count" in h)) process.exit(1)' || return 1
   page="$(curl -fsSL --max-time 10 "$PUBLIC_URL/r/deploy-check")" || return 1
-  [[ "$page" == *'<title>PINVOU Remote</title>'* ]] || return 1
+  [[ "$page" == *'<title>PINVOU 智能助手'* \
+    && "$page" == *"$BASE_PATH/platform/tauri/bridge.js"* ]] || return 1
   prod_health="$(curl -fsS --max-time 10 "https://pinvou.com/pinvou3/remote/healthz")" || return 1
   echo "$prod_health" | node -e 'const h=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!h.ok) process.exit(1)' || return 1
 }

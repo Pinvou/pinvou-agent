@@ -107,11 +107,11 @@ async function clickContains(page, sel, text) {
 
   await page.evaluate(() => {
     window.__OUTPUT_PREVIEW_READS__ = [];
-    window.TauriBridge.readArtifactText = async (path, sessionId) => {
+    window.TauriBridge.artifacts.readArtifactText = async (path, sessionId) => {
       window.__OUTPUT_PREVIEW_READS__.push({ kind: 'text', path, sessionId });
       return '# 跨会话报告';
     };
-    window.TauriBridge.artifactInfo = async (path, sessionId) => {
+    window.TauriBridge.artifacts.artifactInfo = async (path, sessionId) => {
       window.__OUTPUT_PREVIEW_READS__.push({ kind: 'info', path, sessionId });
       return { exists: true, kind: 'md', size: 1200 };
     };

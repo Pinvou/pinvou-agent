@@ -11,7 +11,7 @@ import re
 import sys
 import urllib.request
 
-RS = pathlib.Path(__file__).resolve().parents[1] / "pinvou3-app/src-tauri/src/pinvou_review.rs"
+RS = pathlib.Path(__file__).resolve().parents[1] / "pinvou3-app/src-tauri/src/features/review/mod.rs"
 URL = "http://10.214.74.113:8000/v1/chat/completions"
 MODEL = "qwen36_35b_256k"
 

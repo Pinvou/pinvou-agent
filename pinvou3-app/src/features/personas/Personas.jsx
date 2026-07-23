@@ -99,8 +99,8 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
           panel.style.transform = 'none';
           panel.style.opacity = '1';
         }
-        if (bridge.available && bridge.readPersonaBody) {
-          bridge.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
+        if (bridge.available && bridge.personas.readPersonaBody) {
+          bridge.personas.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
         } else { setBody(''); }
       }, []);
       const tc = deptColor(card.dept);
@@ -125,7 +125,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
               <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
               {body===null
                 ? <div className="text-[14px] py-8 text-center" style={{ color:'#8E8E93' }}>{t.cpBodyLoading}</div>
-                : <div className="persona-body text-[14px] leading-relaxed" style={{ color: isDark?'#C7C7CC':'#1C1C1E' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown ? bridge.renderMarkdown(body) : body }} />}
+                : <div className="persona-body text-[14px] leading-relaxed" style={{ color: isDark?'#C7C7CC':'#1C1C1E' }} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
             </div>
             {/* 加持/取消 */}
             <div className="p-4 shrink-0" style={{ borderTop:'1px solid '+(isDark?'#38383A':'rgba(198,198,200,.5)') }}>
@@ -151,11 +151,10 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const [body, setBody] = useState(init.body || '');
       const [saving, setSaving] = useState(false);
       const [err, setErr] = useState('');
-      const [deptPickerOpen, setDeptPickerOpen] = useState(false);
       // 编辑已有卡时, summary 不含 body, 拉一次完整正文
       useEffect(() => {
-        if (isEdit && !init.body && bridge.available && bridge.readPersonaBody) {
-          bridge.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
+        if (isEdit && !init.body && bridge.available && bridge.personas.readPersonaBody) {
+          bridge.personas.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
         }
       }, []);
       const tc = deptColor(dept);
@@ -167,28 +166,19 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
         setSaving(true); setErr('');
         var input = { name: name.trim(), dept: dept, emoji: emoji || '🃏', color: init.color || deptColor(dept), description: description.trim(), body: body };
         try {
-          var sum = isEdit ? await bridge.updatePersona(init.id, input) : await bridge.createPersona(input);
+          var sum = isEdit ? await bridge.personas.updatePersona(init.id, input) : await bridge.personas.createPersona(input);
           if (onSaved) onSaved(sum);
           onClose();
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
       }
-      const ph = isDark ? '#636366' : '#C7C7CC';
-      const modalBg = isDark ? '#1C1C1E' : '#F2F2F7';
-      const groupedCellBg = isDark ? '#2C2C2E' : '#fff';
-      const separatorColor = isDark ? 'rgba(84,84,88,.65)' : 'rgba(198,198,200,.5)';
-      const primaryText = isDark ? '#F2F2F7' : '#000';
-      const secondaryText = isDark ? '#8E8E93' : '#8E8E93';
+      const ph = isDark ? '#48484A' : '#C7C7CC';
       return (
         <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
-          style={{ background:'rgba(0,0,0,.48)', backdropFilter:'blur(8px)', WebkitBackdropFilter:'blur(8px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
-          <style>{`
-            .persona-ios-input::placeholder,
-            .persona-ios-textarea::placeholder { color: ${ph}; opacity: 1; }
-          `}</style>
-          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[20px] md:rounded-[20px] overflow-hidden"
-            style={{ background: modalBg, color: primaryText }}>
+          style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
+          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden"
+            style={{ background: isDark ? '#1C1C1E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
             {/* 导航栏 */}
-            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b" style={{ borderColor: separatorColor }}>
+            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
               <button onClick={onClose} className="text-[17px]" style={{ color: isDark ? '#0A84FF' : '#007AFF' }}>{t.cpCancel}</button>
               <span className="text-[17px] font-semibold">{isEdit ? t.cpEditCard : t.cpNewCard}</span>
               <button onClick={save} disabled={saving} className="text-[17px] font-semibold" style={{ color: saving ? '#8E8E93' : (isDark ? '#0A84FF' : '#007AFF') }}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
@@ -197,74 +187,42 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
             <div className="flex-1 overflow-y-auto p-4 space-y-6">
               {err ? <div className="text-[13px] px-2" style={{ color:'#FF3B30' }}>{err}</div> : null}
               {/* 名称 + 部门 */}
-              <div className="rounded-[12px] overflow-hidden" style={{ background: groupedCellBg }}>
-                <div className="flex items-center px-4 min-h-[48px] border-b" style={{ borderColor: separatorColor }}>
+              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+                <div className="flex items-center px-4 py-3 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
                   <span className="w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
-                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="persona-ios-input flex-1 text-[17px] bg-transparent outline-none" style={{ color: primaryText }} />
+                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000', '::placeholder': ph }} />
                 </div>
-                <div className="flex items-center px-4 min-h-[48px]">
+                <div className="flex items-center px-4 py-3">
                   <span className="w-20 text-[17px] shrink-0">{t.cpDept}</span>
-                  <button type="button" onClick={() => setDeptPickerOpen(true)}
-                    className="flex-1 min-w-0 flex items-center justify-end gap-2 text-[17px] text-right outline-none"
-                    style={{ color: secondaryText }}>
-                    <span className="truncate">{deptLabelFor(t, dept)}</span>
-                    <ChevronRight size={18} className="shrink-0" style={{ color: secondaryText }} />
-                  </button>
+                  <select value={dept} onChange={e=>setDept(e.target.value)} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000' }}>
+                    {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d} style={{ color:'#000' }}>{deptLabelFor(t, d)}</option>; })}
+                  </select>
                 </div>
               </div>
               {/* 描述 */}
-              <div className="rounded-[12px] overflow-hidden" style={{ background: groupedCellBg }}>
+              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
                 <div className="px-4 py-3">
-                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="persona-ios-textarea w-full text-[17px] bg-transparent outline-none resize-none leading-snug" style={{ color: primaryText }} />
+                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-none resize-none" style={{ color: isDark?'#fff':'#000' }} />
                 </div>
               </div>
               {/* 系统人设 (必填) */}
               <div>
-                <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color: secondaryText }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
-                <div className="rounded-[12px] overflow-hidden" style={{ background: groupedCellBg }}>
+                <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color:'#8E8E93' }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
+                <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
                   <div className="px-4 py-3">
-                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="persona-ios-textarea w-full text-[16px] leading-relaxed bg-transparent outline-none resize-none custom-scrollbar" style={{ color: primaryText, maxHeight:'40vh' }} />
+                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-none resize-none custom-scrollbar" style={{ color: isDark?'#fff':'#000', maxHeight:'40vh' }} />
                   </div>
                 </div>
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
-                <button onClick={()=>{ if(confirmDel){ bridge.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
-                  className="w-full rounded-[12px] py-3 text-[17px] transition-colors" style={{ background: groupedCellBg, color:'#FF3B30' }}>
+                <button onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
+                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors" style={{ background: isDark?'#000':'#fff', color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
               ) : null}
             </div>
           </div>
-          {deptPickerOpen && (
-            <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center md:p-4"
-              style={{ background:'rgba(0,0,0,.35)' }}
-              onClick={(e) => { e.stopPropagation(); setDeptPickerOpen(false); }}>
-              <div onClick={e => e.stopPropagation()}
-                className="w-full md:max-w-sm max-h-[72vh] rounded-t-[20px] md:rounded-[20px] overflow-hidden shadow-2xl"
-                style={{ background: modalBg, color: primaryText }}>
-                <div className="h-12 flex items-center justify-between px-4 border-b" style={{ borderColor: separatorColor }}>
-                  <button type="button" className="text-[17px]" style={{ color: isDark ? '#0A84FF' : '#007AFF' }} onClick={() => setDeptPickerOpen(false)}>{t.cpCancel}</button>
-                  <div className="text-[17px] font-semibold">{t.cpDept}</div>
-                  <div className="w-[34px]" />
-                </div>
-                <div className="max-h-[calc(72vh-48px)] overflow-y-auto custom-scrollbar p-2">
-                  {DEPT_OPTIONS.map(function(d){
-                    const active = d === dept;
-                    return (
-                      <button key={d} type="button"
-                        onClick={() => { setDept(d); setDeptPickerOpen(false); }}
-                        className="w-full min-h-[44px] px-3 rounded-[10px] flex items-center justify-between text-left text-[17px]"
-                        style={{ background: active ? groupedCellBg : 'transparent', color: active ? (isDark ? '#0A84FF' : '#007AFF') : primaryText }}>
-                        <span>{deptLabelFor(t, d)}</span>
-                        {active ? <Check size={18} className="shrink-0" /> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       );
     };
@@ -321,7 +279,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const isDark = theme === 'dark';
       const pool = (bs && bs.personaPool) || { loadState: 'idle' };
       // 201 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
-      const list = (bridge.available && bridge.getPersonas) ? bridge.getPersonas() : [];
+      const list = (bridge.available && bridge.personas.getPersonas) ? bridge.personas.getPersonas() : [];
       const active = (bs && bs.activePersona) || null;
       // 加持目标 = 当前对话(equipPersona 注入到 state.activeSessionId)。让用户始终知道注入到哪。
       const target = (bs && bs.sessions && bs.activeSessionId) ? bs.sessions.find(s => s.id === bs.activeSessionId) : null;
@@ -337,7 +295,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const [confirmDelId, setConfirmDelId] = useState(null); // 卡上删除二次确认
       const [activeTab, setActiveTab] = useState('individual');
 
-      useEffect(() => { if (bridge.available) bridge.loadPersonas(); }, []);
+      useEffect(() => { if (bridge.available) bridge.personas.loadPersonas(); }, []);
       useEffect(() => { setVisible(60); }, [query, activeDept, myOnly]);
       useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
 
@@ -360,14 +318,14 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       function resetFacets() { setActiveDept(ALL_DEPT); setQuery(''); setMyOnly(false); }
       function editCard(card, e){ if(e) e.stopPropagation(); setEditor({ initial: card }); }
       function doDelete(card, e){ if(e) e.stopPropagation(); setConfirmDelId(null);
-        Promise.resolve(bridge.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
+        Promise.resolve(bridge.personas.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
       function onMove(e){ const el=e.currentTarget; const r=el.getBoundingClientRect(); const px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
         el.style.transform=`perspective(900px) rotateX(${(0.5-py)*9}deg) rotateY(${(px-0.5)*11}deg) translateY(-3px)`;
         el.style.setProperty('--mx',(px*100)+'%'); el.style.setProperty('--my',(py*100)+'%'); }
       function onLeave(e){ e.currentTarget.style.transform=''; }
       function equip(card, e){ if(e) e.stopPropagation();
-        if (active && active.id===card.id) { bridge.unequipPersona(); setToast(t.cpToastUnequipped(personaText(card, t).name)); }
-        else { Promise.resolve(bridge.equipPersona(card.id)).then(s => { if (s) setToast(t.cpToastEquipped(targetTitle || t.cpCurrentChat, personaText(s, t).name)); }); } }
+        if (active && active.id===card.id) { bridge.personas.unequipPersona(); setToast(t.cpToastUnequipped(personaText(card, t).name)); }
+        else { Promise.resolve(bridge.personas.equipPersona(card.id)).then(s => { if (s) setToast(t.cpToastEquipped(targetTitle || t.cpCurrentChat, personaText(s, t).name)); }); } }
       function openDetail(card, e){ const r=e.currentTarget.getBoundingClientRect();
         setDetail({ card, rect:{ left:r.left, top:r.top, width:r.width, height:r.height } }); }
 

@@ -1,17 +1,18 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "pinvou3",
-  "version": "0.6.3",
+  "mainBinaryName": "pinvou3-tauri",
+  "version": "0.6.4",
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "beforeDevCommand": "vite",
-    "beforeBuildCommand": "npm run validate:pet-assets -- --release && vite build",
+    "beforeBuildCommand": "node scripts/tauri/require-wrapper.js build && npm run validate:pet-assets -- --release && vite build",
+    "beforeBundleCommand": "node scripts/tauri/require-wrapper.js bundle",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
-    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -31,16 +32,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "deb",
-      "app",
-      "dmg"
-    ],
-    "resources": {
-      "resources/web-template": "resources/web-template",
-      "resources/asr": "resources/asr",
-      "PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy"
-    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -48,29 +39,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "macOS": {
-      "minimumSystemVersion": "14.0",
-      "signingIdentity": "-",
-      "entitlements": "entitlements.plist",
-      "infoPlist": "Info.plist"
-    },
-    "linux": {
-      "deb": {
-        "desktopTemplate": "desktop/pinvou3.desktop",
-        "postInstallScript": "scripts/postinst.sh",
-        "preRemoveScript": "scripts/prerm.sh",
-        "depends": [],
-        "recommends": [
-          "poppler-utils",
-          "tesseract-ocr",
-          "tesseract-ocr-chi-sim",
-          "pandoc",
-          "p7zip-full",
-          "python3",
-          "libreoffice",
-          "libemail-outlook-message-perl"
-        ]
-      }
+    "resources": {
+      "resources/common/web-template/": "web-template"
     }
   }
 }

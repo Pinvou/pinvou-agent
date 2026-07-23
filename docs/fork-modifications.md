@@ -8,11 +8,11 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| fork 分支 | `pinvou3-clean`，当前 head `612fd2e5773c` |
-| 组织方式 | **6 个长期主题 commit + 1 个父仓主题（T7 macOS）**；T7 不动 fork，仅父仓平台抽象 |
-| drift | 对 `v0.9.0`：**+3447 / -557，53 文件**（T7 不增加 fork drift，零 fork 改动） |
-| 守护 | `scripts/fork-guard.sh`：45 条主题指纹 + submodule/app `forkguard_` 行为测试 |
-| app 状态 | `pinvou3-tauri` 主库 Linux/macOS 均编译通过，lib test target 可完整编译；macOS 适配在父仓 `feat/macos` 分支 |
+| fork 分支 | `pinvou3-clean`，当前 head `c32bb73f4605` |
+| 组织方式 | **6 个长期主题 commit**，按耦合边界维护；不再保留 C1–C12 / W1–W13 批量编号 |
+| drift | 对 `v0.9.0`：**+3668 / -558，53 文件** |
+| 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
+| app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译；macOS 适配保留在父仓平台抽象中，不增加 fork drift |
 
 ### 软上限评估
 
@@ -22,6 +22,7 @@
 - 约 665 行是宿主编排与结构化/文件产出完成闸，属于子 agent 生命周期的原子语义，放在 app 无法可靠判断真实完成。
 - 约 633 行是 prompt/context/skill 来源密封；这是 pinvou3 单一 bundle 来源和静态前缀稳定性的产品边界。
 - 约 965 行是工具面、写入上限和命令安全，其中包含结果式 golden 测试，不能只留字符串指纹。
+- Shell 实时输出不再形成 fork drift：app 复用 `c32bb73f` 已公开的 session 级 `ShellManager`，以非破坏性完整快照计算前台/后台增量，并由主仓测试守护 UTF-8 边界和拥塞合并。
 - 已移除 v0.8.65 时代被 v0.9.0 harvest 的 MCP env、Windows 子进程、旧 request_user_input 路由、旧 subagent 自建 mailbox/温度/工具面等补丁；没有机械照搬整包旧 fork。
 
 后续减量优先级：先推动 T6 宿主接口和 T2 通用安全修复上游化，再评估 T4 automation 通用部分；T3/T5 的 pinvou3 产品语义继续留 fork。
@@ -38,15 +39,15 @@
 
 ### T2 `fork`：工具面、文件写入与执行安全
 
-- **commit**：`9e136cb11 feat(fork): 收敛工具面、文件写入与执行安全`
-- **核心文件**：`tools/pinvou3_blocklist.rs`、`core/engine/tool_catalog.rs`、`tools/file.rs`、`core/engine/dispatch.rs`、`tools/shell.rs`、`command_safety.rs`、审批策略相关文件。
+- **commit**：`9e136cb11 feat(fork): 收敛工具面、文件写入与执行安全`。
+- **核心文件**：`tools/pinvou3_blocklist.rs`、`core/engine/tool_catalog.rs`、`tools/file.rs`、`core/engine/dispatch.rs`、`tools/shell.rs`、`core/engine/turn_loop.rs`、`command_safety.rs`、审批策略相关文件。
 - **内容**：
   - pinvou3 native 工具黑名单与 deferred activator 结果式 golden。
   - `write_file` / `append_file` 64KB 单次内容上限和缺字段修复提示。
   - `disallowed_tools` 支持 `*` 前缀规则。
   - Dangerous 命令在所有模式阻断；审批缓存、workflow plan 审批保持 fail-closed。
-- **为什么留 fork**：工具面是 pinvou3 产品定位；append_file 与大产物引导耦合。通用安全修复可继续拆上游 PR。
-- **守护**：`forkguard_blocklist_golden`、`forkguard_yolo_no_deferred_activator_first_class`、文件上限测试、命令安全测试。
+- **为什么留 fork**：工具面是 pinvou3 产品定位；append_file 与大产物引导耦合。Shell 展示能力已经移到 app，不再作为本主题的 fork-distinct 代码维护。
+- **守护**：`forkguard_blocklist_golden`、`forkguard_yolo_no_deferred_activator_first_class`、文件上限测试和命令安全测试。
 
 ### T3 `fork`：提示词密封与 context / skill 单一来源
 
@@ -82,12 +83,13 @@
 - **内容**：
   - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools；宿主注入工具在 Plan / Agent / Yolo 三种 turn registry 中统一注册，避免非 Plan 分支提前返回时丢失 `kb_search`。
   - `SpawnSubAgent` 接受 role、allowed tools、max steps、output schema、expects-file-output。
+  - `Custom` 工作流子 Agent 的显式工具白名单同时恢复父级允许的粗粒度能力；声明 `write_file`/`append_file` 后可以真实落盘，未声明工具仍由白名单拒绝，且只读父级不能被越权提升。
   - 合成 `submit_output` 工具；递归校验有限 JSON schema，只允许声明的安全相对路径落盘；最多 3 次催交后 fail-closed。
-  - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成。
+  - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成；重试耗尽时把最后一次工具错误带入失败信封，宿主日志无需读取私有转录即可显示具体原因。
   - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
-- **守护**：宿主额外工具全模式注册、结构化 schema/安全路径、批量取消、OAuth drop-before-return 回归。
+- **守护**：宿主额外工具全模式注册、结构化 schema/安全路径、Custom 显式写工具真实落盘、文件产出失败保留并脱敏最后工具错误、父子权限不可越权、批量取消、OAuth drop-before-return 回归。
 
 ### T6 `embed`：宿主路由、预算与 shared automation 接口
 
@@ -155,6 +157,9 @@ Mach-O arm64，静态链接，Metal 着色器内嵌），源自上游 [`lovemefa
 - `SyncSession` 显式设置 mode；新增 Event/Mailbox 字段用 `..` 向前兼容。
 - `Cargo.lock` 随 submodule v0.9.0 依赖图更新。
 - `dump_system_prompt` 兼容 v0.9 的 `SystemPrompt::Blocks`；内置中文技能名改用安全命令名 `visual-design`，避免被归一化成无意义的 `skill`。
+- app 的 `ShellOutputMonitor` 复用 session 级共享 `ShellManager`：按命令和工具调用绑定新任务，以非消费式完整快照计算 stdout/stderr 增量，合并慢轮询期间的全部未发送内容，并在后台终态补齐去重后的输出尾部。
+- `ShellOutputMonitor` 对运行中快照尾部的临时 `U+FFFD` 延迟一轮发送，避免 UTF-8 中文字符跨 reader chunk 时被永久写成替换符；底座的权限、安全分析、执行与 wait 游标保持原实现。
+- `EnginePool` 以 session 级生命周期记录协调自然完成、异常断流、主动回收和缺失 Engine 的取消路径，确保同一 turn 只产生一次权威终态。
 
 ## 4. 守护与验收
 
