@@ -41,6 +41,13 @@ import {
   stepPetDrag,
 } from './pet-interaction.js';
 import {
+  getCurrentTauriWindow,
+  invokeTauri,
+  isTauriAvailable,
+  tauriCommands,
+  tauriEvents,
+} from '../../platform/tauri/client.js';
+import {
   applyActivitySnapshot,
   applyEvent,
   createPetState,
@@ -270,7 +277,7 @@ export default function PetWindow({
   };
 
   useEffect(() => {
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) return undefined;
     let disposed = false;
     const requestSequence = petActivationRef.current.requestSequence;
@@ -311,9 +318,8 @@ export default function PetWindow({
   // Global Engine events drive activities. The main window supplies titles and
   // current busy flags because the pet intentionally does not duplicate Session.
   useEffect(() => {
-    const T = window.__TAURI__;
-    const ev = T && T.event;
-    const core = T && T.core;
+    const ev = isTauriAvailable() ? tauriEvents : null;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!ev) return undefined;
     let disposed = false;
     let noticeRequest = 0;
@@ -466,7 +472,7 @@ export default function PetWindow({
   }, []);
 
   useLayoutEffect(() => {
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) return undefined;
     // 人物锚点由 Rust 从当前窗口几何自行反推（前端此刻的 DOM 已经因卡片
     // 卸载而漂移，测量结果不可信），这里只需带上人物贴边方向。
@@ -493,24 +499,23 @@ export default function PetWindow({
   }, [activityVisible]);
 
   useEffect(() => {
-    const T = window.__TAURI__;
-    if (!T || !T.window || !T.core) return undefined;
+    if (!isTauriAvailable()) return undefined;
     const scaleRequest = Number.isFinite(configuredScale)
-      ? T.core.invoke('set_pet_scale', {
+      ? invokeTauri('set_pet_scale', {
         scale: startupScale,
         activityVisible: activityVisibleRef.current,
         activityHeight: activityHeightRef.current,
         verticalAlignment: edgeVAlignRef.current,
       })
-      : T.core.invoke('get_pet_scale');
+      : invokeTauri('get_pet_scale');
     scaleRequest.then((value) => {
       if (value > 0) setScale(value);
     }).catch(() => {});
-    const win = T.window.getCurrentWindow();
+    const win = getCurrentTauriWindow();
     let saveTimer = 0;
     let disposed = false;
     const unlisteners = [];
-    readPetDragContext(T).then((geometry) => updateEdgeAlignment(geometry, true)).catch(() => {});
+    readPetDragContext().then((geometry) => updateEdgeAlignment(geometry, true)).catch(() => {});
     // Linux/TAO 的 onMoved payload 来自 WM frame origin，而 setPosition 在 GTK
     // 实际按 client origin 移动。事件只当作“发生了移动”的通知；稳定后重新读
     // innerPosition，保证运行模型、持久化和下次恢复始终处于同一坐标域。
@@ -519,7 +524,7 @@ export default function PetWindow({
       saveTimer = window.setTimeout(() => {
         Promise.resolve(win.innerPosition()).then((position) => {
           if (disposed) return;
-          return T.core.invoke('save_pet_position', {
+          return invokeTauri('save_pet_position', {
             x: position.x,
             y: position.y,
             verticalAlignment: edgeVAlignRef.current,
@@ -580,7 +585,7 @@ export default function PetWindow({
   }, []);
 
   const openMain = (sessionId = null) => {
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) return;
     const sid = String(sessionId || '').trim();
     if (sid && openingSessionRef.current === sid) return;
@@ -593,7 +598,7 @@ export default function PetWindow({
 
   const openScheduledNotice = (event) => {
     event.stopPropagation();
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!core || !scheduledNotice) return;
     if (openingScheduledRunRef.current === scheduledNotice.runId) return;
     openingScheduledRunRef.current = scheduledNotice.runId;
@@ -646,7 +651,7 @@ export default function PetWindow({
     // rAF 已经把同一帧的鼠标事件合并成最新坐标。这里必须立即提交，不能等待
     // 上一笔 GTK setPosition Promise；串行等待会让原生窗口阶梯式追赶鼠标，
     // 体感等同于重新加入弹簧。inFlight 只用于 resize/新拖拽前的读取屏障。
-    const write = setPetWindowPosition(window.__TAURI__, drag.win, x, y);
+    const write = setPetWindowPosition(drag.win, x, y);
     queue.inFlight.add(write);
     void write
       .catch((error) => {
@@ -794,7 +799,7 @@ export default function PetWindow({
         metrics.localTop = nextLocalRect ? nextLocalRect.t : undefined;
         metrics.localBottom = nextLocalRect ? nextLocalRect.b : undefined;
         setEdgeVAlign(nextVAlign);
-        const core = window.__TAURI__ && window.__TAURI__.core;
+        const core = isTauriAvailable() ? tauriCommands : null;
         if (core) {
           // 落盘不在翻转关键帧做；快速往返时只保存最终方向。
           window.clearTimeout(verticalAlignmentSaveTimerRef.current);
@@ -901,12 +906,11 @@ export default function PetWindow({
     const positionQueue = positionQueueRef.current;
     positionQueue.requested = null;
     const previousPositionSettled = waitForPetPositionWrites();
-    const T = window.__TAURI__;
-    if (!T || !T.window) {
+    if (!isTauriAvailable()) {
       stopPhysics(drag);
       return;
     }
-    previousPositionSettled.then(() => readPetDragContext(T))
+    previousPositionSettled.then(() => readPetDragContext())
       .then(({ win, position, size, monitor, monitors }) => {
         if (dragRef.current !== drag) return;
         drag.win = win;
@@ -977,7 +981,7 @@ export default function PetWindow({
   const resizeRef = useRef(null);
   const flushResizeScale = async (drag) => {
     if (drag.sending) return;
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) return;
     drag.sending = true;
     while (drag.pendingScale != null) {
@@ -1055,10 +1059,9 @@ export default function PetWindow({
     };
     resizeRef.current = drag;
 
-    const T = window.__TAURI__;
     const rect = characterSlotRef.current?.getBoundingClientRect();
     Promise.resolve()
-      .then(() => T?.window?.getCurrentWindow()?.innerPosition())
+      .then(() => getCurrentTauriWindow().innerPosition())
       .then((position) => petScreenAnchorFromRect({
         position,
         rect,
@@ -1114,7 +1117,7 @@ export default function PetWindow({
   };
 
   const hidePet = async () => {
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     try {
       if (core) await core.invoke('set_pet_enabled', { enabled: false });
     } finally {
@@ -1157,7 +1160,7 @@ export default function PetWindow({
     if (!text || cardUi.pendingRequestId) return;
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     dispatchCardUi({ type: 'submit-reply', requestId });
-    const core = window.__TAURI__ && window.__TAURI__.core;
+    const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) {
       dispatchCardUi({ type: 'reply-failed', requestId, error: '无法连接主窗口' });
       return;

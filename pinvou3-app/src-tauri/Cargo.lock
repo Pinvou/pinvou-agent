@@ -5749,6 +5749,7 @@ dependencies = [
  "codewhale-secrets",
  "codewhale-tui",
  "device_query",
+ "encoding_rs",
  "fastembed",
  "flate2",
  "futures-util",

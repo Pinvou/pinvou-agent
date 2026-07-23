@@ -8,70 +8,38 @@
 //! Engine 事件（MessageDelta / ToolCallStarted / ToolCallComplete / TurnComplete）
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
-// bridge + engine 公开给 tests/l1_dialog_harness.rs 用 (boot_with_workspace /
-// spawn_headless 是测试入口)。其余模块保持 private,仅 Tauri 内部使用。
-mod audit;
-pub mod bridge;
-mod commands;
-pub mod credential_store;
-mod detach;
-pub mod feedback;
+mod core;
+pub mod platform;
+mod app;
+pub mod features;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
-pub use commands::build_message_with_attachments;
-// CLI 连接器公共管道(飞书 / 企微 / 钉钉共享:起进程 / 扫码 / 事件 / 取消)。
-mod connector_cli;
-mod connector_visibility;
-mod dingtalk;
-pub mod engine;
-pub mod engine_pool;
-mod eip;
-mod feishu;
-mod wecom;
-pub mod file_ingest;
-mod file_watcher;
-mod harness;
-mod knowledge;
-pub mod llmapi_hub;
-mod local_vllm_setup;
-pub mod memory;
-mod monitor;
-mod microphone_permission;
-mod notifications;
-mod os;
-pub mod personas;
-mod pet_window;
-mod pinvou_review;
-mod process;
-mod remote_control;
-mod scheduled_executor;
-mod scheduled_tasks;
-mod selected_pet;
-pub mod super_permission;
-mod startup;
-mod telemetry;
-mod timing;
-mod ui_cache;
-mod updater;
-mod voice_asr;
-mod workflow_migrate;
-pub mod workflow_registry;
-mod workflow_runs;
-mod zhidao;
+pub use app::commands::attachments::build_message_with_attachments;
 
 use tauri::Manager;
 
-use crate::bridge::sessions::SessionStore;
-use crate::engine_pool::EnginePool;
-use crate::monitor::MonitorState;
-use crate::remote_control::RemoteControlManager;
+use crate::app::commands;
+use crate::features::{
+    assistant::{
+        engine_pool::EnginePool, platform::bridge,
+    },
+    connectors::{connector_cli, eip, zhidao},
+    files::file_watcher,
+    knowledge,
+    monitor::MonitorState,
+    pet::{pet_window, selected_pet},
+    remote_control::RemoteControlManager,
+    scheduled::tasks as scheduled_tasks,
+    sessions::SessionStore,
+};
+use crate::platform::{notifications, startup, telemetry};
 
 /// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
 /// 要在副本里 `npm run build` 写盘,而随 deb 的 resource_dir 是只读安装目录,故首次启动复制一份)。
 /// 已就位则跳过；用「临时目录 + 原子 rename」防半截复制留下残缺模板。失败只警告——网页类差事
 /// 不可用,但不连累其余工作流。
 fn seed_web_template(src: Option<std::path::PathBuf>) {
-    let dst = crate::bridge::paths::web_template_dir();
+    let dst = crate::platform::paths::web_template_dir();
     if dst.join("package.json").exists() {
         return; // 已就位
     }
@@ -143,68 +111,13 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
     // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
-    // —— webkit2gtk / fcitx 兼容（Wayland 下 IM 协议挂）——
-    // 不得默认设置 WEBKIT_DISABLE_COMPOSITING_MODE：关闭合成后，透明桌伴窗口的
-    // 动画帧会在 WebKitGTK 软件渲染路径上留下未清理的透明残影。极少数
-    // NVIDIA/WebKitGTK 兼容异常机器仍可从外部显式设为 1，var_os 守门会保留。
-    ("GDK_BACKEND", "x11"),
-    ("GTK_IM_MODULE", "fcitx"),
-    ("QT_IM_MODULE", "fcitx"),
-    ("XMODIFIERS", "@im=fcitx"),
 ];
-
-const WEBKIT_RENDERING_OVERRIDE_KEYS: &[&str] = &[
-    "WEBKIT_DISABLE_COMPOSITING_MODE",
-    "WEBKIT_DISABLE_DMABUF_RENDERER",
-    "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
-    "WEBKIT_FORCE_DMABUF_RENDERER",
-    "WEBKIT_WEB_RENDER_DEVICE_FILE",
-];
-
-fn should_force_webkit_dmabuf_shm(
-    is_linux_arm64_nvidia: bool,
-    has_explicit_rendering_override: bool,
-) -> bool {
-    is_linux_arm64_nvidia && !has_explicit_rendering_override
-}
-
-fn configure_webkit_rendering_env() {
-    use std::env;
-
-    let has_explicit_rendering_override = WEBKIT_RENDERING_OVERRIDE_KEYS
-        .iter()
-        .any(|key| env::var_os(key).is_some());
-    let is_linux_arm64_nvidia = cfg!(all(target_os = "linux", target_arch = "aarch64"))
-        && std::path::Path::new("/proc/driver/nvidia/version").is_file();
-
-    if should_force_webkit_dmabuf_shm(
-        is_linux_arm64_nvidia,
-        has_explicit_rendering_override,
-    ) {
-        // GB10/NVIDIA + WebKitGTK 2.52 会在 DMA-BUF/GBM 路径调用
-        // DRM_IOCTL_MODE_CREATE_DUMB 并被驱动拒绝。FORCE_SHM 仅把 WebKit
-        // renderer buffer 传输改为共享内存，不关闭 compositing，因此透明
-        // 桌伴动画仍能正确清帧。显式外部配置始终优先。
-        env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
-    }
-}
 
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
 fn ensure_release_env() {
     use std::env;
-    // Windows 没有 Unix 的 HOME 环境变量,但本 app 大量代码(paths.rs::user_home_dir /
-    // file_ingest / bridge)用 std::env::var("HOME") 解析 `~/.pinvou3` 路径树。HOME 缺失时
-    // user_home_dir() 退回 "/tmp" → 在 Windows 上拼出非法路径 `/tmp\.pinvou3\sessions`,
-    // SessionStore::boot 直接 panic 闪退。这里在启动最早期(单线程,Tauri builder 之前)把
-    // HOME 补成 USERPROFILE,一处设置让所有 HOME 读取点在 Windows 生效。
-    #[cfg(windows)]
-    if env::var_os("HOME").is_none() {
-        if let Some(profile) = env::var_os("USERPROFILE") {
-            env::set_var("HOME", profile);
-        }
-    }
-    configure_webkit_rendering_env();
+    crate::platform::ui_cache::configure_runtime_environment();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
             env::set_var(k, v);
@@ -217,13 +130,13 @@ fn ensure_release_env() {
     // 故把 `~/.pinvou3/bundle/skills/{eip,zhidao}/bin` 前插进程 PATH,模型即可像 lark-cli 一样
     // 直接调用。目录此刻可能尚未解包,但 PATH 含不存在目录无害。
     {
-        let skills_dir = crate::bridge::paths::bundle_skills_dir();
+        let skills_dir = crate::platform::paths::bundle_skills_dir();
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = vec![
                 skills_dir.join("eip").join("bin"),
                 skills_dir.join("zhidao").join("bin"),
             ];
-            if let Some(connector_bin) = crate::bridge::paths::bundle_connector_bin_dir() {
+            if let Some(connector_bin) = crate::platform::paths::bundle_connector_bin_dir() {
                 dirs.push(connector_bin);
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
@@ -242,29 +155,6 @@ fn ensure_release_env() {
     }
 }
 
-#[cfg(test)]
-mod release_env_contract {
-    #[test]
-    fn arm64_nvidia_uses_shm_without_disabling_compositing() {
-        assert!(super::should_force_webkit_dmabuf_shm(true, false));
-        assert!(
-            !super::should_force_webkit_dmabuf_shm(true, true),
-            "用户显式配置的 WebKit 渲染策略必须优先"
-        );
-        assert!(!super::should_force_webkit_dmabuf_shm(false, false));
-    }
-
-    #[test]
-    fn hardware_compositing_is_not_disabled_by_default() {
-        assert!(
-            !super::RELEASE_ENV_DEFAULTS
-                .iter()
-                .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"),
-            "WebKit 合成模式只能由外部环境变量显式关闭，不能作为全局默认值"
-        );
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ensure_release_env();
@@ -272,7 +162,7 @@ pub fn run() {
     startup::mark("environment:ready");
     // 必须早于 Tauri Builder/WebView 创建：避免升级后 WebKit 复用旧 index.html，
     // 却在新包内找不到旧 CSS，退化成裸 HTML 页面。
-    ui_cache::migrate_before_webview();
+    crate::platform::ui_cache::migrate_before_webview();
     let initial_navigation_reported =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let builder = tauri::Builder::default()
@@ -391,7 +281,7 @@ pub fn run() {
             // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
             // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
             startup::mark("workflow_migrate:start");
-            if let Err(e) = crate::workflow_migrate::migrate_if_needed() {
+            if let Err(e) = crate::features::workflow::workflow_migrate::migrate_if_needed() {
                 eprintln!("[pinvou3-app] workflow migrate failed (will retry next boot): {e}");
                 startup::mark_with_detail("rust", "workflow_migrate:error", &e.to_string());
             }
@@ -419,8 +309,15 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
-            app.handle()
-                .manage(RemoteControlManager::new(app.handle().clone()));
+            let remote_control = RemoteControlManager::new_with_attachment_stager(
+                app.handle().clone(),
+                commands::attachments::stage_remote_attachment_source,
+            );
+            let remote_event_transport = remote_control.clone();
+            app.handle().manage(platform::app_events::AppEventBus::new(
+                move |event, payload| remote_event_transport.forward_local_event(event, payload),
+            ));
+            app.handle().manage(remote_control);
             // 匿名设备遥测：独立于 UI/Engine，失败只写日志；先 manage 再建 EnginePool，
             // 让每个 session forwarder 都能在 TurnStarted/TurnComplete 取到状态。
             match telemetry::TelemetryState::boot(env!("CARGO_PKG_VERSION")) {
@@ -443,7 +340,37 @@ pub fn run() {
                 SessionStore::boot().expect("session store boot fallback")
             });
             startup::mark("engine_pool:start");
-            match EnginePool::new(handle.clone(), store_for_engine.clone()) {
+            let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
+                std::sync::Arc::new(|app, session_id| {
+                    vec![
+                        std::sync::Arc::new(knowledge::KbSearchTool::new(
+                            app.clone(),
+                            session_id.to_string(),
+                        )),
+                        std::sync::Arc::new(knowledge::KbOpenSourceTool::new(
+                            app.clone(),
+                            session_id.to_string(),
+                        )),
+                    ]
+                });
+            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy = std::sync::Arc::new(|app| {
+                let mut tools = crate::features::marketplace::disabled_tool_names();
+                let kb_usable = app
+                    .try_state::<knowledge::KnowledgeService>()
+                    .map(|service| service.has_indexed_content() && service.semantic_ready())
+                    .unwrap_or(false);
+                if !kb_usable {
+                    tools.push("kb_search".to_string());
+                    tools.push("kb_open_source".to_string());
+                }
+                tools
+            });
+            match EnginePool::new_with_dependencies(
+                handle.clone(),
+                store_for_engine.clone(),
+                tool_factory,
+                tool_policy,
+            ) {
                 Ok(pool) => {
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
@@ -473,7 +400,7 @@ pub fn run() {
             // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
             // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
             startup::mark("disabled_skills:start");
-            crate::bridge::skill_marketplace::refresh_disabled_skills();
+            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -519,10 +446,10 @@ pub fn run() {
                     res.join("runtime").join("asr"),
                     res.join("resources").join("runtime").join("asr"),
                 ]
-                    .into_iter()
-                    .find(|d| d.join("sense-voice-main").exists())
+                .into_iter()
+                .find(|d| d.join("sense-voice-main").exists())
             }) {
-                voice_asr::set_bundled_engine_dir(asr_res);
+                features::voice::set_bundled_engine_dir(asr_res);
             }
 
             startup::mark("knowledge_service:start");
@@ -576,255 +503,257 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::chat,
-            startup::report_frontend_startup,
-            connector_cli::refresh_connector_auth_gates,
-            feishu::feishu_ensure_cli,
-            feishu::feishu_status,
-            feishu::feishu_connect_begin,
-            feishu::feishu_cancel,
-            feishu::feishu_logout,
-            feishu::feishu_apply_skills,
-            feishu::set_feishu_enabled,
-            feishu::feishu_skills_state,
-            wecom::wecom_ensure_cli,
-            wecom::wecom_status,
-            wecom::wecom_connect_begin,
-            wecom::wecom_cancel,
-            wecom::wecom_logout,
-            wecom::wecom_apply_skills,
-            wecom::set_wecom_enabled,
-            wecom::wecom_skills_state,
-            dingtalk::dingtalk_ensure_cli,
-            dingtalk::dingtalk_status,
-            dingtalk::dingtalk_connect_begin,
-            dingtalk::dingtalk_cancel,
-            dingtalk::dingtalk_logout,
-            dingtalk::dingtalk_apply_skills,
-            dingtalk::set_dingtalk_enabled,
-            dingtalk::dingtalk_skills_state,
-            eip::eip_status,
-            eip::eip_connect_begin,
-            eip::eip_cancel,
-            eip::eip_logout,
-            zhidao::zhidao_status,
-            zhidao::zhidao_connect_begin,
-            zhidao::zhidao_cancel,
-            zhidao::zhidao_logout,
-            commands::get_settings,
-            commands::submit_feedback,
-            commands::get_effective_model_config,
-            commands::update_settings,
-            commands::save_settings_and_restart,
-            commands::clear_session,
-            commands::get_monitor_snapshot,
-            commands::get_backend_status,
-            commands::ensure_llmapi_binding,
-            commands::login_llmapi_user,
-            commands::save_llmapi_user_session,
-            commands::get_llmapi_status,
-            commands::get_llmapi_models,
-            commands::set_llmapi_default_model,
-            commands::retry_llmapi_provisioning,
-            commands::set_llmapi_user_enabled,
-            commands::get_llmapi_admin_overview,
-            commands::discover_local_vllm,
-            local_vllm_setup::detect_local_vllm_setup,
-            local_vllm_setup::bootstrap_local_vllm,
-            local_vllm_setup::decline_local_vllm_setup,
-           commands::list_models,
-           commands::reveal_model_api_key,
-           commands::save_model,
-            commands::delete_model,
-            commands::set_active_model,
-            commands::set_session_model,
-            commands::get_session_model_id,
-            commands::test_model_connection,
-            commands::test_search_provider,
-            commands::transcribe_voice_audio,
-            microphone_permission::reset_microphone_permission,
-            voice_asr::voice_asr_status,
-            voice_asr::install_voice_asr,
-            voice_asr::cancel_voice_asr,
-            commands::list_sessions,
-            commands::create_session,
-            commands::load_session,
-            commands::delete_session,
-            commands::rename_session,
-            commands::set_session_pinned,
-            commands::list_archived_sessions,
-            commands::set_session_archived,
-            commands::get_session_timeline,
-            commands::get_session_stats,
-            scheduled_tasks::list_scheduled_tasks,
-            scheduled_tasks::read_scheduled_task,
-            scheduled_tasks::list_scheduled_task_runs,
-            scheduled_tasks::list_scheduled_runs,
-            scheduled_tasks::create_scheduled_task,
-            scheduled_tasks::update_scheduled_task,
-            scheduled_tasks::pause_scheduled_task,
-            scheduled_tasks::resume_scheduled_task,
-            scheduled_tasks::set_scheduled_task_pinned,
-            scheduled_tasks::delete_scheduled_task,
-            scheduled_tasks::run_scheduled_task_now,
-            scheduled_tasks::mark_scheduled_run_viewed,
-            scheduled_tasks::scheduled_task_chat_prompt,
-            commands::get_active_session,
-            commands::save_session_messages,
-            commands::save_session_artifacts,
-            commands::list_workspace_files,
-            commands::cancel_generation,
-            commands::list_shell_tasks,
-            commands::cancel_shell_task,
-            remote_control::remote_control_start,
-            remote_control::remote_control_stop,
-            remote_control::remote_control_status,
-            remote_control::remote_control_refresh_qr,
-            remote_control::remote_control_publish_user_message,
-            remote_control::remote_control_publish_event,
-            commands::set_disabled_connectors,
-            commands::get_disabled_connectors,
-            commands::get_memory_profile,
-            commands::update_memory_profile,
-            commands::clear_memory_profile,
-            commands::get_memory_overview,
-            commands::list_pending_memory,
-            commands::suggest_memory,
-            commands::confirm_pending_memory,
-            commands::ignore_pending_memory,
-            commands::never_pending_memory,
-            commands::list_recent_work_memory,
-            commands::upsert_recent_work_memory,
-            commands::archive_recent_work_memory,
-            commands::delete_memory_preference,
-            commands::update_memory_preference,
-            commands::update_work_context_memory,
-            commands::delete_work_context_memory,
-            commands::update_timed_memory,
-            commands::delete_timed_memory,
-            commands::edit_last_turn,
-            commands::read_artifact_text,
-            commands::write_artifact_text,
-            commands::list_deliverables,
-            commands::list_deliverable_index,
-            commands::artifact_info,
-            commands::render_artifact_visual,
-            commands::read_artifact_image_b64,
-            commands::read_artifact_thumbnail,
-            commands::open_in_system,
-            commands::open_containing_folder,
-            commands::reveal_session_folder,
-            commands::open_scheduled_task_folder,
-            commands::open_artifact_window,
-            detach::open_detached_window,
-            detach::begin_detach_drag,
-            pet_window::set_pet_enabled,
-            pet_window::get_pet_scale,
-            pet_window::set_pet_scale,
-            pet_window::set_pet_activity_visible,
-            pet_window::save_pet_position,
-            pet_window::save_pet_vertical_alignment,
-            pet_window::open_main_from_pet,
-            pet_window::take_pet_navigation,
-            pet_window::queue_pet_reply,
-            pet_window::take_pet_reply,
-            selected_pet::get_selected_pet,
-            selected_pet::set_selected_pet,
-            commands::open_external_url,
-            commands::ingest_file,
-            commands::detect_system_tools,
-            commands::save_paste_image,
-            commands::compact_now,
-            commands::get_mode_state,
-            commands::set_plan_mode_next,
-            commands::exit_plan_to_yolo,
-            commands::accept_plan,
-            commands::discard_plan,
-            commands::read_skill_body,
-            commands::list_skills_v2,
-            commands::read_skill_demo,
-            commands::start_skill_session,
-            commands::unbind_session_skill,
-            commands::list_workflows,
-            commands::start_workflow,
-            commands::kick_workflow,
-            commands::retry_workflow_role,
-            commands::get_role_prompt,
-            commands::get_role_outputs,
-            commands::get_role_logs,
-            commands::get_gate_report,
-            commands::save_project_config,
-            commands::save_agent_overrides,
-            commands::cancel_workflow_role,
-            commands::stop_workflow,
-            commands::approve_workflow_gate,
-            commands::reject_workflow_gate,
-            commands::get_workflow_state,
-            commands::find_resumable_run,
-            commands::get_session_active_skill,
-            commands::list_session_skill_bindings,
-            commands::submit_user_input,
-            commands::add_run_materials,
-            commands::cancel_user_input,
-            commands::restart_engine,
-            commands::summon_pinvou,
-            commands::save_session_pinvou_reviews,
-            commands::get_session_pinvou_reviews,
-            commands::get_super_permission_status,
-            commands::set_super_permission,
-            commands::list_personas,
-            commands::read_persona_body,
-            commands::equip_persona,
-            commands::unequip_persona,
-            commands::get_active_persona,
-            commands::create_persona,
-            commands::update_persona,
-            commands::delete_persona,
-            commands::save_session_persona_events,
-            commands::get_session_persona_events,
-            updater::get_app_version,
-            updater::check_for_update,
-            updater::download_update,
-            updater::install_update,
-            updater::restart_app,
-            updater::cancel_download,
-            updater::report_pending_update_result,
-            file_ingest::check_dependencies,
-            file_ingest::install_dependencies,
-            commands::list_marketplace_tools,
-            commands::install_marketplace_tool,
-            commands::get_marketplace_tool_auth_status,
-            commands::start_marketplace_tool_oauth_login,
-            commands::cancel_marketplace_tool_oauth_login,
-            commands::uninstall_marketplace_tool,
-            commands::detect_obsidian,
-            knowledge::kb_start_scan,
-            knowledge::kb_scan_status,
-            knowledge::kb_cancel_scan,
-            knowledge::kb_search,
-            knowledge::kb_stats,
-            knowledge::kb_type_counts,
-            knowledge::kb_collection_list,
-            knowledge::kb_collection_create,
-            knowledge::kb_collection_update,
-            knowledge::kb_collection_delete,
-            knowledge::kb_collection_add_sources,
-            knowledge::kb_index_status,
-            knowledge::kb_index_cancel,
-            knowledge::kb_documents,
-            knowledge::kb_remove_document,
-            knowledge::kb_embed_info,
-            knowledge::model_download::kb_model_status,
-            knowledge::model_download::kb_model_load_after_first_frame,
-            knowledge::model_download::kb_model_download,
-            knowledge::model_download::kb_model_cancel,
-            commands::session_mount_collection,
-            commands::session_unmount_collection,
-            commands::session_mounted_collection,
-            commands::list_marketplace_skills,
-            commands::install_marketplace_skill,
-            commands::import_skill_package,
-            commands::uninstall_marketplace_skill,
+            commands::chat::chat,
+            commands::startup::report_frontend_startup,
+            commands::connectors::refresh_connector_auth_gates,
+            commands::connectors::feishu_ensure_cli,
+            commands::connectors::feishu_status,
+            commands::connectors::feishu_connect_begin,
+            commands::connectors::feishu_cancel,
+            commands::connectors::feishu_logout,
+            commands::connectors::feishu_apply_skills,
+            commands::connectors::set_feishu_enabled,
+            commands::connectors::feishu_skills_state,
+            commands::connectors::wecom_ensure_cli,
+            commands::connectors::wecom_status,
+            commands::connectors::wecom_connect_begin,
+            commands::connectors::wecom_cancel,
+            commands::connectors::wecom_logout,
+            commands::connectors::wecom_apply_skills,
+            commands::connectors::set_wecom_enabled,
+            commands::connectors::wecom_skills_state,
+            commands::connectors::dingtalk_ensure_cli,
+            commands::connectors::dingtalk_status,
+            commands::connectors::dingtalk_connect_begin,
+            commands::connectors::dingtalk_cancel,
+            commands::connectors::dingtalk_logout,
+            commands::connectors::dingtalk_apply_skills,
+            commands::connectors::set_dingtalk_enabled,
+            commands::connectors::dingtalk_skills_state,
+            commands::connectors::eip_status,
+            commands::connectors::eip_connect_begin,
+            commands::connectors::eip_cancel,
+            commands::connectors::eip_logout,
+            commands::connectors::zhidao_status,
+            commands::connectors::zhidao_connect_begin,
+            commands::connectors::zhidao_cancel,
+            commands::connectors::zhidao_logout,
+            commands::settings::get_settings,
+            commands::runtime::get_platform_capabilities,
+            commands::settings::submit_feedback,
+            commands::settings::get_effective_model_config,
+            commands::settings::update_settings,
+            commands::settings::save_settings_and_restart,
+            commands::sessions::clear_session,
+            commands::monitor::get_monitor_snapshot,
+            commands::monitor::get_backend_status,
+            commands::llmapi::ensure_llmapi_binding,
+            commands::llmapi::login_llmapi_user,
+            commands::llmapi::save_llmapi_user_session,
+            commands::llmapi::get_llmapi_status,
+            commands::llmapi::get_llmapi_models,
+            commands::llmapi::set_llmapi_default_model,
+            commands::llmapi::retry_llmapi_provisioning,
+            commands::llmapi::set_llmapi_user_enabled,
+            commands::llmapi::get_llmapi_admin_overview,
+            commands::monitor::discover_local_vllm,
+            commands::local_llm::detect_local_vllm_setup,
+            commands::local_llm::bootstrap_local_vllm,
+            commands::local_llm::decline_local_vllm_setup,
+            commands::settings::list_models,
+            commands::settings::reveal_model_api_key,
+            commands::settings::save_model,
+            commands::settings::delete_model,
+            commands::settings::set_active_model,
+            commands::settings::set_session_model,
+            commands::settings::get_session_model_id,
+            commands::settings::test_model_connection,
+            commands::settings::test_search_provider,
+            commands::voice::transcribe_voice_audio,
+            commands::voice::reset_microphone_permission,
+            commands::voice::voice_asr_status,
+            commands::voice::install_voice_asr,
+            commands::voice::cancel_voice_asr,
+            commands::sessions::list_sessions,
+            commands::sessions::create_session,
+            commands::sessions::load_session,
+            commands::sessions::delete_session,
+            commands::sessions::rename_session,
+            commands::sessions::set_session_pinned,
+            commands::sessions::list_archived_sessions,
+            commands::sessions::set_session_archived,
+            commands::timeline::get_session_timeline,
+            commands::timeline::get_session_stats,
+            commands::scheduled::list_scheduled_tasks,
+            commands::scheduled::read_scheduled_task,
+            commands::scheduled::list_scheduled_task_runs,
+            commands::scheduled::list_scheduled_runs,
+            commands::scheduled::create_scheduled_task,
+            commands::scheduled::update_scheduled_task,
+            commands::scheduled::pause_scheduled_task,
+            commands::scheduled::resume_scheduled_task,
+            commands::scheduled::set_scheduled_task_pinned,
+            commands::scheduled::delete_scheduled_task,
+            commands::scheduled::run_scheduled_task_now,
+            commands::scheduled::mark_scheduled_run_viewed,
+            commands::scheduled::scheduled_task_chat_prompt,
+            commands::sessions::get_active_session,
+            commands::sessions::save_session_messages,
+            commands::sessions::save_session_artifacts,
+            commands::sessions::list_workspace_files,
+            commands::runtime::cancel_generation,
+            commands::runtime::list_shell_tasks,
+            commands::runtime::cancel_shell_task,
+            commands::remote_control::remote_control_start,
+            commands::remote_control::remote_control_stop,
+            commands::remote_control::remote_control_status,
+            commands::remote_control::remote_control_refresh_qr,
+            commands::remote_control::remote_control_publish_user_message,
+            commands::remote_control::remote_control_publish_event,
+            commands::connectors::set_disabled_connectors,
+            commands::connectors::get_disabled_connectors,
+            commands::memory::get_memory_profile,
+            commands::memory::update_memory_profile,
+            commands::memory::clear_memory_profile,
+            commands::memory::get_memory_overview,
+            commands::memory::list_pending_memory,
+            commands::memory::suggest_memory,
+            commands::memory::confirm_pending_memory,
+            commands::memory::ignore_pending_memory,
+            commands::memory::never_pending_memory,
+            commands::memory::list_recent_work_memory,
+            commands::memory::upsert_recent_work_memory,
+            commands::memory::archive_recent_work_memory,
+            commands::memory::delete_memory_preference,
+            commands::memory::update_memory_preference,
+            commands::memory::update_work_context_memory,
+            commands::memory::delete_work_context_memory,
+            commands::memory::update_timed_memory,
+            commands::memory::delete_timed_memory,
+            commands::memory::edit_last_turn,
+            commands::artifacts::read_artifact_text,
+            commands::artifacts::write_artifact_text,
+            commands::artifacts::list_deliverables,
+            commands::artifacts::list_deliverable_index,
+            commands::artifacts::artifact_info,
+            commands::artifacts::render_artifact_visual,
+            commands::artifacts::read_artifact_image_b64,
+            commands::artifacts::read_artifact_thumbnail,
+            commands::artifacts::open_in_system,
+            commands::artifacts::open_containing_folder,
+            commands::artifacts::reveal_session_folder,
+            commands::artifacts::open_scheduled_task_folder,
+            commands::artifacts::open_artifact_window,
+            commands::pet::open_detached_window,
+            commands::pet::begin_detach_drag,
+            commands::pet::set_pet_enabled,
+            commands::pet::get_pet_scale,
+            commands::pet::set_pet_scale,
+            commands::pet::set_pet_activity_visible,
+            commands::pet::save_pet_position,
+            commands::pet::save_pet_vertical_alignment,
+            commands::pet::open_main_from_pet,
+            commands::pet::take_pet_navigation,
+            commands::pet::queue_pet_reply,
+            commands::pet::take_pet_reply,
+            commands::pet::get_selected_pet,
+            commands::pet::set_selected_pet,
+            commands::artifacts::open_external_url,
+            commands::files::ingest_file,
+            commands::files::detect_system_tools,
+            commands::files::save_paste_image,
+            commands::interaction::compact_now,
+            commands::interaction::get_mode_state,
+            commands::interaction::set_plan_mode_next,
+            commands::interaction::exit_plan_to_yolo,
+            commands::interaction::accept_plan,
+            commands::interaction::discard_plan,
+            commands::interaction::read_skill_body,
+            commands::workflows::list_skills_v2,
+            commands::workflows::read_skill_demo,
+            commands::workflows::start_skill_session,
+            commands::workflows::unbind_session_skill,
+            commands::workflows::list_workflows,
+            commands::workflows::start_workflow,
+            commands::workflows::kick_workflow,
+            commands::workflows::retry_workflow_role,
+            commands::workflows::get_role_prompt,
+            commands::workflows::get_role_outputs,
+            commands::workflows::get_role_logs,
+            commands::workflows::get_gate_report,
+            commands::workflows::save_project_config,
+            commands::workflows::save_agent_overrides,
+            commands::workflows::cancel_workflow_role,
+            commands::workflows::stop_workflow,
+            commands::workflows::approve_workflow_gate,
+            commands::workflows::reject_workflow_gate,
+            commands::workflows::get_workflow_state,
+            commands::workflows::find_resumable_run,
+            commands::workflows::get_session_active_skill,
+            commands::workflows::list_session_skill_bindings,
+            commands::interaction::submit_user_input,
+            commands::interaction::add_run_materials,
+            commands::interaction::cancel_user_input,
+            commands::interaction::restart_engine,
+            commands::interaction::summon_pinvou,
+            commands::personas::save_session_pinvou_reviews,
+            commands::personas::get_session_pinvou_reviews,
+            commands::interaction::get_super_permission_status,
+            commands::interaction::set_super_permission,
+            commands::personas::list_personas,
+            commands::personas::read_persona_body,
+            commands::personas::equip_persona,
+            commands::personas::unequip_persona,
+            commands::personas::get_active_persona,
+            commands::personas::create_persona,
+            commands::personas::update_persona,
+            commands::personas::delete_persona,
+            commands::personas::save_session_persona_events,
+            commands::personas::get_session_persona_events,
+            commands::updater::get_app_version,
+            commands::updater::check_for_update,
+            commands::updater::download_update,
+            commands::updater::install_update,
+            commands::updater::restart_app,
+            commands::updater::cancel_download,
+            commands::updater::report_pending_update_result,
+            commands::dependencies::check_dependencies,
+            commands::dependencies::install_dependencies,
+            commands::marketplace::list_marketplace_tools,
+            commands::marketplace::install_marketplace_tool,
+            commands::marketplace::get_marketplace_tool_auth_status,
+            commands::marketplace::start_marketplace_tool_oauth_login,
+            commands::marketplace::cancel_marketplace_tool_oauth_login,
+            commands::marketplace::uninstall_marketplace_tool,
+            commands::artifacts::detect_obsidian,
+            commands::knowledge::kb_start_scan,
+            commands::knowledge::kb_scan_status,
+            commands::knowledge::kb_cancel_scan,
+            commands::knowledge::kb_search,
+            commands::knowledge::kb_stats,
+            commands::knowledge::kb_type_counts,
+            commands::knowledge::kb_collection_list,
+            commands::knowledge::kb_collection_create,
+            commands::knowledge::kb_collection_update,
+            commands::knowledge::kb_collection_delete,
+            commands::knowledge::kb_collection_add_sources,
+            commands::knowledge::kb_index_status,
+            commands::knowledge::kb_index_cancel,
+            commands::knowledge::kb_documents,
+            commands::knowledge::kb_remove_document,
+            commands::knowledge::kb_embed_info,
+            commands::knowledge::kb_model_status,
+            commands::knowledge::kb_model_load_after_first_frame,
+            commands::knowledge::kb_model_download,
+            commands::knowledge::kb_model_cancel,
+            commands::knowledge::session_mount_collection,
+            commands::knowledge::session_unmount_collection,
+            commands::knowledge::session_mounted_collection,
+            commands::marketplace::list_marketplace_skills,
+            commands::marketplace::install_marketplace_skill,
+            commands::marketplace::import_skill_package,
+            commands::marketplace::uninstall_marketplace_skill,
+            commands::files::verify_upload,
         ]);
 
     startup::mark("tauri:builder_configured");
@@ -908,6 +837,7 @@ mod blocklist_contract {
             "agent_eval",  // subagent 收结果
             "agent_close", // subagent 释放 session
             "kb_search",   // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
+            "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
         }
@@ -943,19 +873,26 @@ mod web_template_seed {
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
         assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"world");
         let meta = fs::symlink_metadata(dst.join("link")).unwrap();
-        assert!(meta.file_type().is_symlink(), "symlink 必须保留为 symlink,不能解引用");
+        assert!(
+            meta.file_type().is_symlink(),
+            "symlink 必须保留为 symlink,不能解引用"
+        );
         assert_eq!(
             fs::read_link(dst.join("link")).unwrap(),
             PathBuf::from("sub/b.txt"),
             "symlink target 不变"
         );
-        assert_eq!(fs::read(dst.join("link")).unwrap(), b"world", "跟随 symlink 仍读到内容");
+        assert_eq!(
+            fs::read(dst.join("link")).unwrap(),
+            b"world",
+            "跟随 symlink 仍读到内容"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn web_template_dir_named_web_template() {
-        assert!(crate::bridge::paths::web_template_dir().ends_with("web-template"));
+        assert!(crate::platform::paths::web_template_dir().ends_with("web-template"));
     }
 }

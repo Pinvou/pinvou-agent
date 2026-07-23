@@ -27,7 +27,7 @@ VC Runtime 保持独立文件。二进制由 Git LFS 管理。
 113 个 7-Zip/Poppler/Tesseract/ASR 文件的路径、大小和 SHA-256。staging 会先校验 ZIP，
 解压后再逐文件复核内部清单。
 
-主仓库 `pinvou3-app/src-tauri/resources/windows-runtime.lock.json` 再锁定：
+主仓库 `pinvou3-app/src-tauri/config/platforms/windows/runtime/x86_64.lock.json` 再锁定：
 
 - submodule URL、路径和 commit；
 - 私有 manifest 路径及 SHA-256；
@@ -38,16 +38,20 @@ VC Runtime 保持独立文件。二进制由 Git LFS 管理。
 ## 初始化和构建
 
 ```powershell
-git submodule update --init -- private-runtimes/windows
-git -C private-runtimes/windows lfs pull
 cd pinvou3-app
+npm run runtime:windows:init
 npm run runtime:windows:validate
 npm run runtime:windows:stage
 npm run build:msi
 ```
 
-`tauri-build-with-secrets.js` 在 Windows 的 `tauri build` / `tauri bundle` 前自动执行
-staging，并把生成的 Tauri config overlay 传给 CLI。
+私有 submodule 配置为 `update = none`，普通的递归 submodule 初始化只处理公共底座，
+Windows 构建机通过 `runtime:windows:init` 显式覆盖该策略并拉取 Git LFS 对象。
+
+`scripts/tauri/build.js` 是项目内 `tauri build` / `tauri bundle` 的统一入口：Windows
+构建前自动执行 staging，所有平台都会加载对应 config overlay，并在调用 Tauri CLI 前
+生成有效合并配置和安装包资源清单。不要直接运行 `npx tauri build/bundle`。
+基础 Tauri 配置的构建/打包钩子会拒绝未经过包装器的调用。
 
 迁移验证阶段可设置 `PINVOU3_WINDOWS_RUNTIME_ROOT` 指向相同 commit 的本地私有仓库；
 正式发布不得用它绕过主仓库锁定的 submodule。

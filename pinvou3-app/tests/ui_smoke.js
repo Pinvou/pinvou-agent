@@ -219,7 +219,7 @@ async function expand(page) {
 
   // ① 启动落草稿页(僵尸 run 不劫持)
   const st = await page.evaluate(() => {
-    const s = window.TauriBridge.getState();
+    const s = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']);
     return { activeSessionId: s.activeSessionId, wfActive: !!(s.workflow && s.workflow.run && s.workflow.run.active), wfSid: s.workflow && s.workflow.run && s.workflow.run.sessionId };
   });
   rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
@@ -235,8 +235,8 @@ async function expand(page) {
       available_models: ['deepseek-v4-flash'],
       default_model: 'deepseek-v4-flash',
     };
-    await window.TauriBridge.getLlmApiStatus();
-    await window.TauriBridge.getLlmApiModels();
+    await window.TauriBridge.llmapi.getLlmApiStatus();
+    await window.TauriBridge.llmapi.getLlmApiModels();
 
     window.__LLMAPI_STATUS__ = {
       backend_user_exists: false,
@@ -244,16 +244,16 @@ async function expand(page) {
       stale: true,
       provisioning_status: 'not_started',
     };
-    await window.TauriBridge.getLlmApiStatus();
-    const retainedAfterUnknown = window.TauriBridge.getState();
+    await window.TauriBridge.llmapi.getLlmApiStatus();
+    const retainedAfterUnknown = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']);
     const keptOnUnknown = retainedAfterUnknown.llmApiStatus
       && retainedAfterUnknown.llmApiStatus.backend_user_state === 'exists';
 
     window.__LLMAPI_STATUS_ERROR__ = true;
     window.__LLMAPI_MODELS_ERROR__ = true;
-    await window.TauriBridge.getLlmApiStatus().catch(() => {});
-    await window.TauriBridge.getLlmApiModels().catch(() => {});
-    const retained = window.TauriBridge.getState();
+    await window.TauriBridge.llmapi.getLlmApiStatus().catch(() => {});
+    await window.TauriBridge.llmapi.getLlmApiModels().catch(() => {});
+    const retained = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']);
     const keptExisting = retained.llmApiStatus && retained.llmApiStatus.backend_user_exists === true;
     const keptModels = retained.llmApiModels && retained.llmApiModels.default_model === 'deepseek-v4-flash';
 
@@ -265,8 +265,8 @@ async function expand(page) {
       provisioning_status: 'not_started',
       last_error_code: 'service_disabled',
     };
-    await window.TauriBridge.getLlmApiStatus();
-    const clearedWhenAuthoritative = window.TauriBridge.getState().llmApiModels === null;
+    await window.TauriBridge.llmapi.getLlmApiStatus();
+    const clearedWhenAuthoritative = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).llmApiModels === null;
     return { keptOnUnknown, keptExisting, keptModels, clearedWhenAuthoritative };
   });
   rec('LLM API 暂时失败保留账户和模型缓存，仅明确不存在或禁用时清理',
@@ -329,7 +329,7 @@ async function expand(page) {
   });
   await sleep(700);
   const stopped = await page.evaluate(() => ({
-    status: window.TauriBridge.getState().workflow.run.status,
+    status: window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).workflow.run.status,
     sessionId: window.__STOP_WORKFLOW_ARGS__ && window.__STOP_WORKFLOW_ARGS__.sessionId,
     brief: (document.querySelector('textarea') || {}).value || '',
   }));
@@ -344,7 +344,7 @@ async function expand(page) {
         roles: { taizi: { name: '太子', status: 'running' }, zhongshu: { name: '中书', status: 'reviewing' } },
       } });
     }
-    const run = window.TauriBridge.getState().workflow.run;
+    const run = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).workflow.run;
     return { status: run.status, taizi: run.agents.taizi.status, zhongshu: run.agents.zhongshu.status };
   });
   rec(
@@ -361,7 +361,7 @@ async function expand(page) {
     window.__KICK_WORKFLOW_ERROR__ = true;
     let error = '';
     try {
-      await window.TauriBridge.startWorkflowTask('sansheng_liubu', { user_request_raw: '测试启动失败' });
+      await window.TauriBridge.workflow.startWorkflowTask('sansheng_liubu', { user_request_raw: '测试启动失败' });
     } catch (e) {
       error = String((e && e.message) || e);
     }
@@ -393,7 +393,7 @@ async function expand(page) {
         roles: { taizi: { name: '太子', status: 'failed', error: '模型服务鉴权失败：HTTP 401 authorization failed' } },
       } });
     }
-    const run = window.TauriBridge.getState().workflow.run;
+    const run = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).workflow.run;
     return {
       status: run.status,
       agentError: run.agents.taizi && run.agents.taizi.error,
@@ -411,7 +411,7 @@ async function expand(page) {
 
   // ①f 失败角色详情必须同时展示权威 error 和可读的结构化运行日志。
   const failureDiagnostics = await page.evaluate(async () => {
-    window.TauriBridge.selectWorkflowRole('taizi');
+    window.TauriBridge.workflow.selectWorkflowRole('taizi');
     await new Promise(resolve => setTimeout(resolve, 100));
     return {
       reason: (document.querySelector('[data-testid="workflow-failure-reason"]') || {}).textContent || '',
@@ -429,7 +429,7 @@ async function expand(page) {
       && failureDiagnostics.body.includes('重试: 3/3'),
     JSON.stringify(failureDiagnostics),
   );
-  await page.evaluate(() => window.TauriBridge.closeWorkflowDrawer()); await sleep(100);
+  await page.evaluate(() => window.TauriBridge.workflow.closeWorkflowDrawer()); await sleep(100);
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
@@ -457,10 +457,10 @@ async function expand(page) {
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
   const restored = await page.evaluate(() => {
     const text = document.body.innerText;
-    const artifactPaths = window.TauriBridge.getState().chatItems
+    const artifactPaths = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems
       .filter(item => item.type === 'artifact_card')
       .map(item => item.path);
-    const restoredShellCards = window.TauriBridge.getState().chatItems.filter(item =>
+    const restoredShellCards = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.filter(item =>
       item.type === 'tool' && item.name === 'exec_shell' && item.args && item.args.command === 'history-shell');
     return {
       history: text.includes('整理纪要'),
@@ -490,7 +490,7 @@ async function expand(page) {
   });
   await sleep(200);
   const liveShell = await page.evaluate(() => {
-    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'live-shell');
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'live-shell');
     return {
       running: item && item.state === 'running',
       output: item && item.output,
@@ -508,7 +508,7 @@ async function expand(page) {
   });
   await sleep(100);
   const liveShellWait = await page.evaluate(() => {
-    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'live-shell-wait');
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'live-shell-wait');
     return {
       running: item && item.state === 'running',
       output: item && item.output,
@@ -530,7 +530,7 @@ async function expand(page) {
   });
   await sleep(100);
   const splitTerminal = await page.evaluate(() => {
-    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'split-terminal');
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal');
     return item && item.output;
   });
   rec('terminal parser preserves CRLF and ANSI state across live chunks',
@@ -547,7 +547,7 @@ async function expand(page) {
     await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'m' });
   });
   const splitTerminalStderr = await page.evaluate(() => {
-    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'split-terminal-stderr');
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal-stderr');
     return item && item.output;
   });
   rec('terminal parser preserves stderr ANSI state across live chunks',
@@ -568,7 +568,7 @@ async function expand(page) {
   });
   await sleep(150);
   const backgroundShell = await page.evaluate(() => {
-    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'background-shell');
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
     const button = document.querySelector('[data-testid="cancel-shell-task"][data-shell-task-id="shell-bg-1"]');
     if (button) button.click();
     return {
@@ -595,7 +595,7 @@ async function expand(page) {
     }});
   });
   const backgroundKilled = await page.evaluate(() => {
-    const item = window.TauriBridge.getState().chatItems.find(item => item.toolId === 'background-shell');
+    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
     return {
       terminal: item && item.state === 'failed' && item.shellStatus === 'Killed' && item.background === false,
       output: item && item.output,
@@ -615,7 +615,7 @@ async function expand(page) {
     await emit('chat:tool_start', { session_id:'s1', id:'live-mcp', name:'mcp_gongwen_make_gongwen', args:{} });
     await emit('chat:tool_end', { session_id:'s1', id:'live-mcp', success:true, output:'{"path":"live-report.docx"}' });
   });
-  const liveArtifacts = await page.evaluate(() => window.TauriBridge.getState().artifacts.map(item => item.path));
+  const liveArtifacts = await page.evaluate(() => window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).artifacts.map(item => item.path));
   rec('③b 实时 tool_end 不跟踪 shell path、保留 MCP 产物', liveArtifacts.includes('live-report.docx') && !liveArtifacts.includes('live-validator-fake.html'), JSON.stringify(liveArtifacts));
 
   // ④ 后端 pending 事件必须直达 React 候选卡；三个决策按钮必须调用各自命令。
@@ -669,13 +669,13 @@ async function expand(page) {
   });
   await sleep(700);
   const shellRunning = await page.evaluate(() => {
-    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    const item=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
     return item && {state:item.state,taskId:item.taskId,output:item.output};
   });
-  await page.evaluate(() => window.TauriBridge.cancelShellTask('s1','task-live-1'));
+  await page.evaluate(() => window.TauriBridge.chat.cancelShellTask('s1','task-live-1'));
   await sleep(700);
   const shellCancelled = await page.evaluate(() => {
-    const item=window.TauriBridge.getState().chatItems.find(it=>it.taskId==='task-live-1');
+    const item=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
     return {item:item&&{state:item.state,exitCode:item.exitCode,output:item.output},args:window.__CANCEL_SHELL_ARGS__};
   });
   rec('③c Shell 实时 tail、省略标记、task_id 取消与退出码',
@@ -702,7 +702,7 @@ async function expand(page) {
   });
   await sleep(700);
   const ambiguousBeforeEnd = await page.evaluate(() => {
-    const items=window.TauriBridge.getState().chatItems;
+    const items=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems;
     return ['dup-tool-a','dup-tool-b'].map(id => {
       const item=items.find(it=>it.toolId===id); return item && item.taskId;
     });
@@ -716,7 +716,7 @@ async function expand(page) {
   });
   await sleep(500);
   const shellIdentity = await page.evaluate(() => {
-    const items=window.TauriBridge.getState().chatItems;
+    const items=window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).chatItems;
     const a=items.filter(it=>it.taskId==='task-dup-a');
     const b=items.filter(it=>it.taskId==='task-dup-b');
     const done=items.find(it=>it.taskId==='task-detached-done');
@@ -731,7 +731,7 @@ async function expand(page) {
 
   const unchangedPollNotifications = await page.evaluate(async () => {
     let count=0;
-    const unsubscribe=window.TauriBridge.subscribe(() => { count+=1; });
+    const unsubscribe=window.TauriBridge.state.subscribe('chat', () => { count+=1; });
     await new Promise(resolve=>setTimeout(resolve,650));
     unsubscribe();
     return count;
@@ -755,7 +755,7 @@ async function expand(page) {
   await page.evaluate(() => { window.__CANCEL_SHELL_ERROR__=false; });
 
   // ⑤ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
-  await page.evaluate(() => window.TauriBridge.summonPinvou('/home/x/会议纪要.md'));
+  await page.evaluate(() => window.TauriBridge.interaction.summonPinvou('/home/x/会议纪要.md'));
   await sleep(900);
   const modal = await page.evaluate(() => {
     const txt = document.body.innerText;
@@ -830,7 +830,7 @@ async function expand(page) {
 
   // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });
-  await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
+  await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
   await sleep(300);
   const startingSetup = await page.evaluate(() => document.body.innerText.includes('启用本地大模型'));
   rec('⑥ MegaCube 引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
@@ -843,7 +843,7 @@ async function expand(page) {
   });
   await sleep(3300);
   const timedOutSetup = await page.evaluate(() => {
-    const setup = window.TauriBridge.getState().vllmSetup || {};
+    const setup = window.TauriBridge.state.getMany(['chat', 'workflow', 'llmapi', 'vllm']).vllmSetup || {};
     return {
       popup: document.body.innerText.includes('启用本地大模型'),
       state: setup.engine_state,
@@ -857,7 +857,7 @@ async function expand(page) {
     window.__VLLM_STATE__ = 'stopped';
   });
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
-  await page.evaluate(() => window.TauriBridge.detectLocalVllmSetup());
+  await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
   await sleep(500);
   const setup = await page.evaluate(() => {
     const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());

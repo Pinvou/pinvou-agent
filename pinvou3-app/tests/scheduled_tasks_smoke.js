@@ -308,15 +308,15 @@ async function clickExactText(page, text) {
   await page.waitForFunction(() => window.TauriBridge && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
   await sleep(1200);
 
-  await page.evaluate(() => window.TauriBridge.sendMessage('普通聊天 JSON 回归测试'));
+  await page.evaluate(() => window.TauriBridge.chat.sendMessage('普通聊天 JSON 回归测试'));
   await page.waitForFunction(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     return invokes.some(x => x.cmd === 'chat') && state && state.busy === false;
   }, { timeout: 10000 });
   await sleep(200);
   const unrelatedJsonState = await page.evaluate(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     return {
       hasDraftState: !!(state && state.scheduledTaskDraft),
       confirmVisible: !!document.querySelector('[data-testid="scheduled-task-draft-card"]')
@@ -383,9 +383,9 @@ async function clickExactText(page, text) {
       target.click();
       return;
     }
-    if (window.TauriBridge && window.TauriBridge.selectScheduledTask) {
-      window.TauriBridge.selectScheduledTask('task-1');
-      if (window.TauriBridge.refreshScheduledTaskData) window.TauriBridge.refreshScheduledTaskData(20);
+    if (window.TauriBridge && window.TauriBridge.scheduled.selectScheduledTask) {
+      window.TauriBridge.scheduled.selectScheduledTask('task-1');
+      if (window.TauriBridge.scheduled.refreshScheduledTaskData) window.TauriBridge.scheduled.refreshScheduledTaskData(20);
       return;
     }
     throw new Error('missing created daily brief task row');
@@ -456,7 +456,7 @@ async function clickExactText(page, text) {
     count: document.querySelectorAll('button[data-testid^="scheduled-template-"]').length,
     hasDailyBrief: !!document.querySelector('[data-testid="scheduled-template-daily-brief"]')
   }));
-  await page.evaluate(() => window.TauriBridge.loadScheduledTaskRecentRuns());
+  await page.evaluate(() => window.TauriBridge.scheduled.loadScheduledTaskRecentRuns());
   await page.waitForFunction(() => document.body.innerText.includes('定时任务记录'), { timeout: 10000 });
   await page.waitForSelector('[data-testid="scheduled-run-sidebar-item"]', { timeout: 10000 });
   await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
@@ -535,9 +535,9 @@ async function clickExactText(page, text) {
       target.click();
       return;
     }
-    if (window.TauriBridge && window.TauriBridge.selectScheduledTask) {
-      window.TauriBridge.selectScheduledTask('task-1');
-      if (window.TauriBridge.refreshScheduledTaskData) window.TauriBridge.refreshScheduledTaskData(20);
+    if (window.TauriBridge && window.TauriBridge.scheduled.selectScheduledTask) {
+      window.TauriBridge.scheduled.selectScheduledTask('task-1');
+      if (window.TauriBridge.scheduled.refreshScheduledTaskData) window.TauriBridge.scheduled.refreshScheduledTaskData(20);
       return;
     }
     throw new Error('missing created daily brief task row');
@@ -640,7 +640,7 @@ async function clickExactText(page, text) {
   await page.click('button[data-testid="scheduled-run-row"]');
   await sleep(300);
   const failedRunOpenState = await page.evaluate(() => {
-    const state = window.TauriBridge.getState();
+    const state = window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']);
     return {
       stayedInScheduled: !!document.querySelector('[data-testid="scheduled-page"]'),
       route: document.querySelector('[data-testid="app-root"]') && document.querySelector('[data-testid="app-root"]').dataset.currentView,
@@ -658,7 +658,7 @@ async function clickExactText(page, text) {
   await page.click('button[data-testid="scheduled-run-row"]');
   await page.waitForSelector('[data-testid="scheduled-run-back"]', { timeout: 10000 });
   const runChatState = await page.evaluate(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     return {
       inChatView: !document.querySelector('[data-testid="scheduled-page"]'),
       route: document.querySelector('[data-testid="app-root"]') && document.querySelector('[data-testid="app-root"]').dataset.currentView,
@@ -688,7 +688,7 @@ async function clickExactText(page, text) {
   });
   await clickExactText(page, '重新发送');
   await page.waitForFunction(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     return state.busy === false && document.body.innerText.includes('Edited brief rerun complete');
   }, { timeout: 10000 });
   const editResendState = await page.evaluate(() => {
@@ -710,7 +710,7 @@ async function clickExactText(page, text) {
       title && title.value === '编辑后的每日早报';
   }, { timeout: 10000 });
   const runReturnState = await page.evaluate(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     const settings = document.querySelector('[data-testid="scheduled-detail-settings"]');
     return {
       scheduledVisible: !!document.querySelector('[data-testid="scheduled-page"]'),
@@ -823,7 +823,7 @@ async function clickExactText(page, text) {
   });
   await page.waitForSelector('[data-testid="scheduled-run-back"]', { timeout: 10000 });
   await page.evaluate(() => {
-    const state = window.TauriBridge.getState();
+    const state = window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']);
     window.__scheduledTaskTest.emit('chat:delta', { session_id: state.activeSessionId, text: '运行中的实时内容' });
   });
   await page.waitForFunction(() => document.body.innerText.includes('运行中的实时内容'), { timeout: 10000 });
@@ -919,12 +919,12 @@ async function clickExactText(page, text) {
   const openChatClicked = true;
   // 新流程:点击只预填输入框,不自动发送 —— 先等引导词就位。
   await page.waitForFunction(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     return !!state.scheduledTaskPendingGuide;
   }, { timeout: 10000 });
   await sleep(500);
   const preSend = await page.evaluate(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     return {
       inChatView: !document.querySelector('[data-testid="scheduled-page"]'),
@@ -938,9 +938,9 @@ async function clickExactText(page, text) {
     };
   });
 
-  await page.evaluate(() => window.TauriBridge.sendMessage('我想创建一个定时任务：工作日每天早上 8 点半做 AI 招聘情报晨报'));
+  await page.evaluate(() => window.TauriBridge.chat.sendMessage('我想创建一个定时任务：工作日每天早上 8 点半做 AI 招聘情报晨报'));
   await page.waitForFunction(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const title = document.querySelector('[data-testid="scheduled-live-title"]');
     return state.scheduledTaskAutoOpenId &&
@@ -949,7 +949,7 @@ async function clickExactText(page, text) {
       title && title.value === 'AI 招聘情报晨报';
   }, { timeout: 10000 });
   const chatAutoCreateState = await page.evaluate(() => {
-    const state = window.TauriBridge && window.TauriBridge.getState ? window.TauriBridge.getState() : {};
+    const state = window.TauriBridge && window.TauriBridge.state ? window.TauriBridge.state.getMany(['chat', 'scheduled', 'sessions']) : {};
     const invokes = (window.__scheduledTaskTest && window.__scheduledTaskTest.invokes) || [];
     const chats = invokes.filter(x => x.cmd === 'chat');
     const create = invokes.find(x => x.cmd === 'create_scheduled_task');
@@ -1088,7 +1088,7 @@ async function clickExactText(page, text) {
     return { rrule: update && update.args.input.rrule };
   });
 
-  await page.evaluate(() => window.TauriBridge.createScheduledTask({
+  await page.evaluate(() => window.TauriBridge.scheduled.createScheduledTask({
     name: '五小时任务', prompt: '每五小时检查一次',
     rrule: 'FREQ=HOURLY;INTERVAL=5', model: '/wire-model', mode: 'agent', paused: false
   }));

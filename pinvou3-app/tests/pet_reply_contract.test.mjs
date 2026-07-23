@@ -5,8 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const bridge = readFileSync(path.join(here, '..', 'src', 'tauri-bridge.js'), 'utf8');
-const main = readFileSync(path.join(here, '..', 'src', 'main.jsx'), 'utf8');
+const bridge = readFileSync(path.join(here, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
+const chatBridge = readFileSync(
+  path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'chat.js'),
+  'utf8',
+);
+const bridgeImplementation = `${bridge}\n${chatBridge}`;
+const main = readFileSync(path.join(here, '..', 'src', 'app', 'main.jsx'), 'utf8');
 const petWindow = readFileSync(
   path.join(here, '..', 'src', 'features', 'pet', 'PetWindow.jsx'),
   'utf8',
@@ -16,15 +21,15 @@ const css = readFileSync(
   'utf8',
 );
 
-assert.match(bridge, /async function sendMessageToSession\(sessionId, text, meta\)/);
-assert.match(bridge, /await ensureSessionBufferLoaded\(sid\)/);
-assert.match(bridge, /if \(isBusyFor\(sid\)\)/);
-assert.match(bridge, /runSyncOnSession\(sid/);
-assert.match(bridge, /doSendFor\(sid, content, content, \[\]/);
+assert.match(bridgeImplementation, /async function sendMessageToSession\(sessionId, text, meta\)/);
+assert.match(bridgeImplementation, /await ensureSessionBufferLoaded\(sid\)/);
+assert.match(bridgeImplementation, /if \(isBusyFor\(sid\)\)/);
+assert.match(bridgeImplementation, /runSyncOnSession\(sid/);
+assert.match(bridgeImplementation, /doSendFor\(sid, content, content, \[\]/);
 assert.match(bridge, /sendMessageToSession:\s*sendMessageToSession/);
 assert.match(main, /listen\(['"]pet:reply_pending['"]/);
 assert.match(main, /invoke\(['"]take_pet_reply['"]\)/);
-assert.match(main, /bridge\.sendMessageToSession\(sid, text\)/);
+assert.match(main, /bridge\.chat\.sendMessageToSession\(sid, text\)/);
 assert.match(main, /result\.completion\.then/);
 assert.match(main, /pet:reply_accepted/);
 assert.match(main, /pet:reply_failed/);

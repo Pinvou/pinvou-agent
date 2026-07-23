@@ -1,5 +1,18 @@
-function requireWindowApi(T) {
-  const api = T && T.window;
+import {
+  availableTauriMonitors,
+  createPhysicalPosition,
+  currentTauriMonitor,
+  getCurrentTauriWindow,
+} from '../../platform/tauri/client.js';
+
+const nativeWindowAdapter = {
+  availableMonitors: availableTauriMonitors,
+  currentMonitor: currentTauriMonitor,
+  getCurrentWindow: getCurrentTauriWindow,
+};
+
+function requireWindowApi(adapter = nativeWindowAdapter) {
+  const api = adapter;
   if (!api || typeof api.getCurrentWindow !== 'function') {
     throw new Error('Tauri window.getCurrentWindow is unavailable');
   }
@@ -9,8 +22,8 @@ function requireWindowApi(T) {
   return api;
 }
 
-export async function readPetDragContext(T) {
-  const api = requireWindowApi(T);
+export async function readPetDragContext(adapter) {
+  const api = requireWindowApi(adapter);
   const win = api.getCurrentWindow();
   if (!win || typeof win.innerPosition !== 'function' || typeof win.innerSize !== 'function') {
     throw new Error('Tauri current window geometry API is unavailable');
@@ -430,16 +443,12 @@ export function releasePetDrag(state) {
   return { ...state, releasePending: true };
 }
 
-export function setPetWindowPosition(T, win, x, y) {
+export function setPetWindowPosition(win, x, y, positionFactory = createPhysicalPosition) {
   try {
-    const api = T && T.window;
-    if (!api || typeof api.PhysicalPosition !== 'function') {
-      throw new Error('Tauri window.PhysicalPosition is unavailable');
-    }
     if (!win || typeof win.setPosition !== 'function') {
       throw new Error('Tauri window.setPosition is unavailable');
     }
-    const position = new api.PhysicalPosition(Math.round(x), Math.round(y));
+    const position = positionFactory(Math.round(x), Math.round(y));
     return Promise.resolve(win.setPosition(position));
   } catch (error) {
     return Promise.reject(error);

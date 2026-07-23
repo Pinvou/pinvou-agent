@@ -97,8 +97,8 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
           panel.style.transform = 'none';
           panel.style.opacity = '1';
         }
-        if (bridge.available && bridge.readPersonaBody) {
-          bridge.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
+        if (bridge.available && bridge.personas.readPersonaBody) {
+          bridge.personas.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
         } else { setBody(''); }
       }, []);
       const tc = deptColor(card.dept);
@@ -123,7 +123,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
               <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
               {body===null
                 ? <div className="text-[14px] py-8 text-center" style={{ color:'#8E8E93' }}>{t.cpBodyLoading}</div>
-                : <div className="persona-body text-[14px] leading-relaxed" style={{ color: isDark?'#C7C7CC':'#1C1C1E' }} dangerouslySetInnerHTML={{ __html: bridge.renderMarkdown ? bridge.renderMarkdown(body) : body }} />}
+                : <div className="persona-body text-[14px] leading-relaxed" style={{ color: isDark?'#C7C7CC':'#1C1C1E' }} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
             </div>
             {/* 加持/取消 */}
             <div className="p-4 shrink-0" style={{ borderTop:'1px solid '+(isDark?'#38383A':'rgba(198,198,200,.5)') }}>
@@ -151,8 +151,8 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const [err, setErr] = useState('');
       // 编辑已有卡时, summary 不含 body, 拉一次完整正文
       useEffect(() => {
-        if (isEdit && !init.body && bridge.available && bridge.readPersonaBody) {
-          bridge.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
+        if (isEdit && !init.body && bridge.available && bridge.personas.readPersonaBody) {
+          bridge.personas.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
         }
       }, []);
       const tc = deptColor(dept);
@@ -164,7 +164,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
         setSaving(true); setErr('');
         var input = { name: name.trim(), dept: dept, emoji: emoji || '🃏', color: init.color || deptColor(dept), description: description.trim(), body: body };
         try {
-          var sum = isEdit ? await bridge.updatePersona(init.id, input) : await bridge.createPersona(input);
+          var sum = isEdit ? await bridge.personas.updatePersona(init.id, input) : await bridge.personas.createPersona(input);
           if (onSaved) onSaved(sum);
           onClose();
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
@@ -214,7 +214,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
-                <button onClick={()=>{ if(confirmDel){ bridge.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
+                <button onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
                   className="w-full rounded-[10px] py-3 text-[17px] transition-colors" style={{ background: isDark?'#000':'#fff', color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
@@ -277,7 +277,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const isDark = theme === 'dark';
       const pool = (bs && bs.personaPool) || { loadState: 'idle' };
       // 201 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
-      const list = (bridge.available && bridge.getPersonas) ? bridge.getPersonas() : [];
+      const list = (bridge.available && bridge.personas.getPersonas) ? bridge.personas.getPersonas() : [];
       const active = (bs && bs.activePersona) || null;
       // 加持目标 = 当前对话(equipPersona 注入到 state.activeSessionId)。让用户始终知道注入到哪。
       const target = (bs && bs.sessions && bs.activeSessionId) ? bs.sessions.find(s => s.id === bs.activeSessionId) : null;
@@ -292,7 +292,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const [myOnly, setMyOnly] = useState(!!initialMyOnly); // 「我的卡牌」facet(从存入确认窗"去查看"进来则默认开)
       const [confirmDelId, setConfirmDelId] = useState(null); // 卡上删除二次确认
 
-      useEffect(() => { if (bridge.available) bridge.loadPersonas(); }, []);
+      useEffect(() => { if (bridge.available) bridge.personas.loadPersonas(); }, []);
       useEffect(() => { setVisible(60); }, [query, activeDept, myOnly]);
       useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
 
@@ -315,14 +315,14 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       function resetFacets() { setActiveDept(ALL_DEPT); setQuery(''); setMyOnly(false); }
       function editCard(card, e){ if(e) e.stopPropagation(); setEditor({ initial: card }); }
       function doDelete(card, e){ if(e) e.stopPropagation(); setConfirmDelId(null);
-        Promise.resolve(bridge.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
+        Promise.resolve(bridge.personas.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
       function onMove(e){ const el=e.currentTarget; const r=el.getBoundingClientRect(); const px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
         el.style.transform=`perspective(900px) rotateX(${(0.5-py)*9}deg) rotateY(${(px-0.5)*11}deg) translateY(-3px)`;
         el.style.setProperty('--mx',(px*100)+'%'); el.style.setProperty('--my',(py*100)+'%'); }
       function onLeave(e){ e.currentTarget.style.transform=''; }
       function equip(card, e){ if(e) e.stopPropagation();
-        if (active && active.id===card.id) { bridge.unequipPersona(); setToast(t.cpToastUnequipped(personaText(card, t).name)); }
-        else { Promise.resolve(bridge.equipPersona(card.id)).then(s => { if (s) setToast(t.cpToastEquipped(targetTitle || t.cpCurrentChat, personaText(s, t).name)); }); } }
+        if (active && active.id===card.id) { bridge.personas.unequipPersona(); setToast(t.cpToastUnequipped(personaText(card, t).name)); }
+        else { Promise.resolve(bridge.personas.equipPersona(card.id)).then(s => { if (s) setToast(t.cpToastEquipped(targetTitle || t.cpCurrentChat, personaText(s, t).name)); }); } }
       function openDetail(card, e){ const r=e.currentTarget.getBoundingClientRect();
         setDetail({ card, rect:{ left:r.left, top:r.top, width:r.width, height:r.height } }); }
 

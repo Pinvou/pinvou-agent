@@ -189,10 +189,10 @@ Op::SyncSession {
 
 | 想动什么 | 改哪儿 |
 |---|---|
-| pinvou3 业务提示词（SKILL 路由、阶段规则、sudo、执行纪律） | `pinvou3-app/src-tauri/resources/bundle/instructions.md` |
+| pinvou3 业务提示词（SKILL 路由、阶段规则、sudo、执行纪律） | `pinvou3-app/src-tauri/resources/common/bundle/instructions.md` |
 | Plan/Yolo per-turn 提醒文案 | `pinvou3-app/src-tauri/src/bridge/mod.rs:530 reminder_for()` |
 | Skill 列表（要 AI 看见的） | 往 `~/.pinvou3/bundle/skills/` 加目录，每个带 `SKILL.md` |
-| 底座 BASE_PROMPT 本身 | 上游源文件 `DeepSeek-TUI/crates/tui/src/prompts/constitution.md`（v0.9 前为 base.md）；pinvou3 文案经 override 注入，内容在 `pinvou3-app/src-tauri/resources/bundle/base.md`（见 [`base-prompt-override-阶段2.md`](./base-prompt-override-阶段2.md)） |
+| 底座 BASE_PROMPT 本身 | 上游源文件 `DeepSeek-TUI/crates/tui/src/prompts/constitution.md`（v0.9 前为 base.md）；pinvou3 文案经 override 注入，内容在 `pinvou3-app/src-tauri/resources/common/bundle/base.md`（见 [`base-prompt-override-阶段2.md`](./base-prompt-override-阶段2.md)） |
 | 模式 prompt 子段（plan.md/yolo.md/agent.md） | `DeepSeek-TUI/crates/tui/src/prompts/modes/*.md` |
 | 13 层拼装逻辑 | `DeepSeek-TUI/crates/tui/src/prompts.rs:673` |
 | 查看 pinvou3 实际最终 prompt | `cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt` |

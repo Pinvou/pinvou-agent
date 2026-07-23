@@ -293,19 +293,19 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
       const monitorError = bs && bs.monitorError;
-      const monitorBridgeReady = !!(window.TauriBridge && typeof window.TauriBridge.startMonitorPolling === 'function');
+      const monitorBridgeReady = !!(window.TauriBridge?.monitor && typeof window.TauriBridge.monitor.startMonitorPolling === 'function');
       const loadingValue = !monitorBridgeReady ? '桥接未就绪' : (monitorError ? '读取失败' : '正在读取');
 
       // Start/stop polling when view mounts/unmounts
       useEffect(() => {
         const liveBridge = window.TauriBridge || bridge;
-        if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') {
-          liveBridge.startMonitorPolling();
+        if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') {
+          liveBridge.monitor.startMonitorPolling();
         } else {
           console.warn('[monitor] TauriBridge polling API unavailable');
         }
         return () => {
-          if (liveBridge && typeof liveBridge.stopMonitorPolling === 'function') liveBridge.stopMonitorPolling();
+          if (liveBridge?.monitor && typeof liveBridge.monitor.stopMonitorPolling === 'function') liveBridge.monitor.stopMonitorPolling();
         };
       }, []);
 
@@ -362,7 +362,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         return String(Math.round(n));
       };
       const doClear = useCallback(() => {
-        const reallyClear = () => { if (bridge.available && bridge.clearMonitorStats) bridge.clearMonitorStats(); };
+        const reallyClear = () => { if (bridge.available && bridge.monitor.clearMonitorStats) bridge.monitor.clearMonitorStats(); };
         const raw = vllmRaw;
         if (!raw || reduceMotionRef.current) { reallyClear(); return; }
         const from = { kv: raw.kvPct, ttftS: raw.ttftS, tps: raw.tps, gen: raw.gen || 0, prompt: raw.prompt || 0 };
@@ -538,7 +538,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                   <div className="flex-1 flex flex-col justify-between">
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-2">
-                        <img src="./brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
+                        <img src="/assets/brand/brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
                         <h2 className="text-xl font-bold">pinvou3-app</h2>
                       </div>
                     </div>

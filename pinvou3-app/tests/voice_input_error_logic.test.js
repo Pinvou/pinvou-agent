@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const bridgePath = path.join(__dirname, "..", "src", "tauri-bridge.js");
+const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "voice.js");
 const source = fs.readFileSync(bridgePath, "utf8");
 const start = source.indexOf("  function normalizeVoiceError(err, fallbackStage) {");
 const end = source.indexOf("\n  function stopMediaTracks(", start);
@@ -92,7 +92,7 @@ vm.runInContext(
   assert.match(chatSource, /const voiceBusy = voiceInput\.status === 'transcribing'/);
   assert.match(
     chatSource,
-    /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?bridge\.cancelVoiceInput\(\);[\s\S]*?return;/,
+    /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?bridge\.voice\.cancelVoiceInput\(\);[\s\S]*?return;/,
   );
 
   const startVoiceInputAt = source.indexOf("  async function startVoiceInput(");

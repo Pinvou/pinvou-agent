@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "generated_from": "cc600dc0072809415236b0deb2247d1adac6119c",
+  "rules": {
+    "common_platform_binaries": {},
+    "frontend_feature_imports_app": {},
+    "frontend_tauri_global_outside_platform": {
+      "pinvou3-app/src/index.html": 7
+    },
+    "frontend_user_agent_platform_detection": {},
+    "rust_cyclic_feature_dependencies": {},
+    "rust_feature_depends_on_app": {},
+    "rust_legacy_module_indirection": {},
+    "rust_platform_depends_on_upper_layer": {},
+    "rust_platform_details_outside_adapter": {},
+    "rust_target_cfg_outside_adapter": {},
+    "rust_tauri_commands_outside_app": {},
+    "rust_tauri_handler_outside_app": {}
+  },
+  "rust_feature_cycles": []
+}

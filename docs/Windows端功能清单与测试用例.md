@@ -5,12 +5,12 @@
 | 项目 | 内容 |
 |---|---|
 | 适用产品 | PINVOU Windows 桌面端 |
-| 当前版本 | `0.6.2` |
-| 代码基线 | 主仓库 `5ad6c33`；DeepSeek-TUI 子模块 `419964409`（上游基线 `v0.9.0`） |
-| 核对日期 | 2026-07-20 |
+| 当前版本 | `0.6.3` |
+| 代码基线 | 主仓库 `025-architecture-migration`；DeepSeek-TUI 子模块 `c32bb73f4605`（上游基线 `v0.9.0`） |
+| 核对日期 | 2026-07-23 |
 | 目标架构 | Windows x64（当前随包运行时、VC++ 检测和 NSIS 资源均为 x64） |
 | 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线 |
-| 主要代码依据 | `pinvou3-app/src/`、`pinvou3-app/src-tauri/src/`、`pinvou3-app/src-tauri/resources/windows/`、`pinvou3-app/tests/`、`DeepSeek-TUI/crates/tui/src/` |
+| 主要代码依据 | `pinvou3-app/src/`、`pinvou3-app/src-tauri/src/`、`pinvou3-app/src-tauri/packaging/windows/`、`pinvou3-app/tests/`、`DeepSeek-TUI/crates/tui/src/` |
 
 本文只记录当前仓库中已经存在的代码能力，不把规划文档中的设想直接视为已交付功能。功能状态定义如下：
 
@@ -109,7 +109,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | 编号 | 功能 | 状态 | 用户可见行为 |
 |---|---|---|---|
 | SHELL-01 | Windows 命令执行 | 基础能力 | 模型可通过 Shell 工具调用 CMD、PowerShell、WinGet 等命令 |
-| SHELL-02 | 前台实时 stdout/stderr | 可用 | 普通管道读取线程持续产生 `ToolCallOutput`，Tauri 转为 `chat:tool_delta`，工具卡实时刷新；流式 UTF-8 解码保留跨读取块字符 |
+| SHELL-02 | 前台实时 stdout/stderr | 可用 | Tauri 复用 session 级共享 `ShellManager`，把底座内部跟踪的前台任务完整快照转换为 `chat:tool_delta`；运行中快照尾部的半个 UTF-8 字符延迟到下一轮发送，避免中文跨读取块损坏 |
 | SHELL-03 | 长命令后台化 | 可用 | 预计超过约 5 秒的任务优先以后台任务启动并立即返回任务 ID |
 | SHELL-04 | 后台任务持续输出 | 可用 | 后台启动结果返回后，原工具卡继续接收 stdout/stderr；`chat:done` 不会直接清掉该任务卡 |
 | SHELL-05 | 后台任务等待/快照 | 可用 | `exec_shell_wait` 默认读取当前快照；明确等待时持续读取直到依赖满足或任务终止 |
@@ -118,7 +118,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | SHELL-08 | Windows 进程树终止 | 可用 | 使用 Windows 进程树/Job Object 相关策略清理子进程，避免只结束父 Shell 后下载器继续运行 |
 | SHELL-09 | 后台子进程不弹黑窗 | 可用 | Windows 子进程统一使用无控制台窗口创建标志 |
 | SHELL-10 | 跨事件终端解析 | 可用 | 按工具调用和 stdout/stderr 分别保存解析状态，正确拼接跨事件的 CRLF、刷新式进度和 ANSI 控制序列 |
-| SHELL-11 | 输出背压与终态收敛 | 可用 | 实时块在异步转发器中合并并接受事件通道背压，工具完成前 flush；后台终态再补齐去重后的输出尾部 |
+| SHELL-11 | 输出背压与终态收敛 | 可用 | 宿主观察器按快照差量合并每个轮询周期内的全部未发送内容，不消费模型侧 wait 游标；后台终态再补齐去重后的输出尾部 |
 | SHELL-12 | 普通管道模式 | 设计约束 | 当前不自动启用 PTY；只保证应用收到程序写入 stdout/stderr 管道的内容 |
 
 ### 3.4 附件、文件解析与制品
@@ -663,4 +663,4 @@ npm run build:nsis
 | 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `tests/voice_input_error_logic.test.js`、`voice_asr.rs` 内模型校验和状态测试 |
 | 设置、依赖、反馈 | `features/settings/SettingsView.jsx` | `commands.rs`、`file_ingest.rs`、`windows_dependency.rs`、`windows_permission.rs` | 设置/文件解析模块测试 |
 | Windows OTA | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `updater.rs`、`os/windows/windows_update.rs` | `tests/update_notice_logic.test.js`、`tests/update_notice_ui_smoke.js`、OTA 脚本验证 |
-| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`resources/windows/nsis/`、`scripts/prepare-windows-runtimes.ps1`、`scripts/tauri-build-with-secrets.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |
+| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`packaging/windows/nsis/`、`src-tauri/packaging/windows/runtime/scripts/stage-runtime.ps1`、`scripts/tauri/build.js` | `tests/builtin_secrets_build.test.js`、`scripts/validate-pet-assets.mjs`、NSIS 发版机人工/虚拟机验收 |
