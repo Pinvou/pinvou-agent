@@ -105,6 +105,7 @@ function injectSource() {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const TOOL_STORE_SEARCH_SELECTOR = 'input[placeholder="搜索连接器、skill、插件等"], input[placeholder="搜索 MCP、API 或工作流工具"]';
 async function clickExact(page, text) {
   const ok = await page.evaluate(t => {
     const els = [...document.querySelectorAll('button,span,div,a')].filter(el => (el.textContent || '').trim() === t);
@@ -115,7 +116,7 @@ async function clickExact(page, text) {
   if (!ok) throw new Error(`找不到可点击文本: ${text}`);
 }
 async function search(page, query) {
-  const input = await page.$('input[placeholder="搜索 MCP、API 或工作流工具"]');
+  const input = await page.$(TOOL_STORE_SEARCH_SELECTOR);
   if (!input) throw new Error('工具商店搜索框未渲染');
   await input.click();
   await page.keyboard.down('Control');
@@ -170,8 +171,8 @@ async function closeDetail(page, title) {
     el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
     return true;
   });
-  await page.waitForFunction(() => !!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]'), { timeout: 10000 }).catch(() => {});
-  const toolStoreLoaded = await page.evaluate((navClicked)=>navClicked&&document.body.innerText.includes('工具商店')&&!!document.querySelector('input[placeholder="搜索 MCP、API 或工作流工具"]'), navClicked);
+  await page.waitForFunction((selector) => !!document.querySelector(selector), { timeout: 10000 }, TOOL_STORE_SEARCH_SELECTOR).catch(() => {});
+  const toolStoreLoaded = await page.evaluate((navClicked, selector)=>navClicked&&document.body.innerText.includes('工具商店')&&!!document.querySelector(selector), navClicked, TOOL_STORE_SEARCH_SELECTOR);
   const navDebug = toolStoreLoaded ? '' : await page.evaluate(() => JSON.stringify({
     currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') || null,
     navs: [...document.querySelectorAll('[data-nav]')].map(node => ({ nav: node.getAttribute('data-nav'), text: (node.textContent || '').trim(), title: node.getAttribute('title') || '' })),
