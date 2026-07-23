@@ -45,10 +45,10 @@ function IosSearchField({
 function IosSegmentedControl({ value, onChange, segments, isDark, className = '', compact = false }) {
   return (
     <div
-      className={`inline-flex shrink-0 items-center gap-1 p-1 ${compact ? 'h-9 rounded-[14px]' : 'h-11 rounded-[15px]'} ${className}`}
+      className={`inline-flex shrink-0 items-center ${compact ? 'h-9 gap-1 rounded-[14px] p-1' : 'gap-3'} ${className}`}
       style={{
-        background: controlFill(isDark),
-        boxShadow: isDark ? 'inset 0 0 0 1px rgba(255,255,255,.06)' : 'inset 0 0 0 1px rgba(0,0,0,.06)',
+        background: compact ? controlFill(isDark) : 'transparent',
+        boxShadow: compact ? (isDark ? 'inset 0 0 0 1px rgba(255,255,255,.06)' : 'inset 0 0 0 1px rgba(0,0,0,.06)') : 'none',
       }}
     >
       {segments.map(({ key, label, Icon, title, count }) => {
@@ -59,20 +59,22 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
             type="button"
             title={title || label}
             onClick={() => onChange && onChange(key)}
-            className={`inline-flex items-center justify-center font-semibold transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px]' : 'h-9 gap-2 rounded-[11px] px-4 text-[15px]'}`}
-            style={selected
-              ? {
-                  background: isDark ? '#3A3A3C' : '#fff',
-                  color: isDark ? '#fff' : '#1D1D1F',
-                  boxShadow: isDark ? 'none' : '0 1px 2px rgba(0,0,0,.10)',
-                }
-              : { color: isDark ? 'rgba(235,235,245,.60)' : 'rgba(60,60,67,.60)' }}
-          >
+            className={`inline-flex items-center justify-center transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold' : 'h-9 gap-2 px-3 text-[24px] font-normal tracking-tight'}`}
+            style={compact
+              ? (selected
+                ? {
+                    background: isDark ? '#3A3A3C' : '#fff',
+                    color: isDark ? '#fff' : '#1D1D1F',
+                    boxShadow: isDark ? 'none' : '0 1px 2px rgba(0,0,0,.10)',
+                  }
+                : { color: isDark ? 'rgba(235,235,245,.60)' : 'rgba(60,60,67,.60)' })
+              : { color: selected ? (isDark ? 'rgba(255,255,255,.90)' : 'rgba(0,0,0,.90)') : (isDark ? 'rgba(235,235,245,.50)' : 'rgba(60,60,67,.42)') }}
+            >
             {Icon ? <Icon size={compact ? 14 : 15} /> : null}
             {label ? <span>{label}</span> : null}
-            {count != null ? (
+            {compact && count != null ? (
               <span
-                className="ml-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-center text-[11px] font-bold leading-none"
+                className={`${compact ? 'ml-0.5 min-w-5 px-1.5 py-0.5 text-[11px]' : 'ml-1 min-w-7 px-2 py-1 text-[11px]'} rounded-full text-center font-bold leading-none`}
                 style={{ background: isDark ? '#0A84FF' : '#007AFF', color: '#fff' }}
               >
                 {count}

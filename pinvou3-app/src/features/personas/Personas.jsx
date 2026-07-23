@@ -390,8 +390,8 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
             <div className="max-w-[1400px] mx-auto">
 
               {/* 顶部: iOS Tab + 操作 */}
-              <div className="border-b border-slate-200/50 px-2 dark:border-white/10">
-                <div className="flex flex-col gap-3 px-6 pb-6 md:px-10 lg:flex-row lg:items-center lg:justify-between">
+              <div className="border-b border-slate-200/50 dark:border-white/10">
+                <div className="flex flex-col gap-3 pb-6 lg:flex-row lg:items-center lg:justify-between">
                   <IosSegmentedControl
                     value={activeTab}
                     onChange={setActiveTab}
@@ -431,13 +431,13 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
               {activeTab === 'individual' ? (
                 <>
                 {/* AI 造卡推广 banner(搜索框下方,一直显示) */}
-                <div className="px-6 md:px-10 pt-3 pb-4">
+                <div className="pt-3 pb-4">
                   <AICardBanner onStart={onAICreate} isDark={isDark} t={t} />
                 </div>
 
                 {/* 分类药丸 + 左右滚动箭头 */}
-                <div className="relative px-6 md:px-10 pt-2 pb-4 group">
-                  {showL ? <button onClick={() => scrollPills(-220)} className="absolute left-4 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronLeft size={18} /></button> : null}
+                <div className="relative pt-2 pb-4 group">
+                  {showL ? <button onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronLeft size={18} /></button> : null}
                   <div ref={scrollRef} className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
                     {[ALL_DEPT].concat(DEPT_ORDER.filter(k => counts[k])).map(k => {
                       const isAll = k === ALL_DEPT; const on = isAll ? activeDept === ALL_DEPT : activeDept === k;
@@ -449,11 +449,11 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                       );
                     })}
                   </div>
-                  {showR ? <button onClick={() => scrollPills(220)} className="absolute right-4 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronRight size={18} /></button> : null}
+                  {showR ? <button onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronRight size={18} /></button> : null}
                 </div>
 
                 {/* 列表 */}
-                <div className="px-6 md:px-10 pb-12">
+                <div className="pb-12">
                   {pool.loadState === 'loading' ? (
                     <div className="py-24 text-center text-[15px]" style={{ color: '#8E8E93' }}>{t.cpLoading}</div>
                   ) : pool.loadState === 'error' ? (

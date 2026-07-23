@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Server, User, XIcon, Zap } from '../../components/icons.jsx';
-import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
+import { Briefcase, ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
@@ -42,13 +41,57 @@ const PlatformToolAction = (props) => {
   return <TsActionBtn {...props} />;
 };
 
+const THIRD_PARTY_TOOL_LOGOS = {
+  weather: 'assets/tool-icons/amap-user-v3.png',
+  iwencai: 'assets/tool-icons/iwencai-user-v3.png',
+  feishu: 'assets/tool-icons/wb-feishu.svg',
+  wecom: 'assets/tool-icons/wecom-user.png',
+  dingtalk: 'assets/tool-icons/dingtalk-user-v2.png',
+  qcc: 'assets/tool-icons/qcc-user.png',
+  'patsnap-search': 'assets/tool-icons/wb-patsnap-search.png',
+  obsidian: 'assets/tool-icons/obsidian.ico',
+  eip: 'assets/tool-icons/h3c-user-v2.png',
+  zhidao: 'assets/tool-icons/h3c-user-v2.png',
+  'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',
+  3: 'assets/tool-icons/wb-qq-mail.png',
+  4: 'assets/tool-icons/wb-ima-mcp.png',
+  5: 'assets/tool-icons/wb-lexiang.png',
+  6: 'assets/tool-icons/wb-tencent-docs.png',
+  7: 'assets/tool-icons/wb-tmeet.svg',
+  8: 'assets/tool-icons/wecom-user.png',
+  11: 'assets/tool-icons/wb-tapd.png',
+  12: 'assets/tool-icons/wb-cnb-api.svg',
+};
+
+const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/h3c-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-yuandian-mcp.svg']);
+const CROPPED_TILE_LOGOS = new Set(['assets/tool-icons/wb-yuandian-mcp.svg']);
+
+const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallbackSize = 30, fallbackStrokeWidth = 1.5, children }) => {
+  const Icon = tool.icon;
+  const isFullTileLogo = tool.logoSrc && FULL_TILE_LOGOS.has(tool.logoSrc);
+  const cropTileLogo = tool.logoSrc && CROPPED_TILE_LOGOS.has(tool.logoSrc);
+  return (
+    <div className={`relative flex items-center justify-center overflow-hidden ${tool.logoSrc ? 'bg-white text-slate-900 dark:bg-white' : `${tool.color} text-white`} ${className}`}>
+      {tool.logoSrc ? (
+        <img
+          src={tool.logoSrc}
+          alt=""
+          className={isFullTileLogo ? `h-full w-full rounded-[inherit] object-cover ${cropTileLogo ? 'scale-[1.22]' : ''}` : `object-contain ${imageClassName}`}
+          loading="lazy"
+        />
+      ) : (
+        <Icon size={fallbackSize} strokeWidth={fallbackStrokeWidth} />
+      )}
+      {children}
+    </div>
+  );
+};
+
 const oauthUiTimeoutResult = (serverName) => ({
   status: 'timeout',
   message: '未收到浏览器授权回调，请确认是否已完成授权，或稍后重新授权。',
   server_name: serverName,
 });
-
-const oauthServerNameForTool = (tool) => tool?.oauthServerName || tool?.serverName || null;
 
 const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
   let timeoutId = null;
@@ -757,6 +800,7 @@ const FEISHU_STEPS = [
         return {
           ...t,
           category: CAT_BY_ID[t.id] || t.category,
+          logoSrc: THIRD_PARTY_TOOL_LOGOS[t.backendId] || THIRD_PARTY_TOOL_LOGOS[t.id] || null,
           installed: t.feishuCli
             ? feishuConnected
             : t.wecomCli
@@ -810,6 +854,8 @@ const FEISHU_STEPS = [
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
       const PIN = ['government-writing', 'pptx', 'visualizer'];
       const filteredTools = sourceItems.filter(tool => {
+        const launched = !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
+        if (!launched) return false;
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
         if (installedOnly && !isCard) return matchesSearch && tool.installed;
@@ -892,7 +938,7 @@ const FEISHU_STEPS = [
         });
       }, []);
 
-      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成 OAuth 授权。') => {
+      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成元典 OAuth 授权。') => {
         setToolAuthStates(prev => ({
           ...prev,
           [backendId]: {
@@ -949,15 +995,11 @@ const FEISHU_STEPS = [
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
-        const oauthServerName = t?.oauthMcp ? oauthServerNameForTool(t) : null;
-        if (t?.oauthMcp && !oauthServerName) {
-          setAlert({ visible: true, loading: false, title: 'OAuth 配置错误', subtitle: `「${name}」未声明 MCP server name，无法发起授权。`, isInstall: false, isError: true });
-          return;
-        }
         const oauthRequestId = t?.oauthMcp ? beginOAuthRequest(backendId) : null;
         setBusyId(backendId);
         if (t?.oauthMcp) {
-          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
+          const loadingTitle = backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`;
+          setAlert({ loading: true, visible: false, title: loadingTitle, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
         } else if (hasConfig) {
           setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在校验 API Key 与远程工具…', isInstall: true, isError: false });
         } else if (hasPipDeps) {
@@ -987,12 +1029,12 @@ const FEISHU_STEPS = [
               .catch(err => ({
                 status: 'failed',
                 message: String(err).slice(0, 240),
-                server_name: oauthServerName,
+                server_name: backendId,
               }));
             setAlert({
               loading: true,
               visible: false,
-              title: `正在连接「${name}」`,
+              title: backendId === 'yuandian-mcp' ? '正在连接元典法律' : `正在连接「${name}」`,
               subtitle: '已打开浏览器，正在等待授权…',
               isInstall: true,
               isError: false,
@@ -1003,7 +1045,7 @@ const FEISHU_STEPS = [
             const loginResult = await withUiTimeout(
               loginPromise,
               OAUTH_UI_TIMEOUT_MS,
-              oauthUiTimeoutResult(oauthServerName)
+              oauthUiTimeoutResult('yuandian_mcp')
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
@@ -1391,7 +1433,7 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
-                message: `尚未连接「${name}」。`,
+                message: '尚未连接华宇元典法律数据。',
               },
             }));
           }
@@ -1519,43 +1561,53 @@ const FEISHU_STEPS = [
             </div>
             ), document.body);
           })()}
-          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar">
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
 
             {/* Header */}
-            <header className="bg-white/80 dark:bg-[#131314]/80 px-4 backdrop-blur-2xl transition-colors sm:px-6 lg:px-10">
-              <div className="w-full max-w-[1400px] mx-auto border-b border-slate-200/50 px-2 dark:border-white/10">
-                <div className="flex flex-col gap-3 pt-12 pb-6 lg:flex-row lg:items-center lg:justify-between">
-                <h1 className="shrink-0 whitespace-nowrap text-[32px] font-normal tracking-tight">工具商店</h1>
-                <div className={`flex min-w-0 flex-col gap-3 lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end ${installedOnly ? 'hidden' : ''}`}>
-                  <IosSearchField
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="搜索 MCP、API 或工作流工具"
-                    isDark={isDark}
-                    compact
-                    className="w-full min-w-[220px] lg:w-[360px] lg:flex-none"
-                  />
-                  {/* 已安装入口;进「我的工具」后隐藏 */}
-                  <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
-                    className="inline-flex h-9 shrink-0 items-center justify-center rounded-full bg-[#E9E9EB] px-4 text-[13px] font-semibold text-[#1D1D1F] shadow-sm transition-colors hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
-                    <User size={14} className="mr-2 opacity-70" />
-                    我的工具
-                  </button>
-                  <IosSegmentedControl
-                    value={viewMode}
-                    onChange={(next) => { setViewMode(next); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
-                    isDark={isDark}
-                    compact
-                    segments={[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }]}
-                  />
-                </div>
+            <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
+              <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
+                <div className="flex items-center justify-between gap-4">
+                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">工具商店</h1>
+                  <div className={`ml-8 flex min-w-0 flex-1 items-center justify-end gap-3 ${installedOnly ? 'hidden' : ''}`}>
+                    <div className="relative group min-w-0 max-w-[520px] flex-1">
+                      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8E8E93] group-focus-within:text-blue-500 transition-colors" size={18} />
+                      <input
+                        type="text"
+                        placeholder="搜索连接器、skill、插件等"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="h-9 w-full rounded-[14px] border-none bg-slate-100 pl-10 pr-4 text-[13px] font-normal outline-none transition-all placeholder:text-[#8E8E93] focus:ring-0 dark:bg-[rgba(118,118,128,.24)] text-slate-900 dark:text-white"
+                      />
+                    </div>
+                    <div className="flex shrink-0 items-center justify-end gap-3">
+                      <div className="flex h-9 shrink-0 items-center rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
+                        {[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }].map(seg => (
+                          <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
+                            className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                              viewMode === seg.key
+                                ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                                : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
+                            }`}>
+                            <seg.Icon size={14} className="mr-2 opacity-70" />
+                            {seg.label}
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
+                        className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                        <User size={14} className="mr-2 opacity-70" />
+                        <span>我的工具</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </header>
 
             {/* Main scrollable area */}
             <main className="flex-1">
-              <div className="max-w-[1400px] mx-auto px-6 md:px-10 py-8 space-y-12">
+              <div className="max-w-[1400px] mx-auto py-8 space-y-12">
+
                 {/* Featured carousel */}
                 {isCard && searchQuery === '' && activeCategory === 'all' && (
                   <section
@@ -1564,7 +1616,7 @@ const FEISHU_STEPS = [
                     onMouseLeave={() => setIsFeaturedHovered(false)}
                   >
                     <div className="flex items-end justify-between mb-5">
-                      <h2 className="text-2xl font-bold tracking-tight">精选连接器</h2>
+                      <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">精选连接器</h2>
                     </div>
 
                     <button
@@ -1640,9 +1692,7 @@ const FEISHU_STEPS = [
                             {featTool && (
                               <div className="absolute bottom-6 left-6 right-6 z-10">
                                 <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center gap-4 transition-transform group-hover:-translate-y-1">
-                                  <div className={`w-14 h-14 rounded-[14px] flex items-center justify-center flex-shrink-0 ${featTool.color} text-white shadow-inner`}>
-                                    <featTool.icon size={26} strokeWidth={1.5} />
-                                  </div>
+                                  <TsToolIcon tool={featTool} className="h-14 w-14 flex-shrink-0 rounded-[14px] shadow-inner" imageClassName="h-9 w-9" fallbackSize={26} />
                                   <div className="flex-1 min-w-0">
                                     <h4 className="text-base font-bold text-white truncate drop-shadow-sm">{featTool.title}</h4>
                                     <p className="text-xs text-white/70 truncate flex items-center gap-1.5">
@@ -1662,8 +1712,8 @@ const FEISHU_STEPS = [
 
                 {/* Category filter + tool list */}
                 <section>
-                  <div className={`flex flex-col gap-4 mb-6 ${isCard ? '' : 'pb-2'}`}>
-                    {(installedOnly || searchQuery || isCard) && (
+                  <div className={`flex flex-col gap-4 mb-6 ${!isCard && !installedOnly && !searching ? '' : 'sm:flex-row sm:items-end justify-between'} ${isCard ? '' : 'pb-5'}`}>
+                    {(isCard || installedOnly || searching) && (
                       <div className="flex items-center gap-3">
                         {installedOnly && (
                           <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
@@ -1671,25 +1721,25 @@ const FEISHU_STEPS = [
                             <ChevronLeft size={20} />
                           </button>
                         )}
-                        <h2 className="text-2xl font-bold tracking-tight">
+                        <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">
                           {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : '检索结果')}
                         </h2>
                       </div>
                     )}
                     {!isCard && !installedOnly && (
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
                         {tsCategories.map((cat) => {
                           const isActive = activeCategory === cat.id;
                           return (
                             <button
                               key={cat.id}
                               onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
-                              className="h-9 shrink-0 whitespace-nowrap rounded-full px-3.5 text-[13px] font-semibold transition-colors"
+                              className="h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors"
                               style={isActive
                                 ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
                                 : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}
                             >
-                              {cat.id === 'all' ? '全部工具' : cat.label}
+                              {cat.label}
                             </button>
                           );
                         })}
@@ -1699,7 +1749,7 @@ const FEISHU_STEPS = [
 
                   {filteredTools.length > 0 ? (
                     (isSkillTab && !searching) ? (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-7">
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 pb-7">
                       {filteredTools.map((tool) => {
                         const v = tool.todayVariant || 'fallback';
                         const bar = (
@@ -1772,12 +1822,11 @@ const FEISHU_STEPS = [
                           onClick={() => setSelectedTool(tool)}
                           className="group flex items-center gap-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#1C1C1E]/50 rounded-2xl px-3 -mx-3 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
                         >
-                          <div className={`relative w-16 h-16 rounded-[16px] flex items-center justify-center flex-shrink-0 ${tool.color} text-white shadow-sm group-hover:shadow transition-shadow border border-black/5 dark:border-white/5`}>
-                            <tool.icon size={30} strokeWidth={1.5} />
+                          <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30}>
                             {tool.internal && (
                               <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
                             )}
-                          </div>
+                          </TsToolIcon>
                           <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
                             <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                             <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
@@ -1844,10 +1893,9 @@ const FEISHU_STEPS = [
                   <div className="space-y-4">
                     {visibleInternalTools.map(t => (
                       <div key={t.id} className="flex items-start gap-4">
-                        <div className={`relative w-[56px] h-[56px] rounded-[14px] flex items-center justify-center flex-shrink-0 ${t.color} text-white shadow-sm`}>
-                          <t.icon size={26} strokeWidth={1.5} />
+                        <TsToolIcon tool={t} className="h-14 w-14 flex-shrink-0 rounded-[14px] border border-black/5 shadow-sm dark:border-white/5">
                           <span className="absolute -bottom-1.5 -right-1.5 text-[8px] leading-none font-black tracking-tight px-1 py-0.5 rounded-md bg-white text-[#E60012] ring-1 ring-black/5 shadow-sm">H3C</span>
-                        </div>
+                        </TsToolIcon>
                         <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-white/5 pb-4">
                           <div className="flex justify-between items-center gap-2 mb-1">
                             <h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{t.title}</h4>
@@ -1887,9 +1935,7 @@ const FEISHU_STEPS = [
 
                 <div className="overflow-y-auto p-6 sm:p-10 no-scrollbar pt-12">
                   <div className="flex flex-col sm:flex-row items-start gap-6 sm:gap-8 mb-8">
-                    <div className={`w-28 h-28 sm:w-32 sm:h-32 rounded-[28px] sm:rounded-[32px] flex items-center justify-center flex-shrink-0 ${selectedTool.color} shadow-md border border-black/5 dark:border-white/5`}>
-                      <selectedTool.icon size={56} strokeWidth={1.5} className="text-white" />
-                    </div>
+                    <TsToolIcon tool={selectedTool} className="h-28 w-28 flex-shrink-0 rounded-[28px] border border-black/5 shadow-md sm:h-32 sm:w-32 sm:rounded-[32px] dark:border-white/5" imageClassName="h-20 w-20 sm:h-24 sm:w-24" fallbackSize={56} />
                     <div className="flex-1">
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
