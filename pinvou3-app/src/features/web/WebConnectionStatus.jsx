@@ -2,15 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { isWeb, platform } from '../../shared/platform.js';
 
 const COPY = {
-  idle: ['正在准备 WebUI', '正在初始化浏览器连接…'],
+  idle: ['正在准备远程控制', '正在初始化浏览器连接…'],
   connecting: ['正在连接桌面端', '连接中断时会自动重试，尚未确认的操作不会重复执行。'],
   desktop_offline: ['桌面端当前离线', '保持此页面打开；桌面端恢复运行后会自动续接。'],
-  credentials_missing: ['链接不完整', '请在桌面端启用 Web 访问，然后粘贴生成的完整链接。'],
+  credentials_missing: ['链接不完整', '请在桌面端启用远程控制，然后粘贴生成的完整链接。'],
   denied: ['无法访问', '链接无效或已被刷新，请从桌面端复制新链接。'],
-  revoked: ['访问已停止', '桌面端已停止此 Web 访问链接。'],
-  replaced: ['已在另一浏览器接管', '同一链接只保留一个活动 WebUI；刷新本页可重新接管。'],
-  incompatible_desktop: ['桌面端版本不兼容', '当前 WebUI 需要更新的桌面端，请先升级桌面端后再重新打开链接。'],
-  error: ['连接异常', 'WebUI 会继续尝试恢复连接。'],
+  revoked: ['访问已停止', '桌面端已停止此远程控制链接。'],
+  replaced: ['已在另一浏览器接管', '同一远程控制链接只保留一个活动浏览器；刷新本页可重新接管。'],
+  incompatible_desktop: ['桌面端版本不兼容', '当前远程控制功能需要更新的桌面端，请先升级桌面端后再重新打开链接。'],
+  error: ['连接异常', '远程控制会继续尝试恢复连接。'],
 };
 
 const BLOCKING = new Set(['credentials_missing', 'denied', 'revoked', 'replaced', 'incompatible_desktop']);

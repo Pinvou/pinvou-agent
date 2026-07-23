@@ -723,26 +723,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const canManageWebAccess = can('webAccessAdmin');
       const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
       const [actionBusy, setActionBusy] = useState(false);
-      // 自定义 Relay 服务器：地址来自后端规范化结果，保存/恢复会触发链接刷新
-      const [relayInfo, setRelayInfo] = useState(null);
-      const [relayEditOpen, setRelayEditOpen] = useState(false);
-      const [relayDraft, setRelayDraft] = useState('');
-      const [relayBusy, setRelayBusy] = useState(false);
-      const [relayError, setRelayError] = useState(null);
       const webAccess = (bs && bs.webAccess) || {};
       const webAccessActive = !!webAccess.active;
       const statusKey = webAccess.starting ? 'starting' : (webAccess.status || 'idle');
       const statusMeta = {
-        idle: { label: '未开启', detail: '开启后会生成一个长期有效的 WebUI 链接。', color: '#8A9097' },
-        starting: { label: '正在开启', detail: '正在创建 WebUI 访问端点。', color: '#F9AB00' },
+        idle: { label: '未开启', detail: '开启后会生成一个长期有效的远程控制链接。', color: '#8A9097' },
+        starting: { label: '正在开启', detail: '正在创建远程控制连接。', color: '#F9AB00' },
         connecting_relay: { label: '正在连接', detail: '正在连接云端中继，请稍候。', color: '#F9AB00' },
         waiting_web_client: { label: '等待浏览器', detail: '在电脑或手机浏览器中粘贴下方链接即可。', color: '#F9AB00' },
-        web_client_connected: { label: '浏览器已连接', detail: 'WebUI 正在连接这台桌面端。', color: '#34A853' },
+        web_client_connected: { label: '浏览器已连接', detail: '远程控制已连接这台桌面端。', color: '#34A853' },
         web_client_disconnected: { label: '浏览器已断开', detail: '链接仍然有效，浏览器可随时重新连接。', color: '#F9AB00' },
-        revoked: { label: '链接已撤销', detail: '请重新开启 WebUI 访问。', color: '#EA4335' },
+        revoked: { label: '链接已撤销', detail: '请重新开启远程控制。', color: '#EA4335' },
         stopped: { label: '已停止', detail: '再次打开此面板即可重新开启。', color: '#8A9097' },
-        error: { label: '连接异常', detail: webAccess.last_error || 'WebUI 访问暂时不可用，请重试。', color: '#EA4335' },
-      }[statusKey] || { label: String(statusKey), detail: 'WebUI 访问状态已更新。', color: '#8A9097' };
+        error: { label: '连接异常', detail: webAccess.last_error || '远程控制暂时不可用，请重试。', color: '#EA4335' },
+      }[statusKey] || { label: String(statusKey), detail: '远程控制状态已更新。', color: '#8A9097' };
 
       useEffect(() => {
         if (!webAccessActive && bridge.available) {
@@ -781,45 +775,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         finally { setActionBusy(false); }
       }
 
-      useEffect(() => {
-        if (!bridge.available || !bridge.remoteControl.getWebRelaySettings) return undefined;
-        let alive = true;
-        bridge.remoteControl.getWebRelaySettings().then(info => { if (alive) setRelayInfo(info); }).catch(() => {});
-        return () => { alive = false; };
-      }, []);
-
-      async function handleSaveRelay() {
-        if (!bridge.available || !relayDraft.trim()) return;
-        setRelayBusy(true);
-        setRelayError(null);
-        try {
-          const info = await bridge.remoteControl.setWebRelayAddress(relayDraft.trim());
-          setRelayInfo(info);
-          setRelayEditOpen(false);
-          setRelayDraft('');
-        } catch (e) {
-          setRelayError(String(e));
-        } finally {
-          setRelayBusy(false);
-        }
-      }
-
-      async function handleResetRelay() {
-        if (!bridge.available) return;
-        setRelayBusy(true);
-        setRelayError(null);
-        try {
-          const info = await bridge.remoteControl.resetWebRelayAddress();
-          setRelayInfo(info);
-          setRelayEditOpen(false);
-          setRelayDraft('');
-        } catch (e) {
-          setRelayError(String(e));
-        } finally {
-          setRelayBusy(false);
-        }
-      }
-
       if (!canManageWebAccess) return null;
 
       return (
@@ -827,8 +782,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
-                <div className="text-[17px] font-semibold">WebUI 访问</div>
-                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>在电脑或手机浏览器中粘贴链接，打开与桌面端相同的完整界面。</div>
+                <div className="text-[17px] font-semibold">手机远程控制</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>在手机或电脑浏览器中打开链接，远程使用这台桌面端。</div>
               </div>
               <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
             </div>
@@ -855,48 +810,18 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 {webAccess.qr_data_url && (
                   <div className="flex flex-col items-center mb-4">
                     <div className="p-3 rounded-[16px] bg-white shadow-sm">
-                      <img src={webAccess.qr_data_url} alt="WebUI 访问二维码" className="block w-[220px] h-[220px]" />
+                      <img src={webAccess.qr_data_url} alt="远程控制二维码" className="block w-[220px] h-[220px]" />
                     </div>
                     <div className={`mt-2 text-[12px] ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>手机扫码，或在电脑浏览器中复制下方链接</div>
                   </div>
                 )}
-                <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>完整 WebUI 链接</div>
+                <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>远程控制链接</div>
                 <div className={`select-all break-all text-[12px] leading-relaxed ${isDark ? 'text-[#D2E3FC]' : 'text-[#174EA6]'}`}>{webAccess.url}</div>
-                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>二维码与链接完全相同，并会在桌面端重启后继续有效；刷新链接或停止访问会立即撤销旧链接。</div>
+                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。</div>
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
-                {webAccess.starting ? '正在生成 WebUI 链接…' : (webAccess.last_error || 'WebUI 访问尚未开启。')}
-              </div>
-            )}
-            {relayInfo && (
-              <div className={`mt-3 rounded-[14px] border px-4 py-3 ${isDark ? 'border-white/10 bg-white/[0.035]' : 'border-black/10 bg-[#F8F9FA]'}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className={`text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>Relay 服务器{relayInfo.custom ? '（自定义）' : '（默认）'}</div>
-                    <div className={`truncate text-[12px] mt-0.5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#3C4043]'}`}>{relayInfo.relay_url}</div>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {relayInfo.custom && <button disabled={relayBusy} onClick={handleResetRelay}
-                      className={`px-2.5 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>恢复默认</button>}
-                    <button disabled={relayBusy} onClick={() => { setRelayEditOpen(v => !v); setRelayDraft(''); setRelayError(null); }}
-                      className={`px-2.5 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>{relayEditOpen ? '收起' : '修改'}</button>
-                  </div>
-                </div>
-                {relayEditOpen && (
-                  <div className="mt-3">
-                    <input value={relayDraft} onChange={e => setRelayDraft(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSaveRelay(); }}
-                      placeholder="域名或 IP，如 relay.example.com 或 ws://192.168.1.20:8080"
-                      className={`w-full h-9 px-3 rounded-lg text-[12px] outline-none border ${isDark ? 'bg-black/20 border-white/10 text-[#E3E3E3] placeholder:text-[#6F7378]' : 'bg-white border-black/10 text-[#1F1F1F] placeholder:text-[#9AA0A6]'}`} />
-                    <div className={`mt-1.5 text-[11px] leading-relaxed ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>默认按 HTTPS/WSS 连接；服务器没有 TLS 证书时请显式写 ws:// 前缀。保存后立即刷新链接，旧链接与二维码作废。</div>
-                    {relayError && <div className="mt-1.5 text-[11px] text-[#EA4335] break-all">{relayError}</div>}
-                    <div className="mt-2 flex justify-end">
-                      <button disabled={relayBusy || !relayDraft.trim()} onClick={handleSaveRelay}
-                        className="px-3 py-1.5 rounded-lg text-[12px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">保存并刷新链接</button>
-                    </div>
-                  </div>
-                )}
+                {webAccess.starting ? '正在生成远程控制链接…' : (webAccess.last_error || '远程控制尚未开启。')}
               </div>
             )}
             {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
@@ -905,18 +830,18 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 disabled={!webAccess.url}
                 className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
               {webAccessActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
-                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新链接</button>
+                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
                 : <button disabled={actionBusy} onClick={handleRetryWebAccess}
                   className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">开启访问</button>}
             </div>
             {refreshConfirmOpen && (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
                 <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl ${isDark ? 'bg-[#2A2B2D]' : 'bg-white'}`}>
-                  <div className="text-[16px] font-semibold">刷新 WebUI 链接？</div>
-                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>刷新后，旧链接立即失效；当前浏览器连接也会断开，需要粘贴新链接重新打开。</div>
+                  <div className="text-[16px] font-semibold">刷新二维码？</div>
+                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。</div>
                   <div className="mt-5 flex justify-end gap-2">
                     <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] ${isDark ? 'bg-white/5 hover:bg-white/10' : 'bg-black/5 hover:bg-black/10'}`}>取消</button>
-                    <button disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? '正在刷新…' : '刷新链接'}</button>
+                    <button disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? '正在刷新…' : '刷新二维码'}</button>
                   </div>
                 </div>
               </div>

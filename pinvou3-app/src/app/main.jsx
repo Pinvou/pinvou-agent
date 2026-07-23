@@ -1839,7 +1839,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                   <>
                     <button
                       onClick={handleOpenRemoteControl}
-                      title="手机扫码连接"
+                      title="手机远程控制（扫码或链接）"
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
@@ -1879,7 +1879,7 @@ function defaultModelPresetForCapabilities(capabilities) {
                   <div className="flex items-center gap-1">
                     <button
                       onClick={handleOpenRemoteControl}
-                      title="手机扫码连接"
+                      title="手机远程控制（扫码或链接）"
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />

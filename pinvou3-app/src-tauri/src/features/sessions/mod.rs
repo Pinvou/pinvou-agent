@@ -1133,7 +1133,7 @@ impl SessionStore {
             .with_context(|| format!("load_session({id}) for transcript CAS"))?;
         let current_revision = transcript_revision(&session.messages)?;
         if current_revision != expected_revision {
-            bail!("session_revision_conflict: Session transcript changed while WebUI was editing");
+            bail!("session_revision_conflict: 会话内容已在远程控制编辑期间发生变化");
         }
         if looks_like_truncating_overwrite(&session.messages, &messages) {
             bail!(
