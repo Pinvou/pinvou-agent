@@ -5678,12 +5678,12 @@
     var suffix = Number.isSafeInteger(size) && size >= 0
       ? "（当前文件 " + (size / (1024 * 1024)).toFixed(1) + " MiB）"
       : "";
-    return new Error("WebUI 单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。");
+    return new Error("远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。");
   }
 
   async function downloadArtifact(path, sessionId) {
     if (IS_WEB && !hasCapability("artifactDownload")) {
-      addSystemItem("⚠️ 当前桌面端不支持 WebUI 产物下载，请更新桌面端后重试。");
+      addSystemItem("⚠️ 当前桌面端不支持远程控制产物下载，请更新桌面端后重试。");
       return false;
     }
     try {
@@ -5696,7 +5696,7 @@
 
   async function downloadArtifactRaw(path, sessionId) {
     if (!IS_WEB || !hasCapability("artifactDownload")) {
-      throw new Error("当前环境未启用 WebUI 产物下载能力");
+      throw new Error("当前环境未启用远程控制产物下载能力");
     }
     var resolvedSessionId = sessionId || state.activeSessionId || null;
     var info = await artifactInfo(path, resolvedSessionId);
@@ -6919,11 +6919,11 @@
       }
       var command = String(request.command || "");
       if (!policy.commands.has(command)) {
-        await webAccessRespond(requestId, false, null, "WebUI command is not allowed: " + command);
+        await webAccessRespond(requestId, false, null, "远程控制不允许调用该命令：" + command);
         return;
       }
       if (command === "__dialog_open") {
-        await webAccessRespond(requestId, false, null, "WebUI uses the remote host file picker");
+        await webAccessRespond(requestId, false, null, "远程控制使用桌面端文件选择器");
         return;
       }
       try {

@@ -113,7 +113,7 @@
       this.streamEpoch = typeof cursor.stream_epoch === "string" ? cursor.stream_epoch : "";
       this.lastSeq = Number.isFinite(Number(cursor.after_seq)) ? Number(cursor.after_seq) : 0;
       if (endpointId && accessToken) this.connect();
-      else queueMicrotask(() => this.setConnection("credentials_missing", "WebUI 链接缺少访问凭证。"));
+      else queueMicrotask(() => this.setConnection("credentials_missing", "远程控制链接缺少访问凭证。"));
     }
 
     setConnection(status, message) {
@@ -239,14 +239,14 @@
           this.applyDesktopCapabilities(message.snapshot && message.snapshot.capabilities);
           break;
         case "endpoint_replaced":
-          this.closePermanently("replaced", "此 WebUI 已在另一台浏览器中打开。");
+          this.closePermanently("replaced", "此远程控制链接已在另一台浏览器中打开。");
           break;
         case "endpoint_revoked":
-          this.closePermanently("revoked", "此 WebUI 访问链接已失效。");
+          this.closePermanently("revoked", "此远程控制链接已失效。");
           break;
         case "error":
           if (message.code === "invalid_token") {
-            this.closePermanently("denied", message.message || "WebUI 访问被拒绝。");
+            this.closePermanently("denied", message.message || "远程控制访问被拒绝。");
           } else if (message.code === "endpoint_not_found") {
             // Relay endpoint state is deliberately ephemeral. After a Relay
             // restart the browser often reconnects before the persistent
@@ -256,7 +256,7 @@
             this.setConnection("desktop_offline", "等待桌面端重新连接…");
             try { this.socket && this.socket.close(); } catch (_) {}
           } else {
-            this.setConnection("error", message.message || "WebUI 连接异常。");
+            this.setConnection("error", message.message || "远程控制连接异常。");
           }
           break;
         default:
@@ -318,12 +318,12 @@
         // the desktop journal to replay from the unchanged cursor after both
         // readiness barriers, including when an older/buggy desktop ignores
         // the state_ready=false phase.
-        throw new Error("remote event arrived before the WebUI state was ready");
+        throw new Error("远程控制状态尚未就绪，无法处理桌面端事件");
       }
       if (!this.desktopCapabilitiesReady || !this.allowedEvents.has(message.event)) {
         this.closePermanently(
           "incompatible_desktop",
-          `桌面端发送了未协商的 WebUI 事件：${message.event || "unknown"}`,
+          `桌面端发送了未协商的远程控制事件：${message.event || "unknown"}`,
         );
         return;
       }
@@ -364,7 +364,7 @@
         ? new Set(capabilities.events)
         : null;
       if (!commands || !events || Number(capabilities.protocol_version) !== protocolVersion) {
-        const error = new Error("桌面端版本不支持当前 WebUI 的能力协商，请先更新桌面端");
+        const error = new Error("桌面端版本不支持当前远程控制功能，请先更新桌面端");
         this.pending.forEach((entry) => {
           window.clearTimeout(entry.timeout);
           entry.reject(error);
@@ -389,7 +389,7 @@
         if (this.allowedCommands.has(entry.command)) return;
         this.pending.delete(id);
         window.clearTimeout(entry.timeout);
-        entry.reject(new Error(`当前桌面端尚不支持 WebUI 功能：${entry.command}`));
+        entry.reject(new Error(`当前桌面端尚不支持远程控制功能：${entry.command}`));
       });
       this.flushSubscriptions();
       this.flushPending();
@@ -401,7 +401,7 @@
 
     async invoke(command, args) {
       await this.policyPromise;
-      if (!this.allowedCommands.has(command)) throw new Error(`WebUI 不允许调用 ${command}`);
+      if (!this.allowedCommands.has(command)) throw new Error(`远程控制不允许调用 ${command}`);
       const id = randomId("rpc");
       return new Promise((resolve, reject) => {
         const entry = {

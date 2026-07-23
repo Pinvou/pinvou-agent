@@ -434,14 +434,14 @@ pub async fn web_access_transcribe_voice_audio(
             crate::commands::VoiceCommandError::new(
                 "recording_failed",
                 "transcribing",
-                format!("decode WebUI voice audio: {error}"),
+                format!("解码远程控制语音音频失败：{error}"),
             )
         })?;
     if audio_bytes.len() > 1024 * 1024 {
         return Err(crate::commands::VoiceCommandError::new(
             "recording_failed",
             "transcribing",
-            "WebUI voice audio exceeds 1 MiB",
+            "远程控制语音音频超过 1 MiB",
         ));
     }
     crate::commands::transcribe_voice_audio(crate::commands::VoiceTranscriptionRequest {
@@ -570,7 +570,7 @@ fn ensure_web_artifact_file_size(path: &str, max_bytes: u64) -> Result<(), Strin
         .map_err(|error| format!("stat Web artifact {path}: {error}"))?
         .len();
     if size > max_bytes {
-        return Err("artifact is too large to preview in WebUI; download it instead".to_string());
+        return Err("产物过大，无法在远程控制中预览，请改为下载".to_string());
     }
     Ok(())
 }
@@ -581,7 +581,7 @@ fn ensure_web_artifact_response<T: Serialize>(value: T) -> Result<T, String> {
         .len();
     if size > MAX_WEB_ARTIFACT_RPC_BYTES {
         return Err(
-            "artifact preview exceeds the WebUI response limit; download it instead".to_string(),
+            "产物预览超过远程控制响应上限，请改为下载".to_string(),
         );
     }
     Ok(value)
@@ -616,7 +616,7 @@ pub fn web_access_write_artifact_text(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     if content.len() > MAX_WEB_ARTIFACT_RPC_BYTES {
-        return Err("markdown is too large to edit in WebUI; download it instead".to_string());
+        return Err("Markdown 过大，无法在远程控制中编辑，请改为下载".to_string());
     }
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
     crate::commands::write_artifact_text_impl(&resolved, &content)

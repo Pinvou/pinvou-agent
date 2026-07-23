@@ -135,6 +135,17 @@ assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);
 assert.match(connectionStatus, /BLOCKING[\s\S]*incompatible_desktop/);
+assert.match(settingsView, />手机远程控制</);
+assert.match(settingsView, />远程控制链接</);
+assert.match(settingsView, />刷新二维码</);
+assert.doesNotMatch(settingsView, />刷新链接</);
+assert.doesNotMatch(settingsView, /Relay 服务器/);
+assert.doesNotMatch(settingsView, /getWebRelaySettings/);
+assert.match(main, /title="手机远程控制（扫码或链接）"/);
+for (const source of [settingsView, connectionStatus]) {
+  assert.doesNotMatch(source, /WebUI/,
+    'user-facing remote control copy must not expose the WebUI implementation name');
+}
 assert.match(chatView, /data-testid="chat-bottom-spacer"[\s\S]{0,180}className="w-full shrink-0"/,
   'WebUI must use a real flex item for composer clearance because iOS Safari may omit trailing overflow padding');
 assert.match(chatView, /style=\{\(isWeb && hasMessages\) \? undefined : \{ paddingBottom:/,

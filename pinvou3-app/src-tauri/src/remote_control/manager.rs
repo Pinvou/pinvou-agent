@@ -399,10 +399,10 @@ enum StreamRecordError {
 impl std::fmt::Display for StreamRecordError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Serialize(error) => write!(formatter, "serialize WebUI event frame: {error}"),
+            Self::Serialize(error) => write!(formatter, "序列化远程控制事件帧失败：{error}"),
             Self::Oversized { wire_bytes, limit } => write!(
                 formatter,
-                "WebUI event frame is too large ({wire_bytes} bytes; limit {limit})"
+                "远程控制事件帧过大（{wire_bytes} 字节；上限 {limit}）"
             ),
         }
     }
@@ -846,7 +846,7 @@ impl RemoteControlManager {
             .len();
         if bytes > MAX_WEB_ATTACHMENT_BYTES {
             return Err(format!(
-                "parsed attachment exceeds the WebUI desktop cache limit of {} MiB",
+                "解析后的附件超过远程控制桌面缓存上限 {} MiB",
                 MAX_WEB_ATTACHMENT_BYTES / (1024 * 1024)
             ));
         }
@@ -883,7 +883,7 @@ impl RemoteControlManager {
             }
         }
         if inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES {
-            return Err("WebUI attachment cache is full; remove an attachment and retry".into());
+            return Err("远程控制附件缓存已满，请移除一个附件后重试".into());
         }
         inner.web_attachment_bytes = inner.web_attachment_bytes.saturating_add(bytes);
         inner.web_attachment_order.push_back(handle.clone());
@@ -906,17 +906,17 @@ impl RemoteControlManager {
         handles: &[String],
     ) -> Result<(String, Vec<crate::file_ingest::IngestResult>), String> {
         if handles.len() > MAX_WEB_ATTACHMENTS {
-            return Err("too many WebUI attachments in one message".into());
+            return Err("单条消息中的远程控制附件过多".into());
         }
         let mut inner = self.inner.lock();
         let mut unique = HashSet::new();
         for handle in handles {
             if !unique.insert(handle.as_str()) {
-                return Err("duplicate WebUI attachment handle".into());
+                return Err("远程控制附件句柄重复".into());
             }
             if !inner.web_attachments.contains_key(handle) {
                 return Err(format!(
-                    "WebUI attachment handle is missing or expired: {handle}"
+                    "远程控制附件句柄不存在或已过期：{handle}"
                 ));
             }
             if inner
@@ -926,7 +926,7 @@ impl RemoteControlManager {
                 .is_some()
             {
                 return Err(format!(
-                    "WebUI attachment handle is already in use: {handle}"
+                    "远程控制附件句柄已在使用：{handle}"
                 ));
             }
         }
@@ -957,7 +957,7 @@ impl RemoteControlManager {
             };
             if cached.reservation_id.as_deref() != Some(reservation_id) {
                 return Err(format!(
-                    "WebUI attachment reservation no longer owns handle: {handle}"
+                    "远程控制附件预留已不再持有句柄：{handle}"
                 ));
             }
         }
@@ -998,16 +998,16 @@ impl RemoteControlManager {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         {
-            return Err("invalid WebUI Session upload id".into());
+            return Err("远程控制会话上传 ID 无效".into());
         }
         if total > MAX_WEB_SESSION_UPLOAD_BYTES {
             return Err(format!(
-                "Session payload exceeds the WebUI {} MiB limit",
+                "会话数据超过远程控制 {} MiB 上限",
                 MAX_WEB_SESSION_UPLOAD_BYTES / (1024 * 1024)
             ));
         }
         if expected_revision.trim().is_empty() || expected_revision.len() > 128 {
-            return Err("WebUI Session upload requires a valid expected revision".into());
+            return Err("远程控制会话上传需要有效的预期版本".into());
         }
         let mut inner = self.inner.lock();
         prune_expired_web_session_transfers(&mut inner);
@@ -1047,26 +1047,26 @@ impl RemoteControlManager {
             .saturating_add(data.len())
             > MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES
         {
-            return Err("WebUI Session upload cache exceeds its total byte limit".into());
+            return Err("远程控制会话上传缓存超过总容量上限".into());
         }
         let upload = inner
             .web_session_uploads
             .get_mut(upload_id)
-            .ok_or_else(|| "WebUI Session upload is missing or expired".to_string())?;
+            .ok_or_else(|| "远程控制会话上传不存在或已过期".to_string())?;
         if upload.session_id != session_id
             || upload.expected_revision != expected_revision
             || upload.total != total
         {
-            return Err("WebUI Session upload metadata changed".into());
+            return Err("远程控制会话上传元数据已变化".into());
         }
         if upload.data.len() != offset {
             return Err(format!(
-                "WebUI Session upload expected offset {}, got {offset}",
+                "远程控制会话上传预期偏移量为 {}，实际为 {offset}",
                 upload.data.len()
             ));
         }
         if upload.data.len().saturating_add(data.len()) > total {
-            return Err("WebUI Session upload exceeds its declared size".into());
+            return Err("远程控制会话上传超过声明大小".into());
         }
         upload.data.extend_from_slice(data);
         upload.last_touched = Instant::now();
@@ -1075,7 +1075,7 @@ impl RemoteControlManager {
         }
         if upload.data.len() != total {
             return Err(format!(
-                "WebUI Session upload is incomplete: {} of {total} bytes",
+                "远程控制会话上传不完整：已上传 {} / {total} 字节",
                 upload.data.len()
             ));
         }
@@ -1095,14 +1095,14 @@ impl RemoteControlManager {
     ) -> Result<WebSessionDownloadReservation, String> {
         if reserved_bytes > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
             return Err(format!(
-                "Session payload exceeds the WebUI {} MiB limit",
+                "会话数据超过远程控制 {} MiB 上限",
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
         let download_id = format!("download_{}", crate::remote_control::short_token(32));
         let download_dir = paths::pinvou3_home().join("web-session-downloads");
         std::fs::create_dir_all(&download_dir)
-            .map_err(|error| format!("create WebUI Session download directory: {error}"))?;
+            .map_err(|error| format!("创建远程控制会话下载目录失败：{error}"))?;
         let path = download_dir.join(format!("{download_id}.json"));
         let mut inner = self.inner.lock();
         prune_expired_web_session_transfers(&mut inner);
@@ -1137,13 +1137,13 @@ impl RemoteControlManager {
         path: &Path,
     ) -> Result<(), String> {
         let total = std::fs::metadata(path)
-            .map_err(|error| format!("inspect serialized WebUI Session download: {error}"))?
+            .map_err(|error| format!("检查远程控制会话下载数据失败：{error}"))?
             .len();
         let total = usize::try_from(total)
-            .map_err(|_| "serialized WebUI Session download is too large".to_string())?;
+            .map_err(|_| "远程控制会话下载数据过大".to_string())?;
         if total > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
             return Err(format!(
-                "Session payload exceeds the WebUI {} MiB limit",
+                "会话数据超过远程控制 {} MiB 上限",
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
@@ -1153,9 +1153,9 @@ impl RemoteControlManager {
         let reserved = inner
             .web_session_downloads
             .get(download_id)
-            .ok_or_else(|| "WebUI Session download reservation expired".to_string())?;
+            .ok_or_else(|| "远程控制会话下载预留已过期".to_string())?;
         if reserved.session_id != session_id || reserved.path != path {
-            return Err("WebUI Session download reservation changed".into());
+            return Err("远程控制会话下载预留已变化".into());
         }
         let other_bytes = inner
             .web_session_downloads
@@ -1165,7 +1165,7 @@ impl RemoteControlManager {
             .sum::<usize>();
         if other_bytes.saturating_add(total) > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
             return Err(format!(
-                "Active WebUI Session downloads would exceed the {} MiB total limit",
+                "进行中的远程控制会话下载将超过 {} MiB 总上限",
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
@@ -1221,12 +1221,12 @@ impl RemoteControlManager {
         let download = inner
             .web_session_downloads
             .get_mut(download_id)
-            .ok_or_else(|| "WebUI Session download is missing or expired".to_string())?;
+            .ok_or_else(|| "远程控制会话下载不存在或已过期".to_string())?;
         if download.session_id != session_id {
-            return Err("WebUI Session download belongs to another Session".into());
+            return Err("远程控制会话下载属于另一个会话".into());
         }
         if !download.ready {
-            return Err("WebUI Session download is still being prepared".into());
+            return Err("远程控制会话下载仍在准备中".into());
         }
         if offset > download.total {
             return Err(format!(
@@ -1238,12 +1238,12 @@ impl RemoteControlManager {
         let end = offset.saturating_add(limit).min(total);
         let path = download.path.clone();
         let mut file =
-            File::open(&path).map_err(|error| format!("open WebUI Session download: {error}"))?;
+            File::open(&path).map_err(|error| format!("打开远程控制会话下载失败：{error}"))?;
         file.seek(SeekFrom::Start(offset as u64))
-            .map_err(|error| format!("seek WebUI Session download: {error}"))?;
+            .map_err(|error| format!("定位远程控制会话下载失败：{error}"))?;
         let mut data = vec![0_u8; end.saturating_sub(offset)];
         file.read_exact(&mut data)
-            .map_err(|error| format!("read WebUI Session download: {error}"))?;
+            .map_err(|error| format!("读取远程控制会话下载失败：{error}"))?;
         drop(file);
         download.last_touched = Instant::now();
         let eof = end == total;
@@ -1818,7 +1818,7 @@ impl RemoteControlManager {
             Some(rpc_error_completion(
                 "request_too_large",
                 format!(
-                    "WebUI RPC arguments exceed the {} MiB limit",
+                    "远程控制请求参数超过 {} MiB 上限",
                     MAX_RPC_REQUEST_BYTES / (1024 * 1024)
                 ),
             ))
@@ -2290,7 +2290,7 @@ impl RemoteControlManager {
         source: EventSource,
     ) -> Result<(), String> {
         if !self.policy.events.contains(event) {
-            return Err(format!("WebUI event is not allowed: {event}"));
+            return Err(format!("远程控制不允许发送该事件：{event}"));
         }
         // The engine/file watcher already call `forward_app_event` directly.
         // The desktop WebView proxy also sees the corresponding Tauri event;
@@ -2371,7 +2371,7 @@ impl RemoteControlManager {
                         .journal
                         .back()
                         .cloned()
-                        .ok_or_else(|| "WebUI stream tail disappeared".to_string())?;
+                        .ok_or_else(|| "远程控制事件流末尾数据丢失".to_string())?;
                     inner.stream.reset();
                     let rebase_result = inner.stream.record(
                         &endpoint_id,
@@ -2394,10 +2394,10 @@ impl RemoteControlManager {
                         ),
                     );
                     rebase_result.map_err(|error| {
-                        format!("rebase WebUI event after enqueue failure: {error}")
+                        format!("远程控制事件入队失败后重建事件流失败：{error}")
                     })?;
                     Err(format!(
-                        "enqueue WebUI live event failed; stream recovery scheduled: {send_error}"
+                        "远程控制实时事件入队失败，已安排事件流恢复：{send_error}"
                     ))
                 }
             }
@@ -2458,12 +2458,12 @@ fn rpc_admission_rejection(
     } else if !allowed {
         Some(rpc_error_completion(
             "command_not_allowed",
-            "WebUI command is not allowed",
+            "远程控制不允许调用该命令",
         ))
     } else if in_flight_count >= MAX_RPC_IN_FLIGHT {
         Some(rpc_error_completion(
             "too_many_in_flight_requests",
-            "too many WebUI RPC requests are already running",
+            "正在运行的远程控制请求过多",
         ))
     } else {
         None
@@ -2657,7 +2657,7 @@ fn ensure_web_session_download_capacity(
 ) -> Result<(), String> {
     if inner.web_session_downloads.len() >= MAX_WEB_SESSION_DOWNLOADS {
         return Err(format!(
-            "WebUI already has {} active Session downloads; finish or retry an existing download",
+            "远程控制已有 {} 个进行中的会话下载，请等待完成或重试已有下载",
             MAX_WEB_SESSION_DOWNLOADS
         ));
     }
@@ -2668,7 +2668,7 @@ fn ensure_web_session_download_capacity(
         .sum::<usize>();
     if active_bytes.saturating_add(reserved_bytes) > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
         return Err(format!(
-            "Active WebUI Session downloads would exceed the {} MiB total limit",
+            "进行中的远程控制会话下载将超过 {} MiB 总上限",
             MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
         ));
     }
@@ -2713,7 +2713,7 @@ fn bounded_rpc_completion(ok: bool, result: Option<Value>, error: Option<String>
         return rpc_error_completion(
             "response_too_large",
             format!(
-                "WebUI RPC response exceeds the {} MiB limit; use a paged or chunked Web command",
+                "远程控制响应超过 {} MiB 上限，请使用分页或分块命令",
                 MAX_RPC_RESPONSE_BYTES / (1024 * 1024)
             ),
         );
@@ -2893,7 +2893,7 @@ fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Resul
         };
     };
     crate::bridge::sessions::validate_session_id(session_id)
-        .map_err(|error| format!("invalid WebUI Session id: {error:#}"))?;
+        .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
     if (command == "web_access_load_session_chunk"
         && args
             .get("downloadId")
@@ -2912,7 +2912,7 @@ fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Resul
         .ok_or_else(|| "Session store is not ready".to_string())?;
     store
         .load(session_id)
-        .map_err(|error| format!("WebUI Session {session_id} does not exist: {error:#}"))?;
+        .map_err(|error| format!("远程控制会话 {session_id} 不存在：{error:#}"))?;
     Ok(())
 }
 
@@ -2932,13 +2932,13 @@ fn validate_bridge_generation(generation: &str) -> Result<(), String> {
 
 fn validate_rpc_command(command: &str) -> Result<(), String> {
     if command.is_empty() || command.len() > MAX_RPC_COMMAND_BYTES {
-        return Err("invalid WebUI RPC command".to_string());
+        return Err("远程控制命令无效".to_string());
     }
     if !command
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
     {
-        return Err("invalid WebUI RPC command".to_string());
+        return Err("远程控制命令无效".to_string());
     }
     Ok(())
 }
