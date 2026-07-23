@@ -32,7 +32,7 @@ function injectSource() {
       obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
     };
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
-    const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp']);
+    const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
       installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,eip:false,zhidao:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
