@@ -492,6 +492,36 @@ fn detect_hardware_identity(fallback_claim: &str) -> HardwareIdentity {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        // ioreg -d2 -c IOPlatformExpertDevice reads IOPlatformUUID,
+        // a stable machine-unique identifier that needs no elevated privileges.
+        // (Note: the class is IOPlatformExpertDevice, NOT IOPlatformExpertNode.)
+        if let Ok(out) = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-d2", "-c", "IOPlatformExpertDevice"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                if line.contains("IOPlatformUUID") {
+                    if let Some(value) = line.split('=').nth(1) {
+                        // 与 Linux/Windows 分支一致:过 normalize_hardware_value 占位过滤
+                        // (拒绝全零 UUID / FFFFFFFF / ToBeFilledByO.E.M. 等),避免极端
+                        // VM/烧录异常把占位 UUID 当真机 ID 上报。
+                        if let Some(v) = normalize_hardware_value(
+                            value.trim().trim_matches('"'),
+                        ) {
+                            return hardware_identity(
+                                format!("macos:ioplatformuuid:{v}"),
+                                "ioplatformuuid",
+                                "hardware_serial",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         let script = "try { (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop).UUID } catch { '' }";
@@ -635,5 +665,31 @@ mod tests {
             .unwrap();
         assert_eq!(count, OUTBOX_MAX_EVENTS);
         assert_eq!(expired, 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_machine_identity_uses_ioplatformuuid() {
+        // On a real Mac, ioreg should always return IOPlatformUUID.
+        // This test verifies the macOS branch is wired up correctly.
+        // Note: PINVOU_TELEMETRY_DEVICE_CLAIM must not be set, otherwise
+        // detect_hardware_identity short-circuits to an override:* claim.
+        // 用锁保护:与 linux_update.rs/macos_update.rs 的 ENV_LOCK 模式一致,避免并行
+        // 测试修改全局 env var 时数据竞争(edition 2024 后 set_var/remove_var 是 unsafe)。
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("PINVOU_TELEMETRY_DEVICE_CLAIM");
+        let id = detect_hardware_identity("test_fallback");
+        assert!(
+            id.claim.starts_with("macos:ioplatformuuid:"),
+            "expected macos:ioplatformuuid: prefix, got: {}",
+            id.claim
+        );
+        // UUID is 36 chars (8-4-4-4-12 hex with dashes), so total > prefix + 36
+        assert!(
+            id.claim.len() > "macos:ioplatformuuid:".len() + 30,
+            "UUID too short, got: {}",
+            id.claim
+        );
     }
 }

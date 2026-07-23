@@ -3462,6 +3462,9 @@
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
       if (error) addSystemItem("⚠️ " + error);
+      // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+      // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+      if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
@@ -3558,6 +3561,10 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) addSystemItem("⚠️ " + error);
+    // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+    // 兜底启动检测被绕过/中途删 key 的场景。
+    // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+    if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
@@ -4214,10 +4221,15 @@
   async function setSelectedPet(id) {
     return await invoke("set_selected_pet", { id: id });
   }
-  async function loadEffectiveModelConfig() {
+  async function loadEffectiveModelConfig(sessionId) {
+    var requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
     try {
-      state.effectiveModelConfig = await invoke("get_effective_model_config");
+      var config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
+      // 快速切会话时，旧请求可能晚于新请求返回；禁止旧会话配置覆盖当前遮罩状态。
+      if ((state.activeSessionId || null) !== requestedSessionId) return;
+      state.effectiveModelConfig = config;
     } catch (e) {
+      if ((state.activeSessionId || null) !== requestedSessionId) return;
       state.effectiveModelConfig = null;
     }
     notify();
@@ -4322,8 +4334,10 @@
     state.vllmSetupDismissed = true;
     notify();
   }
-  async function getEffectiveModelConfig() {
-    return await invoke("get_effective_model_config");
+  async function getEffectiveModelConfig(sessionId) {
+    return await invoke("get_effective_model_config", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
   }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
@@ -4342,6 +4356,7 @@
  async function saveModel(model) {
    await invoke("save_model", { model: model });
    await loadModels();
+   await loadEffectiveModelConfig();
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
@@ -4349,25 +4364,42 @@
  async function deleteModel(id) {
    await invoke("delete_model", { id: id });
    await loadModels();
+   await loadEffectiveModelConfig();
   }
   async function setActiveModel(id) {
     await invoke("set_active_model", { id: id });
     await loadModels();
+    await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
   async function loadSessionModel(sessionId) {
-    if (!sessionId) { state.currentSessionModelId = null; notify(); return; }
+    var requestedSessionId = sessionId || null;
+    var modelId = null;
+    var config = null;
     try {
-      state.currentSessionModelId = await invoke("get_session_model_id", { sessionId: sessionId });
-    } catch (e) { state.currentSessionModelId = null; }
+      var results = await Promise.all([
+        requestedSessionId
+          ? invoke("get_session_model_id", { sessionId: requestedSessionId }).catch(function () { return null; })
+          : Promise.resolve(null),
+        invoke("get_effective_model_config", { sessionId: requestedSessionId }).catch(function () { return null; }),
+      ]);
+      modelId = results[0];
+      config = results[1];
+    } catch (e) {
+      modelId = null;
+      config = null;
+    }
+    // ChatView effect 可能并发加载相邻两个会话；只提交仍为当前会话的结果。
+    if ((state.activeSessionId || null) !== requestedSessionId) return;
+    state.currentSessionModelId = modelId;
+    state.effectiveModelConfig = config;
     notify();
   }
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
   async function switchModel(sessionId, modelId) {
     if (sessionId) {
       await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
-      state.currentSessionModelId = modelId;
-      notify();
+      await loadSessionModel(sessionId);
     } else {
       await setActiveModel(modelId);
     }
@@ -5224,11 +5256,17 @@
     }
     state.updateChecking = false; notify();
   }
-  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;Windows 下载 zip 后解析 MSI,
+  // 下载+安装一条龙: Linux 下载 deb 后 pkexec apt 并自动重启;macOS 下载 dmg 后
+  // hdiutil attach + cp -R 并自动重启(与 Linux 同型);Windows 下载 zip 后解析 MSI,
   // 安装器启动成功后后端退出当前进程。返回 true 表示安装链路已成功走完。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    var shouldRestartAfterInstall = state.updateInfo.platform === "linux";
+    // macOS 与 Linux 一样安装后自动重启:app.restart() 按路径 exec,
+    // bundle 被替换后该路径已指向新文件,spawn 新进程即加载新版(inode 语义与 Linux 同)。
+    // Ok(false) 表示「安装完成,进程未退出,由前端决定 restart」,不是「需手动重启」。
+    // 唯一不自动重启的是 Windows(MSI 安装器接管,后端 Ok(true)→app.exit)。
+    var shouldRestartAfterInstall =
+      state.updateInfo.platform === "linux" || state.updateInfo.platform === "macos";
     var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
@@ -5238,7 +5276,9 @@
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {
-        await invoke("install_update", { debPath: downloadResult });
+        // Linux/macOS:download_update 返回纯路径字符串(JSON untagged),走 debPath 分支。
+        // 传 info 让 macOS 后端做安装前 sha256 复验(TOCTOU 纵深防御);Linux 后端目前忽略此参数。
+        await invoke("install_update", { debPath: downloadResult, info: state.updateInfo });
       }
       state.updateReady = true;
       installed = true;

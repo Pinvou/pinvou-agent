@@ -34,7 +34,7 @@ PINVOU 不只是一个聊天界面。它把模型、工具、个人知识、专�
 
 - 本地语音输入，语音模型按需下载
 - GPU、内存、磁盘、模型服务与上下文使用情况集中监控
-- Linux 应用内更新，Windows OTA 链路适配
+- Linux 应用内更新，macOS/Windows OTA 链路适配
 - 会话、设置、知识和运行时扩展统一保存在 `~/.pinvou3/`
 
 > [!NOTE]
@@ -100,6 +100,8 @@ DeepSeek-TUI（Agent 底座 submodule）
 - Tauri 2.0 对应的系统依赖
 - 一个可访问的 OpenAI-compatible 模型端点
 
+> **macOS 用户**：pinvou3 支持 Apple Silicon (arm64) + macOS 14.0+。语音识别引擎已内置打包；文件解析（PDF/Office/OCR/压缩包等）依赖可选外部工具，通过 Homebrew 或各工具官网安装——详见 [macOS 运行环境要求](docs/macos-requirements.md)。
+
 ### 启动应用
 
 ```bash
@@ -147,6 +149,7 @@ docs/                 架构设计、验证报告与维护文档
 ## 进一步阅读
 
 - [贡献指南](CONTRIBUTING.md)
+- [macOS 运行环境要求](docs/macos-requirements.md)
 - [DeepSeek-TUI fork 策略](docs/fork-policy.md)
 - [当前 fork 修改清单](docs/fork-modifications.md)
 - [工具市场设计](docs/工具市场.md)

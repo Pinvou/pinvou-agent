@@ -77,8 +77,9 @@ pub fn system_tools() -> SystemTools {
     })
 }
 
-/// 设置页「依赖体检」一项：一类文件解析能力 + 它所需系统工具是否齐全 + 缺失时的 apt 包。
-/// `apt` 是空格分隔的包名串，可直接拼进 `sudo apt install <apt>`。能力名走前端 i18n（按 key 映射）。
+/// 设置页「依赖体检」一项：一类文件解析能力 + 它所需系统工具是否齐全 + 缺失时的安装包名。
+/// `apt` 是平台对应的安装包名串（Linux=apt 包名，macOS=brew formula，Windows/不支持=空串），
+/// 传给各平台 install_dependencies。能力名走前端 i18n（按 key 映射）。
 #[derive(Debug, Clone, Serialize)]
 pub struct DependencyCheckItem {
     pub key: String,
@@ -118,17 +119,17 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         crate::os::asr_dependency_packages(),
     ));
     items.extend([
-        item("office_legacy", libreoffice, "libreoffice"),
+        item("office_legacy", libreoffice, crate::os::libreoffice_dependency_packages()),
         item(
             "ocr",
             crate::os::command_exists("tesseract") && crate::os::pdf_tool_exists("pdftoppm"),
             crate::os::ocr_dependency_packages(),
         ),
-        item("archive", crate::os::command_exists("7z"), "p7zip-full"),
+        item("archive", crate::os::command_exists("7z"), crate::os::sevenzip_dependency_packages()),
         item(
             "email",
             crate::os::command_exists("python3") && crate::os::command_exists("msgconvert"),
-            "python3 libemail-outlook-message-perl",
+            crate::os::email_dependency_packages(),
         ),
     ]);
     items
@@ -466,7 +467,7 @@ fn libreoffice_convert_text(
     out_ext: &str,
 ) -> Result<String, String> {
     if !system_tools().libreoffice {
-        return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
+        return Err(crate::os::libreoffice_missing_message().to_string());
     }
     // 临时目录：每次唯一，避免并发文件名冲突。
     let ts = std::time::SystemTime::now()
@@ -602,7 +603,7 @@ fn inline_html_images(html: &str, dir: &Path) -> String {
 /// 独立 UserInstallation profile + 临时目录约定。
 pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
     if !system_tools().libreoffice {
-        return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
+        return Err(crate::os::libreoffice_missing_message().to_string());
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -664,7 +665,7 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
 pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>, bool), String> {
     let tools = system_tools();
     if !tools.libreoffice {
-        return Err("需要 LibreOffice，请运行: sudo apt install libreoffice".into());
+        return Err(crate::os::libreoffice_missing_message().to_string());
     }
     if !tools.pdftoppm {
         return Err(crate::os::pdf_render_missing_message().into());
@@ -1254,7 +1255,7 @@ fn ingest_archive(
     };
 
     if !system_tools().sevenzip {
-        return mk_err("压缩包解析需要 7z: sudo apt install p7zip-full".into());
+        return mk_err(crate::os::sevenzip_missing_message().to_string());
     }
 
     // 预检：解压前就用 7z 列表拦截压缩炸弹。
@@ -1419,7 +1420,7 @@ fn ingest_email(
     };
 
     if !tools.python3 {
-        return mk(None, Some("邮件解析需要 python3，请运行: sudo apt install python3".into()));
+        return mk(None, Some(crate::os::python3_missing_message().to_string()));
     }
 
     let parsed = if kind == "msg" {
@@ -1427,7 +1428,7 @@ fn ingest_email(
             return mk(
                 None,
                 Some(
-                    ".msg 解析需要: sudo apt install libemail-outlook-message-perl".into(),
+                    crate::os::msgconvert_missing_message().to_string(),
                 ),
             );
         }

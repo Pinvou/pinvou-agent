@@ -5,7 +5,7 @@ import './styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, ChevronRight, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, Sparkles, StopCircle, XCircle, Wrench, User, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from './components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from './components/layout/NavigationComponents.jsx';
 import { VllmSetupProgress } from './components/VllmSetupProgress.jsx';
-import { bridge, useBridge } from './hooks/useBridge.js';
+import { bridge, useBridge, activeModelIsLocal, shouldShowApiKeyGate } from './hooks/useBridge.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from './shared/i18n.js';
 import { formatSessionDate } from './shared/date-utils.js';
 import { KnowledgeView } from './features/knowledge/KnowledgeView.jsx';
@@ -28,6 +28,17 @@ import { PinvouSummonCard } from './features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from './features/personas/Personas.jsx';
 import { WorkflowView } from './features/workflow/WorkflowView.jsx';
 
+
+// 当前平台是否支持本地 vLLM。macOS/Windows 后端已 cfg 掉本地 vLLM 命令(discover_local_vllm /
+// detect_local_vllm_setup 等),前端默认预设与探测入口都据此守卫,避免新用户首启落在
+// 127.0.0.1:8000 永远连不上、或调用不存在的后端命令报错。与 bridge prefs::ModelPreset::default() 对齐。
+function isLocalVllmPlatform() {
+  return /linux/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
+}
+// 平台感知默认预设:Linux→local_vllm,其它→deepseek。
+function defaultModelPresetForPlatform() {
+  return isLocalVllmPlatform() ? 'local_vllm' : 'deepseek';
+}
 
 /* ==========================================
        Lucide icon replacements (inline SVG)
@@ -121,7 +132,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
       // MegaCube(GB10) 首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
-      useEffect(() => { if (bridge.available) bridge.detectLocalVllmSetup(); }, []);
+      // 开机探测本地大模型预装:仅 Linux 有该后端命令(discover/detect_local_vllm_setup 已 cfg linux)。
+      // macOS/Windows 上 invoke 不存在的命令会 reject,白白污染控制台 —— 非 Linux 跳过。
+      useEffect(() => { if (bridge.available && isLocalVllmPlatform()) bridge.detectLocalVllmSetup(); }, []);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState('zh');
       const [superPerm, setSuperPerm] = useState(false);
@@ -135,7 +148,9 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
       const [searchKeyDrafts, setSearchKeyDrafts] = useState({});
       const [searchKeyActions, setSearchKeyActions] = useState({});
       // 模型配置（动态适配）——草稿模式，确认后才保存
-      const [modelPreset, setModelPreset] = useState('local_vllm');
+      // 默认预设平台感知:macOS/Windows 无本地 vLLM(后端命令已 cfg 掉),默认 DeepSeek;
+      // Linux 保持 local_vllm(麒麟环境默认有本地大模型)。与 bridge prefs::ModelPreset::default() 对齐。
+      const [modelPreset, setModelPreset] = useState(isLocalVllmPlatform() ? 'local_vllm' : 'deepseek');
       const [customModelName, setCustomModelName] = useState('');
       const [customBaseUrl, setCustomBaseUrl] = useState('');
       const [customApiKey, setCustomApiKey] = useState('');
@@ -174,7 +189,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         };
       }
       function modelDraftForPreset(preset, profiles, fallback) {
-        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS.local_vllm;
+        const defs = PRESET_DEFAULTS[preset] || PRESET_DEFAULTS[defaultModelPresetForPlatform()];
         const profile = (profiles && profiles[preset]) || {};
         return {
           preset,
@@ -328,7 +343,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
         if (!modelConfigInitRef.current && bs.settings) {
           const adv = bs.settings.advanced || {};
           const effective = bs.effectiveModelConfig || {};
-          const preset = effective.preset || adv.model_preset || 'local_vllm';
+          const preset = effective.preset || adv.model_preset || defaultModelPresetForPlatform();
           const profiles = { ...(adv.model_profiles || {}) };
           const fallback = {
             name: effective.model || adv.custom_model_name || '',
@@ -1393,16 +1408,18 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                   </button>
                 </>
               )}
-              <button
-                onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
-                title={t.megacubeSite}
-                className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
-              >
-                <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
-                {isSidebarOpen && (
-                  <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
-                )}
-              </button>
+              {isLocalVllmPlatform() && (
+                <button
+                  onClick={() => window.__TAURI__.core.invoke('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
+                  title={t.megacubeSite}
+                  className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
+                >
+                  <img src="assets/megacube-icon.png" alt="MegaCube" className="w-8 h-8 shrink-0 rounded-lg object-contain" />
+                  {isSidebarOpen && (
+                    <span className="text-[14px] font-medium leading-none whitespace-nowrap text-left">MegaCube</span>
+                  )}
+                </button>
+              )}
               {isSidebarOpen && (
                 <div className="flex items-center gap-1">
                   <button
@@ -1532,6 +1549,30 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
               </div>
             )}
 
+            {/* API Key 拦截遮罩 —— 云端模型未配 key 时只盖住聊天界面,强制先配置。
+                根因:此前前后端都无 key gate,空 key 打云端 → 401 静默无回应。
+                设置页必须保持可操作,否则“去配置”后遮罩仍在,用户反而无法录入 Key。
+                条件:credential_state 为 missing 或 unavailable 且非本地模型。本地 vLLM
+                和 loopback OpenAI-compatible 端点允许无鉴权。unavailable 同样需拦截:macOS 上用户在 Keychain
+                授权弹窗点"拒绝"时 credential_state 变 unavailable(见 prefs.rs:785),
+                此时不盖遮罩用户仍可发消息 → 命中 Keychain 错误,与 missing 同等后果。 */}
+            {shouldShowApiKeyGate(bs, currentView, bridge.available) && (
+              <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
+                <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
+                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <img src="brand-blue.png" width={22} height={22} alt="" className="select-none" />
+                    <div className="text-[17px] font-semibold">{t.apiKeyGateTitle}</div>
+                  </div>
+                  <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.apiKeyGateDesc}</div>
+                  <div className="flex justify-end">
+                    <button onClick={() => openSettingsSection('model')}
+                      className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.apiKeyGateBtn}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
@@ -1609,7 +1650,7 @@ import { WorkflowView } from './features/workflow/WorkflowView.jsx';
                     <X size={16} />
                   </button>
                   <div className="max-h-[90vh] overflow-y-auto custom-scrollbar px-5 pt-5 pb-6">
-                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} />
+                    <PinvouSummonCard item={bs.pinvouModal} theme={activeTheme} t={t} isLocal={activeModelIsLocal(bs)} />
                   </div>
                 </div>
               </div>

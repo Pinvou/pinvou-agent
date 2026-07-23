@@ -20,20 +20,49 @@ const MODEL_URL: &str =
 /// modelscope 上 q4_k 的精确字节数（下载完整性校验，避免半包）。
 const MODEL_SIZE: u64 = 182_278_688;
 
+/// 入库 sense-voice-darwin-arm64 的 sha256(docs/fork-modifications.md 登记)。
+/// 仅 macOS bundled 引擎校验用 —— 防 app bundle 内二进制被替换后用户级 RCE。
+#[cfg(target_os = "macos")]
+const BUNDLED_ENGINE_SHA256: &str =
+    "7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4";
+
 /// `~/.pinvou3/asr/` —— 引擎、模型、下载缓存的落地目录。
 pub fn asr_dir() -> PathBuf {
     paths::pinvou3_home().join("asr")
 }
 
+/// 引擎二进制名：各平台不同（Linux 是 sense-voice-main，Mac 是
+/// sense-voice-darwin-arm64，Windows 是 pinvou-asr.exe）。Mac 二进制由
+/// Phase 3 Task 3.1 编译，在此之前 engine_path() 返回的路径不会 is_file，
+/// 前端会显示 ASR 不可用 —— 这是预期行为。
+#[cfg(target_os = "linux")]
+pub fn engine_binary_name() -> &'static str {
+    "sense-voice-main"
+}
+
+/// 注意:PR #212 仅打包 arm64 (Apple Silicon) 二进制。Intel Mac (x86_64) 无对应
+/// 入库引擎,engine_path() 返回的路径不会 is_file → ASR 不可用(前端显示"不可用",
+/// 不会崩溃)。如需 Intel Mac 支持需另行编译 sense-voice-darwin-x86_64 入库。
+#[cfg(target_os = "macos")]
+pub fn engine_binary_name() -> &'static str {
+    "sense-voice-darwin-arm64"
+}
+
+#[cfg(target_os = "windows")]
+pub fn engine_binary_name() -> &'static str {
+    "pinvou-asr.exe"
+}
+
 /// 引擎可执行：优先 `~/.pinvou3/asr/`（按需/手动装的），回退打包资源目录。
 /// 打包资源目录由 [`set_bundled_engine_dir`] 在启动时注入（需要 AppHandle）。
 pub fn engine_path() -> PathBuf {
-    let local = asr_dir().join("sense-voice-main");
+    let name = engine_binary_name();
+    let local = asr_dir().join(name);
     if local.is_file() {
         return local;
     }
     if let Some(dir) = bundled_engine_dir() {
-        let bundled = dir.join("sense-voice-main");
+        let bundled = dir.join(name);
         if bundled.is_file() {
             return bundled;
         }
@@ -55,6 +84,59 @@ pub fn set_bundled_engine_dir(dir: PathBuf) {
 
 fn bundled_engine_dir() -> Option<PathBuf> {
     BUNDLED_ENGINE_DIR.get().cloned()
+}
+
+/// 判定引擎路径是否落在打包资源目录(即由 [`set_bundled_engine_dir`] 注入的路径)下。
+///
+/// - macOS 仅对 bundled 路径做 sha256 校验,本地 `~/.pinvou3/asr/` 装的不校验。
+/// - `bundled_dir` 为 `None`(OnceLock 未注入,如未打包/单测)时放宽返回 `true`。
+///
+/// 抽成纯函数方便单元测试 starts_with 语义。
+fn path_is_in_bundled_dir(path: &Path, bundled_dir: Option<&Path>) -> bool {
+    match bundled_dir {
+        Some(dir) => path.starts_with(dir),
+        None => true,
+    }
+}
+
+/// 校验 macOS bundled 引擎的 sha256 与入库登记一致。
+///
+/// - 本地 `~/.pinvou3/asr/` 装的引擎(用户/开发者手动放的)**不校验**(可能版本不同)。
+/// - 仅当路径解析自 `bundled_engine_dir`(打包资源目录)时校验。
+///
+/// 校验失败返回 `false`,调用方应拒绝 spawn。
+#[cfg(target_os = "macos")]
+fn bundled_engine_intact(path: &Path) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    // 只对打包目录里的引擎校验;用户自装的跳过。
+    let Some(bundled_dir) = bundled_engine_dir() else {
+        return true;
+    };
+    if !path_is_in_bundled_dir(path, Some(&bundled_dir)) {
+        return true; // 本地装的,不校验
+    }
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        hasher.update(&buf[..n]);
+    }
+    format!("{:x}", hasher.finalize()) == BUNDLED_ENGINE_SHA256
+}
+
+/// 非 macOS 平台无 bundled 引擎校验(无 ad-hoc 签名 Mach-O,签名体系不同),
+/// 始终放行。
+#[cfg(not(target_os = "macos"))]
+fn bundled_engine_intact(_path: &Path) -> bool {
+    true
 }
 
 pub fn ffmpeg_available() -> bool {
@@ -136,6 +218,17 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     // 钉死 CWD 到可写的 asr_dir,让这个副产物落在那里、不污染源码树。
     let work_dir = asr_dir();
     let _ = std::fs::create_dir_all(&work_dir);
+
+    // 安全:打包资源目录下的 macOS 引擎必须 sha256 与入库登记一致,
+    // 否则拒绝执行(防 app bundle 内二进制被替换导致用户级 RCE)。
+    // 本地 `~/.pinvou3/asr/` 装的引擎不校验(bundled_engine_intact 内部跳过)。
+    if !bundled_engine_intact(&engine) {
+        return Err(
+            "本地语音识别引擎完整性校验失败(可能被替换),已拒绝执行。请重新安装 pinvou3 或联系支持"
+                .to_string(),
+        );
+    }
+
     let out = Command::new(&engine)
         .current_dir(&work_dir)
         .arg("-m")
@@ -284,4 +377,40 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
         serde_json::json!({ "stage": "done", "ready": st.ready }),
     );
     Ok(st)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_binary_name_matches_platform() {
+        let name = engine_binary_name();
+        #[cfg(target_os = "linux")]
+        assert_eq!(name, "sense-voice-main");
+        #[cfg(target_os = "macos")]
+        assert_eq!(name, "sense-voice-darwin-arm64");
+        #[cfg(target_os = "windows")]
+        assert_eq!(name, "pinvou-asr.exe");
+    }
+
+    #[test]
+    fn path_is_in_bundled_dir_matches() {
+        // 打包资源目录下的引擎 → true(需要 sha256 校验)
+        assert!(path_is_in_bundled_dir(
+            &Path::new("/Applications/pinvou3.app/Contents/Resources/asr/sense-voice-darwin-arm64"),
+            Some(Path::new("/Applications/pinvou3.app/Contents/Resources/asr/")),
+        ));
+        // 本地 `~/.pinvou3/asr/` 装的不在打包目录下 → false(跳过 sha256 校验)
+        assert!(!path_is_in_bundled_dir(
+            &Path::new("/Users/x/.pinvou3/asr/sense-voice-darwin-arm64"),
+            Some(Path::new("/Applications/pinvou3.app/Contents/Resources/asr/")),
+        ));
+    }
+
+    #[test]
+    fn path_is_in_bundled_dir_relaxed_when_unset() {
+        // bundled dir 未注入(OnceLock 未 set,如未打包/单测)→ 放宽返回 true,不阻断
+        assert!(path_is_in_bundled_dir(&Path::new("/any"), None));
+    }
 }

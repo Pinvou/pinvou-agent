@@ -95,6 +95,36 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     vec!["nvidia-smi"]
 }
 
+// ====== file_ingest.rs 跨平台缺失消息 + 依赖包名 ======
+
+pub fn libreoffice_missing_message() -> &'static str {
+    "当前平台缺少可用的 LibreOffice 组件。"
+}
+
+pub fn sevenzip_missing_message() -> &'static str {
+    "当前平台缺少可用的 7-Zip 组件。"
+}
+
+pub fn python3_missing_message() -> &'static str {
+    "当前平台缺少可用的 Python 3。"
+}
+
+pub fn msgconvert_missing_message() -> &'static str {
+    "当前平台缺少可用的 msgconvert 组件。"
+}
+
+pub fn libreoffice_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn sevenzip_dependency_packages() -> &'static str {
+    ""
+}
+
+pub fn email_dependency_packages() -> &'static str {
+    ""
+}
+
 pub fn ram_snapshot() -> Option<RamSnapshot> {
     None
 }
@@ -152,6 +182,7 @@ pub async fn check_for_update_info(
         update_type: String::new(),
         platform: std::env::consts::OS.to_string(),
         ota_host: String::new(),
+        platforms: std::collections::HashMap::new(),
     })
 }
 

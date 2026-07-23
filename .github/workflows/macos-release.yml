@@ -1,0 +1,211 @@
+name: macos-release
+
+# 版本号 bump 时自动构建 macOS dmg 安装包,挂为 GitHub Actions artifact(保留 90 天)。
+#
+# 触发条件(push main):
+# - paths 限定三处版本号文件(tauri.conf.json / Cargo.toml / package.json),减少触发频率;
+# - job 1 再做精确版本号 diff,排除版本文件的非版本字段改动(如 Cargo.toml 加依赖)误触发。
+#   三处版本号(tauri/cargo/npm)任一变化即判定 bump。
+#
+# 与其他 workflow 的分工:
+# - mac-build:每次 Rust 改动跑编译验证 gate(不产出可用产物)。
+# - macos-release(本 workflow):仅版本 bump 跑,产出可用 dmg artifact。
+# - release-macos.sh:手动发版到 pinvou.com / OTA 清单(含上传/签名/公证)。本 workflow 不碰线上。
+#
+# 签名:ad-hoc(signingIdentity="-"),用户首次安装需 xattr -dr com.apple.quarantine。
+# 零 secret 依赖,零外部副作用。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pinvou3-app/src-tauri/tauri.conf.json'
+      - 'pinvou3-app/src-tauri/Cargo.toml'
+      - 'pinvou3-app/package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Job 1: 版本号变更检测(gate,跑 ubuntu 快) ──────────────────────
+  # 对比当前 commit 与父 commit 的版本号。三处任一变化 → version_bumped=true。
+  # 首提交(无 HEAD~1,如新建分支首推)直接放行。
+  check-version-bump:
+    name: 检测版本号变更
+    runs-on: ubuntu-latest
+    outputs:
+      version_bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      # fetch-depth: 2 取当前 commit + 父 commit,够做版本号 diff。
+      # 默认 fetch-depth:1(浅克隆)拿不到 HEAD~1,diff 会误判为"首提交放行"。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: 对比版本号
+        id: diff
+        run: |
+          set -euo pipefail
+
+          # 新版本(当前 commit)——三处版本号
+          V_TAURI=$(jq -r .version pinvou3-app/src-tauri/tauri.conf.json)
+          V_CARGO=$(grep -m1 '^version = ' pinvou3-app/src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          V_NPM=$(jq -r .version pinvou3-app/package.json)
+          echo "当前版本: tauri=$V_TAURI cargo=$V_CARGO npm=$V_NPM"
+
+          # 父 commit 不存在(首提交/浅克隆边界)→ 视为首次 bump,放行。
+          if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            echo "⚠️ 无父 commit(浅克隆或首提交),视为版本 bump,放行"
+            BUMPED=true
+          else
+            # 旧版本(父 commit)——逐个 git show 取,文件在父 commit 不存在时返回空
+            V_TAURI_OLD=$(git show HEAD~1:pinvou3-app/src-tauri/tauri.conf.json 2>/dev/null | jq -r .version 2>/dev/null || echo "")
+            V_CARGO_OLD=$(git show HEAD~1:pinvou3-app/src-tauri/Cargo.toml 2>/dev/null | grep -m1 '^version = ' 2>/dev/null | sed 's/version = "\(.*\)"/\1/' || echo "")
+            V_NPM_OLD=$(git show HEAD~1:pinvou3-app/package.json 2>/dev/null | jq -r .version 2>/dev/null || echo "")
+            echo "父 commit 版本: tauri=$V_TAURI_OLD cargo=$V_CARGO_OLD npm=$V_NPM_OLD"
+
+            # 三处任一变化即判定 bump。版本文件改了但版本号没变(如 Cargo.toml 加依赖)→ 不触发。
+            if [ "$V_TAURI" != "$V_TAURI_OLD" ] || [ "$V_CARGO" != "$V_CARGO_OLD" ] || [ "$V_NPM" != "$V_NPM_OLD" ]; then
+              echo "✓ 版本号变化,触发 dmg 构建"
+              BUMPED=true
+            else
+              echo "✗ 版本号未变化(版本文件的非版本字段改动),跳过"
+              BUMPED=false
+            fi
+          fi
+
+          echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
+          echo "version=$V_TAURI" >> "$GITHUB_OUTPUT"
+
+          # 三处版本号必须一致(防只 bump package.json 忘改 Cargo.toml/tauri.conf,
+          # 导致 DMG 文件名用未 bump 的旧 tauri 版本号;build-dmg 用 version=$V_TAURI 命名 dmg)。
+          # 放在判定 bumped=true 之后、build-dmg 之前。
+          if [ "$BUMPED" = "true" ]; then
+            if [ "$V_TAURI" != "$V_CARGO" ] || [ "$V_TAURI" != "$V_NPM" ]; then
+              echo "::error::三处版本号不一致: tauri=$V_TAURI cargo=$V_CARGO npm=$V_NPM" >&2
+              exit 1
+            fi
+          fi
+
+  # ── Job 2: 构建 dmg(仅版本 bump 时跑) ──────────────────────────────
+  build-dmg:
+    name: 构建 macOS dmg
+    needs: check-version-bump
+    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    runs-on: macos-14
+    timeout-minutes: 50
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: macos-release
+
+      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
+      # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
+      # runner 目前是 macos-14(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
+      # 注入,tauri build 会硬失败。同 release-macos.sh / mac-build.yml 的 workaround。
+      - name: macOS 27+ strip workaround
+        run: |
+          if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
+            echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
+            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
+            echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
+          else
+            echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
+          fi
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它,
+      # 而 tauri_build::build() 会校验 tauri.conf resources 路径存在。
+      # 造空占位文件骗过资源校验即可(同 mac-build.yml)。
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: 构建 dmg
+        working-directory: pinvou3-app
+        env:
+          VERSION: ${{ needs.check-version-bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          npx tauri build --target aarch64-apple-darwin
+
+          DMG="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_aarch64.dmg"
+          APP_BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/pinvou3.app"
+
+          # dmg 打包偶发失败兜底(同 release-macos.sh 的三级策略):
+          # bundle_dmg.sh 调 osascript 做 Finder 图标美化,CI 无 head 交互环境下偶尔失败
+          # (残留临时镜像 / Finder 进程 / osascript 自动化权限)。非 macOS 固有 bug,重跑通常就好。
+          # 本 workflow 产出可用 dmg 作 artifact,不能用 continue-on-error,必须带兜底。
+          if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
+            echo "⚠️ Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
+            npx tauri build --target aarch64-apple-darwin --bundles dmg || echo "⚠️ 重试仍失败,降级手动 hdiutil"
+          fi
+
+          # 重试后仍无 dmg:手动 hdiutil 兜底(无 Finder 图标美化,但 dmg 功能完整)。
+          if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
+            echo "⚠️ 降级手动 hdiutil 打包(无 Finder 图标美化)"
+            DMG_DIR="$(dirname "$DMG")"
+            rm -f "$DMG_DIR"/rw.*.dmg 2>/dev/null || true
+            TMP_DMG="$DMG_DIR/rw.fallback.dmg"
+            hdiutil create -ov -volname "pinvou3" -srcfolder "$APP_BUNDLE" \
+              -fs HFS+ -format UDRW "$TMP_DMG" >/dev/null
+            DEV=$(hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" 2>/dev/null \
+                  | grep -E '^/dev/' | sed '1q' | awk '{print $1}')
+            ln -sf /Applications "/Volumes/pinvou3/Applications" 2>/dev/null || true
+            hdiutil detach "$DEV" >/dev/null 2>&1
+            hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null
+            rm -f "$TMP_DMG"
+            echo "✓ 手动 dmg 打包完成(无 Finder 图标美化)"
+          fi
+
+          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
+
+          # 校验 + 写 checksum 文件(随 artifact 附带)
+          cd src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
+          SHA=$(shasum -a 256 "pinvou3_${VERSION}_aarch64.dmg" | awk '{print $1}')
+          echo "dmg sha256: $SHA"
+          echo "$SHA  pinvou3_${VERSION}_aarch64.dmg" > "pinvou3_${VERSION}_aarch64.dmg.sha256"
+          ls -lh "pinvou3_${VERSION}_aarch64.dmg"
+
+      - name: 上传 dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinvou3-macos-${{ needs.check-version-bump.outputs.version }}-aarch64
+          path: |
+            pinvou3-app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_aarch64.dmg
+            pinvou3-app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_aarch64.dmg.sha256
+          retention-days: 90
+          if-no-files-found: error
