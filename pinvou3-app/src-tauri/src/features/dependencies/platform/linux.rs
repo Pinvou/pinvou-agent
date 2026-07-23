@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use super::super::linux_packages::validate_packages;
+use super::linux_packages::validate_packages;
 
 pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
     validate_packages(&packages)?;

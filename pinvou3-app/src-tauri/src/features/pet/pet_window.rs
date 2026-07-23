@@ -175,12 +175,7 @@ fn pet_window_effective_size(
     activity_height: Option<f64>,
 ) -> (f64, f64) {
     let size = pet_window_logical_size(scale, activity_visible, activity_height);
-    #[cfg(target_os = "linux")]
-    let size = {
-        const WEBVIEW_MIN: f64 = 200.0;
-        (size.0.max(WEBVIEW_MIN), size.1.max(WEBVIEW_MIN))
-    };
-    size
+    super::platform::effective_window_size(size)
 }
 
 fn activity_content_height(activity_height: Option<f64>) -> f64 {
@@ -1149,15 +1144,13 @@ mod tests {
         // 贴底布局:y = 窗高 - 8 - 人物高,与卡片存在与否无关。
         // 紧凑 0.5 档在 Linux 上按 200x200 生效尺寸计算(WebKitGTK 最小内容
         // 尺寸,见 pet_window_effective_size),局部坐标随之不同。
-        #[cfg(not(target_os = "linux"))]
+        let effective_size = super::super::platform::effective_window_size((144.0, 165.0));
         assert_eq!(
             character_local_top_left(0.5, false, None, "right", PetVerticalAlignment::Bottom,),
-            (24.0, 53.0)
-        );
-        #[cfg(target_os = "linux")]
-        assert_eq!(
-            character_local_top_left(0.5, false, None, "right", PetVerticalAlignment::Bottom,),
-            (80.0, 88.0)
+            (
+                effective_size.0 - PET_HORIZONTAL_PADDING / 2.0 - PET_FRAME_W * 0.5,
+                effective_size.1 - PET_CHARACTER_BOTTOM - PET_FRAME_H * 0.5,
+            )
         );
         assert_eq!(
             character_local_top_left(1.0, false, None, "left", PetVerticalAlignment::Bottom,),
@@ -1185,10 +1178,10 @@ mod tests {
 
     #[test]
     fn effective_size_floors_to_webview_min_on_linux_only() {
-        #[cfg(target_os = "linux")]
-        assert_eq!(pet_window_effective_size(0.5, false, None), (200.0, 200.0));
-        #[cfg(not(target_os = "linux"))]
-        assert_eq!(pet_window_effective_size(0.5, false, None), (144.0, 165.0));
+        assert_eq!(
+            pet_window_effective_size(0.5, false, None),
+            super::super::platform::effective_window_size((144.0, 165.0))
+        );
         // 高于下限的尺寸各平台一致。
         assert_eq!(pet_window_effective_size(1.0, true, None), (350.0, 332.0));
     }

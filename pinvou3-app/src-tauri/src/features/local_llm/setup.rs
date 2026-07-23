@@ -705,9 +705,11 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn runtime_commands_have_a_hard_timeout() {
+        if !crate::platform::capabilities::is_unix() {
+            return;
+        }
         let success =
             command_output_with_timeout("sh", &["-c", "printf ready"], Duration::from_millis(500))
                 .expect("quick command should complete");

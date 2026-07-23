@@ -843,7 +843,6 @@ fn canonical_inside(path: &Path, root: &Path, label: &str) -> Result<PathBuf, St
 }
 
 fn windows_tool_path(path: &Path) -> PathBuf {
-    #[cfg(windows)]
     {
         use std::path::Prefix;
 

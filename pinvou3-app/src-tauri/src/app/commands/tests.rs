@@ -3,6 +3,7 @@ use super::{
     personas::*, sessions::*, voice::*, workflows::*,
 };
 use super::prelude::*;
+use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
 use std::path::{Path, PathBuf};
 
@@ -845,15 +846,16 @@ use std::path::{Path, PathBuf};
         );
 
         // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
-        #[cfg(unix)]
+        let absolute = std::env::current_dir().unwrap().join("artifact-test.html");
+        let absolute = absolute.to_string_lossy().to_string();
         assert_eq!(
             resolve_artifact_path(
-                "/home/u/.pinvou3/sessions/x/workspace/a.html",
+                &absolute,
                 Some("sess-owner"),
                 &store
             )
             .expect("absolute artifact"),
-            "/home/u/.pinvou3/sessions/x/workspace/a.html"
+            absolute
         );
     }
 
@@ -1228,8 +1230,10 @@ use std::path::{Path, PathBuf};
 
     /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
     #[test]
-    #[cfg(unix)]
     fn validate_user_path_blocks_etc_shadow() {
+        if !crate::platform::capabilities::is_unix() {
+            return;
+        }
         let result = validate_user_path("/etc/shadow");
         assert!(result.is_err(), "/etc/shadow 必须拒绝, got {result:?}");
         assert!(result.unwrap_err().contains("system-sensitive"));
@@ -1313,49 +1317,6 @@ use std::path::{Path, PathBuf};
                 "ordinary basename must remain valid: {valid:?}"
             );
         }
-    }
-
-    #[cfg(unix)]
-    fn try_link_file(target: &std::path::Path, link: &std::path::Path) -> bool {
-        std::os::unix::fs::symlink(target, link).is_ok()
-    }
-
-    #[cfg(windows)]
-    fn try_link_file(target: &std::path::Path, link: &std::path::Path) -> bool {
-        std::os::windows::fs::symlink_file(target, link).is_ok()
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn try_link_file(_target: &std::path::Path, _link: &std::path::Path) -> bool {
-        false
-    }
-
-    #[cfg(unix)]
-    fn try_link_dir(target: &std::path::Path, link: &std::path::Path) -> bool {
-        std::os::unix::fs::symlink(target, link).is_ok()
-    }
-
-    #[cfg(windows)]
-    fn try_link_dir(target: &std::path::Path, link: &std::path::Path) -> bool {
-        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
-            return true;
-        }
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(link)
-            .arg(target)
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn try_link_dir(_target: &std::path::Path, _link: &std::path::Path) -> bool {
-        false
     }
 
     #[test]
@@ -1451,10 +1412,7 @@ use std::path::{Path, PathBuf};
             "validation must happen before creating children through the link"
         );
 
-        #[cfg(windows)]
-        let _ = std::fs::remove_dir(&linked_parent);
-        #[cfg(not(windows))]
-        let _ = std::fs::remove_file(&linked_parent);
+        remove_dir_link(&linked_parent);
         let _ = std::fs::remove_dir_all(root);
     }
 

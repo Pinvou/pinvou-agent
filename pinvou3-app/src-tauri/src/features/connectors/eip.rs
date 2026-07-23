@@ -106,97 +106,12 @@ fn device_id() -> String {
 
 /// 定位 EIP CLI 二进制(按平台选 `.exe` / ELF)。Linux 下确保有执行权限。
 fn eip_bin_path() -> Result<PathBuf, String> {
-    let name = if cfg!(windows) {
-        "eip-cli.exe"
-    } else if std::env::consts::ARCH == "aarch64" {
-        "eip-cli-aarch64"
-    } else {
-        "eip-cli"
-    };
-    let p = crate::platform::paths::bundle_skills_dir()
-        .join("eip")
-        .join("bin")
-        .join(name);
-    if !p.is_file() {
-        #[cfg(unix)]
-        if std::env::consts::ARCH == "aarch64"
-            && crate::platform::paths::bundle_skills_dir()
-                .join("eip")
-                .join("bin")
-                .join("eip-cli")
-                .is_file()
-        {
-            return Err(format!(
-                "eip-cli Linux ARM64 binary missing: expected {}. Bundle contains eip-cli, but this Linux device is aarch64; please package a matching aarch64 binary as eip-cli-aarch64.",
-                p.display()
-            ));
-        }
-        #[cfg(unix)]
-        if crate::platform::paths::bundle_skills_dir()
-            .join("eip")
-            .join("bin")
-            .join("eip-cli.exe")
-            .is_file()
-        {
-            return Err(format!(
-                "eip-cli Linux binary missing: expected {} for {}. Bundle only contains the Windows .exe; H3C EIP is unavailable on this Linux device until a matching Linux binary is packaged.",
-                p.display(),
-                std::env::consts::ARCH
-            ));
-        }
-        return Err(format!(
-            "eip-cli 未找到: {}(需先把 EIP 技能二进制打包进 bundle)",
-            p.display()
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        validate_linux_cli_arch(&p, "eip-cli")?;
-        if let Ok(meta) = std::fs::metadata(&p) {
-            let mode = meta.permissions().mode();
-            if mode & 0o111 == 0 {
-                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
-            }
-        }
-    }
-    Ok(p)
-}
-
-#[cfg(unix)]
-fn validate_linux_cli_arch(path: &std::path::Path, label: &str) -> Result<(), String> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Ok(());
-    };
-    if bytes.len() < 20 || &bytes[0..4] != b"\x7FELF" || bytes[5] != 1 {
-        return Ok(());
-    }
-    let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
-    let actual = match machine {
-        62 => "x86_64",
-        183 => "aarch64",
-        3 => "x86",
-        40 => "arm",
-        _ => "unknown",
-    };
-    let expected = std::env::consts::ARCH;
-    let compatible = matches!(
-        (expected, actual),
-        ("x86_64", "x86_64") | ("aarch64", "aarch64") | ("arm", "arm") | ("x86", "x86")
-    );
-    if compatible {
-        Ok(())
-    } else {
-        Err(format!(
-            "{label} architecture mismatch: packaged binary is {actual}, but this Linux device is {expected}. Please package a matching {expected} Linux binary at {}.",
-            path.display()
-        ))
-    }
+    super::platform::eip_bin_path()
 }
 
 // ──────────────────────────── 子进程封装 ────────────────────────────
 
-/// 构造 `eip-cli` 命令:注入 AGENT_* 环境,Windows 抑黑窗。
+/// 构造 EIP CLI 命令并注入运行环境。
 fn base_cmd() -> Result<Command, String> {
     let bin = eip_bin_path()?;
     let mut c = Command::new(&bin);
@@ -217,12 +132,7 @@ fn base_cmd() -> Result<Command, String> {
     }
     c.env("NO_PROXY", "*");
     c.env("no_proxy", "*");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        c.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::platform::process::hide_std_console(&mut c);
     Ok(c)
 }
 

@@ -739,7 +739,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
         // Windows:python-pptx 等依赖已随内置 python(python-win)预装,不在用户机器
         // 跑 pip —— 用户也就不需要自己装 python。仅 Linux/macOS 走系统 python3 联网 pip。
-        if cfg!(target_os = "windows") {
+        if crate::platform::capabilities::is_windows() {
             return Ok(());
         }
         let python_cmd = "python3";

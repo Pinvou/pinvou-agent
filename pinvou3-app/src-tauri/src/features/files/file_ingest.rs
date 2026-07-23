@@ -2633,9 +2633,11 @@ mod tests {
         assert!(arg.ends_with("profile%20dir"));
     }
 
-    #[cfg(windows)]
     #[test]
     fn validate_path_accepts_windows_canonicalized_home_file() {
+        if !crate::platform::capabilities::is_windows() {
+            return;
+        }
         let home = crate::platform::os::user_home_dir();
         let file = home.join(format!(
             "pinvou3-validate-path-{}.txt",
@@ -2720,9 +2722,11 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_archive_missing_message_points_to_bundled_runtime() {
+        if !crate::platform::capabilities::is_windows() {
+            return;
+        }
         let message = archive_tool_missing_message();
 
         assert!(message.contains("内置压缩包解析组件"));
@@ -2785,9 +2789,11 @@ mod tests {
         assert!(parsed.contains("OpenAI") || parsed.contains("正文:"));
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_invalid_msg_returns_warning_without_msgconvert_dependency() {
+        if !crate::platform::capabilities::is_windows() {
+            return;
+        }
         let tmp = std::env::temp_dir().join("pinvou3-invalid-msg-test.msg");
         std::fs::write(&tmp, b"not an outlook msg").unwrap();
 
@@ -2805,9 +2811,11 @@ mod tests {
         assert!(!warning.contains("msgconvert"));
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_email_dependency_check_uses_native_msg_parser() {
+        if !crate::platform::capabilities::is_windows() {
+            return;
+        }
         let deps = check_dependencies();
         let email = deps
             .iter()
@@ -2891,9 +2899,11 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_pandoc_missing_message_points_to_repair_install() {
+        if !crate::platform::capabilities::is_windows() {
+            return;
+        }
         let message = crate::platform::os::pandoc_missing_message();
         assert!(!message.contains("sudo apt install pandoc"));
         assert!(message.contains("修复") || message.contains("重新安装"));

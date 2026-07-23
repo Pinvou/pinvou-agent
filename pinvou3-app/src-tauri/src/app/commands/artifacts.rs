@@ -123,20 +123,7 @@ pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::i
         f.sync_all()?;
         drop(f);
 
-        #[cfg(windows)]
-        {
-            std::fs::rename(path, &backup)?;
-            if let Err(e) = std::fs::rename(&tmp, path) {
-                let _ = std::fs::rename(&backup, path);
-                return Err(e);
-            }
-            let _ = std::fs::remove_file(&backup);
-        }
-
-        #[cfg(not(windows))]
-        {
-            std::fs::rename(&tmp, path)?;
-        }
+        crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup)?;
 
         if let Ok(dir) = std::fs::File::open(parent) {
             let _ = dir.sync_all();

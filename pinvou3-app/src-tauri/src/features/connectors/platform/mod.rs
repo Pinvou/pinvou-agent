@@ -1,15 +1,13 @@
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(any(target_os = "linux", test))]
-mod linux_packages;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
 #[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(target_os = "linux")]
-pub use linux::install_dependencies;
+pub(super) use linux::{eip_bin_path, zhidao_bin_path};
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-pub use unsupported::install_dependencies;
+pub(super) use unsupported::{eip_bin_path, zhidao_bin_path};
 #[cfg(target_os = "windows")]
-pub use windows::install_dependencies;
+pub(super) use windows::{eip_bin_path, zhidao_bin_path};

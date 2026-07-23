@@ -105,28 +105,8 @@ fn reserve_unique_staged_file(
     None
 }
 
-#[cfg(unix)]
 fn staged_reserved_target_is_unchanged(file: &std::fs::File, path: &std::path::Path) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    let (Ok(opened), Ok(named)) = (file.metadata(), std::fs::symlink_metadata(path)) else {
-        return false;
-    };
-    named.file_type().is_file() && opened.dev() == named.dev() && opened.ino() == named.ino()
-}
-
-#[cfg(windows)]
-fn staged_reserved_target_is_unchanged(_file: &std::fs::File, path: &std::path::Path) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    let Ok(named) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    named.file_type().is_file() && named.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-}
-
-#[cfg(not(any(unix, windows)))]
-fn staged_reserved_target_is_unchanged(_file: &std::fs::File, path: &std::path::Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+    crate::platform::filesystem::reserved_target_is_unchanged(file, path)
 }
 
 fn staged_target_is_safe(

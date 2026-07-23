@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod identity;
 pub mod models;
+mod platform;
 pub mod provisioning;
 pub mod store;
 pub mod usage;

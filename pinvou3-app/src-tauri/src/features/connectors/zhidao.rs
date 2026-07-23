@@ -89,71 +89,12 @@ fn device_id() -> String {
 }
 
 fn zhidao_bin_path() -> Result<PathBuf, String> {
-    // Windows ships a native reimplementation (zhidao-cli.exe, see resources/common/bundle/
-    // zhidao/win-src); Unix runs the CLI binary directly so architecture errors
-    // surface before the wrapper hides them as a generic connection failure.
-    let name = if cfg!(windows) {
-        "zhidao-cli.exe"
-    } else if std::env::consts::ARCH == "aarch64" {
-        "zhidao-cli-aarch64"
-    } else {
-        "zhidao-cli"
-    };
-    let p = crate::platform::paths::bundle_skills_dir()
-        .join("zhidao")
-        .join("bin")
-        .join(name);
-    if !p.is_file() {
-        return Err(format!(
-            "zhidao CLI 未找到: {}(需先把知道技能二进制打包进 bundle)",
-            p.display()
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        validate_linux_cli_arch(&p, "zhidao-cli")?;
-        if let Ok(meta) = std::fs::metadata(&p) {
-            let mode = meta.permissions().mode();
-            if mode & 0o111 == 0 {
-                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
-            }
-        }
-    }
-    Ok(p)
+    super::platform::zhidao_bin_path()
 }
 
-#[cfg(unix)]
-fn validate_linux_cli_arch(path: &std::path::Path, label: &str) -> Result<(), String> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Ok(());
-    };
-    if bytes.len() < 20 || &bytes[0..4] != b"\x7FELF" || bytes[5] != 1 {
-        return Ok(());
-    }
-    let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
-    let actual = match machine {
-        62 => "x86_64",
-        183 => "aarch64",
-        3 => "x86",
-        40 => "arm",
-        _ => "unknown",
-    };
-    let expected = std::env::consts::ARCH;
-    let compatible = matches!(
-        (expected, actual),
-        ("x86_64", "x86_64") | ("aarch64", "aarch64") | ("arm", "arm") | ("x86", "x86")
-    );
-    if compatible {
-        Ok(())
-    } else {
-        Err(format!(
-            "{label} architecture mismatch: packaged binary is {actual}, but this Linux device is {expected}. Please package a matching {expected} Linux binary at {}.",
-            path.display()
-        ))
-    }
-}
+// ──────────────────────────── 子进程封装 ────────────────────────────
 
+/// 构造 知道 CLI 命令并注入运行环境。
 fn base_cmd() -> Result<Command, String> {
     let mut c = Command::new(zhidao_bin_path()?);
     c.env("AGENT_DEVICE_ID", device_id());
@@ -171,12 +112,7 @@ fn base_cmd() -> Result<Command, String> {
     }
     c.env("NO_PROXY", "*");
     c.env("no_proxy", "*");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        c.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::platform::process::hide_std_console(&mut c);
     Ok(c)
 }
 

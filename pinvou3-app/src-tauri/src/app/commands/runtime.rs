@@ -35,12 +35,14 @@ pub struct PlatformCapabilities {
 
 impl PlatformCapabilities {
     fn current() -> Self {
+        let capabilities = crate::platform::capabilities::current();
         Self {
-            os: std::env::consts::OS,
-            show_megacube_site: cfg!(target_os = "linux"),
-            show_super_permission_settings: cfg!(target_os = "linux"),
-            uses_bundled_dependency_installer: cfg!(target_os = "windows"),
-            task_completion_notifications_default: !cfg!(target_os = "linux"),
+            os: capabilities.os,
+            show_megacube_site: capabilities.show_megacube_site,
+            show_super_permission_settings: capabilities.show_super_permission_settings,
+            uses_bundled_dependency_installer: capabilities.uses_bundled_dependency_installer,
+            task_completion_notifications_default: capabilities
+                .task_completion_notifications_default,
         }
     }
 }
@@ -85,18 +87,19 @@ mod platform_capability_tests {
     #[test]
     fn semantic_capabilities_match_the_compiled_target() {
         let capabilities = get_platform_capabilities();
-        assert_eq!(capabilities.os, std::env::consts::OS);
+        let expected = crate::platform::capabilities::current();
+        assert_eq!(capabilities.os, expected.os);
         assert_eq!(
             capabilities.uses_bundled_dependency_installer,
-            cfg!(target_os = "windows")
+            expected.uses_bundled_dependency_installer
         );
         assert_eq!(
             capabilities.show_super_permission_settings,
-            cfg!(target_os = "linux")
+            expected.show_super_permission_settings
         );
         assert_eq!(
             capabilities.task_completion_notifications_default,
-            !cfg!(target_os = "linux")
+            expected.task_completion_notifications_default
         );
     }
 }

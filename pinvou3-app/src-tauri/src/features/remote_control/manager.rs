@@ -2899,12 +2899,8 @@ mod tests {
         )
         .is_err());
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-
-            let link = paths::session_workspace_dir(current_session).join("outside-link.txt");
-            symlink(&outside_file, &link).expect("create escape symlink");
+        let link = paths::session_workspace_dir(current_session).join("outside-link.txt");
+        if crate::platform::filesystem::tests::try_link_file(&outside_file, &link) {
             assert!(
                 resolve_session_preview_path(&store, current_session, "outside-link.txt").is_err()
             );

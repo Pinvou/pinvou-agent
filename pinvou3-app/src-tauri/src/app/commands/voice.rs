@@ -74,16 +74,6 @@ fn voice_temp_wav_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("pinvou3-voice-{}-{stamp}.wav", std::process::id()))
 }
 
-#[cfg(windows)]
-fn hide_child_console(command: &mut std::process::Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_child_console(_command: &mut std::process::Command) {}
-
 struct LocalAsrOutput {
     text: String,
 }
@@ -192,7 +182,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    hide_child_console(&mut command);
+    crate::platform::process::hide_std_console(&mut command);
 
     let mut child = command.spawn().map_err(|e| {
         let message = if e.kind() == std::io::ErrorKind::NotFound {

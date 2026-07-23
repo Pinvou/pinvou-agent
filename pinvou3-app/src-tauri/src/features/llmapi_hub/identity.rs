@@ -18,31 +18,7 @@ impl IdentityResolver for SystemIdentityResolver {
 }
 
 pub fn resolve_current_identity() -> Result<LlmApiIdentity, LlmApiError> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        return Err(LlmApiError::new(
-            LlmApiErrorCode::UnsupportedPlatform,
-            "LLM API Hub is currently only available on Windows",
-            false,
-        ));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let bios_sn = crate::platform::os::bios_serial_number().map_err(|err| {
-            LlmApiError::new(
-                LlmApiErrorCode::DeviceBindingFailed,
-                format!("Failed to read device binding information: {err}"),
-                true,
-            )
-        })?;
-        let bound_hash = std::env::var(PINVOU_BOUND_BIOS_SN_SHA256_ENV)
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase())
-            .filter(|v| !v.is_empty());
-
-        resolve_identity_from_parts(&bios_sn, bound_hash.as_deref())
-    }
+    super::platform::resolve_current_identity()
 }
 
 pub fn resolve_identity_from_parts(

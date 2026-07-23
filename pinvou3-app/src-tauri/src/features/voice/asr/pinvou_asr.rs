@@ -10,11 +10,12 @@
 //!   pinvou-asr asr --model sensevoice-q8 --lang zh --input input.wav
 
 use std::env;
-use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+mod platform;
 
 const DEFAULT_MODEL: &str = "sensevoice-q8";
 const DEFAULT_LANG: &str = "zh";
@@ -247,7 +248,7 @@ fn run_backend(backend: &Backend, request: &AsrRequest) -> Result<BackendOutput,
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    hide_child_console(&mut command);
+    platform::hide_child_console(&mut command);
 
     let mut child = command.spawn().map_err(|err| {
         AsrCliError::BackendFailed(format!(
@@ -303,16 +304,6 @@ fn run_backend(backend: &Backend, request: &AsrRequest) -> Result<BackendOutput,
     Ok(BackendOutput { stdout, stderr })
 }
 
-#[cfg(windows)]
-fn hide_child_console(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_child_console(_command: &mut Command) {}
-
 #[derive(Debug, Clone)]
 struct BackendResolveError(String);
 
@@ -332,14 +323,14 @@ fn resolve_backend() -> Result<Backend, BackendResolveError> {
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     if let Some(dir) = exe_dir {
-        for candidate in sibling_sensevoice_candidates(&dir) {
+        for candidate in platform::sibling_sensevoice_candidates(&dir) {
             if candidate.is_file() {
                 return Ok(Backend::SenseVoice {
                     executable: candidate,
                 });
             }
         }
-        for candidate in sibling_paddlespeech_candidates(&dir) {
+        for candidate in platform::sibling_paddlespeech_candidates(&dir) {
             if candidate.is_file() {
                 return Ok(Backend::PaddleSpeech {
                     executable: candidate,
@@ -384,45 +375,6 @@ fn backend_from_path(path: PathBuf) -> Backend {
     } else {
         Backend::SenseVoice { executable: path }
     }
-}
-
-fn sibling_sensevoice_candidates(dir: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    #[cfg(windows)]
-    {
-        candidates.push(dir.join("llama-funasr-sensevoice.exe"));
-        candidates.push(dir.join("runtime").join("llama-funasr-sensevoice.exe"));
-        candidates.push(
-            dir.join("runtime")
-                .join("bin")
-                .join("llama-funasr-sensevoice.exe"),
-        );
-        candidates.push(dir.join("bin").join("llama-funasr-sensevoice.exe"));
-    }
-    #[cfg(not(windows))]
-    {
-        candidates.push(dir.join("llama-funasr-sensevoice"));
-        candidates.push(dir.join("runtime").join("llama-funasr-sensevoice"));
-        candidates.push(dir.join("runtime").join("bin").join("llama-funasr-sensevoice"));
-        candidates.push(dir.join("bin").join("llama-funasr-sensevoice"));
-    }
-    candidates
-}
-
-fn sibling_paddlespeech_candidates(dir: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    #[cfg(windows)]
-    {
-        candidates.push(dir.join("paddlespeech.exe"));
-        candidates.push(dir.join("runtime").join("Scripts").join("paddlespeech.exe"));
-        candidates.push(dir.join("runtime").join("paddlespeech.exe"));
-    }
-    #[cfg(not(windows))]
-    {
-        candidates.push(dir.join("paddlespeech"));
-        candidates.push(dir.join("runtime").join("bin").join("paddlespeech"));
-    }
-    candidates
 }
 
 fn backend_dir(backend: &Backend) -> Option<PathBuf> {
@@ -488,33 +440,8 @@ fn command_name_exists(command: &Path) -> bool {
     let Some(path) = env::var_os("PATH") else {
         return false;
     };
-    let names = executable_names(command.as_os_str());
+    let names = platform::executable_names(command.as_os_str());
     env::split_paths(&path).any(|dir| names.iter().any(|name| dir.join(name).is_file()))
-}
-
-fn executable_names(command: &OsStr) -> Vec<PathBuf> {
-    let raw = command.to_string_lossy();
-    #[cfg(windows)]
-    {
-        if Path::new(raw.as_ref()).extension().is_some() {
-            return vec![PathBuf::from(raw.as_ref())];
-        }
-        let pathext = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-        let mut names = vec![PathBuf::from(raw.as_ref())];
-        for ext in pathext.split(';').filter(|ext| !ext.trim().is_empty()) {
-            let ext = if ext.starts_with('.') {
-                ext.to_string()
-            } else {
-                format!(".{ext}")
-            };
-            names.push(PathBuf::from(format!("{raw}{ext}")));
-        }
-        names
-    }
-    #[cfg(not(windows))]
-    {
-        vec![PathBuf::from(raw.as_ref())]
-    }
 }
 
 fn parse_asr_text(stdout: &str, stderr: &str) -> Option<String> {
