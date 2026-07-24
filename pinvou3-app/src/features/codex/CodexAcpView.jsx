@@ -170,13 +170,7 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
 function CommandExecutionItem({ item, now }) {
   const details = commandExecutionDetails(item.tool);
   const state = terminalStatus(item.status, details.exitCode);
-  const [open, setOpen] = useState(state === 'failed');
-  const wasRunning = useRef(state === 'running');
-  useEffect(() => {
-    if (state === 'running') setOpen(true);
-    else if (wasRunning.current) setOpen(state === 'failed');
-    wasRunning.current = state === 'running';
-  }, [state]);
+  const [open, setOpen] = useState(false);
   const countHint = details.commandCount > 1 ? ` · ${details.commandCount} 段` : '';
   const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const outcome = state === 'running'
@@ -206,8 +200,7 @@ function CommandExecutionItem({ item, now }) {
 function GenericToolItem({ item, now }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
-  const [open, setOpen] = useState(state === 'failed');
-  useEffect(() => { if (state === 'running') setOpen(true); }, [state]);
+  const [open, setOpen] = useState(false);
   const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? '文件变更' : (tool.kind || 'Codex 工具');
   return (
@@ -241,13 +234,7 @@ function ToolGroup({ group, now }) {
     item.status,
     item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
   ) === 'failed');
-  const [open, setOpen] = useState(running || failed);
-  const wasRunning = useRef(running);
-  useEffect(() => {
-    if (running) setOpen(true);
-    else if (wasRunning.current) setOpen(failed);
-    wasRunning.current = running;
-  }, [running, failed]);
+  const [open, setOpen] = useState(false);
   return (
     <div>
       <button type="button" onClick={() => setOpen(value => !value)}

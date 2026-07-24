@@ -184,6 +184,14 @@ try {
   assert.ok(codexView.includes('临时会话'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('思考中'), 'running reasoning must expose a timer label');
   assert.ok(codexView.includes('执行步骤'), 'tool items must use a compact presentation group');
+  assert.ok(!codexView.includes("useState(state === 'failed')"),
+    'failed operation details must stay collapsed until the user opens them');
+  assert.ok(!codexView.includes('useState(running || failed)'),
+    'operation groups must not expand automatically for running or failed items');
+  assert.ok(!codexView.includes("if (state === 'running') setOpen(true)"),
+    'running operation details must not interrupt the conversation by auto-expanding');
+  assert.ok(!codexView.includes('if (running) setOpen(true)'),
+    'running operation groups must remain compact by default');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', { sessionId: activeId, message })"));
   assert.ok(codexView.includes('className="codex-markdown'), 'Codex Markdown must use an isolated style scope');
