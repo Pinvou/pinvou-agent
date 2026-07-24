@@ -3,6 +3,17 @@
 Date: 2026-07-24
 Branch/worktree: `work/design-mode-20260724`
 Status: paused until next week
+PR status: Draft only. Do not merge until the missing business integrations are complete.
+
+## Handoff Summary
+
+This branch is an interaction/UI shell for the new composer modes. It is intended for product/design review and for the next engineer to continue wiring behavior.
+
+Do not treat this branch as feature-complete:
+
+- Code Agent provider buttons are UI state only.
+- Work/design secondary tabs are category selectors only.
+- Content generation and Code Agent dispatch are not implemented.
 
 ## Current State
 
@@ -53,15 +64,20 @@ The Tauri dev app was running during iteration at `http://127.0.0.1:1420`.
 ## PR / Repository Notes
 
 - Correct target repository: `https://github.com/Pinvou/pinvou-agent`.
-- Local commit: `8e6048f7 Add design mode composer UI`.
+- Local commits:
+  - `8e6048f7 Add design mode composer UI`
+  - `30832f1c Update design mode handoff notes`
 - A draft PR was accidentally opened against the old repository: `https://github.com/Pinvou/pinvou3/pull/250`.
 - Do not continue that PR if the target repository has changed.
-- When work resumes next week, push `work/design-mode-20260724` to `Pinvou/pinvou-agent` and open a new Draft PR there.
-- The Draft PR description should explicitly say this branch is UI/interaction shell only and leaves content/code execution integration for follow-up.
+- Open a new Draft PR in `Pinvou/pinvou-agent`.
+- The Draft PR description must explicitly say this branch is UI/interaction shell only and must not be merged before content/code execution integration is complete.
 - Untracked local dev file intentionally left out of commit: `src-tauri/config/dev-port-1421.conf.json`.
 
-## Follow-Up Notes
+## Next Implementation Steps
 
-- The current secondary tabs are visual-only selectors for work/design categories; wire behavior when the product flow is defined.
-- If the tab labels grow, check the composer on narrow widths because the secondary row uses horizontal overflow.
+- Define the backend/frontend dispatch contract for Code Agent execution.
+- Wire `Codex`, `Claude Code`, and `Kimi Code` provider selection to real execution paths.
+- Decide what each work/design secondary tab should do when selected or submitted.
+- Implement content-generation flows for `公文写作`, `PPT设计`, `数据可视化`, `海报`, `网页`, `Banner`, `Logo`, and `UI界面`.
+- Recheck narrow-width layout if more secondary tab labels are added; the row currently uses horizontal overflow.
 - Keep code provider icons as real brand assets. Do not replace them with generic or approximate icons.
