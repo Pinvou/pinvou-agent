@@ -16,12 +16,12 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           title={!isSidebarOpen ? label : ""}
           style={dragging ? { opacity: 0.4 } : undefined}
           className={`group flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
-          ${isSidebarOpen ? 'px-4 py-3 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
+          ${isSidebarOpen ? 'px-4 py-2 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
             : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
         >
-          <div className={`relative ${isSidebarOpen ? 'mr-4' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
+          <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
             {icon}
             {unread && (
               <span data-testid="scheduled-nav-unread" aria-label="定时任务有未查看的运行对话"

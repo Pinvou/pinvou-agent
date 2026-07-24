@@ -71,12 +71,13 @@ function defaultModelPresetForCapabilities(capabilities) {
        Lucide icon replacements (inline SVG)
        ========================================== */
     const appWindow = tryGetCurrentTauriWindow();
-    const TitleBar = ({ theme, t }) => {
+    const TitleBar = ({ theme, t, sidebarOpen = true }) => {
       const isDark = theme === 'dark';
       const hoverBg = isDark ? 'hover:bg-white/10' : 'hover:bg-black/10';
+      const titleBarBg = isDark ? (sidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]';
       return (
         <div data-tauri-drag-region
-          className={`h-9 shrink-0 flex items-center justify-between select-none ${isDark ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
+          className={`h-9 shrink-0 flex items-center justify-between select-none ${titleBarBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
           <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-[13px] font-medium pointer-events-none">
             <img src="/assets/brand/brand-blue.png" width={18} height={18} alt="" className="select-none" />
             {t.appTitle}
@@ -538,6 +539,7 @@ function defaultModelPresetForCapabilities(capabilities) {
       const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
       const canDetachWindows = can('detachWindows');
       const [chatPrefill, setChatPrefill] = useState('');
+      const [searchOverlayOpen, setSearchOverlayOpen] = useState(false);
       const composerPrefillSeenRef = useRef(0);
       const scheduledTaskAutoOpenSeenRef = useRef(null);
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
@@ -1075,6 +1077,11 @@ function defaultModelPresetForCapabilities(capabilities) {
         setActiveChat(id);
         setCurrentView('chat');
         closeMobileSidebar();
+      }
+
+      async function handleSearchSelect(id) {
+        await handleSwitchSession(id);
+        setSearchOverlayOpen(false);
       }
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
@@ -1628,7 +1635,18 @@ function defaultModelPresetForCapabilities(capabilities) {
             document.body
           )}
 
-          {can('desktopChrome') && <TitleBar theme={activeTheme} t={t} />}
+          {searchOverlayOpen && createPortal(
+            <SearchOverlay
+              theme={activeTheme}
+              history={chatHistory}
+              t={t}
+              onSelect={handleSearchSelect}
+              onClose={() => setSearchOverlayOpen(false)}
+            />,
+            document.body
+          )}
+
+          {can('desktopChrome') && <TitleBar theme={activeTheme} t={t} sidebarOpen={isSidebarOpen} />}
 
           {isCompactShell && (
             <MobileTopBar theme={activeTheme} t={t} title={mobileTitle}
@@ -1636,7 +1654,7 @@ function defaultModelPresetForCapabilities(capabilities) {
               onNewChat={currentView === 'chat' ? () => handleNewChat() : undefined} />
           )}
 
-          <div className="flex flex-1 min-h-0">
+          <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]'}`}>
 
           {isWeb && isSidebarOpen && (
             <button
@@ -1660,7 +1678,7 @@ function defaultModelPresetForCapabilities(capabilities) {
             className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
 
             {/* Header / Logo */}
-            <div className={`px-4 py-4 max-sm:px-3 max-sm:py-0 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
+            <div className={`px-4 py-3 max-sm:px-3 max-sm:py-0 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
               <button
                 data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -1672,23 +1690,40 @@ function defaultModelPresetForCapabilities(capabilities) {
               <span className={`text-[18px] font-medium tracking-wide flex items-center gap-2 whitespace-nowrap transition-opacity duration-200 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 w-0'}`}>
                 PINVOU
               </span>
+              {isSidebarOpen && !isCompactShell && (
+                <button
+                  type="button"
+                  onClick={() => setSearchOverlayOpen(true)}
+                  title={t.searchChats}
+                  aria-label={t.searchChats}
+                  className={`ml-auto w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                    searchOverlayOpen
+                      ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
+                      : (activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]')
+                  }`}
+                >
+                  <Search size={19} />
+                </button>
+              )}
             </div>
 
             {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
-            <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-1 mt-3 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
+            <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
-              <NavItem
-                icon={<Search size={18} />} label={t.searchChats}
-                active={currentView === 'search'}
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('search')}
-              />
+              {(!isSidebarOpen || isCompactShell) && (
+                <NavItem
+                  icon={<Search size={18} />} label={t.searchChats}
+                  active={searchOverlayOpen}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => setSearchOverlayOpen(true)}
+                />
+              )}
               {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
                   icon={<Clock size={18} />} label={t.scheduledPlans}
@@ -1713,20 +1748,20 @@ function defaultModelPresetForCapabilities(capabilities) {
                 dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('monitor', undefined, t.monitor, geom) : undefined}
               />
               <NavItem
-                icon={<Layers size={18} />} label={t.cardPool}
-                active={currentView === 'cardpool'}
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
-              />
-              <NavItem
                 icon={<Puzzle size={18} />} label={t.toolStore}
                 active={currentView === 'toolStore'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('toolStore')}
                 dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
+              />
+              <NavItem
+                icon={<Layers size={18} />} label={t.cardPool}
+                active={currentView === 'cardpool'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
+                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
@@ -1954,7 +1989,7 @@ function defaultModelPresetForCapabilities(capabilities) {
           </div>
 
           {/* ================= Main Content ================= */}
-          <div className="flex-1 flex flex-col relative min-w-0 overflow-hidden">
+          <div className={`flex-1 flex flex-col relative min-w-0 overflow-hidden ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'} ${isCompactShell ? '' : 'rounded-tl-[28px]'}`}>
 
             {/* Gemini Style Background Glow */}
             {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
@@ -2319,6 +2354,130 @@ function defaultModelPresetForCapabilities(capabilities) {
     /* ==========================================
        Helpers
        ========================================== */
+    const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
+      const isDark = theme === 'dark';
+      const [query, setQuery] = useState('');
+      const inputRef = useRef(null);
+      const filtered = query
+        ? history.filter(h => String(h.title || '').toLowerCase().includes(query.toLowerCase()))
+        : history;
+
+      useEffect(() => {
+        const timer = window.setTimeout(() => inputRef.current && inputRef.current.focus(), 80);
+        const onKey = (e) => {
+          if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => {
+          window.clearTimeout(timer);
+          window.removeEventListener('keydown', onKey);
+        };
+      }, [onClose]);
+
+      return (
+        <div
+          role="presentation"
+          className="fixed inset-0 z-[180] flex items-start justify-center px-5 pt-[76px]"
+          style={{
+            background: isDark ? 'rgba(0,0,0,.34)' : 'rgba(255,255,255,.28)',
+            backdropFilter: 'blur(18px) saturate(150%)',
+            WebkitBackdropFilter: 'blur(18px) saturate(150%)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif',
+          }}
+          onClick={onClose}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t.searchChats}
+            className="w-full max-w-[680px] overflow-hidden rounded-[28px] border shadow-2xl"
+            style={{
+              background: isDark ? 'rgba(32,33,36,.86)' : 'rgba(255,255,255,.88)',
+              borderColor: isDark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.08)',
+              boxShadow: isDark ? '0 30px 90px rgba(0,0,0,.58)' : '0 30px 90px rgba(25,33,45,.20)',
+              color: isDark ? '#F2F2F7' : '#1F1F1F',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-3">
+              <div
+                className="flex h-12 items-center gap-3 rounded-full px-4"
+                style={{
+                  background: isDark ? 'rgba(255,255,255,.08)' : 'rgba(118,118,128,.12)',
+                }}
+              >
+                <Search size={20} className={isDark ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'} />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  placeholder={t.searchPlaceholder}
+                  className={`min-w-0 flex-1 bg-transparent border-none outline-none text-[17px] leading-6 ${
+                    isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1D1D1F] placeholder:text-[#8A8A8E]'
+                  }`}
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
+                    title={t.clearSearch}
+                    aria-label={t.clearSearch}
+                    className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors"
+                    style={{
+                      background: isDark ? 'rgba(255,255,255,.10)' : 'rgba(60,60,67,.18)',
+                      color: isDark ? '#C7C7CC' : '#6E6E73',
+                    }}
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  title={t.winClose}
+                  aria-label={t.winClose}
+                  className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors"
+                  style={{
+                    background: isDark ? 'rgba(255,255,255,.10)' : 'rgba(60,60,67,.18)',
+                    color: isDark ? '#C7C7CC' : '#6E6E73',
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-[min(620px,calc(100vh-180px))] overflow-y-auto custom-scrollbar px-2 pb-2">
+              <div className={`px-4 pb-2 pt-1 text-[13px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                {t.recent}
+              </div>
+              {filtered.length > 0 ? filtered.map(chat => (
+                <button
+                  key={chat.id}
+                  type="button"
+                  onClick={() => onSelect && onSelect(chat.id)}
+                  className={`w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors ${
+                    isDark ? 'hover:bg-white/[.08]' : 'hover:bg-black/[.05]'
+                  }`}
+                  style={{ color: isDark ? '#F2F2F7' : '#1D1D1F' }}
+                >
+                  <div className="flex min-w-0 items-center justify-between gap-4">
+                    <span className="min-w-0 truncate text-[16px] leading-6">{chat.title}</span>
+                    <span className={`shrink-0 text-[13px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{chat.date}</span>
+                  </div>
+                </button>
+              )) : (
+                <div className={`px-4 py-8 text-center text-[14px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                  {t.sidebarTaskEmpty || '暂无任务'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     const SearchView = ({ theme, history, t, onSelect }) => {
       const isDark = theme === 'dark';
       const [query, setQuery] = useState('');
