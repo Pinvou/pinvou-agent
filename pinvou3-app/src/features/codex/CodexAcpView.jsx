@@ -11,6 +11,7 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
+import { ConversationTurn } from '../conversation/ConversationTimeline.jsx';
 import {
   invokeTauri,
   listenTauri,
@@ -19,6 +20,15 @@ import {
 
 const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
+const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+
+function unifiedConversationUiEnabled() {
+  try {
+    return localStorage.getItem(UNIFIED_CONVERSATION_UI_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
 
 function workspaceName(path) {
   const normalized = String(path || '').replace(/[\\/]+$/, '');
@@ -474,6 +484,7 @@ export function CodexAcpView({ theme }) {
   const [sessionInfo, setSessionInfo] = useState(null);
   const [draft, setDraft] = useState('');
   const [now, setNow] = useState(Date.now());
+  const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [configApplying, setConfigApplying] = useState('');
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
@@ -830,7 +841,19 @@ export function CodexAcpView({ theme }) {
                 )}
               </div>
             )}
-            {projection.turns.map(turn => <Turn key={turn.id} turn={turn} now={now} pendingByTool={pendingByTool} onRespond={respond} responding={responding} />)}
+            {projection.turns.map(turn => useUnifiedConversationUi
+              ? (
+                  <ConversationTurn
+                    key={turn.id}
+                    turn={turn}
+                    now={now}
+                    pendingByTool={pendingByTool}
+                    onRespond={respond}
+                    responding={responding}
+                    agentLabel="Codex"
+                  />
+                )
+              : <Turn key={turn.id} turn={turn} now={now} pendingByTool={pendingByTool} onRespond={respond} responding={responding} />)}
           </div>
         </div>
 

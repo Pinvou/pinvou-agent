@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,8 +9,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const source = path.join(root, 'src', 'features', 'codex', 'acp-state.js');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-codex-acp-'));
-const modulePath = path.join(temp, 'acp-state.mjs');
+const moduleDir = path.join(temp, 'codex');
+const conversationDir = path.join(temp, 'conversation');
+mkdirSync(moduleDir, { recursive: true });
+mkdirSync(conversationDir, { recursive: true });
+writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
+const modulePath = path.join(moduleDir, 'acp-state.js');
 copyFileSync(source, modulePath);
+copyFileSync(
+  path.join(root, 'src', 'features', 'conversation', 'conversation-model.js'),
+  path.join(conversationDir, 'conversation-model.js'),
+);
 
 const event = (seq, type, data, turnId = 'turn-1') => ({
   version: 1,
@@ -178,12 +187,13 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
   assert.ok(codexView.includes('临时会话'), 'temporary sessions must remain an explicit choice');
-  assert.ok(codexView.includes('思考中'), 'running reasoning must expose a timer label');
-  assert.ok(codexView.includes('执行步骤'), 'tool items must use a compact presentation group');
+  assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');
+  assert.ok(conversationView.includes('执行步骤'), 'tool items must use a compact presentation group');
   assert.ok(!codexView.includes("useState(state === 'failed')"),
     'failed operation details must stay collapsed until the user opens them');
   assert.ok(!codexView.includes('useState(running || failed)'),
@@ -194,7 +204,8 @@ try {
     'running operation groups must remain compact by default');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', { sessionId: activeId, message })"));
-  assert.ok(codexView.includes('className="codex-markdown'), 'Codex Markdown must use an isolated style scope');
+  assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
+  assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),
     'Codex unordered lists must retain bullets after Tailwind preflight');
   assert.ok(baseStyles.includes('.codex-markdown ol { list-style:decimal outside; }'),

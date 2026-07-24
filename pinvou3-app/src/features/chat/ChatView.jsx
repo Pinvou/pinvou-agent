@@ -9,10 +9,21 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
+import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
+const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+
+function unifiedConversationUiEnabled() {
+  try {
+    return localStorage.getItem(UNIFIED_CONVERSATION_UI_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
 
 const openChatExternalUrl = (url) => {
   if (isWeb) {
@@ -363,6 +374,27 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         : null;
       let lastUserId = null;
       for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
+      const useUnifiedConversationUi = unifiedConversationUiEnabled();
+      const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
+      const latestArtIdByPath = {};
+      chatItems.forEach((item) => {
+        if (item.type === 'artifact_card' && item.path) latestArtIdByPath[item.path] = item.id;
+      });
+      const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
+      const conversationProjection = projectDeepSeekConversation({
+        chatItems: visibleChatItems,
+        busy,
+        thinking: bs && bs.thinking,
+        tokens: ctxTokens,
+        sessionId: bs && bs.activeSessionId,
+      });
+      const [conversationNow, setConversationNow] = useState(Date.now());
+      useEffect(() => {
+        if (!busy || !useUnifiedConversationUi) return undefined;
+        setConversationNow(Date.now());
+        const timer = window.setInterval(() => setConversationNow(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+      }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
       // 工作流启用时预填输入框
       useEffect(() => {
@@ -748,20 +780,59 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
             {hasMessages && (
               <div className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
-                {(() => {
-                  // 每个产物 path 只在它最新的那张卡上挂品悟入口:不同文件各自最新卡都给入口
-                  // (一轮多产物都能审);同文件的旧卡不挂,避免"点老卡却审到磁盘最新态"的错位
-                  // (后端 focus 按 path 定向、审 workspace 当前文件)。
-                  const latestArtIdByPath = {};
-                  chatItems.forEach((it) => { if (it.type === 'artifact_card' && it.path) latestArtIdByPath[it.path] = it.id; });
-                  const latestArtIds = new Set(Object.values(latestArtIdByPath));
-                  return chatItems
-                    .filter((item) => !(item.type === 'memory_candidate' && !item.resolved))
-                    .map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
-                  ));
-                })()}
-                {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
+                {useUnifiedConversationUi ? (
+                  <ConversationTimeline
+                    turns={conversationProjection.turns}
+                    now={conversationNow}
+                    agentLabel="品悟"
+                    renderUser={(item) => (
+                      <ChatBubble
+                        item={item}
+                        theme={theme}
+                        t={t}
+                        editable={!busy && item.id === lastUserId}
+                        conversationVariant="unified"
+                      />
+                    )}
+                    renderItem={(item) => {
+                      if (!item.legacyItem) return undefined;
+                      return (
+                        <ChatBubble
+                          item={item.legacyItem}
+                          theme={theme}
+                          t={t}
+                          onPrefill={(text) => setInputText(text)}
+                          onSend={(text) => { if (bridge.available) bridge.chat.sendMessage(text); }}
+                          onOpenEditor={onOpenEditor}
+                          isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
+                          allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                        />
+                      );
+                    }}
+                    renderToolItem={(item) => item.legacyItem
+                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} />
+                      : undefined}
+                    shouldAutoOpenToolGroup={(group) => (group.items || []).some((item) => item.status === 'in_progress')}
+                  />
+                ) : (
+                  <>
+                    {visibleChatItems.map((item) => (
+                      <ChatBubble
+                        key={item.id}
+                        item={item}
+                        theme={theme}
+                        t={t}
+                        onPrefill={(text) => setInputText(text)}
+                        onSend={(text) => { if (bridge.available) bridge.chat.sendMessage(text); }}
+                        editable={!busy && item.id === lastUserId}
+                        onOpenEditor={onOpenEditor}
+                        isLatestArtifact={latestArtifactIds.has(item.id)}
+                        allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                      />
+                    ))}
+                    {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
+                  </>
+                )}
                 {/* WebKit does not reliably include trailing padding on an overflow flex
                     container in scrollHeight. Use a real, non-shrinking flex item so the
                     final message can always scroll fully above the floating composer. */}
@@ -1348,8 +1419,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       ), document.body);
     };
 
-    const UserBubble = ({ item, theme, editable, t }) => {
+    const UserBubble = ({ item, theme, editable, t, conversationVariant }) => {
       const isDark = theme === 'dark';
+      const unified = conversationVariant === 'unified';
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
@@ -1369,7 +1441,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
-                className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`} />
+                className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
+                  unified
+                    ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
+                    : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
+                }`} />
               <div className="flex gap-2 justify-end mt-1">
                 <button className={cardBtnCls(isDark)} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
                 <button className={cardBtnCls(isDark, 'primary')} onClick={commit}>{t.resend}</button>
@@ -1399,7 +1475,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
-            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
+            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
+              unified
+                ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
+                : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
+            }`}>{item.text}</div>
             {/* iOS 风操作条：hover 气泡时下方浮现；窄屏无 hover，常显保证触屏可达。复制=所有 query；编辑重发=仅最新(editable)。 */}
             <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity duration-150">
               <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
@@ -1578,7 +1658,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '🃏 正在设计卡牌…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft }) => {
+    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
       const isDark = theme === 'dark';
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
@@ -1588,7 +1668,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
-      if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
+      if (item.type === 'user') {
+        return <UserBubble item={item} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+      }
 
       if (item.type === 'card_creator_intro') {
         return (
