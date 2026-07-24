@@ -6,7 +6,7 @@
   "identifier": "com.pinvou.pinvou3",
   "build": {
     "beforeDevCommand": "vite",
-    "beforeBuildCommand": "node scripts/tauri/require-wrapper.js build && npm run validate:pet-assets -- --release && vite build",
+    "beforeBuildCommand": "node scripts/tauri/require-wrapper.js build && npm run validate:pet-assets -- --release && npm run build:ui",
     "beforeBundleCommand": "node scripts/tauri/require-wrapper.js bundle",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
