@@ -9,9 +9,16 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
-import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
+import {
+  ConversationActivityIndicator,
+  ConversationTimeline,
+} from '../conversation/ConversationTimeline.jsx';
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
-import { isFetchTool, isSearchTool } from '../conversation/conversation-model.js';
+import {
+  isFetchTool,
+  isNearConversationBottom,
+  isSearchTool,
+} from '../conversation/conversation-model.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
@@ -313,6 +320,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       };
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const lastScrollTopRef = useRef(0);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
@@ -390,6 +398,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         sessionId: bs && bs.activeSessionId,
         timelineEvents: bs && bs.turnTimeline,
       });
+      const activeConversationTurn = [...conversationProjection.turns]
+        .reverse()
+        .find(turn => turn.status === 'running') || null;
       const [conversationNow, setConversationNow] = useState(Date.now());
       useEffect(() => {
         if (!busy || !useUnifiedConversationUi) return undefined;
@@ -412,16 +423,17 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         }
       }, [prefill]);
 
-      const isNearChatBottom = (el) => (el.scrollHeight - el.scrollTop - el.clientHeight) < 96;
-
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
         const onScroll = () => {
-          const near = isNearChatBottom(el);
-          const shouldShow = !near && el.scrollHeight > el.clientHeight + 4;
-          autoScrollRef.current = near;
+          const near = isNearConversationBottom(el);
+          const movingUp = el.scrollTop < lastScrollTopRef.current - 1;
+          lastScrollTopRef.current = el.scrollTop;
+          if (movingUp) autoScrollRef.current = false;
+          else if (near) autoScrollRef.current = true;
+          const shouldShow = !autoScrollRef.current && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         };
         onScroll();
@@ -448,7 +460,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           autoScrollRef.current = true;
           setShowScrollBottom(false);
         } else {
-          const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
+          const shouldShow = el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
       }, [
@@ -467,8 +479,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       useEffect(() => {
         const el = scrollRef.current;
         autoScrollRef.current = true;
+        lastScrollTopRef.current = 0;
         setShowScrollBottom(false);
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+          lastScrollTopRef.current = el.scrollTop;
+        }
       }, [bs && bs.activeSessionId]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
@@ -817,7 +833,6 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                       && !isFetchTool(item.tool)
                       ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
                       : undefined}
-                    shouldAutoOpenToolGroup={(group) => (group.items || []).some((item) => item.status === 'in_progress')}
                     onOpenExternal={openChatExternalUrl}
                   />
                 ) : (
@@ -1053,6 +1068,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               );
             })()}
             <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              <ConversationActivityIndicator
+                turn={activeConversationTurn}
+                now={conversationNow}
+                onRequestAttention={scrollChatToBottom}
+                className="mb-0.5"
+              />
               <textarea
                 ref={composerRef}
                 value={inputText}

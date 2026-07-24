@@ -22,13 +22,22 @@ try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
     `${pathToFileURL(path.join(conversationDir, 'deepseek-conversation.js')).href}?t=${Date.now()}`
   );
-  const { externalMarkdownUrl, fetchToolDetails, isFetchTool, isSearchTool, searchToolDetails } = await import(
+  const {
+    externalMarkdownUrl,
+    fetchToolDetails,
+    isFetchTool,
+    isNearConversationBottom,
+    isSearchTool,
+    searchToolDetails,
+  } = await import(
     `${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`
   );
   assert.equal(externalMarkdownUrl('http://localhost:8080/'), 'http://localhost:8080/');
   assert.equal(externalMarkdownUrl('https://example.com/demo'), 'https://example.com/demo');
   assert.equal(externalMarkdownUrl('javascript:alert(1)'), '');
   assert.equal(externalMarkdownUrl('README.md'), '');
+  assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 820, clientHeight: 100 }), true);
+  assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 700, clientHeight: 100 }), false);
   const chatItems = [
     { id: 1, type: 'system', text: '会话已恢复' },
     { id: 2, type: 'user', text: '检查仓库' },
@@ -194,13 +203,17 @@ try {
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
   assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('<ConversationActivityIndicator')
+    && chatView.includes('turn={activeConversationTurn}')
+    && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
+  'the composer activity timer must be shared and visible only while a turn is active');
   assert.ok(chatView.includes('!isSearchTool(item.tool)') && chatView.includes('!isFetchTool(item.tool)'),
     'web search and fetch tools must use shared structured renderers while other DeepSeek tools retain provider cards');
   assert.ok(chatView.includes('variant="timeline"'),
     'legacy DeepSeek tool details must use the shared timeline visual shell');
   assert.ok(toolRenderers.includes('data-tool-card-variant="timeline"')
-    && toolRenderers.includes('manualTimelineExpanded.current == null'),
-  'timeline tool cards must share the compact shell and return to collapsed terminal state unless manually toggled');
+    && toolRenderers.includes('const shouldAutoExpand = !isTimeline'),
+  'timeline tool cards must stay compact while status changes unless manually toggled');
   assert.ok(toolRenderers.includes('<QuestionChoiceCard'),
     'DeepSeek request_user_input must use the shared Codex-style choice card');
   assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')
@@ -223,8 +236,14 @@ try {
   'search and fetch cards must preserve their actual tool names instead of translated titles');
   assert.ok(!conversationView.includes('`搜索“${query.length') && !conversationView.includes('`抓取 ${details.target}`'),
     'search and fetch tool names must not be replaced by Chinese action phrases');
-  assert.ok(conversationView.includes('manualOpen.current == null') && conversationView.includes('setOpen(autoOpen)'),
-    'automatic tool-group expansion must close on terminal state unless the user has toggled it');
+  assert.ok(conversationView.includes('const [open, setOpen] = useState(false)')
+    && !conversationView.includes('setOpen(autoOpen)')
+    && !chatView.includes('shouldAutoOpenToolGroup='),
+  'tool groups must keep a user-owned expansion state instead of opening and closing with execution status');
+  assert.ok(chatView.includes('isNearConversationBottom(el)')
+    && chatView.includes('const movingUp = el.scrollTop < lastScrollTopRef.current - 1')
+    && chatView.includes('if (movingUp) autoScrollRef.current = false'),
+  'DeepSeek streaming must pause auto-follow while the user reads history');
   assert.ok(chatView.includes('<ThinkingBubble'), 'the original rendering path must remain available as a fallback');
   assert.ok(chatView.includes("pinvou_conversation_ui_v2"), 'the local rollback switch must be explicit');
 

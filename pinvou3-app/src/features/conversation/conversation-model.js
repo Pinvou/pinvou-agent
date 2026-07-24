@@ -21,6 +21,11 @@ export function externalMarkdownUrl(value) {
   return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
 }
 
+export function isNearConversationBottom(element, threshold = 96) {
+  if (!element) return true;
+  return (element.scrollHeight - element.scrollTop - element.clientHeight) < threshold;
+}
+
 /**
  * 浏览器不是终端，展示命令和输出前清理 ANSI、OSC 超链接等控制序列。
  */

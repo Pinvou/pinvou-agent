@@ -237,6 +237,12 @@ try {
     'running operation details must not interrupt the conversation by auto-expanding');
   assert.ok(!codexView.includes('if (running) setOpen(true)'),
     'running operation groups must remain compact by default');
+  assert.ok(codexView.includes('const movingUp = element.scrollTop < lastScrollTopRef.current - 1')
+    && codexView.includes('if (movingUp) autoScrollRef.current = false')
+    && codexView.includes('if (autoScrollRef.current)')
+    && codexView.includes('scrollConversationToBottom')
+    && codexView.includes('回到最新'),
+  'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', { sessionId: activeId, message })"));
   assert.ok(codexView.includes('function ElicitationCard'),
@@ -249,6 +255,10 @@ try {
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
+  assert.ok(codexView.includes('<ConversationActivityIndicator')
+    && codexView.includes('turn={activeConversationTurn}')
+    && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
+  'Codex must show the shared composer timer only while the active turn is running');
   assert.ok(codexView.includes('<ConversationMarkdown')
     && codexView.includes("invoke('open_external_url', { url })"),
   'both unified and fallback Codex messages must route links through the host opener');

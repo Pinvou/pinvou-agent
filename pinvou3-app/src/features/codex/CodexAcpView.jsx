@@ -9,7 +9,12 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
-import { ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
+import {
+  ConversationActivityIndicator,
+  ConversationMarkdown,
+  ConversationTurn,
+} from '../conversation/ConversationTimeline.jsx';
+import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import {
   invokeTauri,
@@ -594,7 +599,10 @@ export function CodexAcpView({ theme }) {
   const [commandOpen, setCommandOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
+  const autoScrollRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
   const controls = useMemo(() => resolveAcpSessionControls(sessionInfo), [sessionInfo]);
   const availableCommands = useMemo(() => {
@@ -609,6 +617,9 @@ export function CodexAcpView({ theme }) {
     [pendingElicitations],
   );
   const busy = projection.turns.some(turn => turn.status === 'running');
+  const activeConversationTurn = [...projection.turns]
+    .reverse()
+    .find(turn => turn.status === 'running') || null;
   const activeSession = useMemo(
     () => sessions.find(session => session.id === activeId) || null,
     [sessions, activeId],
@@ -730,9 +741,56 @@ export function CodexAcpView({ theme }) {
   }, [busy]);
 
   useEffect(() => {
-    if (!scroller.current) return;
-    scroller.current.scrollTop = scroller.current.scrollHeight;
+    const element = scroller.current;
+    if (!element) return undefined;
+    const onScroll = () => {
+      const near = isNearConversationBottom(element);
+      const movingUp = element.scrollTop < lastScrollTopRef.current - 1;
+      lastScrollTopRef.current = element.scrollTop;
+      if (movingUp) autoScrollRef.current = false;
+      else if (near) autoScrollRef.current = true;
+      const shouldShow = !autoScrollRef.current
+        && element.scrollHeight > element.clientHeight + 4;
+      setShowScrollBottom(current => current === shouldShow ? current : shouldShow);
+    };
+    onScroll();
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => element.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element) return;
+    if (autoScrollRef.current) {
+      element.scrollTop = element.scrollHeight;
+      setShowScrollBottom(false);
+      return;
+    }
+    const shouldShow = element.scrollHeight > element.clientHeight + 4;
+    setShowScrollBottom(current => current === shouldShow ? current : shouldShow);
   }, [events.length, projection.turns.length]);
+
+  useEffect(() => {
+    autoScrollRef.current = true;
+    lastScrollTopRef.current = 0;
+    setShowScrollBottom(false);
+    const frame = window.requestAnimationFrame(() => {
+      const element = scroller.current;
+      if (element) {
+        element.scrollTop = element.scrollHeight;
+        lastScrollTopRef.current = element.scrollTop;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeId]);
+
+  function scrollConversationToBottom() {
+    const element = scroller.current;
+    if (!element) return;
+    autoScrollRef.current = true;
+    setShowScrollBottom(false);
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+  }
 
   async function prepare() {
     setWorking(true); setError('');
@@ -769,6 +827,8 @@ export function CodexAcpView({ theme }) {
     }
     setWorking(true); setError('');
     try {
+      autoScrollRef.current = true;
+      setShowScrollBottom(false);
       setDraft('');
       await invoke('codex_acp_prompt', { sessionId: activeId, message });
     } catch (err) {
@@ -920,7 +980,7 @@ export function CodexAcpView({ theme }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 min-h-0 flex flex-col">
+      <main className="relative flex-1 min-w-0 min-h-0 flex flex-col">
         <header className="h-14 shrink-0 px-5 flex items-center gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center"><Sparkles size={16} /></div>
           <div className="min-w-0 flex-1">
@@ -1014,10 +1074,34 @@ export function CodexAcpView({ theme }) {
           </div>
         </div>
 
+        {showScrollBottom && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-[106px] z-20 flex justify-center">
+            <button
+              type="button"
+              onClick={scrollConversationToBottom}
+              aria-label={pending.length || pendingElicitations.length ? '有请求需要处理，回到最新' : '回到最新'}
+              title={pending.length || pendingElicitations.length ? '有请求需要处理，回到最新' : '回到最新'}
+              className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 border ${
+                pending.length || pendingElicitations.length
+                  ? 'bg-amber-500/95 text-white border-amber-400'
+                  : 'bg-white/95 dark:bg-[#2B2C2F]/95 text-[#1F1F1F] dark:text-[#E3E3E3] border-black/10 dark:border-white/10'
+              }`}
+            >
+              <ChevronDown size={15} />
+            </button>
+          </div>
+        )}
+
         <div className="shrink-0 px-6 pb-5 pt-2">
           <div className="w-full max-w-[920px] mx-auto">
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
             <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
+              <ConversationActivityIndicator
+                turn={activeConversationTurn}
+                now={now}
+                onRequestAttention={scrollConversationToBottom}
+                className="mb-0.5"
+              />
               {commandOpen && availableCommands.length > 0 && (
                 <>
                   <button aria-label="关闭 Codex 命令菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />

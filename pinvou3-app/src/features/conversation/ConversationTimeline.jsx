@@ -75,6 +75,48 @@ export function ConversationStatusBadge({ status }) {
   );
 }
 
+export function ConversationActivityIndicator({
+  turn,
+  now = Date.now(),
+  onRequestAttention,
+  className = '',
+}) {
+  if (!turn || turn.status !== 'running') return null;
+  const waitingPermission = turn.waitingPermission
+    || (turn.permissions || []).some(permission => !permission.resolved);
+  const waitingInput = turn.waitingInput
+    || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
+  const waitingAttention = waitingPermission || waitingInput;
+  const label = waitingPermission
+    ? '等待授权'
+    : waitingInput
+      ? '等待你的输入'
+      : '正在处理';
+  const content = (
+    <>
+      {waitingAttention
+        ? <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+        : <span className="w-3 h-3 rounded-full border-2 border-current/20 border-t-current animate-spin" />}
+      <span>{label} · {formatElapsed(elapsedMs(turn.startedAt, null, now))}</span>
+    </>
+  );
+  const sharedClass = `h-6 flex items-center gap-2 px-1 text-[12px] ${
+    waitingAttention
+      ? 'text-amber-600 dark:text-amber-300'
+      : 'text-gray-500 dark:text-gray-400'
+  } ${className}`;
+  if (waitingAttention && onRequestAttention) {
+    return (
+      <button type="button" onClick={onRequestAttention}
+        aria-label={`${label}，前往最新消息`}
+        className={`${sharedClass} hover:text-amber-700 dark:hover:text-amber-200`}>
+        {content}
+      </button>
+    );
+  }
+  return <div role="status" aria-live="polite" className={sharedClass}>{content}</div>;
+}
+
 function TerminalBlock({ label, text }) {
   if (!text) return null;
   return (
@@ -335,7 +377,7 @@ function GenericToolItem({ item, now }) {
   );
 }
 
-function ToolGroup({ group, now, renderToolItem, shouldAutoOpenToolGroup, onOpenExternal }) {
+function ToolGroup({ group, now, renderToolItem, onOpenExternal }) {
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
   const failedCount = items.filter(item => terminalStatus(
@@ -343,24 +385,18 @@ function ToolGroup({ group, now, renderToolItem, shouldAutoOpenToolGroup, onOpen
     item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
   ) === 'failed').length;
   const failed = failedCount > 0;
-  const summary = `${running ? '正在执行' : '执行步骤'} · ${items.length} 项${
+  const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
+  const runningLabel = runningItem
+    ? (runningItem.tool && (runningItem.tool.name || runningItem.tool.title))
+      || (runningItem.type === 'file_change' ? '文件变更' : '')
+    : '';
+  const summary = `${running ? `正在执行${runningLabel ? ` · ${runningLabel}` : ''}` : '执行步骤'} · ${items.length} 项${
     failedCount ? ` · ${failedCount} 项失败` : ''
   }`;
-  const autoOpen = Boolean(shouldAutoOpenToolGroup && shouldAutoOpenToolGroup(group));
-  const [open, setOpen] = useState(autoOpen);
-  const manualOpen = React.useRef(null);
-  useEffect(() => {
-    if (manualOpen.current == null) setOpen(autoOpen);
-  }, [autoOpen]);
-  const toggleOpen = () => {
-    setOpen(value => {
-      manualOpen.current = !value;
-      return !value;
-    });
-  };
+  const [open, setOpen] = useState(false);
   return (
     <div>
-      <button type="button" onClick={toggleOpen}
+      <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
         <span>{summary}</span>
@@ -474,7 +510,6 @@ function DefaultItem({
   onRespond,
   responding,
   renderToolItem,
-  shouldAutoOpenToolGroup,
   onOpenExternal,
   agentLabel,
 }) {
@@ -485,7 +520,6 @@ function DefaultItem({
         group={item}
         now={now}
         renderToolItem={renderToolItem}
-        shouldAutoOpenToolGroup={shouldAutoOpenToolGroup}
         onOpenExternal={onOpenExternal}
       />
     );
@@ -521,7 +555,6 @@ export function ConversationTurn({
   renderUser,
   renderItem,
   renderToolItem,
-  shouldAutoOpenToolGroup,
   onOpenExternal,
   agentLabel = 'Agent',
   assistantAvatar,
@@ -586,7 +619,6 @@ export function ConversationTurn({
                 onRespond={onRespond}
                 responding={responding}
                 renderToolItem={renderToolItem}
-                shouldAutoOpenToolGroup={shouldAutoOpenToolGroup}
                 onOpenExternal={onOpenExternal}
                 agentLabel={agentLabel}
               />

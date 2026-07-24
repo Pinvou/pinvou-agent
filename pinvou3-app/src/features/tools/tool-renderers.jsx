@@ -88,13 +88,10 @@ const ToolOutput = ({ item, isDark, t }) => {
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);
-      const shouldAutoExpand = hasLiveShellOutput || (!isTimeline && hasCard);
+      const shouldAutoExpand = !isTimeline && (hasLiveShellOutput || hasCard);
       const [expanded, setExpanded] = useState(shouldAutoExpand);
-      const manualTimelineExpanded = useRef(null);
       useEffect(() => {
-        if (isTimeline && manualTimelineExpanded.current == null) {
-          setExpanded(shouldAutoExpand);
-        } else if (!isTimeline && shouldAutoExpand) {
+        if (!isTimeline && shouldAutoExpand) {
           setExpanded(true);
         }
       }, [isTimeline, shouldAutoExpand]);
@@ -161,10 +158,7 @@ const ToolOutput = ({ item, isDark, t }) => {
             ? 'text-blue-500 bg-blue-500/10'
             : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
         const meta = `${summary ? `${summary} · ` : ''}${timelineStatusText}`;
-        const toggleExpanded = () => setExpanded(value => {
-          manualTimelineExpanded.current = !value;
-          return !value;
-        });
+        const toggleExpanded = () => setExpanded(value => !value);
         return (
           <div
             data-tool-card-variant="timeline"
