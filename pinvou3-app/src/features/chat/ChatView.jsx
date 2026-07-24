@@ -45,7 +45,7 @@ const openChatExternalUrl = (url) => {
   invokeTauri('open_external_url', { url }).catch(() => {});
 };
 
-const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
+const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const [hovered, setHovered] = useState(null);
       const tool = tsToolsData.find(t => t.backendId === toolId);
@@ -69,19 +69,19 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  系统已就绪
+                  {t.uiChat.ready}
                 </div>
               </div>
             </div>
             <div className="p-5">
               <p className={`leading-relaxed text-[15px] ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
-                {tool.desc.split('。')[0]}。自然语言提问即可。
+                {tool.desc.split('。')[0]}。{t.uiChat.naturalQuestion}
               </p>
               <div className="flex items-center my-5">
                 <div className={`flex-grow h-px ${isDark ? 'bg-gradient-to-r from-transparent via-[#3A3A3C] to-transparent' : 'bg-gradient-to-r from-transparent via-slate-200 to-transparent'}`}></div>
                 <span className={`px-4 text-[11px] uppercase tracking-wider font-semibold flex items-center gap-1.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
                   <Sparkles size={13} />
-                  <span>试试问我</span>
+                  <span>{t.uiChat.askMe}</span>
                 </span>
                 <div className={`flex-grow h-px ${isDark ? 'bg-gradient-to-r from-transparent via-[#3A3A3C] to-transparent' : 'bg-gradient-to-r from-transparent via-slate-200 to-transparent'}`}></div>
               </div>
@@ -248,6 +248,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
+      const chatCopy = t.uiChat;
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const [inputText, setInputTextState] = useState('');
       const [inputLimitReached, setInputLimitReached] = useState(false);
@@ -753,12 +754,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               {scheduledRunContext && (
                 <button type="button" onClick={onBackScheduledRun}
                   data-testid="scheduled-run-back"
-                  aria-label="返回定时任务运行历史"
-                  title="返回定时任务运行历史"
+                  aria-label={chatCopy.backRuns}
+                  title={chatCopy.backRuns}
                   className={`pointer-events-auto h-10 max-w-[520px] max-sm:max-w-[55vw] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm'}`}>
                   <ArrowLeft size={16} className="shrink-0" />
-                  <span className="truncate">{scheduledRunContext.taskName || '定时任务运行'}</span>
-                  <span className={`shrink-0 text-[12px] max-sm:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]'}`}>运行记录</span>
+                  <span className="truncate">{scheduledRunContext.taskName || chatCopy.scheduledRun}</span>
+                  <span className={`shrink-0 text-[12px] max-sm:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]'}`}>{chatCopy.runRecords}</span>
                 </button>
               )}
             </div>
@@ -799,6 +800,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 <ToolWelcomeCard
                   toolId={welcomeToolId}
                   theme={theme}
+                  t={t}
                   onSend={(q) => {
                     setWelcomeToolId(null);
                     if (bridge.available) bridge.chat.sendMessage(q);
@@ -1020,8 +1022,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             )}
             {voiceAsrSetup.open && !canInstallLocalAsr && (
               <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
-                <span>语音识别组件尚未安装，请先在桌面端完成安装后再试。</span>
-                <button onClick={() => bridge.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>知道了</button>
+                <span>{chatCopy.asrUnavailable}</span>
+                <button onClick={() => bridge.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
             {voiceAsrSetup.open && canInstallLocalAsr && (() => {
@@ -1032,33 +1034,28 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               const needFfmpeg = missing.indexOf('ffmpeg') >= 0;
               const needModel = missing.indexOf('model') >= 0;
               const needEngine = missing.indexOf('engine') >= 0 || missing.indexOf('runtime') >= 0;
-              const modelSizeText = (su.status && su.status.engine && needModel && !needFfmpeg) ? '约 254MB' : '约 174-254MB';
+              const modelSizeText = (su.status && su.status.engine && needModel && !needFfmpeg) ? chatCopy.sizeModelOnly : chatCopy.sizeFull;
               return (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
                   onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
                   <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
                     onClick={e => e.stopPropagation()}>
                     <h3 className="text-[16px] font-semibold mb-2">
-                      {su.installing ? '下载语音识别模型' : '启用本地语音识别'}
+                      {su.installing ? chatCopy.asrDownloadTitle : chatCopy.asrEnableTitle}
                     </h3>
                     {!su.installing && (
                       <p className="text-[13px] leading-relaxed opacity-80 mb-4">
                         {needEngine
-                          ? '本地语音识别运行时缺失，请修复或重新安装应用；仅缺模型时可在这里下载。'
-                          : `首次使用需要下载语音识别模型（${modelSizeText}${needFfmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。`}
+                          ? chatCopy.asrRuntimeMissing
+                          : chatCopy.asrFirstUse(modelSizeText, needFfmpeg)}
                       </p>
                     )}
                     {su.installing && (
                       <div className="mb-4">
                         <div className="text-[12px] opacity-70 mb-1">
-                          {prog.stage === 'ffmpeg' ? '正在安装 ffmpeg（可能弹系统授权框）…'
-                            : prog.stage === 'model' ? ('正在下载模型 ' + (pct != null ? pct + '%' : '…'))
-                            : prog.stage === 'verify' ? '正在校验模型完整性…'
-                            : prog.stage === 'cancelling' ? '正在取消下载…'
-                            : prog.stage === 'done' ? '完成'
-                            : prog.stage === 'cancelled' ? '已取消'
-                            : prog.stage === 'failed' ? '下载失败，可重试'
-                            : '准备中…'}
+                          {prog.stage === 'model'
+                            ? chatCopy.downloadingModel(pct != null ? pct + '%' : '…')
+                            : (chatCopy.asrStages[prog.stage] || chatCopy.asrStages.preparing)}
                         </div>
                         <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
                           <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct != null ? pct : 30) + '%' }} />
@@ -1069,11 +1066,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     <div className="flex items-center justify-end gap-2">
                       <button onClick={() => bridge.voice.cancelVoiceAsrSetup()} disabled={su.cancelling}
                         className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.cancelling ? 'opacity-50' : ''}`}>
-                        {su.installing ? (su.cancelling ? '正在取消…' : '取消下载') : '取消'}</button>
+                        {su.installing ? (su.cancelling ? chatCopy.cancelling : chatCopy.cancelDownload) : chatCopy.cancel}</button>
                       {!su.installing && (
                         <button onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
                           className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
-                          {!su.status?.installable ? '需要修复安装' : (needModel ? '下载模型' : '安装')}</button>
+                          {!su.status?.installable ? chatCopy.repairInstall : (needModel ? chatCopy.downloadModel : chatCopy.install)}</button>
                       )}
                     </div>
                   </div>
@@ -1499,7 +1496,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           <div className="flex justify-end min-w-0 max-w-full">
             <div className="max-w-[85%] min-w-0">
               <div className="flex items-center justify-end gap-1 mb-1 text-[11px] font-medium" style={{ color: tint }}>
-                <span>{isWu ? '✨' : '📋'}</span><span>{'Pinvou · ' + item.pinvouTransfer + ' · 转交修订'}</span>
+                <span>{isWu ? '✨' : '📋'}</span><span>{t.uiChatExtra.transferRevision(item.pinvouTransfer)}</span>
               </div>
               <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.text}</div>
             </div>
@@ -1692,11 +1689,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       var m = /<pre[^>]*>\s*<code[^>]*(?:persona-card|card-question|scheduled-task-draft)[\s\S]*$/i.exec(html); // persona-card / card-question / scheduled-task-draft 标签块(到末尾)
       if (!m) m = /<pre[^>]*>\s*<code[^>]*>\s*\{[\s\S]*?(?:name|&quot;name|rrule|&quot;rrule)[\s\S]*$/i.exec(html); // 兜底: 以 { 开头且含 name / rrule 的块
       if (!m) return html;
-      return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '🃏 正在设计卡牌…') + '</div>';
+      return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
     const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
       const isDark = theme === 'dark';
+      const chatCopy = t.uiChat;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
 
@@ -1720,7 +1718,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (item.type === 'assistant') {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
         const html = item.html || '';
-        const streamingDraftLabel = /scheduled-task-draft/.test(html) ? '⏰ 正在整理定时任务草稿…' : (t && t.cpDesigning);
+        const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
@@ -1820,15 +1818,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (item.type === 'memory_notice') {
         const text = item.text || '';
         const quietNotice = item.kind === 'recent_activity' || item.kind === 'recent_work';
-        const meta = item.kind === 'current_focus'
-          ? { label: '当前关注', hint: '后续对话会参考这个近期事项。' }
-          : item.kind === 'recent_activity' || item.kind === 'recent_work'
-            ? { label: '近期动态', hint: '后续对话会参考这次完成的事情。' }
-          : item.kind === 'work_context'
-            ? { label: '工作背景', hint: '后续对话会参考这条长期背景。' }
-          : item.kind === 'profile'
-            ? { label: '称呼', hint: '后续对话会按这个称呼交流。' }
-            : { label: '长期偏好', hint: '后续对话会参考这条偏好。' };
+        const memoryKind = item.kind === 'recent_work' ? 'recent_activity' : item.kind;
+        const meta = chatCopy.memoryMeta[memoryKind] || chatCopy.memoryMeta.preference;
         if (quietNotice) {
           return (
             <div className="flex justify-center">
@@ -1838,8 +1829,8 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 style={{ background: 'rgba(32, 34, 38, 0.54)', border: '1px solid rgba(255,255,255,0.06)' }}
               >
                 <Check size={12} className="shrink-0 text-[#30D158]" />
-                <span className="font-medium text-[#D5D9DE]">已记录近期动态</span>
-                <span className="truncate">可在记忆中心查看</span>
+                <span className="font-medium text-[#D5D9DE]">{chatCopy.recordedRecent}</span>
+                <span className="truncate">{chatCopy.viewMemory}</span>
               </div>
             </div>
           );
@@ -1862,10 +1853,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                 </span>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-[13px] font-semibold leading-tight">{item.statusLabel || '记忆已更新'}</span>
+                    <span className="text-[13px] font-semibold leading-tight">{item.statusLabel || chatCopy.memoryUpdated}</span>
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
                   </div>
-                  <div className="mt-1 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>
+                  <div className="mt-1 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.notice}</div>
                 </div>
               </div>
               {text && (
@@ -1881,18 +1872,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         const resolved = !!item.resolved;
         if (resolved && (item.statusLabel === '已忽略' || item.statusLabel === '不再提示')) return null;
         const text = item.text || '';
-        const preferenceDetail = /回答|回复|简洁|详细|风格|语气|口吻/.test(text) ? '回答风格'
-          : /代码|测试|开发|实现|文档/.test(text) ? '工作方式'
-          : '';
-        const meta = item.kind === 'current_focus'
-          ? { label: '当前关注', prompt: '我可以记住这个当前关注', hint: '以后我会用它理解你最近正在推进的工作。' }
-          : item.kind === 'recent_activity' || item.kind === 'recent_work'
-            ? { label: '近期动态', prompt: '我可以记住这个近期动态', hint: '以后我会用它理解你刚完成的工作。' }
-          : item.kind === 'work_context'
-            ? { label: '工作背景', prompt: '我可以记住这条工作背景', hint: '以后我会用它理解你的长期工作上下文。' }
-          : item.kind === 'profile'
-            ? { label: '称呼', prompt: '我可以记住这个称呼', hint: '以后我会按这个称呼和你交流。' }
-            : { label: '偏好' + (preferenceDetail ? ' · ' + preferenceDetail : ''), prompt: '我可以记住这条偏好', hint: '以后我会按这个偏好调整回复方式。' };
+        const memoryKind = item.kind === 'recent_work' ? 'recent_activity' : item.kind;
+        const meta = chatCopy.memoryMeta[memoryKind] || chatCopy.memoryMeta.preference;
+        const localizedStatus = item.statusLabel === '已忽略' ? chatCopy.ignoreOnce
+          : item.statusLabel === '不再提示' ? chatCopy.neverAsk
+          : item.statusLabel;
         return (
           <div className="flex justify-end">
             <div
@@ -1913,7 +1897,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     {resolved ? <Check size={15} /> : <Brain size={15} />}
                   </span>
                   <div className="min-w-0">
-                    <div className="text-[13px] font-semibold leading-tight">{resolved ? (item.statusLabel || '已处理') : '记忆候选'}</div>
+                    <div className="text-[13px] font-semibold leading-tight">{resolved ? (localizedStatus || chatCopy.processed) : chatCopy.candidate}</div>
                     {!resolved && <div className="text-[12px] leading-tight mt-1 text-[#AEB4BC]">{meta.prompt}</div>}
                   </div>
                 </div>
@@ -1922,7 +1906,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                   {!resolved && (
                     <button
                       className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
-                      title="这次忽略"
+                      title={chatCopy.ignoreOnce}
                       data-testid="memory-candidate-dismiss"
                       onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}
                     >
@@ -1937,9 +1921,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
               {!resolved && (
                 <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
-                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />记住</button>
-                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />这次忽略</button>
-                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>不再提示</button>
+                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />{chatCopy.remember}</button>
+                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />{chatCopy.ignoreOnce}</button>
+                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>{chatCopy.neverAsk}</button>
                 </div>
               )}
             </div>

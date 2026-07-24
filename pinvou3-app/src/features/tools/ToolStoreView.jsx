@@ -657,8 +657,9 @@ const FEISHU_STEPS = [
       );
     };
 
-    const ToolStoreView = ({ theme, onNewChat }) => {
+    const ToolStoreView = ({ theme, t, onNewChat }) => {
       const isDark = theme === 'dark';
+      const storeCopy = t.uiToolStore;
       const externalAuthAvailable = canStartExternalAuth();
       const canMutateToolStore = can('toolStoreMutations');
       const [searchQuery, setSearchQuery] = useState('');
@@ -1684,14 +1685,14 @@ const FEISHU_STEPS = [
             <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
               <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
                 <div className="flex items-center justify-between gap-4">
-                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">工具商店</h1>
+                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{storeCopy.title}</h1>
                   <div className={`ml-8 flex min-w-0 flex-1 items-center justify-end gap-3 ${installedOnly ? 'hidden' : ''}`}>
                     <div className="relative group min-w-0 max-w-[520px] flex-1">
                       <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8E8E93] group-focus-within:text-blue-500 transition-colors" size={18} />
                       <input
                         data-testid="tool-store-search"
                         type="text"
-                        placeholder="搜索连接器、skill、插件等"
+                        placeholder={storeCopy.search}
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         className="h-9 w-full rounded-[14px] border-none bg-slate-100 pl-10 pr-4 text-[13px] font-normal outline-none transition-all placeholder:text-[#8E8E93] focus:ring-0 dark:bg-[rgba(118,118,128,.24)] text-slate-900 dark:text-white"
@@ -1699,7 +1700,7 @@ const FEISHU_STEPS = [
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-3">
                       <div className="flex h-9 shrink-0 items-center rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
-                        {[{ key: 'card', label: '卡片', Icon: IconGrid }, { key: 'list', label: '列表', Icon: IconList }].map(seg => (
+                        {[{ key: 'card', label: storeCopy.card, Icon: IconGrid }, { key: 'list', label: storeCopy.list, Icon: IconList }].map(seg => (
                           <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
                             className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
                               viewMode === seg.key
@@ -1711,10 +1712,10 @@ const FEISHU_STEPS = [
                           </button>
                         ))}
                       </div>
-                      <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title="我的工具 · 已安装"
+                      <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
                         className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                         <User size={14} className="mr-2 opacity-70" />
-                        <span>我的工具</span>
+                        <span>{storeCopy.myTools}</span>
                       </button>
                     </div>
                   </div>
@@ -1735,7 +1736,7 @@ const FEISHU_STEPS = [
                   onMouseLeave={() => setIsFeaturedHovered(false)}
                 >
                     <div className="flex items-end justify-between mb-5">
-                      <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">精选连接器</h2>
+                      <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">{storeCopy.featured}</h2>
                     </div>
 
                     <button
@@ -1802,13 +1803,13 @@ const FEISHU_STEPS = [
                     {(isCard || installedOnly || searching) && (
                       <div className="flex items-center gap-3">
                         {installedOnly && (
-                          <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title="返回商店"
+                          <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title={storeCopy.back}
                             className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
                             <ChevronLeft size={20} />
                           </button>
                         )}
                         <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">
-                          {isCard ? (searchQuery ? '检索结果' : '独家技能') : (installedOnly ? '我的工具' : '检索结果')}
+                          {isCard ? (searchQuery ? storeCopy.results : storeCopy.skills) : (installedOnly ? storeCopy.myTools : storeCopy.results)}
                         </h2>
                       </div>
                     )}

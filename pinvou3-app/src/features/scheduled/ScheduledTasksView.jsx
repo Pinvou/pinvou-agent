@@ -94,15 +94,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       ],
     };
 
-    const WEEKDAY_OPTIONS = [
-      ['MO', '星期一', '周一'], ['TU', '星期二', '周二'], ['WE', '星期三', '周三'],
-      ['TH', '星期四', '周四'], ['FR', '星期五', '周五'], ['SA', '星期六', '周六'],
-      ['SU', '星期日', '周日'],
-    ].map(([value, label, shortLabel]) => ({ value, label, shortLabel }));
+    const WEEKDAY_OPTIONS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
+      .map(value => ({ value, label: value, shortLabel: value }));
     const WEEKDAY_CODES = WEEKDAY_OPTIONS.map(option => option.value);
     const HOURLY_INTERVAL_OPTIONS = Array.from({ length: 24 }, (_, index) => ({
       value: index + 1,
-      label: `${index + 1} 小时`,
+      label: String(index + 1),
     }));
     const normalizeScheduleDays = (value) => {
       const requested = new Set(
@@ -115,7 +112,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
     const ScheduledSelect = ({
       value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
-      multiple = false, minSelected = 0, onClose,
+      multiple = false, minSelected = 0, onClose, emptyLabel = '—',
     }) => {
       const [open, setOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
@@ -129,7 +126,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const displayLabel = multiple
         ? (options || []).filter(option => selectedValues.includes(option.value))
           .map(option => option.shortLabel || option.label).join('、')
-        : (selected ? selected.label : '请选择');
+        : (selected ? selected.label : emptyLabel);
       const serializedValue = multiple ? selectedValues.join(',') : (value || '');
       const closeMenu = () => {
         setOpen(false);
@@ -232,7 +229,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
             onClick={(event) => open ? closeMenu() : openMenu(event.currentTarget)}
             className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 ${isDark ? 'text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}>
-            <span className="truncate">{displayLabel || '请选择'}</span>
+            <span className="truncate">{displayLabel || emptyLabel}</span>
             <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-[#9AA0A6]' : 'text-[#73777D]'}`} />
           </button>
           {menu}
@@ -381,6 +378,16 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const busyAction = appState.scheduledTaskBusyAction || null;
       const error = appState.scheduledTaskError || null;
       const isDark = theme === 'dark';
+      const scheduledCopy = t.uiScheduled;
+      const weekdayOptions = WEEKDAY_OPTIONS.map((option, index) => ({
+        ...option,
+        label: scheduledCopy.weekdays[index][0],
+        shortLabel: scheduledCopy.weekdays[index][1],
+      }));
+      const hourlyIntervalOptions = HOURLY_INTERVAL_OPTIONS.map(option => ({
+        ...option,
+        label: scheduledCopy.hourCount(option.value),
+      }));
       const canOpenTaskFolder = can('externalSystemOpen');
       const [taskFilter, setTaskFilter] = useState('all');
       const [clockNow, setClockNow] = useState(() => Date.now());
@@ -459,49 +466,47 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const accent = isDark ? '#0A84FF' : '#007AFF';
       const bodyText = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
       const fmtDateTime = (value) => {
-        if (!value) return '未安排';
+        if (!value) return scheduledCopy.notScheduled;
         const d = new Date(value);
         if (Number.isNaN(d.getTime())) return value;
         const p = (n) => String(n).padStart(2, '0');
         return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
       };
       const statusLabel = (value) => {
-        if (value === 'active') return '活跃';
-        if (value === 'paused') return '已暂停';
-        return value || '未知';
+        if (value === 'active') return scheduledCopy.active;
+        if (value === 'paused') return scheduledCopy.paused;
+        return value || scheduledCopy.unknown;
       };
-      const taskListStatusLabel = (value) => value === 'active' ? '已开启' : '已暂停';
-      const runStatusLabel = (value) => ({
-        queued: '等待中', running: '运行中', completed: '已完成', failed: '失败', canceled: '已取消'
-      }[value] || value || '未知');
+      const taskListStatusLabel = (value) => value === 'active' ? scheduledCopy.enabled : scheduledCopy.paused;
+      const runStatusLabel = (value) => scheduledCopy.runStatus[value] || value || scheduledCopy.unknown;
       const taskSummary = (task) => {
-        const schedule = task.scheduleLabel || '暂无计划';
+        const schedule = task.scheduleLabel || scheduledCopy.noSchedule;
         if (task.status !== 'active') return `${schedule} · ${statusLabel(task.status)}`;
-        if (!task.nextRunAt) return `${schedule} · 等待调度`;
+        if (!task.nextRunAt) return `${schedule} · ${scheduledCopy.waitingDispatch}`;
         const next = new Date(task.nextRunAt);
-        if (Number.isNaN(next.getTime())) return `${schedule} · 等待调度`;
+        if (Number.isNaN(next.getTime())) return `${schedule} · ${scheduledCopy.waitingDispatch}`;
         const now = new Date(clockNow);
         const pad = value => String(value).padStart(2, '0');
         const sameDay = next.getFullYear() === now.getFullYear()
           && next.getMonth() === now.getMonth()
           && next.getDate() === now.getDate();
-        const exact = `${sameDay ? '' : `${next.getMonth() + 1}月${next.getDate()}日 `}${pad(next.getHours())}:${pad(next.getMinutes())}`;
+        const exact = `${sameDay ? '' : scheduledCopy.date(next.getMonth() + 1, next.getDate())}${pad(next.getHours())}:${pad(next.getMinutes())}`;
         const totalSeconds = Math.max(0, Math.ceil((next.getTime() - clockNow) / 1000));
         const days = Math.floor(totalSeconds / 86400);
         const hours = Math.floor((totalSeconds % 86400) / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         const seconds = totalSeconds % 60;
-        let remaining = '即将执行';
-        if (days > 0) remaining = `${days}天${hours ? `${hours}小时` : ''}后`;
-        else if (hours > 0) remaining = `${hours}小时${minutes ? `${minutes}分` : ''}后`;
-        else if (minutes > 0) remaining = `${minutes}分${seconds}秒后`;
-        else if (seconds > 0) remaining = `${seconds}秒后`;
+        let remaining = scheduledCopy.soon;
+        if (days > 0) remaining = scheduledCopy.daysAfter(days, hours);
+        else if (hours > 0) remaining = scheduledCopy.hoursAfter(hours, minutes);
+        else if (minutes > 0) remaining = scheduledCopy.minutesAfter(minutes, seconds);
+        else if (seconds > 0) remaining = scheduledCopy.secondsAfter(seconds);
         return (
           <>
             <span>{schedule} · </span>
             <span data-testid="scheduled-task-next-run"
               className={`font-semibold ${isDark ? 'text-[#7CB7F0]' : 'text-[#1769B0]'}`}>
-              下次 {exact}（{remaining}）
+              {scheduledCopy.nextRun(exact, remaining)}
             </span>
           </>
         );
@@ -515,7 +520,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const matches = savedModels.filter(model => model.model === task.model);
         return matches.length === 1 ? matches[0].id : '';
       };
-      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES;
+      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES.map(template => ({
+        ...template,
+        ...(scheduledCopy.templateMap[template.id] || {}),
+      }));
       const detailFormIsValid = !!detailForm &&
         !!String(detailForm.name || '').trim() &&
         !!String(detailForm.prompt || '').trim() &&
@@ -716,7 +724,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             scheduleLabel: scheduleRepeatLabel(scheduleEditorValue(createForm.rrule)),
             rrule: createForm.rrule,
             prompt,
-            model: activeModel && activeModel.model || '自动选择',
+            model: activeModel && activeModel.model || scheduledCopy.autoModel,
             modelId: activeModel && activeModel.id || null,
             nextRunAt: new Date(clockNow + 1000 * 60 * 60).toISOString(),
             hasUnreadRuns: false,
@@ -864,10 +872,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       function scheduleRepeatLabel(editor) {
         if (!editor) return '';
         if (editor.repeat === 'hourly') {
-          const interval = editor.interval === 1 ? '每小时' : `每 ${editor.interval} 小时`;
-          return editor.hasTimeAnchor ? `${interval} · ${editor.time} 起` : interval;
+          const interval = editor.interval === 1 ? scheduledCopy.repeatOptions.hourly : scheduledCopy.everyHours(editor.interval);
+          return editor.hasTimeAnchor ? `${interval} · ${scheduledCopy.startsAt(editor.time)}` : interval;
         }
-        return {workdays: '工作日', daily: '每天', weekly: '每周'}[editor.repeat] || '自定义';
+        return scheduledCopy.repeatOptions[editor.repeat] || scheduledCopy.repeatOptions.custom;
       }
 
       function buildRrule(currentRrule, key, value) {
@@ -946,13 +954,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       if (detailForm && detailForm.modelId && !modelOptions.some(option => option.value === detailForm.modelId)) {
         modelOptions.unshift({ value: detailForm.modelId, label: detailForm.model || detailForm.modelId, model: detailForm.model });
       } else if (detailForm && !detailForm.modelId) {
-        modelOptions.unshift({ value: '', label: detailForm.model ? `重新选择模型 · ${detailForm.model}` : '当前模型' });
+        modelOptions.unshift({ value: '', label: detailForm.model ? scheduledCopy.reselectModel(detailForm.model) : scheduledCopy.currentModel });
       }
       const repeatOptions = [
-        { value: 'workdays', label: '工作日' },
-        { value: 'daily', label: '每天' },
-        { value: 'weekly', label: '每周' },
-        { value: 'hourly', label: '每小时' },
+        { value: 'workdays', label: scheduledCopy.repeatOptions.workdays },
+        { value: 'daily', label: scheduledCopy.repeatOptions.daily },
+        { value: 'weekly', label: scheduledCopy.repeatOptions.weekly },
+        { value: 'hourly', label: scheduledCopy.repeatOptions.hourly },
       ];
       const selectedWeekdays = scheduleEditor && scheduleEditor.days.length
         ? scheduleEditor.days
@@ -977,7 +985,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             onClick={(event) => toggleTask(event, task)}
             disabled={!!busyAction}
             aria-pressed={checked}
-            aria-label={checked ? `暂停${task.name}` : `恢复${task.name}`}
+            aria-label={checked ? scheduledCopy.pause(task.name) : scheduledCopy.resume(task.name)}
             className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-[1px] transition-colors duration-300 disabled:opacity-50 ${
               checked ? 'bg-[#34C759]' : (isDark ? 'bg-[#4A4B50]' : 'bg-[#D8DADD]')
             }`}
@@ -1017,9 +1025,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const FilterTabs = () => (
         <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 ${isDark ? 'bg-[#767680]/24' : 'bg-[#767680]/12'}`}>
           {[
-            ['all', '全部'],
-            ['active', '已开启'],
-            ['paused', '已暂停'],
+            ['all', scheduledCopy.filterAll],
+            ['active', scheduledCopy.filterActive],
+            ['paused', scheduledCopy.filterPaused],
           ].map(([value, label]) => (
             <button key={value} type="button" onClick={() => setTaskFilter(value)}
               aria-pressed={taskFilter === value}
@@ -1038,11 +1046,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         <>
           <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
             <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>重复</span>
+              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.repeat}</span>
               <div className="flex items-center gap-1.5">
                 <ScheduledSelect value={editor.repeat} options={repeatOptions}
                   onChange={value => onEdit('repeat', value)}
-                  testId={`${prefix}-repeat`} ariaLabel="选择重复频率" theme={theme} />
+                  testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
                 <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
               </div>
             </div>
@@ -1050,22 +1058,22 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           {editor.repeat === 'hourly' && (
             <div data-testid={`${prefix}-interval-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
               <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>间隔</span>
-                <ScheduledSelect value={editor.interval} options={HOURLY_INTERVAL_OPTIONS}
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.interval}</span>
+                <ScheduledSelect value={editor.interval} options={hourlyIntervalOptions}
                   onChange={value => onEdit('interval', value)}
-                  testId={`${prefix}-interval`} ariaLabel="选择小时间隔" theme={theme} minWidth={140} />
+                  testId={`${prefix}-interval`} ariaLabel={scheduledCopy.chooseInterval} theme={theme} minWidth={140} emptyLabel={scheduledCopy.choose} />
               </div>
             </div>
           )}
           {editor.repeat === 'weekly' && (
             <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
               <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>日期</span>
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.dateLabel}</span>
                 <div className="flex items-center gap-1.5">
-                  <ScheduledSelect value={selectedDays} options={WEEKDAY_OPTIONS}
+                  <ScheduledSelect value={selectedDays} options={weekdayOptions}
                     onChange={values => onEdit('days', values)} multiple minSelected={1}
                     onClose={onCloseWeekly}
-                    testId={`${prefix}-day`} ariaLabel="选择运行日期" theme={theme} minWidth={190} />
+                    testId={`${prefix}-day`} ariaLabel={scheduledCopy.chooseDate} theme={theme} minWidth={190} emptyLabel={scheduledCopy.choose} />
                   <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
                 </div>
               </div>
@@ -1073,11 +1081,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           )}
           <div data-testid={`${prefix}-time-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer`}>
             <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{editor.repeat === 'hourly' ? '起始时间' : '时间'}</span>
+              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{editor.repeat === 'hourly' ? scheduledCopy.startTime : scheduledCopy.time}</span>
               <ScheduledTimeWheel value={editor.time}
                 onChange={value => onEdit('time', value)}
-                theme={theme} testId={`${prefix}-time`} ariaLabel={editor.repeat === 'hourly' ? '选择起始时间' : '选择运行时间'}
-                placeholder={editor.repeat === 'hourly' && !editor.hasTimeAnchor ? '设置起点' : ''} />
+                theme={theme} testId={`${prefix}-time`} ariaLabel={editor.repeat === 'hourly' ? scheduledCopy.chooseStartTime : scheduledCopy.chooseRunTime}
+                placeholder={editor.repeat === 'hourly' && !editor.hasTimeAnchor ? scheduledCopy.setStart : ''} />
             </div>
           </div>
         </>
@@ -1091,13 +1099,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             <div className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
               <div className="min-w-0">
                 <h2 id="scheduled-create-dialog-title" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
-                  {createForm.templateId ? '基于模板创建任务' : '新建任务'}
+                  {createForm.templateId ? scheduledCopy.createFromTemplate : scheduledCopy.newTask}
                 </h2>
               </div>
               <button type="button" data-testid="scheduled-create-close" disabled={!!busyAction}
                 onClick={() => setCreateForm(null)}
                 className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] text-[#C7C7CC] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD]'}`}
-                aria-label="关闭新建任务">
+                aria-label={scheduledCopy.closeCreate}>
                 <X size={18} />
               </button>
             </div>
@@ -1107,18 +1115,18 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 testId="scheduled-create-repeat"
               */}
               <label className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>任务名称</span>
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskName}</span>
                 <input data-testid="scheduled-create-name" value={createForm.name}
                   onChange={event => setCreateForm(current => ({...current, name: event.target.value}))}
-                  placeholder="例如：每日数据备份"
+                  placeholder={scheduledCopy.taskNamePlaceholder}
                   className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
               </label>
 
               <label className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>执行内容</span>
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskPrompt}</span>
                 <textarea data-testid="scheduled-create-prompt" value={createForm.prompt}
                   onChange={event => setCreateForm(current => ({...current, prompt: event.target.value}))}
-                  placeholder="描述每次运行时需要完成的工作..." rows="3"
+                  placeholder={scheduledCopy.taskPromptPlaceholder} rows="3"
                   className={`min-h-[112px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
               </label>
 
@@ -1138,7 +1146,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               <button type="submit" data-testid="scheduled-create-submit"
                 disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
                 className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
-                保存任务
+                {scheduledCopy.saveTask}
               </button>
             </div>
           </form>
@@ -1148,7 +1156,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const renderTemplateSuggestions = () => (
         <section className="mb-10" data-testid="scheduled-template-suggestions">
           <div className="mb-4 ml-1 flex items-center justify-between">
-            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>推荐模板</h2>
+            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.templates}</h2>
           </div>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             {visibleSuggestions.map(template => {
@@ -1156,8 +1164,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               return (
                 <button key={template.id} type="button" onClick={() => startTemplate(template)}
                   data-testid={`scheduled-template-${template.id}`}
-                  aria-label={`使用${template.name}模板`}
-                  title={`使用${template.name}模板`}
+                  aria-label={scheduledCopy.useTemplate(template.name)}
+                  title={scheduledCopy.useTemplate(template.name)}
                   className={`group relative h-[260px] max-sm:h-[210px] w-full overflow-hidden rounded-[20px] text-left shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] transition-all duration-300 active:scale-[0.99] ${activeTemplate ? 'ring-2 ring-[#0A84FF]/45' : ''} ${
                     activeTemplate
                       ? ''
@@ -1200,8 +1208,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               <button
                 type="button"
                 onClick={() => selectTask(task.id)}
-                aria-label={`查看定时任务：${task.name}`}
-                title={`查看定时任务：${task.name}`}
+                aria-label={scheduledCopy.view(task.name)}
+                title={scheduledCopy.view(task.name)}
                 className="flex min-w-0 flex-1 items-center gap-4 pr-3 text-left"
               >
                 <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${className}`}>
@@ -1217,12 +1225,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                       {taskListStatusLabel(task.status)}
                     </span>
                     {task.isRunning && (
-                      <span data-testid="scheduled-task-running" aria-label="任务正在运行"
+                      <span data-testid="scheduled-task-running" aria-label={scheduledCopy.running}
                         className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2"
                         style={{ borderColor: accent, borderTopColor: 'transparent' }} />
                     )}
                     {task.hasUnreadRuns && (
-                      <span data-testid="scheduled-task-unread" aria-label="有未查看的运行对话"
+                      <span data-testid="scheduled-task-unread" aria-label={scheduledCopy.unread}
                         className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
                     )}
                   </span>
@@ -1242,7 +1250,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const MyTasksSection = ({ className = '' } = {}) => (
         <section className={className || 'mb-5'}>
           <div className="mb-4 ml-1 flex items-center justify-between gap-4">
-            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>我的任务</h2>
+            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
             <FilterTabs />
           </div>
           <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] ${isDark ? 'border-white/15 bg-[#1C1C1E]' : 'border-black/5 bg-white'}`}>
@@ -1250,7 +1258,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] ${isDark ? 'bg-[#3A2424] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
                 <span className="min-w-0 flex-1">{error}</span>
                 <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
-                  aria-label="关闭错误提示" className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
+                  aria-label={scheduledCopy.closeError} className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -1261,7 +1269,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </div>
             ) : (
               <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
-                {loading ? '正在读取定时任务…' : '没有匹配的定时任务'}
+                {loading ? scheduledCopy.loading : scheduledCopy.empty}
               </div>
             )}
           </div>
@@ -1281,7 +1289,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <h2 id="scheduled-detail-title-heading" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
-                    编辑任务
+                    {scheduledCopy.editTask}
                   </h2>
                   <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${selected.status === 'active' ? (isDark ? 'bg-[#163820] text-[#7EE787]' : 'bg-[#E9F8EE] text-[#188038]') : (isDark ? 'bg-[#34353A] text-[#C6C8CE]' : 'bg-[#EEF0F3] text-[#5F6368]')}`}>
                     {statusLabel(selected.status)}
@@ -1289,7 +1297,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 </div>
                 {saveState !== 'idle' && (
                   <span data-testid="scheduled-save-state" className={`mt-1 block text-[12px] ${saveState === 'error' || saveState === 'invalid' ? 'text-[#FF3B30]' : mutedValue}`}>
-                    {saveState === 'saving' ? '正在保存…' : saveState === 'saved' ? '已保存' : saveState === 'invalid' ? '名称和说明不能为空' : '保存失败'}
+                    {scheduledCopy.saveState[saveState] || scheduledCopy.saveState.error}
                   </span>
                 )}
               </div>
@@ -1297,7 +1305,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <button type="button" data-testid="scheduled-detail-close" disabled={!!busyAction}
                   onClick={() => selectTask(null)}
                   className={`flex h-11 w-11 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] text-[#C7C7CC] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD]'}`}
-                  aria-label="关闭任务详情">
+                  aria-label={scheduledCopy.closeDetail}>
                   <X size={18} />
                 </button>
               </div>
@@ -1305,29 +1313,29 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
             <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar">
               <label data-testid="scheduled-detail-title" className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>任务名称</span>
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskName}</span>
                 <input data-testid="scheduled-live-title" value={detailForm.name}
                   onChange={e => editTextField('name', e.target.value)} onBlur={() => finishTextField('name')}
-                  aria-label="定时任务名称"
+                  aria-label={scheduledCopy.taskNameAria}
                   className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
               </label>
 
               <label data-testid="scheduled-detail-prompt" className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>执行内容</span>
+                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskPrompt}</span>
                 <textarea data-testid="scheduled-live-prompt" value={detailForm.prompt}
                   onChange={e => editTextField('prompt', e.target.value)} onBlur={() => finishTextField('prompt')}
-                  rows="5" aria-label="定时任务说明" placeholder="描述每次运行时要完成的工作..."
+                  rows="5" aria-label={scheduledCopy.taskPromptAria} placeholder={scheduledCopy.taskPromptPlaceholder}
                   className={`min-h-[132px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
               </label>
 
               <div data-testid="scheduled-detail-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
                 <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
                   <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-                    <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>AI 模型</span>
+                    <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.aiModel}</span>
                     <div className="flex items-center gap-1.5">
                       <ScheduledSelect value={detailForm.modelId || ''} options={modelOptions}
                         onChange={value => editModel(value)}
-                        testId="scheduled-live-model" ariaLabel="选择定时任务模型" theme={theme} minWidth={220} />
+                        testId="scheduled-live-model" ariaLabel={scheduledCopy.chooseModel} theme={theme} minWidth={220} emptyLabel={scheduledCopy.choose} />
                       <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
                     </div>
                   </div>
@@ -1350,15 +1358,15 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
               <div className={`grid gap-3 rounded-[16px] p-4 text-[13px] ${iosInsetSurface}`}>
                 <div className="flex items-center justify-between gap-3">
-                  <span className={mutedValue}>运行状态</span>
+                  <span className={mutedValue}>{scheduledCopy.runningStatus}</span>
                   <span className={`font-medium ${bodyText}`}>{statusLabel(selected.status)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className={mutedValue}>下次执行</span>
+                  <span className={mutedValue}>{scheduledCopy.nextExecution}</span>
                   <span className={`truncate text-right font-medium ${bodyText}`}>{fmtDateTime(selected.nextRunAt)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className={mutedValue}>启用任务</span>
+                  <span className={mutedValue}>{scheduledCopy.enableTask}</span>
                   <MacSwitch task={selected} />
                 </div>
               </div>
@@ -1368,21 +1376,21 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   disabled={!!busyAction || !detailFormIsValid}
                   onClick={() => runTaskNow(selected.id)}
                   className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${canOpenTaskFolder ? `border-b ${iosSeparator}` : ''} ${pressedRow}`}>
-                  <span className={`font-medium ${bodyText}`}>立即运行</span>
+                  <span className={`font-medium ${bodyText}`}>{scheduledCopy.runNow}</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
                 </button>
                 <button type="button" data-testid="scheduled-open-folder"
                   onClick={() => bridge && bridge.artifacts.openScheduledTaskFolder && bridge.artifacts.openScheduledTaskFolder(selected.id)}
                   className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
-                  <span className={`font-medium ${bodyText}`}>打开文件夹</span>
+                  <span className={`font-medium ${bodyText}`}>{scheduledCopy.openFolder}</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
                 </button>
               </div>
 
               <section>
                 <div className="mb-2 flex items-center justify-between px-1">
-                  <h3 className={`text-[13px] font-medium ${mutedValue}`}>执行历史</h3>
-                  <span className={`text-[12px] ${mutedValue}`}>{runs.length ? `${runs.length} 条记录` : '暂无记录'}</span>
+                  <h3 className={`text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.runHistory}</h3>
+                  <span className={`text-[12px] ${mutedValue}`}>{runs.length ? scheduledCopy.records(runs.length) : scheduledCopy.noRecords}</span>
                 </div>
                 <div data-testid="scheduled-run-history-list" className={`overflow-hidden rounded-[12px] ${iosHistorySurface}`}>
                   {runs.length ? (
@@ -1391,15 +1399,15 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                         <button key={item.id} type="button" disabled={!item.sessionId} onClick={() => openRunChat(item)}
                           data-testid="scheduled-run-row"
                           className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors disabled:cursor-default disabled:opacity-60 ${pressedRow}`}
-                          title={item.sessionId ? '打开运行会话' : '此运行记录还没有可打开的会话'}
-                          aria-label={item.sessionId ? `打开运行记录：${runStatusLabel(item.status)}` : '此运行记录还没有可打开的会话'}>
+                          title={item.sessionId ? scheduledCopy.openRun : scheduledCopy.noOpenRun}
+                          aria-label={item.sessionId ? scheduledCopy.openRunLabel(runStatusLabel(item.status)) : scheduledCopy.noOpenRun}>
                           <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center">
                             {['queued', 'running'].includes(item.status) ? (
-                              <span data-testid="scheduled-run-running" aria-label="运行正在进行"
+                              <span data-testid="scheduled-run-running" aria-label={scheduledCopy.runInProgress}
                                 className="h-3 w-3 shrink-0 animate-spin rounded-full border-2"
                                 style={{ borderColor: accent, borderTopColor: 'transparent' }} />
                             ) : item.unread ? (
-                              <span data-testid="scheduled-run-unread" aria-label="未查看的运行对话"
+                              <span data-testid="scheduled-run-unread" aria-label={scheduledCopy.unread}
                                 className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
                             ) : (
                               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.status === 'failed' ? '#FF3B30' : '#8E8E93' }} />
@@ -1410,7 +1418,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                               {runStatusLabel(item.status)}
                             </span>
                             <span className={`mt-0.5 block truncate text-[13px] ${bodyText}`}>
-                              {item.error || (item.sessionId ? '打开对应会话查看结果' : '暂无可打开的会话')}
+                              {item.error || (item.sessionId ? scheduledCopy.viewRunResult : scheduledCopy.noRunSession)}
                             </span>
                             <span className={`mt-1 block truncate text-[12px] ${mutedValue}`}>
                               {fmtDateTime(item.scheduledFor || item.createdAt)}
@@ -1421,7 +1429,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                       ))}
                     </div>
                   ) : (
-                    <div className={`px-4 py-8 text-center text-[13px] ${mutedValue}`}>还没有运行记录</div>
+                    <div className={`px-4 py-8 text-center text-[13px] ${mutedValue}`}>{scheduledCopy.noRunHistory}</div>
                   )}
                 </div>
               </section>
@@ -1432,14 +1440,14 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 onClick={(event) => requestDeleteTask(event, selected)}
                 disabled={!!busyAction}
                 className={`h-11 rounded-full px-6 text-[15px] font-medium text-[#FF3B30] transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] hover:bg-[#DADADD]'}`}>
-                删除
+                {scheduledCopy.delete}
               </button>
               <div className="flex flex-wrap justify-end gap-3">
                 <button type="button" data-testid="scheduled-detail-save"
                   disabled={!!busyAction || !detailFormIsValid}
                   onClick={saveDetailAndClose}
                   className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
-                  保存
+                  {scheduledCopy.save}
                 </button>
               </div>
             </div>
@@ -1454,7 +1462,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           {tasks[0] && (
             <button
               type="button"
-              aria-label={`查看定时任务：${tasks[0].name}`}
+              aria-label={scheduledCopy.view(tasks[0].name)}
               tabIndex={-1}
               className="absolute left-0 top-0 h-px w-px opacity-0"
             />
@@ -1463,7 +1471,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             <div className="relative mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col overflow-hidden">
               <header data-testid="scheduled-list-intro" className={`mb-4 flex shrink-0 flex-col items-start justify-between gap-4 border-b pb-6 sm:flex-row sm:items-center ${iosSeparator}`}>
                 <div className="min-w-0">
-                  <h1 className={`truncate text-[26px] font-normal tracking-tight ${bodyText}`}>定时任务</h1>
+                  <h1 className={`truncate text-[26px] font-normal tracking-tight ${bodyText}`}>{scheduledCopy.title}</h1>
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <button type="button"
@@ -1478,7 +1486,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     data-testid="scheduled-create-menu"
                     className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-[#0066D6]">
                     <Plus size={14} className="mr-2" />
-                    新建任务
+                    {scheduledCopy.newTask}
                   </button>
                 </div>
               </header>
@@ -1509,10 +1517,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               >
                 <div className={`px-5 pb-4 pt-5 text-center border-b ${iosSeparator}`}>
                   <h3 id="scheduled-delete-title" className={`text-[15px] font-semibold leading-5 ${bodyText}`}>
-                    删除定时任务？
+                    {scheduledCopy.deleteTitle}
                   </h3>
                   <p id="scheduled-delete-description" className={`mt-2 text-[12px] leading-4 ${mutedValue}`}>
-                    “{deleteTarget.name}”将被删除，此操作无法撤销。
+                    {scheduledCopy.deleteDescription(deleteTarget.name)}
                   </p>
                 </div>
                 <div className={`grid grid-cols-2 divide-x ${isDark ? 'divide-[#545458]/50' : 'divide-[#3C3C43]/16'}`}>
@@ -1520,13 +1528,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     onClick={(event) => cancelDeleteTask(event)}
                     disabled={!!busyAction}
                     className={`h-11 text-[15px] font-normal text-[#007AFF] transition-colors disabled:opacity-50 ${pressedRow}`}>
-                    取消
+                    {scheduledCopy.cancel}
                   </button>
                   <button type="button" data-testid="scheduled-detail-delete-confirm"
                     onClick={(event) => confirmDeleteTask(event, deleteTarget)}
                     disabled={!!busyAction}
                     className={`h-11 text-[15px] font-semibold text-[#FF3B30] transition-colors disabled:opacity-50 ${pressedRow}`}>
-                    删除
+                    {scheduledCopy.delete}
                   </button>
                 </div>
               </div>

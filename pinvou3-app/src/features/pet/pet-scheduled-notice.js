@@ -41,13 +41,13 @@ export function selectLatestScheduledNotice(tasks, runsByTask, acknowledgedAt = 
   return latest;
 }
 
-export function formatScheduledNoticeBody(notice) {
-  const time = new Intl.DateTimeFormat('zh-CN', {
+export function formatScheduledNoticeBody(notice, locale = 'zh-CN', completedLabel = '已完成') {
+  const time = new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
   }).format(new Date(notice.endedAtMs));
-  return `${time}「${notice.taskName}」已完成`;
+  return `${time}「${notice.taskName}」${completedLabel}`;
 }
 
 export function readScheduledNoticeAcknowledgedAt(storage = window.localStorage) {

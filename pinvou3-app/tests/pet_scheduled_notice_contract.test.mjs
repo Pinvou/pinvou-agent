@@ -15,8 +15,8 @@ assert.match(
 assert.match(petWindow, /listen\(['"]scheduled_task:run_updated['"]/);
 assert.match(petWindow, /className="pet-activity pet-activity-scheduled"/);
 assert.match(petWindow, /scheduledRun:\s*scheduledNotice/);
-assert.match(petWindow, /定时任务已完成/);
-assert.match(petWindow, /formatScheduledNoticeBody\(scheduledNotice\)/);
+assert.match(petWindow, /petCopy\.scheduledDone/);
+assert.match(petWindow, /formatScheduledNoticeBody\(scheduledNotice, t\.langTag, petCopy\.done\)/);
 assert.match(petCss, /\.pet-activity-scheduled\s*\{/);
 
 assert.match(rust, /pub struct PetScheduledRunNavigation/);

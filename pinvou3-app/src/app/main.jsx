@@ -133,10 +133,11 @@ function workspaceDisplayName(path) {
       render() {
         if (this.state.error) {
           const isDark = this.props.theme === 'dark';
+          const accountCopy = this.props.t.uiAccount;
           return (
             <div className="flex-1 flex flex-col w-full h-full relative z-10 px-16 py-12">
               <div className={`max-w-[800px] rounded-2xl border p-5 ${isDark ? 'bg-[#1F2023] border-[#333537] text-[#E8EAED]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F]'}`}>
-                <div className="text-[18px] font-semibold mb-2">设置页加载失败</div>
+                <div className="text-[18px] font-semibold mb-2">{accountCopy.settingsLoadFailed}</div>
                 <div className={`text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
                   {String((this.state.error && this.state.error.message) || this.state.error)}
                 </div>
@@ -1377,6 +1378,9 @@ function workspaceDisplayName(path) {
           try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
           return;
         }
+        if (isTauriAvailable()) {
+          tauriEvents.emit('ui:language_changed', { language: lang }).catch(() => {});
+        }
         if (bridge.available) {
           bridge.settings.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
         }
@@ -1502,7 +1506,7 @@ function workspaceDisplayName(path) {
             paddingLeft: 'env(safe-area-inset-left)',
           } : undefined}>
 
-          <WebConnectionStatus theme={activeTheme} />
+          <WebConnectionStatus theme={activeTheme} t={t} />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
           {dragAvatar && (
@@ -1808,7 +1812,7 @@ function workspaceDisplayName(path) {
                   <>
                     <button
                       onClick={handleOpenWebAccess}
-                      title="手机远程控制（扫码或链接）"
+                      title={t.uiRemote.title}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
@@ -1848,7 +1852,7 @@ function workspaceDisplayName(path) {
                   <div className="flex items-center gap-1">
                     <button
                       onClick={handleOpenWebAccess}
-                      title="手机远程控制（扫码或链接）"
+                      title={t.uiRemote.title}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
@@ -1890,7 +1894,7 @@ function workspaceDisplayName(path) {
 
             {currentView === 'monitor' && <MonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
-              <SettingsErrorBoundary theme={activeTheme}>
+              <SettingsErrorBoundary theme={activeTheme} t={t}>
                 <SettingsView
                   activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
@@ -1925,7 +1929,7 @@ function workspaceDisplayName(path) {
               </SettingsErrorBoundary>
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
-            {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
+            {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
@@ -1957,7 +1961,7 @@ function workspaceDisplayName(path) {
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
             {can('webAccessAdmin') && webAccessOpen && (
-              <WebAccessModal theme={activeTheme} bs={bs} onClose={() => setWebAccessOpen(false)} />
+              <WebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
             )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
@@ -2486,7 +2490,7 @@ function workspaceDisplayName(path) {
       workflow:  ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
       monitor:   ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
       cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
-      toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} onNewChat={()=>{}} />,
+      toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} t={t} onNewChat={()=>{}} />,
       knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
     };
 
