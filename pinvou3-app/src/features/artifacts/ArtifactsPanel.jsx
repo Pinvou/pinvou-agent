@@ -6,6 +6,7 @@ import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { AcFmtIcon } from '../tools/tool-common.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
+import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
@@ -57,7 +58,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings }) => {
+    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings, designMode = false, designCommand, onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied }) => {
       const isDark = theme === 'dark';
       const canOpenContainingFolder = can('externalSystemOpen');
       const canDownloadArtifacts = can('artifactDownload');
@@ -69,6 +70,99 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const [infos, setInfos] = useState({});      // path → { size, kind, modified }(列表行元信息)
       const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(false);
       const mdPreviewRef = useRef(null);
+      const designFrameRef = useRef(null);
+      const designRuntimeScriptRef = useRef(null);
+
+      function setDesignStatus(status, error) {
+        if (onDesignRuntimeStatus) onDesignRuntimeStatus(status, error);
+      }
+
+      function destroyDesignRuntime() {
+        const frame = designFrameRef.current;
+        if (!frame || !frame.contentWindow) return;
+        try {
+          frame.contentWindow.postMessage({ type: DESIGN_MESSAGE_TYPES.DESTROY }, '*');
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      function postDesignCommand(message) {
+        const frame = designFrameRef.current;
+        if (!frame || !frame.contentWindow || !message) return false;
+        try {
+          frame.contentWindow.postMessage(message, '*');
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function injectDesignRuntime(frame) {
+        designFrameRef.current = frame || null;
+        if (!designMode || !frame || !frame.contentWindow) return;
+        setDesignStatus('injecting');
+        try {
+          const script = designRuntimeScriptRef.current || (designRuntimeScriptRef.current = buildDesignRuntimeScript());
+          frame.contentWindow.eval(script);
+        } catch (error) {
+          setDesignStatus('error', String(error && error.message || error));
+        }
+      }
+
+      const handlePreviewFrameLoad = (frame) => {
+        injectDesignRuntime(frame);
+      };
+
+      useEffect(() => {
+        if (!designMode) {
+          destroyDesignRuntime();
+          setDesignStatus('idle');
+          return undefined;
+        }
+        injectDesignRuntime(designFrameRef.current);
+        return undefined;
+      }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
+
+      useEffect(() => {
+        if (!designMode || !designCommand || !designCommand.seq) return;
+        if (designCommand.kind === 'apply') {
+          const ok = postDesignCommand({
+            type: DESIGN_MESSAGE_TYPES.APPLY_CHANGE,
+            payload: designCommand.payload,
+          });
+          if (!ok && onDesignChangeApplied) {
+            onDesignChangeApplied({ changeId: designCommand.payload && designCommand.payload.changeId, ok: false, error: 'design runtime is not ready' });
+          }
+        } else if (designCommand.kind === 'clear') {
+          postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
+        }
+      }, [designMode, designCommand && designCommand.seq]);
+
+      useEffect(() => {
+        const onMessage = (event) => {
+          const data = event && event.data;
+          if (!data || data.source !== 'pinvou-design-runtime') return;
+          if (designFrameRef.current && event.source !== designFrameRef.current.contentWindow) return;
+          if (data.type === DESIGN_MESSAGE_TYPES.READY) {
+            setDesignStatus('ready');
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_SELECTED) {
+            const element = data.payload && data.payload.element;
+            if (onDesignElementSelected) onDesignElementSelected(element || null);
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ERROR) {
+            setDesignStatus('error', data.payload && data.payload.error);
+          } else if (data.type === DESIGN_MESSAGE_TYPES.DESTROYED) {
+            setDesignStatus('idle');
+          } else if (data.type === DESIGN_MESSAGE_TYPES.CHANGE_APPLIED) {
+            if (onDesignChangeApplied) onDesignChangeApplied(data.payload || {});
+          }
+        };
+        window.addEventListener('message', onMessage);
+        return () => {
+          window.removeEventListener('message', onMessage);
+          destroyDesignRuntime();
+        };
+      }, [onDesignElementSelected, onDesignRuntimeStatus]);
 
       async function flushMarkdownPreview() {
         if (tab !== 'preview' || pv.kind !== 'md' || !mdPreviewRef.current) return true;
@@ -247,7 +341,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (pv.kind === 'html') {
           // 方角 + 不裁剪:WebKitGTK 对「会内部滚动的 iframe」做任何 border-radius 裁剪
           // (含外层 overflow-hidden)都会在边缘留黑色梳齿残影。去掉圆角是唯一彻底解。
-          return <ScaledHtmlPreview html={pv.text || ''} />;
+          return <ScaledHtmlPreview html={pv.text || ''} onFrameLoad={handlePreviewFrameLoad} />;
         }
         if (pv.kind === 'text') {
           return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>;
@@ -258,7 +352,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return (
             <div className="flex flex-col gap-2 h-full">
               {vis.warning && <div className={`flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
-              <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+              <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+                data-testid="artifact-html-preview-frame"
+                onLoad={(e) => handlePreviewFrameLoad(e.currentTarget)}
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
             </div>
           );

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
+import { ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Code, Copy, Edit2, Feather, FileText, IconGrid, ImageIcon, Layout, Mic, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
+import { IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
@@ -23,6 +24,17 @@ import {
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import claudeIcon from '../../brand-icons/claude.svg';
+import kimiCodeIcon from '../../brand-icons/kimi-official.svg';
+import {
+  CODE_AGENT_PROVIDERS,
+  CODE_AGENT_PROVIDER_LABELS,
+  PINVOU_MODE_LABELS,
+  loadPinvouModeState,
+  reducePinvouModeState,
+  savePinvouModeState,
+} from './pinvou-mode-state.js';
+import { createDesignChange, reduceDesignChanges, uniqueDesignChanges } from './design-changes.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
@@ -35,6 +47,44 @@ function unifiedConversationUiEnabled() {
     return true;
   }
 }
+
+const PINVOU_MODE_SEGMENTS = [
+  { key: 'work', label: PINVOU_MODE_LABELS.work, Icon: Briefcase, title: '工作模式' },
+  { key: 'design', label: PINVOU_MODE_LABELS.design, Icon: Palette, title: '设计模式' },
+  { key: 'code', label: PINVOU_MODE_LABELS.code, Icon: Code, title: '代码模式' },
+];
+
+const OpenAIIcon = (props) => (
+  <svg
+    width={props.size || 24}
+    height={props.size || 24}
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    className={props.className || ''}
+    aria-hidden="true"
+  >
+    <path fillRule="evenodd" d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" />
+  </svg>
+);
+
+const CODE_AGENT_PROVIDER_ICONS = {
+  'claude-code': claudeIcon,
+  'kimi-code': kimiCodeIcon,
+};
+
+const WORK_MODE_SUBTABS = [
+  { key: 'document-writing', label: '公文写作', Icon: FileText },
+  { key: 'ppt-design', label: 'PPT设计', Icon: Presentation },
+  { key: 'data-visualization', label: '数据可视化', Icon: BarChart2 },
+];
+
+const DESIGN_MODE_SUBTABS = [
+  { key: 'poster', label: '海报', Icon: ImageIcon },
+  { key: 'webpage', label: '网页', Icon: Layout },
+  { key: 'banner', label: 'Banner', Icon: Presentation },
+  { key: 'logo', label: 'Logo', Icon: Feather },
+  { key: 'ui', label: 'UI界面', Icon: IconGrid },
+];
 
 const openChatExternalUrl = (url) => {
   if (isWeb) {
@@ -154,18 +204,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return (
         <div className="relative">
           <button ref={triggerRef} onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
-            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
-              ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25')
+            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold'} ${active
+              ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#007AFF]/10 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/25')
               : modelMissing
                 ? 'bg-transparent text-gray-400 dark:text-gray-600 border-transparent opacity-70'
-                : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5')}`}>
-            <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
-            {!compact && <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>}
-            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+                : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]')}`}>
+            <BookOpen size={compact ? 18 : 13} className="opacity-70 shrink-0" />
+            {!compact && <span className="max-w-[116px] truncate">{active ? mountedName : t.kbMount}</span>}
+            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
             {compact && active && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#1A73E8] dark:bg-[#A8C7FA] ring-2 ring-white dark:ring-[#161618]"></span>}
           </button>
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {modelMissing ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
                 ) : collections === null ? (
@@ -226,7 +276,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               : <Zap size={18} className="shrink-0" />}
           </button>
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <button onClick={() => switchTo('yolo')} className={optCls}>
                   <span className="flex flex-col items-start min-w-0">
                     <span className="font-semibold">{t.modeYolo}</span>
@@ -242,6 +292,261 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
                 </button>
           </ComposerPopover>
+        </div>
+      );
+    };
+
+    const PinvouModeSwitcher = ({ mode, onChange, isDark }) => (
+      <div className="flex items-center justify-center mb-2 px-1" data-testid="pinvou-mode-switcher">
+        <IosSegmentedControl
+          value={mode}
+          onChange={onChange}
+          segments={PINVOU_MODE_SEGMENTS}
+          isDark={isDark}
+          compact
+          prominent
+          className="max-w-full"
+        />
+      </div>
+    );
+
+    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker' }) => {
+      const trackRef = useRef(null);
+      const buttonRefs = useRef({});
+      const [indicator, setIndicator] = useState({ left: 0, width: 20, ready: false });
+
+      const updateIndicator = useCallback(() => {
+        const track = trackRef.current;
+        const button = buttonRefs.current[value];
+        if (!track || !button) return;
+        const trackRect = track.getBoundingClientRect();
+        const buttonRect = button.getBoundingClientRect();
+        const width = Math.min(28, Math.max(20, buttonRect.width * 0.32));
+        setIndicator({
+          left: buttonRect.left - trackRect.left + (buttonRect.width - width) / 2,
+          width,
+          ready: true,
+        });
+      }, [value]);
+
+      useLayoutEffect(() => {
+        updateIndicator();
+        window.addEventListener('resize', updateIndicator);
+        return () => window.removeEventListener('resize', updateIndicator);
+      }, [items, updateIndicator]);
+
+      return (
+        <div
+          data-testid={testId}
+          className="mb-1.5 flex justify-center px-1"
+        >
+          <div ref={trackRef} className="relative inline-flex max-w-full items-center justify-center gap-5 overflow-x-auto px-2 py-1">
+            <span
+              aria-hidden="true"
+              className={`absolute bottom-0 h-0.5 rounded-full transition-all duration-200 ease-out ${isDark ? 'bg-[#F5F5F7]' : 'bg-[#1D1D1F]'}`}
+              style={{
+                left: `${indicator.left}px`,
+                width: `${indicator.width}px`,
+                opacity: indicator.ready ? 1 : 0,
+              }}
+            />
+            {items.map((item) => {
+              const selected = value === item.key;
+              const icon = icons && icons[item.key];
+              const ItemIcon = item.Icon;
+              return (
+                <button
+                  ref={(node) => { buttonRefs.current[item.key] = node; }}
+                  key={item.key}
+                  type="button"
+                  data-testid={testId === 'code-agent-picker' ? `code-agent-provider-${item.key}` : `${testId}-option-${item.key}`}
+                  onClick={() => onChange && onChange(item.key)}
+                  className={`relative flex h-7 min-w-0 items-center justify-center gap-1.5 px-0.5 text-[13px] font-medium transition-colors duration-200 ${
+                    selected
+                      ? isDark
+                        ? 'text-[#F5F5F7]'
+                        : 'text-[#1D1D1F]'
+                      : isDark
+                        ? 'text-[#8E8E93] hover:text-[#F5F5F7]'
+                        : 'text-[#8E8E93] hover:text-[#1D1D1F]'
+                  }`}
+                >
+                  {ItemIcon && (
+                    <ItemIcon size={15} className="shrink-0" />
+                  )}
+                  {icon && (
+                    <span className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-white ${
+                      isDark ? 'shadow-[0_0_0_1px_rgba(255,255,255,.14)]' : 'ring-1 ring-black/[0.06]'
+                    }`}>
+                      <img src={icon} alt="" className="h-[13px] w-[13px] object-contain" />
+                    </span>
+                  )}
+                  <span className="min-w-0 truncate">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    const CodeProviderPicker = ({ isDark, value, onChange }) => (
+      <SubModePicker
+        isDark={isDark}
+        value={value}
+        onChange={onChange}
+        items={CODE_AGENT_PROVIDERS.map((provider) => ({
+          key: provider,
+          label: CODE_AGENT_PROVIDER_LABELS[provider],
+          Icon: provider === 'codex' ? OpenAIIcon : undefined,
+        }))}
+        icons={CODE_AGENT_PROVIDER_ICONS}
+        testId="code-agent-picker"
+      />
+    );
+
+    const rgbToHex = (value, fallback = '#000000') => {
+      const raw = String(value || '').trim();
+      if (/^#[0-9a-f]{6}$/i.test(raw)) return raw;
+      const match = raw.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (!match) return fallback;
+      return '#' + [match[1], match[2], match[3]]
+        .map((part) => Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, '0'))
+        .join('');
+    };
+
+    const pxNumber = (value) => {
+      const n = parseFloat(String(value || '').replace('px', ''));
+      return Number.isFinite(n) ? Math.round(n) : 0;
+    };
+
+    const DesignMiniPanel = ({ isDark, selectedElement, changes, onApplyChange, onClearChanges }) => {
+      const style = (selectedElement && selectedElement.computedStyle) || {};
+      const [textDraft, setTextDraft] = useState('');
+      const committedTextRef = useRef('');
+      useEffect(() => {
+        const next = selectedElement ? selectedElement.text || '' : '';
+        setTextDraft(next);
+        committedTextRef.current = next;
+      }, [selectedElement && selectedElement.id]);
+
+      if (!selectedElement) {
+        return null;
+      }
+
+      const panelCls = `mb-2 rounded-[20px] border p-3 ${
+        isDark
+          ? 'border-white/10 bg-[#1E1F20]/92 text-[#E3E3E3]'
+          : 'border-black/[0.06] bg-white/92 text-[#1F1F1F] shadow-sm'
+      }`;
+      const inputCls = `h-8 min-w-0 rounded-[10px] border px-2 text-[13px] outline-none ${
+        isDark
+          ? 'border-white/10 bg-white/[0.06] text-[#F5F5F7]'
+          : 'border-black/10 bg-black/[0.03] text-[#1D1D1F]'
+      }`;
+      const labelCls = `text-[11px] font-medium ${isDark ? 'text-[#8E8E93]' : 'text-[#757575]'}`;
+
+      const commitText = () => {
+        if (textDraft !== committedTextRef.current) {
+          const oldValue = committedTextRef.current;
+          committedTextRef.current = textDraft;
+          onApplyChange && onApplyChange({ type: 'text', oldValue, newValue: textDraft });
+        }
+      };
+
+      return (
+        <div data-testid="design-mini-panel" className={panelCls}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[13px] font-semibold truncate" data-testid="design-selected-element">
+                {selectedElement.tagName} {selectedElement.selector}
+              </div>
+              <div className={`mt-0.5 text-[11px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#757575]'}`}>
+                {selectedElement.className || '无 class'}
+              </div>
+            </div>
+            {changes.length > 0 && (
+              <button
+                type="button"
+                onClick={onClearChanges}
+                data-testid="design-clear-changes"
+                className={`shrink-0 h-8 px-3 rounded-full text-[12px] font-semibold transition-colors ${
+                  isDark ? 'bg-white/[0.08] hover:bg-white/[0.12] text-[#F5F5F7]' : 'bg-black/[0.05] hover:bg-black/[0.08] text-[#3C3C43]'
+                }`}
+              >
+                清空修改
+              </button>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 sm:col-span-2">
+              <span className={labelCls}>文案</span>
+              <input
+                data-testid="design-text-input"
+                className={inputCls}
+                value={textDraft}
+                onChange={(e) => setTextDraft(e.target.value)}
+                onBlur={commitText}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className={labelCls}>文字颜色</span>
+              <input
+                data-testid="design-color-input"
+                type="color"
+                value={rgbToHex(style.color)}
+                onInput={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'color', oldValue: style.color || '', newValue: e.currentTarget.value })}
+                onChange={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'color', oldValue: style.color || '', newValue: e.target.value })}
+                className="h-8 w-12 rounded-[10px] border border-black/10 bg-transparent p-1"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className={labelCls}>背景颜色</span>
+              <input
+                data-testid="design-background-input"
+                type="color"
+                value={rgbToHex(style.backgroundColor, '#ffffff')}
+                onInput={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'backgroundColor', oldValue: style.backgroundColor || '', newValue: e.currentTarget.value })}
+                onChange={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'backgroundColor', oldValue: style.backgroundColor || '', newValue: e.target.value })}
+                className="h-8 w-12 rounded-[10px] border border-black/10 bg-transparent p-1"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <span className={`${labelCls} w-16`}>字号</span>
+              <input
+                data-testid="design-font-size-input"
+                type="number"
+                min="1"
+                className={`${inputCls} w-full`}
+                defaultValue={pxNumber(style.fontSize)}
+                onBlur={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'fontSize', oldValue: style.fontSize || '', newValue: `${e.target.value || 0}px` })}
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <span className={`${labelCls} w-16`}>圆角</span>
+              <input
+                data-testid="design-radius-input"
+                type="number"
+                min="0"
+                className={`${inputCls} w-full`}
+                defaultValue={pxNumber(style.borderRadius)}
+                onBlur={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'borderRadius', oldValue: style.borderRadius || '', newValue: `${e.target.value || 0}px` })}
+              />
+            </label>
+          </div>
+
+          {changes.length > 0 && (
+            <div data-testid="design-changes-log" className={`mt-3 max-h-24 overflow-y-auto rounded-[12px] p-2 text-[11px] ${isDark ? 'bg-black/20' : 'bg-black/[0.035]'}`}>
+              <div className="mb-1 font-semibold">设计变更 {changes.length}</div>
+              {changes.slice(-5).map((change) => (
+                <div key={change.id} className="truncate">
+                  {change.type === 'text' ? 'text' : change.property}: {change.oldValue || '空'} -&gt; {change.newValue || '空'}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       );
     };
@@ -263,6 +568,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setInputLimitReached(constrained.limitReached);
       }, []);
       const [artifactsOpen, setArtifactsOpen] = useState(false);
+      const [pinvouModeState, setPinvouModeState] = useState(() => loadPinvouModeState());
+      const [workSubtab, setWorkSubtab] = useState(WORK_MODE_SUBTABS[0].key);
+      const [designSubtab, setDesignSubtab] = useState(DESIGN_MODE_SUBTABS[0].key);
+      const [selectedDesignElement, setSelectedDesignElement] = useState(null);
+      const [designChanges, setDesignChanges] = useState([]);
+      const [designCommand, setDesignCommand] = useState(null);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
       const ART_MIN = 360, CHAT_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
       const clampArtifactWidth = (w, rootW) => {
@@ -380,6 +691,87 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
       const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
       const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
+      const pinvouMode = pinvouModeState.mode;
+      const codeProvider = pinvouModeState.codeProvider;
+      const visibleDesignChanges = uniqueDesignChanges(designChanges);
+      const updatePinvouModeState = useCallback((action) => {
+        setPinvouModeState((prev) => savePinvouModeState(reducePinvouModeState(prev, action)));
+      }, []);
+      const handlePinvouModeChange = useCallback((mode) => {
+        updatePinvouModeState({ type: 'set-mode', mode });
+        if (mode !== 'design') setSelectedDesignElement(null);
+        if (mode === 'design' && artifactCount > 0) setArtifactsOpen(true);
+      }, [artifactCount, updatePinvouModeState]);
+      const handleCodeProviderChange = useCallback((provider) => {
+        updatePinvouModeState({ type: 'set-code-provider', provider });
+      }, [updatePinvouModeState]);
+      const handleDesignRuntimeStatus = useCallback((status) => {
+        updatePinvouModeState({ type: 'set-design-runtime-status', status });
+      }, [updatePinvouModeState]);
+      const handleDesignElementSelected = useCallback((element) => {
+        updatePinvouModeState({ type: 'set-selected-design-element', elementId: element && element.id });
+        setSelectedDesignElement(element || null);
+      }, [updatePinvouModeState]);
+      const handleApplyDesignChange = useCallback(({ type, property, oldValue, newValue }) => {
+        if (!selectedDesignElement || !selectedDesignElement.selector) return;
+        if (String(oldValue == null ? '' : oldValue) === String(newValue == null ? '' : newValue)) return;
+        if (designChanges.some((change) => (
+          change.selector === selectedDesignElement.selector &&
+          change.type === type &&
+          change.property === property &&
+          change.oldValue === String(oldValue == null ? '' : oldValue) &&
+          change.newValue === String(newValue == null ? '' : newValue)
+        ))) return;
+        const change = createDesignChange({
+          element: selectedDesignElement,
+          type,
+          property,
+          oldValue,
+          newValue,
+        });
+        setDesignChanges((prev) => reduceDesignChanges(prev, { type: 'add', change }));
+        setDesignCommand({
+          seq: Date.now(),
+          kind: 'apply',
+          payload: {
+            selector: selectedDesignElement.selector,
+            changeId: change.id,
+            changeType: type,
+            property,
+            value: newValue,
+          },
+        });
+        setSelectedDesignElement((prev) => {
+          if (!prev) return prev;
+          if (type === 'text') return { ...prev, text: String(newValue || '') };
+          return {
+            ...prev,
+            computedStyle: {
+              ...(prev.computedStyle || {}),
+              [property]: String(newValue || ''),
+            },
+          };
+        });
+      }, [designChanges, selectedDesignElement]);
+      const handleDesignChangeApplied = useCallback((result) => {
+        if (!result || !result.changeId || result.changeId === 'clear') return;
+        setDesignChanges((prev) => reduceDesignChanges(prev, {
+          type: 'mark-applied',
+          changeId: result.changeId,
+          ok: result.ok,
+          error: result.error,
+        }));
+      }, []);
+      const handleClearDesignChanges = useCallback(() => {
+        setDesignCommand({ seq: Date.now(), kind: 'clear' });
+        setDesignChanges((prev) => reduceDesignChanges(prev, { type: 'clear' }));
+        setSelectedDesignElement(null);
+      }, []);
+      const composerPlaceholder = pinvouMode === 'design'
+        ? '描述你想怎么调整选中的元素'
+        : pinvouMode === 'code'
+          ? '描述要交给代码 Agent 的修改'
+          : t.placeholder;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
@@ -963,15 +1355,44 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           {/* Floating Input Area */}
           <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
-            {!activeSessionId && !scheduledRunContext && (
-              <HomeModeSwitcher
-                mode="work"
-                codeSupported={codeModeAvailable}
-                isDark={isDark}
-                onChange={onSwitchHomeMode}
-                copy={t.uiHomeMode}
-              />
-            )}
+              {!activeSessionId && !scheduledRunContext && (
+                <HomeModeSwitcher
+                  mode="work"
+                  codeSupported={codeModeAvailable}
+                  isDark={isDark}
+                  onChange={onSwitchHomeMode}
+                  copy={t.uiHomeMode}
+                />
+              )}
+              <PinvouModeSwitcher mode={pinvouMode} onChange={handlePinvouModeChange} isDark={isDark} />
+              {pinvouMode === 'work' && (
+                <SubModePicker
+                  isDark={isDark}
+                  value={workSubtab}
+                  onChange={setWorkSubtab}
+                  items={WORK_MODE_SUBTABS}
+                  testId="work-subtab-picker"
+                />
+              )}
+              {pinvouMode === 'design' && (
+                <SubModePicker
+                  isDark={isDark}
+                  value={designSubtab}
+                  onChange={setDesignSubtab}
+                  items={DESIGN_MODE_SUBTABS}
+                  testId="design-subtab-picker"
+                />
+              )}
+              {pinvouMode === 'code' && <CodeProviderPicker isDark={isDark} value={codeProvider} onChange={handleCodeProviderChange} />}
+              {pinvouMode === 'design' && (
+                <DesignMiniPanel
+                  isDark={isDark}
+                  selectedElement={selectedDesignElement}
+                  changes={visibleDesignChanges}
+                  onApplyChange={handleApplyDesignChange}
+                  onClearChanges={handleClearDesignChanges}
+                />
+              )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -1097,7 +1518,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 maxLength={CHAT_INPUT_MAX_LENGTH}
-                placeholder={t.placeholder}
+                placeholder={composerPlaceholder}
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
@@ -1175,11 +1596,37 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
               <div ref={artColRef} className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
-                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} onGotoSettings={onGotoSettings} />
+                <ArtifactsPanel
+                  bs={bs}
+                  theme={theme}
+                  t={t}
+                  onClose={() => setArtifactsOpen(false)}
+                  isWide={true}
+                  onGotoSettings={onGotoSettings}
+                  designMode={pinvouMode === 'design'}
+                  designCommand={designCommand}
+                  onDesignRuntimeStatus={handleDesignRuntimeStatus}
+                  onDesignElementSelected={handleDesignElementSelected}
+                  onDesignChangeApplied={handleDesignChangeApplied}
+                />
               </div>
             </>
           )}
-          {artifactsVisible && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
+          {artifactsVisible && !isWide && (
+            <ArtifactsPanel
+              bs={bs}
+              theme={theme}
+              t={t}
+              onClose={() => setArtifactsOpen(false)}
+              isWide={false}
+              onGotoSettings={onGotoSettings}
+              designMode={pinvouMode === 'design'}
+              designCommand={designCommand}
+              onDesignRuntimeStatus={handleDesignRuntimeStatus}
+              onDesignElementSelected={handleDesignElementSelected}
+              onDesignChangeApplied={handleDesignChangeApplied}
+            />
+          )}
         </div>
       );
     };

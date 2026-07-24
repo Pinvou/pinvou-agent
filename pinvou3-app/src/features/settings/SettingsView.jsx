@@ -846,7 +846,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="relative min-w-0">
           <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
             title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold min-w-0 max-w-full bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
+            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             {compact ? (
               <>
                 <Cpu size={18} className="opacity-80" />
@@ -855,13 +855,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             ) : (
               <>
                 <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
-                <span className="max-w-[128px] truncate">{t.composerModelLabel(current ? current.name : t.modelNonePick)}</span>
-                <ChevronDown size={14} className="opacity-50 shrink-0" />
+                <span className="max-w-[116px] truncate">{t.composerModelLabel(current ? current.name : t.modelNonePick)}</span>
+                <ChevronDown size={13} className="opacity-50 shrink-0" />
               </>
             )}
           </button>
           <ComposerPopover open={open && canSwitchModels} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {savedModels.map(m => (
                   <button key={m.id} onClick={() => pick(m.id)}
                     className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
@@ -1018,7 +1018,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
     // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
-    const ScaledHtmlPreview = ({ html }) => {
+    const ScaledHtmlPreview = ({ html, onFrameLoad }) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
       const [box, setBox] = useState(null); // { w, h, scale }
@@ -1047,7 +1047,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return (
         <div ref={wrapRef} className="relative w-full bg-[#15171a]" style={scaled ? { height: Math.ceil(box.h * box.scale) } : { minHeight: 480, height: '100%' }}>
           {!ready && <div className="h-[480px] bg-[#15171a]"></div>}
-          <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" onLoad={() => { measure(); setTimeout(() => setReady(true), 80); }}
+          <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" data-testid="artifact-html-preview-frame" onLoad={() => { measure(); if (onFrameLoad) onFrameLoad(frameRef.current); setTimeout(() => setReady(true), 80); }}
             className={`border-0 block bg-[#15171a] transition-opacity duration-300 ${ready ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'}`}
             style={scaled
               ? { width: box.w + 'px', height: box.h + 'px', transform: 'scale(' + box.scale + ')', transformOrigin: 'top left', colorScheme: 'dark' }
@@ -1075,17 +1075,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return (
         <div className="relative">
           <button onClick={() => setOpen(o => !o)} title={cur ? cur.name : t.composerMode}
-            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] whitespace-nowrap'} ${cur
+            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] whitespace-nowrap'} ${cur
               ? 'bg-[#007AFF]/[0.1] dark:bg-[#0A84FF]/20 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/30'
-              : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5'}`}>
-            <Zap size={14} className={cur ? '' : 'opacity-70'} />
+              : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]'}`}>
+            <Zap size={compact ? 14 : 13} className={cur ? '' : 'opacity-70'} />
             {!compact && (cur ? cur.name : t.composerMode)}
-            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
           </button>
           {open && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerModeTitle}</div>
                 {SKILLS.map(s => {
                   const soon = s.kind === 'soon';
@@ -1217,17 +1217,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return (
         <div className="relative shrink-0">
           <button ref={triggerRef} data-testid="composer-tool-menu-trigger" onClick={() => setOpen(o => !o)} title={t.composerTools}
-            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold whitespace-nowrap bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 border-black/[0.04] dark:border-white/5'}`}>
-            <Wrench size={compact ? 18 : 14} className="opacity-80" />
+            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold whitespace-nowrap bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
+            <Wrench size={compact ? 18 : 13} className="opacity-80" />
             {!compact && t.composerTools}
             {enabledCount > 0 && (compact
               ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount}</span>
-              : <span className="text-[11px] bg-[#007AFF] text-white px-1.5 py-0.5 rounded-full leading-none font-bold shrink-0">{enabledCount}</span>)}
-            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+              : <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>)}
+            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
           </button>
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             menuProps={{ 'data-testid': 'composer-tool-menu' }}
-            desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
                 {toolRows.map(switchRow)}
                 {skillRows.length === 0 ? (
