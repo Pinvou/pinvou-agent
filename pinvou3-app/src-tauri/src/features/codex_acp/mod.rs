@@ -65,6 +65,8 @@ pub struct CodexAcpStatus {
     pub download_total_bytes: u64,
     pub download_progress: Option<u8>,
     pub authenticated: bool,
+    pub login_in_progress: bool,
+    pub login_url: Option<String>,
     pub installing: bool,
     pub error: Option<String>,
 }
@@ -253,6 +255,8 @@ pub struct AcpPool {
     agents: SessionAgentStore,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
+    login_in_progress: Arc<AtomicBool>,
+    login_url: Arc<parking_lot::RwLock<Option<String>>>,
     downloaded_bytes: Arc<AtomicU64>,
     download_total_bytes: Arc<AtomicU64>,
     last_error: Arc<parking_lot::RwLock<Option<String>>>,
@@ -354,6 +358,8 @@ impl AcpPool {
             agents: SessionAgentStore::load_or_empty(),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
+            login_in_progress: Arc::new(AtomicBool::new(false)),
+            login_url: Arc::new(parking_lot::RwLock::new(None)),
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             download_total_bytes: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(parking_lot::RwLock::new(None)),
@@ -457,6 +463,8 @@ impl AcpPool {
             download_total_bytes,
             download_progress,
             authenticated: codex_authenticated(),
+            login_in_progress: self.login_in_progress.load(Ordering::Acquire),
+            login_url: self.login_url.read().clone(),
             installing: self.installing.load(Ordering::Acquire),
             error: self.last_error.read().clone(),
         }
@@ -493,22 +501,66 @@ impl AcpPool {
 
     pub async fn login(&self) -> Result<CodexAcpStatus> {
         self.ensure_installed().await?;
-        let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
-        let mut command = self.adapter_command(&adapter)?;
-        command
-            .arg("login")
-            .arg("--client-name")
-            .arg("pinvou3")
-            .arg("--client-title")
-            .arg("品悟")
-            .arg("--client-version")
-            .arg(env!("CARGO_PKG_VERSION"));
-        self.configure_codex_path(&mut command, &adapter)?;
-        let status = command.status().await.context("启动 Codex 登录失败")?;
-        if !status.success() {
-            bail!("Codex 登录失败: {status}");
+        if codex_authenticated() {
+            return Ok(self.status());
         }
+        let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
+        let codex = self
+            .resolve_codex(&adapter)
+            .context("未检测到可用 Codex；请下载托管 Codex")?;
+        if self.login_in_progress.swap(true, Ordering::AcqRel) {
+            return Ok(self.status());
+        }
+        *self.login_url.write() = None;
+        *self.last_error.write() = None;
+        let pool = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = pool.run_login(codex.path).await {
+                *pool.last_error.write() = Some(format!("Codex 授权登录失败: {error:#}"));
+            }
+            pool.login_in_progress.store(false, Ordering::Release);
+        });
         Ok(self.status())
+    }
+
+    pub fn open_login_url(&self) -> Result<()> {
+        let url = self
+            .login_url
+            .read()
+            .clone()
+            .context("Codex 授权链接尚未生成，请稍候")?;
+        crate::platform::os::open_target(&url, "Codex 授权页面").map_err(anyhow::Error::msg)
+    }
+
+    async fn run_login(&self, codex_path: PathBuf) -> Result<()> {
+        let mut command = codex_login_command(&codex_path);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().context("启动 Codex CLI 登录失败")?;
+        let stdout = child.stdout.take().context("读取 Codex 登录标准输出失败")?;
+        let stderr = child.stderr.take().context("读取 Codex 登录错误输出失败")?;
+        let stdout_reader = tokio::spawn(capture_login_output(stdout, self.login_url.clone()));
+        let stderr_reader = tokio::spawn(capture_login_output(stderr, self.login_url.clone()));
+
+        let status = match tokio::time::timeout(Duration::from_secs(600), child.wait()).await {
+            Ok(result) => result.context("等待 Codex 登录进程失败")?,
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                bail!("授权等待超过 10 分钟，请重新登录");
+            }
+        };
+        let _ = stdout_reader.await;
+        let _ = stderr_reader.await;
+
+        if !status.success() {
+            bail!("Codex 登录进程退出: {status}");
+        }
+        if !codex_authenticated() {
+            bail!("Codex 登录进程已结束，但未检测到授权信息");
+        }
+        *self.login_url.write() = None;
+        *self.last_error.write() = None;
+        Ok(())
     }
 
     pub async fn send_message(&self, session_id: &str, content: String) -> Result<()> {
@@ -1160,6 +1212,39 @@ fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Command> {
     }
 }
 
+fn codex_login_command(codex: &Path) -> Command {
+    if crate::platform::capabilities::is_windows()
+        && codex.extension().and_then(|value| value.to_str()) == Some("cmd")
+    {
+        let mut command = Command::new("cmd");
+        command.args(["/D", "/S", "/C"]).arg(codex).arg("login");
+        command
+    } else {
+        let mut command = Command::new(codex);
+        command.arg("login");
+        command
+    }
+}
+
+async fn capture_login_output<R>(reader: R, login_url: Arc<parking_lot::RwLock<Option<String>>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(url) = extract_codex_login_url(&line) {
+            *login_url.write() = Some(url.to_string());
+        }
+    }
+}
+
+fn extract_codex_login_url(line: &str) -> Option<&str> {
+    line.split_whitespace().find(|token| {
+        token.starts_with("https://auth.openai.com/")
+            || token.starts_with("https://platform.openai.com/")
+    })
+}
+
 fn codex_path_for_adapter(adapter: &Path) -> Option<PathBuf> {
     let name = if crate::platform::capabilities::is_windows() {
         "codex.cmd"
@@ -1262,6 +1347,24 @@ mod tests {
         assert_ne!(
             permission_key("session-a", "tool-1"),
             permission_key("session-b", "tool-1")
+        );
+    }
+
+    #[test]
+    fn extracts_only_codex_authorization_urls() {
+        assert_eq!(
+            extract_codex_login_url(
+                "https://auth.openai.com/oauth/authorize?response_type=code&state=test"
+            ),
+            Some("https://auth.openai.com/oauth/authorize?response_type=code&state=test")
+        );
+        assert_eq!(
+            extract_codex_login_url("open https://platform.openai.com/codex/auth now"),
+            Some("https://platform.openai.com/codex/auth")
+        );
+        assert_eq!(
+            extract_codex_login_url("https://example.com/not-codex"),
+            None
         );
     }
 }

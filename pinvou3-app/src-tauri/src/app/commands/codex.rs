@@ -46,6 +46,13 @@ pub async fn login_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpSta
 }
 
 #[tauri::command]
+pub fn open_codex_login_url(acp_pool: State<'_, AcpPool>) -> Result<(), String> {
+    acp_pool
+        .open_login_url()
+        .map_err(|error| format!("打开 Codex 授权页面失败: {error:#}"))
+}
+
+#[tauri::command]
 pub async fn get_codex_acp_session_info(
     session_id: String,
     acp_pool: State<'_, AcpPool>,

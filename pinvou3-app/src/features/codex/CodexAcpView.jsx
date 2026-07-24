@@ -394,7 +394,7 @@ function Turn({ turn, now, pendingByTool, onRespond, responding }) {
   );
 }
 
-function RuntimeNotice({ status, working, error, onPrepare, onLogin }) {
+function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin }) {
   if (!status) return <div className="text-[13px] text-gray-400">正在检查 Codex ACP…</div>;
   if (!status.bridge_ready) {
     return (
@@ -425,15 +425,30 @@ function RuntimeNotice({ status, working, error, onPrepare, onLogin }) {
     );
   }
   if (!status.authenticated) {
+    const waitingForLogin = Boolean(status.login_in_progress);
+    const loginUrlReady = waitingForLogin && Boolean(status.login_url);
     return (
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-center gap-3">
         <Sparkles size={19} className="text-amber-500 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Codex 尚未登录</div>
-          <div className="text-[12px] text-gray-500">使用 Codex CLI / ChatGPT 账号完成授权</div>
+          <div className="text-[13px] font-semibold">{waitingForLogin ? '等待 Codex 授权' : 'Codex 尚未登录'}</div>
+          <div className="text-[12px] text-gray-500">
+            {loginUrlReady
+              ? '请在浏览器中完成 ChatGPT 授权；完成后 Pinvou 会自动连接'
+              : waitingForLogin
+                ? '正在启动 Codex 授权页面，请稍候…'
+                : '使用 Codex CLI / ChatGPT 账号完成授权'}
+          </div>
           {(error || status.error) && <div className="mt-1 text-[11px] text-red-500">{error || status.error}</div>}
         </div>
-        <button onClick={onLogin} disabled={working} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">{working ? '等待授权…' : '登录'}</button>
+        {loginUrlReady && (
+          <button onClick={onOpenLogin} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
+            重新打开授权页
+          </button>
+        )}
+        <button onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
+          {working || waitingForLogin ? '等待授权…' : '授权登录'}
+        </button>
       </div>
     );
   }
@@ -566,6 +581,12 @@ export function CodexAcpView({ theme }) {
     return () => { if (unlisten) unlisten(); };
   }, []);
 
+  useEffect(() => {
+    if (!status || !status.login_in_progress) return undefined;
+    const timer = window.setInterval(() => refreshStatus().catch(() => {}), 750);
+    return () => window.clearInterval(timer);
+  }, [status && status.login_in_progress]);
+
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
 
@@ -594,6 +615,12 @@ export function CodexAcpView({ theme }) {
     try { setStatus(await invoke('login_codex_acp')); }
     catch (err) { setError(String(err)); }
     finally { setWorking(false); }
+  }
+
+  async function openLogin() {
+    setError('');
+    try { await invoke('open_codex_login_url'); }
+    catch (err) { setError(String(err)); }
   }
 
   async function send() {
@@ -785,7 +812,7 @@ export function CodexAcpView({ theme }) {
 
         <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <div className="w-full max-w-[920px] mx-auto px-6 py-6 space-y-7">
-            <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} />
+            <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
             {!projection.turns.length && (
               <div className="min-h-[48vh] flex flex-col items-center justify-center text-center">
                 <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center shadow-lg shadow-green-500/15"><Sparkles size={26} /></div>

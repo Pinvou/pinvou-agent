@@ -556,6 +556,7 @@ pub fn run() {
             commands::codex::get_codex_acp_status,
             commands::codex::prepare_codex_acp,
             commands::codex::login_codex_acp,
+            commands::codex::open_codex_login_url,
             commands::codex::get_codex_acp_session_info,
             commands::codex::set_codex_acp_model,
             commands::codex::set_codex_acp_mode,
