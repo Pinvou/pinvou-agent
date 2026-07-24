@@ -100,7 +100,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 50
     env:
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v4

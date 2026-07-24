@@ -45,23 +45,6 @@ pub fn decide_on_device(supports_on_device: bool) -> bool {
     supports_on_device
 }
 
-/// 运行时探测系统 Speech 识别器是否可用（默认 locale）。
-///
-/// **不在此处阻塞请求授权**：`requestAuthorization` 需主线程 + Info.plist 的
-/// `NSSpeechRecognitionUsageDescription`，首次语音输入时由 Tauri 命令上下文触发。
-/// 这里只创建一个默认 locale 的 recognizer 并读 `isAvailable`（recognizer 创建
-/// 成功但服务临时不可用时 isAvailable=false，例如未授权或联网失败）。
-pub fn speech_available() -> bool {
-    // SAFETY: SFSpeechRecognizer::init 创建默认 locale 的识别器；isAvailable 只读
-    // 框架状态。无外部输入约束。alloc/init 配对（Retained 的 Drop 释放）。
-    let recognizer: Option<Retained<SFSpeechRecognizer>> =
-        unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) };
-    match recognizer {
-        Some(r) => unsafe { r.isAvailable() },
-        None => false,
-    }
-}
-
 /// 对 wav 文件做语音识别，返回识别文本。
 ///
 /// 前端录音 → 16kHz mono 16-bit PCM WAV（首选格式，零转码）→ 写到临时文件 →

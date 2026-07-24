@@ -135,7 +135,7 @@ objc2-foundation = "0.3"
 # voice_asr_speech.rs 用 block2::RcBlock 包装 Rust 闭包。版本对齐 objc2 0.6 family。
 block2 = "0.6"
 # macOS 系统 Speech framework 绑定,替代内嵌 SenseVoice ASR 引擎——免模型下载、
-# 免 ffmpeg、零额外体积。spike 已验证 0.3.2 在 MACOSX_DEPLOYMENT_TARGET=11.0 下干净编译。
+# 免 ffmpeg、零额外体积。项目构建与应用最低系统版本统一为 macOS 14。
 objc2-speech = { version = "0.3", default-features = false, features = [
     "std",
     "SFSpeechRecognizer",

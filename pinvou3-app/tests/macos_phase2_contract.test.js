@@ -57,6 +57,7 @@ assert.match(
 );
 
 const macBuild = read(".github/workflows/mac-build.yml");
+const macRelease = read(".github/workflows/macos-release.yml");
 const bundleStart = macBuild.indexOf("- name: Tauri bundle smoke");
 const verifyStart = macBuild.indexOf("- name: Verify 脚本", bundleStart);
 assert.ok(bundleStart >= 0 && verifyStart > bundleStart, "macOS bundle steps must exist");
@@ -67,6 +68,16 @@ assert.doesNotMatch(
   /continue-on-error:\s*true/,
   "Universal bundle smoke must fail the main mac-build job",
 );
+for (const [name, source] of [
+  ["mac-build.yml", macBuild],
+  ["macos-release.yml", macRelease],
+]) {
+  assert.match(
+    source,
+    /MACOSX_DEPLOYMENT_TARGET:\s*"14\.0"/,
+    `${name} must match the declared macOS 14 minimum`,
+  );
+}
 
 const infoPlist = read("pinvou3-app/src-tauri/packaging/macos/Info.plist");
 assert.match(infoPlist, /NSSpeechRecognitionUsageDescription/);
@@ -80,6 +91,16 @@ const macPlatform = read(
   "pinvou3-app/src-tauri/src/features/voice/platform/macos.rs",
 );
 assert.match(macPlatform, /pub fn asr_model_exists\(\) -> bool \{[\s\S]*?\btrue\b/);
+assert.match(
+  macPlatform,
+  /pub fn asr_tool_exists\(\) -> bool \{[\s\S]*?\btrue\b/,
+  "macOS system Speech must not be treated as an installable dependency",
+);
+assert.doesNotMatch(
+  macPlatform,
+  /pub fn asr_tool_exists\(\) -> bool \{[\s\S]*?speech_available\(\)/,
+  "transient default-locale availability must not block voice recording",
+);
 assert.match(
   macPlatform,
   /pub fn asr_bundled_runtime_status\(\) -> Option<bool> \{[\s\S]*?Some\(asr_tool_exists\(\)\)/,

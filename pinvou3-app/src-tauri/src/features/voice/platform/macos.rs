@@ -60,26 +60,16 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    if speech_available() {
-        return true;
-    }
-    explicit_asr_tool_path().is_some_and(|path| {
-        path.is_file() || crate::platform::os::command_exists(&path.to_string_lossy())
-    })
-}
-
-/// 探测系统 Speech 识别器是否可用（默认 locale）。
-///
-/// 委托给 `voice_asr_speech::speech_available`——创建默认 locale 的 recognizer 并读
-/// `isAvailable`（recognizer 创建成功但服务临时不可用时 isAvailable=false）。**不在此处
-/// 阻塞请求授权**：首次语音输入时由 Tauri 命令上下文触发。
-pub fn speech_available() -> bool {
-    voice_asr_speech::speech_available()
+    // 项目最低支持 macOS 14，系统 Speech framework 是平台能力，不是需要安装的
+    // 应用依赖。`SFSpeechRecognizer::isAvailable` 表示指定 locale 的瞬时服务状态，
+    // 不能拿系统默认 locale 的结果充当录音前置门禁；否则默认语言不可用时会误拦截
+    // 另一个仍可用的 UI 语言。授权、locale 与在线服务状态在实际识别时检查。
+    true
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {
-    // Some 表示 macOS 的系统运行时自行给出完整就绪状态；公共状态机不再继续检查
-    // SenseVoice 引擎和 ffmpeg。
+    // Some(true) 表示系统 Speech framework 无需安装；公共状态机不再继续检查
+    // SenseVoice 引擎和 ffmpeg。瞬时服务状态由真正的识别请求报告。
     Some(asr_tool_exists())
 }
 
