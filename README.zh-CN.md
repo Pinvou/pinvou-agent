@@ -6,7 +6,9 @@
 
 Pinvou Agent 不只是一个聊天界面。它把模型、工具、个人知识、专家角色和工作流放进同一个桌面应用，让 AI 从“回答问题”进一步走到“完成任务”。模型既可以运行在本地，也可以接入 OpenAI-compatible 服务；工具与连接器按需启用。
 
-![Pinvou Agent 主界面](docs/assets/screenshots/home.webp)
+<video src="docs/assets/videos/feature-update-2026-07-17-2026-07-23.mp4" controls width="100%" poster="docs/assets/screenshots/home.webp">
+  Pinvou Agent 新增功能介绍视频
+</video>
 
 ## 能做什么
 
