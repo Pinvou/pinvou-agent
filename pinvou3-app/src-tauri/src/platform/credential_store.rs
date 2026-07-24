@@ -7,6 +7,7 @@ use std::time::Instant;
 const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
+const IMA_SECRET_SERVICE: &str = "pinvou3-ima-secret";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialReference {
@@ -36,6 +37,13 @@ impl CredentialReference {
         Self {
             service: MCP_SECRET_SERVICE.to_string(),
             account: format!("mcp:{tool_id}:{target}:{secret_name}"),
+            version: 1,
+        }
+    }
+    pub fn for_ima_secret(secret_name: &str) -> Self {
+        Self {
+            service: IMA_SECRET_SERVICE.to_string(),
+            account: format!("ima:{secret_name}"),
             version: 1,
         }
     }
@@ -408,6 +416,14 @@ mod tests {
         let reference = CredentialReference::for_mcp_secret("iwencai", "env", "IWENCAI_API_KEY");
         assert_eq!(reference.service, "pinvou3-mcp-secret");
         assert_eq!(reference.account, "mcp:iwencai:env:IWENCAI_API_KEY");
+        assert_eq!(reference.version, 1);
+    }
+
+    #[test]
+    fn ima_reference_uses_separate_service() {
+        let reference = CredentialReference::for_ima_secret("api_key");
+        assert_eq!(reference.service, "pinvou3-ima-secret");
+        assert_eq!(reference.account, "ima:api_key");
         assert_eq!(reference.version, 1);
     }
 

@@ -886,6 +886,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://console.amap.com/",
     "https://www.iwencai.com/",
     "https://agent.qcc.com/",
+    // 腾讯 ima OpenAPI 凭据页
+    "https://ima.qq.com/",
     // 智慧芽开放平台:智慧芽 MCP API Key 获取说明
     "https://open.zhihuiya.com/",
     // MegaCube 官网(侧边栏 footer 入口跳转)

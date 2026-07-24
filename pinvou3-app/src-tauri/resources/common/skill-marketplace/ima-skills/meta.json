@@ -1,0 +1,10 @@
+{
+  "version": "1.1.8-pinvou1",
+  "required_binaries": [
+    {
+      "name": "node",
+      "min_version": "18.0.0",
+      "reason": "Runs ima_api.cjs and uses built-in fetch for IMA OpenAPI requests"
+    }
+  ]
+}

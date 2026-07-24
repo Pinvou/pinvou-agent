@@ -1198,6 +1198,9 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://console.amap.com/dev/key/app"
     ));
+    assert!(url_in_external_allowlist(
+        "https://ima.qq.com/agent-interface"
+    ));
     assert!(!url_in_external_allowlist(
         "https://open.chineselaw.com/oauth/authorize"
     ));
@@ -1220,6 +1223,7 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(!url_in_external_allowlist(
         "https://console.amap.com.evil.com/dev/key/app"
     ));
+    assert!(!url_in_external_allowlist("https://ima.qq.com.evil.com/"));
     assert!(!url_in_external_allowlist(
         "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
     ));

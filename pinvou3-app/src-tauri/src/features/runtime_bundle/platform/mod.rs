@@ -88,8 +88,9 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.14: 接入钉钉官方 dws skill + Linux ARM64 内置 dws CLI
 /// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
 /// 0.16: 接入腾讯会议官方 tmeet CLI skill
+/// 0.17: Windows IMA OpenAPI Skill 在 ima_api.cjs 调用中注入受控凭据 env
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.16-",
+    "0.17-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -261,6 +262,9 @@ pub const DENY_SENSITIVE_PATHS_PS1: &str =
 
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
 pub const SHELL_ENV_SH: &str = include_str!("../../../../resources/common/bundle/shell_env.sh");
+/// Windows IMA OpenAPI Skill 凭据 env hook：仅 ima_api.cjs 调用时输出 IMA env。
+pub const IMA_SHELL_ENV_PS1: &str =
+    include_str!("../../../../resources/common/bundle/ima_shell_env.ps1");
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
@@ -272,6 +276,7 @@ pub struct Pinvou3Bundle {
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
     pub shell_env_sh: PathBuf,
+    pub ima_shell_env_ps1: PathBuf,
 }
 
 impl Pinvou3Bundle {
@@ -285,6 +290,7 @@ impl Pinvou3Bundle {
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
             deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
             shell_env_sh: paths::bundle_root().join("shell_env.sh"),
+            ima_shell_env_ps1: paths::bundle_root().join("ima_shell_env.ps1"),
         }
     }
 
@@ -416,6 +422,7 @@ impl Pinvou3Bundle {
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
         std::fs::write(&self.shell_env_sh, SHELL_ENV_SH)?;
+        std::fs::write(&self.ima_shell_env_ps1, IMA_SHELL_ENV_PS1)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -849,6 +856,7 @@ mod tests {
         assert!(bundle.deny_sensitive_sh.is_file());
         assert!(bundle.deny_sensitive_ps1.is_file());
         assert!(bundle.shell_env_sh.is_file());
+        assert!(bundle.ima_shell_env_ps1.is_file());
         assert!(paths::bundle_version_file().is_file());
         // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
         assert!(

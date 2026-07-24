@@ -27,7 +27,7 @@ pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
 
 use crate::features::connectors::{
     connector_cli as connector_cli_domain, dingtalk as dingtalk_domain, feishu as feishu_domain,
-    tmeet as tmeet_domain, wecom as wecom_domain,
+    ima as ima_domain, tmeet as tmeet_domain, wecom as wecom_domain,
 };
 use connector_cli_domain::*;
 use serde_json::Value;
@@ -70,4 +70,7 @@ async_command_passthrough!(tmeet_domain, tmeet_apply_skills() -> Result<Value, S
 async_command_passthrough!(tmeet_domain, set_tmeet_enabled(enabled: bool) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
+async_command_passthrough!(ima_domain, ima_status() -> Result<Value, String>);
+async_command_passthrough!(ima_domain, ima_connect(client_id: String, api_key: String) -> Result<Value, String>);
+async_command_passthrough!(ima_domain, ima_logout() -> Result<Value, String>);
 use super::prelude::*;
