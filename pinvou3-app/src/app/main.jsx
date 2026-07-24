@@ -856,21 +856,12 @@ function defaultModelPresetForCapabilities(capabilities) {
           return {
             id: run.sessionId,
             title,
-            subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
-            date: '',
+            date: formatSessionDate(run.scheduledFor || run.createdAt, language),
             updatedAt: run.createdAt || run.scheduledFor || '',
             pinned: !!run.pinned,
             pinnedAt: run.pinnedAt || '',
             working: run.status === 'running' || run.status === 'queued',
-            leadingIcon: (
-              <span className="relative inline-flex h-5 w-5 items-center justify-center">
-                <Clock size={16} />
-                {run.unread && (
-                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
-                    style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
-                )}
-              </span>
-            ),
+            unread: !!run.unread,
             testId: 'scheduled-run-sidebar-item',
             menuTestId: 'scheduled-run-sidebar-menu',
             scheduledRun: run,
@@ -888,16 +879,8 @@ function defaultModelPresetForCapabilities(capabilities) {
           : chat.title;
         return Object.assign({}, chat, {
           title,
-          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
-          leadingIcon: (
-            <span className="relative inline-flex h-5 w-5 items-center justify-center">
-              <Clock size={16} />
-              {run.unread && (
-                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
-                  style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
-              )}
-            </span>
-          ),
+          date: chat.date || formatSessionDate(run.scheduledFor || run.createdAt, language),
+          unread: !!run.unread,
           testId: 'scheduled-run-sidebar-item',
           menuTestId: 'scheduled-run-sidebar-menu',
           scheduledRun: run,
@@ -1019,16 +1002,6 @@ function defaultModelPresetForCapabilities(capabilities) {
         if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
           setIsSidebarOpen(false);
         }
-      }
-
-      function scheduledRunLabel(value) {
-        return ({
-          queued: '等待中',
-          running: '运行中',
-          completed: '已完成',
-          failed: '失败',
-          canceled: '已取消',
-        }[value] || value || '未知');
       }
 
       async function handleOpenScheduledRunShortcut(run) {
