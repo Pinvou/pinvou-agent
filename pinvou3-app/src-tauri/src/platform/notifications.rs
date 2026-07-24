@@ -77,12 +77,14 @@ fn send_notify_send() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    // 不再自建局部 ENV_LOCK:改借 crate 级唯一的 bridge::paths::tests::ENV_LOCK,
+    // 与所有 mutate PINVOU3_HOME 的测试共享同一把锁,消除并发数据竞争。
 
     fn with_temp_pinvou3_home(test_name: &str, f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let old_home = std::env::var_os("PINVOU3_HOME");
         let root = std::env::temp_dir().join(format!(
             "pinvou3-notification-test-{test_name}-{}",

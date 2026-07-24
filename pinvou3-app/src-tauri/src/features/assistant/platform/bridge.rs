@@ -1257,20 +1257,23 @@ fn reminder_for(mode: AppMode) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
 
-    static ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
-
+    // env 写测试统一借用 bridge::paths::tests::ENV_LOCK(crate 级唯一 env 锁),
+    // 避免本模块自建锁与其它模块的 PINVOU3_HOME/DEEPSEEK_* 写测试并发竞争
+    // (曾经的 ENV_GUARD_LOCK 与 paths::ENV_LOCK 不通,导致 qwen_preset/vllm flaky,
+    // 进而被迫全局 --test-threads=1)。
+    //
+    // EnvGuard **本身不持锁**(避免与外部 ENV_LOCK 获取重入死锁);调用方负责先拿锁。
+    // 所有写 env 的本模块测试统一用 `locked_env` helper 一步到位(锁 + guard):
+    //   let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
+    // 切勿在已持 ENV_LOCK 时再调 locked_env(同一 Mutex 不可重入,会死锁)。
     struct EnvGuard {
-        _lock: MutexGuard<'static, ()>,
         vars: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn new(vars: &[&'static str]) -> Self {
-            let lock = ENV_GUARD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             Self {
-                _lock: lock,
                 vars: vars
                     .iter()
                     .map(|&name| (name, std::env::var(name).ok()))
@@ -1289,6 +1292,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 获取 crate 级 ENV_LOCK 并返回 (锁 guard, EnvGuard)。
+    /// 供需要写 DEEPSEEK_* 等 env 的测试使用——锁保证与所有 env 写测试串行,
+    /// EnvGuard 保证退出时恢复原值。切勿在已持 ENV_LOCK 时再调用(会重入死锁)。
+    fn locked_env(
+        vars: &[&'static str],
+    ) -> (
+        std::sync::MutexGuard<'static, ()>,
+        EnvGuard,
+    ) {
+        let lock = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        (lock, EnvGuard::new(vars))
     }
 
     fn fixture_bridge() -> Pinvou3Bridge {
@@ -1411,7 +1429,7 @@ mod tests {
     ///     抖动(190K > 128K 窗口的 E,必倒置——正是客户机每 1-2 工具调用一次 Emergency 的根因)。
     #[test]
     fn forkguard_compaction_128k_scenarios() {
-        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        let (_lock, _env) = locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         // [根治后] derive_compaction_threshold 经底座 context_input_budget_for_route 读
         // DEEPSEEK_MAX_OUTPUT_TOKENS 算 output 预留(不再镜像 24576)。测试须钉死生产 env 值,
         // 否则底座默认 API_MAX_OUTPUT_TOKENS=65536 → E 偏小 → T 偏小(fixture 的 wire 用 is_none
@@ -1516,7 +1534,7 @@ mod tests {
     /// 本地引擎只要在 SavedModel 声明能力，都必须走同一预算链。
     #[test]
     fn forkguard_openai_compatible_route_uses_declared_limits() {
-        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        let (_lock, _env) = locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -1551,7 +1569,7 @@ mod tests {
     /// 走 output 预留分档(底座 TURN_MAX_OUTPUT=262144),锁住 2026-07-02 修的大窗口倒置。
     #[test]
     fn compaction_cloud_large_window_models() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -1712,7 +1730,7 @@ mod tests {
     /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
     #[test]
     fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
-        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        let (_lock, _env) = locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         // clean env 路径:helper 应 set 默认 24576
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
@@ -1795,7 +1813,7 @@ mod tests {
     /// 谁改 derive_compaction_threshold 或 max_output_tokens 导致倒置都会被这条挡下。
     #[test]
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
-        let _env = EnvGuard::new(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        let (_lock, _env) = locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
         // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
@@ -2054,14 +2072,14 @@ mod tests {
     /// allow_shell 默认 true（pinvou3 yolo 模式需要）。
     #[test]
     fn allow_shell_defaults_to_true() {
-        let _env = EnvGuard::new(&["PINVOU3_ALLOW_SHELL"]);
+        let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         assert!(fixture_bridge().allow_shell());
     }
 
     #[test]
     fn allow_shell_uses_advanced_preference_without_env_override() {
-        let _env = EnvGuard::new(&["PINVOU3_ALLOW_SHELL"]);
+        let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(false);
@@ -2071,7 +2089,7 @@ mod tests {
     /// env 优先级高于 prefs。
     #[test]
     fn allow_shell_env_overrides_prefs() {
-        let _env = EnvGuard::new(&["PINVOU3_ALLOW_SHELL"]);
+        let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(true);
         std::env::set_var("PINVOU3_ALLOW_SHELL", "false");
@@ -2140,7 +2158,7 @@ mod tests {
         use deepseek_tui::tools::ToolContext;
         use serde_json::json;
 
-        let _env = EnvGuard::new(&["SHELL", "XDG_RUNTIME_DIR", "OPENAI_API_KEY"]);
+        let (_lock, _env) = locked_env(&["SHELL", "XDG_RUNTIME_DIR", "OPENAI_API_KEY"]);
         std::env::set_var("SHELL", "/bin/bash");
         std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242");
         std::env::set_var("OPENAI_API_KEY", "must-not-leak");
@@ -2221,6 +2239,9 @@ mod tests {
     /// yolo 路径默认放开 trust 让产物落任意用户授权目录）。
     #[test]
     fn bridge_yolo_mode_trust_mode_true() {
+        // remove_var 是无保护的 env 写,须持 crate 级 ENV_LOCK 与 allow_shell_* 组串行,
+        // 否则去掉 --test-threads=1 后会与同组测试并发污染 PINVOU3_ALLOW_SHELL。
+        let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
@@ -2251,6 +2272,9 @@ mod tests {
     /// 都用不了）。
     #[test]
     fn bridge_plan_mode_allow_shell_true() {
+        // 本测试既 remove_var 又经 allow_shell_for_prefs() 读 PINVOU3_ALLOW_SHELL 断言 true;
+        // 不持锁时会与 allow_shell_env_overrides_prefs(临界区内 set "false")竞态 → 断言偶发失败。
+        let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
@@ -2340,10 +2364,8 @@ mod tests {
 
     #[test]
     fn engine_config_for_session_keeps_mcp_artifacts_public() {
-        let _g = paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _env = EnvGuard::new(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
+        // locked_env 一步获取 crate 级 ENV_LOCK + EnvGuard(保护 PINVOU3_HOME 写并恢复)。
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
         let root = std::env::temp_dir().join(format!(
             "pinvou3-mcp-artifacts-public-{}",
             std::process::id()
@@ -2378,7 +2400,7 @@ mod tests {
     /// `UserPrefs::load()` 都跑)物化成 active SavedModel 才生效——测试显式调一次模拟之。
     #[test]
     fn openai_compatible_uses_user_provided_name() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2399,7 +2421,7 @@ mod tests {
     /// OpenaiCompatible preset 必须透传任意模型名（如自定义兼容端点模型）。
     #[test]
     fn openai_compatible_passthrough_model_name() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2422,7 +2444,7 @@ mod tests {
     /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
     #[test]
     fn env_always_overrides_settings() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2443,7 +2465,7 @@ mod tests {
 
     #[test]
     fn empty_api_key_env_does_not_hide_saved_credential() {
-        let _env = EnvGuard::new(&["DEEPSEEK_API_KEY"]);
+        let (_lock, _env) = locked_env(&["DEEPSEEK_API_KEY"]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -2459,7 +2481,7 @@ mod tests {
     /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
     #[test]
     fn remote_provider_keeps_default_reasoning_effort() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2480,7 +2502,7 @@ mod tests {
     /// Deepseek preset 应返回正确的默认 URL 和模型。
     #[test]
     fn deepseek_preset_defaults() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2498,7 +2520,7 @@ mod tests {
     /// sglang 形状把 deepseek-v4-flash 改写成 deepseek-ai/DeepSeek-V4-Flash。
     #[test]
     fn official_deepseek_base_url_forces_deepseek_provider() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2533,7 +2555,7 @@ mod tests {
     /// base_url 是官方 DeepSeek,bridge 就必须发官方 API 接受的 provider+模型名。
     #[test]
     fn official_deepseek_base_url_canonicalizes_env_mismatch() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2569,7 +2591,7 @@ mod tests {
     /// Qwen preset 应返回正确的默认 URL 和模型。
     #[test]
     fn qwen_preset_defaults() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",
@@ -2594,7 +2616,7 @@ mod tests {
     /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
     #[test]
     fn local_vllm_forces_reasoning_effort_off() {
-        let _env = EnvGuard::new(&[
+        let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
             "DEEPSEEK_BASE_URL",

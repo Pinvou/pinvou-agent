@@ -677,9 +677,9 @@ fn new_feedback_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // 不再自建局部 ENV_LOCK:改借 crate 级唯一的 bridge::paths::tests::ENV_LOCK,
+    // 与所有 mutate PINVOU3_HOME 的测试共享同一把锁,消除并发数据竞争。
 
     struct MockUploader {
         result: Result<(), &'static str>,
@@ -750,7 +750,9 @@ mod tests {
 
     #[tokio::test]
     async fn mock_uploader_returns_submitted_and_retryable_receipts() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let root = unique_temp_dir("mock");
         std::env::set_var("PINVOU3_HOME", &root);
 
@@ -833,7 +835,9 @@ mod tests {
 
     #[test]
     fn manifest_does_not_include_original_absolute_attachment_path() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let root = unique_temp_dir("manifest");
         std::env::set_var("PINVOU3_HOME", &root);
         let image = root.join("source.png");

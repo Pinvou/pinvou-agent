@@ -670,12 +670,14 @@ mod tests {
     fn macos_machine_identity_uses_ioplatformuuid() {
         // On a real Mac, ioreg should always return IOPlatformUUID.
         // This test verifies the macOS branch is wired up correctly.
-        // Note: PINVOU_TELEMETRY_DEVICE_CLAIM must not be set, otherwise
+        // PINVOU_TELEMETRY_DEVICE_CLAIM must not be set, otherwise
         // detect_hardware_identity short-circuits to an override:* claim.
-        // 用锁保护:与 linux_update.rs/macos_update.rs 的 ENV_LOCK 模式一致,避免并行
-        // 测试修改全局 env var 时数据竞争(edition 2024 后 set_var/remove_var 是 unsafe)。
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // 改借 crate 级唯一的 bridge::paths::tests::ENV_LOCK,与所有 mutate env var
+        // 的测试共享同一把锁,避免并行测试修改全局 env var 时数据竞争
+        // (set_var/remove_var 操作进程级 env,并发写无锁会互相覆盖)。
+        let _g = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         std::env::remove_var("PINVOU_TELEMETRY_DEVICE_CLAIM");
         let id = detect_hardware_identity("test_fallback");
         assert!(

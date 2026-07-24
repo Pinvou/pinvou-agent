@@ -331,9 +331,15 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// 进程级 env var 是测试的硬隔离障碍：cargo test 默认并行跑，多个测试
-    /// 同时改 PINVOU3_HOME 会互相覆盖断言。这把全局锁让所有 mutate
-    /// `PINVOU3_HOME` 的测试串行执行。bridge::sessions 模块测试也借用这把锁。
+    /// 进程级 env var 是测试的硬隔离障碍:cargo test 默认并行跑,多个测试
+    /// 同时改 PINVOU3_HOME 会互相覆盖断言。这是 **crate 级唯一的 env 锁源**:
+    /// bridge/mod.rs(EnvGuard,DEEPSEEK_*)、feedback、notifications、telemetry 等模块
+    /// 所有 mutate env var 的测试都借用这把锁串行执行,使 env 写测试彼此串行。
+    ///
+    /// 注意:锁源单一只让 **env 写测试** 之间互斥,**不代表** 可以撤掉 `--test-threads=1`——
+    /// 任一 env 写测试 panic 会 poison 本锁,此后 `.into_inner()` 恢复会绕过互斥,
+    /// 后续 env 写测试随即失锁并发(雪崩 flaky)。故 CI 的 `cargo test --lib` 仍需串行,
+    /// 根治需让测试不再依赖进程级 env(thread-local PINVOU3_HOME),超出当前范围。
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

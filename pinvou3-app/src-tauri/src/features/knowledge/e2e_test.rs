@@ -49,6 +49,13 @@ fn service_starts_without_embedder() {
 #[test]
 #[ignore]
 fn full_l0_l1_e2e() {
+    // 写 PINVOU3_KB_EMBED_MODEL_DIR:虽 #[ignore] 不入默认套件,仍须持 crate 级 ENV_LOCK
+    // 串行并在退出时恢复,避免 `cargo test -- --ignored` 合跑或本测试 panic 时留下脏 env。
+    let _lock = crate::bridge::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev_embed_dir = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").ok();
+
     // L1 语义检索真实跑：指向本地 bge-m3。
     let home = std::env::var("HOME").unwrap();
     std::env::set_var(
@@ -224,6 +231,11 @@ fn full_l0_l1_e2e() {
 
     svc.cancel_scan();
     let _ = fs::remove_dir_all(&root);
+    // 恢复 PINVOU3_KB_EMBED_MODEL_DIR 原值(_lock 随后释放,与本测试 set 串行)。
+    match prev_embed_dir {
+        Some(v) => std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", v),
+        None => std::env::remove_var("PINVOU3_KB_EMBED_MODEL_DIR"),
+    }
     eprintln!(
         "✅ L0+L1 e2e PASS — 扫描 {} 文件 / 知识集 {} 块 / 关键词+语义检索均命中并溯源",
         stats.total_files, coll.chunk_count
