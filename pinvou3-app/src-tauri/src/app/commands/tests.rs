@@ -1173,6 +1173,9 @@ async fn open_external_url_rejects_off_allowlist_targets() {
 fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist("https://obsidian.md/download"));
     assert!(url_in_external_allowlist("https://metaso.cn/"));
+    assert!(url_in_external_allowlist(
+        "https://console.amap.com/dev/key/app"
+    ));
     assert!(!url_in_external_allowlist(
         "https://open.chineselaw.com/oauth/authorize"
     ));
@@ -1189,6 +1192,9 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         "https://export-download.canva.cn/example/preview.png"
     ));
     assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
+    assert!(!url_in_external_allowlist(
+        "https://console.amap.com.evil.com/dev/key/app"
+    ));
     assert!(!url_in_external_allowlist(
         "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
     ));

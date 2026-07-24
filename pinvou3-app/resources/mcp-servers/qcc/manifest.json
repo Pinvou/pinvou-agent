@@ -1,39 +1,27 @@
 {
   "id": "qcc",
   "name": "企查查",
-  "description": "企业工商、风控、知产、经营数据查询 — 182个企业数据工具",
+  "description": "企业工商数据查询 — 企查查账号 OAuth 授权",
   "version": "1.0.0",
   "icon": "building",
   "category": "金融数据",
   "mcp_tools": [],
   "command": "",
   "args": [],
-  "secret_headers": [
+  "config_fields": [],
+  "servers": [
     {
-      "header": "Authorization",
-      "scheme": "Bearer",
-      "source_key": "QCC_API_KEY",
-      "provider": "qcc",
-      "required": true
+      "name": "qcc-company",
+      "url": "https://agent.qcc.com/mcp/company/stream",
+      "scopes": ["mcp:tools"],
+      "oauth_resource": "https://agent.qcc.com/mcp/company/stream"
     }
   ],
-  "config_fields": [
-    { "key": "QCC_API_KEY", "label": "企查查 API Key（留空用内置共享额度）", "required": false, "target": "bearer", "secret": true }
-  ],
-  "servers": [
-    { "name": "qcc-company",   "url": "https://agent.qcc.com/mcp/company/stream" },
-    { "name": "qcc-risk",      "url": "https://agent.qcc.com/mcp/risk/stream" },
-    { "name": "qcc-ipr",       "url": "https://agent.qcc.com/mcp/ipr/stream" },
-    { "name": "qcc-operation", "url": "https://agent.qcc.com/mcp/operation/stream" }
-  ],
   "routing_rules": [
-    "企业/公司/工商/股东/法人/风险/失信/专利/商标/招投标/供应商/高管/董监高 → `qcc-*` 系列工具，不要用 `web_search`"
+    "企业/公司/工商/股东/法人/高管/董监高/注册资本/对外投资/分支机构 → `qcc-company` 系列工具，不要用 `web_search`"
   ],
   "tool_table_entries": [
-    "| 企业信息 | `mcp_qcc-company_*` (企查查: 工商登记/股东/财务) |",
-    "| 风险查询 | `mcp_qcc-risk_*` (企查查: 失信/被执行/行政处罚) |",
-    "| 知识产权 | `mcp_qcc-ipr_*` (企查查: 专利/商标/软著) |",
-    "| 经营数据 | `mcp_qcc-operation_*` (企查查: 招投标/资质/舆情) |"
+    "| 企业信息 | `mcp_qcc-company_*` (企查查: 工商登记/股东/高管/对外投资) |"
   ],
   "pip_dependencies": []
 }

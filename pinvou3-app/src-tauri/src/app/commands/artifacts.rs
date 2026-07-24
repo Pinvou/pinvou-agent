@@ -882,6 +882,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://open.bochaai.com/",
     "https://console.bce.baidu.com/",
     "https://app.tavily.com/",
+    // 高德开放平台:天气 MCP Web 服务 Key 创建入口
+    "https://console.amap.com/",
     "https://www.iwencai.com/",
     "https://agent.qcc.com/",
     // 智慧芽开放平台:智慧芽 MCP API Key 获取说明

@@ -1,5 +1,4 @@
 const { spawnSync } = require("node:child_process");
-const { loadBuiltinSecrets } = require("./builtin-secrets.js");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
 const {
   APP_ROOT,
@@ -56,14 +55,6 @@ function main() {
   const validateOnly = args[0] === "--validate-only";
   if (validateOnly) args.shift();
 
-  if (process.platform === "win32") {
-    const result = loadBuiltinSecrets();
-    if (result.missing.length > 0) {
-      console.warn(`[build] 已显式跳过 ${result.missing.length} 项内置 MCP 密钥。`);
-    } else {
-      console.log(`[build] 已加载并校验 ${result.loaded.length} 项内置 MCP 密钥。`);
-    }
-  }
   if (validateOnly) return;
 
   const preparedArgs = prepareTauriArgs(args);

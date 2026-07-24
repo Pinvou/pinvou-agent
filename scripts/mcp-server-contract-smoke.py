@@ -16,6 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MCP_ROOT = ROOT / "pinvou3-app" / "resources" / "mcp-servers"
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 
 class RpcServer:
     def __init__(
@@ -237,13 +242,38 @@ def main():
             assert docx_path.parent == Path(artifacts) and zipfile.is_zipfile(docx_path)
     print("✅ pptx/gongwen: 真实 tools/call 生成可打开的 OOXML 产物")
 
+    weather = manifests["weather"]
+    assert weather["secret_env"] == [{"key": "AMAP_KEY", "provider": "amap", "required": True}]
+    assert weather["config_fields"] == [{
+        "key": "AMAP_KEY",
+        "label": "高德 Web 服务 API Key",
+        "required": True,
+        "target": "env",
+        "secret": True,
+    }]
+    print("✅ weather: 用户自填高德 Web 服务 Key 清单契约")
+
+    iwencai = manifests["iwencai"]
+    assert iwencai["secret_env"] == [{"key": "IWENCAI_API_KEY", "provider": "iwencai", "required": True}]
+    assert iwencai["config_fields"] == [{
+        "key": "IWENCAI_API_KEY",
+        "label": "问财 API Key",
+        "required": True,
+        "target": "env",
+        "secret": True,
+    }]
+    print("✅ iwencai: 用户自填问财 API Key 清单契约")
+
     qcc = manifests["qcc"]
-    servers = qcc.get("servers") or []
-    assert len(servers) == 4 and len({item["name"] for item in servers}) == 4
-    assert all(item["url"].startswith("https://agent.qcc.com/mcp/") for item in servers)
-    field = qcc["config_fields"][0]
-    assert field == {"key": "QCC_API_KEY", "label": "企查查 API Key（留空用内置共享额度）", "required": False, "target": "bearer", "secret": True}
-    print("✅ qcc: 4 个远端 MCP 端点 + bearer secret 清单契约")
+    assert qcc.get("secret_headers") in (None, [])
+    assert qcc["config_fields"] == []
+    assert qcc["servers"] == [{
+        "name": "qcc-company",
+        "url": "https://agent.qcc.com/mcp/company/stream",
+        "scopes": ["mcp:tools"],
+        "oauth_resource": "https://agent.qcc.com/mcp/company/stream",
+    }]
+    print("✅ qcc: 唯一 qcc-company 远程端点 + OAuth scope/resource 清单契约")
 
     yuandian = manifests["yuandian-mcp"]
     assert yuandian["mcp_tools"] == [] and not yuandian["command"]

@@ -47,7 +47,6 @@ def secret_shaped(name: str) -> bool:
     upper = name.upper()
     return (
         upper.startswith("PINVOU3_MCP_SECRET_")
-        or upper.startswith("PINVOU3_BUILTIN_")
         or "API_KEY" in upper
         or "PRIVATE_KEY" in upper
         or "ACCESS_KEY" in upper
