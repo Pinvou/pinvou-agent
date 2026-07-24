@@ -28,9 +28,14 @@ jobs:
             );
 
             const signoff = /^Signed-off-by:\s+.+\s+<[^<>@\s]+@[^<>\s]+>$/im;
-            const unsigned = commits.filter(
-              ({ commit }) => !signoff.test(commit.message),
-            );
+            const trustedBots = new Set([
+              "dependabot[bot]",
+              "github-actions[bot]",
+            ]);
+            const unsigned = commits.filter(({ author, committer, commit }) => {
+              const login = author?.login ?? committer?.login;
+              return !trustedBots.has(login) && !signoff.test(commit.message);
+            });
 
             if (unsigned.length > 0) {
               const list = unsigned
