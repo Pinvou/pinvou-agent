@@ -2225,13 +2225,12 @@ mod tests {
     }
 
     fn temp_home() -> std::path::PathBuf {
+        // 叠加进程内原子计数器,避免纯纳秒命名在高并发下碰撞
+        // (本 helper 被 18 个测试共用同一前缀,部分不持 ENV_LOCK,并发时同名目录会互相删文件)。
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-scheduled-tasks-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("unix epoch")
-                .as_nanos()
+            crate::bridge::paths::tests::unique_suffix()
         ));
         std::fs::create_dir_all(&dir).expect("create temp home");
         dir

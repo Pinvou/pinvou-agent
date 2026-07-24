@@ -342,6 +342,22 @@ pub(crate) mod tests {
     /// 根治需让测试不再依赖进程级 env(thread-local PINVOU3_HOME),超出当前范围。
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// 生成**进程内**唯一的单调递增后缀,供测试临时目录/会话 ID 命名用。
+    ///
+    /// 纯纳秒时间戳在高并发下会碰撞(热缓存 + 线程调度抖动让两次调用落同纳秒),
+    /// 导致临时目录/会话 ID 重复 → 测试互相覆盖文件。叠加这个原子计数器后,
+    /// 同一**进程内**每次调用都唯一,消除并行测试的命名碰撞。
+    ///
+    /// 注意:计数器是进程级的——两个并发的 `cargo test` **进程**(如本地双终端)各自从 0
+    /// 起计数,若临时目录名只含本后缀(不含 pid)仍会跨进程碰撞。因此临时目录命名应同时
+    /// 叠加 `std::process::id()`(见 `scheduled/tasks.rs::temp_home` 的做法);仅靠本后缀
+    /// 只保证单进程内唯一。
+    pub(crate) fn unique_suffix() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
     #[test]
     fn pinvou3_home_respects_env_override() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

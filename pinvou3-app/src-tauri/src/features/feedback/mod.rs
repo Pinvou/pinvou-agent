@@ -711,12 +711,12 @@ mod tests {
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
+        // 叠加 pid + 进程内原子计数器:pid 保证跨进程唯一(双终端 cargo test),
+        // unique_suffix 保证进程内唯一(纯纳秒会碰撞)。与 scheduled/tasks.rs::temp_home 一致。
         let dir = std::env::temp_dir().join(format!(
-            "pinvou-feedback-test-{name}-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
+            "pinvou-feedback-test-{name}-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir

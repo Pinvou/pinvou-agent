@@ -2367,8 +2367,9 @@ mod tests {
         // locked_env 一步获取 crate 级 ENV_LOCK + EnvGuard(保护 PINVOU3_HOME 写并恢复)。
         let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
         let root = std::env::temp_dir().join(format!(
-            "pinvou3-mcp-artifacts-public-{}",
-            std::process::id()
+            "pinvou3-mcp-artifacts-public-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("PINVOU3_HOME", &root);

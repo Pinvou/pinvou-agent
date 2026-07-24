@@ -1472,10 +1472,14 @@ mod tests {
     }
 
     fn tempdir() -> String {
-        let id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        // 叠加 pid + 进程内原子计数器:pid 保证跨进程唯一(双终端 cargo test),
+        // unique_suffix 保证进程内唯一(纯纳秒会碰撞;曾因两个 bundle 测试落同纳秒,
+        // 临时目录同名 → 互相删文件)。与 scheduled/tasks.rs::temp_home 一致。
+        let id = format!(
+            "{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
+        );
         std::env::var_os("TMPDIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
