@@ -31,7 +31,8 @@ function injectSource() {
       'yuandian-mcp':['华宇元典法律数据',[]],
       obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
     };
-    const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp'};
+    const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
+    const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
       installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,eip:false,zhidao:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
@@ -76,7 +77,7 @@ function injectSource() {
         }
         case 'list_marketplace_skills': return Promise.resolve(skills());
         case 'install_marketplace_tool':
-          if(OAUTH_SERVERS[args.toolId]) return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
+          if(BLOCKING_INSTALL_OAUTH_TOOLS.has(args.toolId)) return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
           state.installed[args.toolId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_tool': state.installed[args.toolId]=false; return Promise.resolve(null);
         case 'start_marketplace_tool_oauth_login': return new Promise(resolve=>{state.oauthRequests[args.requestId]={toolId:args.toolId,resolve};});
@@ -202,7 +203,47 @@ async function closeDetail(page, title) {
   })).then(detail => JSON.stringify({ detail: JSON.parse(detail), errors: errors.slice(0, 5) }));
   rec('工具商店真实页面加载', toolStoreLoaded, navDebug);
 
-  for (const [query,id,buttonId] of [['高德天气','weather','weather'],['同花顺问财','iwencai','iwencai'],['企查查','qcc','qcc'],['PPT 生成','pptx','pptx'],['公文写作','gongwen','government-writing']]) {
+  await action(page,'高德天气','配置','weather');
+  rec('高德天气安装前展示必填 Key 配置',await page.evaluate(()=>{
+    const input=document.querySelector('input[type="password"][placeholder="粘贴高德 Web 服务 Key"]');
+    return document.body.innerText.includes('高德天气 Key')&&!!input;
+  }));
+  const weatherInput=await page.$('input[type="password"][placeholder="粘贴高德 Web 服务 Key"]');
+  await weatherInput.type('amap-test-token');
+  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  rec('高德天气经 Env 凭据配置连接',await page.evaluate(()=>{
+    const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='weather');
+    return window.__TOOL_STORE_TEST__.installed.weather&&call?.args?.config?.AMAP_KEY==='amap-test-token';
+  }));
+
+  await action(page,'同花顺问财','配置','iwencai');
+  rec('同花顺问财安装前展示必填 Key 配置',await page.evaluate(()=>{
+    const input=document.querySelector('input[type="password"][placeholder="粘贴 IWENCAI_API_KEY"]');
+    return document.body.innerText.includes('问财 Key')&&!!input;
+  }));
+  const iwencaiInput=await page.$('input[type="password"][placeholder="粘贴 IWENCAI_API_KEY"]');
+  await iwencaiInput.type('iwencai-test-token');
+  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  rec('同花顺问财经 Env 凭据配置连接',await page.evaluate(()=>{
+    const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='iwencai');
+    return window.__TOOL_STORE_TEST__.installed.iwencai&&call?.args?.config?.IWENCAI_API_KEY==='iwencai-test-token';
+  }));
+
+  const composerChangedBeforeQcc = await page.evaluate(()=>window.__TOOL_STORE_TEST__.composerChanged);
+  await action(page,'企查查','连接','qcc');
+  rec('企查查走 OAuth 且不展示 API Key 输入',await page.evaluate(()=>document.body.innerText.includes('正在连接「企查查」')&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='取消')&&!document.querySelector('input[type="password"]')));
+  await clickExact(page,'取消'); await sleep(180);
+  rec('企查查取消命令与授权请求使用同一 requestId',await page.evaluate(()=>{
+    const calls=window.__TOOL_STORE_TEST__.calls;
+    const start=[...calls].reverse().find(x=>x.cmd==='start_marketplace_tool_oauth_login'&&x.args.toolId==='qcc');
+    const cancel=[...calls].reverse().find(x=>x.cmd==='cancel_marketplace_tool_oauth_login'&&x.args.toolId==='qcc');
+    return !!start&&!!cancel&&start.args.requestId===cancel.args.requestId;
+  }));
+  rec('企查查取消授权后保持待授权态',await page.evaluate(()=>window.__TOOL_STORE_TEST__.installed.qcc&&[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='重新授权')));
+  rec('企查查未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeQcc));
+  await dismiss(page);
+
+  for (const [query,id,buttonId] of [['PPT 生成','pptx','pptx'],['公文写作','gongwen','government-writing']]) {
     await action(page,query,'安装',buttonId); await dismiss(page);
     const installed=await page.evaluate(id=>!!window.__TOOL_STORE_TEST__.installed[id],id);
     rec(`${query} 经 UI 安装`,installed);
@@ -288,7 +329,9 @@ async function closeDetail(page, title) {
   }
 
   const calls=await page.evaluate(()=>window.__TOOL_STORE_TEST__.calls);
-  rec('仅智慧芽安装调用携带用户配置',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>{
+  rec('用户 Key 工具安装调用携带对应配置',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>{
+    if(x.args.toolId==='weather')return Object.keys(x.args.config||{}).join(',')==='AMAP_KEY';
+    if(x.args.toolId==='iwencai')return Object.keys(x.args.config||{}).join(',')==='IWENCAI_API_KEY';
     if(x.args.toolId==='patsnap-search')return Object.keys(x.args.config||{}).join(',')==='PATSNAP_API_KEY';
     return x.args&&x.args.toolId&&!x.args.config;
   }));

@@ -93,28 +93,6 @@ xattr -dr com.apple.quarantine "$ASR_BIN" 2>/dev/null || true
 xattr -dr com.apple.quarantine "$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/" 2>/dev/null || true
 echo "✓ SenseVoice darwin-arm64 校验通过"
 
-# ── 3. 内置工具共享 key 注入（同 release-deb.sh）─────────────────
-SECRETS_ENV="$REPO_ROOT/scripts/.builtin-secrets.env"
-if [ "${PINVOU3_SKIP_BUILTIN_SECRETS:-0}" = "1" ]; then
-  echo "⚠️  PINVOU3_SKIP_BUILTIN_SECRETS=1 → 本版不含内置共享 key(新用户装天气/问财/企查查需自填)" >&2
-elif [ -f "$SECRETS_ENV" ]; then
-  set -a; . "$SECRETS_ENV"; set +a
-  missing=""
-  [ -z "${PINVOU3_BUILTIN_AMAP_KEY:-}" ]    && missing="$missing AMAP"
-  [ -z "${PINVOU3_BUILTIN_IWENCAI_KEY:-}" ] && missing="$missing IWENCAI"
-  [ -z "${PINVOU3_BUILTIN_QCC_KEY:-}" ]     && missing="$missing QCC"
-  if [ -n "$missing" ]; then
-    echo "❌ $SECRETS_ENV 里这些 key 为空:$missing" >&2
-    echo "   填好三个 key,或设 PINVOU3_SKIP_BUILTIN_SECRETS=1 显式发不带内置 key 的版本。" >&2
-    exit 1
-  fi
-  echo "✓ 已加载内置共享 key(AMAP/IWENCAI/QCC),将编译进二进制"
-else
-  echo "❌ $SECRETS_ENV 不存在 —— 直接发版会静默发出「内置工具对新用户不可用」的坏包。" >&2
-  echo "   从 scripts/.builtin-secrets.env.example 复制并填 key,或设 PINVOU3_SKIP_BUILTIN_SECRETS=1 显式跳过。" >&2
-  exit 1
-fi
-
 # ── 4. 构建 dmg ────────────────────────────────────────────────────
 # 与 release-deb.sh 对齐:每次发布先 npm ci,避免新增前端依赖时生成坏包或 beforeBuildCommand 失败。
 # Mac 构建钉死 universal-apple-darwin(arm64 + x86_64 双切片,可在 Apple Silicon 与 Intel Mac 跑)。
