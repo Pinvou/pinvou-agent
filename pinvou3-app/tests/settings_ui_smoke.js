@@ -2,7 +2,7 @@
 /**
  * 设置页全局配置 smoke：加载真实 Vite dist，mock TauriBridge，点击真实 React UI。
  * 覆盖模型/搜索/权限/帮助反馈四个高风险设置面板：
- * - 模型列表默认单选、删除二次确认、本地模型不可删除、添加模型保存条件、编辑模型回显凭据和同厂商切换
+ * - 模型列表默认单选、删除二次确认、本地/云端模型删除、添加模型保存条件、编辑模型回显凭据和同厂商切换
  * - 搜索源交互与模型页一致，添加源未点保存不得持久化，确认重启后才写设置
  * - 高级执行权限失败时回滚并 toast 提示
  * - 反馈弹窗保持与模型/搜索一致的 iOS 规格，提交成功不使用原生 alert
@@ -88,6 +88,7 @@ function injectSource() {
     var superPerm = false;
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
+    var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     window.alert = function (message) { record('window_alert', { message: message }); };
@@ -115,7 +116,7 @@ function injectSource() {
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
           models = models.filter(function (model) { return model.id !== args.model.id; }).concat(Object.assign({}, args.model, {
-            has_secret: !!(args.model.api_key || args.model.preset === 'local_vllm'),
+            has_secret: !!args.model.api_key,
             credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
           }));
           return Promise.resolve(null);
@@ -124,8 +125,27 @@ function injectSource() {
           if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
           return Promise.resolve(null);
         case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
-        case 'test_model_connection': return Promise.resolve('ok');
-        case 'discover_local_vllm': return Promise.resolve({ candidates: [] });
+        case 'test_model_connection': return Promise.resolve(Object.assign({}, modelTestResponse));
+        case 'discover_local_vllm': return Promise.resolve({ candidates: [
+          {
+            provider: 'ollama',
+            label: 'Ollama',
+            base_url: 'http://127.0.0.1:11434/v1',
+            status: 'ready',
+            model: 'qwen2.5-coder:32b',
+            models: ['qwen2.5-coder:32b', 'deepseek-r1:14b'],
+            max_model_len: 32768,
+          },
+          {
+            provider: 'vllm',
+            label: 'vLLM',
+            base_url: 'http://127.0.0.1:8000/v1',
+            status: 'ready',
+            model: 'qwen36_35b_256k',
+            models: ['qwen36_35b_256k'],
+            max_model_len: 262144,
+          },
+        ] });
         case 'detect_local_vllm_setup': return Promise.resolve({ eligible: false, has_packages: false, vllm_online: false });
         case 'get_selected_pet': return Promise.resolve('lingling');
         case 'list_sessions': return Promise.resolve([]);
@@ -157,6 +177,7 @@ function injectSource() {
       settings: function () { return settings; },
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
+      setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       resolveDownload: function () {
         if (pendingDownloadResolve) {
           var resolve = pendingDownloadResolve;
@@ -210,6 +231,24 @@ async function clickExact(page, text) {
     return true;
   }, text);
   if (!ok) throw new Error('找不到可点击文本: ' + text);
+}
+
+async function clickModalExact(page, text) {
+  const ok = await page.evaluate(t => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!root) return false;
+    const elements = [...root.querySelectorAll('button,span,div,a,h1,h2')].filter(element => (element.textContent || '').trim() === t);
+    const element = elements.find(el => el.tagName === 'BUTTON') || elements[elements.length - 1];
+    if (!element) return false;
+    const target = element.closest('button') || element;
+    target.scrollIntoView({ block: 'center' });
+    target.click();
+    return true;
+  }, text);
+  if (!ok) {
+    const dialogText = await page.evaluate(() => (document.querySelector('[data-testid="model-form-dialog"]')?.innerText || '').slice(0, 600));
+    throw new Error('找不到弹窗内可点击文本: ' + text + '\n弹窗文本: ' + dialogText);
+  }
 }
 
 async function clickSettingsSection(page, label) {
@@ -345,12 +384,13 @@ async function modalWidth(page, headingText) {
       localTag: text.includes('本地模型'),
       activeTag: text.includes('默认'),
       noStatusNoise: !text.includes('已配置') && !text.includes('未配置'),
-      localHasNoDelete: !!localRow && !(localRow.textContent || '').includes('删除'),
+      localHasDelete: !!localRow && (localRow.textContent || '').includes('删除'),
+      qwenLocalUsesBrandIcon: !!localRow && !!localRow.querySelector('img'),
       cloudHasDelete: !!deepseekRow,
       oldSaveSearchButtonHidden: !text.includes('保存搜索配置'),
     };
   });
-  rec('② 模型列表符合 iOS 列表交互标识', Object.values(modelList).every(Boolean), JSON.stringify(modelList));
+  rec('② 模型列表符合 iOS 列表交互标识且用户本地模型可删除', Object.values(modelList).every(Boolean), JSON.stringify(modelList));
 
   await clickRowRadio(page, 'deepseek-v4-flash');
   await sleep(350);
@@ -386,7 +426,11 @@ async function modalWidth(page, headingText) {
 
   await clickExact(page, '添加模型');
   await sleep(250);
-  await clickExact(page, '自定义 DeepSeek 模型');
+  await clickExact(page, '深度求索 / DeepSeek');
+  await sleep(250);
+  await clickModalExact(page, '模型');
+  await sleep(250);
+  await clickModalExact(page, '自定义 DeepSeek 模型');
   await sleep(250);
   const modelIdInput = await page.$('input[placeholder="输入模型 ID"]');
   await modelIdInput.click();
@@ -417,29 +461,206 @@ async function modalWidth(page, headingText) {
 
   await clickExact(page, '添加模型');
   await sleep(300);
-  const modelPickerWidth = await modalWidth(page, '添加模型');
   const freshCatalog = await page.evaluate(() => {
     const text = document.body.innerText;
     const stale = ['deepseek-chat', 'kimi-k2.5', 'glm-4-plus', 'minimax-m1', 'abab6.5s-chat', 'mimo-v2-flash', 'qwen-max', 'qwen-plus', 'qwen-turbo', 'doubao-pro-256k', 'gpt-4o'];
     return {
-      hasLatest: text.includes('kimi-k3') && text.includes('MiniMax-M3') && text.includes('mimo-v2.5-pro') && text.includes('qwen3.7-plus') && text.includes('doubao-seed-2.1-pro'),
+      hasSections: text.includes('Coding Plan') && text.includes('官方 API') && text.includes('自定义兼容接口'),
+      hasProviders: text.includes('智谱 Coding Plan / GLM Coding Plan') && text.includes('Kimi Coding Plan') && text.includes('深度求索 / DeepSeek') && text.includes('MiniMax 中国版 / MiniMax China'),
+      providerFirst: !text.includes('deepseek-v4-pro') && !text.includes('kimi-k3'),
       noStale: stale.every(name => !text.includes(name)),
     };
   });
-  rec('⑥ 内置模型目录不展示已下线或弃用推荐项', Object.values(freshCatalog).every(Boolean), JSON.stringify(freshCatalog));
-  await clickExact(page, 'deepseek-v4-pro');
+  rec('⑥ 添加模型首屏按厂商分组且不展示已下线推荐项', Object.values(freshCatalog).every(Boolean), JSON.stringify(freshCatalog));
+  const addPickerDefault = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return {
+      hasCloudTab: [...document.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '云端模型'),
+      hasLocalTab: [...document.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '本地模型'),
+      cloudCatalogVisible: text.includes('智谱 Coding Plan / GLM Coding Plan') && text.includes('深度求索 / DeepSeek'),
+      localPickerHidden: !text.includes('自动检测本地模型') && !text.includes('手动添加本地模型'),
+    };
+  });
+  rec('⑥.1 添加模型默认展示云端 tab 且保留本地 tab 入口', Object.values(addPickerDefault).every(Boolean), JSON.stringify(addPickerDefault));
+
+  await clickExact(page, '智谱 Coding Plan / GLM Coding Plan');
   await sleep(300);
-  const addModelBeforeKey = await page.evaluate(() => {
+  const codingPlanBeforePick = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    return {
+      title: text.includes('添加 智谱 Coding Plan'),
+      defaultModel: text.includes('GLM-5-Turbo'),
+      noDisplayNameField: !text.includes('显示名'),
+      noServiceUrlField: !text.includes('服务地址') && !(root && [...root.querySelectorAll('input')].some(input => input.value === 'https://open.bigmodel.cn/api/coding/paas/v4')),
+      noNativeSelect: document.querySelectorAll('[data-testid="model-form-dialog"] select').length === 0,
+    };
+  });
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  await clickModalExact(page, 'GLM-5.1');
+  await sleep(200);
+  const codingApiInput = await page.$('input[placeholder="输入 API Key"]');
+  await codingApiInput.type('sk-coding-plan');
+  await sleep(150);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: false,
+    code: 'auth_invalid',
+    message: 'API Key 无效，请检查后重新填写',
+    detail: 'HTTP 401',
+    http_status: 401,
+  }));
+  await clickExact(page, '测试连接');
+  await sleep(250);
+  const codingPlanTestResult = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    return {
+      friendlyMessage: text.includes('API Key 无效，请检查后重新填写'),
+      noTechnicalDetail: !text.includes('技术详情') && !text.includes('HTTP 401'),
+      noAddressHint: !text.includes('改地址') && !text.includes('修改服务地址'),
+      called: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'test_model_connection' && call.args.baseUrl === 'https://open.bigmodel.cn/api/coding/paas/v4'),
+    };
+  });
+  rec('⑥.1a Coding Plan 测试连接只显示友好错误且不提示改地址', Object.values(codingPlanTestResult).every(Boolean), JSON.stringify(codingPlanTestResult));
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedCodingPlan = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.1b Coding Plan 隐藏服务地址并保存专用地址',
+    Object.values(codingPlanBeforePick).every(Boolean)
+      && savedCodingPlan
+      && savedCodingPlan.provider_kind === 'coding_plan'
+      && savedCodingPlan.vendor === 'glm'
+      && savedCodingPlan.model === 'glm-5.1'
+      && savedCodingPlan.base_url === 'https://open.bigmodel.cn/api/coding/paas/v4'
+      && savedCodingPlan.api_key === 'sk-coding-plan'
+      && savedCodingPlan.credential_action === 'replace',
+    JSON.stringify({ ...codingPlanBeforePick, savedCodingPlan }));
+
+  await clickExact(page, '添加模型');
+  await sleep(250);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-backdrop"]')?.click());
+  await sleep(200);
+  const addPickerOutsideClick = await page.evaluate(() => {
+    const stayedOpen = !!document.querySelector('[data-testid="model-form-dialog"]');
+    document.querySelector('[data-testid="model-form-cancel"]')?.click();
+    return { stayedOpen };
+  });
+  await sleep(200);
+  const addPickerClosedByCancel = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
+  rec('⑥.1c 添加模型选择弹窗点击外部区域不关闭且取消可关闭',
+    addPickerOutsideClick.stayedOpen && addPickerClosedByCancel,
+    JSON.stringify({ ...addPickerOutsideClick, closedByCancel: addPickerClosedByCancel }));
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(250);
+  const localPickerInitial = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const localRows = ['自动检测本地模型', '手动添加本地模型'].map(label => {
+      const title = [...document.querySelectorAll('span')].find(node => (node.textContent || '').trim() === label);
+      let row = title;
+      while (row && !String(row.className || '').includes('items-center')) row = row.parentElement;
+      return row;
+    }).filter(Boolean);
+    return {
+      hasAutoDetect: text.includes('自动检测本地模型') && text.includes('检测 vLLM、Ollama、LM Studio'),
+      hasManual: text.includes('手动添加本地模型') && text.includes('填写 API 地址和模型 ID'),
+      cloudCatalogHidden: !text.includes('深度求索 / DeepSeek'),
+      localIconIsGeneric: localRows.length === 2 && localRows.every(row => !row.querySelector('img') && row.querySelector('svg')),
+    };
+  });
+  rec('⑥.2 本地模型 tab 只保留检测和手动添加两条主路径', Object.values(localPickerInitial).every(Boolean), JSON.stringify(localPickerInitial));
+  await clickExact(page, '检测');
+  await sleep(500);
+  const localDetectUi = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return {
+      called: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'discover_local_vllm'),
+      ollamaModel: text.includes('qwen2.5-coder:32b') && text.includes('deepseek-r1:14b'),
+      vllmModel: text.includes('qwen36_35b_256k'),
+      providerLine: text.includes('Ollama · http://127.0.0.1:11434/v1') && text.includes('vLLM · http://127.0.0.1:8000/v1'),
+    };
+  });
+  rec('⑥.3 本地模型自动检测展示多个服务与多个模型 ID', Object.values(localDetectUi).every(Boolean), JSON.stringify(localDetectUi));
+  const localAddClicked = await page.evaluate(() => {
+    const title = [...document.querySelectorAll('span')].find(node => (node.textContent || '').trim() === 'qwen2.5-coder:32b');
+    let row = title;
+    while (row && ![...row.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '添加')) {
+      row = row.parentElement;
+    }
+    const button = row && [...row.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === '添加');
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  await sleep(500);
+  const savedLocalModel = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.4 检测候选可一键添加为本地模型且不强制 API Key',
+    localAddClicked
+      && savedLocalModel
+      && savedLocalModel.preset === 'local_vllm'
+      && savedLocalModel.model === 'qwen2.5-coder:32b'
+      && savedLocalModel.base_url === 'http://127.0.0.1:11434/v1'
+      && savedLocalModel.context_window_tokens === 32768
+      && savedLocalModel.api_key === ''
+      && savedLocalModel.credential_action === 'keep_existing',
+    JSON.stringify(savedLocalModel));
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await clickExact(page, '手动添加本地模型');
+  await sleep(250);
+  const manualLocalForm = await page.evaluate(() => {
     const text = document.body.innerText;
     const save = [...document.querySelectorAll('button')].reverse().find(button => (button.textContent || '').trim() === '保存');
     return {
+      noDisplayNameOnCreate: !text.includes('显示名'),
+      hasModelId: text.includes('本地模型 ID'),
+      hasBaseUrl: text.includes('API 地址'),
+      hasKeySwitch: text.includes('需要 API Key'),
+      hasConnectionTest: text.includes('测试连接'),
+      saveDisabledBeforeModelId: !!save && save.disabled,
+      keyInputHiddenByDefault: document.querySelectorAll('input[placeholder="输入 API Key"]').length === 0,
+    };
+  });
+  rec('⑥.5 手动添加本地模型表单保持 iOS 分组且默认无需 Key，不强制显示名', Object.values(manualLocalForm).every(Boolean), JSON.stringify(manualLocalForm));
+  await clickExact(page, '取消');
+  await sleep(200);
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  const cloudPickerWidth = await modalWidth(page, '添加模型');
+  await clickExact(page, '深度求索 / DeepSeek');
+  await sleep(300);
+  const addModelBeforeKey = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    const save = [...document.querySelectorAll('button')].reverse().find(button => (button.textContent || '').trim() === '保存');
+    return {
       noAdvancedCollapse: !text.includes('高级设置'),
-      noApiUrlForBuiltIn: !text.includes('API 地址'),
+      noServiceUrlField: !text.includes('服务地址'),
+      hasModelPicker: text.includes('模型') && text.includes('deepseek-v4-pro'),
       saveDisabled: !!save && save.disabled,
       hasSingleKeyInput: document.querySelectorAll('input[placeholder="输入 API Key"]').length === 1,
     };
   });
-  rec('⑥ 添加内置云模型表单精简且 API Key 前禁用保存', modelPickerWidth >= 430 && modelPickerWidth <= 455 && Object.values(addModelBeforeKey).every(Boolean), JSON.stringify({ modelPickerWidth, ...addModelBeforeKey }));
+  const addModelBeforeKeyPass = cloudPickerWidth >= 430 && cloudPickerWidth <= 455
+    && addModelBeforeKey.noAdvancedCollapse
+    && addModelBeforeKey.noServiceUrlField
+    && addModelBeforeKey.hasModelPicker
+    && addModelBeforeKey.saveDisabled
+    && addModelBeforeKey.hasSingleKeyInput;
+  rec('⑥.6 添加内置云模型表单精简且 API Key 前禁用保存', addModelBeforeKeyPass, JSON.stringify({ cloudPickerWidth, ...addModelBeforeKey }));
   const apiInput = await page.$('input[placeholder="输入 API Key"]');
   await apiInput.type('sk-model-test');
   await sleep(150);
