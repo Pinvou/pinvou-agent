@@ -7,11 +7,35 @@
 
 #![cfg(test)]
 
+use std::ffi::OsString;
 use std::fs;
 use std::time::{Duration, Instant};
 
 use super::store::SearchQuery;
 use super::KnowledgeService;
+
+struct EnvVarRestore {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarRestore {
+    fn snapshot(name: &'static str) -> Self {
+        Self {
+            name,
+            previous: std::env::var_os(name),
+        }
+    }
+}
+
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
 
 fn wait_idle(svc: &KnowledgeService, what: &str) {
     let start = Instant::now();
@@ -47,8 +71,37 @@ fn service_starts_without_embedder() {
 }
 
 #[test]
+fn env_var_restore_runs_during_unwind() {
+    let _lock = crate::bridge::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _restore_original = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
+    std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "before-panic");
+
+    let result = std::panic::catch_unwind(|| {
+        let _restore = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
+        std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "temporary");
+        panic!("触发 unwind 以验证环境变量恢复");
+    });
+
+    assert!(result.is_err());
+    assert_eq!(
+        std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").as_deref(),
+        Ok("before-panic")
+    );
+}
+
+#[test]
 #[ignore]
 fn full_l0_l1_e2e() {
+    // 写 PINVOU3_KB_EMBED_MODEL_DIR:虽 #[ignore] 不入默认套件,仍须持 crate 级 ENV_LOCK
+    // 串行并在退出时恢复,避免 `cargo test -- --ignored` 合跑或本测试 panic 时留下脏 env。
+    let _lock = crate::bridge::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // `_restore` 比 `_lock` 后创建,会在锁释放前恢复；测试 panic 时 Drop 同样执行。
+    let _restore = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
+
     // L1 语义检索真实跑：指向本地 bge-m3。
     let home = std::env::var("HOME").unwrap();
     std::env::set_var(

@@ -331,10 +331,33 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// 进程级 env var 是测试的硬隔离障碍：cargo test 默认并行跑，多个测试
-    /// 同时改 PINVOU3_HOME 会互相覆盖断言。这把全局锁让所有 mutate
-    /// `PINVOU3_HOME` 的测试串行执行。bridge::sessions 模块测试也借用这把锁。
+    /// 进程级 env var 是测试的硬隔离障碍:cargo test 默认并行跑,多个测试
+    /// 同时改 PINVOU3_HOME 会互相覆盖断言。这是 **crate 级唯一的 env 锁源**:
+    /// bridge/mod.rs(EnvGuard,DEEPSEEK_*)、feedback、notifications、telemetry 等模块
+    /// 所有 mutate env var 的测试都借用这把锁串行执行,使 env 写测试彼此串行。
+    ///
+    /// 注意:锁源单一只让 **持锁的 env 写测试** 之间互斥,**不代表** 可以撤掉
+    /// `--test-threads=1`——未持锁的 env 读取者仍可能观察到其他测试的临时值。
+    /// Mutex poison 后通过 `PoisonError::into_inner()` 取得的仍是已加锁 guard,
+    /// 不会绕过互斥。CI 暂时串行执行；根治需消除测试对进程级 env 的依赖,
+    /// 或让所有读写都通过同一隔离层。
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 生成**进程内**唯一的单调递增后缀,供测试临时目录/会话 ID 命名用。
+    ///
+    /// 纯纳秒时间戳在高并发下会碰撞(热缓存 + 线程调度抖动让两次调用落同纳秒),
+    /// 导致临时目录/会话 ID 重复 → 测试互相覆盖文件。叠加这个原子计数器后,
+    /// 同一**进程内**每次调用都唯一,消除并行测试的命名碰撞。
+    ///
+    /// 注意:计数器是进程级的——两个并发的 `cargo test` **进程**(如本地双终端)各自从 0
+    /// 起计数,若临时目录名只含本后缀(不含 pid)仍会跨进程碰撞。因此临时目录命名应同时
+    /// 叠加 `std::process::id()`(见 `scheduled/tasks.rs::temp_home` 的做法);仅靠本后缀
+    /// 只保证单进程内唯一。
+    pub(crate) fn unique_suffix() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
 
     #[test]
     fn pinvou3_home_respects_env_override() {

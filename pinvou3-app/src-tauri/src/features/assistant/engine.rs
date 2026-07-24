@@ -3476,6 +3476,30 @@ mod live_tests {
     use crate::core::mode_state::SerializableMode;
     use crate::features::monitor::SelfMetrics;
 
+    /// RAII 恢复 env 原值(本模块 #[ignore] 真机测试写 DEEPSEEK_*/PINVOU3_* env,
+    /// 须保证退出时恢复——含 panic 路径,避免 `cargo test -- --ignored` 合跑时污染)。
+    struct EnvRestore {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvRestore {
+        fn snapshot(names: &'static [&'static str]) -> Self {
+            let saved = names.iter().map(|&n| (n, std::env::var(n).ok())).collect();
+            EnvRestore { saved }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, val) in &self.saved {
+                match val {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
     /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 四臂
     /// 原样喂 SelfMetrics**,证明真实事件流(TurnStarted→MessageDelta→TurnComplete+真
     /// usage)累加出合理指标 + 事件顺序符合预期(TurnStarted 在首 MessageDelta 前)。
@@ -3487,6 +3511,17 @@ mod live_tests {
     #[ignore]
     #[tokio::test]
     async fn self_metrics_populates_from_real_turn() {
+        // 写 DEEPSEEK_*/PINVOU3_* env:虽 #[ignore] 不入默认套件,仍须持 crate 级
+        // ENV_LOCK 串行并保证退出恢复,避免被 `cargo test -- --ignored` 一起跑时污染
+        // 其它测试(或本测试 panic 后留下脏 env)。
+        let _lock = crate::bridge::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvRestore::snapshot(&[
+            "DEEPSEEK_ALLOW_INSECURE_HTTP",
+            "DEEPSEEK_FORCE_HTTP1",
+            "PINVOU3_SKIP_WARMUP",
+        ]);
         std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
         std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1");
         std::env::set_var("PINVOU3_SKIP_WARMUP", "1");

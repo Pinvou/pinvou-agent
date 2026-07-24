@@ -627,9 +627,9 @@ fn archive_tool_filename() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // 不再自建局部 ENV_LOCK:改借 crate 级唯一的 platform::paths::tests::ENV_LOCK,
+    // 与所有 mutate env var 的测试共享同一把锁(此处 PINVOU3_PYTHON 属 env 写),
+    // 消除并行测试的数据竞争。
 
     fn test_temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -673,7 +673,9 @@ mod tests {
 
     #[test]
     fn python_command_respects_valid_pinvou3_python() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = test_temp_dir("pinvou3-python-env");
         let python = dir.join("pythonw.exe");
         std::fs::write(&python, b"").unwrap();
