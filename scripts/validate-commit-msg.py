@@ -92,19 +92,33 @@ def git(*args: str) -> str:
     return subprocess.check_output(("git", *args), text=True, encoding="utf-8").strip()
 
 
+def git_commit_exists(revision: str) -> bool:
+    return (
+        subprocess.run(
+            ("git", "cat-file", "-e", f"{revision}^{{commit}}"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
 def validate_file(path: Path) -> list[str]:
     return validate_text(path.read_text(encoding="utf-8"), str(path))
 
 
 def validate_range(base: str, head: str) -> list[str]:
-    commit_list = git(
+    log_args = [
         "log",
         "--no-merges",
         "--format=%H",
         f"{base}..{head}",
-        "--not",
-        LEGACY_HISTORY_CUTOFF,
-    )
+    ]
+    if git_commit_exists(LEGACY_HISTORY_CUTOFF):
+        log_args.extend(("--not", LEGACY_HISTORY_CUTOFF))
+
+    commit_list = git(*log_args)
     commits = [line for line in commit_list.splitlines() if line]
     errors: list[str] = []
 
