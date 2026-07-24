@@ -1,0 +1,421 @@
+{
+  "schema_version": 1,
+  "description": "三省六部工作流 Agent 注册表 — 每个角色的提示词、工具白名单、执行约束。harness 按 role_id 查表 spawn subagent。",
+  "agents": {
+    "taizi": {
+      "name": "太子",
+      "prompt_file": "roles/taizi.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_dir",
+        "request_user_input"
+      ],
+      "max_steps": 16,
+      "timeout_secs": 600,
+      "outputs": [
+        "_state/zhiyi.json"
+      ],
+      "gate": "auto",
+      "output_schema": {
+        "type": "object",
+        "x-output-file": "_state/zhiyi.json",
+        "required": [
+          "title",
+          "objective",
+          "constraints",
+          "original_request"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "自己概括的一句话标题(10-30字,中文,禁路径/URL/原话复制/系统元数据)"
+          },
+          "objective": {
+            "type": "string",
+            "description": "目标:一句话说清要达成什么"
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "具体要求/约束条件,逐条;没有给空数组,不编造"
+          },
+          "original_request": {
+            "type": "string",
+            "description": "皇上原话,原样保留供下游核对"
+          }
+        }
+      }
+    },
+    "zhongshu": {
+      "name": "中书省",
+      "prompt_file": "roles/zhongshu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_dir"
+      ],
+      "max_steps": 20,
+      "timeout_secs": 600,
+      "outputs": [
+        "plan.json"
+      ],
+      "gate": "auto",
+      "output_schema": {
+        "type": "object",
+        "x-output-file": "plan.json",
+        "required": [
+          "objective",
+          "steps",
+          "risks",
+          "expected_outputs"
+        ],
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "方案目标(对齐 zhiyi.objective)"
+          },
+          "steps": {
+            "type": "array",
+            "description": "执行步骤,顺序即先后",
+            "items": {
+              "type": "object",
+              "required": [
+                "step",
+                "what",
+                "why",
+                "which_bu"
+              ],
+              "properties": {
+                "step": {
+                  "type": "integer",
+                  "description": "步骤序号,从1起"
+                },
+                "what": {
+                  "type": "string",
+                  "description": "做什么"
+                },
+                "why": {
+                  "type": "string",
+                  "description": "为什么做;被封驳重做时在此回应对应 issue"
+                },
+                "which_bu": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "hubu",
+                      "libu",
+                      "bingbu",
+                      "xingbu",
+                      "gongbu",
+                      "libu_renshi"
+                    ]
+                  },
+                  "description": "归哪个部(六部之一或多个)"
+                }
+              }
+            }
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "风险点;没有给空数组"
+          },
+          "expected_outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "预期产出清单"
+          }
+        }
+      }
+    },
+    "menxia": {
+      "name": "门下省",
+      "prompt_file": "roles/menxia.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_dir"
+      ],
+      "max_steps": 15,
+      "timeout_secs": 600,
+      "outputs": [
+        "_state/shenyi.json"
+      ],
+      "gate": "auto",
+      "output_schema": {
+        "type": "object",
+        "x-output-file": "_state/shenyi.json",
+        "required": [
+          "verdict",
+          "dimensions",
+          "issues",
+          "forced"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "准奏",
+              "封驳"
+            ],
+            "description": "审议结论"
+          },
+          "dimensions": {
+            "type": "object",
+            "required": [
+              "可行性",
+              "完整性",
+              "风险",
+              "资源"
+            ],
+            "properties": {
+              "可行性": {
+                "type": "string",
+                "description": "「过」或「不过」+一句话理由"
+              },
+              "完整性": {
+                "type": "string",
+                "description": "「过」或「不过」+一句话理由"
+              },
+              "风险": {
+                "type": "string",
+                "description": "「过」或「不过」+一句话理由"
+              },
+              "资源": {
+                "type": "string",
+                "description": "「过」或「不过」+一句话理由"
+              }
+            },
+            "description": "四维度审议,每项「过/不过」+一句话"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "封驳时逐条问题,每条具体可执行且≤2句;准奏时空数组(强制准奏可放改进建议)"
+          },
+          "forced": {
+            "type": "boolean",
+            "description": "第3轮强制准奏时 true,其余 false"
+          }
+        }
+      }
+    },
+    "shangshu": {
+      "name": "尚书省",
+      "prompt_file": "roles/shangshu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_dir"
+      ],
+      "max_steps": 15,
+      "timeout_secs": 600,
+      "outputs": [
+        "dispatch.json"
+      ],
+      "gate": "auto",
+      "output_schema": {
+        "type": "object",
+        "x-output-file": "dispatch.json",
+        "required": [
+          "assignments"
+        ],
+        "properties": {
+          "assignments": {
+            "type": "array",
+            "description": "任务令清单。一个部可多条(同部不同 wave = 多次出场)",
+            "items": {
+              "type": "object",
+              "required": [
+                "bu",
+                "wave",
+                "task",
+                "requirements"
+              ],
+              "properties": {
+                "bu": {
+                  "type": "string",
+                  "enum": [
+                    "hubu",
+                    "libu",
+                    "bingbu",
+                    "xingbu",
+                    "gongbu",
+                    "libu_renshi"
+                  ],
+                  "description": "哪个部"
+                },
+                "wave": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "第几批(从1起)。同批=会办并行,跨批=接力(后批等前批出结果再办)。同一个部可在不同批多次出场。"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "差事短描(4-6字,卡片副标题用,如「初勘」「复核」),可留空"
+                },
+                "task": {
+                  "type": "string",
+                  "description": "具体任务内容,自包含,部里看了就能干活"
+                },
+                "requirements": {
+                  "type": "string",
+                  "description": "输出要求(格式/标准/验收要点)"
+                }
+              }
+            }
+          },
+          "skip_bus": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "hubu",
+                "libu",
+                "bingbu",
+                "xingbu",
+                "gongbu",
+                "libu_renshi"
+              ]
+            },
+            "description": "可选,留空即可——代码自动把没领差事的部派生为 skip。"
+          }
+        }
+      }
+    },
+    "hubu": {
+      "name": "户部",
+      "prompt_file": "roles/hubu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep_files"
+      ],
+      "max_steps": 30,
+      "timeout_secs": 900,
+      "outputs": [
+        "deliverables/hubu.md"
+      ],
+      "gate": "auto"
+    },
+    "libu": {
+      "name": "礼部",
+      "prompt_file": "roles/libu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep_files"
+      ],
+      "max_steps": 30,
+      "timeout_secs": 900,
+      "outputs": [
+        "deliverables/libu.md"
+      ],
+      "gate": "auto"
+    },
+    "bingbu": {
+      "name": "兵部",
+      "prompt_file": "roles/bingbu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep_files",
+        "web_search"
+      ],
+      "max_steps": 30,
+      "timeout_secs": 900,
+      "outputs": [
+        "deliverables/bingbu.md"
+      ],
+      "gate": "auto"
+    },
+    "xingbu": {
+      "name": "刑部",
+      "prompt_file": "roles/xingbu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep_files",
+        "web_search",
+        "exec_shell",
+        "exec_shell_wait"
+      ],
+      "max_steps": 30,
+      "timeout_secs": 900,
+      "outputs": [
+        "deliverables/xingbu.md"
+      ],
+      "gate": "auto"
+    },
+    "gongbu": {
+      "name": "工部",
+      "prompt_file": "roles/gongbu.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep_files",
+        "exec_shell",
+        "exec_shell_wait"
+      ],
+      "max_steps": 100,
+      "timeout_secs": 900,
+      "outputs": [
+        "deliverables/gongbu.md"
+      ],
+      "gate": "auto"
+    },
+    "libu_renshi": {
+      "name": "吏部",
+      "prompt_file": "roles/libu_renshi.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "grep_files"
+      ],
+      "max_steps": 30,
+      "timeout_secs": 900,
+      "outputs": [
+        "deliverables/libu_renshi.md"
+      ],
+      "gate": "auto"
+    },
+    "huizou": {
+      "name": "回奏",
+      "prompt_file": "roles/huizou.md",
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_dir"
+      ],
+      "max_steps": 20,
+      "timeout_secs": 600,
+      "outputs": [
+        "final_report.md"
+      ],
+      "gate": "human",
+      "gate_description": "结案呈报已写好(final_report.md):核对旨意是否办成、各部成果是否如实、遗留事项是否接受;这是全流程唯一人工关卡,皇上终审"
+    }
+  }
+}

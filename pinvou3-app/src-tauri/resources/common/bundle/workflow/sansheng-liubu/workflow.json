@@ -1,0 +1,151 @@
+{
+  "id": "sansheng-liubu",
+  "name": "三省六部帮你办",
+  "enabled": true,
+  "scenarios": [
+    "sansheng_liubu"
+  ],
+  "ui": {
+    "header": "🏛️ 三省六部帮你办",
+    "hasMemorial": true,
+    "memorialRole": "huizou",
+    "newTask": "freeform",
+    "newTaskTitle": "🏛️ 新建「三省六部帮你办」",
+    "briefLabel": "你想让三省六部帮你办什么?",
+    "briefPlaceholder": "一句话说清要办什么事、目标、有什么要求…",
+    "attachments": true,
+    "template": {
+      "title": "🏛️ 三省六部帮你办",
+      "badge": "11 agent",
+      "desc": "太子接旨 → 中书省起草 → 门下省审议(封驳≤2轮) → 尚书省派单 → 六部并行办差 → 回奏呈报(人工终审)。通用任务，不限 PPT。"
+    },
+    "agentDefs": [
+      {
+        "id": "taizi",
+        "name": "太子",
+        "desc": "接旨立项，提炼旨意书",
+        "color": "#C9A227",
+        "avatar": "avatars/taizi.png"
+      },
+      {
+        "id": "zhongshu",
+        "name": "中书省",
+        "desc": "起草执行方案",
+        "color": "#4285F4",
+        "avatar": "avatars/zhongshu.png"
+      },
+      {
+        "id": "menxia",
+        "name": "门下省",
+        "desc": "审议封驳（≤2 轮）",
+        "color": "#8E24AA",
+        "avatar": "avatars/menxia.png"
+      },
+      {
+        "id": "shangshu",
+        "name": "尚书省",
+        "desc": "拆解派单给六部",
+        "color": "#0097A7",
+        "avatar": "avatars/shangshu.png"
+      },
+      {
+        "id": "hubu",
+        "name": "户部",
+        "desc": "数据分析·统计·财算·报表",
+        "color": "#34A853",
+        "avatar": "avatars/hubu.png"
+      },
+      {
+        "id": "libu",
+        "name": "礼部",
+        "desc": "文书撰写·文案·对外沟通",
+        "color": "#FF6D00",
+        "avatar": "avatars/libu.png"
+      },
+      {
+        "id": "bingbu",
+        "name": "兵部",
+        "desc": "攻坚调研·情报·技术验证",
+        "color": "#E91E63",
+        "avatar": "avatars/bingbu.png"
+      },
+      {
+        "id": "xingbu",
+        "name": "刑部",
+        "desc": "质量检查·验收·合规审计",
+        "color": "#5C6BC0",
+        "avatar": "avatars/xingbu.png"
+      },
+      {
+        "id": "gongbu",
+        "name": "工部",
+        "desc": "工程营造·代码·部署运维",
+        "color": "#00897B",
+        "avatar": "avatars/gongbu.png"
+      },
+      {
+        "id": "libu_renshi",
+        "name": "吏部",
+        "desc": "人事组织·流程规范·沉淀",
+        "color": "#FBBC04",
+        "avatar": "avatars/libu_renshi.png"
+      },
+      {
+        "id": "huizou",
+        "name": "回奏",
+        "desc": "汇总呈报（人工终审）",
+        "color": "#F06292",
+        "avatar": "avatars/huizou.png"
+      }
+    ],
+    "lanes": [
+      {
+        "lane": 0,
+        "title": "接旨",
+        "agents": [
+          "taizi"
+        ]
+      },
+      {
+        "lane": 1,
+        "title": "起草",
+        "agents": [
+          "zhongshu"
+        ]
+      },
+      {
+        "lane": 2,
+        "title": "审议",
+        "agents": [
+          "menxia"
+        ]
+      },
+      {
+        "lane": 3,
+        "title": "派单",
+        "agents": [
+          "shangshu"
+        ]
+      },
+      {
+        "lane": 4,
+        "title": "六部并行",
+        "agents": [
+          "hubu",
+          "libu",
+          "bingbu",
+          "xingbu",
+          "gongbu",
+          "libu_renshi"
+        ]
+      },
+      {
+        "lane": 5,
+        "title": "回奏",
+        "agents": [
+          "huizou"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "app": {
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": {
+      "resources/platforms/macos/PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy"
+    },
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "-",
+      "entitlements": "packaging/macos/entitlements.plist",
+      "infoPlist": "packaging/macos/Info.plist"
+    }
+  }
+}
