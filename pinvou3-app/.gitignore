@@ -1,0 +1,16 @@
+# Tauri 后端构建产物
+src-tauri/target/
+# Note: src-tauri/Cargo.lock 是 binary crate 应该 commit 的（锁依赖版本）
+
+# 前端依赖（@tauri-apps/cli native binary 等）
+node_modules/
+# 三省六部网页模板依赖由统一 Tauri wrapper 按当前平台从 lockfile 生成，
+# 安装包继续携带离线依赖，但源码仓库不跟踪 node_modules。
+src-tauri/resources/**/web-template/node_modules/
+
+# Tauri 生成的快照
+src-tauri/gen/
+
+# OS
+.DS_Store
+Thumbs.db

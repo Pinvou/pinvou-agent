@@ -1,0 +1,26 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Pinned upstream connector documentation uses synthetic IDs and tokens"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^pinvou3-app/src-tauri/resources/common/bundle/dingtalk-skills/dws/references/products/doc(?:/doc-info)?\.md$''',
+  '''^pinvou3-app/src-tauri/resources/common/bundle/skills/lark-im/references/lark-im-reactions\.md$''',
+]
+
+[[allowlists]]
+description = "Credential persistence tests use explicit non-production test keys"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/src-tauri/src/platform/prefs\.rs$''']
+regexes = ['''sk-(?:test|legacy|custom|once)-secret-1234567890''']
+
+[[allowlists]]
+description = "File-ingest tests and detectors intentionally contain private-key header literals"
+targetRules = ["private-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/src-tauri/src/features/files/file_ingest\.rs$''']
+regexes = ['''b?"-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----''']

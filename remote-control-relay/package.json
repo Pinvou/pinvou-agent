@@ -1,0 +1,17 @@
+{
+  "name": "pinvou-remote-control-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:legacy-v1-ui": "node --test --test-concurrency=1 test/mobile-advanced-controls.legacy.js test/mobile-snapshot-system-persistence.legacy.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

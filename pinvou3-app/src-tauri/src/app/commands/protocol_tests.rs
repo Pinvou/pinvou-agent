@@ -1,0 +1,430 @@
+fn command_names(source: &str) -> Vec<&str> {
+    let mut commands = Vec::new();
+    let mut command_attribute_seen = false;
+    for line in source.lines() {
+        let line = line.trim();
+        if line.starts_with("async_command_passthrough!(")
+            || line.starts_with("sync_command_passthrough!(")
+        {
+            let name = line
+                .split_once(',')
+                .expect("passthrough domain")
+                .1
+                .trim()
+                .split('(')
+                .next()
+                .expect("passthrough command name");
+            commands.push(name);
+            continue;
+        }
+        if line.starts_with("#[tauri::command") {
+            command_attribute_seen = true;
+            continue;
+        }
+        if !command_attribute_seen {
+            continue;
+        }
+        if let Some((_, suffix)) = line.split_once("fn ") {
+            commands.push(
+                suffix
+                    .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                    .next()
+                    .expect("command function name"),
+            );
+            command_attribute_seen = false;
+        }
+    }
+    commands
+}
+
+macro_rules! command_protocol {
+    ($test_name:ident, $source:literal, [$($command:literal),* $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            let expected: &[&str] = &[$($command),*];
+            assert_eq!(command_names(include_str!($source)).as_slice(), expected);
+        }
+    };
+}
+
+command_protocol!(
+    artifacts_protocol,
+    "artifacts.rs",
+    [
+        "read_artifact_text",
+        "write_artifact_text",
+        "list_deliverable_index",
+        "list_deliverables",
+        "artifact_info",
+        "read_artifact_image_b64",
+        "read_artifact_thumbnail",
+        "render_artifact_visual",
+        "open_external_url",
+        "detect_obsidian",
+        "open_in_system",
+        "open_containing_folder",
+        "reveal_session_folder",
+        "open_scheduled_task_folder",
+        "open_artifact_window"
+    ]
+);
+command_protocol!(attachments_protocol, "attachments.rs", []);
+command_protocol!(chat_protocol, "chat.rs", ["chat"]);
+command_protocol!(
+    connectors_protocol,
+    "connectors.rs",
+    [
+        "set_disabled_connectors",
+        "get_disabled_connectors",
+        "refresh_connector_auth_gates",
+        "feishu_ensure_cli",
+        "feishu_status",
+        "feishu_connect_begin",
+        "feishu_cancel",
+        "feishu_logout",
+        "feishu_apply_skills",
+        "set_feishu_enabled",
+        "feishu_skills_state",
+        "wecom_ensure_cli",
+        "wecom_status",
+        "wecom_connect_begin",
+        "wecom_cancel",
+        "wecom_logout",
+        "wecom_apply_skills",
+        "set_wecom_enabled",
+        "wecom_skills_state",
+        "dingtalk_ensure_cli",
+        "dingtalk_status",
+        "dingtalk_connect_begin",
+        "dingtalk_cancel",
+        "dingtalk_logout",
+        "dingtalk_apply_skills",
+        "set_dingtalk_enabled",
+        "dingtalk_skills_state"
+    ]
+);
+command_protocol!(
+    dependencies_protocol,
+    "dependencies.rs",
+    ["check_dependencies", "install_dependencies"]
+);
+command_protocol!(
+    files_protocol,
+    "files.rs",
+    [
+        "ingest_file",
+        "detect_system_tools",
+        "save_paste_image",
+        "verify_upload"
+    ]
+);
+command_protocol!(
+    interaction_protocol,
+    "interaction.rs",
+    [
+        "compact_now",
+        "get_mode_state",
+        "set_plan_mode_next",
+        "exit_plan_to_yolo",
+        "accept_plan",
+        "get_super_permission_status",
+        "set_super_permission",
+        "read_skill_body",
+        "discard_plan",
+        "submit_user_input",
+        "add_run_materials",
+        "cancel_user_input",
+        "restart_engine",
+        "summon_pinvou"
+    ]
+);
+command_protocol!(
+    knowledge_protocol,
+    "knowledge.rs",
+    [
+        "session_mount_collection",
+        "session_unmount_collection",
+        "session_mounted_collection",
+        "kb_start_scan",
+        "kb_scan_status",
+        "kb_cancel_scan",
+        "kb_type_counts",
+        "kb_collection_list",
+        "kb_collection_create",
+        "kb_collection_update",
+        "kb_collection_delete",
+        "kb_collection_add_sources",
+        "kb_index_status",
+        "kb_index_cancel",
+        "kb_documents",
+        "kb_remove_document",
+        "kb_embed_info",
+        "kb_search",
+        "kb_stats",
+        "kb_model_status",
+        "kb_model_cancel",
+        "kb_model_load_after_first_frame",
+        "kb_model_download"
+    ]
+);
+command_protocol!(
+    local_llm_protocol,
+    "local_llm.rs",
+    [
+        "detect_local_vllm_setup",
+        "decline_local_vllm_setup",
+        "bootstrap_local_vllm"
+    ]
+);
+command_protocol!(
+    marketplace_protocol,
+    "marketplace.rs",
+    [
+        "list_marketplace_tools",
+        "install_marketplace_tool",
+        "get_marketplace_tool_auth_status",
+        "start_marketplace_tool_oauth_login",
+        "cancel_marketplace_tool_oauth_login",
+        "uninstall_marketplace_tool",
+        "list_marketplace_skills",
+        "install_marketplace_skill",
+        "import_skill_package",
+        "uninstall_marketplace_skill"
+    ]
+);
+command_protocol!(
+    memory_protocol,
+    "memory.rs",
+    [
+        "get_memory_profile",
+        "update_memory_profile",
+        "clear_memory_profile",
+        "get_memory_overview",
+        "list_pending_memory",
+        "suggest_memory",
+        "confirm_pending_memory",
+        "ignore_pending_memory",
+        "never_pending_memory",
+        "list_recent_work_memory",
+        "upsert_recent_work_memory",
+        "archive_recent_work_memory",
+        "delete_memory_preference",
+        "update_memory_preference",
+        "update_work_context_memory",
+        "delete_work_context_memory",
+        "update_timed_memory",
+        "delete_timed_memory",
+        "edit_last_turn"
+    ]
+);
+command_protocol!(
+    monitor_protocol,
+    "monitor.rs",
+    [
+        "get_monitor_snapshot",
+        "discover_local_vllm",
+        "get_backend_status"
+    ]
+);
+command_protocol!(
+    pet_protocol,
+    "pet.rs",
+    [
+        "open_detached_window",
+        "begin_detach_drag",
+        "set_pet_enabled",
+        "get_pet_scale",
+        "set_pet_scale",
+        "set_pet_activity_visible",
+        "save_pet_position",
+        "save_pet_vertical_alignment",
+        "open_main_from_pet",
+        "take_pet_navigation",
+        "queue_pet_reply",
+        "take_pet_reply",
+        "get_selected_pet",
+        "set_selected_pet"
+    ]
+);
+command_protocol!(
+    personas_protocol,
+    "personas.rs",
+    [
+        "list_personas",
+        "read_persona_body",
+        "equip_persona",
+        "create_persona",
+        "update_persona",
+        "delete_persona",
+        "save_session_persona_events",
+        "get_session_persona_events",
+        "save_session_pinvou_reviews",
+        "get_session_pinvou_reviews",
+        "unequip_persona",
+        "get_active_persona"
+    ]
+);
+command_protocol!(
+    runtime_protocol,
+    "runtime.rs",
+    [
+        "cancel_generation",
+        "get_platform_capabilities",
+        "list_shell_tasks",
+        "cancel_shell_task"
+    ]
+);
+command_protocol!(
+    remote_control_protocol,
+    "remote_control.rs",
+    [
+        "web_access_enable",
+        "web_access_disable",
+        "web_access_status",
+        "web_access_rotate",
+        "web_access_relay_settings",
+        "web_access_set_relay",
+        "web_access_reset_relay",
+        "web_access_bridge_ready",
+        "web_access_rpc_begin",
+        "web_access_rpc_respond",
+        "web_access_publish_event",
+        "web_access_list_host_files",
+        "web_access_create_session",
+        "web_access_load_session_chunk",
+        "web_access_ingest_file",
+        "web_access_chat",
+        "web_access_save_session_messages_chunk",
+        "web_access_transcribe_voice_audio",
+        "web_access_start_skill_session",
+        "web_access_read_artifact_chunk",
+        "web_access_update_settings",
+        "web_access_list_deliverables",
+        "web_access_get_role_prompt",
+        "web_access_get_role_outputs",
+        "web_access_get_role_logs",
+        "web_access_get_gate_report",
+        "web_access_artifact_info",
+        "web_access_read_artifact_text",
+        "web_access_write_artifact_text",
+        "web_access_read_artifact_image_b64",
+        "web_access_read_artifact_thumbnail",
+        "web_access_render_artifact_visual"
+    ]
+);
+command_protocol!(
+    scheduled_protocol,
+    "scheduled.rs",
+    [
+        "list_scheduled_tasks",
+        "read_scheduled_task",
+        "list_scheduled_task_runs",
+        "list_scheduled_runs",
+        "create_scheduled_task",
+        "update_scheduled_task",
+        "pause_scheduled_task",
+        "resume_scheduled_task",
+        "set_scheduled_task_pinned",
+        "delete_scheduled_task",
+        "run_scheduled_task_now",
+        "mark_scheduled_run_viewed",
+        "scheduled_task_chat_prompt"
+    ]
+);
+command_protocol!(
+    sessions_protocol,
+    "sessions.rs",
+    [
+        "clear_session",
+        "list_sessions",
+        "list_archived_sessions",
+        "create_session",
+        "load_session",
+        "delete_session",
+        "rename_session",
+        "set_session_pinned",
+        "set_session_archived",
+        "get_active_session",
+        "save_session_messages",
+        "save_session_artifacts",
+        "list_workspace_files"
+    ]
+);
+command_protocol!(
+    settings_protocol,
+    "settings.rs",
+    [
+        "get_settings",
+        "submit_feedback",
+        "get_effective_model_config",
+        "list_models",
+        "reveal_model_api_key",
+        "save_model",
+        "delete_model",
+        "set_active_model",
+        "set_session_model",
+        "get_session_model_id",
+        "test_search_provider",
+        "test_model_connection",
+        "update_settings",
+        "save_settings_and_restart"
+    ]
+);
+command_protocol!(
+    timeline_protocol,
+    "timeline.rs",
+    ["get_session_timeline", "get_session_stats"]
+);
+command_protocol!(startup_protocol, "startup.rs", ["report_frontend_startup"]);
+command_protocol!(
+    updater_protocol,
+    "updater.rs",
+    [
+        "get_app_version",
+        "check_for_update",
+        "download_update",
+        "install_update",
+        "restart_app",
+        "cancel_download",
+        "report_pending_update_result"
+    ]
+);
+command_protocol!(
+    voice_protocol,
+    "voice.rs",
+    [
+        "transcribe_voice_audio",
+        "reset_microphone_permission",
+        "voice_asr_status",
+        "install_voice_asr",
+        "cancel_voice_asr"
+    ]
+);
+command_protocol!(
+    workflows_protocol,
+    "workflows.rs",
+    [
+        "list_skills_v2",
+        "read_skill_demo",
+        "start_skill_session",
+        "start_workflow",
+        "kick_workflow",
+        "retry_workflow_role",
+        "get_role_prompt",
+        "get_role_outputs",
+        "get_role_logs",
+        "get_gate_report",
+        "save_project_config",
+        "save_agent_overrides",
+        "cancel_workflow_role",
+        "stop_workflow",
+        "approve_workflow_gate",
+        "reject_workflow_gate",
+        "get_workflow_state",
+        "find_resumable_run",
+        "list_workflows",
+        "unbind_session_skill",
+        "get_session_active_skill",
+        "list_session_skill_bindings"
+    ]
+);

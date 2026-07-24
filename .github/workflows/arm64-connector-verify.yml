@@ -1,0 +1,65 @@
+name: ARM64 connector CLI verify
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/arm64-connector-verify.yml"
+      - "scripts/fetch-linux-arm64-connectors.sh"
+      - "pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/**"
+      - "pinvou3-app/src-tauri/src/platform/paths.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/arm64-connector-verify.yml"
+      - "scripts/fetch-linux-arm64-connectors.sh"
+      - "pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/**"
+      - "pinvou3-app/src-tauri/src/platform/paths.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
+
+jobs:
+  verify-linux-arm64-connectors:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check runner architecture
+        run: |
+          set -eux
+          uname -a
+          test "$(uname -m)" = "aarch64"
+
+      - name: Download pinned connector binaries
+        run: ./scripts/fetch-linux-arm64-connectors.sh
+
+      - name: Inspect prepared binaries
+        run: |
+          set -eux
+          ./scripts/fetch-linux-arm64-connectors.sh --check
+          file pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/dws
+          file pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/lark-cli
+          file pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/wecom-cli
+
+      - name: Simulate app extraction
+        run: |
+          set -eux
+          mkdir -p "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin"
+          cp pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/dws "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
+          cp pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/lark-cli "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
+          cp pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/wecom-cli "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/"
+          chmod 755 "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/dws"
+          chmod 755 "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/lark-cli"
+          chmod 755 "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/wecom-cli"
+
+      - name: Run bundled CLIs without npm
+        run: |
+          set -eux
+          BIN="$HOME/.pinvou3/bundle/connectors/linux-arm64/bin"
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/dws" version
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/lark-cli" --version
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/wecom-cli" --version
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/lark-cli" auth status --json || true
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/wecom-cli" auth show || true

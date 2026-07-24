@@ -1,0 +1,112 @@
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 10px; }
+    .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.5); }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    /* 移动 Web 的应用自身负责滚动。禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
+    html.compact-web-viewport,
+    html.compact-web-viewport body,
+    html.compact-web-viewport #root {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    html.compact-web-viewport body {
+      position: fixed;
+      inset: 0;
+    }
+    /* 与 Tailwind max-sm 同断点:触屏横滑容器(如设置页 Tab 条)不显示滚动条 */
+    @media (max-width: 639.98px) {
+      .max-sm-hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      .max-sm-hide-scrollbar::-webkit-scrollbar { display: none; }
+    }
+
+    /* Chat message styles */
+    .msg-md h1,.msg-md h2,.msg-md h3,.msg-md h4 { font-weight:600; margin:0.6em 0 0.3em; }
+    .msg-md h1 { font-size:1.4em; } .msg-md h2 { font-size:1.2em; } .msg-md h3 { font-size:1.05em; }
+    .msg-md p { margin:0.4em 0; line-height:1.7; }
+    .msg-md ul,.msg-md ol { padding-left:1.5em; margin:0.4em 0; }
+    .msg-md li { margin:0.2em 0; line-height:1.6; }
+    .msg-md code { font-family:"JetBrains Mono","SF Mono",Consolas,monospace; font-size:0.88em; padding:0.15em 0.4em; border-radius:6px; }
+    .msg-md pre { margin:0.6em 0; padding:1em; border-radius:12px; overflow-x:auto; font-size:0.88em; line-height:1.5; }
+    .msg-md pre code { padding:0; background:none; }
+    .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
+    .msg-md a { text-decoration:underline; }
+    .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; }
+    .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
+
+    /* Dark theme code blocks */
+    .dark-code .msg-md code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
+    .dark-code .msg-md pre { background:rgba(0,0,0,0.3); color:#E3E3E3; }
+    /* Light theme code blocks */
+    .light-code .msg-md code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
+    .light-code .msg-md pre { background:rgba(0,0,0,0.04); color:#1F1F1F; }
+
+    /* Tool card styles */
+    .tool-card-output { max-height:200px; overflow-y:auto; font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
+
+    /* Streaming cursor */
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    .streaming-cursor::after { content:"▊"; animation:blink 1s step-end infinite; margin-left:2px; }
+
+    /* Thinking animation */
+    @keyframes spin-braille { 0%{content:"⠋"} 10%{content:"⠙"} 20%{content:"⠹"} 30%{content:"⠸"} 40%{content:"⠼"} 50%{content:"⠴"} 60%{content:"⠦"} 70%{content:"⠧"} 80%{content:"⠇"} 90%{content:"⠏"} }
+    /* Tool Store */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    @keyframes tsModalIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+    .ts-modal-in { animation: tsModalIn 0.2s ease-out; }
+    @keyframes tsAlertIn { from { opacity:0; transform:scale(1.05); } to { opacity:1; transform:scale(1); } }
+    @keyframes tsSpinner { to { transform: rotate(360deg); } }
+
+    /* ===== 卡片池: tilt / spotlight / borderglow / 挂件 ===== */
+    .ap-card { transform-style: preserve-3d; transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .25s, border-color .25s; will-change: transform; position: relative; }
+    /* 鼠标跟随高光(--mx/--my 由 JS 注入) */
+    .ap-card::before {
+      content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;
+      transition:opacity .25s; z-index:1;
+      background: radial-gradient(380px circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,.10), transparent 42%);
+    }
+    .ap-card:hover::before { opacity:1; }
+    .ap-card > * { position:relative; z-index:2; }
+    /* A 档金色 spotlight 额外柔光 */
+    .ap-card.tier-A:hover { box-shadow: 0 0 0 1px rgba(255,191,0,.35), 0 14px 40px -12px rgba(255,191,0,.30); }
+    /* 已加持: 金色流转边框 */
+    @keyframes ap-borderglow { 0%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} 50%{box-shadow:0 0 0 1px rgba(255,210,80,1),0 0 26px 0 rgba(255,190,40,.75)} 100%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} }
+    .ap-card.equipped { border-color: rgba(255,180,30,.95) !important; animation: ap-borderglow 2.4s ease-in-out infinite; }
+    /* 挂件(lanyard) 入场 + 悬挂摆动 */
+    @keyframes lanyard-drop { 0%{ transform: translateY(-120%) rotate(-3deg); opacity:0 } 60%{ transform: translateY(6%) rotate(1.5deg) } 100%{ transform: translateY(0) rotate(0); opacity:1 } }
+    @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
+    /* 🏛️ 奏折卷轴:纸面从中线向上下展开(clip-path),两根轴杆从中间滚向边缘;收卷反向 */
+    @keyframes memorial-fade { from { opacity: 0 } to { opacity: 1 } }
+    /* AI 造卡 banner 头像浮动 */
+    @keyframes bnrFloat1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+    @keyframes bnrFloat2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+    @keyframes bnrFloat3 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+    @media (max-width: 760px){ .bnr-avatars { display: none; } }
+    @keyframes memorial-paper-open { from { clip-path: inset(50% 0 50% 0) } to { clip-path: inset(0 0 0 0) } }
+    @keyframes memorial-paper-close { from { clip-path: inset(0 0 0 0) } to { clip-path: inset(50% 0 50% 0) } }
+    @keyframes memorial-roller-top-open { from { top: calc(50% - 9px) } to { top: -9px } }
+    @keyframes memorial-roller-top-close { from { top: -9px } to { top: calc(50% - 9px) } }
+    @keyframes memorial-roller-bottom-open { from { bottom: calc(50% - 9px) } to { bottom: -9px } }
+    @keyframes memorial-roller-bottom-close { from { bottom: -9px } to { bottom: calc(50% - 9px) } }
+    @keyframes memorial-stamp { from { opacity: 0; transform: rotate(-14deg) scale(1.8) } 70% { opacity: .9; transform: rotate(-14deg) scale(.94) } to { opacity: .82; transform: rotate(-14deg) scale(1) } }
+    /* 御赐宝箱:开箱金光迸出 + 成品文档逐件弹出 */
+    @keyframes chest-glow { from { opacity: 0; transform: translateX(-50%) scale(.4) } to { opacity: 1; transform: translateX(-50%) scale(1) } }
+    @keyframes chest-item-pop { from { opacity: 0; transform: translateY(16px) scale(.85) } to { opacity: 1; transform: none } }
+    @keyframes chest-open-bounce { 0% { transform: scale(1) } 35% { transform: scale(1.07) rotate(-1.5deg) } 70% { transform: scale(.98) rotate(1deg) } 100% { transform: scale(1.03) } }
+    .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
+    .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
+    /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
+    .persona-body h1, .persona-body h2, .persona-body h3 { font-weight:600; margin:.9em 0 .35em; line-height:1.3; }
+    .persona-body h1 { font-size:1.15em; } .persona-body h2 { font-size:1.06em; } .persona-body h3 { font-size:1em; }
+    .persona-body p { margin:.45em 0; }
+    .persona-body ul, .persona-body ol { margin:.4em 0; padding-left:1.4em; }
+    .persona-body li { margin:.18em 0; }
+    .persona-body code { font-size:.88em; padding:.08em .35em; border-radius:4px; background:rgba(128,128,128,.18); }
+    .persona-body pre { padding:.7em; border-radius:8px; background:rgba(128,128,128,.14); overflow-x:auto; margin:.5em 0; }
+    .persona-body pre code { background:none; padding:0; }
+    .persona-body strong { font-weight:600; }
+    .persona-body hr { border:none; border-top:1px solid rgba(128,128,128,.25); margin:.8em 0; }

@@ -1,0 +1,18 @@
+{
+  "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "targets": ["msi", "nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "compression": "lzma"
+      }
+    }
+  }
+}

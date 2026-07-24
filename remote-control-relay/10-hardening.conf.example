@@ -1,0 +1,12 @@
+[Service]
+# Replace these loopback defaults with your reverse proxy addresses.
+Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
+Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
+Environment=MAX_ROOMS=2000
+Environment=ROOM_CREATE_LIMIT=20
+Environment=ROOM_CREATE_WINDOW_MS=60000
+Environment=MAX_PAYLOAD_BYTES=4194304
+Environment=MAX_WS_CONNECTIONS=5000
+Environment=WS_CONNECT_LIMIT=120
+Environment=WS_CONNECT_WINDOW_MS=60000
+Environment=WS_AUTH_TIMEOUT_MS=10000

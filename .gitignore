@@ -1,0 +1,79 @@
+# Rust build artifacts
+CodeWhale/target/
+pinvou3-app/src-tauri/target/
+/target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+
+# Node / frontend
+node_modules/
+dist/
+build/
+*.log
+
+# Python (sim 脚本缓存)
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env*
+# 内置共享 key(明文 export,模板见 .builtin-secrets.env.example)
+scripts/.builtin-secrets.env
+*.pem
+
+# Playwright
+.playwright-mcp/
+
+# Local tool state
+.claude/
+.superpowers/
+.codex-memory.md
+.specify/
+specs/
+
+# 临时 PR worktree(submodule 的 git worktree,勿提交)
+/CodeWhale-*-env/
+
+# 本地构建日志与临时截图(勿提交)
+build-logs/
+/20260615-115647.png
+/icon-preview.png
+/screenshot-*.png
+/Gemini_Generated_Image_*.png
+
+# 本地安装出的 app 二进制(勿提交)
+/pinvou3/
+
+# 第三方预编译产物由固定版本下载脚本在构建时生成，不进入 Git。
+/pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/
+/pinvou3-app/src-tauri/resources/platforms/linux/asr/sense-voice-main
+
+# 图标中间产物(由 icons/ 生成, 不入库)
+pinvou3-app/src-tauri/icon-source-new.png
+
+# Obsidian 笔记本配置
+.obsidian/
+
+# 客户资料包:原始截图是中间产物(由 _tooling/shoot.js 再生成),只提交 shots-web/
+资料包/shots/
+pinvou3-app/src-tauri/resources/bge-m3/
+
+# 本地下载的测试浏览器(Chrome for Testing),不提交
+.cache/

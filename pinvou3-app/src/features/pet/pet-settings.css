@@ -1,0 +1,233 @@
+/* 设置页宠物选择器：桌宠启用后直接展示三项可选卡。
+   颜色主体走 SettingsView 的 Tailwind 惯例；这里只放 Tailwind 不便表达的
+   雪碧图定位、三列紧凑轨道与状态覆盖层。卡片收紧为小尺寸三列，
+   避免设置页出现横向滑动条。每张卡通过 --pet-accent
+   注入低饱和主题色，仅用于描边、勾选标与极淡底色，不另造主题系统。 */
+
+.pet-card-track {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 152px));
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 4px;
+  overflow: visible;
+}
+
+.pet-card {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: 1 / 0.92;
+  border-radius: 16px;
+  border: 2px solid transparent;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.pet-card--light { background: #ffffff; }
+.pet-card--dark { background: #131314; }
+
+.pet-card:hover {
+  transform: translateY(-2px);
+}
+
+.pet-card--selected {
+  border-color: var(--pet-accent);
+  box-shadow: 0 5px 14px -8px var(--pet-accent);
+}
+
+.pet-card-main {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 8px;
+  border-radius: 14px;
+  text-align: center;
+}
+
+.pet-card-main:disabled {
+  cursor: default;
+}
+
+.pet-card-figure {
+  position: relative;
+  width: 58px;
+  height: 62px;
+  margin: 6px 0 6px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.pet-card-cover {
+  width: 58px;
+  height: 62px;
+  object-fit: contain;
+}
+
+.pet-card-cover-blank {
+  width: 58px;
+  height: 62px;
+}
+
+/* 雪碧图几何（宽高/背景尺寸/定位）由 PreviewSprite 按协议常量内联注入，
+   兼容 9/11 行图集；此处只保留与几何无关的静态属性。 */
+.pet-card-sprite {
+  background-repeat: no-repeat;
+}
+
+.pet-card-cover,
+.pet-card-sprite {
+  transform-origin: center bottom;
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.pet-card-main:not(:disabled):hover .pet-card-cover,
+.pet-card-main:not(:disabled):hover .pet-card-sprite,
+.pet-card-main:not(:disabled):focus-visible .pet-card-cover,
+.pet-card-main:not(:disabled):focus-visible .pet-card-sprite {
+  transform: translateY(-2px) scale(1.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-card-cover,
+  .pet-card-sprite {
+    transition: none;
+  }
+
+  /* 加载环静止但保留可见——进度语义保留,旋转动效豁免。 */
+  .pet-card-ring {
+    animation: none;
+  }
+}
+
+.pet-card-ring {
+  position: absolute;
+  z-index: 2;
+  right: -6px;
+  bottom: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--pet-accent);
+  border-top-color: transparent;
+  animation: pet-card-ring-spin 0.9s linear infinite;
+}
+
+@keyframes pet-card-ring-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pet-card-badge {
+  position: absolute;
+  left: 1px;
+  top: 2px;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--pet-accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pet-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.pet-card-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pet-card-preparing {
+  margin-top: auto;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  color: var(--pet-accent);
+}
+
+@media (max-width: 760px) {
+  .pet-card-track {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .pet-card-main {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .pet-card-figure {
+    width: 48px;
+    height: 52px;
+  }
+
+  .pet-card-cover,
+  .pet-card-cover-blank {
+    width: 48px;
+    height: 52px;
+  }
+}
+
+.pet-card-main:hover .pet-card-preparing,
+.pet-card-main:focus-visible .pet-card-preparing {
+  opacity: 1;
+}
+
+/* 占位宠物的显式标注：开发期可选可测，但绝不伪装成正式选项。
+   正式发布由 validate-pet-assets --release 保证无占位，此标记自然不出现。 */
+.pet-card-flag {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: #FEF7E0;
+  color: #B06000;
+}
+
+.pet-card-flag--dark {
+  background: #3A2E1A;
+  color: #F9D67A;
+}
+
+.pet-card-error {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: #FEF7E0;
+  color: #B06000;
+}
+
+.pet-card-error--dark {
+  background: #3A2E1A;
+  color: #F9D67A;
+}
+
+.pet-card-retry {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
