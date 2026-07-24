@@ -42,13 +42,72 @@ function IosSearchField({
   );
 }
 
-function IosSegmentedControl({ value, onChange, segments, isDark, className = '', compact = false }) {
+function IosSegmentedControl({ value, onChange, segments, isDark, className = '', compact = false, prominent = false }) {
+  const activeIndex = Math.max(0, segments.findIndex((segment) => segment.key === value));
+  const segmentCount = Math.max(segments.length, 1);
+
+  if (compact) {
+    const heightClass = prominent ? 'h-10' : 'h-9';
+    const radiusClass = prominent ? 'rounded-[16px]' : 'rounded-[14px]';
+    const plateRadiusClass = prominent ? 'rounded-[12px]' : 'rounded-[10px]';
+    const buttonClass = prominent
+      ? 'h-8 min-w-[82px] gap-2 rounded-[12px] px-3.5 text-[14px]'
+      : 'h-7 min-w-[68px] gap-1.5 rounded-[10px] px-3 text-[13px]';
+    const iconSize = prominent ? 15 : 14;
+    return (
+      <div
+        className={`relative grid ${heightClass} shrink-0 items-center overflow-hidden ${radiusClass} p-1 ${className}`}
+        style={{
+          gridTemplateColumns: `repeat(${segmentCount}, minmax(0, 1fr))`,
+          background: controlFill(isDark),
+          boxShadow: isDark ? 'inset 0 0 0 1px rgba(255,255,255,.06)' : 'inset 0 0 0 1px rgba(0,0,0,.06)',
+        }}
+      >
+        <span
+          aria-hidden="true"
+          className={`absolute bottom-1 top-1 ${plateRadiusClass} transition-transform duration-200 ease-out`}
+          style={{
+            left: '4px',
+            width: `calc((100% - 8px) / ${segmentCount})`,
+            transform: `translateX(${activeIndex * 100}%)`,
+            background: isDark ? '#3A3A3C' : '#fff',
+            boxShadow: isDark ? 'none' : '0 1px 2px rgba(0,0,0,.10)',
+          }}
+        />
+        {segments.map(({ key, label, Icon, title, count }) => {
+          const selected = value === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              title={title || label}
+              onClick={() => onChange && onChange(key)}
+              className={`relative z-10 inline-flex items-center justify-center font-semibold transition-colors duration-200 ${buttonClass}`}
+              style={{ color: selected ? (isDark ? '#fff' : '#1D1D1F') : (isDark ? 'rgba(235,235,245,.60)' : 'rgba(60,60,67,.60)') }}
+            >
+              {Icon ? <Icon size={iconSize} /> : null}
+              {label ? <span>{label}</span> : null}
+              {count != null ? (
+                <span
+                  className="ml-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-center text-[11px] font-bold leading-none"
+                  style={{ background: isDark ? '#0A84FF' : '#007AFF', color: '#fff' }}
+                >
+                  {count}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div
-      className={`inline-flex shrink-0 items-center ${compact ? 'h-9 gap-1 rounded-[14px] p-1' : 'gap-3'} ${className}`}
+      className={`inline-flex shrink-0 items-center gap-3 ${className}`}
       style={{
-        background: compact ? controlFill(isDark) : 'transparent',
-        boxShadow: compact ? (isDark ? 'inset 0 0 0 1px rgba(255,255,255,.06)' : 'inset 0 0 0 1px rgba(0,0,0,.06)') : 'none',
+        background: 'transparent',
+        boxShadow: 'none',
       }}
     >
       {segments.map(({ key, label, Icon, title, count }) => {
@@ -59,27 +118,11 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
             type="button"
             title={title || label}
             onClick={() => onChange && onChange(key)}
-            className={`inline-flex items-center justify-center transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold' : 'h-9 gap-2 px-3 text-[24px] font-normal tracking-tight'}`}
-            style={compact
-              ? (selected
-                ? {
-                    background: isDark ? '#3A3A3C' : '#fff',
-                    color: isDark ? '#fff' : '#1D1D1F',
-                    boxShadow: isDark ? 'none' : '0 1px 2px rgba(0,0,0,.10)',
-                  }
-                : { color: isDark ? 'rgba(235,235,245,.60)' : 'rgba(60,60,67,.60)' })
-              : { color: selected ? (isDark ? 'rgba(255,255,255,.90)' : 'rgba(0,0,0,.90)') : (isDark ? 'rgba(235,235,245,.50)' : 'rgba(60,60,67,.42)') }}
+            className="inline-flex h-9 items-center justify-center gap-2 px-3 text-[24px] font-normal tracking-tight transition-colors duration-200"
+            style={{ color: selected ? (isDark ? 'rgba(255,255,255,.90)' : 'rgba(0,0,0,.90)') : (isDark ? 'rgba(235,235,245,.50)' : 'rgba(60,60,67,.42)') }}
             >
-            {Icon ? <Icon size={compact ? 14 : 15} /> : null}
+            {Icon ? <Icon size={15} /> : null}
             {label ? <span>{label}</span> : null}
-            {compact && count != null ? (
-              <span
-                className={`${compact ? 'ml-0.5 min-w-5 px-1.5 py-0.5 text-[11px]' : 'ml-1 min-w-7 px-2 py-1 text-[11px]'} rounded-full text-center font-bold leading-none`}
-                style={{ background: isDark ? '#0A84FF' : '#007AFF', color: '#fff' }}
-              >
-                {count}
-              </span>
-            ) : null}
           </button>
         );
       })}
