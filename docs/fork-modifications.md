@@ -2,15 +2,17 @@
 
 > 本文是 pinvou3 对 CodeWhale 底座 fork 的单一现状清单。
 > 基线、主题边界、守护指纹和每次 sync 结论都以本文与 `docs/fork-policy.md` 为准。
+> English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
 ## 0. 当前状态（2026-07-24 · v0.9.0）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `b2e3a83bf74f` |
-| 组织方式 | **6 个长期主题 commit + 3 个维护/修复 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
-| drift | 对 `v0.9.0`：**+3771 / -550，54 文件** |
+| 公开固定基线 | tag `pinvou-v0.9.0-r1`，commit `070f4413eeb0e0c4e6f2634f1ada13c60fd2e86e` |
+| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `070f4413eeb0` |
+| 组织方式 | **6 个长期主题 commit + 3 个维护/修复 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
+| drift | 对 `v0.9.0`：**+3878 / -550，57 文件** |
 | 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译；macOS 适配保留在父仓平台抽象中，不增加 fork drift |
 
@@ -107,6 +109,14 @@
   - 公开 `reconcile_run_statuses_shared`，宿主不再持 automation mutex 等待 task-manager I/O。
 - **为什么单列**：这是可上游化的宿主 API 面，与 pinvou3 私有产品逻辑解耦；后续最优先提上游。
 
+### 公开基线与安全维护（不新增产品主题）
+
+- `3e8e6e7f chore(security): 配置 fork 全历史密钥扫描`
+- `23d4c9b5 docs(fork): 记录 Pinvou 公开基线`
+- `070f4413 chore(fork): 清理内部项目注释`
+
+这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。父仓只固定到稳定标签 `pinvou-v0.9.0-r1`，不跟随维护分支漂移。
+
 ### T7 macOS 平台目标支持 (2026-07)
 
 **不在 fork 内做任何改动** —— fork 已通过 `crates/tui/Cargo.toml:112` 声明
@@ -186,6 +196,13 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 本地 `/tmp` 空间不足时，显式把 `TMPDIR` 和 `CARGO_TARGET_DIR` 指到项目盘；不要用清理用户目录解决构建问题。
 
 ## 5. Sync 历史
+
+### v0.9.0 公开固定基线（2026-07-24）
+
+- 在 `Pinvou/CodeWhale` 保留上游完整 MIT 历史与作者归属，并发布不可变标签 `pinvou-v0.9.0-r1`。
+- 对 5,448 个历史 commit 执行 Gitleaks；只精确放行两个上游公开测试夹具，扫描结果为 0 个泄漏。
+- GitHub CI 已通过全 workspace/all-targets 编译、`forkguard_` 回归、格式、DCO、Gitleaks 与 CodeQL。
+- 父仓 gitlink 固定到标签解引用 commit；`.gitmodules` 不再跟随 `pinvou3-clean` 浮动分支。
 
 ### v0.9.0 clean re-fork（2026-07-17）
 

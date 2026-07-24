@@ -1,12 +1,15 @@
 # pinvou3 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-07-23（上游基线 `v0.9.0@d167c07c9`）
+> 最后更新：2026-07-24（公开发布基线 `pinvou-v0.9.0-r1@070f4413`）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
+> English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线与组织方式
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f`。
-- 生产 fork 分支：`pinvou3-clean`，当前 head `c32bb73f4605`。
+- 公开 fork：`https://github.com/Pinvou/CodeWhale`。
+- 维护分支：`pinvou3-clean`，当前 head `070f4413eeb0e0c4e6f2634f1ada13c60fd2e86e`。
+- 父仓固定标签：`pinvou-v0.9.0-r1`，解引用后必须是上述 commit；`.gitmodules` 不配置浮动 `branch`。
 - fork 不再按历史 C1–C12 / W1–W13 批量编号维护，当前只保留 **6 个长期主题**：
 
   1. 宿主 library facade
@@ -36,7 +39,7 @@ Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands、MCP client、
 - 总 drift 软上限：1500 行。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须在 `fork-modifications.md` 记录：为什么不能放 app/skill/MCP、哪些已 harvest、后续减量顺序。
-- 当前 v0.9.0 re-fork 为 `+3668/-558，53 文件`，已经完成强制评估；结论见修改清单 §0。
+- 当前公开基线相对 v0.9.0 为 `+3878/-550，57 文件`，已经完成强制评估；结论见修改清单 §0。
 
 ### 1.3 主题提交
 
@@ -147,6 +150,6 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 
 1. submodule 先形成干净的主题 commit，并完成底座测试。
 2. 父仓同一 PR 更新 gitlink、app 适配、Cargo.lock、两份文档和 guard。
-3. fork 远端分支与父仓 gitlink 必须指向同一个可达 commit。
+3. fork 稳定标签、远端维护分支与父仓 gitlink 必须指向同一个公开可达 commit；父仓不得通过 `.gitmodules branch` 跟随浮动分支。
 4. 未明确授权时，不直接 force-push 共享 main；先在同步分支交付验证结果。
 5. 合入后删除临时 worktree/branch 属单独清理动作，不与 sync 默认捆绑。
