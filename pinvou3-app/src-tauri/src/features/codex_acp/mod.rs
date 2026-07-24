@@ -529,6 +529,30 @@ impl AcpPool {
             .read()
             .clone()
             .context("Codex 授权链接尚未生成，请稍候")?;
+        #[cfg(target_os = "linux")]
+        if let Some(browser) = [
+            "firefox",
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "brave-browser",
+            "brave",
+        ]
+        .into_iter()
+        .find_map(find_in_path)
+        {
+            std::process::Command::new(&browser)
+                .arg("--new-window")
+                .arg(&url)
+                .spawn()
+                .with_context(|| format!("启动浏览器失败: {}", browser.display()))?;
+            eprintln!(
+                "[pinvou3-app] Codex authorization page requested via {}",
+                browser.display()
+            );
+            return Ok(());
+        }
         crate::platform::os::open_target(&url, "Codex 授权页面").map_err(anyhow::Error::msg)
     }
 
