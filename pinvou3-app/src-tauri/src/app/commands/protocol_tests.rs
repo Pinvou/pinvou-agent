@@ -100,7 +100,10 @@ command_protocol!(
         "dingtalk_logout",
         "dingtalk_apply_skills",
         "set_dingtalk_enabled",
-        "dingtalk_skills_state"
+        "dingtalk_skills_state",
+        "ima_status",
+        "ima_connect",
+        "ima_logout"
     ]
 );
 command_protocol!(

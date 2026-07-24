@@ -356,6 +356,7 @@ pub fn run() {
                 tool_policy,
             ) {
                 Ok(pool) => {
+                    crate::features::connectors::ima::sync_ima_env_from_credentials();
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
                             &pool.bridge,
@@ -515,6 +516,9 @@ pub fn run() {
             commands::connectors::dingtalk_apply_skills,
             commands::connectors::set_dingtalk_enabled,
             commands::connectors::dingtalk_skills_state,
+            commands::connectors::ima_status,
+            commands::connectors::ima_connect,
+            commands::connectors::ima_logout,
             commands::settings::get_settings,
             commands::runtime::get_platform_capabilities,
             commands::settings::submit_feedback,

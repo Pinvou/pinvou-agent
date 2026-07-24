@@ -34,7 +34,7 @@ function injectSource() {
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
-      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false},
+      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,ima:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
@@ -92,6 +92,9 @@ function injectSource() {
         case 'feishu_status': return Promise.resolve({connected:state.connected.feishu});
         case 'wecom_status': return Promise.resolve({connected:state.connected.wecom});
         case 'dingtalk_status': return Promise.resolve({connected:state.connected.dingtalk});
+        case 'ima_status': return Promise.resolve({connected:state.connected.ima,credentials_present:state.connected.ima,skill_installed:state.connected.ima});
+        case 'ima_connect': state.connected.ima=true;state.skills['ima-skills']=true;state.lastImaConnect=args; return Promise.resolve({ok:true,connected:true});
+        case 'ima_logout': state.connected.ima=false;state.skills['ima-skills']=false; return Promise.resolve({ok:true,connected:false});
         case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': return Promise.resolve(null);
         case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
@@ -260,6 +263,23 @@ async function closeDetail(page, title) {
     return window.__TOOL_STORE_TEST__.installed['patsnap-search']&&call?.args?.config?.PATSNAP_API_KEY==='patsnap-test-token';
   }));
 
+  await action(page,'腾讯 ima','配置','ima');
+  rec('腾讯 ima 安装前展示 Client ID 和 API Key 配置',await page.evaluate(()=>{
+    const client=document.querySelector('input[type="password"][placeholder="Client ID"]');
+    const key=document.querySelector('input[type="password"][placeholder="API Key"]');
+    return document.body.innerText.includes('连接腾讯 ima')&&!!client&&!!key;
+  }));
+  const imaClientInput=await page.$('input[type="password"][placeholder="Client ID"]');
+  await imaClientInput.type('ima-client-test');
+  const imaKeyInput=await page.$('input[type="password"][placeholder="API Key"]');
+  await imaKeyInput.type('ima-api-test');
+  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  rec('腾讯 ima 走 OpenAPI Skill 连接命令',await page.evaluate(()=>{
+    const state=window.__TOOL_STORE_TEST__;
+    const generic=state.calls.some(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='ima');
+    return state.connected.ima&&state.skills['ima-skills']&&state.lastImaConnect?.clientId==='ima-client-test'&&state.lastImaConnect?.apiKey==='ima-api-test'&&!generic;
+  }));
+
   await action(page,'Obsidian 知识库','安装','obsidian');
   rec('Obsidian 缺库时先展示引导',await page.evaluate(()=>document.body.innerText.includes('还没有笔记库')));
   await clickExact(page,'我已新建，重新检测'); await sleep(250); await dismiss(page);
@@ -329,6 +349,7 @@ async function closeDetail(page, title) {
     if(x.args.toolId==='weather')return Object.keys(x.args.config||{}).join(',')==='AMAP_KEY';
     if(x.args.toolId==='iwencai')return Object.keys(x.args.config||{}).join(',')==='IWENCAI_API_KEY';
     if(x.args.toolId==='patsnap-search')return Object.keys(x.args.config||{}).join(',')==='PATSNAP_API_KEY';
+    if(x.args.toolId==='ima')return false;
     return x.args&&x.args.toolId&&!x.args.config;
   }));
   rec('页面无未处理 JavaScript 异常',errors.length===0,errors.slice(0,2).join(' | '));

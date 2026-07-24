@@ -79,6 +79,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             icon: "LineChart",
             color: "bg-gradient-to-b from-blue-500 to-cyan-600",
         },
+        SkillManifest {
+            id: "ima-skills",
+            skill_name: "ima-skills",
+            source_dir: "ima-skills",
+            title: "腾讯 ima",
+            subtitle: "IMA OpenAPI 笔记 / 知识库读取、写入、检索",
+            description: "接入腾讯 ima OpenAPI，用本机凭据调用官方接口管理 IMA 笔记与知识库。凭据由 Pinvou 工具市场写入本机系统凭据，不需要在对话里粘贴 Token。",
+            icon: "BookOpen",
+            color: "bg-gradient-to-b from-sky-500 to-indigo-600",
+        },
     ]
 }
 
@@ -678,6 +688,36 @@ mod tests {
             .any(|s| s.id == "visualizer" && s.installed));
 
         mgr.uninstall("visualizer").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn install_ima_preset_with_api_helper() {
+        let tmp = fresh_dir("ima");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+
+        mgr.install("ima-skills").unwrap();
+        let skill_dir = tmp.join("ima-skills");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert!(
+            skill_dir.join("ima_api.cjs").is_file(),
+            "IMA API helper 应一并复制"
+        );
+        assert!(
+            skill_dir.join("knowledge-base").join("SKILL.md").is_file(),
+            "knowledge-base 子模块说明应一并复制"
+        );
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("ima-skills")
+        );
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "ima-skills" && s.installed));
+
+        mgr.uninstall("ima-skills").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
         let _ = std::fs::remove_dir_all(&tmp);
     }
