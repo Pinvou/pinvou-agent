@@ -58,9 +58,9 @@ Web 构建以 `/pinvou3/remote/` 为默认 base path。Relay 对 HTML 禁止缓�
 要求重新验证，对带 hash 的静态资源使用 immutable 缓存，因此替换 Web dist 后浏览器可在
 下次加载获得新版本，而不受已安装桌面版本的 UI 资源约束。
 
-正式部署由 `scripts/deploy-remote-relay.sh` 完成：脚本以生产 base path 重建 WebUI，整体上传
-`web/dist`，备份当前 Relay 与完整 dist 后再替换，并在服务/公网验证失败时回滚。为避免误操作，
-必须显式设置 `PINVOU_CONFIRM_PRODUCTION_DEPLOY=1`；脚本不会修改 Nginx 配置。
+公开仓库不分发 Pinvou 官方环境的部署脚本、服务器地址或基础设施配置。自行部署 Relay 时，应
+按目标环境独立配置进程托管、反向代理、TLS、备份、健康检查与失败回滚；不要把生产凭据或
+服务端配置提交到公开仓库。
 
 ## 4. 持久访问链接
 

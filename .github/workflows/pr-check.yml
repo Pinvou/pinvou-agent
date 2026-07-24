@@ -140,7 +140,6 @@ jobs:
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'remote-control-relay/**'
-              - 'scripts/deploy-remote-relay.sh'
               - 'scripts/run-user-journey-tests.sh'
               - 'scripts/mcp-server-contract-smoke.py'
               - 'pinvou3-app/package.json'
@@ -152,8 +151,6 @@ jobs:
               - '.github/workflows/pr-check.yml'
             relay:
               - 'remote-control-relay/**'
-              - 'scripts/deploy-remote-relay.sh'
-              - 'scripts/deploy-remote-relay-test.sh'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -174,6 +171,9 @@ jobs:
         run: |
           base_ref="${BASE_REF#refs/heads/}"
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
+
+      - name: 公开底座 gitlink 可达性
+        run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -286,11 +286,8 @@ jobs:
       - name: 安装 relay 依赖
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
-      - name: Relay 与部署脚本回归
-        run: |
-          bash -n scripts/deploy-remote-relay.sh
-          bash -n scripts/deploy-remote-relay-test.sh
-          npm --prefix remote-control-relay test
+      - name: Relay 回归
+        run: npm --prefix remote-control-relay test
 
   rust-test:
     name: rust-test

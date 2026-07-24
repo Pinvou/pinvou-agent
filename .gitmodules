@@ -1,4 +1,3 @@
 [submodule "CodeWhale"]
 	path = CodeWhale
 	url = https://github.com/Pinvou/CodeWhale.git
-	branch = pinvou3-clean
