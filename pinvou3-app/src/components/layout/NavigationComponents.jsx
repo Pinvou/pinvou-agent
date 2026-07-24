@@ -327,6 +327,11 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           </span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
+          {chat.unread && (
+            <span data-testid="scheduled-run-sidebar-unread" aria-label="定时任务运行有未查看的对话"
+              className="mr-1 h-2 w-2 shrink-0 rounded-full group-hover:hidden"
+              style={{ background: '#0B57D0' }} />
+          )}
           {confirming ? (
             <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
               <span className={`text-[11px] mr-0.5 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
