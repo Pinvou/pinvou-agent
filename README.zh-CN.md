@@ -150,6 +150,11 @@ docs/                 架构设计、验证报告与维护文档
 ## 进一步阅读
 
 - [贡献指南](CONTRIBUTING.zh-CN.md)
+- [社区支持范围](SUPPORT.md)
+- [安全报告流程](SECURITY.md)
+- [社区行为准则](CODE_OF_CONDUCT.md)
+- [第三方许可声明](THIRD_PARTY_NOTICES.md)
+- [商标使用规则](TRADEMARKS.md)
 - [CodeWhale fork 策略](docs/fork-policy.md)
 - [当前 fork 修改清单](docs/fork-modifications.md)
 - [工具市场设计](docs/工具市场.md)

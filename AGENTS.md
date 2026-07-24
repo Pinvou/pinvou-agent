@@ -6,11 +6,11 @@
 
 - 如果仓库根目录存在 `.codex-memory.md`，开始工作前先读取；该文件是本地私人记忆，不提交。
 
-### 1. 开发与 Merge Queue
+### 1. 开发与 PR
 
 - 开始新的开发任务前，先安全同步最新 `origin/main` 和 submodule，不得丢失已有本地改动。
-- 创建 PR 前确保分支基于最新 `origin/main` 并解决全部冲突。
-- 评审和修复期间不要仅因 `main` 更新而反复 rebase；PR 审批且 CI 通过后加入 Merge Queue，由队列基于最新 `main` 完成最终验证和合入。
+- 创建 PR 前及合并前确保分支基于最新 `origin/main` 并解决全部冲突。
+- 评审和修复期间不要仅因 `main` 更新而反复 rebase；准备合并时再同步主线并通过完整 CI，默认使用 Squash Merge。
 
 ### 2. CodeWhale 是底座，不重复造轮子
 
