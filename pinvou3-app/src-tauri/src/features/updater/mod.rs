@@ -57,7 +57,7 @@ pub struct UpdateInfo {
     pub platform: String,
     #[serde(default)]
     pub ota_host: String,
-    /// 多平台清单:`{ "macos-arm64": PlatformAsset, "linux-arm64": ..., ... }`。
+    /// 多平台清单:`{ "macos-universal": PlatformAsset, "linux-arm64": ..., ... }`。
     /// 旧版 latest.json 没这字段 → 空 map → 调用方回退到顶层 url/sha256/size。
     #[serde(default)]
     pub platforms: std::collections::HashMap<String, PlatformAsset>,
@@ -112,16 +112,23 @@ pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// 根据 std::env::consts 拼 `"macos-arm64"` / `"linux-arm64"` / `"linux-x86_64"` / `"windows-x86_64"`。
-/// 与 `latest.json` 的 `platforms` map key 对齐。arch 归一:aarch64→arm64、x86_64→x86_64、其它原样。
+/// 拼 OTA 平台 key,与 `latest.json` 的 `platforms` map key 对齐。
+/// - macOS 固定返回 `"macos-universal"`:Mac 走 Universal 二进制,单包同时覆盖 arm64 / x86_64,
+///   manifest 里不再按 arch 分条目。
+/// - 其它平台仍按 `"{os}-{arch}"`,arch 归一:aarch64→arm64、x86_64→x86_64、其它原样。
 pub fn build_platform_key() -> String {
     let os = std::env::consts::OS;
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "x86_64",
-        other => other,
-    };
-    format!("{os}-{arch}")
+    match os {
+        "macos" => "macos-universal".to_string(),
+        _ => {
+            let arch = match std::env::consts::ARCH {
+                "aarch64" => "arm64",
+                "x86_64" => "x86_64",
+                other => other,
+            };
+            format!("{}-{}", os, arch)
+        }
+    }
 }
 
 /// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
@@ -198,7 +205,7 @@ mod tests {
         }
         if std::env::consts::OS == "macos" {
             assert!(
-                key == "macos-arm64" || key == "macos-x86_64",
+                key == "macos-universal",
                 "unexpected macos platform key: {key}"
             );
         }

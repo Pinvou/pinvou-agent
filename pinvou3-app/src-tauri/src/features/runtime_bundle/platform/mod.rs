@@ -685,7 +685,12 @@ impl Pinvou3Bundle {
     fn write_eip_skill(&self) -> std::io::Result<()> {
         let dest = self.skills_dir.join("eip");
         Self::extract_dir(&EIP_SKILL_DIR, &dest)?;
-        Self::extract_dir(&EIP_PLATFORM_BIN_DIR, &dest.join("bin"))?;
+        // EIP_PLATFORM_BIN_DIR 仅在 windows/linux 下有定义(平台特定二进制),
+        // macOS 无 eip 平台二进制——闸住避免符号缺失编译错误。
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            Self::extract_dir(&EIP_PLATFORM_BIN_DIR, &dest.join("bin"))?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -703,7 +708,11 @@ impl Pinvou3Bundle {
     fn write_zhidao_skill(&self) -> std::io::Result<()> {
         let dest = self.skills_dir.join("zhidao");
         Self::extract_dir(&ZHIDAO_SKILL_DIR, &dest)?;
-        Self::extract_dir(&ZHIDAO_PLATFORM_BIN_DIR, &dest.join("bin"))?;
+        // ZHIDAO_PLATFORM_BIN_DIR 仅在 windows/linux 下有定义,macOS 无此二进制。
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            Self::extract_dir(&ZHIDAO_PLATFORM_BIN_DIR, &dest.join("bin"))?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -78,7 +78,7 @@ git -C DeepSeek-TUI diff --shortstat <current-release-tag>..<current-fork-head>
 ./scripts/fork-guard.sh --fast
 
 cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-  --bin dump_system_prompt > /tmp/pre-sync-prompt.txt
+  --bin dump_system_prompt --features dev-tools > /tmp/pre-sync-prompt.txt
 ```
 
 先核对工作树、worktree 和 submodule branch 占用；备份只建 branch，不删除 worktree、不 `git clean`。
@@ -129,7 +129,7 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
 
 # 静态 prompt
 cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-  --bin dump_system_prompt > /tmp/post-sync-prompt.txt
+  --bin dump_system_prompt --features dev-tools > /tmp/post-sync-prompt.txt
 diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 ```
 

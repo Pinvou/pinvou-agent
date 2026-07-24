@@ -57,6 +57,26 @@ fn local_asr_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+pub(super) fn has_nonempty_asr_cli_config(values: &[Option<&str>]) -> bool {
+    values
+        .iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+}
+
+fn has_explicit_asr_cli_fallback() -> bool {
+    let values = [
+        std::env::var("PINVOU3_ASR_CMD").ok(),
+        std::env::var("PINVOU3_DEEPSPEECH2_CMD").ok(),
+        std::env::var("PADDLESPEECH_BIN").ok(),
+    ];
+    has_nonempty_asr_cli_config(&[
+        values[0].as_deref(),
+        values[1].as_deref(),
+        values[2].as_deref(),
+    ])
+}
+
 pub(super) fn apply_local_asr_model_env(
     command: &mut std::process::Command,
     model_path: Option<std::path::PathBuf>,
@@ -76,6 +96,9 @@ fn voice_temp_wav_path() -> std::path::PathBuf {
 
 struct LocalAsrOutput {
     text: String,
+    /// 识别后端来源（system_speech / pinvou-webview-sensevoice-local / local_cli），
+    /// 透传到 VoiceTranscriptionResponse.source 供前端/排查区分。
+    source: String,
 }
 
 fn compact_process_output(stdout: &str, stderr: &str) -> String {
@@ -258,7 +281,10 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
         )
     })?;
 
-    Ok(LocalAsrOutput { text })
+    Ok(LocalAsrOutput {
+        text,
+        source: "local_cli".to_string(),
+    })
 }
 
 /// Transcribe a short one-shot voice capture from the desktop WebView using
@@ -285,17 +311,36 @@ pub async fn transcribe_voice_audio(
                 format!("Failed to write temporary voice audio: {e}"),
             )
         })?;
-        // 优先用内置 SenseVoice 引擎（转码+识别+清洗全在 Rust，无需 shim/环境变量）；
-        // 引擎或模型未就绪时回退原 CLI 路径（PINVOU3_ASR_CMD / pinvou-asr）。
-        let result = if crate::features::voice::asr_bundled_runtime_status().is_none()
-            && crate::features::voice::voice_asr::engine_path().is_file()
-            && crate::features::voice::voice_asr::model_path().is_file()
-        {
-            crate::features::voice::voice_asr::transcribe(&wav_path)
-                .map(|text| LocalAsrOutput { text })
-                .map_err(|e| VoiceCommandError::new("recognition_failed", "transcribing", e))
-        } else {
-            run_local_asr_cli(&wav_path)
+        // 识别路径分支（平台中立）：
+        //   macOS  → 系统 Speech 框架（免模型下载、免 ffmpeg、首次即用）
+        //   Linux/Windows → 内置 SenseVoice（否则回退 CLI）
+        // 平台选择封装在 `features::voice::recognize_native`（platform/ 适配器），
+        // 此处只按返回值分发，不出现 cfg(target_os)。
+        let result = {
+            // 识别语言跟随 UI 语言偏好（默认 zh-Hans → zh-CN）：系统默认 locale
+            // 可能是 en-US，会把中文音频当英文解析 → 无意义英文字母。
+            let locale_tag = crate::platform::prefs::UserPrefs::load()
+                .language
+                .speech_recognition_locale();
+            let native = crate::features::voice::recognize_native(&wav_path, locale_tag);
+            match native {
+                Some(Ok(text)) => Ok(LocalAsrOutput {
+                    text,
+                    source: crate::features::voice::native_recognition_source().to_string(),
+                }),
+                Some(Err(e)) => {
+                    if has_explicit_asr_cli_fallback() {
+                        run_local_asr_cli(&wav_path)
+                    } else {
+                        Err(VoiceCommandError::new(
+                            "recognition_failed",
+                            "transcribing",
+                            e,
+                        ))
+                    }
+                }
+                None => run_local_asr_cli(&wav_path),
+            }
         };
         let _ = std::fs::remove_file(&wav_path);
         result
@@ -311,7 +356,7 @@ pub async fn transcribe_voice_audio(
 
     Ok(VoiceTranscriptionResponse {
         text: asr_output.text,
-        source: "pinvou-webview-sensevoice-local".to_string(),
+        source: asr_output.source,
     })
 }
 

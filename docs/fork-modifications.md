@@ -113,23 +113,12 @@ pinvou3-app 在父仓内通过 `pinvou3-app/src-tauri/src/os/macos/` 实现平�
 `voice_asr.rs` engine_binary_name、`telemetry.rs` IOPlatformUUID 等）也全在父仓内，
 通过 `#[cfg(target_os = "macos")]` 闸住，对 Linux/Windows 主线零影响。
 
-#### SenseVoice darwin-arm64 二进制 provenance
+#### 语音识别：已剥离 SenseVoice，改用系统 Speech 框架（2026-07 二期）
 
-入库文件 `pinvou3-app/src-tauri/resources/asr/sense-voice-darwin-arm64`（1,888,176 字节，
-Mach-O arm64，静态链接，Metal 着色器内嵌），源自上游 [`lovemefan/SenseVoice.cpp`](https://github.com/lovemefan/SenseVoice.cpp)。
-
-| 项 | 值 |
-|---|---|
-| 上游仓库 | https://github.com/lovemefan/SenseVoice.cpp |
-| 上游最近 commit（编译期参考锚点） | `6503f51c2357034e1443c86dabeb24ad026c4b45`（2025-12-19，main HEAD at 文档编写时）|
-| 构建命令 | `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON` && `cmake --build build -j --target sense-voice` |
-| 构建环境 | Apple Silicon (arm64)，`MACOSX_DEPLOYMENT_TARGET=14.0`，Xcode + Metal SDK；产物仅链系统框架（Accelerate/Metal/MetalKit/Foundation/CoreFoundation/libSystem/libobjc/libc++），无第三方 dylib |
-| sha256（本入库文件） | `7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4` |
-| LICENSE | `resources/asr/LICENSE-sense-voice-darwin-arm64`（上游 MIT，Copyright (c) 2024 lovemefan） |
-
-> 复现说明：上游 `--depth 1` 拉取会得到浮动的 main HEAD；如需严格复现本二进制，请 pin 到上述 commit 再构建。
-> 校验：`scripts/run-mac-verify.sh` 与 `scripts/release-macos.sh` 均做存在性 + `Mach-O arm64` 文件类型校验。
-> 引入真签名后，建议在安装侧补 `codesign --verify` 校验该二进制的完整性。
+- macOS 不再打包 SenseVoice 引擎，改用 `objc2-speech` crate 调系统 `SFSpeechURLRecognitionRequest`。
+- 运行时查询当前语言对应识别器的 `supportsOnDeviceRecognition`：支持时要求端上识别，否则由 Apple Speech 在线服务处理；不能按 Apple Silicon / Intel 架构预判。
+- Linux 仍保留 `sense-voice-main`，本节不再登记 macOS provenance。
+- fork-guard 仍无需追踪（语音非 fork 改动）。
 
 **无需新增 fork-guard 指纹**（fork 代码零改动）。`./scripts/fork-guard.sh --fast`
 在 macOS 适配 PR 上仍然通过。
@@ -185,7 +174,7 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
 cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml scheduled_executor::tests --lib -- --test-threads=1
 
 # prompt 静态层
-cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt > /tmp/post-sync-prompt.txt
+cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt --features dev-tools > /tmp/post-sync-prompt.txt
 diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 ```
 

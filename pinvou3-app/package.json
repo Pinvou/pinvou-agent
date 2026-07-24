@@ -28,6 +28,7 @@
     "test:wosign": "node tests/wosign_signing_contract.test.js",
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
+    "test:macos-phase2": "node tests/macos_phase2_contract.test.js",
     "test:update-notice": "node tests/update_notice_logic.test.js",
     "test:diff-parser": "node tests/unified_diff_parser.test.js",
     "test:diff-ui": "node tests/diff_viewer_ui_smoke.mjs",
@@ -55,7 +56,7 @@
     "test:pet-navigation": "node tests/pet_navigation_contract.test.mjs",
     "test:pet-bootstrap": "node tests/pet_bootstrap_isolation.test.mjs",
     "validate:pet-assets": "node scripts/validate-pet-assets.mjs",
-    "test": "npm run test:update-notice && npm run test:diff-parser && npm run test:marketplace-oauth && npm run test:composer-tools && npm run test:chat-input-limit && npm run test:voice-input && npm run test:voice-asr-cancel && npm run test:bridge-protocol && npm run test:web-access-contract && npm run test:web-bootstrap && npm run test:api-key-gate && npm run test:scheduled && npm run test:wosign && npm run test:windows-runtime && npm run test:workflow-scheduler-contract && npm run test:tauri-layout && npm run test:tauri-effective-config && npm run test:pet-animation && npm run test:pet-registry && npm run test:pet-active && npm run test:pet-selector-contract && npm run test:pet-state && npm run test:pet-card-state && npm run test:pet-reply && npm run test:pet-scheduled-notice && npm run test:pet-interaction && npm run test:pet-activation-guard && npm run test:pet-navigation && npm run test:pet-bootstrap && npm run validate:pet-assets",
+    "test": "npm run test:update-notice && npm run test:diff-parser && npm run test:marketplace-oauth && npm run test:composer-tools && npm run test:chat-input-limit && npm run test:voice-input && npm run test:voice-asr-cancel && npm run test:bridge-protocol && npm run test:web-access-contract && npm run test:web-bootstrap && npm run test:api-key-gate && npm run test:scheduled && npm run test:wosign && npm run test:windows-runtime && npm run test:workflow-scheduler-contract && npm run test:tauri-layout && npm run test:tauri-effective-config && npm run test:macos-phase2 && npm run test:pet-animation && npm run test:pet-registry && npm run test:pet-active && npm run test:pet-selector-contract && npm run test:pet-state && npm run test:pet-card-state && npm run test:pet-reply && npm run test:pet-scheduled-notice && npm run test:pet-interaction && npm run test:pet-activation-guard && npm run test:pet-navigation && npm run test:pet-bootstrap && npm run validate:pet-assets",
     "test:ui-smoke": "node tests/ui_smoke.js",
     "test:settings-ui": "node tests/settings_ui_smoke.js",
     "test:kb-smoke": "node tests/kb_smoke.js",
@@ -67,7 +68,7 @@
     "test:user-journey": "../scripts/run-user-journey-tests.sh"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^10.6.0",
     "puppeteer-core": "^25.3.0",

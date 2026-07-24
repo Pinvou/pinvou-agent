@@ -131,6 +131,24 @@ tauri = { version = "2.11.1", features = ["macos-private-api"] }
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+# block2: Speech framework 的 recognitionTask result handler 是 Obj-C block,
+# voice_asr_speech.rs 用 block2::RcBlock 包装 Rust 闭包。版本对齐 objc2 0.6 family。
+block2 = "0.6"
+# macOS 系统 Speech framework 绑定,替代内嵌 SenseVoice ASR 引擎——免模型下载、
+# 免 ffmpeg、零额外体积。项目构建与应用最低系统版本统一为 macOS 14。
+objc2-speech = { version = "0.3", default-features = false, features = [
+    "std",
+    "SFSpeechRecognizer",
+    "SFSpeechRecognitionTask",
+    "SFSpeechRecognitionRequest",
+    "SFSpeechRecognitionResult",
+    "SFSpeechRecognitionTaskHint",
+    "SFTranscription",
+    "SFTranscriptionSegment",
+    "block2",
+    "objc2-avf-audio",
+    "objc2-core-media",
+] }
 
 [target.'cfg(windows)'.dependencies]
 fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }

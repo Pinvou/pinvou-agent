@@ -10,6 +10,8 @@
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>pinvou3 需要访问麦克风以提供语音输入功能。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>pinvou3 需要语音识别权限以将您的语音转换为文字；系统支持时在本机处理，否则音频可能发送至 Apple Speech 服务。</string>
     <!-- 不设 LSUIElement：主窗口要进 Dock（与 Linux/Windows 一致） -->
 </dict>
 </plist>

@@ -1,27 +1,31 @@
 # macOS 运行环境要求
 
-pinvou3 在 macOS 上支持 **Apple Silicon (arm64)** + **macOS 14.0 (Sonoma) 及以上**。
+pinvou3 在 macOS 上支持 **Apple Silicon (arm64) + Intel (x86_64)**（Universal 二进制通吃）+ **macOS 14.0 (Sonoma) 及以上**。
 
 ## 系统要求
 
 | 项目 | 要求 |
 |------|------|
-| 处理器 | Apple Silicon (M1/M2/M3/M4 等 arm64 芯片) |
+| 处理器 | Apple Silicon (arm64) + Intel (x86_64)，Universal 二进制通吃 |
 | macOS 版本 | 14.0 (Sonoma) 或更高 |
-| 磁盘空间 | 应用本体约 200MB + 语音模型约 300MB（按需下载） |
+| 磁盘空间 | 应用本体约 200MB（不再打包语音引擎、不再按需下载语音模型；macOS 走系统 Speech 框架） |
 
-> Intel Mac (x86_64) 暂不支持。语音识别引擎 (SenseVoice) 仅提供 darwin-arm64 二进制。
+> 语音识别改用 macOS 系统 Speech 框架（系统自带，无需安装）。应用会按当前语言和系统识别器的运行时能力选择路径：支持端上识别时强制在本机处理，否则由 Apple Speech 在线服务处理。该能力不由 Apple Silicon / Intel 架构单独决定。当前 dmg 为 Universal 二进制（arm64 + x86_64），两类 Mac 均可直接运行。
 
-## 内置组件（无需安装）
+## 语音识别（系统自带，无需安装）
 
-以下组件已随应用打包，开箱即用：
+macOS 语音输入直接调用系统 **Speech 框架**，无需额外安装引擎，也无需下载模型。应用会查询当前语言对应识别器的 `supportsOnDeviceRecognition`：
 
-- **语音识别引擎** — SenseVoice darwin-arm64，随 app 打包为 bundled Mach-O
-- **ASR 模型** — 首次使用语音输入时按需下载到 `~/.pinvou3/asr/`
+- 支持时，要求系统在设备端识别
+- 不支持时，由 Apple Speech 在线服务处理，需联网且音频可能发送给 Apple
+
+端上能力取决于系统、语言和识别器状态，不能仅凭 Apple Silicon / Intel 架构判断。
+
+一期打包的 SenseVoice darwin-arm64 引擎与按需下载的 ASR 模型已全部移除。
 
 ## 可选外部依赖
 
-文件解析、OCR、音频转码等功能依赖外部命令行工具。这些工具**不是必须的**——缺失时对应功能会优雅降级（跳过该格式，不影响其他功能），但安装后可获得完整体验。
+文件解析、OCR 等功能依赖外部命令行工具。这些工具**不是必须的**——缺失时对应功能会优雅降级（跳过该格式，不影响其他功能），但安装后可获得完整体验。
 
 ### 安装方式一：Homebrew（推荐）
 
@@ -32,7 +36,7 @@ pinvou3 在 macOS 上支持 **Apple Silicon (arm64)** + **macOS 14.0 (Sonoma) �
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # 通过应用内「依赖体检」一键安装，或手动执行：
-brew install poppler pandoc tesseract p7zip ffmpeg
+brew install poppler pandoc tesseract p7zip
 brew install --cask libreoffice
 ```
 
@@ -48,7 +52,7 @@ brew install --cask libreoffice
 | Markdown/文档转换 | pandoc | Homebrew / 官网 | https://pandoc.org/installing.html |
 | OCR（扫描件识别） | tesseract | Homebrew / 官网 | https://tesseract-ocr.github.io/tessdoc/Installation.html |
 | 压缩包解压 | 7-Zip (`7z`) | Homebrew (`p7zip`) / 官网 | https://www.7-zip.org |
-| 音频转码（语音输入） | ffmpeg | Homebrew / 官网 | https://ffmpeg.org/download.html |
+| 语音输入 | macOS 系统 Speech 框架 | 系统自带（无需安装） | — |
 | 邮件解析 (.msg) | msgconvert (Perl 模块) | `sudo cpan -i Email::Outlook::Message` | — |
 | 邮件解析 (.eml) | Python 3 | macOS 自带（需 Xcode Command Line Tools） | https://www.python.org/downloads |
 
@@ -71,7 +75,7 @@ xcode-select --install
 | Office 文档 | 跳过转换，返回提示信息 |
 | 压缩包 | 跳过解压，返回提示信息 |
 | 邮件 (.msg/.eml) | 跳过解析，返回提示信息 |
-| 语音输入 | 引擎已内置；缺 ffmpeg 时跳过音频转码，直接喂原始音频（识别质量可能下降） |
+| 语音输入 | 走系统 Speech 框架：支持时端上识别，否则使用 Apple Speech 在线服务 |
 
 **所有缺失均不会导致应用崩溃。** 应用启动时和「设置 → 依赖体检」页面会实时检测已安装的工具状态。
 
@@ -107,4 +111,4 @@ xcode-select --install
 
 - **Keychain 授权提示**：macOS 与 Linux/Windows 采用同一安全策略，API Key 优先写入系统凭据存储（macOS Keychain）；仅在系统凭据存储确实不可用时回退文件存储。当前 ad-hoc 签名的开发/测试构建身份不稳定，重建后可能再次触发 Keychain 授权提示；接入稳定签名身份后可改善这一体验。
 
-- **Intel Mac 不支持**：仅打包 arm64 语音识别引擎（SenseVoice darwin-arm64），Intel Mac（x86_64）的语音输入不可用（其余功能正常）。详见上方「系统要求」。
+- **Intel Mac 支持**：dmg 已为 Universal 二进制（arm64 + x86_64），Intel Mac 可直接运行。语音识别已改用系统 Speech 框架，不再有 SenseVoice darwin-arm64 的二进制障碍；实际使用端上还是在线识别由当前语言对应的系统识别器能力决定。

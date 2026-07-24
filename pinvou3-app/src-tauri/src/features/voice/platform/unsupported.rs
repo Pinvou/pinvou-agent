@@ -66,6 +66,19 @@ pub fn asr_missing_message() -> &'static str {
     "当前平台暂不支持本地语音识别"
 }
 
+/// 不支持的平台无原生识别后端，恒返回 `None`（调用方回退 CLI）。
+pub fn recognize_native(
+    _wav_path: &std::path::Path,
+    _locale_tag: &str,
+) -> Option<Result<String, String>> {
+    None
+}
+
+/// 原生识别后端的来源标签（用于前端展示/日志区分）。
+pub fn native_recognition_source() -> &'static str {
+    "unsupported"
+}
+
 pub async fn reset_microphone_permission(_window: tauri::WebviewWindow) -> Result<bool, String> {
     Ok(false)
 }
