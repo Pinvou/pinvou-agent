@@ -80,7 +80,16 @@ assert.ok(
 const macos = composeEffectiveConfig([platformConfigPath("darwin")]).effectiveConfig;
 assert.deepEqual(macos.bundle.targets, ["app", "dmg"]);
 assert.ok(macos.bundle.resources["resources/common/web-template/"]);
-assert.ok(macos.bundle.resources["resources/platforms/macos/aarch64/asr/"]);
+assert.equal(
+  macos.bundle.resources["resources/platforms/macos/aarch64/asr/"],
+  undefined,
+  "macOS system Speech must not bundle the legacy SenseVoice runtime",
+);
+const macosManifest = buildResourceManifest(macos, { platform: "darwin" });
+assert.ok(
+  !macosManifest.files.some((file) => file.destination.startsWith("runtime/asr/")),
+  "macOS resource manifest must not contain a legacy ASR runtime",
+);
 
 const nullRemoval = mergeConfig(
   { bundle: { resources: { common: "common-target", runtime: "runtime-target" } } },

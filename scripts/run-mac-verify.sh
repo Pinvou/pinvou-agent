@@ -76,37 +76,7 @@ for cli in lark-cli wecom-cli dws; do
     fi
 done
 
-echo "=== 5. SenseVoice darwin-arm64 入库校验 ==="
-ASR="$APP_SRC_TAURI/resources/platforms/macos/aarch64/asr/sense-voice-darwin-arm64"
-ASR_LIC="$APP_SRC_TAURI/resources/platforms/macos/aarch64/asr/LICENSE-sense-voice-darwin-arm64"
-# 入库二进制的 sha256(provenance 见 docs/fork-modifications.md T7 节)。若二进制重新编译,
-# 同步更新此常量与文档,否则这里会报 ⚠ 不匹配 —— 这是预期:提醒重新编译要同步 provenance。
-ASR_SHA256_EXPECTED="7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4"
-if [ -f "$ASR" ] && file "$ASR" | grep -q "Mach-O.*arm64"; then
-    echo "  ✓ SenseVoice darwin-arm64 就绪(Mach-O arm64)"
-else
-    echo "  ❌ SenseVoice darwin-arm64 缺失或非 Mach-O arm64" >&2
-    VERIFY_FAIL=1
-fi
-if [ -f "$ASR" ]; then
-    ASR_SHA256_ACTUAL=$(shasum -a 256 "$ASR" | awk '{print $1}')
-    if [ "$ASR_SHA256_ACTUAL" = "$ASR_SHA256_EXPECTED" ]; then
-        echo "  ✓ sha256 校验通过(匹配入库 provenance)"
-    else
-        # sha256 不匹配是核心 provenance 校验失败(二进制被篡改/重新编译未更新)→ 硬失败。
-        echo "  ❌ sha256 不匹配:期望 $ASR_SHA256_EXPECTED" >&2
-        echo "    实际 $ASR_SHA256_ACTUAL" >&2
-        echo "    若重新编译了二进制,请同步更新本脚本 ASR_SHA256_EXPECTED 与 docs/fork-modifications.md T7 节" >&2
-        VERIFY_FAIL=1
-    fi
-fi
-if [ -f "$ASR_LIC" ]; then
-    echo "  ✓ LICENSE 就绪"
-else
-    echo "  ⚠ LICENSE-sense-voice-darwin-arm64 缺失"
-fi
-
-echo "=== 6. tauri.conf.json macOS bundle 校验 ==="
+echo "=== 5. tauri.conf.json macOS bundle 校验 ==="
 # index() 返回 0(第一个元素)在 jq 中是 truthy(0 非 null/false),但用 != null 更明确。
 MAC_OVERLAY="$APP_SRC_TAURI/config/platforms/macos/tauri.conf.json"
 if jq -e '(.bundle.targets | index("dmg") != null) and (.bundle.targets | index("app") != null)' "$MAC_OVERLAY" >/dev/null; then
@@ -128,7 +98,7 @@ else
     echo "  ⚠ Info.plist LSMinimumSystemVersion=$PLIST_MIN_SYS(期望 14.0,与 tauri.conf.json 可能漂移)"
 fi
 
-echo "=== 7. Info.plist / entitlements.plist 存在校验 ==="
+echo "=== 6. Info.plist / entitlements.plist 存在校验 ==="
 for f in Info.plist entitlements.plist; do
     p="$APP_SRC_TAURI/packaging/macos/$f"
     if [ -f "$p" ] && plutil -lint "$p" >/dev/null 2>&1; then
@@ -160,13 +130,13 @@ if [ -z "$BID" ] || [ -z "$TID" ] || [ "$BID" != "$TID" ]; then
   VERIFY_FAIL=1
 fi
 
-echo "=== 8. universal 二进制双切片校验 (arm64 + x86_64) ==="
+echo "=== 7. universal 二进制双切片校验 (arm64 + x86_64) ==="
 # 产物由 npx tauri build --target universal-apple-darwin 产出(tauri 内部双切片 + lipo 合成,
 # 非 cargo target)。校验策略:产物存在时验两个切片齐全(核心硬失败);产物不存在只 warn ——
 # verify --skip-test 常在未打包场景跑(本地 dev / 非 main 分支),硬失败会挡住所有未构建
 # universal 的正常流程。main push 时 mac-build.yml 的 bundle smoke 产 universal 产物,
 # 本校验在 verify 步骤即时激活;非 main/未打包场景 warn-only。
-APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3"
+APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
 if [ -f "$APP_BIN" ]; then
     LIPO_OUT="$(lipo -info "$APP_BIN" 2>&1 || true)"
     # fat 二进制输出形如 "Architectures in the fat file: ... are: arm64 x86_64"。

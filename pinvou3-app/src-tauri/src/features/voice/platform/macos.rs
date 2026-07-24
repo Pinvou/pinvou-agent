@@ -1,7 +1,4 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
-
-use sha2::{Digest, Sha256};
 
 use super::super::voice_asr::{self, AsrModelSpec};
 use super::voice_asr_speech;
@@ -12,42 +9,33 @@ const ASR_MODEL_MIRROR_URL: &str =
     "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf";
 const ASR_MODEL_SIZE: u64 = 182_278_688;
 const ASR_MODEL_SHA256: &str = "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b";
-const BUNDLED_ENGINE_SHA256: &str =
-    "7cc7fc5c31d67b82df36d605c55db1abd685daa73180066afdc1b9d3324bd1b4";
-
 pub fn engine_binary_name() -> &'static str {
-    "sense-voice-darwin-arm64"
+    // macOS 不再打包引擎；该名称仅保留给显式配置的兼容 CLI 路径。
+    "pinvou-asr"
 }
 
-pub fn bundled_engine_intact(path: &Path, bundled_dir: Option<&Path>) -> bool {
-    let Some(dir) = bundled_dir else {
-        return true;
-    };
-    if !path.starts_with(dir) {
-        return true;
+pub fn bundled_engine_intact(_path: &Path, _bundled_dir: Option<&Path>) -> bool {
+    // macOS 二期没有打包 ASR 引擎。
+    true
+}
+
+fn explicit_asr_tool_path() -> Option<PathBuf> {
+    for name in [
+        "PINVOU3_ASR_CMD",
+        "PINVOU3_DEEPSPEECH2_CMD",
+        "PADDLESPEECH_BIN",
+    ] {
+        if let Ok(path) = std::env::var(name) {
+            if !path.trim().is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
     }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 65_536];
-    loop {
-        let count = match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => count,
-            Err(_) => return false,
-        };
-        hasher.update(&buffer[..count]);
-    }
-    format!("{:x}", hasher.finalize()) == BUNDLED_ENGINE_SHA256
+    None
 }
 
 pub fn asr_tool_path() -> PathBuf {
-    std::env::var("PINVOU3_ASR_CMD")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(voice_asr::engine_path)
+    explicit_asr_tool_path().unwrap_or_else(voice_asr::engine_path)
 }
 
 pub fn asr_model_spec() -> AsrModelSpec {
@@ -66,13 +54,18 @@ pub fn asr_model_path() -> PathBuf {
 }
 
 pub fn asr_model_exists() -> bool {
-    voice_asr::model_available()
+    // 系统 Speech 不需要应用侧模型。这里返回 true 是为了让平台中立的
+    // VoiceAsrStatus 不再把旧 SenseVoice 模型当成 macOS 语音输入前置条件。
+    true
 }
 
 pub fn asr_tool_exists() -> bool {
-    // macOS 二期改走系统 Speech 框架（voice_asr_speech），不再依赖 SenseVoice 引擎。
-    // 体检项用 speech_available() 判断系统 Speech 服务是否就绪，而非查引擎文件。
-    speech_available()
+    if speech_available() {
+        return true;
+    }
+    explicit_asr_tool_path().is_some_and(|path| {
+        path.is_file() || crate::platform::os::command_exists(&path.to_string_lossy())
+    })
 }
 
 /// 探测系统 Speech 识别器是否可用（默认 locale）。
@@ -85,12 +78,15 @@ pub fn speech_available() -> bool {
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {
-    None
+    // Some 表示 macOS 的系统运行时自行给出完整就绪状态；公共状态机不再继续检查
+    // SenseVoice 引擎和 ffmpeg。
+    Some(asr_tool_exists())
 }
 
 pub fn asr_dependency_installable() -> bool {
-    // macOS 走系统 Speech，无需安装额外依赖。
-    speech_available()
+    // 系统 Speech 不属于应用可安装依赖。不可用时应引导检查系统权限/服务，
+    // 不能展示一个实际无动作的“安装”按钮。
+    false
 }
 
 pub fn asr_install_unavailable_message() -> &'static str {
@@ -113,7 +109,7 @@ pub fn asr_missing_message() -> &'static str {
 
 /// 用系统 Speech 框架识别临时 wav 文件。
 ///
-/// macOS 不走内置 SenseVoice：系统 Speech 框架零体积、跨架构、开箱即用。
+/// macOS 不走内置 SenseVoice：系统 Speech 框架无需打包额外引擎、跨架构可用。
 /// 返回 `Some` 表示 macOS 始终走系统 Speech（失败时由调用方回退 CLI）。
 ///
 /// `locale_tag` 决定识别语言（跟随 UI 语言偏好，而非系统默认 locale——
@@ -122,7 +118,9 @@ pub fn recognize_native(
     wav_path: &std::path::Path,
     locale_tag: &str,
 ) -> Option<Result<String, String>> {
-    Some(voice_asr_speech::transcribe_with_speech(wav_path, locale_tag))
+    Some(voice_asr_speech::transcribe_with_speech(
+        wav_path, locale_tag,
+    ))
 }
 
 /// 原生识别后端的来源标签（用于前端展示/日志区分）。

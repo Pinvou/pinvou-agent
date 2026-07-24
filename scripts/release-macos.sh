@@ -4,12 +4,11 @@
 #
 # 发版前置:
 #   1. bump 版本号(tauri.conf.json / Cargo.toml / package.json 三处,本脚本会校验一致)
-#   2. resources/asr/sense-voice-darwin-arm64 已入库(Task 3.1 本机编译产物)
-#   3. (可选)export MACOS_SIGNING_IDENTITY / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID
+#   2. (可选)export MACOS_SIGNING_IDENTITY / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID
 #      未设则 Tauri bundler 用 tauri.conf.json 的 signingIdentity="-" 做 ad-hoc 签(可运行,
 #      但用户首次需 xattr -dr com.apple.quarantine 才能过 Gatekeeper)。
-#   4. ./scripts/release-macos.sh "修了 xxx"
-#   5. 客户端 App 启动/手动检查即可看到新版
+#   3. ./scripts/release-macos.sh "修了 xxx"
+#   4. 客户端 App 启动/手动检查即可看到新版
 set -euo pipefail
 
 NOTES="${1:-}"
@@ -70,28 +69,6 @@ if [ -n "${MACOS_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] \
    && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
   SIGN_READY=1
 fi
-
-# ── 2. SenseVoice darwin-arm64 前置校验 ────────────────────────────
-ASR_BIN="$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/sense-voice-darwin-arm64"
-ASR_LICENSE="$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/LICENSE-sense-voice-darwin-arm64"
-if [ ! -f "$ASR_BIN" ]; then
-  echo "❌ SenseVoice darwin-arm64 缺失: $ASR_BIN" >&2
-  echo "   需本机交叉/本地编译 SenseVoice.cpp(-DBUILD_SHARED_LIBS=OFF,Metal 着色器内嵌),"
-  echo "   产物为静态链接的 Mach-O arm64,放至上述路径并配 LICENSE。" >&2
-  exit 1
-fi
-if ! file "$ASR_BIN" | grep -q "Mach-O.*arm64"; then
-  echo "❌ $ASR_BIN 不是 Mach-O arm64" >&2
-  exit 1
-fi
-if [ ! -f "$ASR_LICENSE" ]; then
-  echo "❌ SenseVoice LICENSE 缺失: $ASR_LICENSE" >&2
-  exit 1
-fi
-# 预清 quarantine xattr(防子进程被 Gatekeeper 拦)
-xattr -dr com.apple.quarantine "$ASR_BIN" 2>/dev/null || true
-xattr -dr com.apple.quarantine "$APP_DIR/src-tauri/resources/platforms/macos/aarch64/asr/" 2>/dev/null || true
-echo "✓ SenseVoice darwin-arm64 校验通过"
 
 # ── 4. 构建 dmg ────────────────────────────────────────────────────
 # 与 release-deb.sh 对齐:每次发布先 npm ci,避免新增前端依赖时生成坏包或 beforeBuildCommand 失败。
@@ -181,18 +158,18 @@ fi
 # 正常 tauri universal 构建在缺 target/切片时会硬失败,故此处触发概率低;但代价
 # 非对称 —— 若因 bundler 异常产出 arm64-only 却退出 0,会被标 universal 上传,
 # 导致 Intel 用户「校验通过地装上跑不起来的 app」。上传前硬校验,缺任一切片即中止。
-APP_BIN="$APP_BUNDLE/Contents/MacOS/pinvou3"
-if [ -f "$APP_BIN" ]; then
-  LIPO_OUT="$(lipo -info "$APP_BIN" 2>&1 || true)"
-  if echo "$LIPO_OUT" | grep -q 'arm64' && echo "$LIPO_OUT" | grep -q 'x86_64'; then
-    echo "✓ universal 双切片就绪 (arm64 + x86_64)"
-  else
-    echo "❌ 产物非 universal(缺 arm64 或 x86_64 切片):$LIPO_OUT" >&2
-    echo "   检查 aarch64-apple-darwin / x86_64-apple-darwin 两个 target 是否都已安装。" >&2
-    exit 1
-  fi
+APP_BIN="$APP_BUNDLE/Contents/MacOS/pinvou3-tauri"
+if [ ! -f "$APP_BIN" ]; then
+  echo "❌ 主二进制不存在，无法验证 Universal 产物: $APP_BIN" >&2
+  exit 1
+fi
+LIPO_OUT="$(lipo -info "$APP_BIN" 2>&1 || true)"
+if echo "$LIPO_OUT" | grep -q 'arm64' && echo "$LIPO_OUT" | grep -q 'x86_64'; then
+  echo "✓ universal 双切片就绪 (arm64 + x86_64)"
 else
-  echo "⚠️  $APP_BIN 不存在,跳过双切片校验(继续,后续公证/上传可能失败)" >&2
+  echo "❌ 产物非 universal(缺 arm64 或 x86_64 切片):$LIPO_OUT" >&2
+  echo "   检查 aarch64-apple-darwin / x86_64-apple-darwin 两个 target 是否都已安装。" >&2
+  exit 1
 fi
 
 # ── 5. 公证 + staple（条件触发；签名已在 build 阶段内联完成）──────

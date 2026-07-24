@@ -116,7 +116,7 @@ pinvou3-app 在父仓内通过 `pinvou3-app/src-tauri/src/os/macos/` 实现平�
 #### 语音识别：已剥离 SenseVoice，改用系统 Speech 框架（2026-07 二期）
 
 - macOS 不再打包 SenseVoice 引擎，改用 `objc2-speech` crate 调系统 `SFSpeechURLRecognitionRequest`。
-- Apple Silicon 走端上识别（on-device），Intel Mac 走 Apple 服务器识别。
+- 运行时查询当前语言对应识别器的 `supportsOnDeviceRecognition`：支持时要求端上识别，否则由 Apple Speech 在线服务处理；不能按 Apple Silicon / Intel 架构预判。
 - Linux 仍保留 `sense-voice-main`，本节不再登记 macOS provenance。
 - fork-guard 仍无需追踪（语音非 fork 改动）。
 

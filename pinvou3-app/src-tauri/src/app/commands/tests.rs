@@ -812,6 +812,27 @@ fn parses_local_asr_plain_text_output() {
 }
 
 #[test]
+fn explicit_asr_cli_fallback_accepts_all_supported_env_names() {
+    assert!(!has_nonempty_asr_cli_config(&[None, None, None]));
+    assert!(!has_nonempty_asr_cli_config(&[Some(""), Some(" \t"), None]));
+    assert!(has_nonempty_asr_cli_config(&[
+        Some("/tmp/pinvou-asr"),
+        None,
+        None
+    ]));
+    assert!(has_nonempty_asr_cli_config(&[
+        None,
+        Some("/tmp/deepspeech2"),
+        None
+    ]));
+    assert!(has_nonempty_asr_cli_config(&[
+        None,
+        None,
+        Some("/tmp/paddlespeech")
+    ]));
+}
+
+#[test]
 fn parses_local_asr_list_output() {
     let text =
         parse_local_asr_text("[INFO] loading\n['hello from voice']\n", "").expect("list output");

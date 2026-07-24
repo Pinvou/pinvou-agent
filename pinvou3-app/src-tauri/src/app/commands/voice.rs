@@ -57,6 +57,26 @@ fn local_asr_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+pub(super) fn has_nonempty_asr_cli_config(values: &[Option<&str>]) -> bool {
+    values
+        .iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+}
+
+fn has_explicit_asr_cli_fallback() -> bool {
+    let values = [
+        std::env::var("PINVOU3_ASR_CMD").ok(),
+        std::env::var("PINVOU3_DEEPSPEECH2_CMD").ok(),
+        std::env::var("PADDLESPEECH_BIN").ok(),
+    ];
+    has_nonempty_asr_cli_config(&[
+        values[0].as_deref(),
+        values[1].as_deref(),
+        values[2].as_deref(),
+    ])
+}
+
 pub(super) fn apply_local_asr_model_env(
     command: &mut std::process::Command,
     model_path: Option<std::path::PathBuf>,
@@ -309,11 +329,7 @@ pub async fn transcribe_voice_audio(
                     source: crate::features::voice::native_recognition_source().to_string(),
                 }),
                 Some(Err(e)) => {
-                    let has_cmd_fallback = std::env::var("PINVOU3_ASR_CMD")
-                        .ok()
-                        .filter(|cmd| !cmd.is_empty())
-                        .is_some();
-                    if has_cmd_fallback {
+                    if has_explicit_asr_cli_fallback() {
                         run_local_asr_cli(&wav_path)
                     } else {
                         Err(VoiceCommandError::new(

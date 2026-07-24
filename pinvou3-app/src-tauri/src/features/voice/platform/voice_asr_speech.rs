@@ -10,9 +10,10 @@
 //! 直到 channel 收到 final 结果或超时——过早 drop `SFSpeechRecognitionTask` 会取消
 //! 识别（见 Apple 文档 SFSpeechRecognizer/recognitionTask(with:resultHandler:)）。
 //!
-//! On-device vs. server 识别在运行时按 `supportsOnDeviceRecognition` 决定：
-//! Apple Silicon（有 Neural Engine）→ true（端上、离线、隐私）；Intel Mac → false
-//! （走 Apple 服务器，需联网）。决策纯函数 [`decide_on_device`] 可单测。
+//! On-device vs. Apple 服务识别在运行时按当前 recognizer/locale 的
+//! `supportsOnDeviceRecognition` 决定：支持时强制端上识别，否则由系统使用在线
+//! Speech 服务。该能力不是处理器架构的固定属性。决策纯函数
+//! [`decide_on_device`] 可单测。
 //!
 //! 参考的 objc2 调用风格：`pet_window.rs:1048-1076`；block2 回调包装见 crate 文档
 //! （`block2::RcBlock::new`，`DynBlock` 是 `Block` 的类型别名）。
@@ -28,20 +29,19 @@ use objc2::AnyThread;
 use objc2_foundation::{NSError, NSLocale, NSString, NSURL};
 use objc2_speech::{
     SFSpeechRecognitionResult, SFSpeechRecognitionTask, SFSpeechRecognitionTaskHint,
-    SFSpeechURLRecognitionRequest, SFSpeechRecognizer,
+    SFSpeechRecognizer, SFSpeechURLRecognitionRequest,
 };
 
 /// 根据 on-device 支持情况决定识别模式（纯函数，可单测）。
 ///
 /// `supports_on_device` 来自 `SFSpeechRecognizer::supportsOnDeviceRecognition()`：
-/// - Apple Silicon（有 Neural Engine）→ true → 端上、离线、隐私友好。
-/// - Intel Mac（无 NPU）→ false → 走 Apple 服务器识别（在线）。
+/// - true → 要求端上识别。
+/// - false → 不强制端上，由系统 Speech 服务在线处理。
 ///
 /// 目前是直传（语义：能端上就端上），但抽成函数是为后续加策略（如用户偏好
 /// "强制联网换更高精度"）留扩展点，也便于单测覆盖。
 pub fn decide_on_device(supports_on_device: bool) -> bool {
-    // 能端上就端上：Apple Silicon（有 Neural Engine）走离线、隐私友好；
-    // Intel Mac（无 NPU）supportsOnDeviceRecognition=false，自然回退到 Apple 服务器。
+    // 支持端上识别时明确要求端上；不支持时由系统走在线 Speech 服务。
     supports_on_device
 }
 
@@ -103,8 +103,9 @@ pub fn transcribe_with_speech(wav_path: &Path, locale_tag: &str) -> Result<Strin
         return Err("系统语音识别服务不可用（未授权 / 联网失败 / 服务限流）".to_string());
     }
 
-    // 3. on-device vs. server：Apple Silicon → 端上离线；Intel → Apple 服务器。
-    //    requiresOnDeviceRecognition 仅在 supportsOnDeviceRecognition=true 时被框架尊重。
+    // 3. on-device vs. Apple 服务：按 recognizer/locale 的运行时能力判断，
+    //    不能按 Apple Silicon / Intel 架构预判。
+    //    requiresOnDeviceRecognition 仅在 supportsOnDeviceRecognition=true 时设置。
     // SAFETY: supportsOnDeviceRecognition 只读属性。
     let on_device = decide_on_device(unsafe { recognizer.supportsOnDeviceRecognition() });
 

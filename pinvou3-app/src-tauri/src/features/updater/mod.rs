@@ -204,7 +204,10 @@ mod tests {
             );
         }
         if std::env::consts::OS == "macos" {
-            assert!(key == "macos-universal", "unexpected macos platform key: {key}");
+            assert!(
+                key == "macos-universal",
+                "unexpected macos platform key: {key}"
+            );
         }
         if std::env::consts::OS == "windows" {
             assert!(

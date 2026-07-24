@@ -10,14 +10,16 @@ pinvou3 在 macOS 上支持 **Apple Silicon (arm64) + Intel (x86_64)**（Univers
 | macOS 版本 | 14.0 (Sonoma) 或更高 |
 | 磁盘空间 | 应用本体约 200MB（不再打包语音引擎、不再按需下载语音模型；macOS 走系统 Speech 框架） |
 
-> 语音识别改用 macOS 系统 Speech 框架（系统自带，无需安装）：Apple Silicon 走端上离线识别，Intel Mac 走 Apple 服务器识别（音频上传 Apple）。当前 dmg 为 Universal 二进制（arm64 + x86_64），Apple Silicon 与 Intel Mac 均可直接运行。
+> 语音识别改用 macOS 系统 Speech 框架（系统自带，无需安装）。应用会按当前语言和系统识别器的运行时能力选择路径：支持端上识别时强制在本机处理，否则由 Apple Speech 在线服务处理。该能力不由 Apple Silicon / Intel 架构单独决定。当前 dmg 为 Universal 二进制（arm64 + x86_64），两类 Mac 均可直接运行。
 
 ## 语音识别（系统自带，无需安装）
 
-macOS 语音输入直接调用系统 **Speech 框架**，无需额外安装引擎，也无需下载模型：
+macOS 语音输入直接调用系统 **Speech 框架**，无需额外安装引擎，也无需下载模型。应用会查询当前语言对应识别器的 `supportsOnDeviceRecognition`：
 
-- **Apple Silicon**（M 系列芯片，含 Neural Engine）→ 端上离线识别，音频不出本机
-- **Intel Mac** → 经 Apple 服务器识别（音频需上传 Apple）
+- 支持时，要求系统在设备端识别
+- 不支持时，由 Apple Speech 在线服务处理，需联网且音频可能发送给 Apple
+
+端上能力取决于系统、语言和识别器状态，不能仅凭 Apple Silicon / Intel 架构判断。
 
 一期打包的 SenseVoice darwin-arm64 引擎与按需下载的 ASR 模型已全部移除。
 
@@ -73,7 +75,7 @@ xcode-select --install
 | Office 文档 | 跳过转换，返回提示信息 |
 | 压缩包 | 跳过解压，返回提示信息 |
 | 邮件 (.msg/.eml) | 跳过解析，返回提示信息 |
-| 语音输入 | 走系统 Speech 框架：Apple Silicon 端上识别，Intel Mac 服务器识别 |
+| 语音输入 | 走系统 Speech 框架：支持时端上识别，否则使用 Apple Speech 在线服务 |
 
 **所有缺失均不会导致应用崩溃。** 应用启动时和「设置 → 依赖体检」页面会实时检测已安装的工具状态。
 
@@ -109,4 +111,4 @@ xcode-select --install
 
 - **Keychain 授权提示**：macOS 与 Linux/Windows 采用同一安全策略，API Key 优先写入系统凭据存储（macOS Keychain）；仅在系统凭据存储确实不可用时回退文件存储。当前 ad-hoc 签名的开发/测试构建身份不稳定，重建后可能再次触发 Keychain 授权提示；接入稳定签名身份后可改善这一体验。
 
-- **Intel Mac 支持**：dmg 已为 Universal 二进制（arm64 + x86_64），Intel Mac 可直接运行。语音识别已改用系统 Speech 框架，不再有 SenseVoice darwin-arm64 的二进制障碍；Intel Mac 语音走 Apple 服务器识别。
+- **Intel Mac 支持**：dmg 已为 Universal 二进制（arm64 + x86_64），Intel Mac 可直接运行。语音识别已改用系统 Speech 框架，不再有 SenseVoice darwin-arm64 的二进制障碍；实际使用端上还是在线识别由当前语言对应的系统识别器能力决定。

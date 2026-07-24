@@ -105,8 +105,13 @@ pub fn asr_missing_message() -> &'static str {
 /// Linux 用内置 SenseVoice 引擎识别（区别于 macOS 的系统 Speech）。
 ///
 /// 引擎/模型就绪时走内置 Rust 转码+识别；否则返回 `None`，由调用方回退 CLI。
-pub fn recognize_native(wav_path: &std::path::Path, _locale_tag: &str) -> Option<Result<String, String>> {
-    if asr_tool_exists() {
+pub fn recognize_native(
+    wav_path: &std::path::Path,
+    _locale_tag: &str,
+) -> Option<Result<String, String>> {
+    // Rust 内置路径只接受由 voice_asr 管理的引擎和模型。外部 CLI 即使存在，
+    // 也必须返回 None 交给 run_local_asr_cli，不能误送进 Rust transcribe。
+    if voice_asr::engine_path().is_file() && voice_asr::model_path().is_file() {
         Some(voice_asr::transcribe(wav_path))
     } else {
         None
