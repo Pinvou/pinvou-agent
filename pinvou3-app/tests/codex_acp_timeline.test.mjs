@@ -249,6 +249,9 @@ try {
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
+  assert.ok(codexView.includes('<ConversationMarkdown')
+    && codexView.includes("invoke('open_external_url', { url })"),
+  'both unified and fallback Codex messages must route links through the host opener');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),
     'Codex unordered lists must retain bullets after Tailwind preflight');
   assert.ok(baseStyles.includes('.codex-markdown ol { list-style:decimal outside; }'),

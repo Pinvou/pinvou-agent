@@ -22,9 +22,13 @@ try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
     `${pathToFileURL(path.join(conversationDir, 'deepseek-conversation.js')).href}?t=${Date.now()}`
   );
-  const { fetchToolDetails, isFetchTool, isSearchTool, searchToolDetails } = await import(
+  const { externalMarkdownUrl, fetchToolDetails, isFetchTool, isSearchTool, searchToolDetails } = await import(
     `${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`
   );
+  assert.equal(externalMarkdownUrl('http://localhost:8080/'), 'http://localhost:8080/');
+  assert.equal(externalMarkdownUrl('https://example.com/demo'), 'https://example.com/demo');
+  assert.equal(externalMarkdownUrl('javascript:alert(1)'), '');
+  assert.equal(externalMarkdownUrl('README.md'), '');
   const chatItems = [
     { id: 1, type: 'system', text: '会话已恢复' },
     { id: 2, type: 'user', text: '检查仓库' },
@@ -209,6 +213,10 @@ try {
   'the shared card must expose explicit radio/checkbox choices and an explicit submit action');
   assert.ok(conversationView.includes('查看原始数据'),
     'model-facing compacted payloads must be secondary diagnostic details');
+  assert.ok(conversationView.includes("closest('a[href]')")
+    && conversationView.includes('event.preventDefault()')
+    && conversationView.includes('onOpenExternal(external)'),
+  'conversation markdown links must not navigate the application webview');
   assert.ok(conversationView.includes("String(tool.name || '').trim() || 'web_search'")
     && conversationView.includes("String(tool.name || '').trim() || 'fetch_url'")
     && conversationView.includes('title={toolName}'),

@@ -12,6 +12,7 @@ import {
 import {
   commandExecutionDetails,
   elapsedMs,
+  externalMarkdownUrl,
   fetchToolDetails,
   formatElapsed,
   isFetchTool,
@@ -20,14 +21,24 @@ import {
   terminalStatus,
 } from './conversation-model.js';
 
-function Markdown({ text, className = '' }) {
+export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(String(text || '')), {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
   }), [text]);
+  const openLink = (event) => {
+    const anchor = event.target && event.target.closest && event.target.closest('a[href]');
+    if (!anchor) return;
+    const href = String(anchor.getAttribute('href') || '').trim();
+    if (href.startsWith('#')) return;
+    event.preventDefault();
+    const external = externalMarkdownUrl(href);
+    if (external && onOpenExternal) onOpenExternal(external);
+  };
   return (
     <div
       className={`codex-markdown conversation-markdown text-[15px] leading-7 ${className}`}
+      onClick={openLink}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -494,8 +505,9 @@ function DefaultItem({
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
     return commentary
-      ? <Markdown text={item.text} className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <Markdown text={item.text} />;
+      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal}
+          className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} />;
   }
   return null;
 }

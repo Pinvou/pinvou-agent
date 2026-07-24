@@ -1,6 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
 import {
   AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Plus, Send, Sparkles,
   StopCircle, Terminal, Trash2, Wrench,
@@ -11,7 +9,7 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
-import { ConversationTurn } from '../conversation/ConversationTimeline.jsx';
+import { ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import {
   invokeTauri,
@@ -70,14 +68,6 @@ function configLabel(option) {
     case 'fast-mode': return '快速模式';
     default: return option && option.name || '';
   }
-}
-
-function Markdown({ text }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(String(text || '')), {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
-  }), [text]);
-  return <div className="codex-markdown text-[15px] leading-7" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function StatusBadge({ status }) {
@@ -431,6 +421,7 @@ function TurnItem({
   onRespond,
   onRespondElicitation,
   responding,
+  onOpenExternal,
 }) {
   if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} />;
   if (item.type === 'tool_group') return <ToolGroup group={item} now={now} />;
@@ -453,8 +444,9 @@ function TurnItem({
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
     return commentary
-      ? <div className="text-[13px] leading-6 text-gray-500 dark:text-gray-400"><Markdown text={item.text} /></div>
-      : <Markdown text={item.text} />;
+      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal}
+          className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} />;
   }
   return null;
 }
@@ -467,6 +459,7 @@ function Turn({
   onRespond,
   onRespondElicitation,
   responding,
+  onOpenExternal,
 }) {
   const waitingPermission = turn.permissions.some(permission => !permission.resolved);
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
@@ -496,7 +489,7 @@ function Turn({
             <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
-              responding={responding} />
+              responding={responding} onOpenExternal={onOpenExternal} />
           ))}
           {(turn.completedAt || turn.error) && (
             <div className="flex items-center gap-2 pt-2">
@@ -1015,7 +1008,8 @@ export function CodexAcpView({ theme }) {
                     pendingByElicitation={pendingByElicitation}
                     onRespond={respond}
                     onRespondElicitation={respondElicitation}
-                    responding={responding} />
+                    responding={responding}
+                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(err => setError(String(err)))} />
                 ))}
           </div>
         </div>

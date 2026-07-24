@@ -16,6 +16,11 @@ const FETCH_TOOL_NAMES = new Set([
   'web.fetch',
 ]);
 
+export function externalMarkdownUrl(value) {
+  const url = String(value || '').trim();
+  return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+}
+
 /**
  * 浏览器不是终端，展示命令和输出前清理 ANSI、OSC 超链接等控制序列。
  */

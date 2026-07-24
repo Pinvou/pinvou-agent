@@ -162,12 +162,14 @@ pub fn run() {
     crate::platform::ui_cache::migrate_before_webview();
     let initial_navigation_reported =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let main_navigation_origin = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let builder = tauri::Builder::default()
         // These no-op probe plugins bracket Tauri's own plugin initialization.
         // The main window is created by Tauri before the application setup hook,
         // so their lifecycle hooks expose time that was previously one opaque gap.
         .plugin({
             let initial_navigation_reported = initial_navigation_reported.clone();
+            let main_navigation_origin = main_navigation_origin.clone();
             tauri::plugin::Builder::<_, ()>::new("startup-probe-runtime")
                 .setup(|_app, _api| {
                     startup::mark("tauri:runtime_created");
@@ -186,16 +188,47 @@ pub fn run() {
                 .on_navigation(move |webview, url| {
                     use std::sync::atomic::Ordering;
 
-                    if webview.label() == "main"
-                        && !initial_navigation_reported.swap(true, Ordering::Relaxed)
-                    {
+                    if webview.label() != "main" {
+                        return true;
+                    }
+                    let origin = format!(
+                        "{}://{}:{}",
+                        url.scheme(),
+                        url.host_str().unwrap_or_default(),
+                        url.port_or_known_default()
+                            .map_or_else(|| "-".to_string(), |port| port.to_string())
+                    );
+                    if !initial_navigation_reported.swap(true, Ordering::Relaxed) {
                         startup::mark_with_detail(
                             "rust",
                             "tauri:main_navigation",
                             &format!("scheme={}", url.scheme()),
                         );
                     }
-                    true
+                    let mut initial_origin = main_navigation_origin
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    match initial_origin.as_ref() {
+                        None => {
+                            *initial_origin = Some(origin);
+                            true
+                        }
+                        Some(allowed) if allowed == &origin => true,
+                        Some(_) => {
+                            startup::mark_with_detail(
+                                "rust",
+                                "tauri:main_navigation_blocked",
+                                &format!(
+                                    "scheme={} host={} port={}",
+                                    url.scheme(),
+                                    url.host_str().unwrap_or_default(),
+                                    url.port_or_known_default()
+                                        .map_or_else(|| "-".to_string(), |port| port.to_string())
+                                ),
+                            );
+                            false
+                        }
+                    }
                 })
                 .build()
         })
