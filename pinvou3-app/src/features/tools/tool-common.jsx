@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Wrench, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Video, Wrench, XIcon, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -435,6 +435,7 @@ const AcFmtIcon = ({ kind, className }) => (
       { id: 6, backendId: null, title: '腾讯文档 MCP', subtitle: '多人实时在线协作协议', category: 'mcp', type: 'MCP Server', version: 'v1.0.5', latency: '<60ms', desc: '将腾讯文档能力接入 AI。允许大模型读取、分析甚至辅助编写在线表格、文档和幻灯片，轻松完成跨维度的内容查询与数据分析。', icon: FileText, color: 'bg-gradient-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true },
       { id: 8, backendId: null, title: '企微 Bot Hook', subtitle: '连接企业内部与外部生态', category: 'comm', type: 'Webhook', version: 'v4.0', latency: '<40ms', desc: '深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: false },
       { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.56', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
+      { id: 22, backendId: 'tmeet', tmeetCli: true, title: '腾讯会议', subtitle: '以你本人身份管理会议/录制/纪要/参会报告', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.13', latency: '云端', desc: '接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我创建一个腾讯会议', '查一下我的腾讯会议录制', '看看最近会议的智能纪要', '查询这场腾讯会议的参会人'] },
       { id: 99, backendId: 'wecom', wecomCli: true, title: '企业微信', subtitle: '以你本人身份操作企微消息/文档/会议/日程', category: 'comm', type: 'CLI + 官方技能', version: 'v0.1.9', latency: '云端', desc: '接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['把这段内容写成企微智能文档', '读一下我企微某篇文档的内容', '在企微智能表格里新建一张子表', '查一下企微智能表格里的数据'] },
       { id: 10, backendId: 'dingtalk', dingtalkCli: true, title: '钉钉', subtitle: '以你本人身份操作钉钉文档/日历/表格/消息', category: 'comm', type: 'CLI + 官方技能', version: 'v1.0.51', latency: '云端', desc: '接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读一下我的钉钉文档', '查我今天的钉钉日程', '在钉钉 AI 表格里查数据', '看看我的钉钉待办'] },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
@@ -636,7 +637,7 @@ const AcFmtIcon = ({ kind, className }) => (
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.oauthMcp) ? '断开' : '卸载'}
+            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.oauthMcp) ? '断开' : '卸载'}
           </button>
         );
       }
@@ -659,7 +660,7 @@ const AcFmtIcon = ({ kind, className }) => (
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.oauthMcp) ? '连接' : (hasConfig ? '配置' : '安装')}
+          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.oauthMcp) ? '连接' : (hasConfig ? '配置' : '安装')}
         </button>
       );
     };

@@ -1165,19 +1165,20 @@ fn merge_covers_recommendations_field() {
 #[tokio::test]
 async fn open_external_url_rejects_off_allowlist_targets() {
     let rejected = [
-        "http://metaso.cn/",                               // 非 https
-        "https://evil.example.com/",                       // host 不在白名单
-        "https://metaso.cn.evil.com/",                     // 子域钓鱼
-        "https://console.bce.baidu.com.evil.com/",         // 百度子域钓鱼
-        "https://app.tavily.com.evil.com/",                // tavily 子域钓鱼
-        "https://www.canva.cn.evil.com/api/action",        // Canva 子域钓鱼
-        "https://export-download.canva.cn.evil.com/x.png", // Canva 资源域钓鱼
-        "https://bce.baidu.com/",                          // 非 console 子域,不放行
-        "javascript:alert(1)",                             // js scheme
-        "file:///etc/passwd",                              // file scheme
-        "https://google.com/",                             // 任何第三方域
-        "",                                                // 空串
-        "metaso.cn/",                                      // 缺 scheme
+        "http://metaso.cn/",                                      // 非 https
+        "https://evil.example.com/",                              // host 不在白名单
+        "https://metaso.cn.evil.com/",                            // 子域钓鱼
+        "https://console.bce.baidu.com.evil.com/",                // 百度子域钓鱼
+        "https://app.tavily.com.evil.com/",                       // tavily 子域钓鱼
+        "https://www.canva.cn.evil.com/api/action",               // Canva 子域钓鱼
+        "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
+        "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
+        "https://bce.baidu.com/",                                 // 非 console 子域,不放行
+        "javascript:alert(1)",                                    // js scheme
+        "file:///etc/passwd",                                     // file scheme
+        "https://google.com/",                                    // 任何第三方域
+        "",                                                       // 空串
+        "metaso.cn/",                                             // 缺 scheme
     ];
     for url in rejected {
         let err = open_external_url(url.to_string()).await.err();
@@ -1212,6 +1213,9 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://export-download.canva.cn/example/preview.png"
     ));
+    assert!(url_in_external_allowlist(
+        "https://meeting.tencent.com/qrcode-login.html?code=abc"
+    ));
     assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
     assert!(!url_in_external_allowlist(
         "https://console.amap.com.evil.com/dev/key/app"
@@ -1225,7 +1229,11 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(!url_in_external_allowlist(
         "https://export-download.canva.cn.evil.com/example/preview.png"
     ));
+    assert!(!url_in_external_allowlist(
+        "https://meeting.tencent.com.evil.com/qrcode-login.html"
+    ));
     assert!(!url_in_external_allowlist("http://obsidian.md/"));
+    assert!(!url_in_external_allowlist("http://meeting.tencent.com/"));
     assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
     assert!(!url_in_external_allowlist(
         "http://www.canva.cn/api/action?token=abc"

@@ -19,3 +19,7 @@ pub fn wecom_skills_visible() -> bool {
 pub fn dingtalk_skills_visible() -> bool {
     !marker("dingtalk_disabled").is_file()
 }
+
+pub fn tmeet_skills_visible() -> bool {
+    !marker("tmeet_disabled").is_file()
+}
