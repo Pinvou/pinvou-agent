@@ -38,6 +38,16 @@ DOC_PATH = "docs/Git Commit 信息规范文档.md"
 # 新门禁只约束该快照之后的非 merge 提交，避免 GitHub 自动 merge commit
 # 和合流前的历史提交永久打红 main。
 LEGACY_HISTORY_CUTOFF = "deae3ca0141390c06e14aa93610645088b8966d4"
+TRUSTED_BOT_AUTHORS = {
+    (
+        "dependabot[bot]",
+        "49699333+dependabot[bot]@users.noreply.github.com",
+    ),
+    (
+        "github-actions[bot]",
+        "41898282+github-actions[bot]@users.noreply.github.com",
+    ),
+}
 
 
 def clean_commit_message(raw: str) -> list[str]:
@@ -123,7 +133,10 @@ def validate_range(base: str, head: str) -> list[str]:
     errors: list[str] = []
 
     for commit in commits:
-        raw = git("log", "-1", "--format=%B", commit)
+        entry = git("log", "-1", "--format=%an%x00%ae%x00%B", commit)
+        author_name, author_email, raw = entry.split("\x00", 2)
+        if (author_name, author_email) in TRUSTED_BOT_AUTHORS:
+            continue
         label = f"{commit[:12]} {first_subject(raw)}"
         errors.extend(validate_text(raw, label))
 

@@ -21,7 +21,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "fix: 修复提交门禁范围",
+                "hexin\x00372726039@qq.com\x00fix: 修复提交门禁范围",
             ]
 
             self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
@@ -45,7 +45,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "chore: 初始化社区版源码",
+                "hexin\x00372726039@qq.com\x00chore: 初始化社区版源码",
             ]
 
             self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
@@ -67,7 +67,38 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "fedcba9876543210",
-                "fix: english only",
+                "hexin\x00372726039@qq.com\x00fix: english only",
+            ]
+
+            errors = validate_commit_msg.validate_range("base", "head")
+
+        self.assertTrue(errors)
+        self.assertIn("description must use Chinese", errors[0])
+
+    def test_range_allows_exact_trusted_bot_identity(self) -> None:
+        with (
+            patch.object(validate_commit_msg, "git_commit_exists", return_value=False),
+            patch.object(validate_commit_msg, "git") as git_mock,
+        ):
+            git_mock.side_effect = [
+                "69de49cc7d1d81159e219c3d6b6494f9fc6859a7",
+                (
+                    "dependabot[bot]\x00"
+                    "49699333+dependabot[bot]@users.noreply.github.com\x00"
+                    "chore(deps): bump dompurify from 3.4.2 to 3.4.12"
+                ),
+            ]
+
+            self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
+
+    def test_range_rejects_spoofed_bot_name(self) -> None:
+        with (
+            patch.object(validate_commit_msg, "git_commit_exists", return_value=False),
+            patch.object(validate_commit_msg, "git") as git_mock,
+        ):
+            git_mock.side_effect = [
+                "fedcba9876543210",
+                "dependabot[bot]\x00attacker@example.com\x00fix: english only",
             ]
 
             errors = validate_commit_msg.validate_range("base", "head")
