@@ -1,7 +1,7 @@
 # Design Mode Handoff
 
 Date: 2026-07-24
-Branch/worktree: `work/design-mode-20260724`
+Branch/worktree: `work/design-mode-ui-shell-20260724`
 Status: paused until next week
 PR status: Draft only. Do not merge until the missing business integrations are complete.
 
@@ -65,11 +65,12 @@ The Tauri dev app was running during iteration at `http://127.0.0.1:1420`.
 
 - Correct target repository: `https://github.com/Pinvou/pinvou-agent`.
 - Local commits:
-  - `8e6048f7 Add design mode composer UI`
-  - `30832f1c Update design mode handoff notes`
+  - `e95fc84c Add design mode composer UI`
+  - `565eee71 Update design mode handoff notes`
+  - `4149bad7 Clarify draft PR handoff status`
 - A draft PR was accidentally opened against the old repository: `https://github.com/Pinvou/pinvou3/pull/250`.
 - Do not continue that PR if the target repository has changed.
-- Open a new Draft PR in `Pinvou/pinvou-agent`.
+- Open a new Draft PR from `work/design-mode-ui-shell-20260724` in `Pinvou/pinvou-agent`.
 - The Draft PR description must explicitly say this branch is UI/interaction shell only and must not be merged before content/code execution integration is complete.
 - Untracked local dev file intentionally left out of commit: `src-tauri/config/dev-port-1421.conf.json`.
 
