@@ -12,7 +12,11 @@ import {
 import {
   commandExecutionDetails,
   elapsedMs,
+  fetchToolDetails,
   formatElapsed,
+  isFetchTool,
+  isSearchTool,
+  searchToolDetails,
   terminalStatus,
 } from './conversation-model.js';
 
@@ -32,11 +36,13 @@ function Markdown({ text, className = '' }) {
 export function ConversationStatusBadge({ status }) {
   const done = ['Completed', 'completed', 'done', 'end_turn'].includes(status);
   const failed = ['Failed', 'failed', 'Refused'].includes(status);
+  const interrupted = ['Interrupted', 'interrupted', 'incomplete'].includes(status);
+  const stopped = interrupted || status === 'LimitReached';
   const label = done
     ? '已完成'
     : failed
       ? '失败'
-      : status === 'Interrupted'
+      : interrupted
         ? '已中断'
         : status === 'LimitReached'
           ? '达到限制'
@@ -45,11 +51,12 @@ export function ConversationStatusBadge({ status }) {
     <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
       done ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
         : failed ? 'bg-red-500/10 text-red-600 dark:text-red-300'
-          : 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+          : stopped ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300'
+            : 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
     }`}>
       {done
         ? <CheckCircle2 size={12} />
-        : failed
+        : failed || stopped
           ? <AlertTriangle size={12} />
           : <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
       {label}
@@ -92,6 +99,8 @@ function StructuredValue({ label, value }) {
 function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
   const tone = status === 'failed'
     ? 'text-red-500 bg-red-500/10'
+    : status === 'warning'
+      ? 'text-amber-500 bg-amber-500/10'
     : status === 'running'
       ? 'text-blue-500 bg-blue-500/10'
       : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
@@ -139,6 +148,152 @@ function CommandExecutionItem({ item, now }) {
   );
 }
 
+function SearchToolItem({ item, now, onOpenExternal }) {
+  const tool = item.tool || {};
+  const details = searchToolDetails(tool);
+  const state = terminalStatus(item.status);
+  const [open, setOpen] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
+  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const query = details.query || tool.title || '网页内容';
+  const toolName = String(tool.name || '').trim() || 'web_search';
+  const queryLabel = query.length > 48 ? `${query.slice(0, 48)}…` : query;
+  const resultLabel = details.count != null
+    ? `${details.count} 条结果`
+    : details.results.length
+      ? `识别到 ${details.results.length} 条结果`
+      : '已返回结果';
+  const meta = state === 'running'
+    ? `${queryLabel} · ${details.source} · 进行中 · ${duration}`
+    : state === 'failed'
+      ? `${queryLabel} · ${details.source} · 失败`
+      : `${queryLabel} · ${details.source} · ${resultLabel}`;
+  return (
+    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
+      <CompactItemRow icon={<Wrench size={13} />} title={toolName}
+        meta={meta} status={state} open={open} onToggle={() => setOpen(value => !value)} />
+      {open && (
+        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+          {details.results.length > 0 ? (
+            <div className="mt-2 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
+              {details.results.slice(0, 5).map((result, index) => {
+                let domain = '';
+                try { domain = new URL(result.url).hostname.replace(/^www\./, ''); } catch (_) {}
+                return (
+                  <button
+                    key={result.url}
+                    type="button"
+                    onClick={() => onOpenExternal && onOpenExternal(result.url)}
+                    disabled={!onOpenExternal}
+                    className="w-full py-2 flex items-start gap-2.5 text-left enabled:hover:text-blue-600 dark:enabled:hover:text-blue-300 disabled:cursor-default"
+                  >
+                    <span className="mt-0.5 w-5 h-5 shrink-0 rounded-md bg-black/[0.035] dark:bg-white/[0.06] text-[10px] text-gray-400 flex items-center justify-center">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12px] leading-5 text-gray-700 dark:text-gray-200">{result.title}</span>
+                      {domain && <span className="block mt-0.5 truncate text-[10px] text-gray-400">{domain}</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : state === 'completed' ? (
+            <div className="mt-2 text-[11px] leading-5 text-gray-400">
+              搜索结果已交给 Agent 处理；当前压缩结果中没有可稳定提取的条目。
+            </div>
+          ) : null}
+          {details.compacted && (
+            <div className="mt-2 text-[10px] text-gray-400">为控制上下文长度，这里只展示可识别的结果摘要。</div>
+          )}
+          {details.rawOutput && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setRawOpen(value => !value)}
+                className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              >
+                {rawOpen ? '收起原始数据' : '查看原始数据'}
+              </button>
+              {rawOpen && <TerminalBlock label="原始数据" text={details.rawOutput} />}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FetchToolItem({ item, now, onOpenExternal }) {
+  const tool = item.tool || {};
+  const details = fetchToolDetails(tool);
+  const state = terminalStatus(item.status);
+  const responseWarning = details.status != null && details.status >= 400;
+  const visualState = responseWarning && state !== 'failed' ? 'warning' : state;
+  const [open, setOpen] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
+  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const toolName = String(tool.name || '').trim() || 'fetch_url';
+  const statusLabel = details.status != null
+    ? `HTTP ${details.status}`
+    : state === 'failed'
+      ? '请求失败'
+      : '已返回';
+  const meta = state === 'running'
+    ? `${details.target} · 进行中 · ${duration}`
+    : `${details.target} · ${statusLabel} · ${details.contentTypeLabel}${details.truncated ? ' · 内容已截断' : ''}`;
+  return (
+    <div className={`rounded-xl border ${
+      state === 'failed'
+        ? 'border-red-500/20'
+        : responseWarning
+          ? 'border-amber-500/25'
+          : 'border-black/[0.05] dark:border-white/[0.07]'
+    } bg-white/45 dark:bg-white/[0.015]`}>
+      <CompactItemRow icon={<Wrench size={13} />} title={toolName}
+        meta={meta} status={visualState} open={open} onToggle={() => setOpen(value => !value)} />
+      {open && (
+        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+          {details.url && (
+            <button
+              type="button"
+              onClick={() => onOpenExternal && onOpenExternal(details.url)}
+              disabled={!onOpenExternal}
+              title={details.url}
+              className="mt-2 block max-w-full truncate text-left text-[11px] text-blue-600 dark:text-blue-300 enabled:hover:underline disabled:text-gray-400 disabled:cursor-default"
+            >
+              {details.url}
+            </button>
+          )}
+          {details.preview && (
+            <div className="mt-2">
+              <div className="mb-1 text-[10px] font-medium text-gray-400">内容预览</div>
+              <div className="max-h-24 overflow-hidden rounded-lg bg-black/[0.025] dark:bg-white/[0.035] px-3 py-2 text-[11px] leading-5 text-gray-600 dark:text-gray-300">
+                {details.preview}{details.contentLength > details.preview.length ? '…' : ''}
+              </div>
+            </div>
+          )}
+          {details.truncated && (
+            <div className="mt-2 text-[10px] text-gray-400">响应内容超过本次抓取上限，Agent 使用的是截断后的内容。</div>
+          )}
+          {details.rawOutput && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setRawOpen(value => !value)}
+                className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              >
+                {rawOpen ? '收起原始数据' : '查看原始数据'}
+              </button>
+              {rawOpen && <TerminalBlock label="原始数据" text={details.rawOutput} />}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GenericToolItem({ item, now }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
@@ -169,24 +324,35 @@ function GenericToolItem({ item, now }) {
   );
 }
 
-function ToolGroup({ group, now, renderToolItem, shouldAutoOpenToolGroup }) {
+function ToolGroup({ group, now, renderToolItem, shouldAutoOpenToolGroup, onOpenExternal }) {
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failed = items.some(item => terminalStatus(
+  const failedCount = items.filter(item => terminalStatus(
     item.status,
     item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
-  ) === 'failed');
+  ) === 'failed').length;
+  const failed = failedCount > 0;
+  const summary = `${running ? '正在执行' : '执行步骤'} · ${items.length} 项${
+    failedCount ? ` · ${failedCount} 项失败` : ''
+  }`;
   const autoOpen = Boolean(shouldAutoOpenToolGroup && shouldAutoOpenToolGroup(group));
   const [open, setOpen] = useState(autoOpen);
+  const manualOpen = React.useRef(null);
   useEffect(() => {
-    if (autoOpen) setOpen(true);
+    if (manualOpen.current == null) setOpen(autoOpen);
   }, [autoOpen]);
+  const toggleOpen = () => {
+    setOpen(value => {
+      manualOpen.current = !value;
+      return !value;
+    });
+  };
   return (
     <div>
-      <button type="button" onClick={() => setOpen(value => !value)}
+      <button type="button" onClick={toggleOpen}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
-        <span>{running ? '正在执行' : failed ? '执行步骤包含失败' : '执行步骤'} · {items.length}</span>
+        <span>{summary}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -196,7 +362,11 @@ function ToolGroup({ group, now, renderToolItem, shouldAutoOpenToolGroup }) {
             if (custom !== undefined) return <React.Fragment key={item.id}>{custom}</React.Fragment>;
             return item.type === 'command_execution'
               ? <CommandExecutionItem key={item.id} item={item} now={now} />
-              : <GenericToolItem key={item.id} item={item} now={now} />;
+              : isSearchTool(item.tool)
+                ? <SearchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} />
+                : isFetchTool(item.tool)
+                  ? <FetchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} />
+                : <GenericToolItem key={item.id} item={item} now={now} />;
           })}
         </div>
       )}
@@ -294,6 +464,7 @@ function DefaultItem({
   responding,
   renderToolItem,
   shouldAutoOpenToolGroup,
+  onOpenExternal,
   agentLabel,
 }) {
   if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} />;
@@ -304,6 +475,7 @@ function DefaultItem({
         now={now}
         renderToolItem={renderToolItem}
         shouldAutoOpenToolGroup={shouldAutoOpenToolGroup}
+        onOpenExternal={onOpenExternal}
       />
     );
   }
@@ -338,14 +510,27 @@ export function ConversationTurn({
   renderItem,
   renderToolItem,
   shouldAutoOpenToolGroup,
+  onOpenExternal,
   agentLabel = 'Agent',
   assistantAvatar,
 }) {
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
+  const waitingInput = turn.waitingInput
+    || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
+  const waitingAttention = waitingPermission || waitingInput;
   const running = turn.status === 'running';
   const duration = formatElapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const showTerminalDuration = Boolean(turn.startedAt && turn.completedAt);
   const presentation = turn.presentation || turn.items || [];
+  const operationCount = Number(turn.operationCount || 0);
+  const failedOperationCount = Number(turn.failedOperationCount || 0);
+  const turnUsage = turn.usage || null;
+  const usageLabel = turnUsage && ('inputTokens' in turnUsage || 'outputTokens' in turnUsage)
+    ? `输入 ${Number(turnUsage.inputTokens || 0).toLocaleString()} · 输出 ${Number(turnUsage.outputTokens || 0).toLocaleString()}`
+    : turnUsage && turnUsage.size
+      ? `上下文 ${Number(turnUsage.used || 0).toLocaleString()} / ${Number(turnUsage.size || 0).toLocaleString()}`
+      : '';
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : turn.userText
@@ -369,9 +554,9 @@ export function ConversationTurn({
         )}
         <div className="min-w-0 flex-1 space-y-1">
           {running && (
-            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? '等待授权' : (turn.activityLabel || '正在处理')} · {duration}
+            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
+              {waitingPermission ? '等待授权' : waitingInput ? '等待输入' : (turn.activityLabel || '正在处理')} · {duration}
             </div>
           )}
           {presentation.map((item, index) => {
@@ -390,15 +575,21 @@ export function ConversationTurn({
                 responding={responding}
                 renderToolItem={renderToolItem}
                 shouldAutoOpenToolGroup={shouldAutoOpenToolGroup}
+                onOpenExternal={onOpenExternal}
                 agentLabel={agentLabel}
               />
             );
           })}
-          {(turn.completedAt || turn.error) && (
-            <div className="flex items-center gap-2 pt-2">
+          {(turn.lifecycleKnown || turn.completedAt || turn.error) && !running && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-2">
               <ConversationStatusBadge status={turn.status} />
-              {turn.startedAt && <span className="text-[11px] text-gray-400">{duration}</span>}
-              {turn.usage && <span className="text-[11px] text-gray-400">上下文 {Number(turn.usage.used || 0).toLocaleString()} / {Number(turn.usage.size || 0).toLocaleString()}</span>}
+              {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}
+              {operationCount > 0 && (
+                <span className="text-[11px] text-gray-400">
+                  执行 {operationCount} 项{failedOperationCount ? ` · ${failedOperationCount} 项失败` : ''}
+                </span>
+              )}
+              {usageLabel && <span className="text-[11px] text-gray-400">{usageLabel}</span>}
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
             </div>
           )}

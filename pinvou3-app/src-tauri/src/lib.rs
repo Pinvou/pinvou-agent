@@ -566,6 +566,8 @@ pub fn run() {
             commands::codex::get_codex_acp_timeline,
             commands::codex::get_codex_acp_pending_permissions,
             commands::codex::respond_codex_acp_permission,
+            commands::codex::get_codex_acp_pending_elicitations,
+            commands::codex::respond_codex_acp_elicitation,
             commands::codex::list_codex_acp_sessions,
             commands::codex::create_codex_acp_session,
             commands::settings::test_model_connection,

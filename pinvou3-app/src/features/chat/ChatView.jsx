@@ -11,6 +11,7 @@ import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import { isFetchTool, isSearchTool } from '../conversation/conversation-model.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
@@ -387,6 +388,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         thinking: bs && bs.thinking,
         tokens: ctxTokens,
         sessionId: bs && bs.activeSessionId,
+        timelineEvents: bs && bs.turnTimeline,
       });
       const [conversationNow, setConversationNow] = useState(Date.now());
       useEffect(() => {
@@ -750,10 +752,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
 
           {/* Main Chat Area */}
-          {/* Web 有消息时底部留白由列表内的 spacer 承担(WebKit 不把尾部 padding 计入 scrollHeight);
-              空态不滚动无此问题,仍需 paddingBottom 让 justify-center 的欢迎语在悬浮输入框上方居中 */}
+          {/* 有消息时底部留白由列表内的实体 spacer 承担，避免 WebKitGTK/Safari
+              不把 overflow flex 容器的尾部 padding 完整计入 scrollHeight。
+              空态不滚动，仍需 paddingBottom 让欢迎语在悬浮输入框上方居中。 */}
           <div ref={scrollRef} data-testid="chat-scroll"
-            style={(isWeb && hasMessages) ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
+            style={hasMessages ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
             className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
@@ -810,9 +813,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                       );
                     }}
                     renderToolItem={(item) => item.legacyItem
-                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} />
+                      && !isSearchTool(item.tool)
+                      && !isFetchTool(item.tool)
+                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
                       : undefined}
                     shouldAutoOpenToolGroup={(group) => (group.items || []).some((item) => item.status === 'in_progress')}
+                    onOpenExternal={openChatExternalUrl}
                   />
                 ) : (
                   <>
@@ -833,13 +839,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
                   </>
                 )}
-                {/* WebKit does not reliably include trailing padding on an overflow flex
-                    container in scrollHeight. Use a real, non-shrinking flex item so the
-                    final message can always scroll fully above the floating composer. */}
-                {isWeb && (
-                  <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
-                    style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
-                )}
+                {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
+                    完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
+                <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
+                  style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
               </div>
             )}
 
@@ -847,7 +850,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
-            style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
+            style={{ height: (composerH ? composerH + 48 : 172) + 'px' }} />
           {hasMessages && showScrollBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
               style={{ bottom: (composerH ? composerH + 54 : 172) + 'px' }}>

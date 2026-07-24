@@ -12,6 +12,7 @@ import {
   resolveAcpSessionControls,
 } from './acp-state.js';
 import { ConversationTurn } from '../conversation/ConversationTimeline.jsx';
+import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import {
   invokeTauri,
   listenTauri,
@@ -342,7 +343,95 @@ function PermissionCard({ permission, pending, onRespond, responding }) {
   );
 }
 
-function TurnItem({ item, now, pendingByTool, onRespond, responding }) {
+function ElicitationCard({ elicitation, pending, onRespond, responding }) {
+  const request = elicitation.request || {};
+  const schema = request.requestedSchema || {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const fields = Object.entries(schema.properties || {});
+  const otherFields = new Map(fields
+    .filter(([, field]) => field && field._meta && field._meta.codex && field._meta.codex.isOtherAnswer)
+    .map(([id, field]) => [String(field._meta.codex.questionId || ''), { id, field }]));
+  const questions = fields.filter(([, field]) => (
+    !(field && field._meta && field._meta.codex && field._meta.codex.isOtherAnswer)
+  ));
+  const actionable = !!pending && !elicitation.resolved;
+
+  function choices(field) {
+    if (Array.isArray(field && field.oneOf)) {
+      return field.oneOf.map(option => ({
+        value: option && option.const,
+        label: option && (option.title || option.const),
+        description: option && option.description,
+      })).filter(option => option.value != null);
+    }
+    if (Array.isArray(field && field.enum)) {
+      return field.enum.map(value => ({ value, label: String(value), description: '' }));
+    }
+    return [];
+  }
+
+  const normalizedQuestions = questions.map(([id, field]) => {
+    const other = otherFields.get(id);
+    return {
+      id,
+      answerKey: id,
+      otherAnswerKey: other && other.id,
+      header: field.title || id,
+      question: field.description || '',
+      options: choices(field),
+      allowOther: Boolean(other),
+      otherPlaceholder: other && (other.field.title || 'Other'),
+      required: required.has(id)
+        || Boolean(field && field._meta && field._meta.codex && field._meta.codex.isOther),
+      inputType: field.type || 'string',
+      secret: Boolean(field && field._meta && field._meta.codex && field._meta.codex.isSecret),
+    };
+  });
+
+  function submit(groups) {
+    const content = {};
+    for (const group of groups) {
+      const custom = group.answers.find(answer => answer.other);
+      if (custom && group.otherAnswerKey) {
+        content[group.otherAnswerKey] = custom.value;
+      } else if (group.multiSelect) {
+        content[group.answerKey] = group.answers.map(answer => answer.value);
+      } else if (group.answers[0]) {
+        content[group.answerKey] = group.answers[0].value;
+      }
+    }
+    onRespond(elicitation.elicitationId, 'accept', content);
+  }
+
+  return (
+    <QuestionChoiceCard
+      title="Codex 需要你的选择"
+      description={request.message && request.message !== 'Input requested' ? request.message : ''}
+      questions={normalizedQuestions}
+      resolved={!actionable}
+      submitting={responding}
+      statusText={!actionable
+        ? elicitation.resolved
+          ? (elicitation.action === 'accept' ? '已提交' : '已取消')
+          : '该输入请求已过期'
+        : ''}
+      onSubmit={submit}
+      onCancel={actionable
+        ? () => onRespond(elicitation.elicitationId, 'cancel', {})
+        : undefined}
+    />
+  );
+}
+
+function TurnItem({
+  item,
+  now,
+  pendingByTool,
+  pendingByElicitation,
+  onRespond,
+  onRespondElicitation,
+  responding,
+}) {
   if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} />;
   if (item.type === 'tool_group') return <ToolGroup group={item} now={now} />;
   if (item.type === 'plan') return <PlanBlock plan={item.plan} />;
@@ -351,6 +440,14 @@ function TurnItem({ item, now, pendingByTool, onRespond, responding }) {
       <PermissionCard permission={item.permission}
         pending={pendingByTool[item.permission.toolCallId]}
         onRespond={onRespond} responding={responding} />
+    );
+  }
+  if (item.type === 'elicitation') {
+    return (
+      <ElicitationCard elicitation={item.elicitation}
+        pending={pendingByElicitation[item.elicitation.elicitationId]}
+        onRespond={onRespondElicitation}
+        responding={responding} />
     );
   }
   if (item.type === 'agent_message') {
@@ -362,8 +459,17 @@ function TurnItem({ item, now, pendingByTool, onRespond, responding }) {
   return null;
 }
 
-function Turn({ turn, now, pendingByTool, onRespond, responding }) {
+function Turn({
+  turn,
+  now,
+  pendingByTool,
+  pendingByElicitation,
+  onRespond,
+  onRespondElicitation,
+  responding,
+}) {
   const waitingPermission = turn.permissions.some(permission => !permission.resolved);
+  const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
   const running = turn.status === 'running';
   const duration = formatElapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
   return (
@@ -381,14 +487,16 @@ function Turn({ turn, now, pendingByTool, onRespond, responding }) {
         </div>
         <div className="min-w-0 flex-1 space-y-1">
           {running && (
-            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? '等待授权' : '正在处理'} · {duration}
+            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission || waitingInput ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission || waitingInput ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
+              {waitingPermission ? '等待授权' : waitingInput ? '等待输入' : '正在处理'} · {duration}
             </div>
           )}
           {turn.presentation.map((item, index) => (
             <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
-              pendingByTool={pendingByTool} onRespond={onRespond} responding={responding} />
+              pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
+              onRespond={onRespond} onRespondElicitation={onRespondElicitation}
+              responding={responding} />
           ))}
           {(turn.completedAt || turn.error) && (
             <div className="flex items-center gap-2 pt-2">
@@ -481,6 +589,7 @@ export function CodexAcpView({ theme }) {
   const [activeId, setActiveId] = useState(() => localStorage.getItem('pinvou_codex_active_session') || null);
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]);
+  const [pendingElicitations, setPendingElicitations] = useState([]);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [draft, setDraft] = useState('');
   const [now, setNow] = useState(Date.now());
@@ -502,6 +611,10 @@ export function CodexAcpView({ theme }) {
     return Array.isArray(update.availableCommands) ? update.availableCommands : [];
   }, [projection.global]);
   const pendingByTool = useMemo(() => Object.fromEntries(pending.map(item => [item.toolCallId, item])), [pending]);
+  const pendingByElicitation = useMemo(
+    () => Object.fromEntries(pendingElicitations.map(item => [item.elicitationId, item])),
+    [pendingElicitations],
+  );
   const busy = projection.turns.some(turn => turn.status === 'running');
   const activeSession = useMemo(
     () => sessions.find(session => session.id === activeId) || null,
@@ -531,12 +644,14 @@ export function CodexAcpView({ theme }) {
     localStorage.setItem('pinvou_codex_active_session', id);
     setError('');
     setSessionInfo(null);
-    const [timeline, permissions] = await Promise.all([
+    const [timeline, permissions, elicitations] = await Promise.all([
       invoke('get_codex_acp_timeline', { sessionId: id }),
       invoke('get_codex_acp_pending_permissions', { sessionId: id }),
+      invoke('get_codex_acp_pending_elicitations', { sessionId: id }),
     ]);
     setEvents(timeline || []);
     setPending(permissions || []);
+    setPendingElicitations(elicitations || []);
     const runtime = status || await refreshStatus();
     if (runtime.installed && runtime.node_supported) {
       invoke('get_codex_acp_session_info', { sessionId: id })
@@ -581,6 +696,19 @@ export function CodexAcpView({ theme }) {
           setPending(current => [...current.filter(item => item.toolCallId !== data.toolCallId), {
             sessionId: incoming.sessionId, toolCallId: data.toolCallId, request: data.request,
           }]);
+        } else if (type === 'elicitation_requested') {
+          setPendingElicitations(current => [
+            ...current.filter(item => item.elicitationId !== data.elicitationId),
+            {
+              sessionId: incoming.sessionId,
+              elicitationId: data.elicitationId,
+              request: data.request,
+            },
+          ]);
+        } else if (type === 'elicitation_resolved') {
+          setPendingElicitations(current => current.filter(
+            item => item.elicitationId !== data.elicitationId,
+          ));
         } else if (type === 'permission_resolved' || type === 'turn_completed') {
           if (type === 'permission_resolved') setPending(current => current.filter(item => item.toolCallId !== data.toolCallId));
           refreshSessions().catch(() => {});
@@ -673,6 +801,23 @@ export function CodexAcpView({ theme }) {
     finally { setResponding(false); }
   }
 
+  async function respondElicitation(elicitationId, action, content) {
+    if (!activeId) return;
+    setResponding(true); setError('');
+    try {
+      await invoke('respond_codex_acp_elicitation', {
+        sessionId: activeId,
+        elicitationId,
+        action,
+        content,
+      });
+      setPendingElicitations(current => current.filter(
+        item => item.elicitationId !== elicitationId,
+      ));
+    } catch (err) { setError(String(err)); }
+    finally { setResponding(false); }
+  }
+
   async function changeModel(modelId) {
     if (!activeId || !modelId) return;
     setWorking(true); setConfigApplying('model');
@@ -708,7 +853,7 @@ export function CodexAcpView({ theme }) {
     const next = await refreshSessions();
     const replacement = next.find(item => item.id !== id);
     if (activeId === id) {
-      setActiveId(null); setEvents([]); setPending([]); setSessionInfo(null);
+      setActiveId(null); setEvents([]); setPending([]); setPendingElicitations([]); setSessionInfo(null);
       localStorage.removeItem('pinvou_codex_active_session');
       if (replacement) await openSession(replacement.id);
     }
@@ -850,10 +995,28 @@ export function CodexAcpView({ theme }) {
                     pendingByTool={pendingByTool}
                     onRespond={respond}
                     responding={responding}
+                    renderItem={(item) => item.type === 'elicitation'
+                      ? (
+                          <ElicitationCard
+                            elicitation={item.elicitation}
+                            pending={pendingByElicitation[item.elicitation.elicitationId]}
+                            onRespond={respondElicitation}
+                            responding={responding}
+                          />
+                        )
+                      : undefined}
                     agentLabel="Codex"
+                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(err => setError(String(err)))}
                   />
                 )
-              : <Turn key={turn.id} turn={turn} now={now} pendingByTool={pendingByTool} onRespond={respond} responding={responding} />)}
+              : (
+                  <Turn key={turn.id} turn={turn} now={now}
+                    pendingByTool={pendingByTool}
+                    pendingByElicitation={pendingByElicitation}
+                    onRespond={respond}
+                    onRespondElicitation={respondElicitation}
+                    responding={responding} />
+                ))}
           </div>
         </div>
 

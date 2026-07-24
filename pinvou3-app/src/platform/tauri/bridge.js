@@ -162,6 +162,10 @@
     composerPrefill: { id: 0, text: "" },
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
+    // DeepSeek Turn 生命周期(user_start / assistant_done)，来自 timing_events.jsonl；
+    // 纯展示诊断数据，不进入 messages 或 LLM 上下文。
+    turnTimeline: [],
+    activeTurnTimelineId: null,
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
     // pos = 事件发生时的 messages 数, rerender 时按 pos 插回原位, 让重载历史不割裂。
     personaEvents: [],
@@ -361,6 +365,7 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
@@ -381,6 +386,7 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -401,6 +407,7 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
@@ -831,7 +838,7 @@
   var STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
@@ -875,6 +882,7 @@
       saveWorkingSetTo(getBuffer(sid));
       return {
         messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
+        turnTimeline: state.turnTimeline,
         busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
       };
     }
@@ -1059,12 +1067,27 @@
     };
   }
 
-  // 定时会话由 Engine 持久化原始送模消息；展示时只投影真实任务正文。
-  // 原始 blocks 保持不变，供模型续聊；普通会话也不受内部标签过滤影响。
+  function userMessageInputProvenance(blocks) {
+    var textBlocks = Array.isArray(blocks) ? blocks : [];
+    for (var i = 0; i < textBlocks.length; i++) {
+      var block = textBlocks[i];
+      if (!block || block.type !== "text") continue;
+      var text = String(block.text || "").trim();
+      if (text.indexOf("<turn_meta>") !== 0) continue;
+      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
+      if (match && match[1]) return match[1].trim();
+    }
+    return "";
+  }
+
+  // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
+  // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
+  // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (userMessageInputProvenance(blocks) === "runtime") return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {

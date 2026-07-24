@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     SessionNotification, SessionUpdate, ToolCall, ToolCallStatus, ToolCallUpdate,
 };
 use anyhow::{bail, Context, Result};
@@ -226,6 +226,8 @@ impl EventBridge {
             "turn_completed" => envelope.event.data["status"].as_str(),
             "permission_requested" => Some("waiting_permission"),
             "permission_resolved" => Some("running"),
+            "elicitation_requested" => Some("waiting_input"),
+            "elicitation_resolved" => Some("running"),
             "cancel_requested" => Some("cancelling"),
             "runtime_error" => Some("error"),
             _ => None,

@@ -237,7 +237,9 @@
         });
         if (concurrentTurn && turnOwnerBuffer) markRemoteTurn(sid, turnOwnerBuffer);
         runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
+          addSystemItem(concurrentTurn
+            ? bt("turnAlreadyInProgress")
+            : "⚠️ " + (err && err.toString ? err.toString() : err));
         });
         notify();
         if (surfaceFailure) throw err;

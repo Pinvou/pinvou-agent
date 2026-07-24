@@ -2840,6 +2840,7 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "get_session_model_id"
         | "get_session_persona_events"
         | "get_session_pinvou_reviews"
+        | "get_session_timeline"
         | "get_workflow_state"
         | "list_shell_tasks"
         | "list_workspace_files"
@@ -4279,6 +4280,7 @@ mod tests {
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
+            "get_session_timeline",
             "kick_workflow",
             "stop_workflow",
             "web_access_chat",

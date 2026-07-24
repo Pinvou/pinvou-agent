@@ -5,6 +5,16 @@ const OSC_SEQUENCE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 const CSI_SEQUENCE = new RegExp(`(?:${ESC}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g');
 const SINGLE_ESCAPE_SEQUENCE = new RegExp(`${ESC}[()][0-2A-Z]`, 'g');
 const OPERATION_ITEM_TYPES = new Set(['command_execution', 'file_change', 'tool']);
+const SEARCH_TOOL_NAMES = new Set([
+  'web_search',
+  'mcp_iwencai_news_search',
+  'search_web',
+]);
+const FETCH_TOOL_NAMES = new Set([
+  'fetch_url',
+  'web_fetch',
+  'web.fetch',
+]);
 
 /**
  * 浏览器不是终端，展示命令和输出前清理 ANSI、OSC 超链接等控制序列。
@@ -14,6 +24,146 @@ export function stripTerminalControlSequences(value) {
     .replace(OSC_SEQUENCE, '')
     .replace(CSI_SEQUENCE, '')
     .replace(SINGLE_ESCAPE_SEQUENCE, '');
+}
+
+function searchToolName(tool) {
+  return String(tool && (tool.name || tool.title) || '').trim().toLowerCase();
+}
+
+export function isSearchTool(tool) {
+  const name = searchToolName(tool);
+  return String(tool && tool.kind || '').toLowerCase() === 'search'
+    || SEARCH_TOOL_NAMES.has(name);
+}
+
+export function isFetchTool(tool) {
+  const name = searchToolName(tool);
+  return String(tool && tool.kind || '').toLowerCase() === 'fetch'
+    || FETCH_TOOL_NAMES.has(name);
+}
+
+function decodeSearchFragment(value) {
+  return String(value || '')
+    .replace(/\\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .trim();
+}
+
+function searchSourceLabel(name, rawOutput) {
+  const sourceMatch = String(rawOutput || '').match(/"source"\s*:\s*"([^"]+)"/i);
+  const source = sourceMatch && sourceMatch[1] ? sourceMatch[1].trim() : '';
+  if (source) return source.toLowerCase() === 'bing' ? 'Bing' : source;
+  if (name === 'mcp_iwencai_news_search') return '同花顺新闻';
+  if (name === 'web_search') return '网页搜索';
+  return '搜索';
+}
+
+function validSearchUrl(value) {
+  const url = decodeSearchFragment(value);
+  return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+}
+
+function collectSearchResults(rawOutput) {
+  const text = decodeSearchFragment(rawOutput);
+  const results = [];
+  const seen = new Set();
+  function add(titleValue, urlValue) {
+    const title = decodeSearchFragment(titleValue).replace(/\s+/g, ' ');
+    const url = validSearchUrl(urlValue);
+    if (!title || !url || seen.has(url)) return;
+    seen.add(url);
+    results.push({ title, url });
+  }
+
+  // web_search: title 紧邻 url；同花顺新闻 MCP: url 后夹带 id/uid 等字段再到 title。
+  let match;
+  const titleThenUrl = /"title"\s*:\s*"([^"\n]{1,500})"\s*,\s*"url"\s*:\s*"([^"\n]{1,2000})"/g;
+  while ((match = titleThenUrl.exec(text))) add(match[1], match[2]);
+  const urlThenTitle = /"url"\s*:\s*"(https?:[^"\n]{1,2000})"[\s\S]{0,700}?"title"\s*:\s*"([^"\n]{1,500})"/g;
+  while ((match = urlThenTitle.exec(text))) add(match[2], match[1]);
+  return results;
+}
+
+export function searchToolDetails(tool) {
+  if (!isSearchTool(tool)) return null;
+  const rawInput = tool && tool.rawInput && typeof tool.rawInput === 'object'
+    ? tool.rawInput
+    : {};
+  const rawOutputValue = tool && (tool.rawOutput != null ? tool.rawOutput : tool.content);
+  const rawOutput = typeof rawOutputValue === 'string'
+    ? rawOutputValue
+    : rawOutputValue == null
+      ? ''
+      : JSON.stringify(rawOutputValue, null, 2);
+  const name = searchToolName(tool);
+  const countMatch = rawOutput.match(/"count"\s*:\s*(\d+)/i);
+  const query = String(rawInput.query || rawInput.q || rawInput.keyword || '').trim();
+  const results = collectSearchResults(rawOutput);
+  return {
+    query,
+    source: searchSourceLabel(name, rawOutput),
+    count: countMatch ? Number(countMatch[1]) : null,
+    results,
+    rawOutput,
+    compacted: /compacted to protect context|output truncated for context|\(Original:\s*\d+\s+chars/i.test(rawOutput),
+  };
+}
+
+function fetchContentTypeLabel(contentType) {
+  const normalized = String(contentType || '').toLowerCase();
+  if (normalized.includes('html')) return 'HTML';
+  if (normalized.includes('json')) return 'JSON';
+  if (normalized.includes('markdown')) return 'Markdown';
+  if (normalized.startsWith('text/')) return '文本';
+  return normalized ? contentType : '网页内容';
+}
+
+export function fetchToolDetails(tool) {
+  if (!isFetchTool(tool)) return null;
+  const rawInput = tool && tool.rawInput && typeof tool.rawInput === 'object'
+    ? tool.rawInput
+    : {};
+  const rawOutputValue = tool && (tool.rawOutput != null ? tool.rawOutput : tool.content);
+  const rawOutput = typeof rawOutputValue === 'string'
+    ? rawOutputValue
+    : rawOutputValue == null
+      ? ''
+      : JSON.stringify(rawOutputValue, null, 2);
+  let payload = rawOutputValue && typeof rawOutputValue === 'object' ? rawOutputValue : null;
+  if (!payload && rawOutput) {
+    try { payload = JSON.parse(rawOutput); } catch (_) {}
+  }
+  payload = payload && typeof payload === 'object' ? payload : {};
+  const url = String(payload.url || rawInput.url || '').trim();
+  let hostname = '';
+  let target = url;
+  try {
+    const parsed = new URL(url);
+    hostname = parsed.hostname.replace(/^www\./, '');
+    const path = parsed.pathname === '/' ? '' : parsed.pathname;
+    target = `${hostname}${path.length > 36 ? `${path.slice(0, 36)}…` : path}`;
+  } catch (_) {}
+  const statusValue = payload.status;
+  const status = statusValue == null || statusValue === '' ? null : Number(statusValue);
+  const content = typeof payload.content === 'string' ? payload.content : '';
+  const preview = content.replace(/\s+/g, ' ').trim().slice(0, 320);
+  const contentType = String(payload.content_type
+    || (payload.headers && (payload.headers['content-type'] || payload.headers['Content-Type']))
+    || '');
+  return {
+    url,
+    hostname,
+    target: target || hostname || '网页',
+    status: Number.isFinite(status) ? status : null,
+    contentType,
+    contentTypeLabel: fetchContentTypeLabel(contentType),
+    contentLength: content.length,
+    preview,
+    truncated: payload.truncated === true,
+    rawOutput,
+  };
 }
 
 /**

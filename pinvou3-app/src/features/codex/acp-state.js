@@ -45,11 +45,16 @@ function emptyTurn(id) {
     planBlockIndex: null,
     permissions: [],
     permissionBlockIndex: {},
+    elicitations: [],
+    elicitationBlockIndex: {},
+    waitingInput: false,
     usage: null,
     status: 'idle',
     error: null,
     startedAt: null,
     completedAt: null,
+    operationCount: 0,
+    failedOperationCount: 0,
   };
 }
 
@@ -117,6 +122,13 @@ function normalizeTurnItems(turn) {
         ...block,
         status: block.permission.resolved ? 'completed' : 'waiting',
         completedAt: block.permission.resolvedAt || null,
+      };
+    }
+    if (block.type === 'elicitation') {
+      return {
+        ...block,
+        status: block.elicitation.resolved ? 'completed' : 'waiting',
+        completedAt: block.elicitation.resolvedAt || null,
       };
     }
     if (block.type === 'plan') {
@@ -260,6 +272,39 @@ export function projectAcpTimeline(input) {
         const block = turn.blocks[turn.permissionBlockIndex[item.toolCallId]];
         if (block) block.updatedAt = envelope.timestamp;
       }
+    } else if (type === 'elicitation_requested') {
+      const request = data.request || {};
+      const elicitation = {
+        elicitationId: String(data.elicitationId || ''),
+        request,
+        resolved: false,
+        requestedAt: envelope.timestamp,
+        resolvedAt: null,
+      };
+      turn.elicitations.push(elicitation);
+      turn.elicitationBlockIndex[elicitation.elicitationId] = turn.blocks.length;
+      turn.blocks.push({
+        id: `elicitation-${elicitation.elicitationId || envelope.seq}`,
+        type: 'elicitation',
+        elicitation,
+        seq: envelope.seq,
+        startedAt: envelope.timestamp,
+        updatedAt: envelope.timestamp,
+      });
+    } else if (type === 'elicitation_resolved') {
+      const item = [...turn.elicitations].reverse().find(
+        elicitation => elicitation.elicitationId === String(data.elicitationId || '')
+          && !elicitation.resolved,
+      );
+      if (item) {
+        Object.assign(item, {
+          resolved: true,
+          resolvedAt: envelope.timestamp,
+          action: data.action,
+        });
+        const block = turn.blocks[turn.elicitationBlockIndex[item.elicitationId]];
+        if (block) block.updatedAt = envelope.timestamp;
+      }
     } else if (type === 'usage') {
       turn.usage = update;
     } else if (type === 'turn_started') {
@@ -273,8 +318,19 @@ export function projectAcpTimeline(input) {
   }
 
   for (const turn of turns) {
+    turn.waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
     turn.items = normalizeTurnItems(turn);
     turn.presentation = presentTurnItems(turn.items);
+    const operations = turn.items.filter(item => (
+      ['command_execution', 'file_change', 'tool'].includes(item.type)
+    ));
+    turn.operationCount = operations.length;
+    turn.failedOperationCount = operations.filter(item => {
+      if (String(item.status || '').toLowerCase() === 'failed') return true;
+      if (item.type !== 'command_execution') return false;
+      const exitCode = commandExecutionDetails(item.tool).exitCode;
+      return exitCode != null && exitCode !== 0;
+    }).length;
   }
   return {
     thread: {

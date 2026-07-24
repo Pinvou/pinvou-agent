@@ -9,8 +9,9 @@ use tauri::State;
 
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::codex_acp::{
-    validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingPermission,
-    CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo, CodexWorkspaceKind,
+    validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation,
+    CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
+    CodexWorkspaceKind,
 };
 use crate::features::sessions::{SessionKind, SessionStore};
 
@@ -182,6 +183,31 @@ pub async fn respond_codex_acp_permission(
         .respond_permission(&session_id, &tool_call_id, &option_id)
         .await
         .map_err(|error| format!("回复 Codex ACP 权限失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn get_codex_acp_pending_elicitations(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<CodexAcpPendingElicitation>, String> {
+    if !acp_pool.is_codex(&session_id) {
+        return Err("当前会话不是 Codex ACP 会话".to_string());
+    }
+    Ok(acp_pool.pending_elicitations_for(&session_id).await)
+}
+
+#[tauri::command]
+pub async fn respond_codex_acp_elicitation(
+    session_id: String,
+    elicitation_id: String,
+    action: String,
+    content: serde_json::Value,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    acp_pool
+        .respond_elicitation(&session_id, &elicitation_id, &action, content)
+        .await
+        .map_err(|error| format!("回复 Codex ACP 输入请求失败: {error:#}"))
 }
 
 /// Codex 页面拥有独立会话列表，DeepSeek 历史面板不会消费这些记录。

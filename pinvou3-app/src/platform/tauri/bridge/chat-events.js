@@ -55,6 +55,65 @@
         })
         .catch(function () {});
     }
+
+    function visibleUserTurnIndex() {
+      var count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
+      return Math.max(0, count - 1);
+    }
+
+    function latestOpenTimelineStart() {
+      var events = state.turnTimeline || [];
+      var completed = Object.create(null);
+      events.forEach(function (event) {
+        if (event && event.event === "assistant_done") completed[event.turn_id] = true;
+      });
+      for (var index = events.length - 1; index >= 0; index--) {
+        var event = events[index];
+        if (event && event.event === "user_start" && !completed[event.turn_id]) return event;
+      }
+      return null;
+    }
+
+    function recordTurnStarted() {
+      if (state.activeTurnTimelineId) return;
+      var timestamp = Date.now();
+      var turnIndex = visibleUserTurnIndex();
+      var existing = latestOpenTimelineStart();
+      if (existing && Math.abs(timestamp - Number(existing.timestamp || 0)) < 60000) {
+        existing.ui_turn_index = turnIndex;
+        state.activeTurnTimelineId = existing.turn_id;
+        return;
+      }
+      var turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
+      state.activeTurnTimelineId = turnId;
+      state.turnTimeline = (state.turnTimeline || []).concat([{
+        turn_id: turnId,
+        event: "user_start",
+        timestamp: timestamp,
+        ts: new Date(timestamp).toISOString(),
+        ui_turn_index: turnIndex,
+      }]);
+    }
+
+    function recordTurnCompleted(payload) {
+      var openStart = latestOpenTimelineStart();
+      var turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
+      if (!turnId) return;
+      var timestamp = Date.now();
+      var start = openStart || (state.turnTimeline || []).find(function (event) {
+        return event && event.turn_id === turnId && event.event === "user_start";
+      });
+      state.turnTimeline = (state.turnTimeline || []).concat([{
+        turn_id: turnId,
+        event: "assistant_done",
+        timestamp: timestamp,
+        ts: new Date(timestamp).toISOString(),
+        status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
+        error: payload && payload.error || null,
+        ui_turn_index: start && start.ui_turn_index,
+      }]);
+      state.activeTurnTimelineId = null;
+    }
     var markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     var trackArtifact = context.trackArtifact;
     var untrackArtifact = context.untrackArtifact;
@@ -188,6 +247,7 @@
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
     state.busy = true;
     if (!state.thinking.active) startThinking();
+    recordTurnStarted();
     notify();
   }); });
 
@@ -455,6 +515,7 @@
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
+      recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
       if (error) addSystemItem("⚠️ " + error);
       flushAssistantMessageToHistory();

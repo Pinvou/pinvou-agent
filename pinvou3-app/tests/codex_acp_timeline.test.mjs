@@ -54,10 +54,22 @@ try {
       options: [{ optionId: 'allow-once', name: '允许一次', kind: 'allow_once' }],
     } }),
     event(7, 'permission_resolved', { toolCallId: 'tool-2', optionId: 'allow-once', outcome: 'selected' }),
-    event(8, 'agent_message_chunk', { update: { content: { type: 'text', text: '已经完成' } } }),
-    event(9, 'agent_message_chunk', { update: { content: { type: 'text', text: '修改。' } } }),
-    event(11, 'usage', { update: { used: 120, size: 1000 } }),
-    event(10, 'turn_completed', { status: 'Completed', error: null }),
+    event(8, 'elicitation_requested', { elicitationId: 'input-1', request: {
+      mode: 'form',
+      message: '请选择实现方式',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          stack: { type: 'string', title: '技术栈', oneOf: [{ const: '原生', title: '原生' }] },
+        },
+        required: ['stack'],
+      },
+    } }),
+    event(9, 'elicitation_resolved', { elicitationId: 'input-1', action: 'accept' }),
+    event(10, 'agent_message_chunk', { update: { content: { type: 'text', text: '已经完成' } } }),
+    event(11, 'agent_message_chunk', { update: { content: { type: 'text', text: '修改。' } } }),
+    event(13, 'usage', { update: { used: 120, size: 1000 } }),
+    event(12, 'turn_completed', { status: 'Completed', error: null }),
   ];
 
   const projected = projectAcpTimeline([events[4], ...events, events[4]]);
@@ -71,23 +83,42 @@ try {
   assert.deepEqual(turn.tools[0].rawInput, { path: 'README.md' });
   assert.deepEqual(turn.tools[0].rawOutput, { text: '# PINVOU' });
   assert.equal(turn.permissions[0].resolved, true);
+  assert.equal(turn.elicitations[0].resolved, true);
+  assert.equal(turn.elicitations[0].action, 'accept');
+  assert.equal(turn.waitingInput, false);
   assert.equal(turn.status, 'Completed');
   assert.equal(turn.usage.used, 120);
-  assert.deepEqual(turn.blocks.map(block => block.type), ['thought', 'tool', 'permission', 'message']);
+  assert.deepEqual(
+    turn.blocks.map(block => block.type),
+    ['thought', 'tool', 'permission', 'elicitation', 'message'],
+  );
   assert.equal(turn.blocks[1].tool.status, 'completed', 'tool block must update in its original position');
   assert.equal(projected.thread.turns, projected.turns, 'thread must own the projected turns');
   assert.deepEqual(
     turn.items.map(item => item.type),
-    ['reasoning', 'tool', 'permission', 'agent_message'],
+    ['reasoning', 'tool', 'permission', 'elicitation', 'agent_message'],
     'ACP blocks must normalize to Codex Turn Items',
   );
   assert.deepEqual(
     turn.presentation.map(item => item.type),
-    ['reasoning', 'tool_group', 'permission', 'agent_message'],
+    ['reasoning', 'tool_group', 'permission', 'elicitation', 'agent_message'],
     'operation items must be grouped only in the presentation layer',
   );
+  assert.equal(turn.operationCount, 1);
+  assert.equal(turn.failedOperationCount, 0);
   assert.equal(turn.items[0].status, 'completed', 'reasoning must close when the next item starts');
   assert.equal(turn.items[2].status, 'completed', 'resolved permission must be terminal');
+  assert.equal(turn.items[3].status, 'completed', 'resolved elicitation must be terminal');
+
+  const pendingInputTurn = projectAcpTimeline([
+    event(14, 'turn_started', { status: 'running' }, 'turn-input'),
+    event(15, 'elicitation_requested', {
+      elicitationId: 'input-pending',
+      request: { mode: 'form', requestedSchema: { type: 'object', properties: {} } },
+    }, 'turn-input'),
+  ]).turns[0];
+  assert.equal(pendingInputTurn.waitingInput, true);
+  assert.equal(pendingInputTurn.items[0].status, 'waiting');
 
   const commandEvents = [
     event(20, 'user_message', { content: [{ type: 'text', text: '检查 PR' }] }, 'turn-command'),
@@ -120,6 +151,8 @@ try {
   assert.equal(command.cwd, '/workspace/pinvou3');
   assert.equal(command.exitCode, 0);
   assert.equal(command.commandCount, 2);
+  assert.equal(commandTurn.operationCount, 1);
+  assert.equal(commandTurn.failedOperationCount, 0);
   assert.ok(command.output.includes('Unknown JSON field'));
   assert.equal(
     command.output,
@@ -175,6 +208,8 @@ try {
   assert.ok(chatCommands.includes('Codex ACP 会话必须通过独立 Codex 页面发送'));
   assert.ok(codexCommands.includes('pub async fn codex_acp_prompt'));
   assert.ok(codexCommands.includes('pub async fn set_codex_acp_mode'));
+  assert.ok(codexCommands.includes('pub async fn get_codex_acp_pending_elicitations'));
+  assert.ok(codexCommands.includes('pub async fn respond_codex_acp_elicitation'));
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
@@ -204,6 +239,14 @@ try {
     'running operation groups must remain compact by default');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', { sessionId: activeId, message })"));
+  assert.ok(codexView.includes('function ElicitationCard'),
+    'Codex request_user_input must have a first-class conversation item');
+  assert.ok(codexView.includes('<QuestionChoiceCard'),
+    'Codex and DeepSeek must share the same choice-card presentation');
+  assert.ok(codexView.includes("invoke('get_codex_acp_pending_elicitations'"),
+    'pending Codex input requests must recover when a session is reopened');
+  assert.ok(codexView.includes("invoke('respond_codex_acp_elicitation'"),
+    'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),

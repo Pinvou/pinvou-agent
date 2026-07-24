@@ -7,21 +7,24 @@ mod events;
 mod runtime;
 mod store;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_client_protocol::schema::{
-    CancelNotification, ContentBlock, Implementation, InitializeRequest, LoadSessionRequest,
-    NewSessionRequest, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+use agent_client_protocol::schema::v1::{
+    CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationRequest,
+    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
+    ElicitationContentValue, ElicitationFormCapabilities, Implementation, InitializeRequest,
+    LoadSessionRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionModeState,
-    SessionModelState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, StopReason, TextContent,
+    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
+    TextContent,
 };
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -86,6 +89,7 @@ pub struct CodexAcpSessionInfo {
     pub modes: Option<SessionModeState>,
     pub config_options: Vec<SessionConfigOption>,
     pub pending_permissions: Vec<CodexAcpPendingPermission>,
+    pub pending_elicitations: Vec<CodexAcpPendingElicitation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,10 +107,23 @@ pub struct CodexAcpPendingPermission {
     pub request: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAcpPendingElicitation {
+    pub session_id: String,
+    pub elicitation_id: String,
+    pub request: serde_json::Value,
+}
+
 struct PendingPermission {
     view: CodexAcpPendingPermission,
     option_ids: Vec<String>,
     response_tx: oneshot::Sender<RequestPermissionResponse>,
+}
+
+struct PendingElicitation {
+    view: CodexAcpPendingElicitation,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
 }
 
 struct AcpSession {
@@ -205,7 +222,11 @@ impl AcpSession {
         let _ = child.kill().await;
     }
 
-    fn info(&self, pending_permissions: Vec<CodexAcpPendingPermission>) -> CodexAcpSessionInfo {
+    fn info(
+        &self,
+        pending_permissions: Vec<CodexAcpPendingPermission>,
+        pending_elicitations: Vec<CodexAcpPendingElicitation>,
+    ) -> CodexAcpSessionInfo {
         CodexAcpSessionInfo {
             session_id: self.acp_session_id.clone(),
             current_model_id: self.current_model.read().clone(),
@@ -213,21 +234,21 @@ impl AcpSession {
             modes: self.modes.read().clone(),
             config_options: self.config_options.read().clone(),
             pending_permissions,
+            pending_elicitations,
         }
     }
 
     async fn set_model(&self, model_id: &str) -> Result<()> {
-        if !self.models.iter().any(|model| model.id == model_id) {
-            bail!("Codex ACP 模型不存在: {model_id}");
-        }
-        self.connection
-            .send_request(SetSessionModelRequest::new(
-                self.acp_session_id.clone(),
-                model_id.to_string(),
-            ))
-            .block_task()
-            .await
-            .context("Codex ACP session/set_model 失败")?;
+        let mut options = self.config_options.read().clone();
+        apply_config_option(
+            &self.connection,
+            &self.acp_session_id,
+            &mut options,
+            "model",
+            model_id,
+        )
+        .await?;
+        *self.config_options.write() = options;
         *self.current_model.write() = Some(model_id.to_string());
         Ok(())
     }
@@ -252,6 +273,7 @@ pub struct AcpPool {
     app: AppHandle,
     sessions: Arc<Mutex<HashMap<String, Arc<AcpSession>>>>,
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
+    pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
     agents: SessionAgentStore,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
@@ -355,6 +377,7 @@ impl AcpPool {
             app,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+            pending_elicitations: Arc::new(Mutex::new(HashMap::new())),
             agents: SessionAgentStore::load_or_empty(),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
@@ -601,6 +624,7 @@ impl AcpPool {
 
     pub async fn cancel(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
+        self.cancel_pending_elicitations(session_id).await;
         if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
             runtime.cancel();
             runtime
@@ -611,6 +635,7 @@ impl AcpPool {
 
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
+        self.cancel_pending_elicitations(session_id).await;
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
         }
@@ -620,8 +645,12 @@ impl AcpPool {
         if !self.is_codex(session_id) {
             bail!("当前会话不是 Codex ACP 会话");
         }
-        let pending = self.pending_permissions_for(session_id).await;
-        Ok(self.get_or_spawn(session_id).await?.info(pending))
+        let pending_permissions = self.pending_permissions_for(session_id).await;
+        let pending_elicitations = self.pending_elicitations_for(session_id).await;
+        Ok(self
+            .get_or_spawn(session_id)
+            .await?
+            .info(pending_permissions, pending_elicitations))
     }
 
     pub async fn set_model(&self, session_id: &str, model_id: &str) -> Result<CodexAcpSessionInfo> {
@@ -629,7 +658,10 @@ impl AcpPool {
         runtime.set_model(model_id).await?;
         self.agents
             .set_acp_model(session_id, Some(model_id.to_string()))?;
-        let info = runtime.info(self.pending_permissions_for(session_id).await);
+        let info = runtime.info(
+            self.pending_permissions_for(session_id).await,
+            self.pending_elicitations_for(session_id).await,
+        );
         patch_acp_state(session_id, json!({ "session": &info }))?;
         Ok(info)
     }
@@ -676,7 +708,10 @@ impl AcpPool {
             "config_change_applied",
             json!({ "configId": config_id, "valueId": value_id }),
         );
-        let info = runtime.info(self.pending_permissions_for(session_id).await);
+        let info = runtime.info(
+            self.pending_permissions_for(session_id).await,
+            self.pending_elicitations_for(session_id).await,
+        );
         patch_acp_state(session_id, json!({ "session": &info }))?;
         Ok(info)
     }
@@ -716,7 +751,10 @@ impl AcpPool {
             "config_change_applied",
             json!({ "configId": "mode", "valueId": mode_id }),
         );
-        let info = runtime.info(self.pending_permissions_for(session_id).await);
+        let info = runtime.info(
+            self.pending_permissions_for(session_id).await,
+            self.pending_elicitations_for(session_id).await,
+        );
         patch_acp_state(session_id, json!({ "session": &info }))?;
         Ok(info)
     }
@@ -733,6 +771,19 @@ impl AcpPool {
         session_id: &str,
     ) -> Vec<CodexAcpPendingPermission> {
         self.pending_permissions
+            .lock()
+            .await
+            .values()
+            .filter(|pending| pending.view.session_id == session_id)
+            .map(|pending| pending.view.clone())
+            .collect()
+    }
+
+    pub async fn pending_elicitations_for(
+        &self,
+        session_id: &str,
+    ) -> Vec<CodexAcpPendingElicitation> {
+        self.pending_elicitations
             .lock()
             .await
             .values()
@@ -780,6 +831,47 @@ impl AcpPool {
         Ok(())
     }
 
+    pub async fn respond_elicitation(
+        &self,
+        session_id: &str,
+        elicitation_id: &str,
+        action: &str,
+        content: serde_json::Value,
+    ) -> Result<()> {
+        let response = match action {
+            "accept" => {
+                let content =
+                    serde_json::from_value::<BTreeMap<String, ElicitationContentValue>>(content)
+                        .context("输入答案格式不符合 ACP elicitation schema")?;
+                CreateElicitationResponse::new(ElicitationAcceptAction::new().content(content))
+            }
+            "decline" => CreateElicitationResponse::new(ElicitationAction::Decline),
+            "cancel" => CreateElicitationResponse::new(ElicitationAction::Cancel),
+            _ => bail!("不支持的输入请求操作: {action}"),
+        };
+        let key = elicitation_key(session_id, elicitation_id);
+        let request = self
+            .pending_elicitations
+            .lock()
+            .await
+            .remove(&key)
+            .context("输入请求已过期、已回复或不属于当前会话")?;
+        request
+            .response_tx
+            .send(response)
+            .map_err(|_| anyhow::anyhow!("Codex ACP 输入请求已关闭"))?;
+        if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
+            runtime.bridge.emit(
+                "elicitation_resolved",
+                json!({
+                    "elicitationId": elicitation_id,
+                    "action": action,
+                }),
+            );
+        }
+        Ok(())
+    }
+
     async fn cancel_pending_permissions(&self, session_id: &str) {
         let mut pending = self.pending_permissions.lock().await;
         let keys = pending
@@ -792,6 +884,36 @@ impl AcpPool {
                 let _ = request.response_tx.send(RequestPermissionResponse::new(
                     RequestPermissionOutcome::Cancelled,
                 ));
+            }
+        }
+    }
+
+    async fn cancel_pending_elicitations(&self, session_id: &str) {
+        let mut pending = self.pending_elicitations.lock().await;
+        let keys = pending
+            .iter()
+            .filter(|(_, request)| request.view.session_id == session_id)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let mut cancelled = Vec::new();
+        for key in keys {
+            if let Some(request) = pending.remove(&key) {
+                cancelled.push(request.view.elicitation_id.clone());
+                let _ = request
+                    .response_tx
+                    .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+            }
+        }
+        drop(pending);
+        if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
+            for elicitation_id in cancelled {
+                runtime.bridge.emit(
+                    "elicitation_resolved",
+                    json!({
+                        "elicitationId": elicitation_id,
+                        "action": "cancel",
+                    }),
+                );
             }
         }
     }
@@ -843,9 +965,12 @@ impl AcpPool {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let bridge_for_notification = event_bridge.clone();
         let bridge_for_permission = event_bridge.clone();
+        let bridge_for_elicitation = event_bridge.clone();
         let replay_for_notification = replay_suppressed.clone();
         let pending_for_permission = self.pending_permissions.clone();
+        let pending_for_elicitation = self.pending_elicitations.clone();
         let pinvou_id_for_permission = pinvou_session_id.to_string();
+        let pinvou_id_for_elicitation = pinvou_session_id.to_string();
 
         tokio::spawn(async move {
             let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
@@ -902,12 +1027,67 @@ impl AcpPool {
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
+                .on_receive_request(
+                    async move |request: CreateElicitationRequest, responder, _cx| {
+                        let request_value =
+                            serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
+                        let elicitation_id = elicitation_id_for(&request_value);
+                        let key = elicitation_key(&pinvou_id_for_elicitation, &elicitation_id);
+                        let cancellation = responder.cancellation();
+                        let view = CodexAcpPendingElicitation {
+                            session_id: pinvou_id_for_elicitation.clone(),
+                            elicitation_id: elicitation_id.clone(),
+                            request: request_value.clone(),
+                        };
+                        let (response_tx, response_rx) = oneshot::channel();
+                        pending_for_elicitation
+                            .lock()
+                            .await
+                            .insert(key.clone(), PendingElicitation { view, response_tx });
+                        bridge_for_elicitation.emit(
+                            "elicitation_requested",
+                            json!({
+                                "elicitationId": elicitation_id,
+                                "request": request_value,
+                            }),
+                        );
+                        let (response, cancelled_by_agent) = tokio::select! {
+                            response = response_rx => (
+                                response.unwrap_or_else(|_| {
+                                    CreateElicitationResponse::new(ElicitationAction::Cancel)
+                                }),
+                                false,
+                            ),
+                            _ = cancellation.cancelled() => (
+                                CreateElicitationResponse::new(ElicitationAction::Cancel),
+                                true,
+                            ),
+                        };
+                        pending_for_elicitation.lock().await.remove(&key);
+                        if cancelled_by_agent {
+                            bridge_for_elicitation.emit(
+                                "elicitation_resolved",
+                                json!({
+                                    "elicitationId": elicitation_id,
+                                    "action": "cancel",
+                                    "reason": "agent_cancelled",
+                                }),
+                            );
+                        }
+                        responder.respond(response)
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
                 .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
+                    let client_capabilities = codex_client_capabilities();
                     let initialized = connection
                         .send_request(
-                            InitializeRequest::new(ProtocolVersion::LATEST).client_info(
-                                Implementation::new("pinvou3", env!("CARGO_PKG_VERSION")),
-                            ),
+                            InitializeRequest::new(ProtocolVersion::LATEST)
+                                .client_capabilities(client_capabilities)
+                                .client_info(Implementation::new(
+                                    "pinvou3",
+                                    env!("CARGO_PKG_VERSION"),
+                                )),
                         )
                         .block_task()
                         .await;
@@ -932,7 +1112,7 @@ impl AcpPool {
             .context("Codex ACP initialize 失败")?;
 
         let saved = self.agents.get(pinvou_session_id);
-        let (acp_session_id, model_state, mut mode_state, mut config_options) =
+        let (acp_session_id, mut mode_state, mut config_options) =
             if initialized.agent_capabilities.load_session {
                 if let Some(saved_id) = saved.acp_session_id.clone() {
                     replay_suppressed.store(true, Ordering::Release);
@@ -944,7 +1124,6 @@ impl AcpPool {
                     match loaded {
                         Ok(response) => (
                             saved_id,
-                            response.models,
                             response.modes,
                             response.config_options.unwrap_or_default(),
                         ),
@@ -970,10 +1149,8 @@ impl AcpPool {
             .await
             .with_context(|| format!("恢复 Codex 权限模式 {mode_id} 失败"))?;
         }
-        let current_model_id = model_state
-            .as_ref()
-            .map(|state| state.current_model_id.to_string());
-        let models = codex_models(model_state.as_ref());
+        let current_model_id = current_config_value(&config_options, "model");
+        let models = codex_models(&config_options);
         self.agents.set_acp_session(
             pinvou_session_id,
             acp_session_id.clone(),
@@ -1072,12 +1249,7 @@ impl AcpPool {
 async fn new_acp_session(
     connection: &ConnectionTo<Agent>,
     workspace: &Path,
-) -> Result<(
-    String,
-    Option<SessionModelState>,
-    Option<SessionModeState>,
-    Vec<SessionConfigOption>,
-)> {
+) -> Result<(String, Option<SessionModeState>, Vec<SessionConfigOption>)> {
     let response = connection
         .send_request(NewSessionRequest::new(workspace))
         .block_task()
@@ -1085,7 +1257,6 @@ async fn new_acp_session(
         .context("Codex ACP session/new 失败")?;
     Ok((
         response.session_id.to_string(),
-        response.models,
         response.modes,
         response.config_options.unwrap_or_default(),
     ))
@@ -1130,7 +1301,7 @@ async fn apply_config_option(
         .send_request(SetSessionConfigOptionRequest::new(
             acp_session_id.to_string(),
             config_id.to_string(),
-            value_id.to_string(),
+            value_id,
         ))
         .block_task()
         .await
@@ -1183,20 +1354,48 @@ async fn apply_saved_mode(
     Ok(())
 }
 
-fn codex_models(state: Option<&SessionModelState>) -> Vec<CodexAcpModel> {
-    state
-        .map(|state| {
-            state
-                .available_models
-                .iter()
-                .map(|model| CodexAcpModel {
-                    id: model.model_id.to_string(),
-                    name: model.name.clone(),
-                    description: model.description.clone(),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn current_config_value(options: &[SessionConfigOption], config_id: &str) -> Option<String> {
+    options.iter().find_map(|option| {
+        if option.id.to_string() != config_id {
+            return None;
+        }
+        match &option.kind {
+            SessionConfigKind::Select(select) => Some(select.current_value.to_string()),
+            _ => None,
+        }
+    })
+}
+
+fn codex_models(options: &[SessionConfigOption]) -> Vec<CodexAcpModel> {
+    let Some(model_option) = options
+        .iter()
+        .find(|option| option.id.to_string() == "model")
+    else {
+        return Vec::new();
+    };
+    let SessionConfigKind::Select(select) = &model_option.kind else {
+        return Vec::new();
+    };
+    match &select.options {
+        SessionConfigSelectOptions::Ungrouped(options) => options
+            .iter()
+            .map(|model| CodexAcpModel {
+                id: model.value.to_string(),
+                name: model.name.clone(),
+                description: model.description.clone(),
+            })
+            .collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .map(|model| CodexAcpModel {
+                id: model.value.to_string(),
+                name: model.name.clone(),
+                description: model.description.clone(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn managed_runtime_dir() -> PathBuf {
@@ -1340,6 +1539,30 @@ fn permission_key(session_id: &str, tool_call_id: &str) -> String {
     format!("{session_id}\u{1f}{tool_call_id}")
 }
 
+fn elicitation_key(session_id: &str, elicitation_id: &str) -> String {
+    format!("{session_id}\u{1f}{elicitation_id}")
+}
+
+fn elicitation_id_for(request: &serde_json::Value) -> String {
+    static NEXT_ELICITATION_ID: AtomicU64 = AtomicU64::new(1);
+    request
+        .get("toolCallId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "elicitation-{}",
+                NEXT_ELICITATION_ID.fetch_add(1, Ordering::Relaxed)
+            )
+        })
+}
+
+fn codex_client_capabilities() -> ClientCapabilities {
+    ClientCapabilities::new()
+        .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
+}
+
 fn codex_authenticated() -> bool {
     if std::env::var_os("OPENAI_API_KEY").is_some() {
         return true;
@@ -1372,6 +1595,26 @@ mod tests {
             permission_key("session-a", "tool-1"),
             permission_key("session-b", "tool-1")
         );
+    }
+
+    #[test]
+    fn elicitation_key_is_scoped_and_prefers_tool_call_id() {
+        assert_ne!(
+            elicitation_key("session-a", "input-1"),
+            elicitation_key("session-b", "input-1")
+        );
+        assert_eq!(
+            elicitation_id_for(&json!({ "toolCallId": "request-user-input-1" })),
+            "request-user-input-1"
+        );
+        assert!(elicitation_id_for(&json!({})).starts_with("elicitation-"));
+    }
+
+    #[test]
+    fn advertises_form_elicitation_to_codex_acp() {
+        let value = serde_json::to_value(codex_client_capabilities()).unwrap();
+        assert_eq!(value["elicitation"]["form"], json!({}));
+        assert!(value["elicitation"].get("url").is_none());
     }
 
     #[test]
