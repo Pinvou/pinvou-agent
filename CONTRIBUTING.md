@@ -97,6 +97,12 @@ Keep changes focused. Update documentation and regression tests together with be
 
 The project uses CI-gated pull requests and squash merge by default.
 
+By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Community support expectations and channel boundaries are documented in
+[SUPPORT.md](SUPPORT.md).
+
 ## Security
 
-Do not open a public issue for a vulnerability. Follow [SECURITY.md](SECURITY.md) or email `security@pinvou.com`.
+Do not open a public issue for a vulnerability. Use GitHub Private Vulnerability
+Reporting as described in [SECURITY.md](SECURITY.md), or email
+`security@pinvou.com`.

@@ -140,9 +140,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the current contribution workflow and
 
 ## Community and security
 
-Pinvou Agent is licensed under the [MIT License](LICENSE). Please use [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) for reproducible bugs and feature requests.
+Pinvou Agent is licensed under the [MIT License](LICENSE). Please use
+[GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) for reproducible
+bugs and focused feature requests, and
+[GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) for
+questions and ideas. Community support is best-effort; see
+[SUPPORT.md](SUPPORT.md).
 
-Do not report security vulnerabilities in public issues. Follow [SECURITY.md](SECURITY.md) or email `security@pinvou.com`.
+Do not report security vulnerabilities in public issues. Use the private
+reporting channel in [SECURITY.md](SECURITY.md), or email
+`security@pinvou.com`.
+
+Contributions follow our [Code of Conduct](CODE_OF_CONDUCT.md). Licensing,
+third-party attribution, SBOM, and brand-use boundaries are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+[docs/sbom.md](docs/sbom.md), and [TRADEMARKS.md](TRADEMARKS.md).
 
 ---
 

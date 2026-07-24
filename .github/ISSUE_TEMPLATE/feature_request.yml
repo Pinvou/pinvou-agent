@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a focused improvement for Pinvou Agent Community
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What user problem should be solved? Describe the need before the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: What should a successful result look like?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or alternative approaches, if any.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Desktop UI
+        - Agent or workflow
+        - MCP or connector
+        - Knowledge and artifacts
+        - CodeWhale engine
+        - Build or platform support
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and discussions for this request.
+          required: true
+        - label: This request is for the Community edition or a generally useful open-source capability.
+          required: true

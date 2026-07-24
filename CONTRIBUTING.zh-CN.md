@@ -53,7 +53,10 @@ fork patch 指纹**随 patch 同 PR**——新增 / 改 fork patch 必须**同�
 - `docs/fork-modifications.md` 登记条目
 - `scripts/fork-guard.sh` 指纹(+ L2 回归测试,如适用)
 
-**不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。submodule gitlink 要焊到 fork 跟踪分支(`pinvou3-clean`)上、不是游离的 PR 分支 commit。细节见 `AGENTS.md` 约束 2 + `docs/fork-policy.md`。
+**不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。submodule gitlink
+必须固定到 `Pinvou/CodeWhale` 的不可变发布标签所对应的公开可达 commit，不得跟随
+`.gitmodules branch` 浮动，也不得指向临时 PR 分支。细节见 `AGENTS.md` 约束 2 +
+`docs/fork-policy.md`。
 
 ## commit message（强制）
 
@@ -72,6 +75,12 @@ git config core.hooksPath .githooks
 ```
 
 > 注：本地 `git commit --no-verify` 可绕过客户端 hook，但 PR/主分支 CI 仍会拦截不合规提交；需要绝对强制时，应配合远端分支保护把该 CI 设为 required check。
+
+## 社区行为、安全与支持
+
+- 参与社区协作即表示同意遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- 社区维护为 best-effort，不承诺响应时间或 SLA；渠道边界见 [SUPPORT.md](SUPPORT.md)。
+- 未修复的安全漏洞不得提交公开 Issue；请按 [SECURITY.md](SECURITY.md) 使用 GitHub 私密漏洞报告，或发送到 `security@pinvou.com`。
 
 ## (可选)本地 pre-push hook
 
