@@ -51,6 +51,16 @@ assert.deepEqual(
 const linux = composeEffectiveConfig([platformConfigPath("linux")]).effectiveConfig;
 assert.deepEqual(linux.bundle.targets, ["deb"]);
 assert.match(linux.build.beforeBuildCommand, /require-wrapper\.js build/);
+assert.match(
+  linux.build.beforeBuildCommand,
+  /npm run build:ui/,
+  "release build must resolve Vite from the repository dependencies",
+);
+assert.doesNotMatch(
+  linux.build.beforeBuildCommand,
+  /&&\s+vite build/,
+  "release build must not rely on a globally installed Vite binary",
+);
 assert.match(linux.build.beforeBundleCommand, /require-wrapper\.js bundle/);
 assert.ok(linux.bundle.resources["resources/common/web-template/"]);
 assert.equal(linux.bundle.resources["resources/platforms/linux/asr/"], "runtime/asr");
