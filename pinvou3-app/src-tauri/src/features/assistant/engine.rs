@@ -3484,10 +3484,7 @@ mod live_tests {
 
     impl EnvRestore {
         fn snapshot(names: &'static [&'static str]) -> Self {
-            let saved = names
-                .iter()
-                .map(|&n| (n, std::env::var(n).ok()))
-                .collect();
+            let saved = names.iter().map(|&n| (n, std::env::var(n).ok())).collect();
             EnvRestore { saved }
         }
     }

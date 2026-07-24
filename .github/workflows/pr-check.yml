@@ -352,12 +352,10 @@ jobs:
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
       - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
-        # real-browser driver 脚本只需 puppeteer-core 一个包(硬编码 require
-        # pinvou3-app/node_modules/puppeteer-core),不必装整套前端依赖树。
-        # --no-save 不污染 package.json;--no-audit/--no-fund 静音噪音。
-        # 版本须与 pinvou3-app/package.json 的 puppeteer-core devDependency(^25.3.0)
-        # 保持一致:升级 package.json 的 puppeteer-core 时记得同步此处的钉死版本。
-        run: npm --prefix pinvou3-app install --no-save --no-audit --no-fund puppeteer-core@25.3.0
+        # real-browser driver 从 pinvou3-app/node_modules 加载 puppeteer-core。
+        # npm --prefix pinvou3-app install 即使指定单包也会解析并安装项目完整依赖树，
+        # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
@@ -369,10 +367,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
-      # (bridge::paths::tests::ENV_LOCK),但实测在 CI(ubuntu 2 核)多线程下仍偶发
-      # PINVOU3_HOME 跨测试污染——任一 env 写测试 panic 会 poison ENV_LOCK,此后所有
-      # `.unwrap_or_else(|p| p.into_inner())` 绕过互斥,env 写测试彻底失锁并发(雪崩 flaky)。
-      # 根治需让测试不依赖进程级 env(thread-local PINVOU3_HOME),超出本 PR 范围。
+      # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
+      # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
+      # 取得的仍是已加锁 guard，不会绕过互斥；根治需消除测试对进程级 env 的依赖
+      # 或让所有读写都通过同一隔离层，超出本 PR 范围。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
         run: |
           export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"

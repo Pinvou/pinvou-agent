@@ -7,11 +7,35 @@
 
 #![cfg(test)]
 
+use std::ffi::OsString;
 use std::fs;
 use std::time::{Duration, Instant};
 
 use super::store::SearchQuery;
 use super::KnowledgeService;
+
+struct EnvVarRestore {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarRestore {
+    fn snapshot(name: &'static str) -> Self {
+        Self {
+            name,
+            previous: std::env::var_os(name),
+        }
+    }
+}
+
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
 
 fn wait_idle(svc: &KnowledgeService, what: &str) {
     let start = Instant::now();
@@ -47,6 +71,27 @@ fn service_starts_without_embedder() {
 }
 
 #[test]
+fn env_var_restore_runs_during_unwind() {
+    let _lock = crate::bridge::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _restore_original = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
+    std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "before-panic");
+
+    let result = std::panic::catch_unwind(|| {
+        let _restore = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
+        std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "temporary");
+        panic!("触发 unwind 以验证环境变量恢复");
+    });
+
+    assert!(result.is_err());
+    assert_eq!(
+        std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").as_deref(),
+        Ok("before-panic")
+    );
+}
+
+#[test]
 #[ignore]
 fn full_l0_l1_e2e() {
     // 写 PINVOU3_KB_EMBED_MODEL_DIR:虽 #[ignore] 不入默认套件,仍须持 crate 级 ENV_LOCK
@@ -54,7 +99,8 @@ fn full_l0_l1_e2e() {
     let _lock = crate::bridge::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    let prev_embed_dir = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").ok();
+    // `_restore` 比 `_lock` 后创建,会在锁释放前恢复；测试 panic 时 Drop 同样执行。
+    let _restore = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
 
     // L1 语义检索真实跑：指向本地 bge-m3。
     let home = std::env::var("HOME").unwrap();
@@ -231,11 +277,6 @@ fn full_l0_l1_e2e() {
 
     svc.cancel_scan();
     let _ = fs::remove_dir_all(&root);
-    // 恢复 PINVOU3_KB_EMBED_MODEL_DIR 原值(_lock 随后释放,与本测试 set 串行)。
-    match prev_embed_dir {
-        Some(v) => std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", v),
-        None => std::env::remove_var("PINVOU3_KB_EMBED_MODEL_DIR"),
-    }
     eprintln!(
         "✅ L0+L1 e2e PASS — 扫描 {} 文件 / 知识集 {} 块 / 关键词+语义检索均命中并溯源",
         stats.total_files, coll.chunk_count

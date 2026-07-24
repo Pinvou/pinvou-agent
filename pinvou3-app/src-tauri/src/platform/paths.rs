@@ -336,10 +336,11 @@ pub(crate) mod tests {
     /// bridge/mod.rs(EnvGuard,DEEPSEEK_*)、feedback、notifications、telemetry 等模块
     /// 所有 mutate env var 的测试都借用这把锁串行执行,使 env 写测试彼此串行。
     ///
-    /// 注意:锁源单一只让 **env 写测试** 之间互斥,**不代表** 可以撤掉 `--test-threads=1`——
-    /// 任一 env 写测试 panic 会 poison 本锁,此后 `.into_inner()` 恢复会绕过互斥,
-    /// 后续 env 写测试随即失锁并发(雪崩 flaky)。故 CI 的 `cargo test --lib` 仍需串行,
-    /// 根治需让测试不再依赖进程级 env(thread-local PINVOU3_HOME),超出当前范围。
+    /// 注意:锁源单一只让 **持锁的 env 写测试** 之间互斥,**不代表** 可以撤掉
+    /// `--test-threads=1`——未持锁的 env 读取者仍可能观察到其他测试的临时值。
+    /// Mutex poison 后通过 `PoisonError::into_inner()` 取得的仍是已加锁 guard,
+    /// 不会绕过互斥。CI 暂时串行执行；根治需消除测试对进程级 env 的依赖,
+    /// 或让所有读写都通过同一隔离层。
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// 生成**进程内**唯一的单调递增后缀,供测试临时目录/会话 ID 命名用。
