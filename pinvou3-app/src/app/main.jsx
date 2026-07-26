@@ -804,6 +804,7 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll || '全部' },
         { id: 'pinned', label: t.sidebarTaskFilterPinned || '置顶' },
+        { id: 'code', label: t.sidebarTaskFilterCode || '代码' },
         { id: 'scheduled', label: t.sidebarTaskFilterScheduled || '定时任务' },
       ];
       const sidebarTaskSortOptions = [
@@ -822,6 +823,7 @@ function workspaceDisplayName(path) {
       const sidebarTaskHistory = allSidebarTasks
         .filter((chat) => {
           if (taskListFilter === 'pinned') return !!chat.pinned;
+          if (taskListFilter === 'code') return chat.taskKind === 'codex';
           if (taskListFilter === 'scheduled') return chat.taskKind === 'scheduled';
           return true;
         })

@@ -203,6 +203,7 @@ try {
   assert.ok(!chatView.includes('sessionAgentBackend'), 'DeepSeek ChatView must not branch on Codex state');
 
   const main = readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+  const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<CodexAcpView'));
@@ -213,6 +214,12 @@ try {
     'global sessions must visually identify Codex records');
   assert.ok(main.includes("useState('recent')"),
     'work and code sessions must be mixed by recent update time by default');
+  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode || '代码' }")
+    && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
+    && i18n.includes("sidebarTaskFilterCode: '代码'")
+    && i18n.includes("sidebarTaskFilterCode: 'Code'")
+    && i18n.includes("sidebarTaskFilterCode: 'コード'"),
+  'the task-list Code filter must show only Codex sessions in every supported locale');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
     && main.includes('<CodexLogo className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),
