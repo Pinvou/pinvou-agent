@@ -81,11 +81,13 @@ pub async fn set_codex_acp_model(
 pub async fn codex_acp_prompt(
     session_id: String,
     message: String,
+    attachments: Option<Vec<crate::features::files::file_ingest::IngestResult>>,
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
     let message = message.trim().to_string();
-    if message.is_empty() {
+    let attachments = attachments.unwrap_or_default();
+    if message.is_empty() && attachments.is_empty() {
         return Err("empty message".to_string());
     }
     if !acp_pool.is_codex(&session_id) {
@@ -95,14 +97,22 @@ pub async fn codex_acp_prompt(
         .load(&session_id)
         .map_err(|error| format!("读取 Codex 会话失败: {error:#}"))?;
     if session.metadata.title == "新对话" {
-        let title = message.chars().take(28).collect::<String>();
+        let title_source = if message.is_empty() {
+            attachments
+                .first()
+                .map(|attachment| attachment.basename.as_str())
+                .unwrap_or("附件")
+        } else {
+            &message
+        };
+        let title = title_source.chars().take(28).collect::<String>();
         store
             .set_title(&session_id, title)
             .map_err(|error| format!("更新 Codex 会话标题失败: {error:#}"))?;
     }
     crate::features::assistant::timing::start_turn(&session_id);
     acp_pool
-        .send_message(&session_id, message)
+        .send_message(&session_id, message, attachments)
         .await
         .map_err(|error| {
             crate::features::assistant::timing::finish_turn(

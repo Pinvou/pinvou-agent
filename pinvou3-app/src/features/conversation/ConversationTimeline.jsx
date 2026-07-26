@@ -576,13 +576,28 @@ export function ConversationTurn({
     : turnUsage && turnUsage.size
       ? `上下文 ${Number(turnUsage.used || 0).toLocaleString()} / ${Number(turnUsage.size || 0).toLocaleString()}`
       : '';
+  const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
-    : turn.userText
+    : (turn.userText || userAttachments.length)
       ? (
           <div className="flex justify-end">
             <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-              {turn.userText}
+              {turn.userText && <div>{turn.userText}</div>}
+              {userAttachments.length > 0 && (
+                <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>
+                  {userAttachments.map((attachment, index) => (
+                    <span
+                      key={`${attachment.name || 'attachment'}-${index}`}
+                      className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4"
+                      title={attachment.name}
+                    >
+                      <span>📎</span>
+                      <span className="truncate">{attachment.name || '附件'}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )

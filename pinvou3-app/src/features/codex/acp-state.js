@@ -33,6 +33,7 @@ function emptyTurn(id) {
   return {
     id,
     userText: '',
+    userAttachments: [],
     assistantText: '',
     thoughtText: '',
     blocks: [],
@@ -187,6 +188,7 @@ export function projectAcpTimeline(input) {
     if (type === 'user_message') {
       const blocks = Array.isArray(data.content) ? data.content : [];
       turn.userText += blocks.map(contentText).join('');
+      turn.userAttachments = Array.isArray(data.attachments) ? data.attachments : [];
     } else if (type === 'user_message_chunk') {
       turn.userText += contentText(update.content);
     } else if (type === 'agent_message_chunk') {

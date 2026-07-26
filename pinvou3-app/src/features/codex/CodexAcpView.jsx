@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Plus, Send, Sparkles,
-  StopCircle, Terminal, Trash2, Wrench,
+  AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Paperclip, Plus, Send,
+  Sparkles, StopCircle, Terminal, Trash2, Wrench,
 } from '../../components/icons.jsx';
 import {
   appendAcpEvent,
@@ -16,6 +16,7 @@ import {
 } from '../conversation/ConversationTimeline.jsx';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
+import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import {
   invokeTauri,
   listenTauri,
@@ -472,10 +473,21 @@ function Turn({
   const duration = formatElapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
   return (
     <section className="space-y-4">
-      {turn.userText && (
+      {(turn.userText || turn.userAttachments.length > 0) && (
         <div className="flex justify-end">
           <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-            {turn.userText}
+            {turn.userText && <div>{turn.userText}</div>}
+            {turn.userAttachments.length > 0 && (
+              <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>
+                {turn.userAttachments.map((attachment, index) => (
+                  <span key={`${attachment.name || 'attachment'}-${index}`}
+                    className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4">
+                    <span>📎</span>
+                    <span className="truncate">{attachment.name || '附件'}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -590,6 +602,7 @@ export function CodexAcpView({ theme }) {
   const [pendingElicitations, setPendingElicitations] = useState([]);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [draft, setDraft] = useState('');
+  const [attachmentDrafts, setAttachmentDrafts] = useState({});
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [configApplying, setConfigApplying] = useState('');
@@ -603,6 +616,7 @@ export function CodexAcpView({ theme }) {
   const scroller = useRef(null);
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
+  const attachmentIdRef = useRef(0);
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
   const controls = useMemo(() => resolveAcpSessionControls(sessionInfo), [sessionInfo]);
   const availableCommands = useMemo(() => {
@@ -624,6 +638,7 @@ export function CodexAcpView({ theme }) {
     () => sessions.find(session => session.id === activeId) || null,
     [sessions, activeId],
   );
+  const attachments = activeId ? (attachmentDrafts[activeId] || []) : [];
 
   function applySessionInfo(info) {
     setSessionInfo(info);
@@ -682,6 +697,83 @@ export function CodexAcpView({ theme }) {
     });
     const path = Array.isArray(selected) ? selected[0] : selected;
     if (path) await createSession(path);
+  }
+
+  function updateAttachments(sessionId, update) {
+    if (!sessionId) return;
+    setAttachmentDrafts(current => {
+      const previous = current[sessionId] || [];
+      const next = typeof update === 'function' ? update(previous) : update;
+      return { ...current, [sessionId]: next };
+    });
+  }
+
+  async function addAttachmentByPath(path, sessionId = activeId) {
+    if (!path || !sessionId) return;
+    const id = `codex-attachment-${++attachmentIdRef.current}`;
+    const basename = String(path).split(/[\\/]/).filter(Boolean).pop() || String(path);
+    updateAttachments(sessionId, current => [
+      ...current,
+      { id, basename, status: 'parsing', result: null, error: null },
+    ]);
+    try {
+      const result = await invoke('ingest_file', { path });
+      updateAttachments(sessionId, current => current.map(attachment => (
+        attachment.id === id
+          ? { ...attachment, basename: result.basename || basename, status: 'ready', result }
+          : attachment
+      )));
+    } catch (err) {
+      updateAttachments(sessionId, current => current.map(attachment => (
+        attachment.id === id
+          ? { ...attachment, status: 'error', error: String(err) }
+          : attachment
+      )));
+    }
+  }
+
+  async function pickAttachments() {
+    if (!activeId) {
+      setError('请先选择项目目录或创建临时会话');
+      return;
+    }
+    const selected = await openTauriDialog({
+      multiple: true,
+      directory: false,
+      title: '添加附件',
+    });
+    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    await Promise.all(paths.map(path => addAttachmentByPath(path, activeId)));
+  }
+
+  function removeAttachment(id) {
+    updateAttachments(activeId, current => current.filter(attachment => attachment.id !== id));
+  }
+
+  function handlePaste(event) {
+    const items = Array.from(event.clipboardData && event.clipboardData.items || []);
+    const images = items.filter(item => item.type && item.type.startsWith('image/'));
+    if (!images.length || !activeId) return;
+    event.preventDefault();
+    images.forEach(item => {
+      const file = item.getAsFile();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const bytes = Array.from(new Uint8Array(reader.result));
+        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        try {
+          const path = await invoke('save_paste_image', {
+            filename: `paste-${Date.now()}.${ext}`,
+            bytes,
+          });
+          await addAttachmentByPath(path, activeId);
+        } catch (err) {
+          setError(String(err));
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
   }
 
   useEffect(() => {
@@ -815,7 +907,14 @@ export function CodexAcpView({ theme }) {
 
   async function send() {
     const message = draft.trim();
-    if (!message || busy || working) return;
+    const readyAttachments = attachments.filter(attachment => (
+      attachment.status === 'ready' && attachment.result
+    ));
+    if ((!message && !readyAttachments.length) || busy || working) return;
+    if (attachments.some(attachment => attachment.status === 'parsing')) {
+      setError('附件仍在解析，请稍候');
+      return;
+    }
     if (!activeId) {
       setError('请先选择项目目录或创建临时会话');
       setCreateMenuOpen(true);
@@ -830,7 +929,14 @@ export function CodexAcpView({ theme }) {
       autoScrollRef.current = true;
       setShowScrollBottom(false);
       setDraft('');
-      await invoke('codex_acp_prompt', { sessionId: activeId, message });
+      await invoke('codex_acp_prompt', {
+        sessionId: activeId,
+        message,
+        attachments: readyAttachments.map(attachment => attachment.result),
+      });
+      updateAttachments(activeId, current => current.filter(
+        attachment => !readyAttachments.some(ready => ready.id === attachment.id),
+      ));
     } catch (err) {
       setError(String(err));
       setDraft(message);
@@ -910,6 +1016,11 @@ export function CodexAcpView({ theme }) {
       localStorage.removeItem('pinvou_codex_active_session');
       if (replacement) await openSession(replacement.id);
     }
+    setAttachmentDrafts(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   }
 
   return (
@@ -1102,6 +1213,13 @@ export function CodexAcpView({ theme }) {
                 onRequestAttention={scrollConversationToBottom}
                 className="mb-0.5"
               />
+              <AttachmentChips
+                attachments={attachments}
+                onRemove={removeAttachment}
+                dark={theme === 'dark'}
+                className="mb-2"
+                formatError={value => String(value || '')}
+              />
               {commandOpen && availableCommands.length > 0 && (
                 <>
                   <button aria-label="关闭 Codex 命令菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
@@ -1119,11 +1237,22 @@ export function CodexAcpView({ theme }) {
                 </>
               )}
               <textarea value={draft} onChange={event => setDraft(event.target.value)}
+                onPaste={handlePaste}
                 onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
                 placeholder="让 Codex 处理代码、运行命令或解释仓库…"
                 rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
               <div className="flex items-center justify-between mt-1">
                 <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                  <button
+                    type="button"
+                    onClick={() => pickAttachments().catch(err => setError(String(err)))}
+                    disabled={!activeId}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
+                    title="添加附件"
+                    aria-label="添加附件"
+                  >
+                    <Paperclip size={16} />
+                  </button>
                   {availableCommands.length > 0 && (
                     <button type="button" onClick={() => setCommandOpen(value => !value)}
                       className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
@@ -1137,7 +1266,7 @@ export function CodexAcpView({ theme }) {
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!activeId || !sessionInfo || !draft.trim() || working || !status || !status.installed || !status.authenticated}
+                  <button onClick={send} disabled={!activeId || !sessionInfo || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready')) || working || !status || !status.installed || !status.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>

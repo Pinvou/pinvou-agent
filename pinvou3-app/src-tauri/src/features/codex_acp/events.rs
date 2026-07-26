@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
+use super::attachments::CodexDisplayAttachment;
+
 const EVENT_VERSION: u32 = 1;
 const TIMELINE_FILE: &str = "acp-timeline.jsonl";
 const STATE_FILE: &str = "acp-state.json";
@@ -72,14 +74,17 @@ impl EventBridge {
         &self.pinvou_session_id
     }
 
-    pub fn begin_turn(&self, content: &str) -> String {
+    pub fn begin_turn(&self, content: &str, attachments: &[CodexDisplayAttachment]) -> String {
         let serial = self.turn_serial.fetch_add(1, Ordering::AcqRel) + 1;
         let turn_id = format!("turn-{}-{serial}", Utc::now().timestamp_millis());
         *self.current_turn.write() = Some(turn_id.clone());
         self.emit_with_turn(
             Some(turn_id.clone()),
             "user_message",
-            json!({ "content": [{ "type": "text", "text": content }] }),
+            json!({
+                "content": [{ "type": "text", "text": content }],
+                "attachments": attachments,
+            }),
         );
         self.emit_with_turn(
             Some(turn_id.clone()),

@@ -3,6 +3,7 @@
 //! pinvou3 只做 ACP client、进程托管、权限路由、事件持久化和 `acp:event` 投影；
 //! Codex 的模型调用、工具循环、会话与权限协议都由 `codex-acp` Agent 提供。
 
+mod attachments;
 mod events;
 mod runtime;
 mod store;
@@ -18,11 +19,11 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationRequest,
     CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
     ElicitationContentValue, ElicitationFormCapabilities, Implementation, InitializeRequest,
-    LoadSessionRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionModeState,
-    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
-    TextContent,
+    LoadSessionRequest, NewSessionRequest, PromptCapabilities, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions,
+    SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    StopReason,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
@@ -36,6 +37,7 @@ use tokio::sync::{oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::features::sessions::SessionStore;
+use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use runtime::{
@@ -136,6 +138,7 @@ struct AcpSession {
     current_model: parking_lot::RwLock<Option<String>>,
     modes: parking_lot::RwLock<Option<SessionModeState>>,
     config_options: parking_lot::RwLock<Vec<SessionConfigOption>>,
+    prompt_capabilities: PromptCapabilities,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     child: Mutex<Child>,
 }
@@ -165,14 +168,16 @@ impl AcpSession {
         Ok(())
     }
 
-    async fn prompt(self: Arc<Self>, content: String) {
-        let turn_id = self.bridge.begin_turn(&content);
+    async fn prompt(
+        self: Arc<Self>,
+        content: String,
+        blocks: Vec<ContentBlock>,
+        attachments: Vec<CodexDisplayAttachment>,
+    ) {
+        let turn_id = self.bridge.begin_turn(&content, &attachments);
         let result = self
             .connection
-            .send_request(PromptRequest::new(
-                self.acp_session_id.clone(),
-                vec![ContentBlock::Text(TextContent::new(content))],
-            ))
+            .send_request(PromptRequest::new(self.acp_session_id.clone(), blocks))
             .block_task()
             .await;
         self.busy.store(false, Ordering::Release);
@@ -552,7 +557,6 @@ impl AcpPool {
             .read()
             .clone()
             .context("Codex 授权链接尚未生成，请稍候")?;
-        #[cfg(target_os = "linux")]
         if let Some(browser) = [
             "firefox",
             "google-chrome",
@@ -610,15 +614,21 @@ impl AcpPool {
         Ok(())
     }
 
-    pub async fn send_message(&self, session_id: &str, content: String) -> Result<()> {
+    pub async fn send_message(
+        &self,
+        session_id: &str,
+        content: String,
+        attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    ) -> Result<()> {
         let runtime = self.get_or_spawn(session_id).await?;
         if runtime.configuring.load(Ordering::Acquire) {
             bail!("Codex 会话配置仍在同步，请稍候再发送");
         }
+        let prepared = prepare_codex_prompt(&content, &attachments, &runtime.prompt_capabilities)?;
         if runtime.busy.swap(true, Ordering::AcqRel) {
             bail!("Codex ACP 会话仍在生成");
         }
-        tokio::spawn(runtime.prompt(content));
+        tokio::spawn(runtime.prompt(content, prepared.blocks, prepared.display_attachments));
         Ok(())
     }
 
@@ -1151,6 +1161,7 @@ impl AcpPool {
         }
         let current_model_id = current_config_value(&config_options, "model");
         let models = codex_models(&config_options);
+        let prompt_capabilities = initialized.agent_capabilities.prompt_capabilities.clone();
         self.agents.set_acp_session(
             pinvou_session_id,
             acp_session_id.clone(),
@@ -1194,6 +1205,7 @@ impl AcpPool {
             current_model: parking_lot::RwLock::new(current_model_id),
             modes: parking_lot::RwLock::new(mode_state),
             config_options: parking_lot::RwLock::new(config_options),
+            prompt_capabilities,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             child: Mutex::new(child),
         })

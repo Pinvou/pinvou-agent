@@ -19,6 +19,7 @@ import {
   isNearConversationBottom,
   isSearchTool,
 } from '../conversation/conversation-model.js';
+import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
@@ -957,25 +958,15 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             )}
             {/* 模型选择器/知识库挂载已挪进下方底栏(ComposerModelSelector/ComposerKbSelector) */}
             {/* 附件 chips */}
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2 px-2">
-                {attachments.map((a) => (
-                  <div key={a.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F] shadow-sm'}`}>
-                    <span>📎</span>
-                    <span className="max-w-[160px] truncate">{a.basename}</span>
-                    <span className={a.status === 'error' ? 'text-[#F28B82]' : a.status === 'parsing' ? 'opacity-60' : 'text-[#93D5A6]'}>
-                      {a.status === 'parsing' ? t.attachParsing : a.status === 'error' ? t.attachFailed : '✓'}
-                    </span>
-                    {a.status === 'error' && formatAttachmentError(a.error) && (
-                      <span title={formatAttachmentError(a.error)} className="min-w-0 max-w-[min(520px,calc(100vw-240px))] truncate text-[#F28B82] opacity-90">
-                        ：{formatAttachmentError(a.error)}
-                      </span>
-                    )}
-                    <button onClick={() => bridge.attachments.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <AttachmentChips
+              attachments={attachments}
+              onRemove={id => bridge.attachments.removeAttachment(id)}
+              dark={isDark}
+              parsingLabel={t.attachParsing}
+              failedLabel={t.attachFailed}
+              formatError={formatAttachmentError}
+              className="mb-2 px-2"
+            />
             {voiceNotice && (
               <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
                 voiceInput.status === 'failed'

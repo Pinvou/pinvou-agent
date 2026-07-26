@@ -39,7 +39,10 @@ try {
     stripTerminalControlSequences,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
   const events = [
-    event(1, 'user_message', { content: [{ type: 'text', text: '修改 README' }] }),
+    event(1, 'user_message', {
+      content: [{ type: 'text', text: '修改 README' }],
+      attachments: [{ name: 'README.md', kind: 'text', size: 1024 }],
+    }),
     event(2, 'turn_started', { status: 'running' }),
     event(3, 'agent_thought_chunk', { update: { content: { type: 'text', text: '先检查文件。' } } }),
     event(4, 'tool_call', { update: {
@@ -76,6 +79,7 @@ try {
   assert.equal(projected.turns.length, 1);
   const turn = projected.turns[0];
   assert.equal(turn.userText, '修改 README');
+  assert.deepEqual(turn.userAttachments, [{ name: 'README.md', kind: 'text', size: 1024 }]);
   assert.equal(turn.thoughtText, '先检查文件。');
   assert.equal(turn.assistantText, '已经完成修改。');
   assert.equal(turn.tools.length, 1, 'tool updates must be merged in place');
@@ -244,7 +248,9 @@ try {
     && codexView.includes('回到最新'),
   'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
-  assert.ok(codexView.includes("invoke('codex_acp_prompt', { sessionId: activeId, message })"));
+  assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
+    && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)'),
+  'Codex prompts must send parsed attachments through the dedicated ACP command');
   assert.ok(codexView.includes('function ElicitationCard'),
     'Codex request_user_input must have a first-class conversation item');
   assert.ok(codexView.includes('<QuestionChoiceCard'),
