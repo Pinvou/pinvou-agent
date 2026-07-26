@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Briefcase, Check, ChevronDown, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
@@ -20,6 +20,7 @@ import mimoIcon from '../../brand-icons/mimo.svg';
 import minimaxIcon from '../../brand-icons/minimax.svg';
 import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
+import tencentCloudIcon from '../../brand-icons/tencentcloud.svg';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 function isReadonlyModel(model) {
@@ -441,6 +442,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
       mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
     };
+    const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
+    const PROVIDER_KIND_OFFICIAL_API = 'official_api';
+    const PROVIDER_KIND_CUSTOM = 'custom';
+    const MODEL_CATALOG_SECTIONS = {
+      coding_plan: 'Coding Plan',
+      official_api: '官方 API',
+      custom: '自定义兼容接口',
+    };
     function presetOptionsI18n(t) {
       return [
         { key: 'local_vllm', label: t.modelPresetLocalVllm },
@@ -469,7 +478,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       minimax: minimaxIcon,
       mimo: mimoIcon,
       openai_compatible: openaiIcon,
-      local_vllm: qwenIcon,
+    };
+    const BRAND_ICON_BY_VENDOR = {
+      glm: glmIcon,
+      kimi: kimiIcon,
+      deepseek: deepseekIcon,
+      qwen: qwenIcon,
+      doubao: doubaoIcon,
+      minimax: minimaxIcon,
+      mimo: mimoIcon,
+      openai: openaiIcon,
+      tencent: tencentCloudIcon,
     };
 
     const MODEL_CATALOG = {
@@ -486,9 +505,67 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       ],
       cloud: [
         {
+          key: 'glm_coding_plan',
+          section: 'coding_plan',
+          title: '智谱 Coding Plan / GLM Coding Plan',
+          configTitle: '智谱 Coding Plan',
+          desc: '智谱编码与 Agent 场景专用接口',
+          preset: 'openai_compatible',
+          providerKind: PROVIDER_KIND_CODING_PLAN,
+          vendor: 'glm',
+          baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+          endpointAliases: ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
+          items: [
+            { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
+            { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
+            { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
+            { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'tencent_coding_plan',
+          section: 'coding_plan',
+          title: '腾讯云 Coding Plan / Tencent Cloud Coding Plan',
+          configTitle: '腾讯云 Coding Plan',
+          desc: '腾讯云编码计划接口',
+          preset: 'openai_compatible',
+          providerKind: PROVIDER_KIND_CODING_PLAN,
+          vendor: 'tencent',
+          baseUrl: 'https://api.lkeap.cloud.tencent.com/coding/v3',
+          endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
+          items: [
+            { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
+            { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+          ],
+        },
+        {
+          key: 'kimi_coding_plan',
+          section: 'coding_plan',
+          title: 'Kimi Coding Plan',
+          configTitle: 'Kimi Coding Plan',
+          desc: 'Kimi 编码场景专用接口',
+          preset: 'openai_compatible',
+          providerKind: PROVIDER_KIND_CODING_PLAN,
+          vendor: 'kimi',
+          baseUrl: 'https://api.kimi.com/coding/v1',
+          endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions'],
+          items: [
+            { model: 'kimi-for-coding', title: 'kimi-for-coding', desc: '标准编码模型' },
+            { model: 'k3-256k', title: 'k3-256k', desc: 'K3 256K 上下文模型' },
+            { model: 'k3', title: 'k3', desc: 'K3 长上下文模型' },
+            { model: 'kimi-for-coding-highspeed', title: 'kimi-for-coding-highspeed', desc: '高速编码模型' },
+            { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+          ],
+        },
+        {
           key: 'deepseek',
-          title: 'DeepSeek',
+          section: 'official_api',
+          title: '深度求索 / DeepSeek',
+          configTitle: 'DeepSeek',
+          desc: 'DeepSeek 官方 API',
           preset: 'deepseek',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'deepseek',
           items: [
             { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
             { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
@@ -497,8 +574,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'kimi',
-          title: 'Kimi',
+          section: 'official_api',
+          title: 'Kimi 中国版 / Kimi China',
+          configTitle: 'Kimi',
+          desc: 'Moonshot 官方 API',
           preset: 'kimi',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'kimi',
           items: [
             { model: 'kimi-k3', title: 'kimi-k3', desc: '最新通用模型' },
             { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
@@ -509,8 +591,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'glm',
-          title: 'GLM',
+          section: 'official_api',
+          title: '智谱开放平台 / GLM API',
+          configTitle: 'GLM API',
+          desc: '智谱开放平台普通 API',
           preset: 'glm',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'glm',
           items: [
             { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
             { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
@@ -521,8 +608,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'minimax',
-          title: 'MiniMax',
+          section: 'official_api',
+          title: 'MiniMax 中国版 / MiniMax China',
+          configTitle: 'MiniMax',
+          desc: 'MiniMax 官方 API',
           preset: 'minimax',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'minimax',
           items: [
             { model: 'MiniMax-M3', title: 'MiniMax-M3', desc: '最新推荐' },
             { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
@@ -534,8 +626,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'mimo',
+          section: 'official_api',
           title: 'MiMo',
+          desc: '小米 MiMo 官方 API',
           preset: 'mimo',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'mimo',
           items: [
             { model: 'mimo-v2.5-pro', title: 'mimo-v2.5-pro', desc: '最新推荐' },
             { model: 'mimo-v2.5', title: 'mimo-v2.5', desc: '通用能力' },
@@ -544,8 +640,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'qwen',
+          section: 'official_api',
           title: '通义千问',
+          desc: '阿里云 DashScope 兼容 API',
           preset: 'qwen',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'qwen',
           items: [
             { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '最新推荐' },
             { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '快速响应' },
@@ -554,8 +654,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'doubao',
+          section: 'official_api',
           title: '豆包',
+          desc: '火山方舟官方 API',
           preset: 'doubao',
+          providerKind: PROVIDER_KIND_OFFICIAL_API,
+          vendor: 'doubao',
           items: [
             { model: 'doubao-seed-evolving', title: 'doubao-seed-evolving', desc: '最新推荐' },
             { model: 'doubao-seed-2.1-pro', title: 'doubao-seed-2.1-pro', desc: '高能力模型' },
@@ -567,8 +671,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         },
         {
           key: 'openai_compatible',
+          section: 'custom',
           title: 'OpenAI Compatible',
+          desc: '自定义 OpenAI 兼容接口',
           preset: 'openai_compatible',
+          providerKind: PROVIDER_KIND_CUSTOM,
+          vendor: 'openai',
           items: [
             { model: 'gpt-5.6-terra', title: 'gpt-5.6-terra', desc: '兼容端点示例' },
             { model: 'gpt-5.6-luna', title: 'gpt-5.6-luna', desc: '兼容端点示例' },
@@ -579,7 +687,82 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       ],
     };
 
-    const ProviderIcon = ({ preset, isDark, compact = false }) => {
+    const CLOUD_MODEL_PROVIDERS = MODEL_CATALOG.cloud;
+    function normalizeEndpointUrl(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      return raw.replace(/\/+$/, '');
+    }
+    function normalizeOpenAiBaseUrl(value) {
+      const trimmed = normalizeEndpointUrl(value);
+      return trimmed.replace(/\/chat\/completions$/i, '');
+    }
+    function providerBaseUrl(provider) {
+      if (!provider) return '';
+      return provider.baseUrl || (MODEL_PRESET_DEFS[provider.preset] && MODEL_PRESET_DEFS[provider.preset].baseUrl) || '';
+    }
+    function normalizedProviderBaseUrl(provider) {
+      const base = providerBaseUrl(provider);
+      if (provider && provider.endpointMode === 'full_chat_completions') return normalizeEndpointUrl(base);
+      return normalizeOpenAiBaseUrl(base);
+    }
+    function findCloudProviderForModel(model) {
+      if (!model) return null;
+      const providerKind = model.provider_kind || model.providerKind;
+      const vendor = model.vendor;
+      const base = normalizeEndpointUrl(model.base_url || model.baseUrl || '');
+      return CLOUD_MODEL_PROVIDERS.find(provider => {
+        if (providerKind && provider.providerKind !== providerKind) return false;
+        if (vendor && provider.vendor !== vendor) return false;
+        const urls = [provider.baseUrl, ...(provider.endpointAliases || [])]
+          .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
+        const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
+        if (compareBase && urls.includes(compareBase)) return true;
+        return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && item.model === model.model);
+      }) || null;
+    }
+    function providerLabelForModel(model, t) {
+      const provider = findCloudProviderForModel(model);
+      if (provider) return provider.title;
+      return presetProviderLabel(model && model.preset, t);
+    }
+    function isCodingPlanModel(model) {
+      const providerKind = model && (model.provider_kind || model.providerKind);
+      return providerKind === PROVIDER_KIND_CODING_PLAN || !!(model && findCloudProviderForModel(model)?.providerKind === PROVIDER_KIND_CODING_PLAN);
+    }
+
+    const ProviderIcon = ({ preset, vendor, providerKind, model, isDark, compact = false }) => {
+      const modelId = String(model || '').toLowerCase();
+      if (preset === 'local_vllm' && modelId.includes('qwen')) {
+        return (
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${isDark ? 'bg-white' : 'bg-white border border-black/[0.08]'}`}>
+            <img src={qwenIcon} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
+          </span>
+        );
+      }
+      if (providerKind === PROVIDER_KIND_CODING_PLAN) {
+        const src = BRAND_ICON_BY_VENDOR[vendor];
+        if (src) {
+          const darkBacked = vendor === 'kimi';
+          return (
+            <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : (isDark ? 'bg-white' : 'bg-white border border-black/[0.08]')}`}>
+              <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
+            </span>
+          );
+        }
+        return (
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${isDark ? 'bg-[#0A84FF]/18 text-[#64B5F6]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
+            <Code size={compact ? 17 : 19} strokeWidth={2.2} />
+          </span>
+        );
+      }
+      if (preset === 'local_vllm') {
+        return (
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${isDark ? 'bg-[#0A84FF]/18 text-[#64B5F6]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
+            <Cpu size={compact ? 18 : 20} strokeWidth={2.2} />
+          </span>
+        );
+      }
       const src = BRAND_ICON_BY_PRESET[preset];
       if (!src) return null;
       const darkBacked = preset === 'kimi';
@@ -1068,13 +1251,21 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
+      const initialProvider = modelScope === 'cloud' ? findCloudProviderForModel(initial) : null;
       const initialCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
       const initialCatalogMatch = initialCatalogGroups.some(group =>
-        group.preset === initial.preset && group.items.some(item => !item.custom && item.model === initial.model)
+        group.preset === initial.preset
+        && (!initialProvider || group.key === initialProvider.key)
+        && group.items.some(item => !item.custom && item.model === initial.model)
       );
       const canSetUpLocalModel = can('localModelSetup');
       const [name, setName] = useState(initial.name || '');
+      const [nameTouched, setNameTouched] = useState(!initial.__new && !!initial.name);
       const [preset, setPreset] = useState(initial.preset || (localVllmSupported ? 'local_vllm' : 'deepseek'));
+      const [providerKey, setProviderKey] = useState(initialProvider ? initialProvider.key : '');
+      const [providerKind, setProviderKind] = useState(initial.provider_kind || (initialProvider && initialProvider.providerKind) || (modelScope === 'cloud' ? PROVIDER_KIND_OFFICIAL_API : ''));
+      const [vendor, setVendor] = useState(initial.vendor || (initialProvider && initialProvider.vendor) || '');
+      const [endpointMode, setEndpointMode] = useState((initialProvider && initialProvider.endpointMode) || '');
       const [model, setModel] = useState(initial.model || '');
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
@@ -1082,28 +1273,78 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
+      const [localKeyEnabled, setLocalKeyEnabled] = useState(!initial.__new && initial.preset === 'local_vllm' && !!initial.has_secret);
       const [pickerOpen, setPickerOpen] = useState(!!initial.__new && initial.preset !== 'local_vllm');
+      const [pickerTab, setPickerTab] = useState(initial.__scope === 'local' ? 'local' : 'cloud');
+      const [providerModelPickerOpen, setProviderModelPickerOpen] = useState(false);
       const [customModel, setCustomModel] = useState(!!initial.__custom || (!initial.__new && initial.preset !== 'local_vllm' && !initialCatalogMatch));
       const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
       const [detecting, setDetecting] = useState(false);
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
+      const [localDetecting, setLocalDetecting] = useState(false);
+      const [localDetectResult, setLocalDetectResult] = useState(null);
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
       const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
       const baseCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
       const catalogGroups = !initial.__new && modelScope === 'cloud'
-        ? baseCatalogGroups.filter(group => group.preset === initial.preset)
+        ? baseCatalogGroups.filter(group => initialProvider ? group.key === initialProvider.key : group.preset === initial.preset)
         : baseCatalogGroups;
+      const activeProvider = modelScope === 'cloud'
+        ? (CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
+        : null;
+      const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
+      function normalizeConnectionTestResult(value, isCodingPlanProvider) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
+          let message = String(value.message || (value.ok ? '连接成功，服务可用' : '连接失败，请稍后重试'));
+          if (isCodingPlanProvider && (code === 'endpoint_not_found' || code === 'method_not_allowed')) {
+            message = '当前厂商接口暂时无法完成测试，但不影响保存配置';
+          }
+          return {
+            ok: !!value.ok,
+            code,
+            message,
+            detail: value.detail ? String(value.detail) : '',
+          };
+        }
+        const raw = String(value || '');
+        const httpMatch = raw.match(/HTTP\s+(\d{3})/i);
+        if (httpMatch) {
+          const status = Number(httpMatch[1]);
+          const legacy = {
+            ok: status >= 200 && status < 300,
+            code: status === 401 ? 'auth_invalid' : status === 403 ? 'auth_forbidden' : status === 429 ? 'rate_limited' : 'http_error',
+            message: status === 401 ? 'API Key 无效，请检查后重新填写'
+              : status === 403 ? '当前 API Key 没有访问权限'
+                : status === 429 ? '请求过于频繁或额度不足，请稍后再试'
+                  : (status >= 200 && status < 300 ? '连接成功，服务可用' : '连接失败，请检查配置后重试'),
+            detail: `HTTP ${status}`,
+          };
+          if (isCodingPlanProvider && (status === 404 || status === 405)) {
+            legacy.code = status === 404 ? 'endpoint_not_found' : 'method_not_allowed';
+            legacy.message = '当前厂商接口暂时无法完成测试，但不影响保存配置';
+          }
+          return legacy;
+        }
+        if (raw === 'ok') return { ok: true, code: 'ok', message: '连接成功，服务可用', detail: '' };
+        return { ok: false, code: 'unknown', message: raw || '连接失败，请稍后重试', detail: '' };
+      }
       function applyCatalogItem(group, item) {
         const p = group.preset;
         setPreset(p);
         const defs = MODEL_PRESET_DEFS[p] || MODEL_PRESET_DEFS[localVllmSupported ? 'local_vllm' : 'deepseek'];
         const nextModel = item.custom ? '' : (item.model || defs.model);
-        setBaseUrl(defs.baseUrl);
+        const nextBaseUrl = normalizedProviderBaseUrl(group) || defs.baseUrl;
+        setProviderKey(group.key || '');
+        setProviderKind(group.providerKind || (p === 'openai_compatible' ? PROVIDER_KIND_CUSTOM : PROVIDER_KIND_OFFICIAL_API));
+        setVendor(group.vendor || '');
+        setEndpointMode(group.endpointMode || '');
+        setBaseUrl(nextBaseUrl);
         setModel(nextModel);
-        setName(p === 'local_vllm' ? (nextModel ? `本地 ${nextModel}` : '本地模型') : group.title);
+        if (!nameTouched) setName(p === 'local_vllm' ? (nextModel ? `本地 ${nextModel}` : '本地模型') : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
         if (p !== 'local_vllm') {
@@ -1114,13 +1355,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           setKeyAction(initial.__new ? 'replace' : 'keep_existing');
         }
         setCustomModel(!!item.custom);
+        setProviderModelPickerOpen(false);
         setPickerOpen(false);
       }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        try { const msg = await bridge.models.testModelConnection(baseUrl.trim(), keyAction === 'replace' ? apiKey.trim() : '', initial.__new ? null : initial.id); setTestResult({ ok: true, msg: String(msg) }); }
-        catch (e) { setTestResult({ ok: false, msg: String(e) }); }
+        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        try {
+          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
+        } catch (e) {
+          setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
+        }
         finally { setTesting(false); }
       }
       // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
@@ -1169,13 +1416,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return t.vllmDetectOffline;
       }
       const isLocalPreset = preset === 'local_vllm';
-      const showModelIdField = isLocalPreset || customModel;
-      const showBaseUrlField = isLocalPreset || (customModel && preset === 'openai_compatible');
+      const showCodingPlanModelField = !isLocalPreset && isCodingPlan;
+      const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
+      const showModelIdField = isLocalPreset || customModel || showProviderModelField;
+      const showBaseUrlField = isLocalPreset || (customModel && preset === 'openai_compatible' && !isCodingPlan);
       const showCustomCloudKeyField = !isLocalPreset && customModel;
-      const showConfigFields = showModelIdField || showBaseUrlField || showCustomCloudKeyField;
-      const selectedProvider = presetProviderLabel(preset, t);
+      const showLocalKeyField = isLocalPreset && localKeyEnabled;
+      const showDisplayNameField = isLocalPreset && !initial.__new;
+      const showConfigFields = showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField;
+      const selectedProvider = isLocalPreset ? presetProviderLabel(preset, t) : (activeProvider ? (activeProvider.configTitle || activeProvider.title) : presetProviderLabel(preset, t));
       const selectedModelLabel = model || '自定义模型';
-      const saveName = name.trim() || (isLocalPreset ? (model.trim() ? `本地 ${model.trim()}` : '本地模型') : selectedProvider);
+      const modalTitle = initial.__new
+        ? (isCodingPlan ? `添加 ${selectedProvider}` : t.modelFormAddTitle)
+        : (isCodingPlan ? `编辑 ${selectedProvider}` : t.modelFormEditTitle);
+      const saveName = name.trim() || (isLocalPreset ? (model.trim() ? `本地 ${model.trim()}` : '本地模型') : (model.trim() ? model.trim() : selectedProvider));
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
       const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
@@ -1203,21 +1457,150 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const contextTokens = Number.parseInt(contextWindow, 10);
         const outputTokens = Number.parseInt(maxOutput, 10);
         const nextKeyAction = isLocalPreset
-          ? 'keep_existing'
+          ? (localKeyEnabled && apiKey.trim() ? 'replace' : 'keep_existing')
           : (apiKey.trim() ? 'replace' : (initial.__new || !hasSavedKey ? 'replace' : 'keep_existing'));
+        const nextApiKey = isLocalPreset
+          ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
+          : (!isLocalPreset && apiKey.trim() ? apiKey.trim() : '');
         onSave({
           id: id, name: saveName, preset: preset,
           context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
           max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
           model: model.trim(), base_url: baseUrl.trim(),
-          api_key: !isLocalPreset && apiKey.trim() ? apiKey.trim() : '', credential_action: nextKeyAction,
+          api_key: nextApiKey, credential_action: nextKeyAction,
+          provider_kind: providerKind || null,
+          vendor: vendor || null,
+          endpoint_mode: endpointMode || null,
         });
+      }
+      function makeModelId() {
+        return 'm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      }
+      function localCandidateRows(result) {
+        const candidates = (result && Array.isArray(result.candidates)) ? result.candidates : [];
+        return candidates.flatMap(candidate => {
+          const ids = Array.isArray(candidate.models) && candidate.models.length
+            ? candidate.models
+            : (candidate.model ? [candidate.model] : []);
+          return ids.map((modelId, index) => ({
+            key: `${candidate.base_url || 'local'}:${modelId}`,
+            model: modelId,
+            base_url: candidate.base_url || '',
+            provider: candidate.provider || 'vllm',
+            label: candidate.label || 'vLLM',
+            max_model_len: index === 0 ? candidate.max_model_len : null,
+          })).filter(row => row.model && row.base_url);
+        });
+      }
+      function buildLocalModelPayload(row) {
+        return {
+          id: makeModelId(),
+          name: `本地 ${row.model}`,
+          preset: 'local_vllm',
+          context_window_tokens: row.max_model_len || null,
+          max_output_tokens: null,
+          model: row.model,
+          base_url: row.base_url,
+          api_key: '',
+          credential_action: 'keep_existing',
+        };
+      }
+      async function handleLocalDetect() {
+        if (!bridge.available || !bridge.vllm.discoverLocalVllm || localDetecting) return;
+        setLocalDetecting(true);
+        setLocalDetectResult(null);
+        try {
+          const result = await bridge.vllm.discoverLocalVllm({
+            currentBaseUrl: null,
+            savedBaseUrl: null,
+          });
+          setLocalDetectResult({ candidates: (result && result.candidates) || [] });
+        } catch (error) {
+          setLocalDetectResult({ error: String(error || '检测失败') });
+        } finally {
+          setLocalDetecting(false);
+        }
+      }
+      function startManualLocalModel() {
+        const defs = MODEL_PRESET_DEFS.local_vllm;
+        setPreset('local_vllm');
+        setModel('');
+        setBaseUrl(defs.baseUrl);
+        setName('本地模型');
+        setContextWindow('');
+        setMaxOutput('');
+        setApiKey('');
+        setKeyAction('keep_existing');
+        setLocalKeyEnabled(false);
+        setCustomModel(true);
+        setPickerOpen(false);
       }
       const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`;
       const catalogGroupClass = `overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`;
       const formSectionTitle = `px-1 mb-1.5 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`;
       const formGroup = `overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`;
       const formDivider = isDark ? 'border-white/[0.10]' : 'border-black/[0.10]';
+      const renderProviderModelField = () => {
+        const items = activeProvider ? activeProvider.items : [];
+        const known = items.some(item => !item.custom && item.model === model);
+        const selectedItem = known ? items.find(item => !item.custom && item.model === model) : null;
+        const selectedLabel = customModel || !known ? '自定义模型 ID' : ((selectedItem && selectedItem.title) || model);
+        const chooseModel = (item) => {
+          if (!item || item.custom) {
+            setCustomModel(true);
+            setModel('');
+            if (!nameTouched) setName(activeProvider ? (activeProvider.configTitle || activeProvider.title) : selectedProvider);
+          } else {
+            setCustomModel(false);
+            setModel(item.model);
+            if (!nameTouched) setName(item.title || item.model);
+          }
+          setProviderModelPickerOpen(false);
+        };
+        return (
+          <>
+            <button
+              type="button"
+              onClick={() => setProviderModelPickerOpen(open => !open)}
+              className={`w-full min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${formDivider}`}
+            >
+              <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>模型</span>
+              <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{selectedLabel}</span>
+              <ChevronDown
+                size={16}
+                className={`shrink-0 transition-transform ${providerModelPickerOpen ? 'rotate-180' : ''} ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}
+              />
+            </button>
+            {providerModelPickerOpen && (
+              <div className={`border-b last:border-b-0 ${formDivider}`}>
+                {items.map(item => {
+                  const active = item.custom ? (customModel || !known) : (!customModel && item.model === model);
+                  return (
+                    <button
+                      type="button"
+                      key={item.custom ? '__custom__' : item.model}
+                      onClick={() => chooseModel(item)}
+                      className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'}`}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className={`block text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{item.title || item.model || '自定义模型 ID'}</span>
+                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>}
+                      </span>
+                      {active && <Check size={17} strokeWidth={2.4} className={isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]'} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {(customModel || !known) && renderInlineField({
+              label: '模型 ID',
+              value: model,
+              onChange: e => setModel(e.target.value),
+              placeholder: isCodingPlan ? '例如 glm-5' : '输入模型 ID',
+            })}
+          </>
+        );
+      };
       const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false }) => (
         <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
           <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{label}</label>
@@ -1232,6 +1615,42 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           {trailing}
         </div>
       );
+      const renderCloudProviderPicker = () => {
+        const bySection = ['coding_plan', 'official_api', 'custom'].map(section => ({
+          section,
+          title: MODEL_CATALOG_SECTIONS[section],
+          groups: catalogGroups.filter(group => (group.section || 'official_api') === section),
+        })).filter(item => item.groups.length > 0);
+        return (
+          <div className="space-y-4">
+            {bySection.map(section => (
+              <section key={section.section}>
+                <div className={catalogSectionTitleClass}>{section.title}</div>
+                <div className={catalogGroupClass}>
+                  {section.groups.map(group => {
+                    const first = group.items.find(item => !item.custom) || group.items[0] || {};
+                    return (
+                      <button
+                        type="button"
+                        key={group.key}
+                        onClick={() => applyCatalogItem(group, first)}
+                        className={`w-full min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}
+                      >
+                        <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} isDark={isDark} compact />
+                        <span className="min-w-0 flex-1">
+                          <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{group.title}</span>
+                          <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{group.desc || first.desc || ''}</span>
+                        </span>
+                        <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        );
+      };
       const renderCatalogPicker = () => (
         <div className="space-y-4">
           {catalogGroups.map(group => (
@@ -1247,7 +1666,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       onClick={() => applyCatalogItem(group, item)}
                       className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}
                     >
-                      <ProviderIcon preset={group.preset} isDark={isDark} compact />
+                      <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} isDark={isDark} compact />
                       <span className="min-w-0 flex-1">
                         <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.title}</span>
                         <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>
@@ -1261,10 +1680,63 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           ))}
         </div>
       );
+      const renderLocalPicker = () => {
+        const rows = localCandidateRows(localDetectResult);
+        const mutedText = isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]';
+        const actionClass = `shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`;
+        return (
+          <div className="space-y-4">
+            <section>
+              <div className={catalogGroupClass}>
+                <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                  <ProviderIcon preset="local_vllm" isDark={isDark} compact />
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>自动检测本地模型</span>
+                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>检测 vLLM、Ollama、LM Studio</span>
+                  </span>
+                  <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
+                    className={`${actionClass} disabled:opacity-45`}>{localDetecting ? '检测中…' : (localDetectResult ? '重新检测' : '检测')}</button>
+                </div>
+                {localDetectResult && localDetectResult.error && (
+                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#F28B82]' : 'border-black/[0.10] text-[#C5221F]'}`}>{localDetectResult.error}</div>
+                )}
+                {localDetectResult && !localDetectResult.error && rows.length === 0 && (
+                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#98989D]' : 'border-black/[0.10] text-[#8A8A8E]'}`}>未检测到运行中的本地模型</div>
+                )}
+                {rows.map(row => (
+                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                    <ProviderIcon preset="local_vllm" isDark={isDark} compact />
+                    <span className="min-w-0 flex-1">
+                      <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{row.model}</span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{row.label} · {row.base_url}</span>
+                    </span>
+                    <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
+                      className={actionClass}>添加</button>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section>
+              <div className={catalogGroupClass}>
+                <button type="button" onClick={startManualLocalModel}
+                  className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'}`}>
+                  <ProviderIcon preset="local_vllm" isDark={isDark} compact />
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>手动添加本地模型</span>
+                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>填写 API 地址和模型 ID</span>
+                  </span>
+                  <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
+                </button>
+              </div>
+            </section>
+          </div>
+        );
+      };
       if (initial.__new && pickerOpen) {
         return (
           <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
             <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
+              onClick={e => e.stopPropagation()}
               className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                 <div>
@@ -1273,19 +1745,32 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </div>
                 <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
               </div>
-              <div className="px-5 py-4">{renderCatalogPicker()}</div>
+              <div className="px-5 pt-4">
+                <div className={`p-1 rounded-full grid grid-cols-2 gap-1 ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                  {[
+                    { key: 'cloud', label: '云端模型' },
+                    { key: 'local', label: '本地模型' },
+                  ].map(tab => (
+                    <button key={tab.key} type="button" onClick={() => setPickerTab(tab.key)}
+                      className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? (isDark ? 'bg-[#3A3A3C] text-[#F2F2F7]' : 'bg-white text-[#007AFF] shadow-sm') : (isDark ? 'text-[#C7C7CC]' : 'text-[#636366]')}`}>
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="px-5 py-4">{pickerTab === 'local' ? renderLocalPicker() : renderCloudProviderPicker()}</div>
             </div>
           </div>
         );
       }
       return (
-        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onCancel}>
+        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
           <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
             className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
-                <h2 className="text-[20px] leading-6 font-semibold">{initial.__new ? t.modelFormAddTitle : t.modelFormEditTitle}</h2>
-                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${selectedProvider} · ${selectedModelLabel}`}</p>
+                <h2 className="text-[20px] leading-6 font-semibold">{modalTitle}</h2>
+                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? 'Coding Plan · 工具调用' : selectedProvider + ' · ' + selectedModelLabel}`}</p>
               </div>
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
             </div>
@@ -1293,7 +1778,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'border-white/[0.10] bg-[#2C2C2E]' : 'border-black/[0.08] bg-white'}`}>
                 {isLocalPreset ? (
                   <div className="w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left">
-                    <ProviderIcon preset={preset} isDark={isDark} compact />
+                    <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} isDark={isDark} compact />
                     <span className="min-w-0 flex-1">
                       <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
@@ -1305,7 +1790,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     onClick={() => setPickerOpen(v => !v)}
                     className={`w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.035]'}`}
                   >
-                    <ProviderIcon preset={preset} isDark={isDark} compact />
+                    <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} isDark={isDark} compact />
                     <span className="min-w-0 flex-1">
                       <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
@@ -1324,9 +1809,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
-                      <input type="text" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                      <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                         placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
-                        style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
                         className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
                       <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
                     </div>
@@ -1337,20 +1821,60 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               {showConfigFields && (
                 <section>
                   <div className={formGroup}>
-                    {showModelIdField && renderInlineField({ label: isLocalPreset ? '本地模型 ID' : '模型 ID', value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : '输入模型 ID' })}
+                    {showDisplayNameField && renderInlineField({
+                      label: t.modelDisplayName || '显示名',
+                      value: name,
+                      onChange: e => { setNameTouched(true); setName(e.target.value); },
+                      placeholder: '本地模型',
+                    })}
+                    {showProviderModelField && renderProviderModelField()}
+                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? '本地模型 ID' : '模型 ID', value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : '输入模型 ID' })}
                     {showCustomCloudKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
-                        <input type="text" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                        <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                           placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
-                          style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
                           className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
                         <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
                       </div>
                     )}
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
+                    {isLocalPreset && (
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
+                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>需要 API Key</label>
+                        <button type="button" onClick={() => setLocalKeyEnabled(v => !v)}
+                          className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : (isDark ? 'bg-[#3A3A3C]' : 'bg-[#D1D1D6]')}`}
+                          aria-pressed={localKeyEnabled}>
+                          <span className={`block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${localKeyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+                    )}
+                    {showLocalKeyField && (
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
+                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
+                        <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+                          placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
+                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                      </div>
+                    )}
                   </div>
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                </section>
+              )}
+              {showConfigFields && (
+                <section>
+                  <div className={formGroup}>
+                    <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
+                      <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : 'text-[#FF3B30]') : (isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]')}`}>
+                        {testResult ? testResult.message : '保存前可测试服务是否可用'}
+                      </span>
+                      <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
+                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`}>
+                        {testing ? t.testingConn : t.testConnection}
+                      </button>
+                    </div>
+                  </div>
                 </section>
               )}
               {preset === 'local_vllm' && detectResult && (
@@ -1755,23 +2279,27 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const isActive = m.id === activeModelId;
         const isLocal = isLocalModel(m);
         const isReadonly = isReadonlyModel(m);
+        const codingPlan = isCodingPlanModel(m);
+        const providerLabel = providerLabelForModel(m, t);
         const title = m.model || m.name;
         return (
           <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
             <button onClick={() => !isActive && onSetActiveModel(m.id)} className="shrink-0" title={t.setActiveModel}>
               <RadioDot active={isActive} />
             </button>
-            <ProviderIcon preset={m.preset || (isLocal ? 'local_vllm' : 'openai_compatible')} isDark={isDark} compact />
+            <ProviderIcon preset={m.preset || (isLocal ? 'local_vllm' : 'openai_compatible')} vendor={m.vendor} providerKind={m.provider_kind} model={m.model} isDark={isDark} compact />
             <div className="min-w-0">
               <div className="flex items-center gap-2 min-w-0">
                 <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</span>
                 {isLocal && <Tag tone="gray">本地模型</Tag>}
+                {codingPlan && <Tag tone="gray">Coding Plan</Tag>}
                 {isActive && <Tag>默认</Tag>}
               </div>
+              <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{providerLabel} · {m.model}</div>
             </div>
             <div className="shrink-0 flex items-center gap-2">
               {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>}
-              {!isReadonly && models.length > 1 && !isLocal && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+              {!isReadonly && models.length > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
             </div>
           </div>
         );

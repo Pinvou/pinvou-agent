@@ -137,6 +137,42 @@ pub enum ModelPreset {
     Mimo,
 }
 
+pub const MODEL_PROVIDER_KIND_CODING_PLAN: &str = "coding_plan";
+pub const MODEL_PROVIDER_KIND_OFFICIAL_API: &str = "official_api";
+pub const MODEL_PROVIDER_KIND_CUSTOM: &str = "custom";
+
+fn trim_url_tail(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+fn strip_chat_completions_suffix(value: &str) -> String {
+    let trimmed = trim_url_tail(value);
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.ends_with("/chat/completions") {
+        trimmed[..trimmed.len() - "/chat/completions".len()].to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn identify_coding_plan_endpoint(base_url: &str) -> Option<(&'static str, &'static str)> {
+    let base = strip_chat_completions_suffix(base_url);
+    let normalized = base.to_ascii_lowercase();
+    match normalized.as_str() {
+        "https://open.bigmodel.cn/api/coding/paas/v4" => {
+            Some(("glm", "https://open.bigmodel.cn/api/coding/paas/v4"))
+        }
+        "https://api.kimi.com/coding/v1" => Some(("kimi", "https://api.kimi.com/coding/v1")),
+        "https://api.lkeap.cloud.tencent.com/coding/v3" => {
+            Some(("tencent", "https://api.lkeap.cloud.tencent.com/coding/v3"))
+        }
+        "https://api.lkeap.cloud.tencent.com/plan/v3" => {
+            Some(("tencent", "https://api.lkeap.cloud.tencent.com/plan/v3"))
+        }
+        _ => None,
+    }
+}
+
 impl Default for ModelPreset {
     /// 平台感知默认预设:macOS/Windows 无本地 vLLM 支持(相关后端命令已 cfg 掉),
     /// 默认到 DeepSeek 远程 API,否则新用户首启即落在 127.0.0.1:8000 永远连不上。
@@ -372,6 +408,12 @@ pub struct SavedModel {
     pub max_output_tokens: Option<u32>,
     pub model: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_mode: Option<String>,
     #[serde(default, skip_serializing)]
     pub api_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,6 +437,46 @@ impl SavedModel {
             if self.max_output_tokens.is_none() {
                 self.max_output_tokens = Some(24_576);
             }
+        }
+    }
+
+    fn normalize_provider_metadata(&mut self) {
+        self.base_url = strip_chat_completions_suffix(&self.base_url);
+        if let Some((vendor, canonical_base_url)) = identify_coding_plan_endpoint(&self.base_url) {
+            self.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.to_string());
+            self.vendor = Some(vendor.to_string());
+            self.base_url = canonical_base_url.to_string();
+            if self.endpoint_mode.as_deref() == Some("full_chat_completions") {
+                self.endpoint_mode = None;
+            }
+            return;
+        }
+        if self.provider_kind.as_deref() == Some(MODEL_PROVIDER_KIND_CODING_PLAN) {
+            self.provider_kind = None;
+        }
+        if self.provider_kind.is_none() {
+            self.provider_kind = Some(
+                if self.preset == ModelPreset::OpenaiCompatible {
+                    MODEL_PROVIDER_KIND_CUSTOM
+                } else {
+                    MODEL_PROVIDER_KIND_OFFICIAL_API
+                }
+                .to_string(),
+            );
+        }
+        if self
+            .vendor
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            self.vendor = None;
+        }
+        if self
+            .endpoint_mode
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            self.endpoint_mode = None;
         }
     }
 
@@ -519,6 +601,7 @@ impl UserPrefs {
             Err(_) => Self::default(),
         };
         prefs.migrate_models();
+        prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
         if migration.settings_sanitized || memory_policy_changed {
@@ -538,12 +621,20 @@ impl UserPrefs {
         let mut normalized = self.clone();
         normalized.search.normalize();
         normalized.enforce_memory_locale_policy();
+        normalized.normalize_saved_model_metadata();
         for model in &mut normalized.advanced.saved_models {
             model.normalize_route_limits();
         }
         normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
+    }
+
+    pub fn normalize_saved_model_metadata(&mut self) {
+        for model in &mut self.advanced.saved_models {
+            model.normalize_provider_metadata();
+            model.normalize_route_limits();
+        }
     }
 
     fn enforce_memory_locale_policy(&mut self) -> bool {
@@ -562,6 +653,7 @@ impl UserPrefs {
     pub(crate) fn migrate_models(&mut self) {
         if !self.advanced.saved_models.is_empty() {
             for model in &mut self.advanced.saved_models {
+                model.normalize_provider_metadata();
                 model.normalize_route_limits();
             }
             return;
@@ -589,6 +681,9 @@ impl UserPrefs {
             max_output_tokens: None,
             model,
             base_url,
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
             api_key,
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -596,6 +691,7 @@ impl UserPrefs {
             credential_action: None,
         });
         self.advanced.saved_models[0].normalize_route_limits();
+        self.advanced.saved_models[0].normalize_provider_metadata();
         self.advanced.custom_api_key = None;
         if self.advanced.active_model_id.is_none() {
             self.advanced.active_model_id = Some(id);
@@ -844,6 +940,7 @@ impl UserPrefs {
 
     /// 增或改(按 id)一条模型。
     pub fn upsert_model(&mut self, mut m: SavedModel) {
+        m.normalize_provider_metadata();
         m.normalize_route_limits();
         if let Some(existing) = self.advanced.saved_models.iter_mut().find(|x| x.id == m.id) {
             *existing = m;
@@ -902,6 +999,72 @@ mod tests {
     }
 
     #[test]
+    fn coding_plan_endpoint_alias_is_normalized_with_metadata() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.upsert_model(SavedModel {
+            id: "glm-coding".into(),
+            name: "GLM-5-Turbo".into(),
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "glm-5-turbo".into(),
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions/".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: Some("full_chat_completions".into()),
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+
+        let model = prefs.model_by_id("glm-coding").expect("coding model");
+        assert_eq!(
+            model.base_url,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+        assert_eq!(
+            model.provider_kind.as_deref(),
+            Some(MODEL_PROVIDER_KIND_CODING_PLAN)
+        );
+        assert_eq!(model.vendor.as_deref(), Some("glm"));
+        assert!(model.endpoint_mode.is_none());
+    }
+
+    #[test]
+    fn normal_glm_api_is_not_migrated_to_coding_plan() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.upsert_model(SavedModel {
+            id: "glm-api".into(),
+            name: "GLM API".into(),
+            preset: ModelPreset::Glm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "glm-5.2".into(),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+
+        let model = prefs.model_by_id("glm-api").expect("glm model");
+        assert_eq!(model.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(
+            model.provider_kind.as_deref(),
+            Some(MODEL_PROVIDER_KIND_OFFICIAL_API)
+        );
+        assert!(model.vendor.is_none());
+    }
+
+    #[test]
     fn remove_active_model_falls_back_to_first() {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
@@ -913,6 +1076,9 @@ mod tests {
             max_output_tokens: None,
             model: "kimi-k2.6".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
