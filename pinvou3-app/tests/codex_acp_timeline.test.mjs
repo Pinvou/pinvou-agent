@@ -302,6 +302,11 @@ try {
     && codexWorkspace.includes('文件')
     && codexWorkspace.includes('更改'),
   'active Codex sessions must expose a right-side Files/Changes workspace panel');
+  assert.ok(codexWorkspace.includes("WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width'")
+    && codexWorkspace.includes('onMouseDown={startPanelResize}')
+    && codexWorkspace.includes('onDoubleClick={resetPanelWidth}')
+    && codexWorkspace.includes("document.body.style.cursor = 'col-resize'"),
+  'the Codex workspace panel must support persisted drag resizing and double-click reset');
   assert.ok(codexWorkspace.includes("invoke('list_codex_workspace'")
     && codexWorkspace.includes("invoke('preview_codex_workspace_file'")
     && codexWorkspace.includes("invoke('get_codex_workspace_changes'")

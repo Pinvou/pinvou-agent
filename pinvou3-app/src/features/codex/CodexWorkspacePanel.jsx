@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, ChevronDown, ChevronRight, Copy, ExternalLink, FileText,
   FolderOpen, Plus, RefreshCw, Search, X,
@@ -6,6 +6,41 @@ import {
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 const invoke = invokeTauri;
+const WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width';
+const WORKSPACE_MIN_WIDTH = 360;
+const CONVERSATION_MIN_WIDTH = 360;
+const WORKSPACE_MAX_RATIO = 0.65;
+const WORKSPACE_DEFAULT_WIDTH = 380;
+
+function clampWorkspaceWidth(width, rootWidth) {
+  const maximum = Math.max(
+    WORKSPACE_MIN_WIDTH,
+    Math.min(
+      Math.round(rootWidth * WORKSPACE_MAX_RATIO),
+      rootWidth - CONVERSATION_MIN_WIDTH,
+    ),
+  );
+  return Math.max(WORKSPACE_MIN_WIDTH, Math.min(Math.round(width), maximum));
+}
+
+function savedWorkspaceWidth() {
+  try {
+    const value = Number.parseInt(localStorage.getItem(WORKSPACE_WIDTH_KEY) || '', 10);
+    return Number.isFinite(value) && value >= WORKSPACE_MIN_WIDTH
+      ? value
+      : WORKSPACE_DEFAULT_WIDTH;
+  } catch {
+    return WORKSPACE_DEFAULT_WIDTH;
+  }
+}
+
+function rememberWorkspaceWidth(width) {
+  try {
+    localStorage.setItem(WORKSPACE_WIDTH_KEY, String(Math.round(width)));
+  } catch {
+    // localStorage 不可用时只保留当前窗口内的宽度。
+  }
+}
 
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
@@ -210,7 +245,83 @@ export function CodexWorkspacePanel({
   const [diff, setDiff] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState('');
+  const [panelWidth, setPanelWidth] = useState(savedWorkspaceWidth);
+  const panelRef = useRef(null);
+  const resizeCleanupRef = useRef(null);
   const referencedPaths = useMemo(() => new Set(references), [references]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    const clampToViewport = () => {
+      const panel = panelRef.current;
+      const rootWidth = panel?.parentElement?.getBoundingClientRect().width || window.innerWidth;
+      setPanelWidth(current => clampWorkspaceWidth(current, rootWidth));
+    };
+    clampToViewport();
+    window.addEventListener('resize', clampToViewport);
+    return () => window.removeEventListener('resize', clampToViewport);
+  }, [visible]);
+
+  useEffect(() => () => {
+    if (resizeCleanupRef.current) resizeCleanupRef.current();
+  }, []);
+
+  function startPanelResize(event) {
+    event.preventDefault();
+    const panel = panelRef.current;
+    const rootRect = panel?.parentElement?.getBoundingClientRect();
+    if (!panel || !rootRect) return;
+    if (resizeCleanupRef.current) resizeCleanupRef.current();
+
+    const maximum = Math.max(
+      WORKSPACE_MIN_WIDTH,
+      Math.min(
+        Math.round(rootRect.width * WORKSPACE_MAX_RATIO),
+        rootRect.width - CONVERSATION_MIN_WIDTH,
+      ),
+    );
+    let nextWidth = panelWidth;
+    let frame = 0;
+    const onMove = moveEvent => {
+      nextWidth = Math.max(
+        WORKSPACE_MIN_WIDTH,
+        Math.min(rootRect.right - moveEvent.clientX, maximum),
+      );
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        panel.style.width = `${nextWidth}px`;
+      });
+    };
+    const cleanup = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      window.removeEventListener('blur', onUp);
+      if (frame) window.cancelAnimationFrame(frame);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      resizeCleanupRef.current = null;
+    };
+    const onUp = () => {
+      cleanup();
+      setPanelWidth(nextWidth);
+      rememberWorkspaceWidth(nextWidth);
+    };
+    resizeCleanupRef.current = cleanup;
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }
+
+  function resetPanelWidth() {
+    const panel = panelRef.current;
+    const rootWidth = panel?.parentElement?.getBoundingClientRect().width || window.innerWidth;
+    const nextWidth = clampWorkspaceWidth(WORKSPACE_DEFAULT_WIDTH, rootWidth);
+    setPanelWidth(nextWidth);
+    rememberWorkspaceWidth(nextWidth);
+  }
 
   async function loadDirectory(path = '', { force = false } = {}) {
     if (!sessionId || (!force && entriesByDirectory[path])) return;
@@ -356,7 +467,20 @@ export function CodexWorkspacePanel({
   const rows = query.trim() ? searchResults : null;
 
   return (
-    <aside className={`${visible ? 'flex' : 'hidden'} w-[380px] max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col`}>
+    <aside
+      ref={panelRef}
+      style={{ width: `${panelWidth}px` }}
+      className={`${visible ? 'flex' : 'hidden'} relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col`}
+    >
+      <div
+        role="separator"
+        aria-label="调整工作区宽度"
+        aria-orientation="vertical"
+        onMouseDown={startPanelResize}
+        onDoubleClick={resetPanelWidth}
+        className="absolute inset-y-0 left-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60 transition-colors"
+        title="拖拽调整宽度，双击恢复默认"
+      />
       <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">工作区</div>
