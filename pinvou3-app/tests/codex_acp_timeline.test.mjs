@@ -242,6 +242,7 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
   const pinvouLogo = readFileSync(path.join(root, 'src', 'components', 'PinvouLogo.jsx'), 'utf8');
@@ -293,8 +294,21 @@ try {
   'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
-    && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)'),
-  'Codex prompts must send parsed attachments through the dedicated ACP command');
+    && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
+    && codexView.includes('workspaceReferences'),
+  'Codex prompts must keep external attachments and workspace references as separate inputs');
+  assert.ok(codexView.includes('<CodexWorkspacePanel')
+    && codexView.includes('工作区')
+    && codexWorkspace.includes('文件')
+    && codexWorkspace.includes('更改'),
+  'active Codex sessions must expose a right-side Files/Changes workspace panel');
+  assert.ok(codexWorkspace.includes("invoke('list_codex_workspace'")
+    && codexWorkspace.includes("invoke('preview_codex_workspace_file'")
+    && codexWorkspace.includes("invoke('get_codex_workspace_changes'")
+    && codexWorkspace.includes("invoke('get_codex_workspace_diff'"),
+  'the workspace panel must use scoped file, preview, and read-only change commands');
+  assert.ok(!codexWorkspace.includes('discard') && !codexWorkspace.includes('stage_codex'),
+    'the first workspace panel must not expose destructive discard or staging actions');
   assert.ok(codexView.includes('function ElicitationCard'),
     'Codex request_user_input must have a first-class conversation item');
   assert.ok(codexView.includes('<QuestionChoiceCard'),

@@ -8,6 +8,9 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::codex_acp::workspace::{
+    self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
+};
 use crate::features::codex_acp::{
     validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation,
     CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
@@ -82,12 +85,14 @@ pub async fn codex_acp_prompt(
     session_id: String,
     message: String,
     attachments: Option<Vec<crate::features::files::file_ingest::IngestResult>>,
+    workspace_references: Option<Vec<String>>,
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
     let message = message.trim().to_string();
     let attachments = attachments.unwrap_or_default();
-    if message.is_empty() && attachments.is_empty() {
+    let workspace_references = workspace_references.unwrap_or_default();
+    if message.is_empty() && attachments.is_empty() && workspace_references.is_empty() {
         return Err("empty message".to_string());
     }
     if !acp_pool.is_codex(&session_id) {
@@ -101,6 +106,7 @@ pub async fn codex_acp_prompt(
             attachments
                 .first()
                 .map(|attachment| attachment.basename.as_str())
+                .or_else(|| workspace_references.first().map(String::as_str))
                 .unwrap_or("附件")
         } else {
             &message
@@ -112,7 +118,7 @@ pub async fn codex_acp_prompt(
     }
     crate::features::assistant::timing::start_turn(&session_id);
     acp_pool
-        .send_message(&session_id, message, attachments)
+        .send_message(&session_id, message, attachments, workspace_references)
         .await
         .map_err(|error| {
             crate::features::assistant::timing::finish_turn(
@@ -122,6 +128,129 @@ pub async fn codex_acp_prompt(
             );
             format!("Codex ACP send failed: {error:#}")
         })
+}
+
+fn codex_workspace_root(
+    session_id: &str,
+    acp_pool: &AcpPool,
+) -> Result<std::path::PathBuf, String> {
+    if !acp_pool.is_codex(session_id) {
+        return Err("当前会话不是 Codex ACP 会话".to_string());
+    }
+    let info = acp_pool
+        .workspace_info(session_id)
+        .map_err(|error| format!("读取 Codex 工作目录失败: {error:#}"))?;
+    if !info.workspace_available {
+        return Err(format!("Codex 工作目录不可用: {}", info.workspace_path));
+    }
+    Ok(std::path::PathBuf::from(info.workspace_path))
+}
+
+#[tauri::command]
+pub async fn list_codex_workspace(
+    session_id: String,
+    relative_path: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceListing, String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::list_workspace(&root, relative_path.as_deref())
+            .map_err(|error| format!("读取 Codex 工作区失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("读取 Codex 工作区任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn search_codex_workspace(
+    session_id: String,
+    query: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<WorkspaceEntry>, String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::search_workspace(&root, &query)
+            .map_err(|error| format!("搜索 Codex 工作区失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("搜索 Codex 工作区任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn preview_codex_workspace_file(
+    session_id: String,
+    relative_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspacePreview, String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::preview_workspace_file(&root, &relative_path)
+            .map_err(|error| format!("预览 Codex 工作区文件失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("预览 Codex 工作区文件任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_codex_workspace_changes(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceChanges, String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::workspace_changes(&session_id, &root)
+            .map_err(|error| format!("读取 Codex 工作区更改失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("读取 Codex 工作区更改任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_codex_workspace_diff(
+    session_id: String,
+    relative_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceDiff, String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::workspace_diff(&root, &relative_path)
+            .map_err(|error| format!("读取 Codex 文件差异失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("读取 Codex 文件差异任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn open_codex_workspace_file(
+    session_id: String,
+    relative_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let path = workspace::resolve_workspace_file(&root, &relative_path)
+        .map_err(|error| format!("打开 Codex 工作区文件失败: {error:#}"))?;
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(&path),
+        "Codex 工作区文件",
+    )
+}
+
+#[tauri::command]
+pub async fn reveal_codex_workspace_file(
+    session_id: String,
+    relative_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let path = workspace::resolve_workspace_file(&root, &relative_path)
+        .map_err(|error| format!("定位 Codex 工作区文件失败: {error:#}"))?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| format!("文件没有父目录: {}", path.display()))?;
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(directory),
+        "Codex 工作区目录",
+    )
 }
 
 #[tauri::command]
@@ -280,6 +409,22 @@ pub async fn create_codex_acp_session(
     {
         let _ = store.delete(&session.metadata.id);
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));
+    }
+    let baseline_root = acp_pool
+        .workspace_info(&session.metadata.id)
+        .map_err(|error| format!("读取 Codex ACP 会话工作目录失败: {error:#}"))?
+        .workspace_path;
+    let baseline_session_id = session.metadata.id.clone();
+    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+        workspace::capture_baseline(&baseline_session_id, std::path::Path::new(&baseline_root))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("工作区基线任务失败: {error}"))
+    .and_then(|result| result)
+    {
+        let _ = acp_pool.agents().remove(&session.metadata.id);
+        let _ = store.delete(&session.metadata.id);
+        return Err(format!("创建 Codex 工作区基线失败: {error:#}"));
     }
     Ok(session.metadata)
 }

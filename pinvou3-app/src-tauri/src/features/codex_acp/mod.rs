@@ -7,6 +7,7 @@ mod attachments;
 mod events;
 mod runtime;
 mod store;
+pub(crate) mod workspace;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -619,12 +620,21 @@ impl AcpPool {
         session_id: &str,
         content: String,
         attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+        workspace_references: Vec<String>,
     ) -> Result<()> {
+        let workspace = self.execution_workspace(session_id)?;
+        let workspace_references =
+            workspace::resolve_workspace_references(&workspace, &workspace_references)?;
         let runtime = self.get_or_spawn(session_id).await?;
         if runtime.configuring.load(Ordering::Acquire) {
             bail!("Codex 会话配置仍在同步，请稍候再发送");
         }
-        let prepared = prepare_codex_prompt(&content, &attachments, &runtime.prompt_capabilities)?;
+        let prepared = prepare_codex_prompt(
+            &content,
+            &attachments,
+            &workspace_references,
+            &runtime.prompt_capabilities,
+        )?;
         if runtime.busy.swap(true, Ordering::AcqRel) {
             bail!("Codex ACP 会话仍在生成");
         }

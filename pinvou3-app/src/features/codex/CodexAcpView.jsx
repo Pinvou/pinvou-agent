@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Paperclip, Send,
+  AlertTriangle, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
   Sparkles, StopCircle, Terminal, Wrench,
 } from '../../components/icons.jsx';
 import { CodexLogo } from '../../components/CodexLogo.jsx';
+import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import {
   appendAcpEvent,
   commandExecutionDetails,
@@ -612,6 +613,9 @@ export function CodexAcpView({
   const [sessionInfo, setSessionInfo] = useState(null);
   const [draft, setDraft] = useState('');
   const [attachmentDrafts, setAttachmentDrafts] = useState({});
+  const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [configApplying, setConfigApplying] = useState('');
@@ -655,6 +659,7 @@ export function CodexAcpView({
   );
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
   const attachments = attachmentDrafts[attachmentKey] || [];
+  const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
 
   function applySessionInfo(info) {
     setSessionInfo(info);
@@ -720,8 +725,17 @@ export function CodexAcpView({
         delete next[DRAFT_ATTACHMENT_KEY];
         return next;
       });
+      setWorkspaceReferenceDrafts(current => {
+        const next = { ...current };
+        delete next[DRAFT_ATTACHMENT_KEY];
+        return next;
+      });
     } else if (activeId) {
       setAttachmentDrafts(current => ({
+        ...current,
+        [DRAFT_ATTACHMENT_KEY]: current[activeId] || [],
+      }));
+      setWorkspaceReferenceDrafts(current => ({
         ...current,
         [DRAFT_ATTACHMENT_KEY]: current[activeId] || [],
       }));
@@ -792,6 +806,22 @@ export function CodexAcpView({
 
   function removeAttachment(id) {
     updateAttachments(attachmentKey, current => current.filter(attachment => attachment.id !== id));
+  }
+
+  function addWorkspaceReference(relativePath) {
+    if (!relativePath || !attachmentKey) return;
+    setWorkspaceReferenceDrafts(current => {
+      const previous = current[attachmentKey] || [];
+      if (previous.includes(relativePath)) return current;
+      return { ...current, [attachmentKey]: [...previous, relativePath] };
+    });
+  }
+
+  function removeWorkspaceReference(relativePath) {
+    setWorkspaceReferenceDrafts(current => ({
+      ...current,
+      [attachmentKey]: (current[attachmentKey] || []).filter(path => path !== relativePath),
+    }));
   }
 
   function handlePaste(event) {
@@ -972,7 +1002,7 @@ export function CodexAcpView({
     const readyAttachments = attachments.filter(attachment => (
       attachment.status === 'ready' && attachment.result
     ));
-    if ((!message && !readyAttachments.length) || busy || working) return;
+    if ((!message && !readyAttachments.length && !workspaceReferences.length) || busy || working) return;
     if (attachments.some(attachment => attachment.status === 'parsing')) {
       setError('附件仍在解析，请稍候');
       return;
@@ -995,6 +1025,12 @@ export function CodexAcpView({
           delete next[DRAFT_ATTACHMENT_KEY];
           return next;
         });
+        setWorkspaceReferenceDrafts(current => {
+          const draftReferences = current[DRAFT_ATTACHMENT_KEY] || [];
+          const next = { ...current, [targetId]: draftReferences };
+          delete next[DRAFT_ATTACHMENT_KEY];
+          return next;
+        });
       }
       if (!targetInfo) {
         throw new Error('Codex 会话配置仍在同步，请稍候');
@@ -1006,10 +1042,12 @@ export function CodexAcpView({
         sessionId: targetId,
         message,
         attachments: readyAttachments.map(attachment => attachment.result),
+        workspaceReferences,
       });
       updateAttachments(targetId, current => current.filter(
         attachment => !readyAttachments.some(ready => ready.id === attachment.id),
       ));
+      setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
     } catch (err) {
       setError(String(err));
       setDraft(message);
@@ -1092,9 +1130,29 @@ export function CodexAcpView({
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">配置应用中…</span>}
           {busy && <StatusBadge status="running" />}
+          <button
+            type="button"
+            onClick={() => setWorkspaceOpen(value => !value)}
+            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
+              workspaceOpen
+                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+            }`}
+            title="查看 Codex 工作区文件和更改"
+          >
+            <FolderOpen size={14} />
+            <span>工作区</span>
+            {workspaceChangeCount > 0 && (
+              <span className="min-w-4 h-4 px-1 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 inline-flex items-center justify-center text-[9px] font-medium">
+                {workspaceChangeCount > 99 ? '99+' : workspaceChangeCount}
+              </span>
+            )}
+          </button>
         </header>
         )}
 
+        <div className="flex-1 min-h-0 flex">
+        <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
         <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <div className="w-full max-w-[920px] mx-auto px-6 py-6 space-y-7">
             <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
@@ -1187,6 +1245,28 @@ export function CodexAcpView({
                 className="mb-2"
                 formatError={value => String(value || '')}
               />
+              {workspaceReferences.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {workspaceReferences.map(path => (
+                    <span
+                      key={path}
+                      title={path}
+                      className="max-w-[260px] h-7 pl-2.5 pr-1 rounded-lg inline-flex items-center gap-1.5 bg-blue-500/8 text-blue-700 dark:text-blue-300 text-[10px]"
+                    >
+                      <FileText size={12} className="shrink-0" />
+                      <span className="truncate">@{path}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeWorkspaceReference(path)}
+                        className="w-5 h-5 rounded-md flex items-center justify-center hover:bg-blue-500/10"
+                        aria-label={`移除工作区引用 ${path}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               {sessionInfo && (
                 <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-1.5">
                   {controls.fallbackModels.length > 0 && (
@@ -1258,7 +1338,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={(activeId && !sessionInfo) || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready')) || working || !status || !status.installed || !status.authenticated}
+                  <button onClick={send} disabled={(activeId && !sessionInfo) || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !status || !status.installed || !status.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>
@@ -1315,6 +1395,19 @@ export function CodexAcpView({
               </div>
             )}
           </div>
+        </div>
+        </div>
+        {activeSession && (
+          <CodexWorkspacePanel
+            session={activeSession}
+            visible={workspaceOpen}
+            onClose={() => setWorkspaceOpen(false)}
+            references={workspaceReferences}
+            onAddReference={addWorkspaceReference}
+            refreshToken={events.length}
+            onChangeCount={setWorkspaceChangeCount}
+          />
+        )}
         </div>
     </div>
   );

@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde::Serialize;
 
+use super::workspace::WorkspacePromptReference;
 use crate::features::files::file_ingest::{self, IngestResult};
 
 const EMBED_FILE_MAX_TOKENS: u32 = 8_000;
@@ -30,9 +31,10 @@ pub(super) struct PreparedCodexPrompt {
 pub(super) fn prepare_codex_prompt(
     message: &str,
     attachments: &[IngestResult],
+    workspace_references: &[WorkspacePromptReference],
     capabilities: &PromptCapabilities,
 ) -> Result<PreparedCodexPrompt> {
-    let mut blocks = Vec::with_capacity(attachments.len() + 1);
+    let mut blocks = Vec::with_capacity(attachments.len() + workspace_references.len() + 1);
     if !message.trim().is_empty() {
         blocks.push(ContentBlock::Text(TextContent::new(message)));
     }
@@ -91,6 +93,34 @@ pub(super) fn prepare_codex_prompt(
                 .mime_type(resource_mime_type(&path, &attachment.kind));
             blocks.push(ContentBlock::ResourceLink(resource));
         }
+    }
+
+    for reference in workspace_references {
+        let uri = tauri::Url::from_file_path(&reference.absolute_path)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "无法构造工作区文件地址: {}",
+                    reference.absolute_path.display()
+                )
+            })?
+            .to_string();
+        let name = reference
+            .absolute_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&reference.relative_path);
+        let size = i64::try_from(reference.size).unwrap_or(i64::MAX);
+        blocks.push(ContentBlock::ResourceLink(
+            ResourceLink::new(&reference.relative_path, uri)
+                .title(&reference.relative_path)
+                .size(size)
+                .mime_type(resource_mime_type(&reference.absolute_path, "workspace")),
+        ));
+        display_attachments.push(CodexDisplayAttachment {
+            name: name.to_string(),
+            kind: "workspace".to_string(),
+            size: reference.size,
+        });
     }
 
     if blocks.is_empty() {
@@ -210,6 +240,7 @@ mod tests {
         let prepared = prepare_codex_prompt(
             "看图",
             &[attachment(&path, "image", None, 0)],
+            &[],
             &capabilities,
         )
         .unwrap();
@@ -238,6 +269,7 @@ mod tests {
                 attachment(&small, "text", Some("# small"), 10),
                 attachment(&large, "text", Some("# large"), 8_001),
             ],
+            &[],
             &capabilities,
         )
         .unwrap();
@@ -253,6 +285,7 @@ mod tests {
         let error = prepare_codex_prompt(
             "",
             &[attachment(&path, "image", None, 0)],
+            &[],
             &PromptCapabilities::default(),
         )
         .err()
