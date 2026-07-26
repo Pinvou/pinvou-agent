@@ -15,6 +15,7 @@ fn sanitize_command_error(context: &str, err: impl std::fmt::Display) -> String 
 
 fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
     let store = SystemCredentialStore::new();
+    prefs.normalize_saved_model_metadata();
     let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
     if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
@@ -25,6 +26,7 @@ fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
 }
 
 fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
+    prefs.normalize_saved_model_metadata();
     prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
     prefs.sanitize_plaintext_api_keys();
     prefs
@@ -119,6 +121,9 @@ pub struct EffectiveModelConfig {
     pub credential_state: CredentialState,
     pub has_secret: bool,
     pub provider: String,
+    pub provider_kind: Option<String>,
+    pub vendor: Option<String>,
+    pub endpoint_mode: Option<String>,
     /// 被环境变量覆盖的字段名列表（如 `["model", "base_url"]`）。
     /// 空列表表示全部走 settings.json，用户修改会生效。
     pub env_overrides: Vec<String>,
@@ -184,6 +189,13 @@ pub async fn get_effective_model_config(
             .map(|model| model.has_secret)
             .unwrap_or(false),
         provider: bridge.provider(),
+        provider_kind: effective
+            .as_ref()
+            .and_then(|model| model.provider_kind.clone()),
+        vendor: effective.as_ref().and_then(|model| model.vendor.clone()),
+        endpoint_mode: effective
+            .as_ref()
+            .and_then(|model| model.endpoint_mode.clone()),
         env_overrides,
     })
 }
@@ -393,22 +405,224 @@ pub async fn test_search_provider(
     Ok("搜索源凭据已配置".to_string())
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelConnectionTestResult {
+    pub ok: bool,
+    pub code: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub http_status: Option<u16>,
+}
+
+fn model_connection_result(
+    ok: bool,
+    code: &str,
+    message: &str,
+    detail: Option<String>,
+    http_status: Option<u16>,
+) -> ModelConnectionTestResult {
+    ModelConnectionTestResult {
+        ok,
+        code: code.to_string(),
+        message: message.to_string(),
+        detail,
+        http_status,
+    }
+}
+
+fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionTestResult {
+    let status_code = status.as_u16();
+    let detail = Some(format!("HTTP {status_code}"));
+    if status.is_success() {
+        return model_connection_result(
+            true,
+            "ok",
+            "连接成功，服务可用",
+            detail,
+            Some(status_code),
+        );
+    }
+    if status.is_redirection() {
+        return model_connection_result(
+            false,
+            "redirect",
+            "服务地址发生跳转，当前测试无法确认可用性",
+            detail,
+            Some(status_code),
+        );
+    }
+    match status_code {
+        400 | 422 => model_connection_result(
+            false,
+            "request_invalid",
+            "请求格式不被服务接受，请检查模型配置",
+            detail,
+            Some(status_code),
+        ),
+        401 => model_connection_result(
+            false,
+            "auth_invalid",
+            "API Key 无效，请检查后重新填写",
+            detail,
+            Some(status_code),
+        ),
+        403 => model_connection_result(
+            false,
+            "auth_forbidden",
+            "当前 API Key 没有访问权限",
+            detail,
+            Some(status_code),
+        ),
+        404 => model_connection_result(
+            false,
+            "endpoint_not_found",
+            "服务地址不正确，或该服务不支持模型列表接口",
+            detail,
+            Some(status_code),
+        ),
+        405 => model_connection_result(
+            false,
+            "method_not_allowed",
+            "服务可以访问，但不支持当前测试方式",
+            detail,
+            Some(status_code),
+        ),
+        408 => model_connection_result(
+            false,
+            "timeout",
+            "连接超时，请检查网络或本地服务是否启动",
+            detail,
+            Some(status_code),
+        ),
+        429 => model_connection_result(
+            false,
+            "rate_limited",
+            "请求过于频繁或额度不足，请稍后再试",
+            detail,
+            Some(status_code),
+        ),
+        500..=599 => model_connection_result(
+            false,
+            "server_unavailable",
+            "服务暂时不可用，请稍后再试",
+            detail,
+            Some(status_code),
+        ),
+        _ => model_connection_result(
+            false,
+            "http_error",
+            "连接失败，请检查配置后重试",
+            detail,
+            Some(status_code),
+        ),
+    }
+}
+
+fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
+    let raw = crate::platform::credential_store::redact_secret(&err.to_string());
+    let raw_lower = raw.to_lowercase();
+    let detail = Some(format!("连接失败: {raw}"));
+    if err.is_timeout() {
+        return model_connection_result(
+            false,
+            "timeout",
+            "连接超时，请检查网络或本地服务是否启动",
+            detail,
+            None,
+        );
+    }
+    if raw_lower.contains("certificate") || raw_lower.contains("tls") || raw_lower.contains("ssl") {
+        return model_connection_result(
+            false,
+            "tls_error",
+            "安全证书校验失败，请检查代理或网络环境",
+            detail,
+            None,
+        );
+    }
+    if raw_lower.contains("dns")
+        || raw_lower.contains("lookup")
+        || raw_lower.contains("name or service not known")
+    {
+        return model_connection_result(
+            false,
+            "dns_failed",
+            "无法解析服务地址，请检查网络",
+            detail,
+            None,
+        );
+    }
+    if raw_lower.contains("connection refused")
+        || raw_lower.contains("os error 10061")
+        || raw_lower.contains("actively refused")
+    {
+        return model_connection_result(
+            false,
+            "connection_refused",
+            "无法连接到服务，请确认本地模型服务已启动",
+            detail,
+            None,
+        );
+    }
+    model_connection_result(
+        false,
+        "network_error",
+        "网络连接失败，请检查网络后重试",
+        detail,
+        None,
+    )
+}
+
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
 #[tauri::command]
 pub async fn test_model_connection(
     base_url: String,
     api_key: String,
     model_id: Option<String>,
-) -> Result<String, String> {
+) -> Result<ModelConnectionTestResult, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
+    let parsed_url = match reqwest::Url::parse(&url) {
+        Ok(url) => url,
+        Err(e) => {
+            return Ok(model_connection_result(
+                false,
+                "invalid_url",
+                "服务地址格式不正确",
+                Some(e.to_string()),
+                None,
+            ));
+        }
+    };
+    let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
-        .map_err(|e| format!("client: {e}"))?;
-    let mut req = client.get(&url);
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return Ok(model_connection_result(
+                false,
+                "client_error",
+                "连接测试初始化失败，请稍后重试",
+                Some(format!("client: {e}")),
+                None,
+            ));
+        }
+    };
+    let mut req = client.get(parsed_url);
     let provided_key = api_key.trim().to_string();
     let key = if provided_key.is_empty() {
-        resolve_saved_model_key(model_id.as_deref())?.unwrap_or_default()
+        match resolve_saved_model_key(model_id.as_deref()) {
+            Ok(key) => key.unwrap_or_default(),
+            Err(e) => {
+                return Ok(model_connection_result(
+                    false,
+                    "credential_unavailable",
+                    "无法读取已保存的 API Key，请重新填写",
+                    Some(e),
+                    None,
+                ));
+            }
+        }
     } else {
         provided_key
     };
@@ -416,11 +630,8 @@ pub async fn test_model_connection(
         req = req.bearer_auth(key.trim());
     }
     match req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            Ok(format!("连接成功 (HTTP {})", resp.status().as_u16()))
-        }
-        Ok(resp) => Err(format!("HTTP {}", resp.status().as_u16())),
-        Err(e) => Err(format!("连接失败: {e}")),
+        Ok(resp) => Ok(model_connection_http_result(resp.status())),
+        Err(e) => Ok(model_connection_error_result(&e)),
     }
 }
 

@@ -835,17 +835,62 @@ fn base_model_snapshot(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiModelInfo {
+    pub id: String,
+    pub max_model_len: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiModelsProbe {
+    pub models: Vec<OpenAiModelInfo>,
+}
+
 fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
-    let first = v.get("data")?.as_array()?.first()?;
-    let id = first
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let max = first
-        .get("max_model_len")
-        .and_then(|v| v.as_u64())
-        .map(|n| n as u32);
-    Some((id, max))
+    let first = parse_models_response_list(v)?.into_iter().next()?;
+    Some((Some(first.id), first.max_model_len))
+}
+
+fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInfo>> {
+    let data = v.get("data")?.as_array()?;
+    let models = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let max_model_len = item
+                .get("max_model_len")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32);
+            Some(OpenAiModelInfo {
+                id: id.to_string(),
+                max_model_len,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!models.is_empty()).then_some(models)
+}
+
+pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", base_url.trim_end_matches('/'))
+    };
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    Some(OpenAiModelsProbe {
+        models: parse_models_response_list(v)?,
+    })
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
@@ -1204,6 +1249,20 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    #[test]
+    fn parse_models_response_list_keeps_all_model_ids() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[{"id":"qwen2.5-coder:32b"},{"id":"deepseek-r1:14b","max_model_len":32768}]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "qwen2.5-coder:32b");
+        assert_eq!(models[0].max_model_len, None);
+        assert_eq!(models[1].id, "deepseek-r1:14b");
+        assert_eq!(models[1].max_model_len, Some(32768));
     }
 
     /// 真机冒烟(#[ignore]):对活着的本地 vLLM 跑 `probe_vllm_model_info`,确认拿到

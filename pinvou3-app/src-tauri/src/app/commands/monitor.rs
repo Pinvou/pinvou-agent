@@ -27,7 +27,10 @@ pub struct DiscoverLocalVllmRequest {
 pub struct LocalVllmCandidate {
     pub base_url: String,
     pub status: VllmStatus,
+    pub provider: String,
+    pub label: String,
     pub model: Option<String>,
+    pub models: Vec<String>,
     pub max_model_len: Option<u32>,
 }
 
@@ -36,7 +39,8 @@ pub struct LocalVllmDiscovery {
     pub candidates: Vec<LocalVllmCandidate>,
 }
 
-/// 手动探测本机 vLLM。只探小白名单候选地址；不做端口扫描,不探局域网。
+/// 手动探测本机 OpenAI-compatible 模型服务。只探小白名单候选地址；
+/// 不做端口扫描,不探局域网。
 #[tauri::command]
 pub async fn discover_local_vllm(
     request: Option<DiscoverLocalVllmRequest>,
@@ -46,18 +50,28 @@ pub async fn discover_local_vllm(
         push_local_vllm_candidate(&mut urls, req.current_base_url.as_deref());
         push_local_vllm_candidate(&mut urls, req.saved_base_url.as_deref());
     }
-    for port in [8000u16, 8001, 8002] {
+    for port in [8000u16, 8001, 8002, 11434, 1234] {
         push_local_vllm_candidate(&mut urls, Some(&format!("http://127.0.0.1:{port}/v1")));
     }
 
     let mut candidates = Vec::new();
     for base_url in urls {
-        if let Some(snapshot) = crate::features::monitor::vllm_snapshot(&base_url, None).await {
+        if let Some(probe) = crate::features::monitor::probe_openai_models(&base_url).await {
+            let (provider, label) = local_model_provider_for_url(&base_url);
+            let models = probe
+                .models
+                .iter()
+                .map(|model| model.id.clone())
+                .collect::<Vec<_>>();
+            let first = probe.models.first();
             candidates.push(LocalVllmCandidate {
-                base_url: snapshot.upstream,
-                status: snapshot.status,
-                model: snapshot.model,
-                max_model_len: snapshot.max_model_len,
+                base_url,
+                status: VllmStatus::Ready,
+                provider: provider.to_string(),
+                label: label.to_string(),
+                model: first.map(|model| model.id.clone()),
+                models,
+                max_model_len: first.and_then(|model| model.max_model_len),
             });
         }
     }
@@ -88,10 +102,26 @@ fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
         return None;
     }
     let port: u16 = port.parse().ok()?;
-    if !matches!(port, 8000 | 8001 | 8002) {
+    if !matches!(port, 8000 | 8001 | 8002 | 11434 | 1234) {
         return None;
     }
     Some(format!("http://{host}:{port}/v1"))
+}
+
+fn local_model_provider_for_url(base_url: &str) -> (&'static str, &'static str) {
+    let port = base_url
+        .trim()
+        .trim_end_matches('/')
+        .split('/')
+        .nth(2)
+        .and_then(|host_port| host_port.rsplit_once(':').map(|(_, port)| port))
+        .and_then(|port| port.parse::<u16>().ok());
+    match port {
+        Some(11434) => ("ollama", "Ollama"),
+        Some(1234) => ("lm_studio", "LM Studio"),
+        Some(8000 | 8001 | 8002) => ("vllm", "vLLM"),
+        _ => ("openai_compatible", "OpenAI Compatible"),
+    }
 }
 
 /// ChatRoom 顶部 live dot 简版指示：vLLM 是否在线。
@@ -123,4 +153,65 @@ pub async fn get_backend_status(
         last_check_ms: now_ms,
         max_model_len,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_local_model_base_url_allows_known_loopback_ports() {
+        assert_eq!(
+            normalize_local_vllm_base_url("http://127.0.0.1:8000/v1"),
+            Some("http://127.0.0.1:8000/v1".to_string())
+        );
+        assert_eq!(
+            normalize_local_vllm_base_url("http://127.0.0.1:8001/v1"),
+            Some("http://127.0.0.1:8001/v1".to_string())
+        );
+        assert_eq!(
+            normalize_local_vllm_base_url("http://127.0.0.1:8002/v1"),
+            Some("http://127.0.0.1:8002/v1".to_string())
+        );
+        assert_eq!(
+            normalize_local_vllm_base_url("http://127.0.0.1:11434/v1"),
+            Some("http://127.0.0.1:11434/v1".to_string())
+        );
+        assert_eq!(
+            normalize_local_vllm_base_url("http://localhost:1234/v1"),
+            Some("http://localhost:1234/v1".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_local_model_base_url_rejects_non_whitelisted_targets() {
+        assert_eq!(
+            normalize_local_vllm_base_url("http://127.0.0.1:9999/v1"),
+            None
+        );
+        assert_eq!(
+            normalize_local_vllm_base_url("http://192.168.1.2:8000/v1"),
+            None
+        );
+        assert_eq!(
+            normalize_local_vllm_base_url("https://example.com/v1"),
+            None
+        );
+    }
+
+    #[test]
+    fn local_model_provider_uses_known_default_ports() {
+        assert_eq!(
+            local_model_provider_for_url("http://127.0.0.1:8000/v1"),
+            ("vllm", "vLLM")
+        );
+        assert_eq!(
+            local_model_provider_for_url("http://127.0.0.1:11434/v1"),
+            ("ollama", "Ollama")
+        );
+        assert_eq!(
+            local_model_provider_for_url("http://127.0.0.1:1234/v1"),
+            ("lm_studio", "LM Studio")
+        );
+    }
 }

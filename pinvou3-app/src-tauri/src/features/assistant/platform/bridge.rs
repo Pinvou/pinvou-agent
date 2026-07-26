@@ -1377,6 +1377,9 @@ mod tests {
             max_output_tokens: None,
             model: model.to_string(),
             base_url: base_url.to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -2439,6 +2442,39 @@ mod tests {
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.base_url(), "https://api.openai.com/v1");
         assert_eq!(bridge.api_key(), "sk-xxx");
+    }
+
+    #[test]
+    fn coding_plan_model_uses_openai_provider_with_canonical_base_url() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "glm-5-turbo",
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+            "sk-coding",
+        );
+        bridge.prefs.normalize_saved_model_metadata();
+
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.model(), "glm-5-turbo");
+        assert_eq!(
+            bridge.base_url(),
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+        assert_eq!(bridge.api_key(), "sk-coding");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Openai
+        );
+        assert_eq!(cfg.default_model(), "glm-5-turbo");
     }
 
     /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
