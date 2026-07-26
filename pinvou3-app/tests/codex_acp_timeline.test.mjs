@@ -244,6 +244,7 @@ try {
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
+  const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
   const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
   const pinvouLogo = readFileSync(path.join(root, 'src', 'components', 'PinvouLogo.jsx'), 'utf8');
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
@@ -258,6 +259,13 @@ try {
     && codexView.includes('data-testid="codex-workspace-selector"')
     && codexView.includes('最近项目'),
   'only the draft composer must expose temporary, directory picker, and recent-project choices');
+  const composerFooterIndex = codexView.indexOf('data-testid="codex-composer-footer"');
+  const workspaceSelectorIndex = codexView.indexOf('data-testid="codex-workspace-selector"');
+  const attachmentButtonIndex = codexView.indexOf('title="添加附件"', composerFooterIndex);
+  assert.ok(composerFooterIndex >= 0
+    && workspaceSelectorIndex > composerFooterIndex
+    && attachmentButtonIndex > workspaceSelectorIndex,
+  'the draft workspace selector must live in the composer footer before the attachment control');
   assert.ok(codexView.includes('sessionInfo && (')
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
@@ -267,6 +275,24 @@ try {
   assert.ok(homeModeSwitcher.includes('工作') && homeModeSwitcher.includes('代码')
     && homeModeSwitcher.includes('Codex'),
   'the home composer must expose Work/Code modes and the current Codex code agent');
+  assert.ok(homeModeSwitcher.includes("key: 'design'")
+    && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = false'),
+  'Design must remain in the home mode configuration but stay hidden');
+  assert.ok(homeModeSwitcher.includes("key: 'claude-code'")
+    && homeModeSwitcher.includes("key: 'kimi-code'")
+    && homeModeSwitcher.includes("key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true")
+    && homeModeSwitcher.includes("label: 'Claude Code', enabled: false")
+    && homeModeSwitcher.includes("label: 'Kimi Code', enabled: false"),
+  'only Codex must be visible while the other code agents remain disabled in configuration');
+  assert.ok(homeModeSwitcher.includes('prominent')
+    && iosControls.includes('compact && prominent')
+    && iosControls.includes('transition-transform duration-200 ease-out'),
+  'the home mode switcher must keep the PR #16 sliding segmented-control treatment');
+  assert.ok(main.includes('function handleSwitchHomeMode(mode)')
+    && main.includes("mode === 'code' && codexAcpSupported")
+    && main.includes('setCodexDraftEpoch(value => value + 1)')
+    && main.includes("setCurrentView('codex')"),
+  'selecting Codex must continue to enter the existing Codex draft page');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
     && main.includes('<CodexLogo')
     && codexView.includes('<CodexLogo'),

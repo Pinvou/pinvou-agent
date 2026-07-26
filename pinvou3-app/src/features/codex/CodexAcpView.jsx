@@ -1154,16 +1154,16 @@ export function CodexAcpView({
         <div className="flex-1 min-h-0 flex">
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
         <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-          <div className="w-full max-w-[920px] mx-auto px-6 py-6 space-y-7">
+          <div className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
             <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
             {!projection.turns.length && (
-              <div className="min-h-[48vh] flex flex-col items-center justify-center text-center">
+              <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
                 <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><CodexLogo className="h-8 w-8" /></div>
                 <div className="mt-5 text-[20px] font-semibold">用 Codex 处理代码任务</div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
                     ? '工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有 DeepSeek 消息框架。'
-                    : '直接输入即可创建临时会话，也可以在输入框下方选择项目目录。'}
+                    : '直接输入即可创建临时会话，也可以从输入框左下角选择项目目录。'}
                 </div>
               </div>
             )}
@@ -1228,7 +1228,12 @@ export function CodexAcpView({
         <div className="shrink-0 px-6 pb-5 pt-2">
           <div className="w-full max-w-[920px] mx-auto">
             {!activeId && (
-              <HomeModeSwitcher mode="code" codeSupported onChange={onSwitchHomeMode} />
+              <HomeModeSwitcher
+                mode="code"
+                codeSupported
+                isDark={theme === 'dark'}
+                onChange={onSwitchHomeMode}
+              />
             )}
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
             <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
@@ -1315,8 +1320,57 @@ export function CodexAcpView({
                 onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
                 placeholder="让 Codex 处理代码、运行命令或解释仓库…"
                 rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
-              <div className="flex items-center justify-between mt-1">
-                <div className="flex items-center gap-2 text-[10px] text-gray-400">
+              <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
+                <div className="flex min-w-0 items-center gap-2 text-[10px] text-gray-400">
+                  {!activeId && (
+                    <div className="relative min-w-0">
+                      <button
+                        type="button"
+                        data-testid="codex-workspace-selector"
+                        onClick={() => setWorkspaceMenuOpen(value => !value)}
+                        className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                        title={draftWorkspacePath || '临时会话'}
+                      >
+                        {draftWorkspacePath
+                          ? <FolderOpen size={13} className="shrink-0" />
+                          : <Sparkles size={13} className="shrink-0 text-emerald-500" />}
+                        <span className="truncate">
+                          {draftWorkspacePath ? workspaceName(draftWorkspacePath) : '临时会话'}
+                        </span>
+                        <ChevronDown size={12} className="shrink-0" />
+                      </button>
+                      {workspaceMenuOpen && (
+                        <>
+                          <button aria-label="关闭工作目录菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
+                          <div className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                            <button type="button" onClick={() => chooseProjectDraft().catch(err => setError(String(err)))}
+                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                              <FolderOpen size={16} className="text-blue-500 shrink-0" />
+                              <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
+                            </button>
+                            <button type="button" onClick={() => beginDraft(null)}
+                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                              <Sparkles size={16} className="text-emerald-500 shrink-0" />
+                              <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
+                            </button>
+                            {recentWorkspaces.length > 0 && (
+                              <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
+                                <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
+                                {recentWorkspaces.map(path => (
+                                  <button key={path} type="button" title={path}
+                                    onClick={() => beginDraft(path)}
+                                    className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                                    <FolderOpen size={13} className="shrink-0 text-gray-400" />
+                                    <span className="truncate text-[11px]">{workspaceName(path)}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => pickAttachments().catch(err => setError(String(err)))}
@@ -1331,9 +1385,11 @@ export function CodexAcpView({
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
                     title={availableCommands.length ? 'Codex Agent 上报的命令' : '创建会话后同步 Codex 命令'}>/</button>
                   <span className={`w-1.5 h-1.5 rounded-full ${status && status.installed && status.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-                  {status && status.installed && status.authenticated
-                    ? `Codex 已连接${runtimeSourceLabel(status) ? ` · ${runtimeSourceLabel(status)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
-                    : 'Codex 未就绪'}
+                  <span className="hidden min-w-0 truncate sm:inline">
+                    {status && status.installed && status.authenticated
+                      ? `Codex 已连接${runtimeSourceLabel(status) ? ` · ${runtimeSourceLabel(status)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
+                      : 'Codex 未就绪'}
+                  </span>
                 </div>
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
@@ -1345,55 +1401,6 @@ export function CodexAcpView({
                 )}
               </div>
             </div>
-            {!activeId && (
-              <div className="relative mt-2 flex justify-center">
-                <button
-                  type="button"
-                  data-testid="codex-workspace-selector"
-                  onClick={() => setWorkspaceMenuOpen(value => !value)}
-                  className="max-w-full h-8 px-3 rounded-full inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
-                  title={draftWorkspacePath || '临时会话'}
-                >
-                  {draftWorkspacePath
-                    ? <FolderOpen size={13} />
-                    : <Sparkles size={13} className="text-emerald-500" />}
-                  <span className="truncate">
-                    {draftWorkspacePath ? workspaceName(draftWorkspacePath) : '临时会话'}
-                  </span>
-                  <ChevronDown size={12} />
-                </button>
-                {workspaceMenuOpen && (
-                  <>
-                    <button aria-label="关闭工作目录菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
-                    <div className="absolute z-40 bottom-10 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                      <button type="button" onClick={() => chooseProjectDraft().catch(err => setError(String(err)))}
-                        className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                        <FolderOpen size={16} className="text-blue-500 shrink-0" />
-                        <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
-                      </button>
-                      <button type="button" onClick={() => beginDraft(null)}
-                        className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                        <Sparkles size={16} className="text-emerald-500 shrink-0" />
-                        <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
-                      </button>
-                      {recentWorkspaces.length > 0 && (
-                        <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
-                          <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
-                          {recentWorkspaces.map(path => (
-                            <button key={path} type="button" title={path}
-                              onClick={() => beginDraft(path)}
-                              className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                              <FolderOpen size={13} className="shrink-0 text-gray-400" />
-                              <span className="truncate text-[11px]">{workspaceName(path)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
           </div>
         </div>
         </div>

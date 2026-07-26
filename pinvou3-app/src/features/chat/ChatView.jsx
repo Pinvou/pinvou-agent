@@ -955,6 +955,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <HomeModeSwitcher
                 mode="work"
                 codeSupported={codeModeAvailable}
+                isDark={isDark}
                 onChange={onSwitchHomeMode}
               />
             )}
