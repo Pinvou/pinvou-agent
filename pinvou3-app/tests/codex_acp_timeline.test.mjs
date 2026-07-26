@@ -282,6 +282,11 @@ try {
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
   'Codex controls must appear in the composer only after the session reports real options');
+  assert.ok(codexView.includes('function CodexComposerConfigSelect')
+    && codexView.includes('data-testid={`codex-config-${id}`}')
+    && codexView.includes('appearance-none opacity-0')
+    && codexView.includes('focus-within:ring-2 focus-within:ring-[#007AFF]/10'),
+  'Codex session controls must use the unified visual selector while retaining native select behavior');
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
   assert.ok(homeModeSwitcher.includes('工作') && homeModeSwitcher.includes('代码')

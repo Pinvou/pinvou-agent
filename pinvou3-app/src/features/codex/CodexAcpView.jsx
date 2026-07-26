@@ -80,6 +80,55 @@ function configLabel(option) {
   }
 }
 
+function CodexComposerConfigSelect({
+  id,
+  label,
+  value,
+  choices,
+  onChange,
+  disabled = false,
+  title,
+}) {
+  const selected = choices.find(choice => String(choice.value) === String(value));
+  const selectedLabel = selected && (selected.name || selected.value) || value || '未设置';
+  return (
+    <label
+      data-testid={`codex-config-${id}`}
+      title={title || `${label}：${selectedLabel}`}
+      className={`group relative inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all ${
+        disabled
+          ? 'cursor-default opacity-50'
+          : 'cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10'
+      } border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]`}
+    >
+      <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
+        {label}
+      </span>
+      <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
+        {selectedLabel}
+      </span>
+      <ChevronDown
+        size={12}
+        aria-hidden="true"
+        className="pointer-events-none ml-auto shrink-0 text-gray-400 transition-transform group-focus-within:rotate-180"
+      />
+      <select
+        aria-label={label}
+        value={value || ''}
+        onChange={event => onChange(event.target.value)}
+        disabled={disabled}
+        className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0 disabled:cursor-default"
+      >
+        {choices.map(choice => (
+          <option key={choice.value} value={choice.value}>
+            {choice.name || choice.value}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function StatusBadge({ status }) {
   const done = ['Completed', 'completed', 'end_turn'].includes(status);
   const failed = ['Failed', 'failed', 'Refused'].includes(status);
@@ -1273,29 +1322,45 @@ export function CodexAcpView({
                 </div>
               )}
               {sessionInfo && (
-                <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-1.5">
+                <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-2">
                   {controls.fallbackModels.length > 0 && (
-                    <select value={sessionInfo.current_model_id || ''} onChange={event => changeModel(event.target.value)}
+                    <CodexComposerConfigSelect
+                      id="model"
+                      label="模型"
+                      value={sessionInfo.current_model_id || ''}
+                      choices={controls.fallbackModels.map(model => ({
+                        value: model.id,
+                        name: model.name || model.id,
+                      }))}
+                      onChange={changeModel}
                       disabled={busy || working}
-                      className="max-w-[210px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
-                      {controls.fallbackModels.map(model => <option key={model.id} value={model.id}>模型 · {model.name || model.id}</option>)}
-                    </select>
+                    />
                   )}
                   {controls.fallbackModes && controls.fallbackModes.availableModes && (
-                    <select value={controls.effectiveMode || ''} onChange={event => changeMode(event.target.value)}
+                    <CodexComposerConfigSelect
+                      id="mode"
+                      label="权限模式"
+                      value={controls.effectiveMode || ''}
+                      choices={controls.fallbackModes.availableModes.map(item => ({
+                        value: item.id,
+                        name: item.name || item.id,
+                      }))}
+                      onChange={changeMode}
                       disabled={busy || working}
                       title="Codex Agent 上报的会话模式"
-                      className="h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
-                      {controls.fallbackModes.availableModes.map(item => <option key={item.id} value={item.id}>权限模式 · {item.name || item.id}</option>)}
-                    </select>
+                    />
                   )}
                   {controls.configOptions.map(option => (
-                    <select key={option.id} value={option.currentValue || ''} onChange={event => changeConfig(option.id, event.target.value)}
+                    <CodexComposerConfigSelect
+                      key={option.id}
+                      id={option.id}
+                      label={configLabel(option)}
+                      value={option.currentValue || ''}
+                      choices={configChoices(option)}
+                      onChange={value => changeConfig(option.id, value)}
                       disabled={busy || working}
                       title={option.description || option.name}
-                      className="max-w-[170px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
-                      {configChoices(option).map(choice => <option key={choice.value} value={choice.value}>{configLabel(option)} · {choice.name || choice.value}</option>)}
-                    </select>
+                    />
                   ))}
                 </div>
               )}
