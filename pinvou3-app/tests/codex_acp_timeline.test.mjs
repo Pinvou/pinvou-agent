@@ -253,12 +253,14 @@ try {
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
     && codexView.includes('const created = await createSession(draftWorkspacePath)'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
-  assert.ok(codexView.includes('data-testid="codex-workspace-selector"')
+  assert.ok(codexView.includes('!activeId && (')
+    && codexView.includes('data-testid="codex-workspace-selector"')
     && codexView.includes('最近项目'),
-  'the composer must retain temporary, directory picker, and recent-project choices');
-  assert.ok(codexView.includes('data-testid="codex-composer-configs"')
-    && codexView.includes("'权限模式', '协作方式', '模型', '推理强度', '快速模式'"),
-  'Codex controls must live in the code composer');
+  'only the draft composer must expose temporary, directory picker, and recent-project choices');
+  assert.ok(codexView.includes('sessionInfo && (')
+    && codexView.includes('data-testid="codex-composer-configs"')
+    && !codexView.includes('创建后同步'),
+  'Codex controls must appear in the composer only after the session reports real options');
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
   assert.ok(homeModeSwitcher.includes('工作') && homeModeSwitcher.includes('代码')

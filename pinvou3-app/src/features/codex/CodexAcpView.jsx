@@ -1187,36 +1187,33 @@ export function CodexAcpView({
                 className="mb-2"
                 formatError={value => String(value || '')}
               />
-              <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-1.5">
-                {controls.fallbackModels.length > 0 && (
-                  <select value={sessionInfo.current_model_id || ''} onChange={event => changeModel(event.target.value)}
-                    disabled={busy || working}
-                    className="max-w-[210px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
-                    {controls.fallbackModels.map(model => <option key={model.id} value={model.id}>模型 · {model.name || model.id}</option>)}
-                  </select>
-                )}
-                {controls.fallbackModes && controls.fallbackModes.availableModes && (
-                  <select value={controls.effectiveMode || ''} onChange={event => changeMode(event.target.value)}
-                    disabled={busy || working}
-                    title="Codex Agent 上报的会话模式"
-                    className="h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
-                    {controls.fallbackModes.availableModes.map(item => <option key={item.id} value={item.id}>权限模式 · {item.name || item.id}</option>)}
-                  </select>
-                )}
-                {controls.configOptions.map(option => (
-                  <select key={option.id} value={option.currentValue || ''} onChange={event => changeConfig(option.id, event.target.value)}
-                    disabled={busy || working}
-                    title={option.description || option.name}
-                    className="max-w-[170px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
-                    {configChoices(option).map(choice => <option key={choice.value} value={choice.value}>{configLabel(option)} · {choice.name || choice.value}</option>)}
-                  </select>
-                ))}
-                {!sessionInfo && ['权限模式', '协作方式', '模型', '推理强度', '快速模式'].map(label => (
-                  <span key={label} className="h-7 px-2 inline-flex items-center rounded-lg border border-black/[0.05] dark:border-white/[0.07] bg-black/[0.03] dark:bg-white/[0.04] text-[10px] text-gray-400">
-                    {label} · 创建后同步
-                  </span>
-                ))}
-              </div>
+              {sessionInfo && (
+                <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {controls.fallbackModels.length > 0 && (
+                    <select value={sessionInfo.current_model_id || ''} onChange={event => changeModel(event.target.value)}
+                      disabled={busy || working}
+                      className="max-w-[210px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
+                      {controls.fallbackModels.map(model => <option key={model.id} value={model.id}>模型 · {model.name || model.id}</option>)}
+                    </select>
+                  )}
+                  {controls.fallbackModes && controls.fallbackModes.availableModes && (
+                    <select value={controls.effectiveMode || ''} onChange={event => changeMode(event.target.value)}
+                      disabled={busy || working}
+                      title="Codex Agent 上报的会话模式"
+                      className="h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
+                      {controls.fallbackModes.availableModes.map(item => <option key={item.id} value={item.id}>权限模式 · {item.name || item.id}</option>)}
+                    </select>
+                  )}
+                  {controls.configOptions.map(option => (
+                    <select key={option.id} value={option.currentValue || ''} onChange={event => changeConfig(option.id, event.target.value)}
+                      disabled={busy || working}
+                      title={option.description || option.name}
+                      className="max-w-[170px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
+                      {configChoices(option).map(choice => <option key={choice.value} value={choice.value}>{configLabel(option)} · {choice.name || choice.value}</option>)}
+                    </select>
+                  ))}
+                </div>
+              )}
               {commandOpen && availableCommands.length > 0 && (
                 <>
                   <button aria-label="关闭 Codex 命令菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
@@ -1268,59 +1265,55 @@ export function CodexAcpView({
                 )}
               </div>
             </div>
-            <div className="relative mt-2 flex justify-center">
-              <button
-                type="button"
-                data-testid="codex-workspace-selector"
-                onClick={() => setWorkspaceMenuOpen(value => !value)}
-                className="max-w-full h-8 px-3 rounded-full inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
-                title={activeSession && activeSession.workspace_path || draftWorkspacePath || '临时会话'}
-              >
-                {activeSession?.workspace_kind === 'project' || (!activeSession && draftWorkspacePath)
-                  ? <FolderOpen size={13} />
-                  : <Sparkles size={13} className="text-emerald-500" />}
-                <span className="truncate">
-                  {activeSession
-                    ? activeSession.workspace_kind === 'project'
-                      ? workspaceName(activeSession.workspace_path)
-                      : '临时会话'
-                    : draftWorkspacePath
-                      ? workspaceName(draftWorkspacePath)
-                      : '临时会话'}
-                </span>
-                <ChevronDown size={12} />
-              </button>
-              {workspaceMenuOpen && (
-                <>
-                  <button aria-label="关闭工作目录菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
-                  <div className="absolute z-40 bottom-10 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                    <button type="button" onClick={() => chooseProjectDraft().catch(err => setError(String(err)))}
-                      className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                      <FolderOpen size={16} className="text-blue-500 shrink-0" />
-                      <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
-                    </button>
-                    <button type="button" onClick={() => beginDraft(null)}
-                      className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                      <Sparkles size={16} className="text-emerald-500 shrink-0" />
-                      <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
-                    </button>
-                    {recentWorkspaces.length > 0 && (
-                      <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
-                        <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
-                        {recentWorkspaces.map(path => (
-                          <button key={path} type="button" title={path}
-                            onClick={() => beginDraft(path)}
-                            className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                            <FolderOpen size={13} className="shrink-0 text-gray-400" />
-                            <span className="truncate text-[11px]">{workspaceName(path)}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+            {!activeId && (
+              <div className="relative mt-2 flex justify-center">
+                <button
+                  type="button"
+                  data-testid="codex-workspace-selector"
+                  onClick={() => setWorkspaceMenuOpen(value => !value)}
+                  className="max-w-full h-8 px-3 rounded-full inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                  title={draftWorkspacePath || '临时会话'}
+                >
+                  {draftWorkspacePath
+                    ? <FolderOpen size={13} />
+                    : <Sparkles size={13} className="text-emerald-500" />}
+                  <span className="truncate">
+                    {draftWorkspacePath ? workspaceName(draftWorkspacePath) : '临时会话'}
+                  </span>
+                  <ChevronDown size={12} />
+                </button>
+                {workspaceMenuOpen && (
+                  <>
+                    <button aria-label="关闭工作目录菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
+                    <div className="absolute z-40 bottom-10 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                      <button type="button" onClick={() => chooseProjectDraft().catch(err => setError(String(err)))}
+                        className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                        <FolderOpen size={16} className="text-blue-500 shrink-0" />
+                        <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
+                      </button>
+                      <button type="button" onClick={() => beginDraft(null)}
+                        className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                        <Sparkles size={16} className="text-emerald-500 shrink-0" />
+                        <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
+                      </button>
+                      {recentWorkspaces.length > 0 && (
+                        <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
+                          <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
+                          {recentWorkspaces.map(path => (
+                            <button key={path} type="button" title={path}
+                              onClick={() => beginDraft(path)}
+                              className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                              <FolderOpen size={13} className="shrink-0 text-gray-400" />
+                              <span className="truncate text-[11px]">{workspaceName(path)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
     </div>
