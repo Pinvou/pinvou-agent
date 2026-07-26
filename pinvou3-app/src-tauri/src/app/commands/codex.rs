@@ -1,4 +1,4 @@
-//! Codex ACP 独立页面的 Tauri 命令。
+//! 主页“代码”模式使用的 Codex ACP Tauri 命令。
 //!
 //! 这里只保留传输边界与会话元数据编排；Codex 进程、ACP 协议、权限和事件适配
 //! 均由 `features::codex_acp` 领域模块负责。
@@ -220,7 +220,7 @@ pub async fn respond_codex_acp_elicitation(
         .map_err(|error| format!("回复 Codex ACP 输入请求失败: {error:#}"))
 }
 
-/// Codex 页面拥有独立会话列表，DeepSeek 历史面板不会消费这些记录。
+/// 返回 Codex 会话，供主页左侧统一会话列表与代码模式共同消费。
 #[tauri::command]
 pub async fn list_codex_acp_sessions(
     store: State<'_, SessionStore>,

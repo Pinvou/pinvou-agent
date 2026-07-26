@@ -14,6 +14,7 @@ pinvou 采用“**Codex 作为 Agent 内核，pinvou 作为 ACP Host 和产品�
 - Codex 负责自身 system prompt、原生 tools、tool loop、上下文和原生 skill 发现。
 - pinvou 负责 ACP 进程托管、会话管理、权限交互、事件持久化和对话 UI。
 - DeepSeek-TUI 继续走现有 Engine / ToolRegistry / SkillRegistry / `chat:*` 链路，不因 Codex ACP 重构而改变原有行为。
+- 主页输入区统一提供“工作 / 代码”入口；两类会话在左侧按时间混排，通过图标区分。
 - Codex ACP 使用独立的事件模型和对话展示层，不再把 ACP 事件压成 DeepSeek 的消息和工具卡片。
 
 这个方案吸收 AionUI 对 ACP 的成熟处理方式，但不引入 AionCore、Electron、HTTP/WS 服务层和 Agent 市场等额外体系。
@@ -44,7 +45,7 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 ### 3.1 MVP 目标
 
 - 在 Linux 开发/内部体验环境中可安装、可登录、可创建和恢复 Codex ACP 会话。
-- 在同一个 pinvou 主窗口中提供独立 Codex 入口和独立 ACP 对话页面，不再通过现有 DeepSeek 输入框的 backend chip 切换。
+- 在同一个 pinvou 主窗口的主页提供“工作 / 代码”入口；左侧统一展示两类会话，不再通过现有 DeepSeek 输入框的 backend chip 或独立 Codex Tab 切换。
 - 完整展示 ACP 中的回答、思考状态、tool call/update、plan、permission、model、mode、config、usage 和错误。
 - 会话内部的内容结构和操作方式参考 Codex/AionUI，整体视觉继续使用 pinvou 设计体系。
 - 保留 Codex 自己的 system prompt、tools、tool loop、skills、MCP 配置和上下文能力。
@@ -56,7 +57,7 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 - 不把 DeepSeek-TUI `ToolRegistry` 中的工具硬塞进 Codex 工具循环。
 - 不接入 pinvou skill、pinvou MCP、知识库和 persona。
 - 不做 Codex 富事件的远程控制兼容；现有 DeepSeek 远程控制保持不变。
-- 不新增独立操作系统窗口；MVP 使用同一主窗口内的独立页面。
+- 不新增独立操作系统窗口；MVP 使用同一主窗口内的“代码”模式。
 - 不要求正式发布所需的私有 Node runtime 在 MVP 内同步完成。
 - 不做通用 Agent 市场，也不一次性支持所有 ACP Agent。
 - 不复制 AionUI 的后端服务、数据库和整套前端。
@@ -68,7 +69,7 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 - persona 作为可见、可选的首次 prompt 扩展接入，不替换 Codex system prompt。
 - 正式 Linux x64 / arm64 发布包内置 pinvou 私有 Node runtime，用户无需安装 Node/npm。
 - Codex 富事件逐步接入远程控制。
-- 如有真实并排使用需求，再提供“弹出为独立窗口”，不改变同窗口独立页面作为默认入口。
+- 如有真实并排使用需求，再提供“弹出为独立窗口”，不改变同窗口“代码”模式作为默认入口。
 
 ## 4. 当前 pinvou 原型的真实状态
 
@@ -79,7 +80,7 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 - 启动 ACP 子进程并通过 stdio 连接。
 - `initialize`、`session/new`、`session/load`、`prompt`、`cancel`、模型切换已接通。
 - pinvou session 与 ACP session ID / model 的映射已持久化。
-- 当前原型可在 DeepSeek 输入框的 chip 中选择 Codex，创建后锁定 backend。目标设计会移除这个入口，改为同一主窗口中的独立 Codex 页面；底层会话仍永久绑定 `codex-acp`，不能中途切换成 DeepSeek。
+- 当前原型曾在 DeepSeek 输入框的 chip 中选择 Codex，创建后锁定 backend。目标设计改为主页“工作 / 代码”模式；“代码”当前选择 Codex，底层会话仍永久绑定 `codex-acp`，不能中途切换成 DeepSeek。
 
 但它仍然是“通路原型”，不是可交付的完整 ACP 架构：
 
@@ -183,12 +184,14 @@ flowchart TB
 
 ### 6.1 入口与页面决策
 
-- pinvou 主导航增加独立“Codex”入口。
-- 点击后仍在当前主窗口中切换到 Codex 专用页面，不创建新的操作系统窗口。
-- Codex 页面拥有独立会话列表/筛选、timeline、输入框和运行状态，不复用 DeepSeek `ChatView` 的消息语义。
+- 主页输入区提供“工作 / 代码”模式，不在主导航增加独立 Codex Tab。
+- “工作”保持原有品悟输入框；“代码”当前只有 Codex，未来可扩展其他代码 Agent。
+- DeepSeek 与 Codex 会话在左侧统一列表中按最近更新时间混排，Codex 会话名前显示代码图标。
+- Codex 使用专属 timeline、输入框和运行状态，不复用 DeepSeek `ChatView` 的消息语义。
+- 代码草稿默认选择临时目录，首条发送时才物化会话；输入框下方也可选择项目目录或最近项目。
 - 现有 DeepSeek 输入框不再显示 Codex backend chip。
 - 每个 Codex 会话在数据层永久绑定 `codex-acp`，不能中途切换为 DeepSeek。
-- 后续可增加“弹出为独立窗口”，但它只是同一 Codex 页面的一种承载方式，不是另一套会话实现。
+- 后续可增加“弹出为独立窗口”，但它只是同一代码模式的一种承载方式，不是另一套会话实现。
 
 ### 6.2 分层原则
 
@@ -204,7 +207,7 @@ flowchart TB
 
 不共享：
 
-- DeepSeek 和 Codex 的会话列表状态、消息数据和输入框逻辑。
+- DeepSeek 和 Codex 的消息数据、输入框逻辑与运行时状态；左侧列表只合并各自的会话摘要。
 - 现有输入框中的 backend 选择 chip。
 - DeepSeek `ToolCard` 与 ACP tool step。
 - DeepSeek message reducer 与 ACP timeline reducer。
@@ -462,7 +465,7 @@ running -> cancelling -> ready
 
 ### 12.3 项目目录与会话目录
 
-Codex 页面新建会话时必须由用户明确选择一种 workspace：
+代码模式新建会话时必须由用户明确选择一种 workspace：
 
 | 类型 | Codex 执行目录 | 适用场景 |
 |---|---|---|
@@ -530,9 +533,10 @@ Codex 页面新建会话时必须由用户明确选择一种 workspace：
 - 实现 `acp-state.json` / `acp-timeline.jsonl` 原子写入和损坏容错。
 - 将 collaboration mode 与 permission policy 解耦。
 
-### 阶段 3：独立 ACP UI
+### 阶段 3：代码模式 ACP UI
 
-- 在同一个 pinvou 主窗口增加独立 Codex 入口和页面，移除现有 DeepSeek 输入框中的 Codex backend chip。
+- 在主页增加“工作 / 代码”模式，移除独立 Codex Tab 和现有 DeepSeek 输入框中的 Codex backend chip。
+- 把 Codex 会话摘要并入左侧统一会话列表，底层 timeline 和运行时状态继续隔离。
 - 建立 `features/chat/acp/`。
 - 完成 timeline、reasoning、tool upsert、permission、plan、runtime status 和 composer。
 - 按 Codex/AionUI 的内容结构和交互语义验收，并保持 pinvou 视觉体系。
@@ -558,7 +562,7 @@ Codex 页面新建会话时必须由用户明确选择一种 workspace：
 
 #### 基础链路
 
-- pinvou 主窗口有独立 Codex 入口和页面，现有 DeepSeek 输入框不再承担 backend 切换。
+- pinvou 主页有“工作 / 代码”入口，左侧会话按时间混排，现有 DeepSeek 输入框不再承担 backend 切换。
 - 未安装、安装中、未登录、登录成功、启动失败均有明确 UI。
 - MVP 环境缺少 Node 20+ 时给出明确诊断，不进入伪启动状态。
 - 新建会话、继续会话、切换会话、重启应用后恢复可用。
@@ -595,7 +599,7 @@ Codex 页面新建会话时必须由用户明确选择一种 workspace：
 
 - DeepSeek 新建/历史会话、工具、skill、知识库、Plan/YOLO 原行为回归通过。
 - 旧会话数据不需迁移即可读。
-- DeepSeek 现有远程控制不受 Codex 独立页面影响。
+- DeepSeek 现有远程控制不受主页代码模式影响。
 
 ### 16.2 后续阶段验收
 
@@ -625,7 +629,7 @@ Codex 页面新建会话时必须由用户明确选择一种 workspace：
 
 1. Codex 原生能力做内核，pinvou 做 ACP Host、会话、权限、事件、持久化和 UI。
 2. Codex ACP 和 DeepSeek 使用独立消息语义和 UI surface。
-3. 同一个 pinvou 主窗口增加独立 Codex 入口和页面；MVP 不创建新操作系统窗口。
+3. 同一个 pinvou 主窗口以“工作 / 代码”模式承载两类输入，左侧统一展示会话；MVP 不创建新操作系统窗口。
 4. Codex 会话在数据层永久绑定 `codex-acp`，不能中途切换成 DeepSeek。
 5. 视觉继续使用 pinvou 体系；Codex/AionUI 只作为会话内容结构和交互语义参考。
 6. MVP 只保留 Codex 自身 system prompt、tools、tool loop、skills、MCP 配置和 context，不接入 pinvou skill、MCP、知识库和 persona。
@@ -649,8 +653,8 @@ Codex 页面新建会话时必须由用户明确选择一种 workspace：
 - `pinvou3-app/src-tauri/src/features/codex_acp/mod.rs`：运行时、会话、权限、new/load/model。
 - `pinvou3-app/src-tauri/src/features/codex_acp/events.rs`：ACP 原始事件持久化与页面投影。
 - `pinvou3-app/src-tauri/src/features/codex_acp/store.rs`：pinvou session 到 ACP session/model/workspace 映射。
-- `pinvou3-app/src-tauri/src/app/commands/codex.rs`：Codex 独立 Tauri 命令边界。
-- `pinvou3-app/src/features/codex/CodexAcpView.jsx`：Codex 独立对话页。
+- `pinvou3-app/src-tauri/src/app/commands/codex.rs`：代码模式的 Codex Tauri 命令边界。
+- `pinvou3-app/src/features/codex/CodexAcpView.jsx`：代码模式中的 Codex 对话与输入区。
 - `pinvou3-app/src/platform/tauri/client.js`：前端统一 Tauri 平台适配。
 
 ### AionUI / AionCore 参考

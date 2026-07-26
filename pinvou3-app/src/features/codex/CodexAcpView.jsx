@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Paperclip, Plus, Send,
-  Sparkles, StopCircle, Terminal, Trash2, Wrench,
+  AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Paperclip, Send,
+  Sparkles, StopCircle, Terminal, Wrench,
 } from '../../components/icons.jsx';
+import { CodexLogo } from '../../components/CodexLogo.jsx';
 import {
   appendAcpEvent,
   commandExecutionDetails,
@@ -17,6 +18,7 @@ import {
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
+import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   invokeTauri,
   listenTauri,
@@ -26,6 +28,7 @@ import {
 const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 
 function unifiedConversationUiEnabled() {
   try {
@@ -492,8 +495,8 @@ function Turn({
         </div>
       )}
       <div className="flex items-start gap-3">
-        <div className="mt-1 w-7 h-7 rounded-xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center shrink-0 shadow-sm">
-          <Sparkles size={15} />
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
+          <CodexLogo className="h-5 w-5" title="Codex" />
         </div>
         <div className="min-w-0 flex-1 space-y-1">
           {running && (
@@ -593,10 +596,16 @@ function runtimeSourceLabel(status) {
   return '';
 }
 
-export function CodexAcpView({ theme }) {
+export function CodexAcpView({
+  theme,
+  sessions = [],
+  activeId = null,
+  draftEpoch = 0,
+  onActiveSessionChange,
+  onSessionsChange,
+  onSwitchHomeMode,
+}) {
   const [status, setStatus] = useState(null);
-  const [sessions, setSessions] = useState([]);
-  const [activeId, setActiveId] = useState(() => localStorage.getItem('pinvou_codex_active_session') || null);
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]);
   const [pendingElicitations, setPendingElicitations] = useState([]);
@@ -610,13 +619,19 @@ export function CodexAcpView({ theme }) {
   const [error, setError] = useState('');
   const [responding, setResponding] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const attachmentIdRef = useRef(0);
+  const skipNextActiveLoadRef = useRef(null);
+  const preserveDraftWorkspaceRef = useRef(false);
+  const draftEpochRef = useRef(draftEpoch);
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
   const controls = useMemo(() => resolveAcpSessionControls(sessionInfo), [sessionInfo]);
   const availableCommands = useMemo(() => {
@@ -638,7 +653,8 @@ export function CodexAcpView({ theme }) {
     () => sessions.find(session => session.id === activeId) || null,
     [sessions, activeId],
   );
-  const attachments = activeId ? (attachmentDrafts[activeId] || []) : [];
+  const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
+  const attachments = attachmentDrafts[attachmentKey] || [];
 
   function applySessionInfo(info) {
     setSessionInfo(info);
@@ -647,8 +663,9 @@ export function CodexAcpView({ theme }) {
 
   async function refreshSessions() {
     const next = await invoke('list_codex_acp_sessions');
-    setSessions(next || []);
-    return next || [];
+    const list = next || [];
+    if (onSessionsChange) onSessionsChange(list);
+    return list;
   }
 
   async function refreshStatus() {
@@ -657,10 +674,8 @@ export function CodexAcpView({ theme }) {
     return next;
   }
 
-  async function openSession(id) {
-    setActiveId(id);
+  async function loadSession(id) {
     activeIdRef.current = id;
-    localStorage.setItem('pinvou_codex_active_session', id);
     setError('');
     setSessionInfo(null);
     const [timeline, permissions, elicitations] = await Promise.all([
@@ -673,30 +688,63 @@ export function CodexAcpView({ theme }) {
     setPendingElicitations(elicitations || []);
     const runtime = status || await refreshStatus();
     if (runtime.installed && runtime.node_supported) {
-      invoke('get_codex_acp_session_info', { sessionId: id })
-        .then(applySessionInfo)
-        .catch(err => setError(String(err)));
+      try {
+        return applySessionInfo(await invoke('get_codex_acp_session_info', { sessionId: id }));
+      } catch (err) {
+        setError(String(err));
+      }
     }
+    return null;
   }
 
-  async function createSession(workspacePath = null) {
+  async function createSession(workspacePath = draftWorkspacePath) {
     setError('');
-    setCreateMenuOpen(false);
+    setWorkspaceMenuOpen(false);
     const metadata = await invoke('create_codex_acp_session', { workspacePath });
     if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
     await refreshSessions();
-    await openSession(metadata.id);
-    return metadata.id;
+    skipNextActiveLoadRef.current = metadata.id;
+    if (onActiveSessionChange) onActiveSessionChange(metadata.id);
+    const info = await loadSession(metadata.id);
+    return { id: metadata.id, info };
   }
 
-  async function chooseProjectSession() {
+  function beginDraft(workspacePath = null, { clearComposer = false } = {}) {
+    preserveDraftWorkspaceRef.current = true;
+    setWorkspaceMenuOpen(false);
+    setDraftWorkspacePath(workspacePath);
+    if (clearComposer) {
+      setDraft('');
+      setAttachmentDrafts(current => {
+        const next = { ...current };
+        delete next[DRAFT_ATTACHMENT_KEY];
+        return next;
+      });
+    } else if (activeId) {
+      setAttachmentDrafts(current => ({
+        ...current,
+        [DRAFT_ATTACHMENT_KEY]: current[activeId] || [],
+      }));
+    }
+    setEvents([]);
+    setPending([]);
+    setPendingElicitations([]);
+    setSessionInfo(null);
+    setError('');
+    if (onActiveSessionChange) onActiveSessionChange(null);
+  }
+
+  async function chooseProjectDraft() {
     const selected = await openTauriDialog({
       directory: true,
       multiple: false,
       title: '选择 Codex 项目目录',
     });
     const path = Array.isArray(selected) ? selected[0] : selected;
-    if (path) await createSession(path);
+    if (path) {
+      setRecentWorkspaces(rememberWorkspace(path));
+      beginDraft(path);
+    }
   }
 
   function updateAttachments(sessionId, update) {
@@ -708,7 +756,7 @@ export function CodexAcpView({ theme }) {
     });
   }
 
-  async function addAttachmentByPath(path, sessionId = activeId) {
+  async function addAttachmentByPath(path, sessionId = attachmentKey) {
     if (!path || !sessionId) return;
     const id = `codex-attachment-${++attachmentIdRef.current}`;
     const basename = String(path).split(/[\\/]/).filter(Boolean).pop() || String(path);
@@ -733,27 +781,23 @@ export function CodexAcpView({ theme }) {
   }
 
   async function pickAttachments() {
-    if (!activeId) {
-      setError('请先选择项目目录或创建临时会话');
-      return;
-    }
     const selected = await openTauriDialog({
       multiple: true,
       directory: false,
       title: '添加附件',
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    await Promise.all(paths.map(path => addAttachmentByPath(path, activeId)));
+    await Promise.all(paths.map(path => addAttachmentByPath(path, attachmentKey)));
   }
 
   function removeAttachment(id) {
-    updateAttachments(activeId, current => current.filter(attachment => attachment.id !== id));
+    updateAttachments(attachmentKey, current => current.filter(attachment => attachment.id !== id));
   }
 
   function handlePaste(event) {
     const items = Array.from(event.clipboardData && event.clipboardData.items || []);
     const images = items.filter(item => item.type && item.type.startsWith('image/'));
-    if (!images.length || !activeId) return;
+    if (!images.length) return;
     event.preventDefault();
     images.forEach(item => {
       const file = item.getAsFile();
@@ -767,7 +811,7 @@ export function CodexAcpView({ theme }) {
             filename: `paste-${Date.now()}.${ext}`,
             bytes,
           });
-          await addAttachmentByPath(path, activeId);
+          await addAttachmentByPath(path, attachmentKey);
         } catch (err) {
           setError(String(err));
         }
@@ -778,10 +822,7 @@ export function CodexAcpView({ theme }) {
 
   useEffect(() => {
     let unlisten = null;
-    Promise.all([refreshStatus(), refreshSessions()]).then(([, list]) => {
-      const initial = activeId && list.some(item => item.id === activeId) ? activeId : (list[0] && list[0].id);
-      if (initial) openSession(initial).catch(err => setError(String(err)));
-    }).catch(err => setError(String(err)));
+    Promise.all([refreshStatus(), refreshSessions()]).catch(err => setError(String(err)));
     listenTauri('acp:event', message => {
       const incoming = message.payload;
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
@@ -817,13 +858,34 @@ export function CodexAcpView({ theme }) {
   }, []);
 
   useEffect(() => {
+    if (!activeId) {
+      activeIdRef.current = null;
+      if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
+      else setDraftWorkspacePath(null);
+      setEvents([]);
+      setPending([]);
+      setPendingElicitations([]);
+      setSessionInfo(null);
+      return;
+    }
+    if (skipNextActiveLoadRef.current === activeId) {
+      skipNextActiveLoadRef.current = null;
+      return;
+    }
+    loadSession(activeId).catch(err => setError(String(err)));
+  }, [activeId]);
+
+  useEffect(() => {
+    if (draftEpochRef.current === draftEpoch) return;
+    draftEpochRef.current = draftEpoch;
+    beginDraft(null, { clearComposer: true });
+  }, [draftEpoch]);
+
+  useEffect(() => {
     if (!status || !status.login_in_progress) return undefined;
     const timer = window.setInterval(() => refreshStatus().catch(() => {}), 750);
     return () => window.clearInterval(timer);
   }, [status && status.login_in_progress]);
-
-  const activeIdRef = useRef(activeId);
-  activeIdRef.current = activeId;
 
   useEffect(() => {
     setNow(Date.now());
@@ -915,26 +977,37 @@ export function CodexAcpView({ theme }) {
       setError('附件仍在解析，请稍候');
       return;
     }
-    if (!activeId) {
-      setError('请先选择项目目录或创建临时会话');
-      setCreateMenuOpen(true);
-      return;
-    }
-    if (!sessionInfo) {
+    if (activeId && !sessionInfo) {
       setError('Codex 会话配置仍在同步，请稍候');
       return;
     }
     setWorking(true); setError('');
     try {
+      let targetId = activeId;
+      let targetInfo = sessionInfo;
+      if (!targetId) {
+        const created = await createSession(draftWorkspacePath);
+        targetId = created.id;
+        targetInfo = created.info;
+        setAttachmentDrafts(current => {
+          const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
+          const next = { ...current, [targetId]: draftAttachments };
+          delete next[DRAFT_ATTACHMENT_KEY];
+          return next;
+        });
+      }
+      if (!targetInfo) {
+        throw new Error('Codex 会话配置仍在同步，请稍候');
+      }
       autoScrollRef.current = true;
       setShowScrollBottom(false);
       setDraft('');
       await invoke('codex_acp_prompt', {
-        sessionId: activeId,
+        sessionId: targetId,
         message,
         attachments: readyAttachments.map(attachment => attachment.result),
       });
-      updateAttachments(activeId, current => current.filter(
+      updateAttachments(targetId, current => current.filter(
         attachment => !readyAttachments.some(ready => ready.id === attachment.id),
       ));
     } catch (err) {
@@ -1005,149 +1078,35 @@ export function CodexAcpView({ theme }) {
     finally { setWorking(false); setConfigApplying(''); }
   }
 
-  async function removeSession(event, id) {
-    event.stopPropagation();
-    if (!window.confirm('删除这个 Codex 会话？')) return;
-    await invoke('delete_session', { id });
-    const next = await refreshSessions();
-    const replacement = next.find(item => item.id !== id);
-    if (activeId === id) {
-      setActiveId(null); setEvents([]); setPending([]); setPendingElicitations([]); setSessionInfo(null);
-      localStorage.removeItem('pinvou_codex_active_session');
-      if (replacement) await openSession(replacement.id);
-    }
-    setAttachmentDrafts(current => {
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
-  }
-
   return (
-    <div className={`h-full min-h-0 flex ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-      <aside className={`w-[238px] shrink-0 border-r flex flex-col ${theme === 'dark' ? 'border-white/[0.07] bg-[#18191B]' : 'border-black/[0.06] bg-[#F7F9FC]'}`}>
-        <div className="p-3 relative">
-          <button onClick={() => setCreateMenuOpen(value => !value)}
-            className="w-full h-10 rounded-xl bg-[#007AFF] hover:bg-[#006EE6] text-white flex items-center justify-center gap-2 text-[13px] font-semibold shadow-sm">
-            <Plus size={16} /> 新建 Codex 会话 <ChevronDown size={13} />
-          </button>
-          {createMenuOpen && (
-            <>
-              <button aria-label="关闭新建会话菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setCreateMenuOpen(false)} />
-              <div className="absolute z-40 left-3 right-3 top-[56px] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                <button type="button" onClick={() => chooseProjectSession().catch(err => setError(String(err)))}
-                  className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                  <FolderOpen size={16} className="text-blue-500 shrink-0" />
-                  <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
-                </button>
-                <button type="button" onClick={() => createSession().catch(err => setError(String(err)))}
-                  className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                  <Sparkles size={16} className="text-emerald-500 shrink-0" />
-                  <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
-                </button>
-                {recentWorkspaces.length > 0 && (
-                  <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
-                    <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
-                    {recentWorkspaces.map(path => (
-                      <button key={path} type="button" title={path}
-                        onClick={() => createSession(path).catch(err => setError(String(err)))}
-                        className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                        <FolderOpen size={13} className="shrink-0 text-gray-400" />
-                        <span className="truncate text-[11px]">{workspaceName(path)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-        <div className="px-4 pt-2 pb-1 text-[11px] uppercase tracking-wider text-gray-400">Codex 会话</div>
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
-          {sessions.map(session => (
-            <button key={session.id} onClick={() => openSession(session.id).catch(err => setError(String(err)))}
-              className={`group w-full min-w-0 px-3 py-2.5 rounded-xl flex items-center gap-2 text-left mb-0.5 ${
-                activeId === session.id ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.05]'
-              }`}>
-              {session.workspace_kind === 'project'
-                ? <FolderOpen size={14} className="shrink-0" />
-                : <Sparkles size={14} className="shrink-0" />}
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12px]">{session.title || '新对话'}</span>
-                <span className={`block truncate text-[10px] mt-0.5 ${session.workspace_available ? 'opacity-55' : 'text-red-500'}`}
-                  title={session.workspace_path}>
-                  {session.workspace_kind === 'project' ? workspaceName(session.workspace_path) : '临时工作区'}
-                  {!session.workspace_available && ' · 目录不可用'}
-                </span>
-              </span>
-              <span role="button" tabIndex={0} onClick={event => removeSession(event, session.id)}
-                className="opacity-0 group-hover:opacity-60 hover:!opacity-100 p-1 rounded-md"><Trash2 size={13} /></span>
-            </button>
-          ))}
-          {!sessions.length && <div className="px-3 py-8 text-center text-[12px] text-gray-400">还没有 Codex 会话</div>}
-        </div>
-        <div className="px-3 py-3 border-t border-black/[0.05] dark:border-white/[0.06] text-[10px] leading-4 text-gray-400">
-          Codex 原生 system prompt、tools、skills 与 MCP<br />pinvou 不注入技能、卡牌或知识库
-        </div>
-      </aside>
-
-      <main className="relative flex-1 min-w-0 min-h-0 flex flex-col">
+    <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+        {activeSession && (
         <header className="h-14 shrink-0 px-5 flex items-center gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center"><Sparkles size={16} /></div>
+          <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><CodexLogo className="h-5 w-5" /></div>
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold">Codex</div>
+            <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {activeSession
-                ? `ACP · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : '临时工作区'}${activeSession.workspace_available ? '' : ' · 目录不可用'}`
-                : 'ACP · 请选择项目目录或临时会话'}
+              {`Codex · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : '临时工作区'}${activeSession.workspace_available ? '' : ' · 目录不可用'}`}
             </div>
           </div>
-          {controls.fallbackModels.length > 0 && (
-            <select value={sessionInfo.current_model_id || ''} onChange={event => changeModel(event.target.value)}
-              disabled={busy || working}
-              className="max-w-[210px] h-8 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[11px] outline-none disabled:opacity-50">
-              {controls.fallbackModels.map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
-            </select>
-          )}
-          {controls.fallbackModes && controls.fallbackModes.availableModes && (
-            <select value={controls.effectiveMode || ''} onChange={event => changeMode(event.target.value)}
-              disabled={busy || working}
-              title="Codex Agent 上报的会话模式"
-              className="h-8 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[11px] outline-none disabled:opacity-50">
-              {controls.fallbackModes.availableModes.map(item => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}
-            </select>
-          )}
-          {controls.configOptions.map(option => (
-            <select key={option.id} value={option.currentValue || ''} onChange={event => changeConfig(option.id, event.target.value)}
-              disabled={busy || working}
-              title={option.description || option.name}
-              className="max-w-[170px] h-8 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[11px] outline-none disabled:opacity-50">
-              {configChoices(option).map(choice => <option key={choice.value} value={choice.value}>{configLabel(option)} · {choice.name || choice.value}</option>)}
-            </select>
-          ))}
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">配置应用中…</span>}
           {busy && <StatusBadge status="running" />}
         </header>
+        )}
 
         <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <div className="w-full max-w-[920px] mx-auto px-6 py-6 space-y-7">
             <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
             {!projection.turns.length && (
               <div className="min-h-[48vh] flex flex-col items-center justify-center text-center">
-                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center shadow-lg shadow-green-500/15"><Sparkles size={26} /></div>
-                <div className="mt-5 text-[20px] font-semibold">{activeSession ? '用 Codex 处理代码任务' : '选择 Codex 的工作目录'}</div>
+                <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><CodexLogo className="h-8 w-8" /></div>
+                <div className="mt-5 text-[20px] font-semibold">用 Codex 处理代码任务</div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
                     ? '工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有 DeepSeek 消息框架。'
-                    : '项目会话直接在真实仓库中工作；临时会话使用 Pinvou 管理的隔离目录。一个项目可以创建多个独立会话。'}
+                    : '直接输入即可创建临时会话，也可以在输入框下方选择项目目录。'}
                 </div>
-                {!activeSession && (
-                  <button type="button" onClick={() => setCreateMenuOpen(true)}
-                    className="mt-5 h-9 px-4 rounded-xl bg-blue-600 text-white text-[12px] font-semibold">
-                    新建会话
-                  </button>
-                )}
               </div>
             )}
             {projection.turns.map(turn => useUnifiedConversationUi
@@ -1159,6 +1118,11 @@ export function CodexAcpView({ theme }) {
                     pendingByTool={pendingByTool}
                     onRespond={respond}
                     responding={responding}
+                    assistantAvatar={(
+                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
+                        <CodexLogo className="h-5 w-5" title="Codex" />
+                      </div>
+                    )}
                     renderItem={(item) => item.type === 'elicitation'
                       ? (
                           <ElicitationCard
@@ -1205,6 +1169,9 @@ export function CodexAcpView({ theme }) {
 
         <div className="shrink-0 px-6 pb-5 pt-2">
           <div className="w-full max-w-[920px] mx-auto">
+            {!activeId && (
+              <HomeModeSwitcher mode="code" codeSupported onChange={onSwitchHomeMode} />
+            )}
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
             <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
               <ConversationActivityIndicator
@@ -1220,6 +1187,36 @@ export function CodexAcpView({ theme }) {
                 className="mb-2"
                 formatError={value => String(value || '')}
               />
+              <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-1.5">
+                {controls.fallbackModels.length > 0 && (
+                  <select value={sessionInfo.current_model_id || ''} onChange={event => changeModel(event.target.value)}
+                    disabled={busy || working}
+                    className="max-w-[210px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
+                    {controls.fallbackModels.map(model => <option key={model.id} value={model.id}>模型 · {model.name || model.id}</option>)}
+                  </select>
+                )}
+                {controls.fallbackModes && controls.fallbackModes.availableModes && (
+                  <select value={controls.effectiveMode || ''} onChange={event => changeMode(event.target.value)}
+                    disabled={busy || working}
+                    title="Codex Agent 上报的会话模式"
+                    className="h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
+                    {controls.fallbackModes.availableModes.map(item => <option key={item.id} value={item.id}>权限模式 · {item.name || item.id}</option>)}
+                  </select>
+                )}
+                {controls.configOptions.map(option => (
+                  <select key={option.id} value={option.currentValue || ''} onChange={event => changeConfig(option.id, event.target.value)}
+                    disabled={busy || working}
+                    title={option.description || option.name}
+                    className="max-w-[170px] h-7 rounded-lg px-2 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.05] dark:border-white/[0.07] text-[10px] outline-none disabled:opacity-50">
+                    {configChoices(option).map(choice => <option key={choice.value} value={choice.value}>{configLabel(option)} · {choice.name || choice.value}</option>)}
+                  </select>
+                ))}
+                {!sessionInfo && ['权限模式', '协作方式', '模型', '推理强度', '快速模式'].map(label => (
+                  <span key={label} className="h-7 px-2 inline-flex items-center rounded-lg border border-black/[0.05] dark:border-white/[0.07] bg-black/[0.03] dark:bg-white/[0.04] text-[10px] text-gray-400">
+                    {label} · 创建后同步
+                  </span>
+                ))}
+              </div>
               {commandOpen && availableCommands.length > 0 && (
                 <>
                   <button aria-label="关闭 Codex 命令菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
@@ -1246,18 +1243,16 @@ export function CodexAcpView({ theme }) {
                   <button
                     type="button"
                     onClick={() => pickAttachments().catch(err => setError(String(err)))}
-                    disabled={!activeId}
-                    className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
+                    className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
                     title="添加附件"
                     aria-label="添加附件"
                   >
                     <Paperclip size={16} />
                   </button>
-                  {availableCommands.length > 0 && (
-                    <button type="button" onClick={() => setCommandOpen(value => !value)}
-                      className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-                      title="Codex Agent 上报的命令">/</button>
-                  )}
+                  <button type="button" onClick={() => setCommandOpen(value => !value)}
+                    disabled={!availableCommands.length}
+                    className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
+                    title={availableCommands.length ? 'Codex Agent 上报的命令' : '创建会话后同步 Codex 命令'}>/</button>
                   <span className={`w-1.5 h-1.5 rounded-full ${status && status.installed && status.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
                   {status && status.installed && status.authenticated
                     ? `Codex 已连接${runtimeSourceLabel(status) ? ` · ${runtimeSourceLabel(status)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
@@ -1266,16 +1261,68 @@ export function CodexAcpView({ theme }) {
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!activeId || !sessionInfo || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready')) || working || !status || !status.installed || !status.authenticated}
+                  <button onClick={send} disabled={(activeId && !sessionInfo) || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready')) || working || !status || !status.installed || !status.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>
                 )}
               </div>
             </div>
+            <div className="relative mt-2 flex justify-center">
+              <button
+                type="button"
+                data-testid="codex-workspace-selector"
+                onClick={() => setWorkspaceMenuOpen(value => !value)}
+                className="max-w-full h-8 px-3 rounded-full inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                title={activeSession && activeSession.workspace_path || draftWorkspacePath || '临时会话'}
+              >
+                {activeSession?.workspace_kind === 'project' || (!activeSession && draftWorkspacePath)
+                  ? <FolderOpen size={13} />
+                  : <Sparkles size={13} className="text-emerald-500" />}
+                <span className="truncate">
+                  {activeSession
+                    ? activeSession.workspace_kind === 'project'
+                      ? workspaceName(activeSession.workspace_path)
+                      : '临时会话'
+                    : draftWorkspacePath
+                      ? workspaceName(draftWorkspacePath)
+                      : '临时会话'}
+                </span>
+                <ChevronDown size={12} />
+              </button>
+              {workspaceMenuOpen && (
+                <>
+                  <button aria-label="关闭工作目录菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
+                  <div className="absolute z-40 bottom-10 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                    <button type="button" onClick={() => chooseProjectDraft().catch(err => setError(String(err)))}
+                      className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                      <FolderOpen size={16} className="text-blue-500 shrink-0" />
+                      <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
+                    </button>
+                    <button type="button" onClick={() => beginDraft(null)}
+                      className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                      <Sparkles size={16} className="text-emerald-500 shrink-0" />
+                      <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
+                    </button>
+                    {recentWorkspaces.length > 0 && (
+                      <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
+                        <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
+                        {recentWorkspaces.map(path => (
+                          <button key={path} type="button" title={path}
+                            onClick={() => beginDraft(path)}
+                            className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                            <FolderOpen size={13} className="shrink-0 text-gray-400" />
+                            <span className="truncate text-[11px]">{workspaceName(path)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
-      </main>
     </div>
   );
 }

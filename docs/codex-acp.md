@@ -5,7 +5,9 @@
 > [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md)。
 > 本文说明当前 MVP 的使用、验证和发布方式。
 
-pinvou3 在同一个主窗口中提供独立的 Codex 页面。Codex 会话使用独立的 ACP
+pinvou3 在主页输入区提供“工作 / 代码”两种模式：“工作”保持原有品悟输入框，
+“代码”当前使用 Codex。两类会话按最近更新时间混排在左侧统一会话列表中，Codex
+会话以代码图标区分，不再占用单独的侧边栏入口。Codex 会话仍使用独立的 ACP
 事件、权限和持久化链路，不进入 DeepSeek `ChatView`；原有品悟对话继续固定使用
 DeepSeek-TUI。
 
@@ -14,12 +16,14 @@ DeepSeek-TUI。
 1. 开发源码首次运行前执行 `./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`；
    正式安装包会自带该 Bridge，不要求系统安装 Node/npm。
 2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 会优先检测系统 Codex；没有检测到时可在
-   Codex 页面下载固定版本的托管 Codex。
-3. 展开主侧栏，点击“Codex”，再点“新建 Codex 会话”：
+   “代码”模式下载固定版本的托管 Codex。
+3. 在主页选择“代码”，输入框下方默认选择“临时会话”；直接发送首条消息时才创建
+   Codex 会话，避免只切换模式就产生空记录。也可以在发送前切换工作目录：
    - **选择项目目录**：Codex 的进程 cwd、`session/new` 和 `session/load`
      都使用该真实项目目录。
    - **临时会话**：Codex 使用
      `~/.pinvou3/sessions/<id>/workspace/` 隔离目录。
+   - **最近项目**：复用近期选择过的项目目录。
    同一个项目可以创建多个独立会话；会话开始后不能更换目录，需要切换项目时新建会话。
 4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，点击下载会把
    固定版本托管 Codex 放到 `~/.pinvou3/runtimes/codex/`；ACP Bridge 版本固定为
@@ -30,7 +34,7 @@ DeepSeek-TUI。
 
 ## 会话与权限状态
 
-Codex 页面不会直接把 ACP chunk 渲染成消息卡片。前端保留原始
+“代码”模式不会直接把 ACP chunk 渲染成消息卡片。前端保留原始
 `acp-timeline.jsonl`，再投影为 Codex 的会话模型：
 
 ```text
@@ -90,6 +94,6 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 - ACP Agent 自己负责 Codex 会话、system prompt、tools、tool loop、skills、MCP 和上下文。
 - pinvou 负责进程托管、ACP 事件还原、权限交互、时间线持久化和 UI。
 - MVP 不向 Codex 注入 pinvou bundle skill、MCP、知识库或 persona。
-- 附件虽由当前 Agent capability 上报为支持图片，但 pinvou 发送链路尚未实现，所以
-  MVP 不显示伪附件入口。
+- 附件入口位于代码输入框；图片按 Agent capability 发送，小型文本资源可内嵌，
+  其他文件以资源链接发送。不支持的图片能力或格式会明确报错。
 - DeepSeek-TUI 的技能市场、知识库、工具、Plan/YOLO、远程控制和历史链路保持原样。

@@ -298,7 +298,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
       ) : null;
       if (editing) {
         return (
-          <div className="px-1.5 py-0.5">
+          <div className="flex h-11 items-center px-1.5">
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
               onClick={e => e.stopPropagation()}
@@ -315,14 +315,18 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           data-testid={chat.testId}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
-          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[15px] transition-all
+          className={`group flex h-11 items-center px-4 rounded-full cursor-pointer text-[15px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
                      : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}>
           {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
-          {chat.leadingIcon && <span className="mr-3 shrink-0 opacity-95">{chat.leadingIcon}</span>}
+          {chat.leadingIcon && (
+            <span className="mr-3 flex h-5 w-5 shrink-0 items-center justify-center opacity-95">
+              {chat.leadingIcon}
+            </span>
+          )}
           <span className="min-w-0 flex-1 pr-2">
-            <span className={`block truncate whitespace-nowrap ${chat.subtitle ? 'leading-5' : 'leading-relaxed'}`}>{chat.title}</span>
+            <span className="block truncate whitespace-nowrap leading-5">{chat.title}</span>
             {chat.subtitle && (
               <span className={`block truncate text-[12px] leading-4 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{chat.subtitle}</span>
             )}

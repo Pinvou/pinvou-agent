@@ -203,9 +203,25 @@ try {
   assert.ok(!chatView.includes('sessionAgentBackend'), 'DeepSeek ChatView must not branch on Codex state');
 
   const main = readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+  const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<CodexAcpView'));
   assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay Linux capability-gated');
+  assert.ok(main.includes(".concat(codexHistory)"),
+    'Codex sessions must share the global recent-session list');
+  assert.ok(main.includes("taskKind: 'codex'") && main.includes("testId: 'codex-sidebar-item'"),
+    'global sessions must visually identify Codex records');
+  assert.ok(main.includes("useState('recent')"),
+    'work and code sessions must be mixed by recent update time by default');
+  assert.ok(main.includes('leadingIcon: <PinvouLogo')
+    && main.includes('<CodexLogo className="h-[18px] w-[18px]"')
+    && main.includes('<Clock size={18} />'),
+  'work, Codex, and scheduled sessions must expose equally sized type icons');
+  assert.ok(navigationComponents.includes('group flex h-11 items-center')
+    && navigationComponents.includes('flex h-5 w-5 shrink-0 items-center justify-center'),
+  'all recent-session rows and their icon canvases must keep a consistent size');
+  assert.ok(!/<NavItem[\s\S]{0,180}label="Codex"/.test(main),
+    'Codex must not occupy a standalone primary-navigation tab');
 
   const chatCommands = readFileSync(path.join(root, 'src-tauri', 'src', 'app', 'commands', 'chat.rs'), 'utf8');
   const codexCommands = readFileSync(path.join(root, 'src-tauri', 'src', 'app', 'commands', 'codex.rs'), 'utf8');
@@ -226,11 +242,37 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
+  const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
+  const pinvouLogo = readFileSync(path.join(root, 'src', 'components', 'PinvouLogo.jsx'), 'utf8');
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
   assert.ok(codexView.includes('临时会话'), 'temporary sessions must remain an explicit choice');
+  assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
+    && codexView.includes('const created = await createSession(draftWorkspacePath)'),
+  'the code home must keep a temporary draft and create its Codex session only on first send');
+  assert.ok(codexView.includes('data-testid="codex-workspace-selector"')
+    && codexView.includes('最近项目'),
+  'the composer must retain temporary, directory picker, and recent-project choices');
+  assert.ok(codexView.includes('data-testid="codex-composer-configs"')
+    && codexView.includes("'权限模式', '协作方式', '模型', '推理强度', '快速模式'"),
+  'Codex controls must live in the code composer');
+  assert.ok(!codexView.includes('<aside'),
+    'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
+  assert.ok(homeModeSwitcher.includes('工作') && homeModeSwitcher.includes('代码')
+    && homeModeSwitcher.includes('Codex'),
+  'the home composer must expose Work/Code modes and the current Codex code agent');
+  assert.ok(codexLogo.includes("brand-icons/openai.svg")
+    && main.includes('<CodexLogo')
+    && codexView.includes('<CodexLogo'),
+  'Codex identity must reuse the project OpenAI mark in the home, sidebar, and conversation');
+  assert.ok(pinvouLogo.includes('/assets/brand/brand-blue.png')
+    && chatView.includes('assistantAvatar={(')
+    && chatView.includes('<PinvouLogo className="h-5 w-5" title="品悟"')
+    && codexView.includes('<CodexLogo className="h-5 w-5" title="Codex"'),
+  'assistant avatars must use the Pinvou and Codex identity marks instead of generic symbols');
   assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');
   assert.ok(conversationView.includes('执行步骤'), 'tool items must use a compact presentation group');
   assert.ok(!codexView.includes("useState(state === 'failed')"),

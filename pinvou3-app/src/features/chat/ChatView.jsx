@@ -7,12 +7,14 @@ import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
 } from '../conversation/ConversationTimeline.jsx';
+import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
 import {
   isFetchTool,
@@ -244,7 +246,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun }) => {
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const [inputText, setInputTextState] = useState('');
@@ -805,6 +807,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
                     turns={conversationProjection.turns}
                     now={conversationNow}
                     agentLabel="品悟"
+                    assistantAvatar={(
+                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
+                        <PinvouLogo className="h-5 w-5" title="品悟" />
+                      </div>
+                    )}
                     renderUser={(item) => (
                       <ChatBubble
                         item={item}
@@ -944,6 +951,13 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           {/* Floating Input Area */}
           <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
+            {!activeSessionId && !scheduledRunContext && (
+              <HomeModeSwitcher
+                mode="work"
+                codeSupported={codeModeAvailable}
+                onChange={onSwitchHomeMode}
+              />
+            )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">

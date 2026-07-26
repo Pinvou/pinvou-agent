@@ -97,7 +97,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 - 不在 Pinvou 中实现 OpenAI 账号体系或自行处理 ChatGPT OAuth token。
 - 不复制、迁移或解析 `auth.json` 中的凭证内容。
 - 不接管 Codex system prompt、tools、tool loop、skills、MCP 和上下文管理。
-- 不要求应用启动时就安装 Codex Runtime；只有进入 Codex 页面或用户显式启用时才检查。
+- 不要求应用启动时就安装 Codex Runtime；只有进入“代码”模式或用户显式启用时才检查。
 - 不将托管 Codex 的更新与 Pinvou 主程序 OTA 强制绑定；Bridge 与 Pinvou 主程序一起
   发布。
 - 不在本阶段建设通用 ACP Agent Runtime 市场。
@@ -307,7 +307,7 @@ CODEX_PATH=<system-codex-or-managed-codex>
 采用“**系统 Codex 优先 + 托管 Codex 按需下载**”：
 
 - Linux 正式安装包只内置固定 Bridge Runtime，不内置大体积 Codex 平台二进制。
-- 进入 Codex 页面时先检测系统 Codex 路径、版本并执行真实 ACP 探测。
+- 进入“代码”模式时先检测系统 Codex 路径、版本并执行真实 ACP 探测。
 - 系统版本兼容时直接使用，不下载托管 Codex。
 - 系统缺失或不兼容时，用户点击一次即可下载托管 Codex。
 - Linux MVP 直接获取 OpenAI 官方 npm registry 的固定平台归档，不调用 npm；官方源
@@ -410,7 +410,7 @@ struct CodexRuntimeStatus {
 ```mermaid
 stateDiagram-v2
   [*] --> Unchecked
-  Unchecked --> Checking: 进入 Codex 页面
+  Unchecked --> Checking: 进入代码模式
   Checking --> RuntimeMissing: 无可用 Runtime
   Checking --> RuntimeInvalid: 校验失败
   Checking --> AuthRequired: ACP 可启动但需要登录
@@ -460,8 +460,9 @@ stateDiagram-v2
 
 ## 10. 首次使用 UI
 
-Codex 页面继续使用现有独立入口和会话布局。Runtime 未就绪时，不跳转到设置页，也不把
-错误塞进对话 timeline，而是在内容区显示 `CodexRuntimeGate`。
+Codex Runtime Gate 位于主页“代码”模式。Runtime 未就绪时，不跳转到设置页，也不把
+错误塞进对话 timeline，而是在内容区显示 `CodexRuntimeGate`；左侧统一会话列表仍可
+查看已有 Codex 会话摘要。
 
 ### 10.1 组件缺失
 
@@ -570,7 +571,7 @@ codex-runtime://status
 
 ### 12.1 不影响 DeepSeek-TUI
 
-- Runtime 检查只在进入 Codex 页面或设置中显式检查时触发。
+- Runtime 检查只在进入“代码”模式或设置中显式检查时触发。
 - Pinvou 应用启动不等待 Runtime 下载、登录或 ACP 探测。
 - 不修改全局 `PATH`、`HOME`、Node 环境或 DeepSeek-TUI Engine 配置。
 - Codex 子进程的环境变量仅作用于该子进程。
@@ -701,7 +702,7 @@ codex-runtime://status
 | 新托管版本探测失败 | 保留或回退上一版本 |
 | OpenAI 网络不可达 | 显示网络错误，不误报未安装 |
 | 用户取消浏览器登录 | 回到需要登录，可再次发起 |
-| Codex 页面未就绪 | 历史可查看，发送和配置修改禁用 |
+| 代码模式未就绪 | 历史可查看，发送和配置修改禁用 |
 | Codex 安装/登录失败 | DeepSeek 会话仍可正常创建和使用 |
 | 删除托管 Codex | 不删除系统 Codex 和 `~/.codex` |
 

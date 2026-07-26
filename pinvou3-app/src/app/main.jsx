@@ -4,6 +4,8 @@ import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
+import { CodexLogo } from '../components/CodexLogo.jsx';
+import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
@@ -66,6 +68,11 @@ function emitPetEvent(ev, name, payload) {
 // 127.0.0.1:8000 永远连不上、或调用不存在的后端命令报错。与 bridge prefs::ModelPreset::default() 对齐。
 function defaultModelPresetForCapabilities(capabilities) {
   return capabilities && capabilities.localVllmSupported ? 'local_vllm' : 'deepseek';
+}
+
+function workspaceDisplayName(path) {
+  const parts = String(path || '').split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || String(path || '');
 }
 
 /* ==========================================
@@ -188,6 +195,73 @@ function defaultModelPresetForCapabilities(capabilities) {
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = !!platformCapabilities.codexAcpSupported;
+      const [codexSessions, setCodexSessions] = useState([]);
+      const [codexDraftEpoch, setCodexDraftEpoch] = useState(0);
+      const [activeCodexId, setActiveCodexId] = useState(() => {
+        try {
+          return localStorage.getItem('pinvou_codex_active_session') || null;
+        } catch {
+          return null;
+        }
+      });
+      const [codexBusyBySession, setCodexBusyBySession] = useState({});
+      const refreshCodexSessions = useCallback(async () => {
+        if (!codexAcpSupported || !isTauriAvailable()) {
+          setCodexSessions([]);
+          return [];
+        }
+        const sessions = await invokeTauri('list_codex_acp_sessions');
+        const next = Array.isArray(sessions) ? sessions : [];
+        setCodexSessions(next);
+        return next;
+      }, [codexAcpSupported]);
+      const updateActiveCodexSession = useCallback((id) => {
+        const next = id || null;
+        setActiveCodexId(next);
+        try {
+          if (next) localStorage.setItem('pinvou_codex_active_session', next);
+          else localStorage.removeItem('pinvou_codex_active_session');
+        } catch {
+          // WebView 禁用 storage 时仍允许当前窗口内切换。
+        }
+      }, []);
+      useEffect(() => {
+        if (!codexAcpSupported || !isTauriAvailable()) {
+          setCodexSessions([]);
+          return undefined;
+        }
+        let disposed = false;
+        const unlisteners = [];
+        refreshCodexSessions().catch(error => {
+          if (!disposed) console.warn('[codex] list sessions failed', error);
+        });
+        tauriEvents.listen('acp:event', (message) => {
+          if (disposed) return;
+          const incoming = message && message.payload;
+          const sessionId = incoming && incoming.sessionId;
+          const type = incoming && incoming.event && incoming.event.type;
+          if (!sessionId || !type) return;
+          if (type === 'turn_started') {
+            setCodexBusyBySession(current => ({ ...current, [sessionId]: true }));
+          } else if (type === 'turn_completed') {
+            setCodexBusyBySession(current => ({ ...current, [sessionId]: false }));
+            refreshCodexSessions().catch(() => {});
+          }
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        tauriEvents.listen('session:deleted', () => {
+          if (!disposed) refreshCodexSessions().catch(() => {});
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          unlisteners.forEach(unlisten => unlisten());
+        };
+      }, [codexAcpSupported, refreshCodexSessions]);
       // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
       const activeChatRef = useRef(activeChat);
       activeChatRef.current = activeChat;
@@ -595,9 +669,29 @@ function defaultModelPresetForCapabilities(capabilities) {
         pinnedAt: s.pinned_at || '',
         skill: skillBindings[s.id] || null,
         working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+        leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
         testId: 'regular-sidebar-item',
         menuTestId: 'regular-sidebar-menu',
       })) : [];
+      const codexHistory = codexSessions.map(session => ({
+        id: session.id,
+        title: (!session.title || session.title === '新对话' || session.title === 'New chat')
+          ? t.newChat
+          : session.title,
+        subtitle: session.workspace_kind === 'project'
+          ? workspaceDisplayName(session.workspace_path)
+          : '临时会话',
+        date: formatSessionDate(session.updated_at || session.created_at, language),
+        updatedAt: session.updated_at || session.created_at || '',
+        pinned: !!session.pinned,
+        pinnedAt: session.pinned_at || '',
+        working: !!codexBusyBySession[session.id],
+        taskKind: 'codex',
+        leadingIcon: <CodexLogo className="h-[18px] w-[18px]" title="Codex" />,
+        testId: 'codex-sidebar-item',
+        menuTestId: 'codex-sidebar-menu',
+        codexSession: session,
+      }));
       const pinnedChatHistory = chatHistory
         .filter(chat => chat.pinned)
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
@@ -633,7 +727,17 @@ function defaultModelPresetForCapabilities(capabilities) {
             pinned: !!run.pinned,
             pinnedAt: run.pinnedAt || '',
             working: run.status === 'running' || run.status === 'queued',
-            unread: !!run.unread,
+            subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+            date: '',
+            leadingIcon: (
+              <span className="relative inline-flex h-5 w-5 items-center justify-center">
+                <Clock size={18} />
+                {run.unread && (
+                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
+                    style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
+                )}
+              </span>
+            ),
             testId: 'scheduled-run-sidebar-item',
             menuTestId: 'scheduled-run-sidebar-menu',
             scheduledRun: run,
@@ -651,8 +755,16 @@ function defaultModelPresetForCapabilities(capabilities) {
           : chat.title;
         return Object.assign({}, chat, {
           title,
-          date: chat.date || formatSessionDate(run.scheduledFor || run.createdAt, language),
-          unread: !!run.unread,
+          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+          leadingIcon: (
+            <span className="relative inline-flex h-5 w-5 items-center justify-center">
+              <Clock size={18} />
+              {run.unread && (
+                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2"
+                  style={{ background: '#0B57D0', borderColor: activeTheme === 'dark' ? '#1E1F20' : '#F0F4F9' }} />
+              )}
+            </span>
+          ),
           testId: 'scheduled-run-sidebar-item',
           menuTestId: 'scheduled-run-sidebar-menu',
           scheduledRun: run,
@@ -661,7 +773,7 @@ function defaultModelPresetForCapabilities(capabilities) {
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
       const [taskListFilter, setTaskListFilter] = useState('all');
-      const [taskListSort, setTaskListSort] = useState('pinned_first');
+      const [taskListSort, setTaskListSort] = useState('recent');
       const [taskFilterOpen, setTaskFilterOpen] = useState(false);
       const taskFilterRef = useRef(null);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
@@ -705,7 +817,8 @@ function defaultModelPresetForCapabilities(capabilities) {
           return { ...item, taskKind: run ? 'scheduled' : 'regular' };
         })
         .concat(regularHistory.map(chat => ({ ...chat, taskKind: 'regular' })))
-        .concat(scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })));
+        .concat(scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })))
+        .concat(codexHistory);
       const sidebarTaskHistory = allSidebarTasks
         .filter((chat) => {
           if (taskListFilter === 'pinned') return !!chat.pinned;
@@ -800,8 +913,26 @@ function defaultModelPresetForCapabilities(capabilities) {
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
-        if (bridge.available) bridge.sessions.createNewSession();
-        setCurrentView('chat');
+        if (currentView === 'codex' && codexAcpSupported) {
+          updateActiveCodexSession(null);
+          setCodexDraftEpoch(value => value + 1);
+          setCurrentView('codex');
+        } else {
+          if (bridge.available) bridge.sessions.createNewSession();
+          setCurrentView('chat');
+        }
+        closeMobileSidebar();
+      }
+
+      function handleSwitchHomeMode(mode) {
+        if (mode === 'code' && codexAcpSupported) {
+          updateActiveCodexSession(null);
+          setCodexDraftEpoch(value => value + 1);
+          setCurrentView('codex');
+        } else if (mode === 'work') {
+          if (bridge.available) bridge.sessions.createNewSession();
+          setCurrentView('chat');
+        }
         closeMobileSidebar();
       }
 
@@ -825,6 +956,12 @@ function defaultModelPresetForCapabilities(capabilities) {
       async function handleSearchSelect(id) {
         await handleSwitchSession(id);
         setSearchOverlayOpen(false);
+      }
+
+      function handleSwitchCodexSession(id) {
+        updateActiveCodexSession(id);
+        setCurrentView('codex');
+        closeMobileSidebar();
       }
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
@@ -1046,34 +1183,51 @@ function defaultModelPresetForCapabilities(capabilities) {
         };
       }, []);
 
-      function handleDeleteSession(id) {
-        if (bridge.available) bridge.sessions.deleteSession(id);
+      async function handleDeleteSession(id) {
+        const isCodexSession = codexSessions.some(session => session.id === id);
+        if (bridge.available) await bridge.sessions.deleteSession(id);
+        if (isCodexSession) {
+          if (activeCodexId === id) updateActiveCodexSession(null);
+          await refreshCodexSessions().catch(() => {});
+        }
       }
 
-      function handleRenameSession(id, title) {
-        if (bridge.available) bridge.sessions.renameSession(id, title);
+      async function handleRenameSession(id, title) {
+        const isCodexSession = codexSessions.some(session => session.id === id);
+        if (bridge.available) await bridge.sessions.renameSession(id, title);
+        if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }
 
-      function handleToggleSessionPinned(id, pinned) {
-        if (bridge.available) bridge.sessions.toggleSessionPinned(id, pinned);
+      async function handleToggleSessionPinned(id, pinned) {
+        const isCodexSession = codexSessions.some(session => session.id === id);
+        if (bridge.available) await bridge.sessions.toggleSessionPinned(id, pinned);
+        if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }
 
       function handleArchiveSession(id) {
-        const chat = chatHistory.find(c => c.id === id) || scheduledRunItems.find(c => c.id === id);
+        const chat = sidebarTaskHistory.find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
       }
 
-      function confirmArchiveSession() {
+      async function confirmArchiveSession() {
         const id = archiveConfirm && archiveConfirm.id;
+        const isCodexSession = archiveConfirm && archiveConfirm.taskKind === 'codex';
         setArchiveConfirm(null);
         if (id && bridge.available) {
-          bridge.sessions.archiveSession(id);
+          if (isCodexSession) {
+            await invokeTauri('set_session_archived', { id, archived: true });
+            if (activeCodexId === id) updateActiveCodexSession(null);
+            await refreshCodexSessions().catch(() => {});
+          } else {
+            await bridge.sessions.archiveSession(id);
+          }
           setArchiveToast(true);
         }
       }
 
-      function handleRestoreArchivedSession(id) {
-        if (bridge.available) bridge.sessions.restoreArchivedSession(id);
+      async function handleRestoreArchivedSession(id) {
+        if (bridge.available) await bridge.sessions.restoreArchivedSession(id);
+        await refreshCodexSessions().catch(() => {});
       }
 
       useEffect(() => {
@@ -1314,6 +1468,8 @@ function defaultModelPresetForCapabilities(capabilities) {
       const scheduledUnread = !!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns));
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
+        : currentView === 'codex'
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || '代码')
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -1394,7 +1550,7 @@ function defaultModelPresetForCapabilities(capabilities) {
           {isCompactShell && (
             <MobileTopBar theme={activeTheme} t={t} title={mobileTitle}
               onMenu={() => setIsSidebarOpen(true)}
-              onNewChat={currentView === 'chat' ? () => handleNewChat() : undefined} />
+              onNewChat={currentView === 'chat' || currentView === 'codex' ? () => handleNewChat() : undefined} />
           )}
 
           <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]'}`}>
@@ -1458,16 +1614,6 @@ function defaultModelPresetForCapabilities(capabilities) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
-              {codexAcpSupported && (
-                <NavItem
-                  icon={<Sparkles size={18} />} label="Codex"
-                  active={currentView === 'codex'}
-                  nativeButton
-                  theme={activeTheme}
-                  isSidebarOpen={isSidebarOpen}
-                  onClick={() => navigateFromScheduledRun('codex')}
-                />
-              )}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
@@ -1607,22 +1753,28 @@ function defaultModelPresetForCapabilities(capabilities) {
                   <div className="space-y-0.5">
                     {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map((chat) => (
                       <RecentItem
-                        key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : chat.id}
+                        key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
                         chat={chat}
                         theme={activeTheme}
                         t={t}
-                        active={chat.scheduledRun
-                          ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
-                          : activeChat === chat.id && currentView === 'chat'}
-                        personaTarget={!chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
-                        onSelect={chat.scheduledRun ? () => handleOpenScheduledRunShortcut(chat.scheduledRun) : handleSwitchSession}
+                        active={chat.taskKind === 'codex'
+                          ? activeCodexId === chat.id && currentView === 'codex'
+                          : chat.scheduledRun
+                            ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+                            : activeChat === chat.id && currentView === 'chat'}
+                        personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+                        onSelect={chat.taskKind === 'codex'
+                          ? handleSwitchCodexSession
+                          : chat.scheduledRun
+                            ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+                            : handleSwitchSession}
                         onRename={handleRenameSession}
                         onDelete={handleDeleteSession}
                         onTogglePinned={handleToggleSessionPinned}
                         onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
                         onArchive={handleArchiveSession}
-                        dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                        onPickUp={canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
+                        dragging={chat.taskKind !== 'codex' && canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+                        onPickUp={chat.taskKind !== 'codex' && canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
                       />
                     )) : (
                       <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
@@ -1760,8 +1912,18 @@ function defaultModelPresetForCapabilities(capabilities) {
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />}
-            {codexAcpSupported && currentView === 'codex' && <CodexAcpView theme={activeTheme} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
+            {codexAcpSupported && currentView === 'codex' && (
+              <CodexAcpView
+                theme={activeTheme}
+                sessions={codexSessions}
+                activeId={activeCodexId}
+                draftEpoch={codexDraftEpoch}
+                onActiveSessionChange={updateActiveCodexSession}
+                onSessionsChange={setCodexSessions}
+                onSwitchHomeMode={handleSwitchHomeMode}
+              />
+            )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
