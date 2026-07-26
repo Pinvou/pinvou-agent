@@ -203,6 +203,11 @@ try {
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
   assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('data-testid="chat-artifacts-entry"')
+    && chatView.includes('{activeSessionId && (')
+    && chatView.includes('const artifactsVisible = Boolean(activeSessionId && artifactsOpen)')
+    && chatView.includes('if (!activeSessionId) setArtifactsOpen(false)'),
+  'the empty Work home must hide and close the artifacts entry until a session exists');
   assert.ok(chatView.includes('<ConversationActivityIndicator')
     && chatView.includes('turn={activeConversationTurn}')
     && conversationView.includes("if (!turn || turn.status !== 'running') return null"),

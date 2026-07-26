@@ -498,6 +498,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const welcomeSessionKeyRef = useRef(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
+      const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
+      useEffect(() => {
+        if (!activeSessionId) setArtifactsOpen(false);
+      }, [activeSessionId]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
@@ -760,12 +764,15 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
             <div className="flex items-center gap-2">
               {/* 窄屏：只留图标+计数（避免被左侧返回按钮挤到换行），文字标签 ≥sm 才显示 */}
-              <button
-                onClick={() => setArtifactsOpen(true)}
-                className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
-                <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
-                {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
-              </button>
+              {activeSessionId && (
+                <button
+                  data-testid="chat-artifacts-entry"
+                  onClick={() => setArtifactsOpen(true)}
+                  className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                  <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
+                  {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
+                </button>
+              )}
             </div>
           </div>
 
@@ -776,7 +783,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               空态不滚动，仍需 paddingBottom 让欢迎语在悬浮输入框上方居中。 */}
           <div ref={scrollRef} data-testid="chat-scroll"
             style={hasMessages ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
-            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -890,7 +897,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
           )}
           {hasMessages && chatItems.some((item) => item.type === 'memory_candidate' && !item.resolved) && (
-            <div className={`pointer-events-none absolute inset-x-0 z-[24] ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}
+            <div className={`pointer-events-none absolute inset-x-0 z-[24] ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}
               style={{ bottom: (composerH ? composerH + 28 : 148) + 'px' }}>
               <div className="max-w-[800px] w-full mx-auto flex flex-col items-end gap-3">
                 {chatItems
@@ -949,7 +956,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
           )}
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
+          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
             {!activeSessionId && !scheduledRunContext && (
               <HomeModeSwitcher
@@ -1160,7 +1167,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           </div>
           </div>{/* /对话列 */}
 
-          {artifactsOpen && isWide && (
+          {artifactsVisible && isWide && (
             <>
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
@@ -1169,7 +1176,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               </div>
             </>
           )}
-          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
+          {artifactsVisible && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
         </div>
       );
     };

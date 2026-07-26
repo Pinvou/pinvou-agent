@@ -220,6 +220,11 @@ try {
   assert.ok(navigationComponents.includes('group flex h-11 items-center')
     && navigationComponents.includes('flex h-5 w-5 shrink-0 items-center justify-center'),
   'all recent-session rows and their icon canvases must keep a consistent size');
+  assert.ok(!main.includes("w-[280px] bg-[#1E1F20]")
+    && main.includes("activeTheme === 'light'")
+    && main.includes("? 'bg-[#F0F4F9]'")
+    && main.includes(": (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')"),
+  'the sidebar must choose one theme background instead of emitting conflicting light and dark classes');
   assert.ok(!/<NavItem[\s\S]{0,180}label="Codex"/.test(main),
     'Codex must not occupy a standalone primary-navigation tab');
 

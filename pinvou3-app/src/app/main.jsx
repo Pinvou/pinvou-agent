@@ -1574,7 +1574,11 @@ function workspaceDisplayName(path) {
               top: 48,
               bottom: 56,
             } : undefined}
-            className={`${isSidebarOpen ? 'w-[280px] bg-[#1E1F20]' : 'w-[68px] bg-[#131314]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${activeTheme === 'light' ? 'bg-[#F0F4F9]' : ''}`}>
+            className={`${isSidebarOpen ? 'w-[280px]' : 'w-[68px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${
+              activeTheme === 'light'
+                ? 'bg-[#F0F4F9]'
+                : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')
+            }`}>
 
             {/* Header / Logo */}
             <div className={`px-4 py-3 max-sm:px-3 max-sm:py-0 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
