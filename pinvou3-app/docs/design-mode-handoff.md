@@ -1,9 +1,10 @@
 # Design Mode Handoff
 
-Date: 2026-07-24
+Last updated: 2026-07-27
 Branch/worktree: `work/design-mode-ui-shell-20260724`
-Status: paused until next week
+Status: paused for handoff
 PR status: Draft only. Do not merge until the missing business integrations are complete.
+Draft PR: https://github.com/Pinvou/pinvou-agent/pull/16
 
 ## Handoff Summary
 
@@ -30,6 +31,18 @@ Do not treat this branch as feature-complete:
 - Composer dropdown panels for model/tools/knowledge were made opaque to avoid tab UI bleeding through in dark mode.
 - The model/tools/knowledge composer pills were visually reduced to better match the iOS-style primary tabs.
 
+## Key Files
+
+- `src/features/chat/ChatView.jsx`: composer mode UI, secondary tabs, Code Agent provider picker, design mini panel wiring.
+- `src/features/chat/pinvou-mode-state.js`: persisted mode/provider state reducer and storage helpers.
+- `src/features/chat/design-changes.js`: design-change normalization, reduction, and dedupe logic.
+- `src/features/artifacts/ArtifactsPanel.jsx`: artifact preview integration point for design runtime.
+- `src/features/artifacts/design-runtime.js`: iframe visual editing runtime injection for selectable/editable HTML preview elements.
+- `src/components/IosControls.jsx`: iOS-style segmented control with `prominent` compact mode.
+- `src/features/settings/SettingsView.jsx`: composer model/tool pill visual alignment and opaque popovers.
+- `src/brand-icons/claude.svg` and `src/brand-icons/kimi-official.svg`: local brand assets for code provider choices.
+- `tests/design_mode_entry_smoke.js`: end-to-end UI smoke for work/design/code entry behavior.
+
 ## Removed UI
 
 - Removed the design-mode blue status banner.
@@ -46,7 +59,7 @@ Do not treat this branch as feature-complete:
 
 ## Verification
 
-Last run from `pinvou3-app`:
+Last full verification was run from `pinvou3-app` in the correct `Pinvou/pinvou-agent` worktree:
 
 ```powershell
 npm run lint:ui
@@ -57,22 +70,48 @@ npm run build:ui
 npm run test:design-mode-entry-smoke
 ```
 
-All commands above passed on 2026-07-24.
+All commands above passed on 2026-07-24 after the branch was migrated onto `Pinvou/pinvou-agent/main`.
 
 The Tauri dev app was running during iteration at `http://127.0.0.1:1420`.
 
 ## PR / Repository Notes
 
 - Correct target repository: `https://github.com/Pinvou/pinvou-agent`.
+- Correct Draft PR: https://github.com/Pinvou/pinvou-agent/pull/16.
+- Correct PR branch: `work/design-mode-ui-shell-20260724`.
 - Local commits:
   - `e95fc84c Add design mode composer UI`
   - `565eee71 Update design mode handoff notes`
   - `4149bad7 Clarify draft PR handoff status`
+  - `da962082 Update handoff for agent PR branch`
 - A draft PR was accidentally opened against the old repository: `https://github.com/Pinvou/pinvou3/pull/250`.
-- Do not continue that PR if the target repository has changed.
-- Open a new Draft PR from `work/design-mode-ui-shell-20260724` in `Pinvou/pinvou-agent`.
-- The Draft PR description must explicitly say this branch is UI/interaction shell only and must not be merged before content/code execution integration is complete.
+- Do not continue or merge the old `Pinvou/pinvou3` PR.
+- The Draft PR description already says this branch is UI/interaction shell only and must not be merged before content/code execution integration is complete.
 - Untracked local dev file intentionally left out of commit: `src-tauri/config/dev-port-1421.conf.json`.
+
+## Resume Checklist
+
+1. Pull the PR branch:
+
+```powershell
+git fetch agent work/design-mode-ui-shell-20260724
+git switch work/design-mode-ui-shell-20260724
+```
+
+2. Re-run focused checks before changing behavior:
+
+```powershell
+cd pinvou3-app
+npm run lint:ui
+npm run test:pinvou-mode-state
+npm run test:design-runtime
+npm run test:design-changes
+npm run build:ui
+npm run test:design-mode-entry-smoke
+```
+
+3. Keep the PR as Draft until Code Agent execution and content-generation flows are implemented.
+4. Update this file when backend contracts or ownership decisions are made.
 
 ## Next Implementation Steps
 
