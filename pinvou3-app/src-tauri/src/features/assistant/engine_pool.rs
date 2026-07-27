@@ -362,12 +362,16 @@ impl EnginePool {
             .map(|profile| profile.workspace)
             .unwrap_or_else(|| bridge.session_workspace(session_id));
         let shell_manager = self.shell_managers.for_session(session_id, shell_workspace);
+        let mut extra_tools = (self.tool_factory)(&self.app, session_id);
+        extra_tools.push(Arc::new(
+            crate::features::connectors::ima::ImaOpenApiTool::new(),
+        ));
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
             bridge,
             session_id,
-            (self.tool_factory)(&self.app, session_id),
+            extra_tools,
             self.compute_disallowed_tools(),
             self.turn_lifecycles.for_session(session_id),
             shell_manager,
