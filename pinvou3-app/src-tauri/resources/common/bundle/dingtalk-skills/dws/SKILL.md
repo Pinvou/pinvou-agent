@@ -1,6 +1,6 @@
 ---
 name: dws
-description: 管理钉钉产品能力(AI表格/AI搜问/日历/通讯录/群聊与机器人/待办/审批/考勤/日志/DING消息/开放平台文档/钉钉文档/钉钉云盘/AI听记/邮箱/在线电子表格/知识库等)。当用户需要操作表格数据、管理日程会议、模糊找人/查谁负责某事项、查询通讯录、管理群聊、机器人发消息、创建待办、提交审批、查看考勤、提交日报周报（钉钉日志模版）、读写钉钉文档、上传下载云盘文件、查询听记纪要、收发邮件、读写在线电子表格(axls)、管理钉钉知识库时使用。
+description: 用 dws CLI 管理钉钉:AI表格/AI应用/AI搜问(找人首选)/目标管理(Agoal)/日历/通讯录/群聊与机器人消息/待办/审批/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/AI听记/邮箱/在线电子表格(axls)/知识库/开放平台文档。用户要求操作上述钉钉产品时使用。
 cli_version: ">=1.0.15"
 ---
 
@@ -9,7 +9,7 @@ cli_version: ">=1.0.15"
 通过 `dws` 命令管理钉钉产品能力。
 
 
-> ⚠️ **命令可用性以当前 dws 二进制为准**。服务发现已下线，本文档随内置 skill 发布；如果 `dws <cmd> --help` 不存在，说明当前版本未暴露该命令。若命令存在但调用失败，请按错误中的 endpoint 或 tool 提示确认静态端点目录和后端工具注册。实际调用前可用 `dws <cmd> --help` 或 `--dry-run` 验证。
+> ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是事实源,与本文档冲突时以 `--help` 为准。
 
 ## 严格禁止 (NEVER DO)
 - 不要使用 dws 命令以外的方式操作（禁止 curl、HTTP API、浏览器）
@@ -20,8 +20,8 @@ cli_version: ">=1.0.15"
 - 所有命令必须加 `--format json` 以获取可解析输出
 - 危险操作必须先向用户确认，用户同意后才加 `--yes` 执行
 - 单次批量操作不超过 30 条记录
-- 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（如：如果有参数值，则参数和参数值之间至少用一个空格隔开）
-- **脚本优先**：[scripts/](./scripts/) 下的 `python scripts/<name>.py` 已封装翻页/轮询/批量逻辑，遇到对应场景（如 AI 表格批量导入导出、AI 应用创建轮询、文档创建后写内容、钉盘目录树等）**优先调用脚本**而非手写多步命令。脚本均支持 `--dry-run` 预览、`--format json` 输出，失败时回退到手动步骤
+- 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
+- **脚本优先**:[scripts/](./scripts/) 下的 `python scripts/<name>.py` 已封装翻页/批量逻辑(如 AI表格导入导出、文档创建并写入、钉盘目录树、机器人广播),对应场景优先调用脚本;各脚本参数不统一,先 `python scripts/<name>.py --help` 确认 flag
 
 
 ## 产品总览
@@ -29,6 +29,7 @@ cli_version: ">=1.0.15"
 | 产品                | 用途                                                   | 参考文件                                                           |
 |-------------------|------------------------------------------------------|----------------------------------------------------------------|
 | `aiapp`           | AI应用：创建/查询/修改AI应用                                       | [aiapp.md](./references/products/aiapp.md)                     |
+| `agoal` | 目标管理:战略解码/经营合约/计分卡/用户目标/目标模板/周月报 | [agoal.md](./references/products/agoal.md) |
 | `aisearch`        | AI搜问（搜人首选）：按姓名/部门/职位/职责/上级/下级/手机号/工号维度找人，"谁负责 XX/XX 的负责人/某事项/某项目的人"统一走本产品 | [aisearch.md](./references/products/aisearch.md)               |
 | `aitable`         | AI表格：Base/数据表/字段/记录/视图/附件/图表/仪表盘/导入导出/模板搜索            | [aitable.md](./references/products/aitable.md)                 |
 | `attendance`      | 考勤：打卡结果/打卡流水/考勤组查询/考勤规则/汇总统计/假期类型/假期余额（P0 已落地，部分管理类命令仍属 P1） | [attendance.md](./references/products/attendance.md)           |
@@ -80,7 +81,7 @@ cli_version: ">=1.0.15"
 
 ## 危险操作确认
 
-以下操作为不可逆或高影响操作，执行前**必须先向用户展示操作摘要并获得明确同意**，同意后才加 `--yes` 执行。
+以下操作为不可逆或高影响操作，执行前**必须先向用户展示操作摘要并获得明确同意**，同意后才加 `--yes` 执行。确认方式：展示操作摘要（操作类型 + 目标对象 + 影响范围），用户明确同意后才加 `--yes` 执行。
 
 | 产品 | 命令 | 说明 |
 |------|------|------|
@@ -104,21 +105,13 @@ cli_version: ">=1.0.15"
 | `todo` | `task delete` | 删除待办 |
 | `minutes` | `replace-text` | 全文批量替换转写与摘要 |
 
-### 确认流程
-```
-Step 1 → 展示操作摘要（操作类型 + 目标对象 + 影响范围）
-Step 2 → 用户明确回复确认（如 "确认" / "好的"）
-Step 3 → 加 --yes 执行命令
-```
-
 ## 核心流程
-作为一个智能助手，你的首要任务是**理解用户的真实、完整的意图**，而不是简单地执行命令。在选择 `dws` 的产品命令前，必须严格遵循以下四步流程：
+在选择 `dws` 的产品命令前，遵循以下流程：
 
 0. **URL 预检**：输入含 `alidocs.dingtalk.com` URL 时，该域名下存在多种路径格式（`/i/nodes/...`、`/i/p/...`、`/spreadsheetv2/...`、`/document/edit|preview?dentryKey=...` 等），每种的处理流程不同。**必须先读取 [url-patterns.md](./references/url-patterns.md) 中的「alidocs URL 分流决策」**，按其中规则识别 URL 类型后再选择对应产品。含 `shanji.dingtalk.com` URL 时直接路由到 `minutes`。URL 已识别后直接进入对应产品流程，无需后续步骤。
-1. 意图分类：首先，判断用户指令的核心 动词/动作 属于哪一类。这比关注名词更重要。
-2. 歧义处理与信息追问：如果用户指令模糊或包含多个产品的关键字，严禁猜测。必须主动向用户追问以澄清意图。这是你作为智能助手而非命令执行器的核心价值。
-3. 精准产品映射：在完成前两步，意图已经清晰后，参考产品总览和意图判断决策树 来选择产品。
-4. 充分阅读产品参考文件，通过编写代码或直接调用指令实现用户意图。
+1. 意图分类：判断用户指令的核心动词/动作属于哪一类。
+2. 歧义追问：指令模糊或包含多个产品的关键字时，严禁猜测，主动向用户追问澄清意图。
+3. 选定产品：参考产品总览和意图判断决策树选定产品，充分阅读对应产品参考文件后执行。
 
 ## 命令发现（flag / 参数以 binary 为准）
 
@@ -140,7 +133,7 @@ dws schema "dev app create"
 - 构造 `--params` / `--json` 时不确定字段类型、必填、别名 → 先看 `dws <cmd> --help`，helper-only 命令再看 `dws schema`
 - 参考文档和 `--help` 冲突时 → **以 `--help` 为准**，文档视为过期
 
-`dws schema` 在静态端点模式下只保留 helper-only 子树；普通产品命令和 flag 不再通过远程 schema 动态发现。写/删操作须先向用户确认再加 `--yes`。
+`dws schema` 在静态端点模式下只保留 helper-only 子树；普通产品命令和 flag 不再通过远程 schema 动态发现。
 
 ## 错误处理
 1. 遇到错误，加 `--verbose` 重试一次
@@ -160,22 +153,7 @@ dws schema "dev app create"
 - [references/field-rules.md](./references/field-rules.md) — AI表格字段类型规则
 - [references/error-codes.md](./references/error-codes.md) — 错误码 + 调试流程
 - [references/recovery-guide.md](./references/recovery-guide.md) — recovery 闭环、`RECOVERY_EVENT_ID`、`execute/finalize` 规范
-- [scripts/](./scripts/) — 各产品批量/复合操作脚本（AI表格批量导入导出、AI应用创建轮询、日历、机器人消息、通讯录、考勤、日志、待办、文档创建并写入、钉盘目录树等）
-- [references/products/aitable/](./references/products/aitable/) — AI表格细分章节（单元格值/字段属性/公式/筛选排序/导入导出/仪表盘/记录增删改查/错误恢复/最佳实践）
-- [references/products/aitable-record-ops.md](./references/products/aitable-record-ops.md) — AI表格记录操作专项说明
+- [scripts/](./scripts/) — 各产品批量/复合操作脚本（AI表格批量导入导出、日历、机器人消息、通讯录、考勤、日志、待办、文档创建并写入、钉盘目录树等）
+- [references/best_practices/](./references/best_practices/) — 11 个编号场景 recipe(01 消息/02 任务/03 会议/04 文档/05 汇报/06 数据分析/07 听记/08 通讯录/09 邮件/10-11 听记发言人)+ [lite-recipes.md](./references/best_practices/lite-recipes.md) 速查;通用规范在 `_common/`
+- [references/products/aitable/](./references/products/aitable/) — AI表格细分章节(单元格值/字段/公式/筛选/导入导出/记录增删改查/错误恢复/最佳实践);记录操作另见 [aitable-record-ops.md](./references/products/aitable-record-ops.md)
 - [references/capability-limits.md](./references/capability-limits.md) — 已知能力限制（doc/aitable/chat/minutes，遇到时直接告知用户不支持）
-- [references/best_practices/](./references/best_practices/) — 全场景 recipe 行动指南（11 个编号场景 + lite 速查）
-  - [01-messaging.md](./references/best_practices/01-messaging.md) — 消息沟通
-  - [02-task.md](./references/best_practices/02-task.md) — 任务管理（todo）
-  - [03-meeting.md](./references/best_practices/03-meeting.md) — 会议日程（日历 + 会议室）
-  - [04-document.md](./references/best_practices/04-document.md) — 文档场景（write-doc / search-docs / migrate-doc / update-doc-section / doc-to-message / delete-old-doc / export-doc-as-docx / grant-doc-access / insert-image-to-doc / template-based-generation 等）
-  - [05-reporting.md](./references/best_practices/05-reporting.md) — 工作汇报（钉钉日志 / 文档周报选路）
-  - [06-data-analytics.md](./references/best_practices/06-data-analytics.md) — AI表格数据分析（read-aitable / generate-data-report / create-aitable-record / update-aitable-record / export-aitable-to-xlsx / primary-doc-from-record 等）
-  - [07-minutes.md](./references/best_practices/07-minutes.md) — 听记与会后
-  - [08-directory.md](./references/best_practices/08-directory.md) — 通讯录（组织架构）
-  - [09-mail.md](./references/best_practices/09-mail.md) — 邮件
-  - [10-minutes-speaker-match.md](./references/best_practices/10-minutes-speaker-match.md) — 听记发言人智能匹配
-  - [11-minutes-speaker-correct.md](./references/best_practices/11-minutes-speaker-correct.md) — 听记发言人识别与标注
-  - [lite-recipes.md](./references/best_practices/lite-recipes.md) — Lite Recipe 速查（核心流程判定为 lite 后直接执行）
-  - [_common/conventions.md](./references/best_practices/_common/conventions.md) — 批量查询、多源并行采集、字段术语等通用规范
-  - [_common/recipe-conventions.md](./references/best_practices/_common/recipe-conventions.md) — recipe 元规范

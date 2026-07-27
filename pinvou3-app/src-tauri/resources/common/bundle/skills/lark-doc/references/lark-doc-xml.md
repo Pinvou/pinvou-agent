@@ -45,7 +45,7 @@ p, h1-h9, ul, ol, li, table, thead, tbody, tr, th, td, blockquote, pre, code, hr
 文档中可嵌入外部资源块（属于容器标签的特殊形式），需要额外语法创建：
 
 - `<img>` — `<img href="https://..."/>` 上传网络图片
-- `<whiteboard>` — 简单图由 SubAgent 直接插入 `<whiteboard type="svg">完整自包含 SVG</whiteboard>`；复杂图使用 `<whiteboard type="blank"></whiteboard>` 先创建空白画板，再按 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md) 启动 SubAgent 调用 `lark-whiteboard` 写入；
+- `<whiteboard>` — 简单图由 SubAgent 直接插入 `<whiteboard type="svg">完整自包含 SVG</whiteboard>`；复杂图使用 `<whiteboard type="blank"></whiteboard>` 先创建空白画板，再按 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md) 启动 SubAgent 写入（lark-whiteboard skill 未随包收录，用 `lark-cli whiteboard +update` 或直接插入 SVG/Mermaid）；
 - `<sheet>` — `<sheet type="blank"></sheet>` 空白；`<sheet sheet-id="SID" token="TOKEN"></sheet>` 复制已有
 - `<task>` — `<task task-id="GUID"></task>`，必传 task-id（任务 guid）
 - `<chat_card>` — `<chat_card chat-id="CHAT_ID"></chat_card>`，必传 chat-id

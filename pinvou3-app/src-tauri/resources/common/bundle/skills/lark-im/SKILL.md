@@ -10,7 +10,7 @@ metadata:
 
 # im (v1)
 
-**CRITICAL — 开始前 MUST 先用 Read 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
+**CRITICAL — 开始前 MUST 先用 `read_file` 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
 
 ## Core Concepts
 
@@ -37,9 +37,7 @@ Chat (oc_xxx)
 
 ### Identity and Token Mapping
 
-- `--as user` means **user identity** and uses `user_access_token`. Calls run as the authorized end user, so permissions depend on both the app scopes and that user's own access to the target chat/message/resource.
-- `--as bot` means **bot identity** and uses `tenant_access_token`. Calls run as the app bot, so behavior depends on the bot's membership, app visibility, availability range, and bot-specific scopes.
-- If an IM API says it supports both `user` and `bot`, the token type changes who the operator is. The same API can succeed with one identity and fail with the other because owner/admin status, chat membership, tenant boundary, or app availability are checked against the current caller.
+身份规则见 lark-shared。IM 特有注意：同一 API 用 user/bot 可能一成一败（群成员关系、群主/管理员、租户边界都按当前调用者校验）。
 
 ### Sender Name Resolution with Bot Identity
 
@@ -55,11 +53,7 @@ The four message-pulling shortcuts (`+messages-mget`, `+chat-messages-list`, `+m
 
 ### Opt-in resource auto-download (`--download-resources`)
 
-`+chat-messages-list`, `+messages-mget`, and `+threads-messages-list` accept `--download-resources` (**off by default** — no `resources` block and no extra requests when omitted). When set, eligible message resources (image/file/audio/video/media + post-embedded; **stickers excluded**) are downloaded into `./lark-im-resources/` and each message gains a `resources` array of `{message_id, key, type, local_path, size_bytes}`. Downloads are deduped by `(message_id, file_key)`, run with bounded concurrency, and isolate single-resource failures (`error: true` + stderr warning). **Scope:** requires `im:message:readonly` (already declared by the listing commands — no extra scope); works under both user and bot identity. For one-off downloads use [`+messages-resources-download`](references/lark-im-messages-resources-download.md). Full contract: [`references/lark-im-message-enrichment.md`](references/lark-im-message-enrichment.md).
-
-### Card Messages (Interactive)
-
-Card messages (`interactive` type) are not yet supported for compact conversion in event subscriptions. The raw event data will be returned instead, with a hint printed to stderr.
+`+chat-messages-list`/`+messages-mget`/`+threads-messages-list` 支持 `--download-resources`（默认关）把图片/文件/音视频（不含 sticker）下载到 `./lark-im-resources/`；完整契约见 [message-enrichment](references/lark-im-message-enrichment.md)。一次性下载用 `+messages-resources-download`。
 
 ### Flag Types
 
@@ -189,43 +183,4 @@ lark-cli im <resource> <method> [flags] # 调用 API
   - `delete` — Delete a feed group. Identity: `user` only (`user_access_token`).[Must-read](references/lark-im-feed-groups.md)
   - `update` — Update a feed group. Identity: `user` only (`user_access_token`).[Must-read](references/lark-im-feed-groups.md)
 
-## 权限表
-
-| 方法 | 所需 scope |
-|------|-----------|
-| `chats.create` | `im:chat:create` |
-| `chats.get` | `im:chat:read` |
-| `chats.link` | `im:chat:read` |
-| `chats.update` | `im:chat:update` |
-| `chat.members.bots` | `im:chat.members:read` |
-| `chat.members.create` | `im:chat.members:write_only` |
-| `chat.members.delete` | `im:chat.members:write_only` |
-| `chat.members.get` | `im:chat.members:read` |
-| `chat.user_setting.batch_query` | `im:chat.user_setting:read` |
-| `chat.user_setting.batch_update` | `im:chat.user_setting:write` |
-| `chat.managers.add_managers` | `im:chat.managers:write_only` |
-| `chat.managers.delete_managers` | `im:chat.managers:write_only` |
-| `chat.moderation.get` | `im:chat.moderation:read` |
-| `chat.moderation.update` | `im:chat:moderation:write_only` |
-| `messages.delete` | `im:message:recall` |
-| `messages.forward` | `im:message` |
-| `messages.merge_forward` | `im:message` |
-| `messages.read_users` | `im:message:readonly` |
-| `messages.urgent_app` | `im:message.urgent` |
-| `messages.urgent_phone` | `im:message.urgent:phone` |
-| `messages.urgent_sms` | `im:message.urgent:sms` |
-| `reactions.batch_query` | `im:message.reactions:read` |
-| `reactions.create` | `im:message.reactions:write_only` |
-| `reactions.delete` | `im:message.reactions:write_only` |
-| `reactions.list` | `im:message.reactions:read` |
-| `threads.forward` | `im:message` |
-| `images.create` | `im:resource` |
-| `pins.create` | `im:message.pins:write_only` |
-| `pins.delete` | `im:message.pins:write_only` |
-| `pins.list` | `im:message.pins:read` |
-| `feed.groups.batch_add_item` | `im:feed_group_v1:write` |
-| `feed.groups.batch_query` | `im:feed_group_v1:read` |
-| `feed.groups.batch_remove_item` | `im:feed_group_v1:write` |
-| `feed.groups.create` | `im:feed_group_v1:write` |
-| `feed.groups.delete` | `im:feed_group_v1:write` |
-| `feed.groups.update` | `im:feed_group_v1:write` |
+- 各方法所需 scope 见 [lark-im-scopes.md](references/lark-im-scopes.md)；权限报错时优先按 lark-shared 读错误里的 permission_violations

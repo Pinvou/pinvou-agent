@@ -1,7 +1,7 @@
 ---
 name: lark-calendar
 version: 1.0.0
-description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书日历：管理日历日程和会议室。查看/搜索日程、创建/更新日程、管理参会人、查询忙闲和推荐时段、预定会议室。当用户需要查看日程安排、创建/修改会议、查询/预定会议室时使用。不负责：查询过去的视频会议记录（走 lark-vc）、待办任务（走 lark-task）。"
+description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书日历:管理日程和会议室。查看/搜索日程、创建/更新日程、管理参会人、查询忙闲和推荐时段、预定会议室。不负责:查询过去的视频会议记录(本环境无 lark-vc 能力,只能查到日程本身)、待办任务(走 lark-task)。"
 metadata:
   requires:
     bins: ["lark-cli"]
@@ -16,15 +16,7 @@ metadata:
 
 ## 身份
 
-日程操作默认使用 `--as user`（查看和管理当前用户的日程）。`--as bot` 只能访问 bot 自己的（空）日历，会拿到空结果——不要用 bot 身份查用户日程。
-
-```bash
-# BAD — bot 身份查用户日程，返回空列表
-lark-cli calendar +agenda --as bot
-
-# GOOD — user 身份查日程
-lark-cli calendar +agenda --as user
-```
+日程操作默认 `--as user`；`--as bot` 只能访问 bot 自己的（空）日历，查用户日程会拿到空结果（原理见 lark-shared）。
 
 ## Shortcuts
 
@@ -49,7 +41,7 @@ lark-cli calendar +agenda --as user
 
 ## 核心概念
 
-- **日程实例（Instance）**：重复性日程展开后的具体时间实例。操作重复日程的某次实例时，必须先定位该实例的 `event_id`，禁止使用原重复日程的 `event_id`。
+- **日程实例（Instance）**：重复性日程展开后的具体时间实例。
 - **全天日程（All-day Event）**：只按日期占用、没有具体起止时刻的日程，结束日期是包含在日程时间内的。
 - **时间块 vs 时间范围**：时间块是具体确定的连续时间段（如 `14:00~15:00`），时间范围是泛指（如"今天下午"）。`+room-find` 必须基于确定时间块，不能基于模糊范围。
 - **会议室（Room）**："room"不是"房间"，是"会议室"。会议室是日程的一种参与人（resource attendee），不能脱离日程单独预定。
@@ -62,7 +54,7 @@ lark-cli calendar +agenda --as user
 
 | 用户意图 | 路由到 |
 |----------|--------|
-| 查询过去的会议（"昨天的会议""上周的会"） | [`../lark-vc/SKILL.md`](../lark-vc/SKILL.md)（会议数据含即时会议，仅查日程会遗漏） |
+| 查询过去的会议（"昨天的会议""上周的会"） | 本 skill 只能查到日程本身；会议记录/纪要能力本环境未提供，如实告知用户 |
 | 查询日历/日程或未来时间的会议 | 本 skill |
 | 预约/改约日程、添加/移除参会人、添加/更换会议室、调整时间 | 先判断新建 vs 编辑，再进入 [schedule-meeting 工作流](references/lark-calendar-schedule-meeting.md) |
 
@@ -124,7 +116,7 @@ lark-cli calendar <resource> <method> [flags]
 
 ## 不在本 skill 范围
 
-- 查询过去的视频会议记录 → [lark-vc](../lark-vc/SKILL.md)
+- 查询过去的视频会议记录 → 本环境未提供该能力（无 lark-vc 技能），不要承诺可查
 - 待办任务管理 → [lark-task](../lark-task/SKILL.md)
 - 会议室物理设施管理 → 管理员后台
 

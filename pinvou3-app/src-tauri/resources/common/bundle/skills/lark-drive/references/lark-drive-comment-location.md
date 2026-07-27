@@ -175,7 +175,7 @@ lark-cli base +record-list --base-token '<base_token>' --table-id '<table_id>' -
 ### Whiteboard 内部评论
 
 - `parent_token` 对应文档 XML 中 `<whiteboard token="...">`；先用它匹配文档里的 whiteboard block。
-- 若要定位画板内部节点，切到 `lark-whiteboard` 读取 raw 节点结构：
+- 若要定位画板内部节点，用 whiteboard 命令读取 raw 节点结构（lark-whiteboard skill 未随包收录，直接按下面命令操作）：
 
 ```bash
 lark-cli whiteboard +query \

@@ -7,7 +7,7 @@
 | Skill             | 核心职责                                                      | 约束                              |
 |-------------------|-----------------------------------------------------------|---------------------------------|
 | `lark-doc`        | 识别画板机会、使用 Mermaid/SVG 创建图表、调度 SubAgent、插入简单 SVG 画板或复杂空白画板 | 主 Agent 不直接创作画板内容；              |
-| `lark-whiteboard` | 查询/导出已有画板；复杂图表生成（Mermaid/DSL/SVG 路由、场景选型、渲染验证）；写入已有/空白画板  | 仅特别复杂的图表或已有画板更新时由独立 SubAgent 读取 |
+| `lark-whiteboard`（**未随包收录**） | 查询/导出已有画板用 `lark-cli whiteboard +query`；复杂图表按本指南 Mermaid/SVG 路径由 SubAgent 直接插入；写入已有/空白画板用 `lark-cli whiteboard +update`（用法以 `--help` 为准） | 不读取该 skill 文件 |
 
 ## 画板适用规则
 
@@ -24,7 +24,7 @@
 | 文档中需要思维导图、时序图、类图、饼图、甘特图 | 步骤 2A:使用 mermaid 插入图表                                     |
 | 文档中需要插入其他图表/自定义图形       | 步骤 2B: 使用 SVG 插入图表                                        |
 | 已有画板需要更新内容              | 先 `docs +fetch --api-version v2` 获取 `board_token`，跳至步骤 3B |
-| 只查看 / 下载已有画板            | 切换至 `lark-whiteboard`，不走本流程                               |
+| 只查看 / 下载已有画板            | 用 `lark-cli whiteboard +query`（lark-whiteboard skill 未随包收录），不走本流程 |
 
 > [!IMPORTANT]
 > ⚠️ **分别对每个图表进行决策**
@@ -115,8 +115,7 @@ Sub Agent 需要携带以下的最小上下文，以及后续的 [SVG 设计 Wor
 ###### 3.插入后审查
 
 插入画板后，可以从返回值使用 lark-cli 指令，将画板内容导出为 png
-图片。若是对设计不满意，可以修改后，删除原来的画板再重新插入，或是调用 [
-`../../lark-whiteboard/SKILL.md`](../../lark-whiteboard/SKILL.md) 编辑。
+图片。若是对设计不满意，可以修改后，删除原来的画板再重新插入，或用 `lark-cli whiteboard +update` 编辑（lark-whiteboard skill 未随包收录，用法以 `lark-cli whiteboard +update --help` 为准）。
 
 ```bash
 lark-cli whiteboard +query \
@@ -125,16 +124,16 @@ lark-cli whiteboard +query \
   --output ./preview.png
 ```
 
-### 步骤 3B：编辑已有画板 — 启动 lark-whiteboard SubAgent
+### 步骤 3B：编辑已有画板 — 启动 SubAgent
 
-复杂图和已有画板更新必须启动 SubAgent。主 Agent 只传最小上下文，不直接执行 `lark-whiteboard` 的渲染和写入流程。
+复杂图和已有画板更新必须启动 SubAgent。主 Agent 只传最小上下文，不直接执行画板写入。lark-whiteboard skill 未随包收录，SubAgent 用 `lark-cli whiteboard +update`（用法以其 `--help` 为准）或直接插入 `<whiteboard type="svg">完整 SVG</whiteboard>` / `<whiteboard type="mermaid">...</whiteboard>` 完成写入。
 
 复杂图 SubAgent 的最小上下文：
 
 - board_token
 - 图表目标、推荐画板类型、受众
 - 与图表直接相关的源段落或数据
-- 要求读取 [`../../lark-whiteboard/SKILL.md`](../../lark-whiteboard/SKILL.md)，按其完整流程写入该 board_token
+- 写入方式：`lark-cli whiteboard +update` 或直接插入 SVG/Mermaid whiteboard 块
 
 多个画板互不依赖时，可并行启动多个 SubAgent；每个 SubAgent 只负责一个画板或一个 SVG 插入点，不要互相复用上下文。
 
@@ -151,4 +150,4 @@ lark-cli whiteboard +query \
 
 ## 关联参考
 
-- 画板查询/创作/修改/渲染写入：[`../../lark-whiteboard/SKILL.md`](../../lark-whiteboard/SKILL.md)
+- 画板查询/修改命令：`lark-cli whiteboard +query` / `+update`（lark-whiteboard skill 未随包收录，用法以 `--help` 为准）

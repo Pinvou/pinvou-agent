@@ -56,4 +56,4 @@ Mermaid 图由主 Agent 直接插入 `<whiteboard type="mermaid">...</whiteboard
 
 SVG SubAgent 必须收到：文档 token、插入位置（标题/block ID）、图表目标、源内容片段、`lark-doc-xml.md` 路径，以及[lark-doc-whiteboard.md](../lark-doc-whiteboard.md) 中的 "SVG 设计 Workflow" 指南。它只负责插入一个 `<whiteboard type="svg">...</whiteboard>`，不改其他正文，也不读取 `lark-whiteboard`。
 
-已有画板更新 SubAgent 必须收到：board_token、图表目标、推荐画板类型、源内容片段、[`../../../lark-whiteboard/SKILL.md`](../../../lark-whiteboard/SKILL.md) 路径。它只负责写入画板，不改文档正文。
+已有画板更新 SubAgent 必须收到：board_token、图表目标、推荐画板类型、源内容片段，以及 [`../lark-doc-whiteboard.md`](../lark-doc-whiteboard.md) 的步骤 3B 指南（lark-whiteboard skill 未随包收录）。它只负责写入画板，不改文档正文。
