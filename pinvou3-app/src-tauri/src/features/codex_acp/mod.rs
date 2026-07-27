@@ -1234,7 +1234,9 @@ impl AcpPool {
         if let Some(path) = self.bundled_node.as_ref().filter(|path| path.is_file()) {
             return Some(path.clone());
         }
-        if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
+        if crate::platform::capabilities::is_windows()
+            || adapter.extension().and_then(|value| value.to_str()) == Some("js")
+        {
             return find_in_path(if crate::platform::capabilities::is_windows() {
                 "node.exe"
             } else {
@@ -1452,15 +1454,17 @@ fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Command> {
         let mut command = Command::new(node);
         command.arg(adapter);
         Ok(command)
+    } else if is_windows_cmd(adapter) {
+        let mut command = Command::new("cmd");
+        command.args(["/D", "/S", "/C"]).arg(adapter);
+        Ok(command)
     } else {
         Ok(Command::new(adapter))
     }
 }
 
 fn codex_login_command(codex: &Path) -> Command {
-    if crate::platform::capabilities::is_windows()
-        && codex.extension().and_then(|value| value.to_str()) == Some("cmd")
-    {
+    if is_windows_cmd(codex) {
         let mut command = Command::new("cmd");
         command.args(["/D", "/S", "/C"]).arg(codex).arg("login");
         command
@@ -1469,6 +1473,11 @@ fn codex_login_command(codex: &Path) -> Command {
         command.arg("login");
         command
     }
+}
+
+fn is_windows_cmd(path: &Path) -> bool {
+    crate::platform::capabilities::is_windows()
+        && path.extension().and_then(|value| value.to_str()) == Some("cmd")
 }
 
 async fn capture_login_output<R>(reader: R, login_url: Arc<parking_lot::RwLock<Option<String>>>)

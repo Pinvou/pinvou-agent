@@ -17,7 +17,7 @@ pub(crate) const fn current() -> DesktopCapabilities {
         uses_bundled_dependency_installer: cfg!(target_os = "windows"),
         task_completion_notifications_default: !cfg!(target_os = "linux"),
         local_vllm_supported: cfg!(target_os = "linux"),
-        codex_acp_supported: cfg!(target_os = "linux"),
+        codex_acp_supported: cfg!(any(target_os = "linux", target_os = "windows")),
     }
 }
 
@@ -46,6 +46,10 @@ mod tests {
         assert_eq!(
             capabilities.task_completion_notifications_default,
             !is_linux()
+        );
+        assert_eq!(
+            capabilities.codex_acp_supported,
+            cfg!(any(target_os = "linux", target_os = "windows"))
         );
     }
 }
