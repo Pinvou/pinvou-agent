@@ -152,7 +152,6 @@ exec /usr/bin/pinvou3-tauri "$@"
   pinvou3-app/src-tauri/resources/common/web-template/node_modules/esbuild/bin/esbuild
   ```
 
-- `Cargo.toml` 声明最低 Rust 1.88，但 `notify-rust 4.18.0` 要求 Rust 1.89，需要统一版本口径。
 - 正式 DEB 应直接提供 `pinvou3` 命令。
 
 ### 完整适配验收

@@ -96,7 +96,7 @@ impl Embedder {
             return Ok(vec![]);
         }
         let docs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let mut m = self
+        let m = self
             .model
             .lock()
             .map_err(|_| "embed lock poisoned".to_string())?;
