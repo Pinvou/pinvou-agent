@@ -6,7 +6,14 @@
 
 [Website](https://pinvou.com/) · [CodeWhale engine](https://github.com/Pinvou/CodeWhale) · [Security](SECURITY.md) · [MIT License](LICENSE)
 
-![Pinvou Agent desktop workspace](docs/assets/screenshots/home.webp)
+<p align="center">
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
+    <img src="docs/assets/screenshots/home.webp" alt="Watch the 90-second Pinvou Agent feature demo">
+  </a>
+</p>
+<p align="center">
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ Watch the 90-second feature demo (Chinese)</strong></a>
+</p>
 
 Pinvou Agent brings models, tools, personal knowledge, specialist personas, and reusable workflows into one desktop workspace. It is designed for work that should end with a result—not just another chat response.
 
