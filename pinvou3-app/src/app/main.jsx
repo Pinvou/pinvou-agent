@@ -12,6 +12,7 @@ import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
+import { runSessionBatch, sessionRoute } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
@@ -1240,7 +1241,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleArchiveSession(id) {
-        const chat = sidebarTaskHistory.find(c => c.id === id);
+        const chat = allSidebarTasks.find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
       }
 
@@ -1249,14 +1250,21 @@ function workspaceDisplayName(path) {
         const isCodexSession = archiveConfirm && archiveConfirm.taskKind === 'codex';
         setArchiveConfirm(null);
         if (id && bridge.available) {
-          if (isCodexSession) {
-            await invokeTauri('set_session_archived', { id, archived: true });
-            if (activeCodexId === id) updateActiveCodexSession(null);
-            await refreshCodexSessions().catch(() => {});
-          } else {
-            await bridge.sessions.archiveSession(id);
+          try {
+            const archived = await bridge.sessions.archiveSession(id);
+            if (archived === false) {
+              setSettingsToast(t.sessionBatchFailed(1));
+              return;
+            }
+            if (isCodexSession) {
+              if (activeCodexId === id) updateActiveCodexSession(null);
+              await refreshCodexSessions().catch(() => {});
+            }
+            setArchiveToast(true);
+          } catch (error) {
+            console.warn('archive session failed', error);
+            setSettingsToast(t.sessionBatchFailed(1));
           }
-          setArchiveToast(true);
         }
       }
 
@@ -1265,21 +1273,52 @@ function workspaceDisplayName(path) {
         await refreshCodexSessions().catch(() => {});
       }
 
-      // 对话管理页批量操作:逐个调既有单条命令(失败由后端各自回报,不中途打断)
-      function handleBatchArchiveSessions(ids) {
-        if (!bridge.available || !ids || !ids.length) return;
-        ids.forEach(id => bridge.sessions.archiveSession(id));
-        setArchiveToast(true);
+      function sessionRowsForIds(ids) {
+        const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
+        return (ids || []).map(id => byId.get(id) || { id });
       }
 
-      function handleBatchDeleteSessions(ids) {
-        if (!bridge.available || !ids || !ids.length) return;
-        ids.forEach(id => bridge.sessions.deleteSession(id));
+      function reportBatchFailures(result) {
+        if (result.failed > 0) setSettingsToast(t.sessionBatchFailed(result.failed));
       }
 
-      function handleBatchRestoreArchived(ids) {
+      // 对话管理页批量操作:按会话类型分流并等待全部结果,避免未执行完成就误报成功。
+      async function handleBatchArchiveSessions(ids) {
         if (!bridge.available || !ids || !ids.length) return;
-        ids.forEach(id => bridge.sessions.restoreArchivedSession(id));
+        const result = await runSessionBatch(sessionRowsForIds(ids), 'archive', {
+          archive: id => bridge.sessions.archiveSession(id),
+          archiveCodex: id => bridge.sessions.archiveSession(id),
+        });
+        const nextCodexSessions = await refreshCodexSessions().catch(() => null);
+        if (activeCodexId && Array.isArray(nextCodexSessions) && !nextCodexSessions.some(session => session.id === activeCodexId)) {
+          updateActiveCodexSession(null);
+        }
+        if (result.succeeded > 0) setArchiveToast(true);
+        reportBatchFailures(result);
+        return result;
+      }
+
+      async function handleBatchDeleteSessions(ids) {
+        if (!bridge.available || !ids || !ids.length) return;
+        const result = await runSessionBatch(sessionRowsForIds(ids), 'delete', {
+          delete: id => bridge.sessions.deleteSession(id),
+        });
+        const nextCodexSessions = await refreshCodexSessions().catch(() => null);
+        if (activeCodexId && Array.isArray(nextCodexSessions) && !nextCodexSessions.some(session => session.id === activeCodexId)) {
+          updateActiveCodexSession(null);
+        }
+        reportBatchFailures(result);
+        return result;
+      }
+
+      async function handleBatchRestoreArchived(ids) {
+        if (!bridge.available || !ids || !ids.length) return;
+        const result = await runSessionBatch(ids.map(id => ({ id })), 'restore', {
+          restore: id => bridge.sessions.restoreArchivedSession(id),
+        });
+        await refreshCodexSessions().catch(() => {});
+        reportBatchFailures(result);
+        return result;
       }
 
       useEffect(() => {
@@ -2050,11 +2089,13 @@ function workspaceDisplayName(path) {
               <SearchView
                 theme={activeTheme} history={allSidebarTasks} t={t} language={language}
                 activeId={activeChat}
+                activeCodexId={activeCodexId}
                 activeScheduledId={(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId) || ''}
                 archived={(bs && bs.archivedSessions) || []}
                 showArchived={searchShowArchived}
                 onShowArchivedConsumed={() => setSearchShowArchived(false)}
                 onSelect={handleSwitchSession}
+                onOpenCodex={handleSwitchCodexSession}
                 onOpenScheduledRun={handleOpenScheduledRunShortcut}
                 onRename={handleRenameSession}
                 onDelete={handleDeleteSession}
@@ -2495,7 +2536,7 @@ function workspaceDisplayName(path) {
     // (在线:置顶/重命名/收纳/删除;已收纳:恢复/永久删除,按对话自身更新时间分组)。
     // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
     // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
-    const SearchView = ({ theme, history, t, language, activeId, activeScheduledId, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
+    const SearchView = ({ theme, history, t, language, activeId, activeCodexId, activeScheduledId, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
       const isDark = theme === 'dark';
       const [query, setQuery] = useState('');
       const [selectedDate, setSelectedDate] = useState(null);
@@ -2696,16 +2737,24 @@ function workspaceDisplayName(path) {
         }
         // 与左侧任务列表同款行项目:置顶/重命名/删除/收纳/打开文件夹/右键菜单;
         // 定时任务运行项点按进入运行会话(与侧栏一致)
-        const isScheduledRun = !!chat.scheduledRun;
+        const route = sessionRoute(chat);
         return (
           <RecentItem
             key={chat.id}
             chat={chat}
             theme={theme}
             t={t}
-            active={isScheduledRun ? (chat.id === activeScheduledId) : (chat.id === activeId)}
+            active={route === 'codex'
+              ? chat.id === activeCodexId
+              : route === 'scheduled'
+                ? chat.id === activeScheduledId
+                : chat.id === activeId}
             personaTarget={false}
-            onSelect={isScheduledRun ? () => onOpenScheduledRun && onOpenScheduledRun(chat.scheduledRun) : onSelect}
+            onSelect={route === 'codex'
+              ? () => onOpenCodex && onOpenCodex(chat.id)
+              : route === 'scheduled'
+                ? () => onOpenScheduledRun && onOpenScheduledRun(chat.scheduledRun)
+                : onSelect}
             onRename={onRename}
             onDelete={onDelete}
             onTogglePinned={onTogglePinned}
