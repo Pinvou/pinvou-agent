@@ -1,4 +1,5 @@
 pub mod assistant;
+pub(crate) mod codex_acp;
 pub(crate) mod connectors;
 pub(crate) mod dependencies;
 pub mod feedback;

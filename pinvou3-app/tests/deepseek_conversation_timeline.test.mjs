@@ -1,0 +1,259 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.join(here, '..');
+const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
+const conversationDir = path.join(temp, 'conversation');
+mkdirSync(conversationDir, { recursive: true });
+writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
+for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+  copyFileSync(
+    path.join(root, 'src', 'features', 'conversation', file),
+    path.join(conversationDir, file),
+  );
+}
+
+try {
+  const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
+    `${pathToFileURL(path.join(conversationDir, 'deepseek-conversation.js')).href}?t=${Date.now()}`
+  );
+  const {
+    externalMarkdownUrl,
+    fetchToolDetails,
+    isFetchTool,
+    isNearConversationBottom,
+    isSearchTool,
+    searchToolDetails,
+  } = await import(
+    `${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`
+  );
+  assert.equal(externalMarkdownUrl('http://localhost:8080/'), 'http://localhost:8080/');
+  assert.equal(externalMarkdownUrl('https://example.com/demo'), 'https://example.com/demo');
+  assert.equal(externalMarkdownUrl('javascript:alert(1)'), '');
+  assert.equal(externalMarkdownUrl('README.md'), '');
+  assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 820, clientHeight: 100 }), true);
+  assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 700, clientHeight: 100 }), false);
+  const chatItems = [
+    { id: 1, type: 'system', text: '会话已恢复' },
+    { id: 2, type: 'user', text: '检查仓库' },
+    { id: 3, type: 'assistant', html: '<p>先看状态。</p>', streaming: false },
+    {
+      id: 4,
+      type: 'tool',
+      toolId: 'shell-1',
+      name: 'exec_shell',
+      args: { command: 'git status', cwd: '/workspace/pinvou3' },
+      output: 'clean',
+      success: true,
+      state: 'done',
+    },
+    {
+      id: 5,
+      type: 'tool',
+      toolId: 'read-1',
+      name: 'read_file',
+      args: { path: 'README.md' },
+      output: '读取失败',
+      success: false,
+      state: 'failed',
+    },
+    { id: 6, type: 'artifact_card', path: '/tmp/report.md', title: '报告' },
+    { id: 7, type: 'user', text: '继续' },
+    { id: 8, type: 'assistant', html: '', streaming: true },
+    { id: 9, type: 'user_input', resolved: false, questions: [] },
+  ];
+  const before = structuredClone(chatItems);
+  const projected = projectDeepSeekConversation({
+    chatItems,
+    busy: true,
+    thinking: { active: true, phase: 'thinking', startedAt: 123456 },
+    tokens: { input: 320, max: 4096 },
+    sessionId: 'session-1',
+    timelineEvents: [
+      { turn_id: 'turn-old', event: 'user_start', timestamp: 1000, ts: '1970-01-01T00:00:01Z' },
+      {
+        turn_id: 'turn-old',
+        event: 'assistant_done',
+        timestamp: 4000,
+        ts: '1970-01-01T00:00:04Z',
+        status: 'Completed',
+        usage: { input_tokens: 120, output_tokens: 30 },
+      },
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+    ],
+  });
+
+  assert.deepEqual(chatItems, before, 'projection must never rewrite the DeepSeek chatItems fact source');
+  assert.equal(projected.thread.id, 'session-1');
+  assert.equal(projected.turns.length, 3, 'preamble and each user message must become stable turns');
+  assert.equal(projected.turns[1].userText, '检查仓库');
+  assert.deepEqual(
+    projected.turns[1].items.map(item => item.type),
+    ['agent_message', 'command_execution', 'tool', 'artifact'],
+  );
+  assert.deepEqual(
+    projected.turns[1].presentation.map(item => item.type),
+    ['agent_message', 'tool_group', 'artifact'],
+    'consecutive operations must only be grouped in the presentation projection',
+  );
+  assert.equal(projected.turns[1].presentation[1].items.length, 2);
+  assert.equal(projected.turns[1].operationCount, 2);
+  assert.equal(projected.turns[1].failedOperationCount, 1);
+  assert.equal(projected.turns[1].status, 'Completed');
+  assert.equal(projected.turns[1].completedAt, 4000);
+  assert.deepEqual(projected.turns[1].usage, {
+    inputTokens: 120,
+    outputTokens: 30,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+  });
+  assert.equal(projected.turns[1].items[1].legacyItem, chatItems[3], 'tool cards must retain the original item for provider rendering');
+  assert.equal(projected.turns[1].items[2].tool.name, 'read_file', 'shared presentation must retain the provider tool name');
+  assert.equal(projected.turns[2].status, 'running');
+  assert.equal(projected.turns[2].startedAt, 123456);
+  assert.equal(projected.turns[2].waitingPermission, false);
+  assert.equal(projected.turns[2].waitingInput, true);
+  assert.deepEqual(projected.turns[2].usage, { used: 320, size: 4096 });
+
+  const history = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      { turn_id: 'turn-live', event: 'assistant_done', timestamp: 125456, ts: '1970-01-01T00:02:05Z', status: 'Failed', error: '模型失败' },
+    ],
+  });
+  assert.equal(history.turns[2].status, 'Failed');
+  assert.equal(history.turns[2].startedAt, 123456);
+  assert.equal(history.turns[2].completedAt, 125456);
+  assert.equal(history.turns[2].error, '模型失败');
+  assert.equal(history.turns[2].lifecycleKnown, true);
+
+  const paired = pairDeepSeekTimeline([
+    { turn_id: 'not-admitted', event: 'user_start', timestamp: 1, ts: '1970-01-01T00:00:00Z' },
+    { turn_id: 'not-admitted', event: 'assistant_done', timestamp: 2, ts: '1970-01-01T00:00:00Z', status: 'send_error' },
+    { turn_id: 'interrupted', event: 'user_start', timestamp: 3, ts: '1970-01-01T00:00:00Z' },
+  ]);
+  assert.equal(paired.length, 1, 'send_error timing records must not shift visible user turns');
+  assert.equal(paired[0].status, 'incomplete');
+
+  const search = searchToolDetails({
+    name: 'web_search',
+    rawInput: { query: '2026 年 AI 新闻' },
+    rawOutput: '[web_search output compacted to protect context]\\n'
+      + 'Snippet: {"query":"2026 年 AI 新闻","source":"bing","count":10,"results":['
+      + '{"title":"第一条新闻","url":"https://example.com/one","snippet":"摘要"},'
+      + '\\n[... output truncated for context ...]\\n'
+      + '{"title":"第二条新闻","url":"https://example.org/two","snippet":"摘要"}]}',
+  });
+  assert.equal(isSearchTool({ name: 'web_search' }), true);
+  assert.equal(isSearchTool({ name: 'file_search' }), false, 'file search must keep its existing file-tool renderer');
+  assert.equal(search.query, '2026 年 AI 新闻');
+  assert.equal(search.source, 'Bing');
+  assert.equal(search.count, 10);
+  assert.equal(search.compacted, true);
+  assert.deepEqual(search.results, [
+    { title: '第一条新闻', url: 'https://example.com/one' },
+    { title: '第二条新闻', url: 'https://example.org/two' },
+  ]);
+
+  const iwencaiSearch = searchToolDetails({
+    name: 'mcp_iwencai_news_search',
+    rawInput: { query: 'AI 行业新闻' },
+    rawOutput: '[mcp_iwencai_news_search output compacted to protect context]\\n'
+      + 'Snippet: {"content":[{"type":"text","text":"{\\n'
+      + '  \\"data\\": [{\\"url\\": \\"https://news.example.com/a\\", '
+      + '\\"id\\": \\"1\\", \\"title\\": \\"行业新闻标题\\"}]\\n}"}]}',
+  });
+  assert.equal(iwencaiSearch.source, '同花顺新闻');
+  assert.deepEqual(iwencaiSearch.results, [
+    { title: '行业新闻标题', url: 'https://news.example.com/a' },
+  ]);
+
+  const fetched = fetchToolDetails({
+    name: 'fetch_url',
+    rawInput: { url: 'https://www.36kr.com/newsflashes', format: 'text' },
+    rawOutput: JSON.stringify({
+      url: 'https://www.36kr.com/newsflashes',
+      status: 200,
+      headers: { 'set-cookie': 'internal-cookie-must-not-be-primary-ui' },
+      content_type: 'text/html; charset=utf-8',
+      content: '快讯 融资 互联网 资本 科技 最新快讯',
+      truncated: true,
+    }),
+  });
+  assert.equal(isFetchTool({ name: 'fetch_url' }), true);
+  assert.equal(isFetchTool({ name: 'read_file' }), false);
+  assert.equal(fetched.target, '36kr.com/newsflashes');
+  assert.equal(fetched.status, 200);
+  assert.equal(fetched.contentTypeLabel, 'HTML');
+  assert.equal(fetched.preview, '快讯 融资 互联网 资本 科技 最新快讯');
+  assert.equal(fetched.truncated, true);
+
+  const chatView = readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
+  const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
+  const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
+  const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
+  assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('data-testid="chat-artifacts-entry"')
+    && chatView.includes('{activeSessionId && (')
+    && chatView.includes('const artifactsVisible = Boolean(activeSessionId && artifactsOpen)')
+    && chatView.includes('if (!activeSessionId) setArtifactsOpen(false)'),
+  'the empty Work home must hide and close the artifacts entry until a session exists');
+  assert.ok(chatView.includes('<ConversationActivityIndicator')
+    && chatView.includes('turn={activeConversationTurn}')
+    && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
+  'the composer activity timer must be shared and visible only while a turn is active');
+  assert.ok(chatView.includes('!isSearchTool(item.tool)') && chatView.includes('!isFetchTool(item.tool)'),
+    'web search and fetch tools must use shared structured renderers while other DeepSeek tools retain provider cards');
+  assert.ok(chatView.includes('variant="timeline"'),
+    'legacy DeepSeek tool details must use the shared timeline visual shell');
+  assert.ok(toolRenderers.includes('data-tool-card-variant="timeline"')
+    && toolRenderers.includes('const displayExpanded = hasLiveShellOutput || expanded')
+    && conversationView.includes('const expanded = running || open;'),
+  'timeline tool cards must stay compact except while a live shell operation needs visible output and controls');
+  assert.ok(toolRenderers.includes('<QuestionChoiceCard'),
+    'DeepSeek request_user_input must use the shared Codex-style choice card');
+  assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')
+    && toolRenderers.includes('!allowOther || !isFreeTextPlaceholderOption(option)'),
+  'free-text questions must not render duplicate Other placeholder choices');
+  assert.ok(toolRenderers.includes('otherPlaceholder="Other"'),
+    'DeepSeek and Codex question cards must use the same free-text placeholder');
+  assert.ok(questionChoiceCard.includes("type={question.multiSelect ? 'checkbox' : 'radio'}")
+    && questionChoiceCard.includes('onClick={submit}'),
+  'the shared card must expose explicit radio/checkbox choices and an explicit submit action');
+  assert.ok(conversationView.includes('查看原始数据'),
+    'model-facing compacted payloads must be secondary diagnostic details');
+  assert.ok(conversationView.includes("closest('a[href]')")
+    && conversationView.includes('event.preventDefault()')
+    && conversationView.includes('onOpenExternal(external)'),
+  'conversation markdown links must not navigate the application webview');
+  assert.ok(conversationView.includes("String(tool.name || '').trim() || 'web_search'")
+    && conversationView.includes("String(tool.name || '').trim() || 'fetch_url'")
+    && conversationView.includes('title={toolName}'),
+  'search and fetch cards must preserve their actual tool names instead of translated titles');
+  assert.ok(!conversationView.includes('`搜索“${query.length') && !conversationView.includes('`抓取 ${details.target}`'),
+    'search and fetch tool names must not be replaced by Chinese action phrases');
+  assert.ok(conversationView.includes('const [open, setOpen] = useState(false)')
+    && !conversationView.includes('setOpen(autoOpen)')
+    && !chatView.includes('shouldAutoOpenToolGroup='),
+  'tool groups must keep a user-owned expansion state instead of opening and closing with execution status');
+  assert.ok(chatView.includes('isNearConversationBottom(el)')
+    && chatView.includes('const movingUp = el.scrollTop < lastScrollTopRef.current - 1')
+    && chatView.includes('if (movingUp) autoScrollRef.current = false'),
+  'DeepSeek streaming must pause auto-follow while the user reads history');
+  assert.ok(chatView.includes('<ThinkingBubble'), 'the original rendering path must remain available as a fallback');
+  assert.ok(chatView.includes("pinvou_conversation_ui_v2"), 'the local rollback switch must be explicit');
+
+  console.log('deepseek_conversation_timeline: ok');
+} finally {
+  rmSync(temp, { recursive: true, force: true });
+}

@@ -1,0 +1,68 @@
+import React from 'react';
+
+export function AttachmentChips({
+  attachments = [],
+  onRemove,
+  dark = false,
+  parsingLabel = '解析中',
+  failedLabel = '失败',
+  formatError = () => '',
+  className = '',
+}) {
+  if (!attachments.length) return null;
+  return (
+    <div className={`flex flex-wrap gap-2 ${className}`}>
+      {attachments.map(attachment => {
+        const friendlyError = attachment.status === 'error'
+          ? formatError(attachment.error)
+          : '';
+        return (
+          <div
+            key={attachment.id}
+            className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] ${
+              dark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F] shadow-sm'
+            }`}
+          >
+            <span>📎</span>
+            <span className="max-w-[160px] truncate" title={attachment.basename}>
+              {attachment.basename}
+            </span>
+            <span className={
+              attachment.status === 'error'
+                ? 'text-[#F28B82]'
+                : attachment.status === 'parsing'
+                  ? 'opacity-60'
+                  : 'text-[#93D5A6]'
+            }>
+              {attachment.status === 'parsing'
+                ? parsingLabel
+                : attachment.status === 'error'
+                  ? failedLabel
+                  : '✓'}
+            </span>
+            {friendlyError && (
+              <span
+                title={friendlyError}
+                className="min-w-0 max-w-[min(520px,calc(100vw-240px))] truncate text-[#F28B82] opacity-90"
+              >
+                ：{friendlyError}
+              </span>
+            )}
+            {onRemove && (
+              <button
+                type="button"
+                onClick={() => onRemove(attachment.id)}
+                aria-label={`移除附件 ${attachment.basename}`}
+                className={`w-5 h-5 rounded-full flex items-center justify-center ${
+                  dark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'
+                }`}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

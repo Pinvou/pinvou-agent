@@ -7,12 +7,34 @@ import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import {
+  ConversationActivityIndicator,
+  ConversationTimeline,
+} from '../conversation/ConversationTimeline.jsx';
+import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
+import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import {
+  isFetchTool,
+  isNearConversationBottom,
+  isSearchTool,
+} from '../conversation/conversation-model.js';
+import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
+const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+
+function unifiedConversationUiEnabled() {
+  try {
+    return localStorage.getItem(UNIFIED_CONVERSATION_UI_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
 
 const openChatExternalUrl = (url) => {
   if (isWeb) {
@@ -224,7 +246,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun }) => {
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const [inputText, setInputTextState] = useState('');
@@ -301,6 +323,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       };
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const lastScrollTopRef = useRef(0);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
@@ -363,6 +386,31 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         : null;
       let lastUserId = null;
       for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
+      const useUnifiedConversationUi = unifiedConversationUiEnabled();
+      const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
+      const latestArtIdByPath = {};
+      chatItems.forEach((item) => {
+        if (item.type === 'artifact_card' && item.path) latestArtIdByPath[item.path] = item.id;
+      });
+      const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
+      const conversationProjection = projectDeepSeekConversation({
+        chatItems: visibleChatItems,
+        busy,
+        thinking: bs && bs.thinking,
+        tokens: ctxTokens,
+        sessionId: bs && bs.activeSessionId,
+        timelineEvents: bs && bs.turnTimeline,
+      });
+      const activeConversationTurn = [...conversationProjection.turns]
+        .reverse()
+        .find(turn => turn.status === 'running') || null;
+      const [conversationNow, setConversationNow] = useState(Date.now());
+      useEffect(() => {
+        if (!busy || !useUnifiedConversationUi) return undefined;
+        setConversationNow(Date.now());
+        const timer = window.setInterval(() => setConversationNow(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+      }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
       // 工作流启用时预填输入框
       useEffect(() => {
@@ -378,16 +426,17 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
         }
       }, [prefill]);
 
-      const isNearChatBottom = (el) => (el.scrollHeight - el.scrollTop - el.clientHeight) < 96;
-
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
         const onScroll = () => {
-          const near = isNearChatBottom(el);
-          const shouldShow = !near && el.scrollHeight > el.clientHeight + 4;
-          autoScrollRef.current = near;
+          const near = isNearConversationBottom(el);
+          const movingUp = el.scrollTop < lastScrollTopRef.current - 1;
+          lastScrollTopRef.current = el.scrollTop;
+          if (movingUp) autoScrollRef.current = false;
+          else if (near) autoScrollRef.current = true;
+          const shouldShow = !autoScrollRef.current && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         };
         onScroll();
@@ -414,7 +463,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           autoScrollRef.current = true;
           setShowScrollBottom(false);
         } else {
-          const shouldShow = !isNearChatBottom(el) && el.scrollHeight > el.clientHeight + 4;
+          const shouldShow = el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
       }, [
@@ -433,8 +482,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       useEffect(() => {
         const el = scrollRef.current;
         autoScrollRef.current = true;
+        lastScrollTopRef.current = 0;
         setShowScrollBottom(false);
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+          lastScrollTopRef.current = el.scrollTop;
+        }
       }, [bs && bs.activeSessionId]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
@@ -445,6 +498,10 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const welcomeSessionKeyRef = useRef(null);
       const activeSessionId = bs ? bs.activeSessionId : null;
+      const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
+      useEffect(() => {
+        if (!activeSessionId) setArtifactsOpen(false);
+      }, [activeSessionId]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
@@ -707,22 +764,26 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
             <div className="flex items-center gap-2">
               {/* 窄屏：只留图标+计数（避免被左侧返回按钮挤到换行），文字标签 ≥sm 才显示 */}
-              <button
-                onClick={() => setArtifactsOpen(true)}
-                className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
-                <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
-                {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
-              </button>
+              {activeSessionId && (
+                <button
+                  data-testid="chat-artifacts-entry"
+                  onClick={() => setArtifactsOpen(true)}
+                  className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                  <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
+                  {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
+                </button>
+              )}
             </div>
           </div>
 
 
           {/* Main Chat Area */}
-          {/* Web 有消息时底部留白由列表内的 spacer 承担(WebKit 不把尾部 padding 计入 scrollHeight);
-              空态不滚动无此问题,仍需 paddingBottom 让 justify-center 的欢迎语在悬浮输入框上方居中 */}
+          {/* 有消息时底部留白由列表内的实体 spacer 承担，避免 WebKitGTK/Safari
+              不把 overflow flex 容器的尾部 padding 完整计入 scrollHeight。
+              空态不滚动，仍需 paddingBottom 让欢迎语在悬浮输入框上方居中。 */}
           <div ref={scrollRef} data-testid="chat-scroll"
-            style={(isWeb && hasMessages) ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
-            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+            style={hasMessages ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -748,27 +809,70 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
             {hasMessages && (
               <div className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
-                {(() => {
-                  // 每个产物 path 只在它最新的那张卡上挂品悟入口:不同文件各自最新卡都给入口
-                  // (一轮多产物都能审);同文件的旧卡不挂,避免"点老卡却审到磁盘最新态"的错位
-                  // (后端 focus 按 path 定向、审 workspace 当前文件)。
-                  const latestArtIdByPath = {};
-                  chatItems.forEach((it) => { if (it.type === 'artifact_card' && it.path) latestArtIdByPath[it.path] = it.id; });
-                  const latestArtIds = new Set(Object.values(latestArtIdByPath));
-                  return chatItems
-                    .filter((item) => !(item.type === 'memory_candidate' && !item.resolved))
-                    .map((item) => (
-                    <ChatBubble key={item.id} item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={!busy && item.id === lastUserId} onOpenEditor={onOpenEditor} isLatestArtifact={latestArtIds.has(item.id)} allowScheduledTaskDraft={isScheduledTaskCreationChat} />
-                  ));
-                })()}
-                {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
-                {/* WebKit does not reliably include trailing padding on an overflow flex
-                    container in scrollHeight. Use a real, non-shrinking flex item so the
-                    final message can always scroll fully above the floating composer. */}
-                {isWeb && (
-                  <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
-                    style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
+                {useUnifiedConversationUi ? (
+                  <ConversationTimeline
+                    turns={conversationProjection.turns}
+                    now={conversationNow}
+                    agentLabel="品悟"
+                    assistantAvatar={(
+                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
+                        <PinvouLogo className="h-5 w-5" title="品悟" />
+                      </div>
+                    )}
+                    renderUser={(item) => (
+                      <ChatBubble
+                        item={item}
+                        theme={theme}
+                        t={t}
+                        editable={!busy && item.id === lastUserId}
+                        conversationVariant="unified"
+                      />
+                    )}
+                    renderItem={(item) => {
+                      if (!item.legacyItem) return undefined;
+                      return (
+                        <ChatBubble
+                          item={item.legacyItem}
+                          theme={theme}
+                          t={t}
+                          onPrefill={(text) => setInputText(text)}
+                          onSend={(text) => { if (bridge.available) bridge.chat.sendMessage(text); }}
+                          onOpenEditor={onOpenEditor}
+                          isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
+                          allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                        />
+                      );
+                    }}
+                    renderToolItem={(item) => item.legacyItem
+                      && !isSearchTool(item.tool)
+                      && !isFetchTool(item.tool)
+                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
+                      : undefined}
+                    onOpenExternal={openChatExternalUrl}
+                  />
+                ) : (
+                  <>
+                    {visibleChatItems.map((item) => (
+                      <ChatBubble
+                        key={item.id}
+                        item={item}
+                        theme={theme}
+                        t={t}
+                        onPrefill={(text) => setInputText(text)}
+                        onSend={(text) => { if (bridge.available) bridge.chat.sendMessage(text); }}
+                        editable={!busy && item.id === lastUserId}
+                        onOpenEditor={onOpenEditor}
+                        isLatestArtifact={latestArtifactIds.has(item.id)}
+                        allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                      />
+                    ))}
+                    {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
+                  </>
                 )}
+                {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
+                    完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
+                <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
+                  style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
               </div>
             )}
 
@@ -776,7 +880,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
 
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
           <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
-            style={{ height: (composerH ? composerH + 96 : 220) + 'px' }} />
+            style={{ height: (composerH ? composerH + 48 : 172) + 'px' }} />
           {hasMessages && showScrollBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
               style={{ bottom: (composerH ? composerH + 54 : 172) + 'px' }}>
@@ -793,7 +897,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
           )}
           {hasMessages && chatItems.some((item) => item.type === 'memory_candidate' && !item.resolved) && (
-            <div className={`pointer-events-none absolute inset-x-0 z-[24] ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}
+            <div className={`pointer-events-none absolute inset-x-0 z-[24] ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}
               style={{ bottom: (composerH ? composerH + 28 : 148) + 'px' }}>
               <div className="max-w-[800px] w-full mx-auto flex flex-col items-end gap-3">
                 {chatItems
@@ -852,8 +956,16 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             </div>
           )}
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsOpen && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
+          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
+            {!activeSessionId && !scheduledRunContext && (
+              <HomeModeSwitcher
+                mode="work"
+                codeSupported={codeModeAvailable}
+                isDark={isDark}
+                onChange={onSwitchHomeMode}
+              />
+            )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -868,25 +980,15 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
             )}
             {/* 模型选择器/知识库挂载已挪进下方底栏(ComposerModelSelector/ComposerKbSelector) */}
             {/* 附件 chips */}
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2 px-2">
-                {attachments.map((a) => (
-                  <div key={a.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F] shadow-sm'}`}>
-                    <span>📎</span>
-                    <span className="max-w-[160px] truncate">{a.basename}</span>
-                    <span className={a.status === 'error' ? 'text-[#F28B82]' : a.status === 'parsing' ? 'opacity-60' : 'text-[#93D5A6]'}>
-                      {a.status === 'parsing' ? t.attachParsing : a.status === 'error' ? t.attachFailed : '✓'}
-                    </span>
-                    {a.status === 'error' && formatAttachmentError(a.error) && (
-                      <span title={formatAttachmentError(a.error)} className="min-w-0 max-w-[min(520px,calc(100vw-240px))] truncate text-[#F28B82] opacity-90">
-                        ：{formatAttachmentError(a.error)}
-                      </span>
-                    )}
-                    <button onClick={() => bridge.attachments.removeAttachment(a.id)} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <AttachmentChips
+              attachments={attachments}
+              onRemove={id => bridge.attachments.removeAttachment(id)}
+              dark={isDark}
+              parsingLabel={t.attachParsing}
+              failedLabel={t.attachFailed}
+              formatError={formatAttachmentError}
+              className="mb-2 px-2"
+            />
             {voiceNotice && (
               <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
                 voiceInput.status === 'failed'
@@ -979,6 +1081,12 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               );
             })()}
             <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              <ConversationActivityIndicator
+                turn={activeConversationTurn}
+                now={conversationNow}
+                onRequestAttention={scrollChatToBottom}
+                className="mb-0.5"
+              />
               <textarea
                 ref={composerRef}
                 value={inputText}
@@ -1059,7 +1167,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
           </div>
           </div>{/* /对话列 */}
 
-          {artifactsOpen && isWide && (
+          {artifactsVisible && isWide && (
             <>
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
@@ -1068,7 +1176,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               </div>
             </>
           )}
-          {artifactsOpen && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
+          {artifactsVisible && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
         </div>
       );
     };
@@ -1348,8 +1456,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       ), document.body);
     };
 
-    const UserBubble = ({ item, theme, editable, t }) => {
+    const UserBubble = ({ item, theme, editable, t, conversationVariant }) => {
       const isDark = theme === 'dark';
+      const unified = conversationVariant === 'unified';
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
@@ -1369,7 +1478,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
-                className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`} />
+                className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
+                  unified
+                    ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
+                    : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
+                }`} />
               <div className="flex gap-2 justify-end mt-1">
                 <button className={cardBtnCls(isDark)} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
                 <button className={cardBtnCls(isDark, 'primary')} onClick={commit}>{t.resend}</button>
@@ -1399,7 +1512,11 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
-            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]'}`}>{item.text}</div>
+            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
+              unified
+                ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
+                : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
+            }`}>{item.text}</div>
             {/* iOS 风操作条：hover 气泡时下方浮现；窄屏无 hover，常显保证触屏可达。复制=所有 query；编辑重发=仅最新(editable)。 */}
             <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity duration-150">
               <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
@@ -1578,7 +1695,7 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '🃏 正在设计卡牌…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft }) => {
+    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
       const isDark = theme === 'dark';
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
@@ -1588,7 +1705,9 @@ const ToolWelcomeCard = ({ toolId, theme, onSend }) => {
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
-      if (item.type === 'user') return <UserBubble item={item} theme={theme} editable={editable} t={t} />;
+      if (item.type === 'user') {
+        return <UserBubble item={item} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+      }
 
       if (item.type === 'card_creator_intro') {
         return (

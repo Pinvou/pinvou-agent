@@ -42,7 +42,66 @@ function IosSearchField({
   );
 }
 
-function IosSegmentedControl({ value, onChange, segments, isDark, className = '', compact = false }) {
+function IosSegmentedControl({
+  value,
+  onChange,
+  segments,
+  isDark,
+  className = '',
+  compact = false,
+  prominent = false,
+}) {
+  const activeIndex = Math.max(0, segments.findIndex(segment => segment.key === value));
+
+  if (compact && prominent) {
+    return (
+      <div
+        className={`relative inline-grid h-10 shrink-0 items-center rounded-[16px] p-1 ${className}`}
+        style={{
+          gridTemplateColumns: `repeat(${segments.length}, minmax(82px, 1fr))`,
+          background: controlFill(isDark),
+          boxShadow: isDark
+            ? 'inset 0 0 0 1px rgba(255,255,255,.06)'
+            : 'inset 0 0 0 1px rgba(0,0,0,.06)',
+        }}
+      >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-1 top-1 rounded-[12px] transition-transform duration-200 ease-out"
+          style={{
+            left: 4,
+            width: `calc((100% - 8px) / ${segments.length})`,
+            transform: `translateX(${activeIndex * 100}%)`,
+            background: isDark ? '#3A3A3C' : '#fff',
+            boxShadow: isDark ? 'none' : '0 1px 3px rgba(0,0,0,.12)',
+          }}
+        />
+        {segments.map(({ key, label, Icon, title, testId }) => {
+          const selected = value === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              title={title || label}
+              data-testid={testId}
+              aria-pressed={selected}
+              onClick={() => onChange && onChange(key)}
+              className="relative z-10 inline-flex h-8 min-w-[82px] items-center justify-center gap-2 rounded-[12px] px-3.5 text-[14px] font-semibold transition-colors"
+              style={{
+                color: selected
+                  ? (isDark ? '#fff' : '#1D1D1F')
+                  : (isDark ? 'rgba(235,235,245,.60)' : 'rgba(60,60,67,.60)'),
+              }}
+            >
+              {Icon ? <Icon size={15} /> : null}
+              {label ? <span>{label}</span> : null}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`inline-flex shrink-0 items-center ${compact ? 'h-9 gap-1 rounded-[14px] p-1' : 'gap-3'} ${className}`}
@@ -51,13 +110,15 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
         boxShadow: compact ? (isDark ? 'inset 0 0 0 1px rgba(255,255,255,.06)' : 'inset 0 0 0 1px rgba(0,0,0,.06)') : 'none',
       }}
     >
-      {segments.map(({ key, label, Icon, title, count }) => {
+      {segments.map(({ key, label, Icon, title, count, testId }) => {
         const selected = value === key;
         return (
           <button
             key={key}
             type="button"
             title={title || label}
+            data-testid={testId}
+            aria-pressed={selected}
             onClick={() => onChange && onChange(key)}
             className={`inline-flex items-center justify-center transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold' : 'h-9 gap-2 px-3 text-[24px] font-normal tracking-tight'}`}
             style={compact

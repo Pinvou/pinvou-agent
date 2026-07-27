@@ -162,12 +162,14 @@ pub fn run() {
     crate::platform::ui_cache::migrate_before_webview();
     let initial_navigation_reported =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let main_navigation_origin = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let builder = tauri::Builder::default()
         // These no-op probe plugins bracket Tauri's own plugin initialization.
         // The main window is created by Tauri before the application setup hook,
         // so their lifecycle hooks expose time that was previously one opaque gap.
         .plugin({
             let initial_navigation_reported = initial_navigation_reported.clone();
+            let main_navigation_origin = main_navigation_origin.clone();
             tauri::plugin::Builder::<_, ()>::new("startup-probe-runtime")
                 .setup(|_app, _api| {
                     startup::mark("tauri:runtime_created");
@@ -186,16 +188,47 @@ pub fn run() {
                 .on_navigation(move |webview, url| {
                     use std::sync::atomic::Ordering;
 
-                    if webview.label() == "main"
-                        && !initial_navigation_reported.swap(true, Ordering::Relaxed)
-                    {
+                    if webview.label() != "main" {
+                        return true;
+                    }
+                    let origin = format!(
+                        "{}://{}:{}",
+                        url.scheme(),
+                        url.host_str().unwrap_or_default(),
+                        url.port_or_known_default()
+                            .map_or_else(|| "-".to_string(), |port| port.to_string())
+                    );
+                    if !initial_navigation_reported.swap(true, Ordering::Relaxed) {
                         startup::mark_with_detail(
                             "rust",
                             "tauri:main_navigation",
                             &format!("scheme={}", url.scheme()),
                         );
                     }
-                    true
+                    let mut initial_origin = main_navigation_origin
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    match initial_origin.as_ref() {
+                        None => {
+                            *initial_origin = Some(origin);
+                            true
+                        }
+                        Some(allowed) if allowed == &origin => true,
+                        Some(_) => {
+                            startup::mark_with_detail(
+                                "rust",
+                                "tauri:main_navigation_blocked",
+                                &format!(
+                                    "scheme={} host={} port={}",
+                                    url.scheme(),
+                                    url.host_str().unwrap_or_default(),
+                                    url.port_or_known_default()
+                                        .map_or_else(|| "-".to_string(), |port| port.to_string())
+                                ),
+                            );
+                            false
+                        }
+                    }
                 })
                 .build()
         })
@@ -322,6 +355,16 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
+            match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
+            {
+                Ok(pool) => {
+                    handle.manage(pool);
+                    eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
+                }
+                Err(error) => {
+                    panic!("failed to init Codex ACP pool: {error:#}");
+                }
+            }
             startup::mark("engine_pool:start");
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
                 std::sync::Arc::new(|app, session_id| {
@@ -546,6 +589,30 @@ pub fn run() {
             commands::settings::set_active_model,
             commands::settings::set_session_model,
             commands::settings::get_session_model_id,
+            commands::codex::get_codex_acp_status,
+            commands::codex::prepare_codex_acp,
+            commands::codex::login_codex_acp,
+            commands::codex::open_codex_login_url,
+            commands::codex::get_codex_acp_session_info,
+            commands::codex::set_codex_acp_model,
+            commands::codex::set_codex_acp_mode,
+            commands::codex::set_codex_acp_config_option,
+            commands::codex::codex_acp_prompt,
+            commands::codex::cancel_codex_acp,
+            commands::codex::get_codex_acp_timeline,
+            commands::codex::get_codex_acp_pending_permissions,
+            commands::codex::respond_codex_acp_permission,
+            commands::codex::get_codex_acp_pending_elicitations,
+            commands::codex::respond_codex_acp_elicitation,
+            commands::codex::list_codex_acp_sessions,
+            commands::codex::create_codex_acp_session,
+            commands::codex::list_codex_workspace,
+            commands::codex::search_codex_workspace,
+            commands::codex::preview_codex_workspace_file,
+            commands::codex::get_codex_workspace_changes,
+            commands::codex::get_codex_workspace_diff,
+            commands::codex::open_codex_workspace_file,
+            commands::codex::reveal_codex_workspace_file,
             commands::settings::test_model_connection,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,

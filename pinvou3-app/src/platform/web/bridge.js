@@ -92,6 +92,10 @@
     composerPrefill: { id: 0, text: "" },
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
+    // DeepSeek Turn 生命周期(user_start / assistant_done)，来自 timing_events.jsonl；
+    // 纯展示诊断数据，不进入 messages 或 LLM 上下文。
+    turnTimeline: [],
+    activeTurnTimelineId: null,
     // 卡牌加持/卸下事件时间线(sidecar, 不进 messages/LLM)。每项 {kind,pos,...}。
     // pos = 事件发生时的 messages 数, rerender 时按 pos 插回原位, 让重载历史不割裂。
     personaEvents: [],
@@ -304,6 +308,7 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
@@ -323,6 +328,7 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -342,6 +348,7 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
@@ -383,7 +390,7 @@
   var personaPlaceholderTitles = {};
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -599,6 +606,8 @@
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
+    buf.turnTimeline = state.turnTimeline;
+    buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
@@ -616,6 +625,8 @@
   function loadWorkingSetFrom(buf) {
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
+    state.turnTimeline = buf.turnTimeline || [];
+    state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
@@ -638,6 +649,8 @@
     buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
     buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
     buf.chatItems = [];
+    buf.turnTimeline = [];
+    buf.activeTurnTimelineId = null;
     buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
       var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
       return { path: p, basename: basename(p) };
@@ -732,6 +745,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
@@ -2180,15 +2194,18 @@
     var saved;
     var personaEvents;
     var pinvouReviews;
+    var turnTimeline;
     try {
       var primary = await Promise.all([
         loadSessionForClient(id, !IS_WEB),
         invoke("get_session_persona_events", { sessionId: id }).catch(function () { return []; }),
         invoke("get_session_pinvou_reviews", { sessionId: id }).catch(function () { return []; }),
+        invoke("get_session_timeline", { sessionId: id }).catch(function () { return []; }),
       ]);
       saved = primary[0];
       personaEvents = primary[1] || [];
       pinvouReviews = primary[2] || [];
+      turnTimeline = primary[3] || [];
     } catch (e) {
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
@@ -2220,6 +2237,7 @@
       );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
@@ -2240,6 +2258,7 @@
       sessionStates[id].sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
+      state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];
       state.artifacts = mergeHydratedArtifacts(saved.artifacts, []);
@@ -2595,12 +2614,27 @@
     };
   }
 
-  // 定时会话由 Engine 持久化原始送模消息；展示时只投影真实任务正文。
-  // 原始 blocks 保持不变，供模型续聊；普通会话也不受内部标签过滤影响。
+  function userMessageInputProvenance(blocks) {
+    var textBlocks = Array.isArray(blocks) ? blocks : [];
+    for (var i = 0; i < textBlocks.length; i++) {
+      var block = textBlocks[i];
+      if (!block || block.type !== "text") continue;
+      var text = String(block.text || "").trim();
+      if (text.indexOf("<turn_meta>") !== 0) continue;
+      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
+      if (match && match[1]) return match[1].trim();
+    }
+    return "";
+  }
+
+  // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
+  // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
+  // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (userMessageInputProvenance(blocks) === "runtime") return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {
@@ -3267,7 +3301,9 @@
         var deferredApplied = applyDeferredRemoteUserMessage(sid, turnOwnerBuffer);
         if (concurrentTurn && turnOwnerBuffer && !deferredApplied) markRemoteTurn(sid, turnOwnerBuffer);
         runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ " + (err && err.toString ? err.toString() : err));
+          addSystemItem(concurrentTurn
+            ? bt("turnAlreadyInProgress")
+            : "⚠️ " + (err && err.toString ? err.toString() : err));
         });
         notify();
         if (surfaceFailure) throw err;
@@ -3716,9 +3752,69 @@
     }
   });
 
+  function visibleUserTurnIndex() {
+    var count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
+    return Math.max(0, count - 1);
+  }
+
+  function latestOpenTimelineStart() {
+    var events = state.turnTimeline || [];
+    var completed = Object.create(null);
+    events.forEach(function (event) {
+      if (event && event.event === "assistant_done") completed[event.turn_id] = true;
+    });
+    for (var index = events.length - 1; index >= 0; index--) {
+      var event = events[index];
+      if (event && event.event === "user_start" && !completed[event.turn_id]) return event;
+    }
+    return null;
+  }
+
+  function recordTurnStarted() {
+    if (state.activeTurnTimelineId) return;
+    var timestamp = Date.now();
+    var turnIndex = visibleUserTurnIndex();
+    var existing = latestOpenTimelineStart();
+    if (existing && Math.abs(timestamp - Number(existing.timestamp || 0)) < 60000) {
+      existing.ui_turn_index = turnIndex;
+      state.activeTurnTimelineId = existing.turn_id;
+      return;
+    }
+    var turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
+    state.activeTurnTimelineId = turnId;
+    state.turnTimeline = (state.turnTimeline || []).concat([{
+      turn_id: turnId,
+      event: "user_start",
+      timestamp: timestamp,
+      ts: new Date(timestamp).toISOString(),
+      ui_turn_index: turnIndex,
+    }]);
+  }
+
+  function recordTurnCompleted(payload) {
+    var openStart = latestOpenTimelineStart();
+    var turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
+    if (!turnId) return;
+    var timestamp = Date.now();
+    var start = openStart || (state.turnTimeline || []).find(function (event) {
+      return event && event.turn_id === turnId && event.event === "user_start";
+    });
+    state.turnTimeline = (state.turnTimeline || []).concat([{
+      turn_id: turnId,
+      event: "assistant_done",
+      timestamp: timestamp,
+      ts: new Date(timestamp).toISOString(),
+      status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
+      error: payload && payload.error || null,
+      ui_turn_index: start && start.ui_turn_index,
+    }]);
+    state.activeTurnTimelineId = null;
+  }
+
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
     state.busy = true;
     if (!state.thinking.active) startThinking();
+    recordTurnStarted();
     notify();
   }); });
 
@@ -4012,6 +4108,7 @@
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
+      recordTurnCompleted(e.payload || {});
       if (error) addSystemItem("⚠️ " + error);
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
@@ -7271,7 +7368,7 @@
   var fields = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],

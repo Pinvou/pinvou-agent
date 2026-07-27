@@ -53,10 +53,14 @@ pub async fn clear_session() -> Result<(), String> {
 /// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
 /// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
 #[tauri::command]
-pub async fn list_sessions(store: State<'_, SessionStore>) -> Result<Vec<SessionListItem>, String> {
+pub async fn list_sessions(
+    store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
+) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     metas.retain(|m| {
         matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
+            && !acp_pool.is_codex(&m.id)
             && !store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
@@ -154,12 +158,14 @@ pub async fn delete_session(
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<(), String> {
     let result = match store
         .session_kind(&id)
         .map_err(|e| format!("delete_session({id}): {e:?}"))?
     {
         SessionKind::Chat => {
+            acp_pool.evict(&id).await;
             // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
             // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
             pool.evict(&id).await;
@@ -168,6 +174,10 @@ pub async fn delete_session(
                 .map_err(|e| format!("delete_session({id}): {e:?}"));
             if result.is_ok() {
                 pool.forget_session(&id);
+                acp_pool
+                    .agents()
+                    .remove(&id)
+                    .map_err(|error| format!("清理 Agent 会话映射失败: {error:#}"))?;
             }
             result
         }

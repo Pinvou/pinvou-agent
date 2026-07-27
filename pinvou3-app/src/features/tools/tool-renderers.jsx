@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, QUIET_TOOLS, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
 const isShellExecutionTool = name => [
@@ -76,8 +77,9 @@ const ToolOutput = ({ item, isDark, t }) => {
       return <OutputPre text={out} isDark={isDark} />;
     };
 
-    const ToolCard = ({ item, theme, t }) => {
+    const ToolCard = ({ item, theme, t, variant = 'legacy' }) => {
       const isDark = theme === 'dark';
+      const isTimeline = variant === 'timeline';
       const isRunning = item.state === 'running';
       const [cancelling, setCancelling] = useState(false);
       const [shellCancelError, setShellCancelError] = useState('');
@@ -86,10 +88,13 @@ const ToolOutput = ({ item, isDark, t }) => {
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);
-      const [expanded, setExpanded] = useState(hasCard || hasLiveShellOutput);
+      const [expanded, setExpanded] = useState(!isTimeline && hasCard);
       useEffect(() => {
-        if (hasCard || hasLiveShellOutput) setExpanded(true);
-      }, [hasCard, hasLiveShellOutput]);
+        if (!isTimeline && hasCard) {
+          setExpanded(true);
+        }
+      }, [hasCard, isTimeline]);
+      const displayExpanded = hasLiveShellOutput || expanded;
       const isDone = item.state === 'done';
       const isFailed = item.state === 'failed';
       const quiet = QUIET_TOOLS.has(item.name);
@@ -103,6 +108,13 @@ const ToolOutput = ({ item, isDark, t }) => {
 
       const statusText = isRunning ? t.toolRunning
         : (item.exitCode != null ? `${isDone ? t.toolDone : t.toolFailed} · exit ${item.exitCode}` : (isDone ? t.toolDone : t.toolFailed));
+      const timelineStatusText = isRunning
+        ? '进行中'
+        : item.exitCode != null
+          ? `${isDone ? '完成' : '失败'} · exit ${item.exitCode}`
+          : isDone
+            ? '完成'
+            : '失败';
       const mutedColor = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const cancelBackground = async (event) => {
         event.stopPropagation();
@@ -131,13 +143,60 @@ const ToolOutput = ({ item, isDark, t }) => {
         </button>
       ) : null;
 
-      const detail = expanded ? (
-        <div className={`px-4 pb-3 border-t ${isDark ? 'border-white/5' : 'border-black/5'}`}>
+      const detail = displayExpanded ? (
+        <div className={`${isTimeline ? 'px-3 pb-3' : 'px-4 pb-3'} border-t ${isDark ? 'border-white/5' : 'border-black/5'}`}>
           {item.output != null
             ? <div className="mt-2"><ToolOutput item={item} isDark={isDark} t={t} /></div>
             : null}
         </div>
       ) : null;
+
+      if (isTimeline) {
+        const tone = isFailed
+          ? 'text-red-500 bg-red-500/10'
+          : isRunning
+            ? 'text-blue-500 bg-blue-500/10'
+            : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
+        const meta = `${summary ? `${summary} · ` : ''}${timelineStatusText}`;
+        const toggleExpanded = () => setExpanded(value => !value);
+        return (
+          <div
+            data-tool-card-variant="timeline"
+            data-tool-name={item.name}
+            className={`rounded-xl border ${
+              isFailed ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'
+            } bg-white/45 dark:bg-white/[0.015]`}
+          >
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={toggleExpanded}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  toggleExpanded();
+                }
+              }}
+              className="w-full min-h-10 px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl cursor-pointer hover:bg-black/[0.025] dark:hover:bg-white/[0.035]"
+            >
+              <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>
+                <Wrench size={13} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium">{item.name}</span>
+                <span className="block mt-0.5 truncate text-[10px] text-gray-400">{meta}</span>
+              </span>
+              {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
+              {cancelButton}
+              <ChevronDown size={13} className={`shrink-0 text-gray-400 transition-transform ${displayExpanded ? 'rotate-180' : ''}`} />
+            </div>
+            {shellCancelError && (
+              <div className="px-3 pb-2 text-[11px] text-red-500">{shellCancelError}</div>
+            )}
+            {detail}
+          </div>
+        );
+      }
 
       // 弱化类：单行灰条。完成态低调（图标灰），运行/失败态保留状态色以便察觉。
       if (quiet) {
@@ -532,39 +591,39 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     // UserInputCard — 🤔 AI 想问你几个问题
     // ==========================================
-    const UserInputCard = ({ item, theme, t }) => {
-      const isDark = theme === 'dark';
-      const questions = item.questions || [];
-      const [answers, setAnswers] = useState(() => item.restoredAnswers || questions.map(() => null));
-      const [otherOpen, setOtherOpen] = useState(() => questions.map(() => false));
-      const [otherText, setOtherText] = useState(() => questions.map(() => ''));
-      const locked = item.resolved || item.submitting;
+    const isFreeTextPlaceholderOption = (option) => {
+      const label = String(option?.label || '').trim();
+      return /^(?:其他|其它|other)(?:\s*[\(（][^()（）]*[\)）])?$/i.test(label);
+    };
 
-      function pick(qi, opt) {
-        if (locked) return;
-        const next = answers.slice();
-        next[qi] = { id: questions[qi].id, label: opt.label, value: opt.label };
-        const oo = otherOpen.slice(); oo[qi] = false; setOtherOpen(oo);
-        commit(next);
-      }
-      function toggleOther(qi) {
-        if (locked) return;
-        const oo = otherOpen.slice(); oo[qi] = !oo[qi]; setOtherOpen(oo);
-        if (oo[qi]) { const next = answers.slice(); next[qi] = null; setAnswers(next); }
-      }
-      function submitOther(qi) {
-        const val = (otherText[qi] || '').trim();
-        if (!val) return;
-        const next = answers.slice();
-        next[qi] = { id: questions[qi].id, label: '其他', value: val };
-        const oo = otherOpen.slice(); oo[qi] = false; setOtherOpen(oo);
-        commit(next);
-      }
-      function commit(next) {
-        setAnswers(next);
-        if (next.every(a => a != null)) {
-          bridge.interaction.submitUserInput(item.id, item.toolCallId, next, questions);
-        }
+    const UserInputCard = ({ item, t }) => {
+      const questions = item.questions || [];
+      const normalizedQuestions = questions.map((question, index) => {
+        const allowOther = question.allow_free_text !== false;
+        return {
+          id: question.id || `question-${index + 1}`,
+          header: question.header || `Q${index + 1}`,
+          question: question.question || '',
+          options: (question.options || [])
+            .filter(option => !allowOther || !isFreeTextPlaceholderOption(option))
+            .map(option => ({
+              value: option.label,
+              label: option.label,
+              description: option.description || '',
+            })),
+          allowOther,
+          multiSelect: Boolean(question.multi_select),
+          required: !question.multi_select,
+        };
+      });
+
+      function submit(groups) {
+        const answers = groups.flatMap(group => group.answers.map(answer => ({
+          id: group.questionId,
+          label: answer.other ? '其他' : answer.label,
+          value: String(answer.value),
+        })));
+        bridge.interaction.submitUserInput(item.id, item.toolCallId, answers, questions);
       }
 
       const statusText = item.cardState === 'submitted' ? t.uiSubmitted
@@ -572,56 +631,22 @@ const ToolOutput = ({ item, isDark, t }) => {
         : item.submitting ? t.uiSubmitting : item.error ? t.uiSubmitFailed(item.error) : '';
 
       return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
-          <div className="flex items-center justify-between mb-3">
-            <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiqTitle}</div>
-          </div>
-          <div className="space-y-4">
-            {questions.map((q, qi) => (
-              <div key={qi}>
-                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || ('Q' + (qi + 1))}</div>
-                <div className={`text-[13px] mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{q.question || ''}</div>
-                <div className="flex flex-col gap-1.5">
-                  {(q.options || []).map((opt, oi) => {
-                    const sel = answers[qi] && answers[qi].label === opt.label && answers[qi].value === opt.label;
-                    return (
-                      <button key={oi} disabled={locked}
-                        onClick={() => pick(qi, opt)}
-                        className={`text-left px-3 py-2 rounded-[12px] border transition-colors disabled:cursor-not-allowed
-                          ${sel ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5')
-                                : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
-                        <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{opt.label}</div>
-                        {opt.description && <div className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{opt.description}</div>}
-                      </button>
-                    );
-                  })}
-                  <button disabled={locked} onClick={() => toggleOther(qi)}
-                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors disabled:cursor-not-allowed
-                      ${answers[qi] && answers[qi].label === '其他' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5')
-                        : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
-                    {/* label '其他' 是协议值(bridge 按它拼 "(其他) "+value),只翻显示不改存储 */}
-                    <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiOtherTitle}</div>
-                    <div className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiOtherDesc}</div>
-                  </button>
-                  {otherOpen[qi] && (
-                    <div className="mt-1">
-                      <textarea rows="2" value={otherText[qi]}
-                        onChange={e => { const ot = otherText.slice(); ot[qi] = e.target.value; setOtherText(ot); }}
-                        onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitOther(qi); } }}
-                        placeholder={t.uiOtherPh}
-                        className={`w-full rounded-[10px] p-2 text-[13px] outline-none border ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
-                      <div className="flex gap-2 mt-1 justify-end">
-                        <button className={cardBtnCls(isDark)} onClick={() => toggleOther(qi)}>{t.cpCancel}</button>
-                        <button className={cardBtnCls(isDark, 'primary')} onClick={() => submitOther(qi)}>{t.uiSubmit}</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-          {statusText && <div className={`mt-3 text-[13px] ${item.error ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]') : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')}`}>{statusText}</div>}
-        </div>
+        <QuestionChoiceCard
+          title={t.uiqTitle}
+          questions={normalizedQuestions}
+          initialAnswers={item.restoredAnswers || []}
+          resolved={Boolean(item.resolved)}
+          submitting={Boolean(item.submitting)}
+          statusText={statusText}
+          error={Boolean(item.error)}
+          submitLabel={t.uiSubmit}
+          cancelLabel={t.cpCancel}
+          otherPlaceholder="Other"
+          onSubmit={submit}
+          onCancel={!item.resolved
+            ? () => bridge.interaction.cancelUserInput(item.id, item.toolCallId)
+            : undefined}
+        />
       );
     };
 

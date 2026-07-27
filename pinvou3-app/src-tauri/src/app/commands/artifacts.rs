@@ -907,14 +907,33 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://export-download.canva.cn/",
 ];
 
-/// URL 是否命中外部链接白名单(纯函数,便于单测)。
-pub(super) fn url_in_external_allowlist(url: &str) -> bool {
-    EXTERNAL_URL_ALLOWLIST.iter().any(|p| url.starts_with(p))
+fn url_is_loopback_http(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// 用系统默认浏览器打开**允许列表**里的 https URL。
-/// 用于 Settings 面板的"获取 API key"链接(Metaso/Bocha 注册页)等。
-/// 白名单写死,前端没法用这个 command 打开任意 URL。
+/// URL 是否命中已审计外部入口或本机 loopback HTTP(S)(纯函数,便于单测)。
+pub(super) fn url_in_external_allowlist(url: &str) -> bool {
+    url_is_loopback_http(url) || EXTERNAL_URL_ALLOWLIST.iter().any(|p| url.starts_with(p))
+}
+
+/// 用系统默认浏览器打开已审计外部 https URL 或严格本机 loopback HTTP(S) URL。
+/// 外部域名白名单写死；loopback 用于 Agent 生成页面的本地预览。
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
     if !url_in_external_allowlist(&url) {

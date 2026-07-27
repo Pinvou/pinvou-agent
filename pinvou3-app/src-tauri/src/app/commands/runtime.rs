@@ -32,6 +32,7 @@ pub struct PlatformCapabilities {
     pub uses_bundled_dependency_installer: bool,
     pub task_completion_notifications_default: bool,
     pub local_vllm_supported: bool,
+    pub codex_acp_supported: bool,
 }
 
 impl PlatformCapabilities {
@@ -45,6 +46,7 @@ impl PlatformCapabilities {
             task_completion_notifications_default: capabilities
                 .task_completion_notifications_default,
             local_vllm_supported: capabilities.local_vllm_supported,
+            codex_acp_supported: capabilities.codex_acp_supported,
         }
     }
 }
@@ -102,6 +104,10 @@ mod platform_capability_tests {
         assert_eq!(
             capabilities.task_completion_notifications_default,
             expected.task_completion_notifications_default
+        );
+        assert_eq!(
+            capabilities.codex_acp_supported,
+            expected.codex_acp_supported
         );
     }
 }
