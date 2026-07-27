@@ -55,7 +55,7 @@ function PreviewSprite({ atlasUrl }) {
  * 选中状态以 bridge 的 selectedPetId 为唯一真相——本组件不做乐观更新，
  * 切换失败时 UI 自然停留在旧宠物上。
  */
-export default function PetSettingsSection({ isDark, enabled, selectedPetId, onSelect }) {
+export default function PetSettingsSection({ isDark, enabled, selectedPetId, t, onSelect }) {
   const reducedMotion = useReducedMotion();
   const [assets, setAssets] = useState({});
   const [hoveredId, setHoveredId] = useState(null);
@@ -123,11 +123,12 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, onS
       <div
         id="pet-selector-panel"
         role="region"
-        aria-label="选择公仔"
+        aria-label={t.uiPetSettings.choose}
         className="pet-card-track"
       >
         {PET_IDS.map((id) => {
           const pet = PET_REGISTRY[id];
+          const localizedPet = t.uiPetSettings.pets[id] || pet;
           const entry = assets[id] || { status: 'loading' };
           const isSelected = id === currentId;
           const isReady = entry.status === 'ready';
@@ -153,7 +154,7 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, onS
                 onBlur={() => setHoveredId((value) => (value === id ? null : value))}
               >
                 {pet.placeholder && (
-                  <span className={`pet-card-flag ${isDark ? 'pet-card-flag--dark' : ''}`}>开发占位</span>
+                  <span className={`pet-card-flag ${isDark ? 'pet-card-flag--dark' : ''}`}>{t.uiPetSettings.placeholder}</span>
                 )}
                 <span className="pet-card-figure">
                   {/* 预览出现时隐藏封面而不是卸载：若 mousedown 按住的节点在
@@ -175,20 +176,20 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, onS
                     <span className="pet-card-badge" aria-hidden="true"><Check size={12} /></span>
                   )}
                 </span>
-                <span className="pet-card-name">{pet.name}</span>
+                <span className="pet-card-name">{localizedPet.name}</span>
                 <span className={`pet-card-desc ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
-                  {pet.description}
+                  {localizedPet.description}
                 </span>
                 {entry.status === 'loading' && (
-                  <span className="pet-card-preparing">正在准备动画</span>
+                  <span className="pet-card-preparing">{t.uiPetSettings.preparing}</span>
                 )}
               </button>
               {(entry.status === 'error' || entry.coverFailed) && (
                 <div className={`pet-card-error ${isDark ? 'pet-card-error--dark' : ''}`}>
                   <AlertTriangle size={14} />
-                  <span>{entry.status === 'error' ? '动画加载失败' : '封面加载失败'}</span>
+                  <span>{entry.status === 'error' ? t.uiPetSettings.animationFailed : t.uiPetSettings.coverFailed}</span>
                   <button type="button" className="pet-card-retry" onClick={() => loadPetAssets(id)}>
-                    重试
+                    {t.uiPetSettings.retry}
                   </button>
                 </div>
               )}

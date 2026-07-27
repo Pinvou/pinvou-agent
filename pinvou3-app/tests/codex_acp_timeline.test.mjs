@@ -263,16 +263,16 @@ try {
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
-  assert.ok(codexView.includes('临时会话'), 'temporary sessions must remain an explicit choice');
+  assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
     && codexView.includes('const created = await createSession(draftWorkspacePath)'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
   assert.ok(codexView.includes('!activeId && (')
     && codexView.includes('data-testid="codex-workspace-selector"')
-    && codexView.includes('最近项目'),
+    && codexView.includes('codexCopy.recentProjects'),
   'only the draft composer must expose temporary, directory picker, and recent-project choices');
   assert.ok(codexView.includes('data-testid="codex-workspace-unavailable"')
-    && codexView.includes('原项目目录已不存在')
+    && codexView.includes('codexCopy.projectMissing')
     && codexView.includes('data-testid="codex-recreate-session"')
     && codexView.includes('recreateUnavailableWorkspaceSession')
     && codexView.includes('beginDraft(null)')
@@ -280,7 +280,7 @@ try {
   'missing project sessions must keep their history and offer a link into the existing new-session workspace menu');
   const composerFooterIndex = codexView.indexOf('data-testid="codex-composer-footer"');
   const workspaceSelectorIndex = codexView.indexOf('data-testid="codex-workspace-selector"');
-  const attachmentButtonIndex = codexView.indexOf('title="添加附件"', composerFooterIndex);
+  const attachmentButtonIndex = codexView.indexOf('title={codexCopy.addAttachment}', composerFooterIndex);
   assert.ok(composerFooterIndex >= 0
     && workspaceSelectorIndex > composerFooterIndex
     && attachmentButtonIndex > workspaceSelectorIndex,
@@ -296,7 +296,7 @@ try {
   'Codex session controls must use the unified visual selector while retaining native select behavior');
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
-  assert.ok(homeModeSwitcher.includes('工作') && homeModeSwitcher.includes('代码')
+  assert.ok(homeModeSwitcher.includes("labelKey: 'work'") && homeModeSwitcher.includes("labelKey: 'code'")
     && homeModeSwitcher.includes('Codex'),
   'the home composer must expose Work/Code modes and the current Codex code agent');
   assert.ok(homeModeSwitcher.includes("key: 'design'")
@@ -340,7 +340,7 @@ try {
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
     && codexView.includes('scrollConversationToBottom')
-    && codexView.includes('回到最新'),
+    && codexView.includes('codexCopy.latest'),
   'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
@@ -348,9 +348,9 @@ try {
     && codexView.includes('workspaceReferences'),
   'Codex prompts must keep external attachments and workspace references as separate inputs');
   assert.ok(codexView.includes('<CodexWorkspacePanel')
-    && codexView.includes('工作区')
-    && codexWorkspace.includes('文件')
-    && codexWorkspace.includes('更改'),
+    && codexView.includes('copy={t.uiCodexWorkspace}')
+    && codexWorkspace.includes('copy.files')
+    && codexWorkspace.includes('copy.changed'),
   'active Codex sessions must expose a right-side Files/Changes workspace panel');
   assert.ok(codexWorkspace.includes("WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width'")
     && codexWorkspace.includes('onMouseDown={startPanelResize}')

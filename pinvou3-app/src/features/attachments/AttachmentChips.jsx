@@ -6,6 +6,7 @@ export function AttachmentChips({
   dark = false,
   parsingLabel = '解析中',
   failedLabel = '失败',
+  removeLabel = name => `移除附件 ${name}`,
   formatError = () => '',
   className = '',
 }) {
@@ -52,7 +53,7 @@ export function AttachmentChips({
               <button
                 type="button"
                 onClick={() => onRemove(attachment.id)}
-                aria-label={`移除附件 ${attachment.basename}`}
+                aria-label={removeLabel(attachment.basename)}
                 className={`w-5 h-5 rounded-full flex items-center justify-center ${
                   dark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'
                 }`}

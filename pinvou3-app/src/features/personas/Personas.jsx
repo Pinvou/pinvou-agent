@@ -355,8 +355,8 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                     onChange={setActiveTab}
                     isDark={isDark}
                     segments={[
-                      { key: 'individual', label: t.expertPoolIndividualTab || '个人专家' },
-                      { key: 'team', label: t.expertPoolTeamTab || '专家团队' },
+                      { key: 'individual', label: t.expertPoolIndividualTab },
+                      { key: 'team', label: t.expertPoolTeamTab },
                     ]}
                   />
                   <div className="flex min-w-0 flex-col gap-3 overflow-hidden lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end">

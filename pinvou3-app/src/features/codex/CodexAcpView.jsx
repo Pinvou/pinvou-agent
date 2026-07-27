@@ -39,9 +39,9 @@ function unifiedConversationUiEnabled() {
   }
 }
 
-function workspaceName(path) {
+function workspaceName(path, unknownDirectory = '未知目录') {
   const normalized = String(path || '').replace(/[\\/]+$/, '');
-  if (!normalized) return '未知目录';
+  if (!normalized) return unknownDirectory;
   return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
 }
 
@@ -79,13 +79,14 @@ function configChoices(option) {
   return raw;
 }
 
-function configLabel(option) {
+function configLabel(option, copy) {
+  const labels = copy?.configLabels || {};
   switch (option && option.id) {
-    case 'mode': return '权限模式';
-    case 'collaboration_mode': return '协作方式';
-    case 'model': return '模型';
-    case 'reasoning_effort': return '推理强度';
-    case 'fast-mode': return '快速模式';
+    case 'mode': return labels.mode || '权限模式';
+    case 'collaboration_mode': return labels.collaboration_mode || '协作方式';
+    case 'model': return labels.model || '模型';
+    case 'reasoning_effort': return labels.reasoning_effort || '推理强度';
+    case 'fast-mode': return labels['fast-mode'] || '快速模式';
     default: return option && option.name || '';
   }
 }
@@ -98,9 +99,10 @@ function CodexComposerConfigSelect({
   onChange,
   disabled = false,
   title,
+  unsetLabel = '未设置',
 }) {
   const selected = choices.find(choice => String(choice.value) === String(value));
-  const selectedLabel = selected && (selected.name || selected.value) || value || '未设置';
+  const selectedLabel = selected && (selected.name || selected.value) || value || unsetLabel;
   return (
     <label
       data-testid={`codex-config-${id}`}
@@ -139,18 +141,18 @@ function CodexComposerConfigSelect({
   );
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, copy }) {
   const done = ['Completed', 'completed', 'end_turn'].includes(status);
   const failed = ['Failed', 'failed', 'Refused'].includes(status);
   const label = done
-    ? '已完成'
+    ? copy.completed
     : failed
-      ? '失败'
+      ? copy.failed
       : status === 'Interrupted'
-        ? '已中断'
+        ? copy.interrupted
         : status === 'LimitReached'
-          ? '达到限制'
-          : '处理中';
+          ? copy.limitReached
+          : copy.processing;
   return (
     <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
       done ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
@@ -402,7 +404,7 @@ function PermissionCard({ permission, pending, onRespond, responding }) {
   );
 }
 
-function ElicitationCard({ elicitation, pending, onRespond, responding }) {
+function ElicitationCard({ elicitation, pending, onRespond, responding, copy }) {
   const request = elicitation.request || {};
   const schema = request.requestedSchema || {};
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
@@ -464,15 +466,17 @@ function ElicitationCard({ elicitation, pending, onRespond, responding }) {
 
   return (
     <QuestionChoiceCard
-      title="Codex 需要你的选择"
+      title={copy.choiceTitle}
       description={request.message && request.message !== 'Input requested' ? request.message : ''}
       questions={normalizedQuestions}
       resolved={!actionable}
       submitting={responding}
+      submitLabel={copy.submit}
+      cancelLabel={copy.cancel}
       statusText={!actionable
         ? elicitation.resolved
-          ? (elicitation.action === 'accept' ? '已提交' : '已取消')
-          : '该输入请求已过期'
+          ? (elicitation.action === 'accept' ? copy.submitted : copy.canceled)
+          : copy.inputExpired
         : ''}
       onSubmit={submit}
       onCancel={actionable
@@ -585,16 +589,20 @@ function Turn({
   );
 }
 
-function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin }) {
-  if (!status) return <div className="text-[13px] text-gray-400">正在检查 Codex ACP…</div>;
+function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin, copy }) {
+  if (!status) return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
+  const rawError = error || status.error;
+  const visibleError = rawError
+    ? (copy.showRawErrors ? rawError : copy.operationFailed)
+    : '';
   if (!status.bridge_ready) {
     return (
       <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-4 flex items-start gap-3">
         <AlertTriangle size={19} className="text-red-500 shrink-0 mt-0.5" />
         <div>
-          <div className="text-[13px] font-semibold">Codex ACP Bridge 不可用</div>
-          <div className="mt-1 text-[12px] text-gray-500">请修复或重新安装 Pinvou。开发环境可运行 prepare-codex-bridge-runtime.sh。</div>
-          {(error || status.error) && <div className="mt-2 text-[11px] text-red-500">{error || status.error}</div>}
+          <div className="text-[13px] font-semibold">{copy.bridgeUnavailable}</div>
+          <div className="mt-1 text-[12px] text-gray-500">{copy.bridgeRepair}</div>
+          {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
         </div>
       </div>
     );
@@ -605,12 +613,12 @@ function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
         <Terminal size={19} className="text-blue-500 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">未检测到系统 Codex</div>
-          <div className="text-[12px] text-gray-500">可下载 Pinvou 托管 Codex {status.managed_codex_version}，不修改系统环境</div>
-          {(error || status.error) && <div className="mt-1 text-[11px] text-red-500">{error || status.error}</div>}
+          <div className="text-[13px] font-semibold">{copy.codexMissing}</div>
+          <div className="text-[12px] text-gray-500">{copy.managedAvailable(status.managed_codex_version)}</div>
+          {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         <button onClick={onPrepare} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
-          {working ? (progress == null ? '正在下载…' : `下载 ${progress}%`) : '下载托管 Codex'}
+          {working ? (progress == null ? copy.downloading : copy.downloadProgress(progress)) : copy.downloadManaged}
         </button>
       </div>
     );
@@ -622,42 +630,39 @@ function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-center gap-3">
         <Sparkles size={19} className="text-amber-500 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{waitingForLogin ? '等待 Codex 授权' : 'Codex 尚未登录'}</div>
+          <div className="text-[13px] font-semibold">{waitingForLogin ? copy.waitingLogin : copy.notLoggedIn}</div>
           <div className="text-[12px] text-gray-500">
             {loginUrlReady
-              ? '请在浏览器中完成 ChatGPT 授权；完成后 Pinvou 会自动连接'
+              ? copy.finishBrowserAuth
               : waitingForLogin
-                ? '正在启动 Codex 授权页面，请稍候…'
-                : '使用 Codex CLI / ChatGPT 账号完成授权'}
+                ? copy.openingAuth
+                : copy.loginHint}
           </div>
-          {(error || status.error) && <div className="mt-1 text-[11px] text-red-500">{error || status.error}</div>}
+          {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {loginUrlReady && (
           <button onClick={onOpenLogin} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
-            重新打开授权页
+            {copy.reopenAuth}
           </button>
         )}
         <button onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
-          {working || waitingForLogin ? '等待授权…' : '授权登录'}
+          {working || waitingForLogin ? copy.waitAuth : copy.authorize}
         </button>
       </div>
     );
   }
-  if (error || status.error) return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{error || status.error}</div>;
+  if (visibleError) return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
   return null;
 }
 
-function runtimeSourceLabel(status) {
+function runtimeSourceLabel(status, copy) {
   if (!status) return '';
-  if (status.runtime_source === 'system') return '系统 Codex';
-  if (status.runtime_source === 'managed') return '托管 Codex';
-  if (status.runtime_source === 'override') return '自定义 Codex';
-  if (status.runtime_source === 'legacy_bundled') return '内置 Codex';
-  return '';
+  return copy?.runtimeSources?.[status.runtime_source] || '';
 }
 
 export function CodexAcpView({
   theme,
+  t,
   sessions = [],
   activeId = null,
   draftEpoch = 0,
@@ -665,6 +670,7 @@ export function CodexAcpView({
   onSessionsChange,
   onSwitchHomeMode,
 }) {
+  const codexCopy = t.uiCodex;
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]);
@@ -680,6 +686,10 @@ export function CodexAcpView({
   const [configApplying, setConfigApplying] = useState('');
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
+  const showError = (nextError) => {
+    console.error('Codex operation failed:', nextError);
+    setError(codexCopy.showRawErrors ? String(nextError) : codexCopy.operationFailed);
+  };
   const [responding, setResponding] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
@@ -760,7 +770,7 @@ export function CodexAcpView({
       try {
         return applySessionInfo(await invoke('get_codex_acp_session_info', { sessionId: id }));
       } catch (err) {
-        setError(String(err));
+        showError(err);
       }
     }
     return null;
@@ -824,7 +834,7 @@ export function CodexAcpView({
     const selected = await openTauriDialog({
       directory: true,
       multiple: false,
-      title: '选择 Codex 项目目录',
+      title: codexCopy.chooseProjectDialog,
     });
     const path = Array.isArray(selected) ? selected[0] : selected;
     if (path) {
@@ -870,7 +880,7 @@ export function CodexAcpView({
     const selected = await openTauriDialog({
       multiple: true,
       directory: false,
-      title: '添加附件',
+      title: codexCopy.addAttachmentDialog,
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     await Promise.all(paths.map(path => addAttachmentByPath(path, attachmentKey)));
@@ -915,7 +925,7 @@ export function CodexAcpView({
           });
           await addAttachmentByPath(path, attachmentKey);
         } catch (err) {
-          setError(String(err));
+          showError(err);
         }
       };
       reader.readAsArrayBuffer(file);
@@ -924,7 +934,7 @@ export function CodexAcpView({
 
   useEffect(() => {
     let unlisten = null;
-    Promise.all([refreshStatus(), refreshSessions()]).catch(err => setError(String(err)));
+    Promise.all([refreshStatus(), refreshSessions()]).catch(showError);
     listenTauri('acp:event', message => {
       const incoming = message.payload;
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
@@ -974,7 +984,7 @@ export function CodexAcpView({
       skipNextActiveLoadRef.current = null;
       return;
     }
-    loadSession(activeId).catch(err => setError(String(err)));
+    loadSession(activeId).catch(showError);
   }, [activeId]);
 
   useEffect(() => {
@@ -1052,21 +1062,21 @@ export function CodexAcpView({
     setWorking(true); setError('');
     const poll = window.setInterval(() => refreshStatus().catch(() => {}), 500);
     try { setStatus(await invoke('prepare_codex_acp')); }
-    catch (err) { setError(String(err)); }
+    catch (err) { showError(err); }
     finally { window.clearInterval(poll); await refreshStatus().catch(() => {}); setWorking(false); }
   }
 
   async function login() {
     setWorking(true); setError('');
     try { setStatus(await invoke('login_codex_acp')); }
-    catch (err) { setError(String(err)); }
+    catch (err) { showError(err); }
     finally { setWorking(false); }
   }
 
   async function openLogin() {
     setError('');
     try { await invoke('open_codex_login_url'); }
-    catch (err) { setError(String(err)); }
+    catch (err) { showError(err); }
   }
 
   async function send() {
@@ -1076,12 +1086,12 @@ export function CodexAcpView({
     ));
     if ((!message && !readyAttachments.length && !workspaceReferences.length) || busy || working) return;
     if (attachments.some(attachment => attachment.status === 'parsing')) {
-      setError('附件仍在解析，请稍候');
+      setError(codexCopy.attachmentsParsing);
       return;
     }
     if (workspaceUnavailable) return;
     if (activeId && !sessionInfo) {
-      setError('Codex 会话配置仍在同步，请稍候');
+      setError(codexCopy.sessionSyncing);
       return;
     }
     setWorking(true); setError('');
@@ -1106,7 +1116,7 @@ export function CodexAcpView({
         });
       }
       if (!targetInfo) {
-        throw new Error('Codex 会话配置仍在同步，请稍候');
+        throw new Error(codexCopy.sessionSyncing);
       }
       autoScrollRef.current = true;
       setShowScrollBottom(false);
@@ -1122,7 +1132,7 @@ export function CodexAcpView({
       ));
       setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
     } catch (err) {
-      setError(String(err));
+      showError(err);
       setDraft(message);
     } finally {
       setWorking(false);
@@ -1131,7 +1141,7 @@ export function CodexAcpView({
 
   async function cancel() {
     if (!activeId) return;
-    await invoke('cancel_codex_acp', { sessionId: activeId }).catch(err => setError(String(err)));
+    await invoke('cancel_codex_acp', { sessionId: activeId }).catch(showError);
   }
 
   async function respond(toolCallId, optionId) {
@@ -1140,7 +1150,7 @@ export function CodexAcpView({
     try {
       await invoke('respond_codex_acp_permission', { sessionId: activeId, toolCallId, optionId });
       setPending(current => current.filter(item => item.toolCallId !== toolCallId));
-    } catch (err) { setError(String(err)); }
+    } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
@@ -1157,7 +1167,7 @@ export function CodexAcpView({
       setPendingElicitations(current => current.filter(
         item => item.elicitationId !== elicitationId,
       ));
-    } catch (err) { setError(String(err)); }
+    } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
@@ -1165,7 +1175,7 @@ export function CodexAcpView({
     if (!activeId || !modelId) return;
     setWorking(true); setConfigApplying('model');
     try { applySessionInfo(await invoke('set_codex_acp_model', { sessionId: activeId, modelId })); }
-    catch (err) { setError(String(err)); }
+    catch (err) { showError(err); }
     finally { setWorking(false); setConfigApplying(''); }
   }
 
@@ -1176,7 +1186,7 @@ export function CodexAcpView({
       applySessionInfo(await invoke('set_codex_acp_config_option', {
         sessionId: activeId, configId, valueId,
       }));
-    } catch (err) { setError(String(err)); }
+    } catch (err) { showError(err); }
     finally { setWorking(false); setConfigApplying(''); }
   }
 
@@ -1185,7 +1195,7 @@ export function CodexAcpView({
     setWorking(true); setConfigApplying('mode'); setError('');
     try {
       applySessionInfo(await invoke('set_codex_acp_mode', { sessionId: activeId, modeId }));
-    } catch (err) { setError(String(err)); }
+    } catch (err) { showError(err); }
     finally { setWorking(false); setConfigApplying(''); }
   }
 
@@ -1198,11 +1208,11 @@ export function CodexAcpView({
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {`Codex · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : '临时工作区'}${activeSession.workspace_available ? '' : ' · 原项目目录已不存在'}`}
+              {`Codex · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace}${activeSession.workspace_available ? '' : ` · ${codexCopy.projectMissing}`}`}
             </div>
           </div>
-          {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">配置应用中…</span>}
-          {busy && <StatusBadge status="running" />}
+          {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
+          {busy && <StatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
             onClick={() => setWorkspaceOpen(value => !value)}
@@ -1211,10 +1221,10 @@ export function CodexAcpView({
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
                 : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
             }`}
-            title="查看 Codex 工作区文件和更改"
+            title={codexCopy.workspaceTitle}
           >
             <FolderOpen size={14} />
-            <span>工作区</span>
+            <span>{codexCopy.workspace}</span>
             {workspaceChangeCount > 0 && (
               <span className="min-w-4 h-4 px-1 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 inline-flex items-center justify-center text-[9px] font-medium">
                 {workspaceChangeCount > 99 ? '99+' : workspaceChangeCount}
@@ -1233,28 +1243,27 @@ export function CodexAcpView({
                 data-testid="codex-workspace-unavailable"
                 className="rounded-xl bg-red-500/8 px-3 py-2 text-[12px] text-red-600 dark:text-red-300"
               >
-                原项目目录已不存在，
+                {codexCopy.recreatePrefix}
                 <button
                   type="button"
                   data-testid="codex-recreate-session"
                   onClick={recreateUnavailableWorkspaceSession}
                   className="font-medium underline underline-offset-2 hover:text-red-700 dark:hover:text-red-200"
                 >
-                  重新创建会话
+                  {codexCopy.recreate}
                 </button>
-                。
               </div>
             ) : (
-              <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
+              <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} copy={codexCopy} />
             )}
             {!projection.turns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
                 <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><CodexLogo className="h-8 w-8" /></div>
-                <div className="mt-5 text-[20px] font-semibold">用 Codex 处理代码任务</div>
+                <div className="mt-5 text-[20px] font-semibold">{codexCopy.welcomeTitle}</div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
-                    ? '工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有工作会话消息框架。'
-                    : '直接输入即可创建临时会话，也可以从输入框左下角选择项目目录。'}
+                    ? codexCopy.activeHint
+                    : codexCopy.draftHint}
                 </div>
               </div>
             )}
@@ -1264,6 +1273,7 @@ export function CodexAcpView({
                     key={turn.id}
                     turn={turn}
                     now={now}
+                    copy={t.uiConversation}
                     pendingByTool={pendingByTool}
                     onRespond={respond}
                     responding={responding}
@@ -1279,11 +1289,12 @@ export function CodexAcpView({
                             pending={pendingByElicitation[item.elicitation.elicitationId]}
                             onRespond={respondElicitation}
                             responding={responding}
+                            copy={codexCopy}
                           />
                         )
                       : undefined}
                     agentLabel="Codex"
-                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(err => setError(String(err)))}
+                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(showError)}
                   />
                 )
               : (
@@ -1293,7 +1304,7 @@ export function CodexAcpView({
                     onRespond={respond}
                     onRespondElicitation={respondElicitation}
                     responding={responding}
-                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(err => setError(String(err)))} />
+                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(showError)} />
                 ))}
           </div>
         </div>
@@ -1303,8 +1314,8 @@ export function CodexAcpView({
             <button
               type="button"
               onClick={scrollConversationToBottom}
-              aria-label={pending.length || pendingElicitations.length ? '有请求需要处理，回到最新' : '回到最新'}
-              title={pending.length || pendingElicitations.length ? '有请求需要处理，回到最新' : '回到最新'}
+              aria-label={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
+              title={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
               className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 border ${
                 pending.length || pendingElicitations.length
                   ? 'bg-amber-500/95 text-white border-amber-400'
@@ -1324,6 +1335,7 @@ export function CodexAcpView({
                 codeSupported
                 isDark={theme === 'dark'}
                 onChange={onSwitchHomeMode}
+                copy={t.uiHomeMode}
               />
             )}
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
@@ -1333,11 +1345,15 @@ export function CodexAcpView({
                 now={now}
                 onRequestAttention={scrollConversationToBottom}
                 className="mb-0.5"
+                copy={t.uiConversation}
               />
               <AttachmentChips
                 attachments={attachments}
                 onRemove={removeAttachment}
                 dark={theme === 'dark'}
+                parsingLabel={t.uiAttachments.parsing}
+                failedLabel={t.uiAttachments.failed}
+                removeLabel={t.uiAttachments.remove}
                 className="mb-2"
                 formatError={value => String(value || '')}
               />
@@ -1355,7 +1371,7 @@ export function CodexAcpView({
                         type="button"
                         onClick={() => removeWorkspaceReference(path)}
                         className="w-5 h-5 rounded-md flex items-center justify-center hover:bg-blue-500/10"
-                        aria-label={`移除工作区引用 ${path}`}
+                        aria-label={codexCopy.removeReference(path)}
                       >
                         ×
                       </button>
@@ -1368,7 +1384,7 @@ export function CodexAcpView({
                   {controls.fallbackModels.length > 0 && (
                     <CodexComposerConfigSelect
                       id="model"
-                      label="模型"
+                      label={codexCopy.model}
                       value={sessionInfo.current_model_id || ''}
                       choices={controls.fallbackModels.map(model => ({
                         value: model.id,
@@ -1376,12 +1392,13 @@ export function CodexAcpView({
                       }))}
                       onChange={changeModel}
                       disabled={busy || working}
+                      unsetLabel={codexCopy.notSet}
                     />
                   )}
                   {controls.fallbackModes && controls.fallbackModes.availableModes && (
                     <CodexComposerConfigSelect
                       id="mode"
-                      label="权限模式"
+                      label={codexCopy.permissionMode}
                       value={controls.effectiveMode || ''}
                       choices={controls.fallbackModes.availableModes.map(item => ({
                         value: item.id,
@@ -1389,28 +1406,30 @@ export function CodexAcpView({
                       }))}
                       onChange={changeMode}
                       disabled={busy || working}
-                      title="Codex Agent 上报的会话模式"
+                      title={codexCopy.sessionModeTitle}
+                      unsetLabel={codexCopy.notSet}
                     />
                   )}
                   {controls.configOptions.map(option => (
                     <CodexComposerConfigSelect
                       key={option.id}
                       id={option.id}
-                      label={configLabel(option)}
+                      label={configLabel(option, codexCopy)}
                       value={option.currentValue || ''}
                       choices={configChoices(option)}
                       onChange={value => changeConfig(option.id, value)}
                       disabled={busy || working}
                       title={option.description || option.name}
+                      unsetLabel={codexCopy.notSet}
                     />
                   ))}
                 </div>
               )}
               {commandOpen && availableCommands.length > 0 && (
                 <>
-                  <button aria-label="关闭 Codex 命令菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
+                  <button aria-label={codexCopy.commandMenuClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
                   <div className="absolute z-40 left-0 right-0 bottom-full mb-2 max-h-72 overflow-y-auto rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">Codex Agent 命令</div>
+                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.agentCommands}</div>
                     {availableCommands.map(command => (
                       <button key={command.name} type="button"
                         onClick={() => { setDraft(`/${command.name}${command.input ? ' ' : ''}`); setCommandOpen(false); }}
@@ -1425,7 +1444,7 @@ export function CodexAcpView({
               <textarea value={draft} onChange={event => setDraft(event.target.value)}
                 onPaste={handlePaste}
                 onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
-                placeholder="让 Codex 处理代码、运行命令或解释仓库…"
+                placeholder={codexCopy.placeholder}
                 rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
               <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
                 <div className="flex min-w-0 items-center gap-2 text-[10px] text-gray-400">
@@ -1436,39 +1455,39 @@ export function CodexAcpView({
                         data-testid="codex-workspace-selector"
                         onClick={() => setWorkspaceMenuOpen(value => !value)}
                         className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-                        title={draftWorkspacePath || '临时会话'}
+                        title={draftWorkspacePath || codexCopy.temporarySession}
                       >
                         {draftWorkspacePath
                           ? <FolderOpen size={13} className="shrink-0" />
                           : <Sparkles size={13} className="shrink-0 text-emerald-500" />}
                         <span className="truncate">
-                          {draftWorkspacePath ? workspaceName(draftWorkspacePath) : '临时会话'}
+                          {draftWorkspacePath ? workspaceName(draftWorkspacePath, codexCopy.unknownDirectory) : codexCopy.temporarySession}
                         </span>
                         <ChevronDown size={12} className="shrink-0" />
                       </button>
                       {workspaceMenuOpen && (
                         <>
-                          <button aria-label="关闭工作目录菜单" className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
+                          <button aria-label={codexCopy.workspaceMenuClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
                           <div className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                            <button type="button" onClick={() => chooseProjectDraft().catch(err => setError(String(err)))}
+                            <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
-                              <span><span className="block text-[12px] font-semibold">选择项目目录</span><span className="block text-[10px] text-gray-400 mt-0.5">Codex 直接在真实项目中工作</span></span>
+                              <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>
                             </button>
                             <button type="button" onClick={() => beginDraft(null)}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <Sparkles size={16} className="text-emerald-500 shrink-0" />
-                              <span><span className="block text-[12px] font-semibold">临时会话</span><span className="block text-[10px] text-gray-400 mt-0.5">使用 Pinvou 管理的隔离目录</span></span>
+                              <span><span className="block text-[12px] font-semibold">{codexCopy.temporarySession}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.temporarySessionDesc}</span></span>
                             </button>
                             {recentWorkspaces.length > 0 && (
                               <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
-                                <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">最近项目</div>
+                                <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
                                     onClick={() => beginDraft(path)}
                                     className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                                     <FolderOpen size={13} className="shrink-0 text-gray-400" />
-                                    <span className="truncate text-[11px]">{workspaceName(path)}</span>
+                                    <span className="truncate text-[11px]">{workspaceName(path, codexCopy.unknownDirectory)}</span>
                                   </button>
                                 ))}
                               </div>
@@ -1480,22 +1499,22 @@ export function CodexAcpView({
                   )}
                   <button
                     type="button"
-                    onClick={() => pickAttachments().catch(err => setError(String(err)))}
+                    onClick={() => pickAttachments().catch(showError)}
                     className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-                    title="添加附件"
-                    aria-label="添加附件"
+                    title={codexCopy.addAttachment}
+                    aria-label={codexCopy.addAttachment}
                   >
                     <Paperclip size={16} />
                   </button>
                   <button type="button" onClick={() => setCommandOpen(value => !value)}
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
-                    title={availableCommands.length ? 'Codex Agent 上报的命令' : '创建会话后同步 Codex 命令'}>/</button>
+                    title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
                   <span className={`w-1.5 h-1.5 rounded-full ${status && status.installed && status.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
                   <span className="hidden min-w-0 truncate sm:inline">
                     {status && status.installed && status.authenticated
-                      ? `Codex 已连接${runtimeSourceLabel(status) ? ` · ${runtimeSourceLabel(status)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
-                      : 'Codex 未就绪'}
+                      ? `${codexCopy.connected}${runtimeSourceLabel(status, codexCopy) ? ` · ${runtimeSourceLabel(status, codexCopy)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
+                      : codexCopy.notReady}
                   </span>
                 </div>
                 {busy ? (
@@ -1520,6 +1539,7 @@ export function CodexAcpView({
             onAddReference={addWorkspaceReference}
             refreshToken={events.length}
             onChangeCount={setWorkspaceChangeCount}
+            copy={t.uiCodexWorkspace}
           />
         )}
         </div>

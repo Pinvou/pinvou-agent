@@ -158,13 +158,14 @@ assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);
 assert.match(connectionStatus, /BLOCKING[\s\S]*incompatible_desktop/);
-assert.match(settingsView, />手机远程控制</);
-assert.match(settingsView, />远程控制链接</);
-assert.match(settingsView, />刷新二维码</);
+assert.match(settingsView, /remoteCopy = t\.uiRemote/);
+assert.match(settingsView, /\{remoteCopy\.title\}/);
+assert.match(settingsView, /\{remoteCopy\.link\}/);
+assert.match(settingsView, /\{remoteCopy\.refresh\}/);
 assert.doesNotMatch(settingsView, />刷新链接</);
 assert.doesNotMatch(settingsView, /Relay 服务器/);
 assert.doesNotMatch(settingsView, /getWebRelaySettings/);
-assert.match(main, /title="手机远程控制（扫码或链接）"/);
+assert.match(main, /title=\{t\.uiRemote\.title\}/);
 for (const source of [settingsView, connectionStatus]) {
   assert.doesNotMatch(source, /WebUI/,
     'user-facing remote control copy must not expose the WebUI implementation name');

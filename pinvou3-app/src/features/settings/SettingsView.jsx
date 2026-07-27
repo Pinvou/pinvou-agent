@@ -890,7 +890,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const WebAccessModal = ({ theme, bs, onClose }) => {
+    const WebAccessModal = ({ theme, bs, t, onClose }) => {
       const isDark = theme === 'dark';
       const canManageWebAccess = can('webAccessAdmin');
       const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
@@ -898,17 +898,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const webAccess = (bs && bs.webAccess) || {};
       const webAccessActive = !!webAccess.active;
       const statusKey = webAccess.starting ? 'starting' : (webAccess.status || 'idle');
-      const statusMeta = {
-        idle: { label: '未开启', detail: '开启后会生成一个长期有效的远程控制链接。', color: '#8A9097' },
-        starting: { label: '正在开启', detail: '正在创建远程控制连接。', color: '#F9AB00' },
-        connecting_relay: { label: '正在连接', detail: '正在连接云端中继，请稍候。', color: '#F9AB00' },
-        waiting_web_client: { label: '等待浏览器', detail: '在电脑或手机浏览器中粘贴下方链接即可。', color: '#F9AB00' },
-        web_client_connected: { label: '浏览器已连接', detail: '远程控制已连接这台桌面端。', color: '#34A853' },
-        web_client_disconnected: { label: '浏览器已断开', detail: '链接仍然有效，浏览器可随时重新连接。', color: '#F9AB00' },
-        revoked: { label: '链接已撤销', detail: '请重新开启远程控制。', color: '#EA4335' },
-        stopped: { label: '已停止', detail: '再次打开此面板即可重新开启。', color: '#8A9097' },
-        error: { label: '连接异常', detail: webAccess.last_error || '远程控制暂时不可用，请重试。', color: '#EA4335' },
-      }[statusKey] || { label: String(statusKey), detail: '远程控制状态已更新。', color: '#8A9097' };
+      const remoteCopy = t.uiRemote;
+      const statusColors = { idle:'#8A9097', starting:'#F9AB00', connecting_relay:'#F9AB00', waiting_web_client:'#F9AB00', web_client_connected:'#34A853', web_client_disconnected:'#F9AB00', revoked:'#EA4335', stopped:'#8A9097', error:'#EA4335' };
+      const statusCopy = remoteCopy.status[statusKey];
+      const statusMeta = statusCopy
+        ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccess.last_error || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
+        : { label: String(statusKey), detail: remoteCopy.updated, color: '#8A9097' };
 
       useEffect(() => {
         if (!webAccessActive && bridge.available) {
@@ -954,8 +949,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
-                <div className="text-[17px] font-semibold">手机远程控制</div>
-                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>在手机或电脑浏览器中打开链接，远程使用这台桌面端。</div>
+                <div className="text-[17px] font-semibold">{remoteCopy.title}</div>
+                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteCopy.desc}</div>
               </div>
               <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
             </div>
@@ -964,7 +959,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <div className="min-w-0 flex items-start gap-3">
                   <div className={`mt-0.5 w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}><Globe size={17} /></div>
                   <div className="min-w-0">
-                    <div className="text-[14px] font-medium">浏览器连接</div>
+                    <div className="text-[14px] font-medium">{remoteCopy.browser}</div>
                     <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{statusMeta.detail}</div>
                   </div>
                 </div>
@@ -973,7 +968,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusMeta.color }}></span>{statusMeta.label}
                   </span>
                   {webAccessActive && <button disabled={actionBusy} onClick={handleDisableWebAccess}
-                    className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>停止</button>}
+                    className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>{remoteCopy.stop}</button>}
                 </div>
               </div>
             </div>
@@ -982,38 +977,38 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 {webAccess.qr_data_url && (
                   <div className="flex flex-col items-center mb-4">
                     <div className="p-3 rounded-[16px] bg-white shadow-sm">
-                      <img src={webAccess.qr_data_url} alt="远程控制二维码" className="block w-[220px] h-[220px]" />
+                      <img src={webAccess.qr_data_url} alt={remoteCopy.qrAlt} className="block w-[220px] h-[220px]" />
                     </div>
-                    <div className={`mt-2 text-[12px] ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>手机扫码，或在电脑浏览器中复制下方链接</div>
+                    <div className={`mt-2 text-[12px] ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteCopy.qrHint}</div>
                   </div>
                 )}
-                <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>远程控制链接</div>
+                <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{remoteCopy.link}</div>
                 <div className={`select-all break-all text-[12px] leading-relaxed ${isDark ? 'text-[#D2E3FC]' : 'text-[#174EA6]'}`}>{webAccess.url}</div>
-                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。</div>
+                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>{remoteCopy.linkHint}</div>
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
-                {webAccess.starting ? '正在生成远程控制链接…' : (webAccess.last_error || '远程控制尚未开启。')}
+                {webAccess.starting ? remoteCopy.generating : (webAccess.last_error || remoteCopy.notStarted)}
               </div>
             )}
             {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(webAccess.url || '')}
                 disabled={!webAccess.url}
-                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>复制链接</button>
+                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>{remoteCopy.copy}</button>
               {webAccessActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
-                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>刷新二维码</button>
+                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>{remoteCopy.refresh}</button>
                 : <button disabled={actionBusy} onClick={handleRetryWebAccess}
-                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">开启访问</button>}
+                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">{remoteCopy.enable}</button>}
             </div>
             {refreshConfirmOpen && (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
                 <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl ${isDark ? 'bg-[#2A2B2D]' : 'bg-white'}`}>
-                  <div className="text-[16px] font-semibold">刷新二维码？</div>
-                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。</div>
+                  <div className="text-[16px] font-semibold">{remoteCopy.refreshTitle}</div>
+                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>{remoteCopy.refreshDesc}</div>
                   <div className="mt-5 flex justify-end gap-2">
-                    <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] ${isDark ? 'bg-white/5 hover:bg-white/10' : 'bg-black/5 hover:bg-black/10'}`}>取消</button>
-                    <button disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? '正在刷新…' : '刷新二维码'}</button>
+                    <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] ${isDark ? 'bg-white/5 hover:bg-white/10' : 'bg-black/5 hover:bg-black/10'}`}>{t.cancel}</button>
+                    <button disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? remoteCopy.refreshing : remoteCopy.refresh}</button>
                   </div>
                 </div>
               </div>
@@ -1256,6 +1251,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     // 添加/编辑模型模态弹窗。
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
+      const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
       const initialProvider = modelScope === 'cloud' ? findCloudProviderForModel(initial) : null;
@@ -1295,20 +1291,24 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
       const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
-      const baseCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
+      const localizeProvider = group => group
+        ? { ...group, ...(settingsCopy.providerCatalog[group.key] || {}) }
+        : null;
+      const baseCatalogGroups = (MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud).map(localizeProvider);
       const catalogGroups = !initial.__new && modelScope === 'cloud'
         ? baseCatalogGroups.filter(group => initialProvider ? group.key === initialProvider.key : group.preset === initial.preset)
         : baseCatalogGroups;
       const activeProvider = modelScope === 'cloud'
-        ? (CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
+        ? localizeProvider(CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
         : null;
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
-          let message = String(value.message || (value.ok ? '连接成功，服务可用' : '连接失败，请稍后重试'));
+          let message = settingsCopy.connectionMessages[code]
+            || (value.ok ? settingsCopy.connectionMessages.ok : settingsCopy.connectionMessages.unknown);
           if (isCodingPlanProvider && (code === 'endpoint_not_found' || code === 'method_not_allowed')) {
-            message = '当前厂商接口暂时无法完成测试，但不影响保存配置';
+            message = settingsCopy.codingPlanTestUnavailable;
           }
           return {
             ok: !!value.ok,
@@ -1324,20 +1324,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           const legacy = {
             ok: status >= 200 && status < 300,
             code: status === 401 ? 'auth_invalid' : status === 403 ? 'auth_forbidden' : status === 429 ? 'rate_limited' : 'http_error',
-            message: status === 401 ? 'API Key 无效，请检查后重新填写'
-              : status === 403 ? '当前 API Key 没有访问权限'
-                : status === 429 ? '请求过于频繁或额度不足，请稍后再试'
-                  : (status >= 200 && status < 300 ? '连接成功，服务可用' : '连接失败，请检查配置后重试'),
+            message: status === 401 ? settingsCopy.connectionMessages.auth_invalid
+              : status === 403 ? settingsCopy.connectionMessages.auth_forbidden
+                : status === 429 ? settingsCopy.connectionMessages.rate_limited
+                  : (status >= 200 && status < 300 ? settingsCopy.connectionMessages.ok : settingsCopy.connectionMessages.http_error),
             detail: `HTTP ${status}`,
           };
           if (isCodingPlanProvider && (status === 404 || status === 405)) {
             legacy.code = status === 404 ? 'endpoint_not_found' : 'method_not_allowed';
-            legacy.message = '当前厂商接口暂时无法完成测试，但不影响保存配置';
+            legacy.message = settingsCopy.codingPlanTestUnavailable;
           }
           return legacy;
         }
-        if (raw === 'ok') return { ok: true, code: 'ok', message: '连接成功，服务可用', detail: '' };
-        return { ok: false, code: 'unknown', message: raw || '连接失败，请稍后重试', detail: '' };
+        if (raw === 'ok') return { ok: true, code: 'ok', message: settingsCopy.connectionMessages.ok, detail: '' };
+        return { ok: false, code: 'unknown', message: settingsCopy.connectionMessages.unknown, detail: '' };
       }
       function applyCatalogItem(group, item) {
         const p = group.preset;
@@ -1351,7 +1351,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setEndpointMode(group.endpointMode || '');
         setBaseUrl(nextBaseUrl);
         setModel(nextModel);
-        if (!nameTouched) setName(p === 'local_vllm' ? (nextModel ? `本地 ${nextModel}` : '本地模型') : (item.custom ? group.title : item.title));
+        if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
         if (p !== 'local_vllm') {
@@ -1432,11 +1432,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const showDisplayNameField = isLocalPreset && !initial.__new;
       const showConfigFields = showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField;
       const selectedProvider = isLocalPreset ? presetProviderLabel(preset, t) : (activeProvider ? (activeProvider.configTitle || activeProvider.title) : presetProviderLabel(preset, t));
-      const selectedModelLabel = model || '自定义模型';
+      const selectedModelLabel = model || settingsCopy.customModel;
       const modalTitle = initial.__new
-        ? (isCodingPlan ? `添加 ${selectedProvider}` : t.modelFormAddTitle)
-        : (isCodingPlan ? `编辑 ${selectedProvider}` : t.modelFormEditTitle);
-      const saveName = name.trim() || (isLocalPreset ? (model.trim() ? `本地 ${model.trim()}` : '本地模型') : (model.trim() ? model.trim() : selectedProvider));
+        ? (isCodingPlan ? settingsCopy.addProvider(selectedProvider) : t.modelFormAddTitle)
+        : (isCodingPlan ? settingsCopy.editProvider(selectedProvider) : t.modelFormEditTitle);
+      const saveName = name.trim() || (isLocalPreset ? settingsCopy.localModelName(model.trim()) : (model.trim() ? model.trim() : selectedProvider));
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
       const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
@@ -1453,7 +1453,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             const savedKey = await bridge.models.revealModelApiKey(initial.id);
             if (savedKey) setApiKey(savedKey);
           } catch (error) {
-            setKeyRevealError(String(error || '读取 API Key 失败'));
+            setKeyRevealError(String(error || settingsCopy.apiKeyReadFailed));
           }
         }
         setShowKey(nextVisible);
@@ -1625,7 +1625,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const renderCloudProviderPicker = () => {
         const bySection = ['coding_plan', 'official_api', 'custom'].map(section => ({
           section,
-          title: MODEL_CATALOG_SECTIONS[section],
+          title: settingsCopy.catalogSections[section] || MODEL_CATALOG_SECTIONS[section],
           groups: catalogGroups.filter(group => (group.section || 'official_api') === section),
         })).filter(item => item.groups.length > 0);
         return (
@@ -1662,21 +1662,25 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="space-y-4">
           {catalogGroups.map(group => (
             <section key={group.key}>
-              <div className={catalogSectionTitleClass}>{group.title}</div>
+              <div className={catalogSectionTitleClass}>{presetProviderLabel(group.preset, t)}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {
                   const active = preset === group.preset && model === item.model && !item.custom;
+                  const itemTitle = item.custom ? settingsCopy.customModelTitle(presetProviderLabel(group.preset, t)) : item.title;
+                  const itemDescription = item.custom
+                    ? (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))
+                    : (settingsCopy.modelDescriptions[item.desc] || item.desc);
                   return (
                     <button
                       type="button"
-                      key={`${group.key}-${item.title}`}
+                      key={`${group.key}-${itemTitle}`}
                       onClick={() => applyCatalogItem(group, item)}
                       className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}
                     >
                       <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} isDark={isDark} compact />
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.title}</span>
-                        <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>
+                        <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{itemTitle}</span>
+                        <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{itemDescription}</span>
                       </span>
                       {active ? <Check size={16} className="shrink-0 text-[#007AFF]" /> : <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />}
                     </button>
@@ -1698,17 +1702,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                   <ProviderIcon preset="local_vllm" isDark={isDark} compact />
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>自动检测本地模型</span>
-                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>检测 vLLM、Ollama、LM Studio</span>
+                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.autoDetectLocalModel}</span>
+                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.localDetectionTargets}</span>
                   </span>
                   <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
-                    className={`${actionClass} disabled:opacity-45`}>{localDetecting ? '检测中…' : (localDetectResult ? '重新检测' : '检测')}</button>
+                    className={`${actionClass} disabled:opacity-45`}>{localDetecting ? t.detectingLocalVllm : (localDetectResult ? settingsCopy.redetect : settingsCopy.detect)}</button>
                 </div>
                 {localDetectResult && localDetectResult.error && (
                   <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#F28B82]' : 'border-black/[0.10] text-[#C5221F]'}`}>{localDetectResult.error}</div>
                 )}
                 {localDetectResult && !localDetectResult.error && rows.length === 0 && (
-                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#98989D]' : 'border-black/[0.10] text-[#8A8A8E]'}`}>未检测到运行中的本地模型</div>
+                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#98989D]' : 'border-black/[0.10] text-[#8A8A8E]'}`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
                 {rows.map(row => (
                   <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
@@ -1718,7 +1722,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{row.label} · {row.base_url}</span>
                     </span>
                     <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
-                      className={actionClass}>添加</button>
+                      className={actionClass}>{settingsCopy.add}</button>
                   </div>
                 ))}
               </div>
@@ -1729,8 +1733,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'}`}>
                   <ProviderIcon preset="local_vllm" isDark={isDark} compact />
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>手动添加本地模型</span>
-                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>填写 API 地址和模型 ID</span>
+                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.manualLocalModel}</span>
+                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.manualLocalModelDesc}</span>
                   </span>
                   <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
                 </button>
@@ -1748,15 +1752,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
-                  <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>选择模型后再填写必要凭据</p>
+                  <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.chooseModelDesc}</p>
                 </div>
                 <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
               </div>
               <div className="px-5 pt-4">
                 <div className={`p-1 rounded-full grid grid-cols-2 gap-1 ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
                   {[
-                    { key: 'cloud', label: '云端模型' },
-                    { key: 'local', label: '本地模型' },
+                    { key: 'cloud', label: settingsCopy.cloudModels },
+                    { key: 'local', label: settingsCopy.localModels },
                   ].map(tab => (
                     <button key={tab.key} type="button" onClick={() => setPickerTab(tab.key)}
                       className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? (isDark ? 'bg-[#3A3A3C] text-[#F2F2F7]' : 'bg-white text-[#007AFF] shadow-sm') : (isDark ? 'text-[#C7C7CC]' : 'text-[#636366]')}`}>
@@ -1777,7 +1781,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{modalTitle}</h2>
-                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? 'Coding Plan · 工具调用' : selectedProvider + ' · ' + selectedModelLabel}`}</p>
+                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? `Coding Plan · ${settingsCopy.toolCalling}` : selectedProvider + ' · ' + selectedModelLabel}`}</p>
               </div>
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
             </div>
@@ -1802,7 +1806,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
                     </span>
-                    <span className="shrink-0 text-[14px] text-[#007AFF]">{pickerOpen ? '收起' : '更换'}</span>
+                    <span className="shrink-0 text-[14px] text-[#007AFF]">{pickerOpen ? settingsCopy.collapse : settingsCopy.change}</span>
                   </button>
                 )}
                 {pickerOpen && !isLocalPreset && (
@@ -1817,9 +1821,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
                       <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                        placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                        placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                         className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
-                      <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                      <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                     </div>
                   </div>
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
@@ -1829,26 +1833,26 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <section>
                   <div className={formGroup}>
                     {showDisplayNameField && renderInlineField({
-                      label: t.modelDisplayName || '显示名',
+                      label: t.modelDisplayName,
                       value: name,
                       onChange: e => { setNameTouched(true); setName(e.target.value); },
-                      placeholder: '本地模型',
+                      placeholder: settingsCopy.localModel,
                     })}
                     {showProviderModelField && renderProviderModelField()}
-                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? '本地模型 ID' : '模型 ID', value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : '输入模型 ID' })}
+                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                          placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                          placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                           className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
-                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>需要 API Key</label>
+                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.apiKeyRequired}</label>
                         <button type="button" onClick={() => setLocalKeyEnabled(v => !v)}
                           className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : (isDark ? 'bg-[#3A3A3C]' : 'bg-[#D1D1D6]')}`}
                           aria-pressed={localKeyEnabled}>
@@ -1860,9 +1864,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                          placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                          placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                           className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
-                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
                   </div>
@@ -1874,7 +1878,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : 'text-[#FF3B30]') : (isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]')}`}>
-                        {testResult ? testResult.message : '保存前可测试服务是否可用'}
+                        {testResult ? testResult.message : settingsCopy.testBeforeSave}
                       </span>
                       <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
                         className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`}>
@@ -1962,6 +1966,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
+      const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
@@ -2188,11 +2193,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       const userModels = visibleSortedModels(savedModels || []);
       const searchOptions = [
-        { key: 'bing', label: 'Bing', desc: '内置搜索' },
-        { key: 'metaso', label: '秘塔', desc: '中文搜索服务' },
-        { key: 'bocha', label: '博查', desc: '搜索服务' },
-        { key: 'baidu', label: '百度', desc: '千帆 AI 搜索' },
-        { key: 'tavily', label: 'Tavily', desc: '海外搜索服务' },
+        { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
+        { key: 'metaso', label: '秘塔', desc: settingsCopy.searchDescriptions.metaso },
+        { key: 'bocha', label: '博查', desc: settingsCopy.searchDescriptions.bocha },
+        { key: 'baidu', label: '百度', desc: settingsCopy.searchDescriptions.baidu },
+        { key: 'tavily', label: 'Tavily', desc: settingsCopy.searchDescriptions.tavily },
       ];
       const enabledSearchSet = new Set(['bing', ...(enabledSearchProviders || [])]);
       const enabledSearchList = searchOptions.filter(item => enabledSearchSet.has(item.key));
@@ -2211,7 +2216,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return {
           __new: true,
           id: '',
-          name: preset === 'local_vllm' ? '本地 Qwen3.6' : presetProviderLabel(preset, t),
+          name: preset === 'local_vllm' ? settingsCopy.localDefaultName : presetProviderLabel(preset, t),
           preset,
           context_window_tokens: preset === 'local_vllm' ? 262144 : null,
           max_output_tokens: preset === 'local_vllm' ? 24576 : null,
@@ -2225,12 +2230,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const memory = (bs && bs.memory) || {};
       const identity = (memory.profile && memory.profile.identity) || {};
       const longTermItems = [
-        ...(memory.preferences || []).map(item => ({ ...item, kind: 'preference', type: '长期偏好' })),
-        ...(memory.work_context || []).map(item => ({ ...item, kind: 'work_context', type: '工作背景' })),
+        ...(memory.preferences || []).map(item => ({ ...item, kind: 'preference', type: settingsCopy.memoryTypes.preference })),
+        ...(memory.work_context || []).map(item => ({ ...item, kind: 'work_context', type: settingsCopy.memoryTypes.work_context })),
       ];
       const recentItems = [
-        ...(memory.current_focus || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'current_focus', type: '当前关注' })),
-        ...(memory.recent_activity || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'recent_activity', type: '近期动态' })),
+        ...(memory.current_focus || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'current_focus', type: settingsCopy.memoryTypes.current_focus })),
+        ...(memory.recent_activity || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'recent_activity', type: settingsCopy.memoryTypes.recent_activity })),
       ];
       useEffect(() => {
         if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.memory.loadMemoryOverview) bridge.memory.loadMemoryOverview();
@@ -2245,9 +2250,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           mode: 'memory',
           kind: item.kind,
           id: item.id,
-          title: '记忆详情',
+          title: settingsCopy.memoryDetail,
           subtitle: '',
-          label: '内容',
+          label: settingsCopy.content,
           value: item.text || item.content || '',
           originalValue: item.text || item.content || '',
           multiline: true,
@@ -2271,12 +2276,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         await bridge.memory.deleteMemoryItem(item.kind, item.id);
       };
       const editProfile = key => {
-        const label = key === 'call_name' ? '用户称呼' : '助手昵称';
+        const label = key === 'call_name' ? settingsCopy.userCallName : settingsCopy.assistantNickname;
         setMemoryEditor({
           mode: 'profile',
           key,
-          title: `编辑${label}`,
-          subtitle: key === 'call_name' ? '助手称呼你的方式' : '你称呼助手的方式',
+          title: settingsCopy.editTitle(label),
+          subtitle: key === 'call_name' ? settingsCopy.callNameDesc : settingsCopy.assistantNameDesc,
           label,
           value: identity[key] || '',
           multiline: false,
@@ -2298,19 +2303,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div className="min-w-0">
               <div className="flex items-center gap-2 min-w-0">
                 <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</span>
-                {isLocal && <Tag tone="gray">本地模型</Tag>}
+                {isLocal && <Tag tone="gray">{settingsCopy.localModel}</Tag>}
                 {codingPlan && <Tag tone="gray">Coding Plan</Tag>}
-                {isActive && <Tag>默认</Tag>}
+                {isActive && <Tag>{settingsCopy.defaultTag}</Tag>}
               </div>
               <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{providerLabel} · {m.model}</div>
             </div>
             <div className="shrink-0 flex items-center gap-2">
-              {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>}
-              {!isReadonly && models.length > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+              {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>{settingsCopy.edit}</button>}
+              {!isReadonly && models.length > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>{settingsCopy.delete}</button>}
             </div>
           </div>
         );
-      }) : <div className={`px-4 py-4 text-[14px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>暂无模型</div>;
+      }) : <div className={`px-4 py-4 text-[14px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.noModels}</div>;
       const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
       const selectedPetId = (bs && typeof bs.selectedPet === 'string' && bs.selectedPet) || DEFAULT_PET_ID;
       const handlePetSelect = id => {
@@ -2319,31 +2324,31 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       };
       const renderGeneral = () => (
         <>
-          <IOSSection title="外观">
-            <IOSRow label="界面语言" desc="切换应用显示语言">
+          <IOSSection title={t.uiSettings.appearance}>
+            <IOSRow label={t.uiSettings.language} desc={t.uiSettings.languageDesc}>
               <SSegmented isDark={isDark} value={language} onChange={v => { setLanguage(v); setRestartDialog('language'); }} options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
             </IOSRow>
-            <IOSRow label="主题模式" desc="选择浅色或深色外观">
+            <IOSRow label={t.uiSettings.theme} desc={t.uiSettings.themeDesc}>
               <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme} options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
             </IOSRow>
           </IOSSection>
           {canConfigureDesktopNotifications && (
-          <IOSSection title="通知">
-            <IOSRow label="任务完成提醒" desc="任务完成后展示系统通知">
+          <IOSSection title={t.uiSettings.notifications}>
+            <IOSRow label={t.uiSettings.taskNotice} desc={t.uiSettings.taskNoticeDesc}>
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
             </IOSRow>
           </IOSSection>
           )}
           {canUsePet && (
           <section className="mb-6">
-            <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>桌面助手</div>
+            <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.desktopAssistant}</div>
             <div className={`overflow-hidden rounded-[18px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>
               <div className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b ${
                 isDark ? 'border-white/[0.10] text-[#F2F2F7]' : 'border-black/[0.12] text-[#1C1C1E]'
               } ${petEnabled ? '' : 'last:border-b-0'}`}>
                 <div className="flex-1 min-w-[120px]">
-                  <div className="text-[15px] leading-5 font-normal whitespace-nowrap">桌伴公仔</div>
-                  <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>在桌面显示常驻小公仔</div>
+                  <div className="text-[15px] leading-5 font-normal whitespace-nowrap">{t.uiSettings.pet}</div>
+                  <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.petDesc}</div>
                 </div>
                 <IOSSwitch checked={petEnabled} onChange={onPetEnabledChange} />
               </div>
@@ -2353,6 +2358,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     isDark={isDark}
                     enabled={petEnabled}
                     selectedPetId={selectedPetId}
+                    t={t}
                     onSelect={handlePetSelect}
                   />
                 </div>
@@ -2365,40 +2371,40 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const renderModels = () => (
         <>
           <section className="mb-6">
-            <SectionTitle>模型</SectionTitle>
+            <SectionTitle>{settingsCopy.modelSection}</SectionTitle>
             <Group>
               {renderModelRows(userModels)}
               <button data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
                 className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
                 <Plus size={18} />
-                <span>添加模型</span>
+                <span>{settingsCopy.addModel}</span>
               </button>
             </Group>
-            {modelEnvLocked.length > 0 && <div className={`px-3 mt-2 text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>如果模型配置被环境变量管理，设置页会保留当前值，但修改可能需要到环境变量中完成。</div>}
+            {modelEnvLocked.length > 0 && <div className={`px-3 mt-2 text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.envManaged}</div>}
           </section>
         </>
       );
       const renderSearch = () => (
         <>
           <section className="mb-6">
-            <SectionTitle>搜索源列表</SectionTitle>
+            <SectionTitle>{settingsCopy.searchList}</SectionTitle>
             <Group>
             {enabledSearchList.map(item => {
               return (
                 <div key={item.key} className={`min-h-[60px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-[14px] px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
-                  <button onClick={() => { setSearchProvider(item.key); setRestartDialog('search'); }} className="shrink-0" title="设为默认">
+                  <button onClick={() => { setSearchProvider(item.key); setRestartDialog('search'); }} className="shrink-0" title={settingsCopy.setDefault}>
                     <RadioDot active={searchProvider === item.key} />
                   </button>
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.label}</span>
-                      {item.key === searchProvider && <Tag>默认</Tag>}
+                      {item.key === searchProvider && <Tag>{settingsCopy.defaultTag}</Tag>}
                     </div>
                     <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {item.key !== 'bing' && <button onClick={() => { setPendingSearchProvider(null); setEditingSearch(item.key); }} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>编辑</button>}
-                    {item.key !== 'bing' && <button onClick={() => setSearchDeleteConfirm(item)} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>删除</button>}
+                    {item.key !== 'bing' && <button onClick={() => { setPendingSearchProvider(null); setEditingSearch(item.key); }} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>{settingsCopy.edit}</button>}
+                    {item.key !== 'bing' && <button onClick={() => setSearchDeleteConfirm(item)} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>{settingsCopy.delete}</button>}
                   </div>
                 </div>
               );
@@ -2406,60 +2412,60 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <button onClick={() => setSearchPickerOpen(true)}
               className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
               <Plus size={18} />
-              <span>添加搜索源</span>
+              <span>{settingsCopy.addSearch}</span>
             </button>
             </Group>
           </section>
         </>
       );
       const renderMemoryList = (items, empty) => items.length ? items.map(item => {
-        const text = item.text || item.content || '未命名记忆';
+        const text = item.text || item.content || settingsCopy.unnamedMemory;
         return (
           <div key={`${item.kind}-${item.id}`} className={`min-h-[92px] flex items-start gap-4 px-4 py-3.5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
             <div className="min-w-0 flex-1">
               <div className={`text-[15px] leading-6 whitespace-pre-wrap break-words line-clamp-3 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{text}</div>
             </div>
-            <button onClick={() => openMemoryItemViewer(item)} className={`shrink-0 mt-0.5 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>查看</button>
+            <button onClick={() => openMemoryItemViewer(item)} className={`shrink-0 mt-0.5 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.view}</button>
           </div>
         );
       }) : <IOSRow label={empty} />;
       const renderMemory = () => (
         <>
           <IOSSection>
-            <IOSRow label="启用记忆" desc="PINVOU 会记住称呼、偏好、工作背景和近期事项">
+            <IOSRow label={settingsCopy.enableMemory} desc={settingsCopy.enableMemoryDesc}>
               <IOSSwitch checked={memoryEnabled} onChange={onMemoryEnabledChange} />
             </IOSRow>
           </IOSSection>
           {memoryEnabled && (
             <>
-              <IOSSection title="个人资料">
-                <IOSRow label="用户称呼" desc="助手称呼你的方式" value={identity.call_name || '未设置'} onClick={() => editProfile('call_name')}>
+              <IOSSection title={settingsCopy.profile}>
+                <IOSRow label={settingsCopy.userCallName} desc={settingsCopy.callNameDesc} value={identity.call_name || settingsCopy.notSet} onClick={() => editProfile('call_name')}>
                   <ChevronDown size={22} className="-rotate-90 opacity-35" />
                 </IOSRow>
-                <IOSRow label="助手昵称" desc="你称呼助手的方式" value={identity.assistant_alias || 'PINVOU'} onClick={() => editProfile('assistant_alias')}>
+                <IOSRow label={settingsCopy.assistantNickname} desc={settingsCopy.assistantNameDesc} value={identity.assistant_alias || 'PINVOU'} onClick={() => editProfile('assistant_alias')}>
                   <ChevronDown size={22} className="-rotate-90 opacity-35" />
                 </IOSRow>
               </IOSSection>
-              <IOSSection title="长期记忆">{renderMemoryList(longTermItems, '暂无长期记忆')}</IOSSection>
-              <IOSSection title="短期记忆">{renderMemoryList(recentItems, '暂无短期记忆')}</IOSSection>
+              <IOSSection title={settingsCopy.longMemory}>{renderMemoryList(longTermItems, settingsCopy.noLongMemory)}</IOSSection>
+              <IOSSection title={settingsCopy.shortMemory}>{renderMemoryList(recentItems, settingsCopy.noShortMemory)}</IOSSection>
             </>
           )}
         </>
       );
       const renderData = () => (
-        <IOSSection title="隐藏任务">
+        <IOSSection title={settingsCopy.hiddenTasks}>
           {archivedSessions.length ? archivedSessions.map(s => (
-            <IOSRow key={s.id} label={s.title || t.newChat} desc={`收纳于 ${formatSessionDate(s.archived_at || s.updated_at || s.created_at, language)}`}>
-              <button onClick={() => onRestoreArchived && onRestoreArchived(s.id)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>恢复</button>
-              <button onClick={() => setArchivedDeleteConfirm(s)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('red')}`}>删除</button>
+            <IOSRow key={s.id} label={s.title || t.newChat} desc={settingsCopy.archivedAt(formatSessionDate(s.archived_at || s.updated_at || s.created_at, language))}>
+              <button onClick={() => onRestoreArchived && onRestoreArchived(s.id)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.restore}</button>
+              <button onClick={() => setArchivedDeleteConfirm(s)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('red')}`}>{settingsCopy.delete}</button>
             </IOSRow>
-          )) : <IOSRow label="暂无隐藏任务" desc="收纳后的任务会显示在这里" />}
+          )) : <IOSRow label={settingsCopy.noHiddenTasks} desc={settingsCopy.noHiddenTasksDesc} />}
         </IOSSection>
       );
       const renderUpdate = () => {
         const upd = bs && bs.updateInfo;
         const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
-        const notes = (upd && String(upd.notes || '').trim()) || '暂无更新说明';
+        const notes = (upd && String(upd.notes || '').trim()) || t.uiSettings.noReleaseNotes;
         const updateChecking = !!(bs && bs.updateChecking);
         const updateDownloading = !!(bs && bs.updateDownloading);
         const updateCancelling = !!(bs && bs.updateCancelling);
@@ -2468,17 +2474,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const isWindowsUpdate = upd && upd.platform === 'windows';
         const updateError = (bs && bs.updateError) || (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? bs.updateCheckError : '');
         const updateStatusDesc = updateDownloading
-          ? (updateProgress >= 100 ? '正在安装更新…' : `正在下载更新 ${updateProgress}%`)
+          ? (updateProgress >= 100 ? t.uiSettings.installingUpdate : t.uiSettings.downloading(updateProgress))
           : updateReady
-            ? (isWindowsUpdate ? '安装器已启动，应用将自动退出' : '升级完成，重启后生效')
-            : (upd && upd.available ? `v${upd.latest_version}` : (bs && bs.updateCheckError === 'latest' ? '已是最新版本' : ''));
+            ? (isWindowsUpdate ? t.updateInstallerStarted : t.updateComplete)
+            : (upd && upd.available ? `v${upd.latest_version}` : (bs && bs.updateCheckError === 'latest' ? t.upToDate : ''));
         const updateButtonLabel = updateChecking
-          ? '检查中…'
+          ? t.checking
           : updateDownloading
-            ? (updateProgress >= 100 ? '安装中…' : (updateCancelling ? '取消中…' : '取消下载'))
+            ? (updateProgress >= 100 ? t.installing : (updateCancelling ? t.cancelling : t.uiSettings.cancelDownload))
             : updateReady
-              ? (isWindowsUpdate ? '安装器已启动' : '立即重启')
-              : (upd && upd.available ? (upd.platform === 'linux' ? '升级并重启' : '下载并安装') : '检查更新');
+              ? (isWindowsUpdate ? t.uiSettings.installerStarted : t.restartNow)
+              : (upd && upd.available ? (upd.platform === 'linux' ? t.downloadInstallRestart : t.downloadInstall) : t.checkUpdate);
         const updateButtonDisabled = !bridge.available || updateChecking || updateCancelling || (updateDownloading && updateProgress >= 100) || (updateReady && isWindowsUpdate);
         const handleUpdateAction = () => {
           if (!bridge.available || updateChecking) return;
@@ -2495,9 +2501,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         };
         return (
           <div ref={versionUpdateRef} id="settings-version-update">
-            <IOSSection title="版本">
-              <IOSRow label="当前版本" desc="内测版" value={`v${currentVersion}`} />
-              <IOSRow label={upd && upd.available ? '发现新版本' : '检查更新'} desc={updateStatusDesc}>
+            <IOSSection title={t.uiSettings.version}>
+              <IOSRow label={t.uiSettings.currentVersion} desc={t.uiSettings.beta} value={`v${currentVersion}`} />
+              <IOSRow label={upd && upd.available ? t.newVersionFound : t.checkUpdate} desc={updateStatusDesc}>
               <button data-settings-update-action="true" onClick={handleUpdateAction} disabled={updateButtonDisabled} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">{updateButtonLabel}</button>
             </IOSRow>
             </IOSSection>
@@ -2505,7 +2511,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] break-words">{String(updateError)}</div>
             )}
             <section className="mb-6">
-              <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>更新内容</div>
+              <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.releaseNotes}</div>
               <div className={`rounded-[18px] px-4 py-3.5 text-[14px] leading-6 whitespace-pre-line ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>{notes}</div>
             </section>
           </div>
@@ -2522,8 +2528,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return (
           <>
             {showSuperPermissionSettings && (
-              <IOSSection title="系统">
-                <IOSRow label="高级执行权限" desc="允许助手执行环境配置等高级指令">
+              <IOSSection title={settingsCopy.system}>
+                <IOSRow label={settingsCopy.advancedPermission} desc={settingsCopy.advancedPermissionDesc}>
                   <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
                 </IOSRow>
               </IOSSection>
@@ -2545,11 +2551,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </IOSRow>
                 {missing.map(dep => (
                   <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={dep.apt || ''}>
-                    <Tag tone="gray">缺失</Tag>
+                    <Tag tone="gray">{settingsCopy.missing}</Tag>
                   </IOSRow>
                 ))}
                 {missing.length > 0 && (
-                  <IOSRow label={usesBundledDependencyInstaller ? '安装缺失依赖' : t.depGoInstall}>
+                  <IOSRow label={usesBundledDependencyInstaller ? settingsCopy.installMissing : t.depGoInstall}>
                     <button
                       onClick={() => bridge.available && bridge.dependencies.installDependencies()}
                       disabled={!bridge.available || busy}
@@ -2564,8 +2570,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       };
       const renderHelp = () => (
         <IOSSection>
-          <IOSRow label="提交问题或建议" desc="支持图片和视频附件，提交前会显示隐私提示">
-            <button onClick={() => setFeedbackOpen(true)} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">提交反馈</button>
+          <IOSRow label={settingsCopy.feedbackTitle} desc={settingsCopy.feedbackDesc}>
+            <button onClick={() => setFeedbackOpen(true)} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">{settingsCopy.submitFeedback}</button>
           </IOSRow>
         </IOSSection>
       );
@@ -2580,15 +2586,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return renderGeneral();
       };
       const sectionTitle = {
-        general: '通用',
-        model: '模型',
-        search: '搜索',
-        memory: '记忆',
-        permissions: '权限与环境',
-        data: '数据管理',
-        update: '更新',
-        help: '帮助反馈',
-      }[activeSection] || '通用';
+        general: t.uiSettings.general,
+        model: t.uiSettings.model,
+        search: t.uiSettings.search,
+        memory: t.uiSettings.memory,
+        permissions: t.uiSettings.permissions,
+        data: t.uiSettings.data,
+        update: t.uiSettings.update,
+        help: t.uiSettings.help,
+      }[activeSection] || t.uiSettings.general;
       const SearchSourceModal = ({ provider, isNew, onClose }) => {
         const option = searchOptions.find(x => x.key === provider);
         const [showSearchKey, setShowSearchKey] = useState(false);
@@ -2605,7 +2611,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                 <div>
-                  <h2 className="text-[20px] leading-6 font-semibold">编辑搜索源</h2>
+                  <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.editSearch}</h2>
                   <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{option ? option.label : provider}</p>
                 </div>
                 <button onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
@@ -2617,23 +2623,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     <label className="shrink-0 text-[14px] leading-5">API Key</label>
                     <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
                       autoFocus
-                      placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                      placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                       style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
                       className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
-                    <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? '隐藏' : '显示'}</button>
+                    <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? settingsCopy.hide : settingsCopy.show}</button>
                     </div>
                   </div>
                 </section>
               </div>
               <div className={`flex justify-end gap-2 px-5 py-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
-                <button onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>取消</button>
+                <button onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{settingsCopy.cancel}</button>
                 <button onClick={() => {
                   if (!canSaveSearch) return;
                   if (isNew) onAddSearchProvider && onAddSearchProvider(provider);
                   if (draftKey.trim()) setSearchApiKey(draftKey, provider);
                   onClose();
                   setRestartDialog('search');
-                }} disabled={!canSaveSearch} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">保存</button>
+                }} disabled={!canSaveSearch} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{settingsCopy.save}</button>
               </div>
             </div>
           </div>
@@ -2643,8 +2649,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
           <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
             <div className="px-6 pt-6 pb-5 text-center">
-              <h3 className="text-[18px] font-semibold">{type === 'search' ? '重启以应用搜索配置？' : '重启以应用语言设置？'}</h3>
-              <p className={`mt-2 text-[14px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{type === 'search' ? '搜索源或凭据保存后，需要重启应用才能用于助手的联网搜索。' : '界面语言已切换，重启后助手回复语言也会同步生效。'}</p>
+              <h3 className="text-[18px] font-semibold">{type === 'search' ? settingsCopy.restartSearchTitle : settingsCopy.restartLanguageTitle}</h3>
+              <p className={`mt-2 text-[14px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{type === 'search' ? settingsCopy.restartSearchDesc : settingsCopy.restartLanguageDesc}</p>
             </div>
             <div className={`grid grid-cols-2 border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
               <button onClick={async () => {
@@ -2653,8 +2659,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   if (saved === false) return;
                 }
                 setRestartDialog(null);
-              }} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>稍后</button>
-              <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">现在重启</button>
+              }} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>{settingsCopy.later}</button>
+              <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.restartNow}</button>
             </div>
           </div>
         </div>
@@ -2663,12 +2669,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
           <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
             <div className="px-5 pt-5 pb-4 text-center">
-              <h3 className="text-[17px] leading-6 font-semibold">删除模型？</h3>
-              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>将移除该模型配置和已保存的凭据。</p>
+              <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteModelTitle}</h3>
+              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.deleteModelDesc}</p>
             </div>
             <div className={`border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
-              <button onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>删除模型</button>
-              <button onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">取消</button>
+              <button onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>{settingsCopy.deleteModel}</button>
+              <button onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
             </div>
           </div>
         </div>
@@ -2677,12 +2683,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
           <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
             <div className="px-5 pt-5 pb-4 text-center">
-              <h3 className="text-[17px] leading-6 font-semibold">删除搜索源？</h3>
-              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>将移除 {source.label} 和已保存的凭据。</p>
+              <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteSearchTitle}</h3>
+              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.deleteSearchDesc(source.label)}</p>
             </div>
             <div className={`border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
-              <button onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>删除搜索源</button>
-              <button onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">取消</button>
+              <button onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>{settingsCopy.deleteSearch}</button>
+              <button onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
             </div>
           </div>
         </div>
@@ -2709,23 +2715,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               data-testid="settings-nav"
               className={`w-full sm:w-[clamp(150px,24vw,210px)] shrink-0 max-sm:flex-1 max-sm:min-w-0 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto custom-scrollbar max-sm-hide-scrollbar sm:border-r px-3 sm:px-4 py-3 sm:py-7 max-sm:flex max-sm:items-center max-sm:gap-2 ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}
             >
-              <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>常用</div>
+              <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.common}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                <SectionButton id="general" icon={<Sparkles size={17} />} label="通用" />
-                <SectionButton id="model" icon={<Cpu size={17} />} label="模型" />
-                <SectionButton id="search" icon={<Search size={17} />} label="搜索" />
-                {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label="记忆" />}
+                <SectionButton id="general" icon={<Sparkles size={17} />} label={t.uiSettings.general} />
+                <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} />
+                <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
+                {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
               </div>
-              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>系统</div>
+              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label="权限与环境" />}
-                <SectionButton id="data" icon={<Archive size={17} />} label="数据管理" />
-                {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label="更新" dot={hasUpdate} />}
-                <SectionButton id="help" icon={<MessageSquare size={17} />} label="帮助反馈" />
+                {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
+                <SectionButton id="data" icon={<Archive size={17} />} label={t.uiSettings.data} />
+                {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
+                <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />
               </div>
             </aside>
             {onCloseSettings && (
-              <button data-testid="settings-close" onClick={onCloseSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
+              <button data-testid="settings-close" onClick={onCloseSettings} aria-label={settingsCopy.closeSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
                 <X size={18} />
               </button>
             )}
@@ -2752,8 +2758,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
                 <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                   <div>
-                    <h2 className="text-[20px] leading-6 font-semibold">添加搜索源</h2>
-                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>选择搜索源后再填写必要凭据</p>
+                    <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.addSearch}</h2>
+                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.addSearchDesc}</p>
                   </div>
                   <button onClick={() => setSearchPickerOpen(false)} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
                 </div>
@@ -2813,8 +2819,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     )}
                   </label>
                   <div className="mt-6 flex justify-end gap-2.5">
-                    <button onClick={() => setMemoryEditor(null)} className={`h-10 px-4 rounded-full text-[14px] font-semibold ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#E5E5EA]'}`}>取消</button>
-                    <button onClick={saveMemoryEditor} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">保存</button>
+                    <button onClick={() => setMemoryEditor(null)} className={`h-10 px-4 rounded-full text-[14px] font-semibold ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#E5E5EA]'}`}>{settingsCopy.cancel}</button>
+                    <button onClick={saveMemoryEditor} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">{settingsCopy.save}</button>
                   </div>
                 </div>
               </div>
