@@ -742,8 +742,10 @@ fn materialize_dispatch_graph(project: &Path) -> Result<(), String> {
         return Err(format!("dispatch_graph.py not found: {}", script.display()));
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = [script.to_string_lossy().to_string(),
-        project.to_string_lossy().to_string()];
+    let args = [
+        script.to_string_lossy().to_string(),
+        project.to_string_lossy().to_string(),
+    ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     run_python(&arg_refs, scripts_dir).map(|_| ())
 }
@@ -912,8 +914,10 @@ fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
         return Err(format!("warmup_check.py not found: {}", script.display()));
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = [script.to_string_lossy().to_string(),
-        project.to_string_lossy().to_string()];
+    let args = [
+        script.to_string_lossy().to_string(),
+        project.to_string_lossy().to_string(),
+    ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     match run_python_with_timeout(&arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
         Ok(stdout) => match serde_json::from_str(&stdout) {
@@ -1127,10 +1131,12 @@ fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
         });
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = [script.to_string_lossy().to_string(),
+    let args = [
+        script.to_string_lossy().to_string(),
         deck_dir.to_string_lossy().to_string(),
         "--layer".to_string(),
-        "1".to_string()];
+        "1".to_string(),
+    ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let out = run_python(&arg_refs, scripts_dir)?;
     serde_json::from_str(&out).map_err(|e| format!("parse gate_runner: {e}"))
@@ -1145,9 +1151,11 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
         });
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = [script.to_string_lossy().to_string(),
+    let args = [
+        script.to_string_lossy().to_string(),
         project.to_string_lossy().to_string(),
-        role_id.to_string()];
+        role_id.to_string(),
+    ];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let out = run_python(&arg_refs, scripts_dir)?;
     let v: serde_json::Value =

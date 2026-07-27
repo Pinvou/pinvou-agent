@@ -1679,7 +1679,10 @@ fn clean_msg_text(value: &str) -> String {
 
 fn decode_msg_html_payload(value: &str) -> String {
     let value = clean_msg_text(value);
-    if value.len() < 8 || !value.len().is_multiple_of(2) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if value.len() < 8
+        || !value.len().is_multiple_of(2)
+        || !value.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return value;
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);

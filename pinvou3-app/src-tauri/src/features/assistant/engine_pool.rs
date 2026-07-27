@@ -651,9 +651,7 @@ impl EnginePool {
         let persona_reminder = active_card
             .as_ref()
             .map(crate::features::personas::equip_anchor);
-        let restrict_tools = active_card
-            .as_ref()
-            .is_some_and(|c| c.conversational_only);
+        let restrict_tools = active_card.as_ref().is_some_and(|c| c.conversational_only);
         let restrict_tools = restrict_tools || restrict_tools_for_turn;
         self.get_or_spawn(session_id)
             .await?

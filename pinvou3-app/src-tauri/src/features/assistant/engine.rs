@@ -2824,9 +2824,7 @@ fn scheduled_tool_should_auto_approve(
     profile: Option<&ScheduledRunProfile>,
     approval_force_prompt: bool,
 ) -> bool {
-    profile.is_none_or(|profile| {
-        profile.auto_approve && !approval_force_prompt
-    })
+    profile.is_none_or(|profile| profile.auto_approve && !approval_force_prompt)
 }
 
 #[cfg(test)]

@@ -32,8 +32,7 @@ pub enum ColorScheme {
     System,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum Language {
     #[serde(rename = "zh-Hans")]
     #[default]

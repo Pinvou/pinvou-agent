@@ -689,8 +689,7 @@ impl Pinvou3Bundle {
                 "args": [present_server.to_string_lossy()]
             }),
         );
-        let json = serde_json::to_string_pretty(&mcp)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         std::fs::write(&self.mcp_json, json)
     }
 
@@ -728,8 +727,7 @@ impl Pinvou3Bundle {
             }
         }
         if changed {
-            let json = serde_json::to_string_pretty(&mcp)
-                .map_err(std::io::Error::other)?;
+            let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
             std::fs::write(&self.mcp_json, json)?;
         }
         Ok(())
