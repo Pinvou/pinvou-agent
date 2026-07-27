@@ -270,6 +270,7 @@
       qr_data_url: null,
       status: "idle",
       relay_url: "",
+      web_client_connected: false,
       last_error: null,
       starting: false,
     },
@@ -533,7 +534,7 @@
   var persistMessages = chatFeature.persistMessages;
 
   var sessionsFeature = installBridgeFeature("sessions", {
-    state: state, invoke: invoke, notify: notify,
+    state: state, invoke: invoke, listen: listen, notify: notify,
     sessionStates: sessionStates, scheduledRunSessionOwners: scheduledRunSessionOwners,
     personaPlaceholderTitles: personaPlaceholderTitles, turnUsageDirty: turnUsageDirty,
     runSyncOnSession: runSyncOnSession, persistMessagesFor: persistMessagesFor,
@@ -1579,7 +1580,18 @@
   var cancelUpdate = updaterFeature.cancelUpdate;
   var restartApp = updaterFeature.restartApp;
   var reportPendingUpdateResult = updaterFeature.reportPendingUpdateResult;
-  var remoteControlFeature = installBridgeFeature("remote-control", { state: state, notify: notify, invoke: invoke });
+  var remoteControlFeature = installBridgeFeature("remote-control", {
+    state: state,
+    notify: notify,
+    invoke: invoke,
+    listen: listen,
+  });
+  // 撕离窗口不是权威主 WebView，不注册桌面 RPC 代理。
+  if (!/(?:^|[?&])detached=1(?:&|$)/.test(locationSearch)) {
+    Promise.resolve(remoteControlFeature.startDesktopProxy()).catch(function (error) {
+      console.error("[WebAccess] desktop proxy startup failed", error);
+    });
+  }
   var refreshRemoteControlStatus = remoteControlFeature.refreshRemoteControlStatus;
   var startRemoteControl = remoteControlFeature.startRemoteControl;
   var stopRemoteControl = remoteControlFeature.stopRemoteControl;

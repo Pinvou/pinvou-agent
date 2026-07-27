@@ -698,7 +698,8 @@
         id: sid,
         downloadId: downloadId,
         offset: offset,
-        limit: 256 * 1024,
+        // 不传 limit，由桌面端按自身版本上限决定块大小；新 WebUI
+        // 先于桌面部署时也不会因为块大小超过旧桌面上限而被拒绝。
       });
       var chunkOffset = Number(chunk && chunk.offset);
       var chunkTotal = Number(chunk && chunk.total);
@@ -1922,19 +1923,35 @@
   }
 
   // ── Session management ───────────────────────────────────────────
+  var refreshHistoryInflight = null;
+  var refreshHistoryQueued = false;
   async function refreshHistoryList() {
-    try {
-      state.sessions = await invoke("list_sessions");
-    } catch (e) {
-      console.warn("list_sessions failed", e);
-      state.sessions = [];
+    if (refreshHistoryInflight) {
+      refreshHistoryQueued = true;
+      return refreshHistoryInflight;
     }
-    try {
-      state.archivedSessions = await invoke("list_archived_sessions");
-    } catch (e) {
-      state.archivedSessions = state.archivedSessions || [];
-    }
-    notify();
+    refreshHistoryInflight = (async function () {
+      try {
+        do {
+          refreshHistoryQueued = false;
+          try {
+            state.sessions = await invoke("list_sessions");
+          } catch (e) {
+            console.warn("list_sessions failed", e);
+            state.sessions = [];
+          }
+          try {
+            state.archivedSessions = await invoke("list_archived_sessions");
+          } catch (e) {
+            state.archivedSessions = state.archivedSessions || [];
+          }
+          notify();
+        } while (refreshHistoryQueued);
+      } finally {
+        refreshHistoryInflight = null;
+      }
+    })();
+    return refreshHistoryInflight;
   }
 
   // 进入草稿态:不创建 session,只清空工作集 + activeSessionId=null,落在「你好」欢迎页。
@@ -2433,8 +2450,10 @@
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id: id });
       applyDeletedSession(id);
+      return true;
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
+      return false;
     }
   }
 
@@ -2494,7 +2513,17 @@
     if (idx < 0) {
       // 定时运行会话不在 state.sessions;收起 = 从侧边栏记录移除,进设置页归档列表。
       var scheduledRun = recentScheduledRunForSession(id);
-      if (!scheduledRun) return;
+      // Codex 等独立会话也不在 state.sessions；交给后端判定并刷新统一历史列表。
+      if (!scheduledRun) {
+        try {
+          await invoke("set_session_archived", { id: id, archived: true });
+          await refreshHistoryList();
+          return true;
+        } catch (e) {
+          console.warn("set_session_archived failed", e);
+          return false;
+        }
+      }
       var previousRuns = state.scheduledTaskRecentRuns || [];
       var wasViewingRun = state.activeSessionId === id;
       var previousContext = state.scheduledRunContext;
@@ -2508,6 +2537,7 @@
       try {
         await invoke("set_session_archived", { id: id, archived: true });
         await refreshHistoryList();
+        return true;
       } catch (e) {
         state.scheduledTaskRecentRuns = previousRuns;
         if (wasViewingRun) {
@@ -2519,8 +2549,8 @@
         }
         console.warn("set_session_archived failed", e);
         notify();
+        return false;
       }
-      return;
     }
     var s = state.sessions[idx];
     var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
@@ -2533,6 +2563,7 @@
     try {
       await invoke("set_session_archived", { id: id, archived: true });
       await refreshHistoryList();
+      return true;
     } catch (e) {
       state.sessions.splice(idx, 0, s);
       state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
@@ -2542,12 +2573,13 @@
       }
       console.warn("set_session_archived failed", e);
       notify();
+      return false;
     }
   }
 
   async function restoreArchivedSession(id) {
     var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
-    if (idx < 0) return;
+    if (idx < 0) return false;
     var s = state.archivedSessions[idx];
     invalidateScheduledRecentRunsForSession(id);
     var restored = Object.assign({}, s, { archived: false, archived_at: null });
@@ -2559,11 +2591,13 @@
       await refreshHistoryList();
       // 还原的定时运行会话回侧边栏"定时任务记录"(refreshHistoryList 只管普通会话)。
       if (String(id).indexOf("sched-") === 0) loadScheduledTaskRecentRuns().catch(function () {});
+      return true;
     } catch (e) {
       state.archivedSessions.splice(idx, 0, s);
       state.sessions = (state.sessions || []).filter(function (x) { return x.id !== id; });
       console.warn("restore archived session failed", e);
       notify();
+      return false;
     }
   }
 
@@ -3637,6 +3671,25 @@
   // ── Event listeners ──────────────────────────────────────────────
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
+  });
+  listen("session:list_changed", function () {
+    refreshHistoryList().catch(function (error) {
+      console.error("[sessions] session:list_changed refresh failed", error);
+    });
+  });
+  listen("session:model_changed", function (e) {
+    var payload = e && e.payload || {};
+    if (payload.id !== state.activeSessionId) return;
+    loadSessionModel(payload.id).catch(function (error) {
+      console.error("[sessions] session:model_changed refresh failed", error);
+    });
+  });
+  listen("session:persona_changed", function (e) {
+    var payload = e && e.payload || {};
+    if (payload.id !== state.activeSessionId) return;
+    Promise.resolve(syncActivePersona()).then(notify).catch(function (error) {
+      console.error("[sessions] session:persona_changed refresh failed", error);
+    });
   });
 
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
@@ -4821,7 +4874,10 @@
   }
 
   // ── Backend status (live dot) ────────────────────────────────────
+  var backendStatusPollInFlight = false;
   async function pollBackendStatus() {
+    if (backendStatusPollInFlight) return;
+    backendStatusPollInFlight = true;
     try {
       var s = await invoke("get_backend_status");
       state.backendOnline = !!s.vllm_online;
@@ -4832,6 +4888,8 @@
       }
     } catch (e) {
       state.backendOnline = false;
+    } finally {
+      backendStatusPollInFlight = false;
     }
     notify();
   }
@@ -6936,137 +6994,6 @@
   }
 
   // ── Init ─────────────────────────────────────────────────────────
-  // The desktop WebView remains the only process allowed to invoke application
-  // commands. Rust validates first; this policy check makes the JS boundary
-  // explicit as defence in depth.
-  var webAccessProxyStarted = false;
-  var webAccessEventForwarders = {};
-  var webAccessPolicyPromise = null;
-  var webAccessBridgeGeneration = (function () {
-    try {
-      if (window.crypto && typeof window.crypto.randomUUID === "function") {
-        return "webview_" + window.crypto.randomUUID().replace(/-/g, "_");
-      }
-    } catch (_) {}
-    return "webview_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
-  })();
-  function loadWebAccessPolicy() {
-    if (webAccessPolicyPromise) return webAccessPolicyPromise;
-    var url = new URL("web-access-policy.json", document.baseURI);
-    webAccessPolicyPromise = fetch(url, { cache: "no-store" }).then(function (response) {
-      if (!response.ok) throw new Error("Web access policy unavailable (" + response.status + ")");
-      return response.json();
-    }).then(function (policy) {
-      return {
-        commands: new Set(policy.allowed_commands || []),
-        events: new Set(policy.allowed_events || []),
-      };
-    });
-    return webAccessPolicyPromise;
-  }
-  function webAccessPayload(event) {
-    return event && Object.prototype.hasOwnProperty.call(event, "payload") ? event.payload : (event || {});
-  }
-  function webAccessRespond(requestId, ok, result, error) {
-    return invoke("web_access_rpc_respond", {
-      requestId: requestId,
-      generation: webAccessBridgeGeneration,
-      ok: !!ok,
-      result: result === undefined ? null : result,
-      error: error ? String(error) : null,
-    }).catch(function (respondError) {
-      console.warn("[WebAccess] failed to send RPC response", respondError);
-    });
-  }
-  async function registerWebAccessDesktopProxy() {
-    // Some bridge unit tests execute this file in a minimal VM without browser
-    // networking globals. The real desktop WebView always provides `fetch`.
-    if (IS_WEB || isDetachedWindow || webAccessProxyStarted || typeof fetch !== "function") return;
-    webAccessProxyStarted = true;
-    var policyReady = loadWebAccessPolicy();
-    // Install every allowlisted desktop-side forwarder before the bridge
-    // readiness ACK. Browser subscriptions can otherwise race the async
-    // Tauri `listen()` call and lose workflow events emitted in that gap.
-    var eventForwardersReady = policyReady.then(function (policy) {
-      return Promise.all(Array.from(policy.events).map(function (name) {
-        if (webAccessEventForwarders[name]) return Promise.resolve();
-        return listen(name, function (appEvent) {
-          invoke("web_access_publish_event", {
-            event: name,
-            payload: appEvent ? appEvent.payload : null,
-          }).catch(function () {});
-        }).then(function (unlisten) {
-          webAccessEventForwarders[name] = unlisten;
-        });
-      }));
-    });
-
-    var rpcListenerReady = listen("web_access:rpc_request", async function (event) {
-      var request = webAccessPayload(event);
-      var requestId = request.request_id || request.requestId || request.id;
-      var requestGeneration = request.bridge_generation || request.bridgeGeneration;
-      if (!requestId || requestGeneration !== webAccessBridgeGeneration) return;
-      var mayExecute = false;
-      try {
-        mayExecute = await invoke("web_access_rpc_begin", {
-          requestId: requestId,
-          generation: webAccessBridgeGeneration,
-        });
-      } catch (error) {
-        console.warn("[WebAccess] RPC begin barrier failed", error);
-        return;
-      }
-      if (!mayExecute) return;
-
-      var policy;
-      try { policy = await policyReady; }
-      catch (error) {
-        console.error("[WebAccess] policy load failed", error);
-        await webAccessRespond(requestId, false, null, error);
-        return;
-      }
-      var command = String(request.command || "");
-      if (!policy.commands.has(command)) {
-        await webAccessRespond(requestId, false, null, "远程控制不允许调用该命令：" + command);
-        return;
-      }
-      if (command === "__dialog_open") {
-        await webAccessRespond(requestId, false, null, "远程控制使用桌面端文件选择器");
-        return;
-      }
-      try {
-        var result = await invoke(command, request.args || {});
-        await webAccessRespond(requestId, true, result, null);
-      } catch (error) {
-        await webAccessRespond(requestId, false, null, error && error.message ? error.message : error);
-      }
-    });
-    rpcListenerReady.catch(function (error) { console.error("[WebAccess] RPC listener failed", error); });
-
-    var subscribeListenerReady = listen("web_access:event_subscribe", async function (event) {
-      var policy;
-      try { policy = await policyReady; }
-      catch (error) { console.error("[WebAccess] policy load failed", error); return; }
-      var name = String(webAccessPayload(event).event || "");
-      if (!name || !policy.events.has(name)) return;
-      await eventForwardersReady;
-    });
-    subscribeListenerReady.catch(function (error) { console.error("[WebAccess] subscribe listener failed", error); });
-
-    // Forwarders remain installed for the lifetime of the authoritative main
-    // WebView. The Rust manager filters delivery per current Web lease.
-    var unsubscribeListenerReady = listen("web_access:event_unsubscribe", function () {});
-    unsubscribeListenerReady.catch(function (error) { console.error("[WebAccess] unsubscribe listener failed", error); });
-
-    Promise.all([policyReady, eventForwardersReady, rpcListenerReady, subscribeListenerReady, unsubscribeListenerReady]).then(function () {
-      return invoke("web_access_bridge_ready", { generation: webAccessBridgeGeneration });
-    }).catch(function (error) {
-      console.error("[WebAccess] desktop bridge readiness failed", error);
-    });
-  }
-
-  if (!IS_WEB && !isDetachedWindow) registerWebAccessDesktopProxy();
-
   function disarmWebInitRetry() {
     if (!webInitRetryArmed || !webInitRetryHandler) return;
     window.removeEventListener("pinvou:web-connection", webInitRetryHandler);

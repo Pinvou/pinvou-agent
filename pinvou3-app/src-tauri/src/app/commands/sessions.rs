@@ -33,6 +33,15 @@ pub(super) fn ensure_chat_session(
     }
 }
 
+pub(super) fn emit_session_event(app: &AppHandle, event: &str, id: &str, action: &str) {
+    let payload = serde_json::json!({
+        "id": id,
+        "action": action,
+    });
+    let _ = app.emit(event, payload.clone());
+    crate::features::remote_control::forward_app_event(app, event, payload);
+}
+
 /// 清当前会话历史。
 ///
 /// **当前 MVP 限制**：仅返回 Ok 让前端清显示；后端 EngineHandle 仍持
@@ -114,6 +123,7 @@ pub async fn list_archived_sessions(
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
+    app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
@@ -125,6 +135,12 @@ pub async fn create_session(
     if set_active.unwrap_or(true) {
         store.set_active(Some(session.metadata.id.clone()));
     }
+    emit_session_event(
+        &app,
+        "session:list_changed",
+        &session.metadata.id,
+        "created",
+    );
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(session.metadata)
@@ -202,11 +218,14 @@ pub async fn delete_session(
 pub async fn rename_session(
     id: String,
     title: String,
+    app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     store
         .set_title(&id, title)
-        .map_err(|e| format!("rename_session({id}): {e:?}"))
+        .map_err(|e| format!("rename_session({id}): {e:?}"))?;
+    emit_session_event(&app, "session:list_changed", &id, "renamed");
+    Ok(())
 }
 
 /// 设置历史对话置顶状态。普通会话与定时运行会话共用置顶表。
@@ -214,6 +233,7 @@ pub async fn rename_session(
 pub async fn set_session_pinned(
     id: String,
     pinned: bool,
+    app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
@@ -221,6 +241,8 @@ pub async fn set_session_pinned(
         .load(&id)
         .map_err(|e| format!("set_session_pinned({id}): {e:?}"))?;
     store.set_pinned(&id, pinned);
+    let action = if pinned { "pinned" } else { "unpinned" };
+    emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
 }
 
@@ -229,6 +251,7 @@ pub async fn set_session_pinned(
 pub async fn set_session_archived(
     id: String,
     archived: bool,
+    app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
@@ -236,6 +259,8 @@ pub async fn set_session_archived(
         .load(&id)
         .map_err(|e| format!("set_session_archived({id}): {e:?}"))?;
     store.set_hidden(&id, archived);
+    let action = if archived { "archived" } else { "restored" };
+    emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
 }
 

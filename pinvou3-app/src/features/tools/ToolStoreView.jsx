@@ -1693,10 +1693,17 @@ const FEISHU_STEPS = [
             {/* Header */}
             <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
               <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
-                <div className="flex items-center justify-between gap-4">
-                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{storeCopy.title}</h1>
-                  <div className={`ml-8 flex min-w-0 flex-1 items-center justify-end gap-3 ${installedOnly ? 'hidden' : ''}`}>
-                    <div className="relative group min-w-0 max-w-[520px] flex-1">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                  <div className="flex items-center justify-between sm:block sm:shrink-0">
+                    <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{storeCopy.title}</h1>
+                    <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
+                      className={`inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] ${installedOnly ? 'hidden' : 'sm:hidden'}`}>
+                      <User size={14} className="mr-2 opacity-70" />
+                      <span>{storeCopy.myTools}</span>
+                    </button>
+                  </div>
+                  <div className={`flex min-w-0 flex-wrap items-center justify-end gap-3 sm:ml-8 sm:flex-1 sm:flex-nowrap ${installedOnly ? 'hidden' : ''}`}>
+                    <div className="relative group min-w-0 basis-full flex-1 sm:basis-auto sm:max-w-[520px]">
                       <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8E8E93] group-focus-within:text-blue-500 transition-colors" size={18} />
                       <input
                         data-testid="tool-store-search"
@@ -1722,7 +1729,7 @@ const FEISHU_STEPS = [
                         ))}
                       </div>
                       <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
-                        className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                        className="max-sm:hidden inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                         <User size={14} className="mr-2 opacity-70" />
                         <span>{storeCopy.myTools}</span>
                       </button>

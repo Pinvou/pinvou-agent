@@ -134,8 +134,8 @@ assert.ok(
   'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
 );
 assert.ok(
-  /async function handleSwitchSession\(id\)[\s\S]{0,260}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}if \(!switched\) return;[\s\S]{0,180}setCurrentView\('chat'\)/.test(indexHtml),
-  'ordinary session navigation must await a successful load before committing the chat route'
+  /async function handleSwitchSession\(id\)[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}closeMobileSidebar\(\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}if \(!switched\) return;/.test(indexHtml),
+  'ordinary session navigation should enter the chat route immediately while the remote session loads'
 );
 assert.ok(
   /async function navigateFromScheduledRun\(nextView[\s\S]{0,480}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}if \(!exited\) return false;[\s\S]{0,200}setCurrentView\(nextView\)/.test(indexHtml),

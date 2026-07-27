@@ -5,13 +5,25 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
-const bridge = [
-  fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
+const webBridge = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const desktopRemoteControlBridge = fs.readFileSync(
+  path.join(bridgeRoot, 'bridge', 'remote-control.js'),
+  'utf8',
+);
+const desktopSessionsBridge = fs.readFileSync(
+  path.join(bridgeRoot, 'bridge', 'sessions.js'),
+  'utf8',
+);
+const desktopBridgeSources = [
   fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
     .filter(name => name.endsWith('.js'))
     .sort()
     .map(name => fs.readFileSync(path.join(bridgeRoot, 'bridge', name), 'utf8')),
+];
+const bridge = [
+  webBridge,
+  ...desktopBridgeSources,
 ].join('\n');
 const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
@@ -20,6 +32,8 @@ const commands = fs.readdirSync(commandsRoot)
   .sort()
   .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
+const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
+const workflowCommands = fs.readFileSync(path.join(commandsRoot, 'workflows.rs'), 'utf8');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
 const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
@@ -74,15 +88,49 @@ assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 const main = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 assert.match(bootstrap, /pinvou:web-capabilities/);
-assert.match(bridge, /if \(!IS_WEB && !isDetachedWindow\) registerWebAccessDesktopProxy\(\)/);
-assert.match(bridge, /eventForwardersReady/);
+assert.ok((main.match(/\{can\('webAccessAdmin'\) && <button[\s\S]{0,220}handleOpenWebAccess/g) || []).length >= 2,
+  'desktop Web-access controls must stay hidden inside WebUI in both sidebar layouts');
+assert.ok((main.match(/\{can\('pet'\) && <button[\s\S]{0,220}handleSetPetEnabled/g) || []).length >= 2,
+  'desktop pet controls must stay hidden inside WebUI in both sidebar layouts');
+assert.doesNotMatch(webBridge, /registerWebAccessDesktopProxy|web_access:rpc_request/,
+  'the browser-only bridge must not own the desktop RPC proxy');
+assert.match(desktopRemoteControlBridge, /async function startDesktopProxy\(\)/);
+assert.match(desktopRemoteControlBridge, /listen\("web_access:rpc_request"/);
+assert.match(desktopRemoteControlBridge, /invoke\("web_access_bridge_ready"/);
+assert.match(desktopRemoteControlBridge, /eventForwardersReady/);
 assert.match(bridge, /listen\("chat:user_message"/);
 assert.match(bridge, /listen\("chat:transcript_committed"/);
 assert.equal(allowedEvents.has('session:deleted'), true,
   'committed session deletion must reach every WebUI client');
-assert.match(bridge, /listen\("session:deleted"/);
+assert.match(webBridge, /listen\("session:deleted"/);
+assert.match(desktopSessionsBridge, /listen\("session:deleted"/,
+  'the desktop session store must apply deletions initiated by WebUI');
 assert.match(commands, /app\.emit\("session:deleted"/);
 assert.match(commands, /forward_app_event\(&app, "session:deleted"/);
+assert.equal(allowedEvents.has('session:list_changed'), true,
+  'session list mutations must reach both WebUI and desktop clients');
+assert.match(webBridge, /listen\("session:list_changed"/);
+assert.match(desktopSessionsBridge, /listen\("session:list_changed"/);
+assert.match(commands, /app\.emit\(event, payload\.clone\(\)\)/);
+assert.match(commands, /forward_app_event\(app, event, payload\)/);
+assert.match(workflowCommands, /start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?emit_session_event\(&app, "session:list_changed", &sid, "created"\)/);
+assert.match(remoteControlCommands, /web_access_start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?start_skill_session\(name, Some\(false\), app, store, pool\)/);
+for (const eventName of ['session:model_changed', 'session:persona_changed']) {
+  assert.equal(allowedEvents.has(eventName), true, `${eventName} must reach both clients`);
+  assert.match(webBridge, new RegExp(`listen\\("${eventName.replace(':', '\\:')}"`));
+  assert.match(desktopSessionsBridge, new RegExp(`listen\\("${eventName.replace(':', '\\:')}"`));
+  assert.match(commands, new RegExp(`"${eventName.replace(':', '\\:')}"`));
+}
+
+function literalListeners(source) {
+  return new Set([...source.matchAll(/\blisten\(\s*["']([^"']+)["']/g)].map(match => match[1]));
+}
+const webListenerNames = literalListeners(webBridge);
+const desktopListenerNames = literalListeners(desktopBridgeSources.join('\n'));
+for (const eventName of webListenerNames) {
+  assert.equal(desktopListenerNames.has(eventName), true,
+    `desktop bridge must handle Web bridge event ${eventName}`);
+}
 assert.match(bridge, /Transcript persistence is authoritative in Rust/);
 assert.doesNotMatch(bridge, /saveSessionMessagesForClient/);
 assert.match(bridge, /session_turn_in_progress/);
@@ -116,6 +164,11 @@ assert.match(toolRenderers, /discardPlan\(item\.id, item\.planId\)/);
 assert.match(bridge, /restoreUiTurnState\(preparation\.snapshot\)/);
 assert.match(bridge, /attachmentHandles:/);
 assert.match(bridge, /web_access_load_session_chunk/);
+assert.doesNotMatch(
+  webBridge,
+  /web_access_load_session_chunk[\s\S]{0,220}\blimit\s*:/,
+  'WebUI must let each desktop version choose its supported session chunk size',
+);
 assert.match(bridge, /MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 \* 1024 \* 1024/);
 assert.match(bridge, /if \(IS_WEB && !hasCapability\("artifactDownload"\)\)/);
 assert.match(bridge, /var info = await artifactInfo\(path, resolvedSessionId\)/);
@@ -166,6 +219,19 @@ assert.doesNotMatch(settingsView, />刷新链接</);
 assert.doesNotMatch(settingsView, /Relay 服务器/);
 assert.doesNotMatch(settingsView, /getWebRelaySettings/);
 assert.match(main, /title=\{t\.uiRemote\.title\}/);
+assert.match(main, /const isWebAccessConnected = !!\(bs && bs\.webAccess && bs\.webAccess\.web_client_connected\);/,
+  'desktop indicator must reflect an actual browser connection, not a persistent access link');
+assert.equal((main.match(/isWebAccessConnected && <span/g) || []).length, 2,
+  'expanded and collapsed navigation must use the actual connection indicator');
+assert.doesNotMatch(main, /bs\.webAccess\.active && <span/,
+  'an enabled access link must not be presented as a connected phone');
+assert.match(desktopRemoteControlBridge, /listen\("web_access:status"/,
+  'desktop bridge must consume live browser connection status events');
+assert.match(desktopRemoteControlBridge, /web_client_connected: false, status: "stopped"/,
+  'stopping remote access must clear any stale connected state');
+const desktopBridge = fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8');
+assert.match(desktopBridge, /web_client_connected: false/,
+  'desktop bridge state must start with an explicit disconnected browser state');
 for (const source of [settingsView, connectionStatus]) {
   assert.doesNotMatch(source, /WebUI/,
     'user-facing remote control copy must not expose the WebUI implementation name');

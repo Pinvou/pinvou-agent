@@ -1274,7 +1274,7 @@ const WidgetCard = ({ title, children, theme }) => {
         return (
           <div className={containerCls}>
             <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
-              <div className="grid grid-cols-1 gap-5 pt-8 lg:grid-cols-2">
+              <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-5 px-4 pt-8 sm:px-6 md:px-10 lg:grid-cols-2">
                 {/* [工作流分离 Stage D] 模板卡 = 后端 list_workflows(各 workflow.json 的
                     ui.template)。点开:当前 run 属于该工作流(scenario 命中它认领的场景)
                     → 续看板;否则弹该工作流自己的新建表单。 */}

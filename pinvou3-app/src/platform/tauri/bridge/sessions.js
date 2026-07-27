@@ -5,6 +5,7 @@
   registry.sessions = function (context) {
     var state = context.state;
     var invoke = context.invoke;
+    var listen = context.listen;
     var notify = context.notify;
     var sessionStates = context.sessionStates;
     var scheduledRunSessionOwners = context.scheduledRunSessionOwners;
@@ -773,25 +774,68 @@
     loadWorkingSetFrom(freshBuffer());
   }
 
-  async function deleteSession(id) {
+  function applyDeletedSession(id) {
+    if (typeof id !== "string" || !id) return false;
     invalidateScheduledRecentRunsForSession(id);
+    purgeSessionBuffer(id);
+    state.sessions = state.sessions.filter(function (session) { return session.id !== id; });
+    state.archivedSessions = (state.archivedSessions || []).filter(function (session) {
+      return session.id !== id;
+    });
+    state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    notify();
+    return true;
+  }
+
+  if (typeof listen === "function") {
+    listen("session:deleted", function (event) {
+      var payload = event && event.payload || {};
+      applyDeletedSession(payload.id);
+    }).catch(function (error) {
+      console.error("[sessions] session:deleted listener failed", error);
+    });
+    listen("session:list_changed", function () {
+      refreshHistoryList().catch(function (error) {
+        console.error("[sessions] session:list_changed refresh failed", error);
+      });
+    }).catch(function (error) {
+      console.error("[sessions] session:list_changed listener failed", error);
+    });
+    listen("session:model_changed", function (event) {
+      var payload = event && event.payload || {};
+      if (payload.id !== state.activeSessionId) return;
+      Promise.resolve(loadSessionModel(payload.id)).catch(function (error) {
+        console.error("[sessions] session:model_changed refresh failed", error);
+      });
+    }).catch(function (error) {
+      console.error("[sessions] session:model_changed listener failed", error);
+    });
+    listen("session:persona_changed", function (event) {
+      var payload = event && event.payload || {};
+      if (payload.id !== state.activeSessionId) return;
+      Promise.resolve(syncActivePersona()).then(notify).catch(function (error) {
+        console.error("[sessions] session:persona_changed refresh failed", error);
+      });
+    }).catch(function (error) {
+      console.error("[sessions] session:persona_changed listener failed", error);
+    });
+  }
+
+  async function deleteSession(id) {
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id: id });
-      // 统一清理工作集、实时状态、定时创建上下文与当前视图，避免手写字段漂移。
-      purgeSessionBuffer(id);
-      state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
-      state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
-      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      notify();
+      // 复用远端事件与本地操作的统一清理路径，并保留批量操作所需的结果语义。
+      return applyDeletedSession(id);
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
+      return false;
     }
   }
 
@@ -851,7 +895,17 @@
     if (idx < 0) {
       // 定时运行会话不在 state.sessions;收起 = 从侧边栏记录移除,进设置页归档列表。
       var scheduledRun = recentScheduledRunForSession(id);
-      if (!scheduledRun) return;
+      // Codex 等独立会话也不在 state.sessions；交给后端判定并刷新统一历史列表。
+      if (!scheduledRun) {
+        try {
+          await invoke("set_session_archived", { id: id, archived: true });
+          await refreshHistoryList();
+          return true;
+        } catch (e) {
+          console.warn("set_session_archived failed", e);
+          return false;
+        }
+      }
       var previousRuns = state.scheduledTaskRecentRuns || [];
       var wasViewingRun = state.activeSessionId === id;
       var previousContext = state.scheduledRunContext;
@@ -865,6 +919,7 @@
       try {
         await invoke("set_session_archived", { id: id, archived: true });
         await refreshHistoryList();
+        return true;
       } catch (e) {
         state.scheduledTaskRecentRuns = previousRuns;
         if (wasViewingRun) {
@@ -876,8 +931,8 @@
         }
         console.warn("set_session_archived failed", e);
         notify();
+        return false;
       }
-      return;
     }
     var s = state.sessions[idx];
     var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
@@ -890,6 +945,7 @@
     try {
       await invoke("set_session_archived", { id: id, archived: true });
       await refreshHistoryList();
+      return true;
     } catch (e) {
       state.sessions.splice(idx, 0, s);
       state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
@@ -899,12 +955,13 @@
       }
       console.warn("set_session_archived failed", e);
       notify();
+      return false;
     }
   }
 
   async function restoreArchivedSession(id) {
     var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
-    if (idx < 0) return;
+    if (idx < 0) return false;
     var s = state.archivedSessions[idx];
     invalidateScheduledRecentRunsForSession(id);
     var restored = Object.assign({}, s, { archived: false, archived_at: null });
@@ -916,11 +973,13 @@
       await refreshHistoryList();
       // 还原的定时运行会话回侧边栏"定时任务记录"(refreshHistoryList 只管普通会话)。
       if (String(id).indexOf("sched-") === 0) loadScheduledTaskRecentRuns().catch(function () {});
+      return true;
     } catch (e) {
       state.archivedSessions.splice(idx, 0, s);
       state.sessions = (state.sessions || []).filter(function (x) { return x.id !== id; });
       console.warn("restore archived session failed", e);
       notify();
+      return false;
     }
   }
 
@@ -968,6 +1027,7 @@
       exitScheduledRunChat: exitScheduledRunChat,
       recentScheduledRunForSession: recentScheduledRunForSession,
       leaveSessionView: leaveSessionView,
+      applyDeletedSession: applyDeletedSession,
       deleteSession: deleteSession,
       renameSession: renameSession,
       toggleSessionPinned: toggleSessionPinned,
