@@ -4,7 +4,7 @@ name: release-packages
 #
 # 触发条件:
 # - push main 且根目录 VERSION 文件被修改(paths 限定);
-# - 影响版本/打包链路的 PR:无条件构建,在合入前验证五个平台真实产物;
+# - 影响版本/打包链路的 PR:无条件构建,在合入前验证四类发布产物;
 # - push 事件按 github.event.before..github.sha 做精确版本号 diff;
 # - workflow_dispatch 手动触发:跳过 diff,无条件全量构建(用于补打/重打某版本)。
 #
@@ -301,7 +301,7 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(同 pr-check.yml windows-rust-test 的结论)。
-      # 仅 x86_64 需要;build-windows-arm64 走 aarch64 路径,不依赖 NASM。
+      # 当前 Windows 默认发布目标仅 x86_64。
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - name: Checkout (含 submodule)
@@ -366,91 +366,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 5: Windows arm64 nsis ───────────────────────────────────────
-  # 方案选择:用 windows-11-arm 原生 runner,不做 x64 交叉编译。
-  # 依据:GitHub 2025-04 公测、2025-08-07 宣布 arm64 hosted runner(Linux + Windows)
-  # 对公共仓库 GA 且免费(github.blog/changelog/2025-08-07-arm64-hosted-runners-
-  # for-public-repositories-are-now-generally-available),本仓库是公共仓库,可直接
-  # runs-on: windows-11-arm。原生构建比 aarch64-pc-windows-msvc 交叉编译链路短、
-  # 少一类 toolchain 配置坑;若该 label 未来不可用,回退方案是在 windows-latest 上
-  # 加 --target aarch64-pc-windows-msvc 交叉编译。
-  build-windows-arm64:
-    name: 构建 Windows arm64 nsis
-    needs: check-version-bump
-    if: needs.check-version-bump.outputs.version_bumped == 'true'
-    runs-on: windows-11-arm
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: bash
-    env:
-      VERSION: ${{ needs.check-version-bump.outputs.version }}
-    steps:
-      - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      # 原生 arm64:rustup 在 arm64 Windows 上默认装 aarch64-pc-windows-msvc host
-      # toolchain,无需显式 --target。
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pinvou3-app/src-tauri
-          shared-key: release-windows-arm64
-
-      - name: Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: pinvou3-app/package-lock.json
-
-      - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
-
-      - name: 同步版本号
-        run: node scripts/sync-version.mjs
-
-      - name: bge-m3 占位 (防御性保留)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
-      - name: 构建 nsis
-        working-directory: pinvou3-app
-        run: npm run build:nsis
-
-      # tauri nsis 产物默认名 pinvou3_<version>_arm64-setup.exe,与目标命名一致。
-      - name: 校验产物 + sha256
-        working-directory: pinvou3-app/src-tauri/target/release/bundle/nsis
-        run: |
-          set -euo pipefail
-          EXE="pinvou3_${VERSION}_arm64-setup.exe"
-          test -f "$EXE" || { echo "❌ nsis 产物不存在: $EXE"; ls -la; exit 1; }
-          SHA=$(sha256sum "$EXE" | awk '{print $1}')
-          echo "nsis sha256: $SHA"
-          echo "$SHA  $EXE" > "$EXE.sha256"
-          ls -lh "$EXE"
-
-      - name: 上传 nsis artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pinvou3-windows-${{ needs.check-version-bump.outputs.version }}-arm64
-          path: |
-            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou3_${{ needs.check-version-bump.outputs.version }}_arm64-setup.exe
-            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou3_${{ needs.check-version-bump.outputs.version }}_arm64-setup.exe.sha256
-          retention-days: 90
-          if-no-files-found: error
-
-  # ── Job 6: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
+  # ── Job 5: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
   build-macos-universal:
     name: 构建 macOS universal dmg
     needs: check-version-bump
