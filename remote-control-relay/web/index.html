@@ -1445,7 +1445,13 @@
     function isWriteTool(name) {
       return name === 'write_file' || name === 'append_file' || name === 'edit_file';
     }
+    // tmp/ 是提示词约定的中间文件目录:tmp/ 下的文件即使扩展名是成品型也不算自动成品,
+    // 确需展示靠模型显式 present_artifact。按段精确匹配 tmp,先归一化 \ 分隔符。
+    function isTmpPath(path) {
+      return String(path || '').replace(/\\/g, '/').split('/').includes('tmp');
+    }
     function isDeliverable(path) {
+      if (isTmpPath(path)) return false;
       const ext = String(path || '').split('.').pop().toLowerCase();
       return ['html', 'htm', 'md', 'markdown', 'pdf', 'docx', 'pptx', 'xlsx', 'csv', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext);
     }

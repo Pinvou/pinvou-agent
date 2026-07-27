@@ -59,7 +59,18 @@
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
     "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
   ];
+  // tmp/ 是提示词约定的中间文件目录(instructions.md:中间/临时文件一律写 tmp/,
+  // 不进产出物列表)。tmp/ 下的文件即使扩展名是成品型(.md/.html 等)也不算自动成品;
+  // 确需展示只能靠模型显式 present_artifact(显式 present 不经 isDeliverable 门控)。
+  function isTmpPath(path) {
+    var segs = normalizedPath(path).split("/");
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i] === "tmp") return true;
+    }
+    return false;
+  }
   function isDeliverable(path) {
+    if (isTmpPath(path)) return false;
     var ext = (String(path || "").split(".").pop() || "").toLowerCase();
     return DELIVERABLE_EXTS.indexOf(ext) >= 0;
   }
