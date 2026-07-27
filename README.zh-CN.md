@@ -16,6 +16,15 @@
 
 [官网](https://pinvou.com/) · [CodeWhale 底座](https://github.com/Pinvou/CodeWhale) · [问题反馈](https://github.com/Pinvou/pinvou-agent/issues) · [讨论区](https://github.com/Pinvou/pinvou-agent/discussions) · [安全政策](SECURITY.md)
 
+<p align="center">
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
+    <img src="docs/assets/screenshots/home.webp" alt="观看 Pinvou Agent 90 秒功能演示">
+  </a>
+</p>
+<p align="center">
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ 观看 90 秒功能演示：7 月 17—23 日功能更新</strong></a>
+</p>
+
 <img src="docs/assets/screenshots/home.webp" alt="Pinvou Agent 主界面" />
 
 </div>

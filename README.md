@@ -16,6 +16,15 @@
 
 [Website](https://pinvou.com/) · [CodeWhale Engine](https://github.com/Pinvou/CodeWhale) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
 
+<p align="center">
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
+    <img src="docs/assets/screenshots/home.webp" alt="Watch the 90-second Pinvou Agent feature demo">
+  </a>
+</p>
+<p align="center">
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ Watch the 90-second feature demo (Chinese)</strong></a>
+</p>
+
 <img src="docs/assets/screenshots/home.webp" alt="Pinvou Agent desktop workspace" />
 
 </div>

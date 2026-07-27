@@ -248,7 +248,7 @@ assert.ok(
 );
 assert.ok(
   /data-testid="scheduled-task-summary"/.test(indexHtml) &&
-    /nextRunAt/.test(indexHtml) && /下次/.test(indexHtml) && /秒后/.test(indexHtml) &&
+    /nextRunAt/.test(indexHtml) && /scheduledCopy\.nextRun/.test(indexHtml) && /scheduledCopy\.secondsAfter/.test(indexHtml) &&
     /setInterval\([\s\S]{0,160}1000/.test(indexHtml),
   'active task rows should show the exact next run and a live seconds countdown'
 );
@@ -259,10 +259,10 @@ assert(
 assert.ok(
   /function scheduleRepeatLabel\(/.test(indexHtml) &&
     /editor\.interval/.test(indexHtml) &&
-    /editor\.repeat === 'hourly' \? '起始时间' : '时间'/.test(indexHtml) &&
+    /editor\.repeat === 'hourly' \? scheduledCopy\.startTime : scheduledCopy\.time/.test(indexHtml) &&
     /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(indexHtml) &&
     /previousEditor\.hasTimeAnchor/.test(indexHtml) &&
-    /placeholder=.*设置起点/.test(indexHtml) &&
+    /placeholder=.*scheduledCopy\.setStart/.test(indexHtml) &&
     !indexHtml.includes("repeat === 'minutely'"),
   'hourly schedules should expose an optional start anchor without migrating legacy rules implicitly'
 );
@@ -287,10 +287,10 @@ assert.ok(
     !/data-testid="scheduled-detail-menu-popover"/.test(indexHtml) &&
     !/data-testid="scheduled-detail-toggle"/.test(indexHtml) &&
     /flex shrink-0 flex-wrap items-center justify-between/.test(indexHtml) &&
-    /data-testid="scheduled-run-now"[\s\S]{0,520}立即运行/.test(indexHtml) &&
-    /data-testid="scheduled-open-folder"[\s\S]{0,520}打开文件夹/.test(indexHtml) &&
+    /data-testid="scheduled-run-now"[\s\S]{0,520}scheduledCopy\.runNow/.test(indexHtml) &&
+    /data-testid="scheduled-open-folder"[\s\S]{0,520}scheduledCopy\.openFolder/.test(indexHtml) &&
     !/data-testid="scheduled-detail-cancel"/.test(indexHtml) &&
-    /data-testid="scheduled-detail-save"[\s\S]{0,320}保存/.test(indexHtml) &&
+    /data-testid="scheduled-detail-save"[\s\S]{0,320}scheduledCopy\.save/.test(indexHtml) &&
     /scheduled-detail-delete[\s\S]{0,1400}scheduled-detail-save/.test(indexHtml) &&
     /data-testid="scheduled-detail-delete"/.test(indexHtml) &&
     /data-testid="scheduled-detail-prompt"/.test(indexHtml) &&
@@ -439,7 +439,7 @@ assert.ok(
     /data-testid="scheduled-create-prompt"/.test(indexHtml) &&
     /testId="scheduled-create-repeat"/.test(indexHtml) &&
     /data-testid="scheduled-create-submit"/.test(indexHtml) &&
-    /<span[^>]*>任务名称<\/span>/.test(indexHtml) &&
+    /<span[^>]*>\{scheduledCopy\.taskName\}<\/span>/.test(indexHtml) &&
     /disabled=\{!!busyAction \|\| !String\(createForm\.name/.test(indexHtml) &&
     /async function startBlankTask\(\)[\s\S]{0,1200}setCreateForm\(/.test(indexHtml) &&
     /selectAfterCreate:\s*false/.test(indexHtml) &&
@@ -486,7 +486,7 @@ assert.ok(
 );
 mustNotContain("每日项目状态提醒");
 mustNotContain("每周资料整理提醒");
-mustNotContain("Templates");
+assert.ok(!scheduledViewSource.includes('>Templates<'), 'the obsolete Templates placeholder must not return');
 mustNotContain("模板库会在后续接入");
 mustNotContain('title="编辑"');
 assert.strictEqual((scheduledTemplateSource.match(/rrule:\s*'FREQ=/g) || []).length, 3, 'the suggestion area should contain exactly three templates');
@@ -539,7 +539,7 @@ assert.ok(
   'selecting a template should confirm through the second-level sheet and create with fixed Yolo mode and no permission UI'
 );
 assert.ok(
-  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES;/.test(indexHtml) &&
+  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES(?:;|\.map\()/.test(indexHtml) &&
     !/const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter/.test(indexHtml) &&
     /visibleSuggestions\.map\(template/.test(indexHtml),
   'suggested templates should remain visible after users create matching scheduled tasks'

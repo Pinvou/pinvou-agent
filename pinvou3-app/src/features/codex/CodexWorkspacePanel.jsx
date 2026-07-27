@@ -49,17 +49,8 @@ function formatBytes(bytes) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function changeLabel(status) {
-  return {
-    added: '新增',
-    modified: '修改',
-    deleted: '删除',
-    renamed: '重命名',
-    copied: '复制',
-    conflict: '冲突',
-    untracked: '未跟踪',
-    unknown: '文件',
-  }[status] || status;
+function changeLabel(status, copy) {
+  return copy.changes[status] || status;
 }
 
 function statusTone(status) {
@@ -69,11 +60,8 @@ function statusTone(status) {
   return 'text-amber-600 dark:text-amber-300 bg-amber-500/10';
 }
 
-function originLabel(origin) {
-  if (origin === 'session') return '本会话';
-  if (origin === 'preexisting') return '会话前已有';
-  if (origin === 'preexisting_modified') return '会话前已有 · 本会话继续修改';
-  return '来源未记录';
+function originLabel(origin, copy) {
+  return copy.origins[origin] || copy.origins.unknown;
 }
 
 function WorkspaceTree({
@@ -86,6 +74,7 @@ function WorkspaceTree({
   onPreview,
   onAddReference,
   referencedPaths,
+  copy,
 }) {
   const entries = entriesByDirectory[directory] || [];
   return entries.map(entry => {
@@ -119,8 +108,8 @@ function WorkspaceTree({
           {!isDirectory && (
             <button
               type="button"
-              aria-label={referenced ? `已添加 ${entry.relativePath}` : `添加 ${entry.relativePath} 到对话`}
-              title={referenced ? '已添加到对话' : '添加到对话'}
+              aria-label={referenced ? copy.addedPath(entry.relativePath) : copy.addPath(entry.relativePath)}
+              title={referenced ? copy.added : copy.add}
               onClick={() => onAddReference(entry.relativePath)}
               className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
                 referenced
@@ -143,6 +132,7 @@ function WorkspaceTree({
             onPreview={onPreview}
             onAddReference={onAddReference}
             referencedPaths={referencedPaths}
+            copy={copy}
           />
         )}
       </React.Fragment>
@@ -150,39 +140,39 @@ function WorkspaceTree({
   });
 }
 
-function PreviewPane({ preview, diff, loading, onBack, onAddReference, referenced, onOpen, onReveal }) {
+function PreviewPane({ preview, diff, loading, onBack, onAddReference, referenced, onOpen, onReveal, copy }) {
   const item = preview || diff;
   if (!item) return null;
   const path = item.relativePath;
   return (
     <div className="h-full min-h-0 flex flex-col">
       <div className="h-11 shrink-0 px-2 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
-        <button type="button" onClick={onBack} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label="返回工作区列表">
+        <button type="button" onClick={onBack} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label={copy.back}>
           <ArrowLeft size={14} />
         </button>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-medium" title={path}>{path}</div>
           {preview && <div className="text-[10px] text-gray-400">{formatBytes(preview.size)}</div>}
         </div>
-        <button type="button" onClick={() => navigator.clipboard?.writeText(path)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title="复制相对路径">
+        <button type="button" onClick={() => navigator.clipboard?.writeText(path)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.copyPath}>
           <Copy size={13} />
         </button>
-        <button type="button" onClick={onReveal} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title="在文件管理器中显示">
+        <button type="button" onClick={onReveal} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.reveal}>
           <FolderOpen size={13} />
         </button>
-        <button type="button" onClick={onOpen} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title="用系统应用打开">
+        <button type="button" onClick={onOpen} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.open}>
           <ExternalLink size={13} />
         </button>
       </div>
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-[11px] text-gray-400">
-          <RefreshCw size={14} className="mr-2 animate-spin" />正在读取…
+          <RefreshCw size={14} className="mr-2 animate-spin" />{copy.reading}
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-auto custom-scrollbar">
           {diff && (
             <pre className="min-w-max p-3 text-[11px] leading-[18px] font-mono whitespace-pre">
-              {diff.text || '没有可显示的文本差异'}
+              {diff.text || copy.noDiff}
             </pre>
           )}
           {preview?.kind === 'image' && preview.dataUrl && (
@@ -195,13 +185,13 @@ function PreviewPane({ preview, diff, loading, onBack, onAddReference, reference
           )}
           {preview && preview.kind !== 'text' && !(preview.kind === 'image' && preview.dataUrl) && (
             <div className="p-6 text-center text-[11px] leading-5 text-gray-400">
-              {preview.truncated ? '文件过大，未生成内置预览。' : '该文件不支持内置预览。'}
-              <br />可以用系统应用打开。
+              {preview.truncated ? copy.tooLarge : copy.unsupported}
+              <br />{copy.openHint}
             </div>
           )}
           {(preview?.truncated || diff?.truncated) && (
             <div className="sticky bottom-0 px-3 py-2 text-[10px] text-amber-600 dark:text-amber-300 bg-amber-50/95 dark:bg-amber-950/80">
-              内容过大，当前只显示前一部分。
+              {copy.truncated}
             </div>
           )}
         </div>
@@ -216,7 +206,7 @@ function PreviewPane({ preview, diff, loading, onBack, onAddReference, reference
               : 'bg-[#007AFF] text-white hover:bg-[#006EE6]'
           }`}
         >
-          <Plus size={13} />{referenced ? '已添加到对话' : '添加到对话'}
+          <Plus size={13} />{referenced ? copy.added : copy.add}
         </button>
       </div>
     </div>
@@ -231,6 +221,7 @@ export function CodexWorkspacePanel({
   onAddReference,
   refreshToken = 0,
   onChangeCount,
+  copy,
 }) {
   const sessionId = session?.id;
   const [tab, setTab] = useState('files');
@@ -245,6 +236,10 @@ export function CodexWorkspacePanel({
   const [diff, setDiff] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState('');
+  const showError = (nextError) => {
+    console.error('Codex workspace operation failed:', nextError);
+    setError(copy.showRawErrors ? String(nextError) : copy.operationFailed);
+  };
   const [panelWidth, setPanelWidth] = useState(savedWorkspaceWidth);
   const panelRef = useRef(null);
   const resizeCleanupRef = useRef(null);
@@ -334,7 +329,7 @@ export function CodexWorkspacePanel({
       setEntriesByDirectory(current => ({ ...current, [path]: listing.entries || [] }));
       setError('');
     } catch (nextError) {
-      setError(String(nextError));
+      showError(nextError);
     } finally {
       setLoadingDirectories(current => {
         const next = new Set(current);
@@ -352,7 +347,7 @@ export function CodexWorkspacePanel({
       if (onChangeCount) onChangeCount((result.changes || []).length);
       setError('');
     } catch (nextError) {
-      setError(String(nextError));
+      showError(nextError);
       if (onChangeCount) onChangeCount(0);
     }
   }
@@ -399,7 +394,7 @@ export function CodexWorkspacePanel({
         setSearchResults(results || []);
         setError('');
       } catch (nextError) {
-        setError(String(nextError));
+        showError(nextError);
       } finally {
         setSearching(false);
       }
@@ -430,7 +425,7 @@ export function CodexWorkspacePanel({
       }));
       setError('');
     } catch (nextError) {
-      setError(String(nextError));
+      showError(nextError);
     } finally {
       setPreviewLoading(false);
     }
@@ -447,7 +442,7 @@ export function CodexWorkspacePanel({
       }));
       setError('');
     } catch (nextError) {
-      setError(String(nextError));
+      showError(nextError);
     } finally {
       setPreviewLoading(false);
     }
@@ -459,7 +454,7 @@ export function CodexWorkspacePanel({
     try {
       await invoke(command, { sessionId, relativePath: path });
     } catch (nextError) {
-      setError(String(nextError));
+      showError(nextError);
     }
   }
 
@@ -474,18 +469,18 @@ export function CodexWorkspacePanel({
     >
       <div
         role="separator"
-        aria-label="调整工作区宽度"
+        aria-label={copy.resize}
         aria-orientation="vertical"
         onMouseDown={startPanelResize}
         onDoubleClick={resetPanelWidth}
         className="absolute inset-y-0 left-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60 transition-colors"
-        title="拖拽调整宽度，双击恢复默认"
+        title={copy.resizeHint}
       />
       <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">工作区</div>
+          <div className="text-[13px] font-semibold">{copy.title}</div>
           <div className="truncate text-[10px] text-gray-400" title={session?.workspace_path}>
-            {session?.workspace_kind === 'temporary' ? '临时工作区' : session?.workspace_path}
+            {session?.workspace_kind === 'temporary' ? copy.temporary : session?.workspace_path}
           </div>
         </div>
         <button
@@ -495,11 +490,11 @@ export function CodexWorkspacePanel({
             loadChanges();
           }}
           className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-          title="刷新工作区"
+          title={copy.refresh}
         >
           <RefreshCw size={14} />
         </button>
-        <button type="button" onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label="关闭工作区">
+        <button type="button" onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label={copy.close}>
           <X size={14} />
         </button>
       </div>
@@ -515,6 +510,7 @@ export function CodexWorkspacePanel({
             referenced={referencedPaths.has(selected.relativePath)}
             onOpen={() => openSelected('open_codex_workspace_file')}
             onReveal={() => openSelected('reveal_codex_workspace_file')}
+            copy={copy}
           />
         </div>
       ) : (
@@ -522,10 +518,10 @@ export function CodexWorkspacePanel({
           <div className="shrink-0 px-3 pt-2">
             <div className="grid grid-cols-2 rounded-lg bg-black/[0.035] dark:bg-white/[0.055] p-0.5">
               <button type="button" onClick={() => setTab('files')} className={`h-7 rounded-md text-[11px] ${tab === 'files' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
-                文件
+                {copy.files}
               </button>
               <button type="button" onClick={() => { setTab('changes'); loadChanges(); }} className={`h-7 rounded-md text-[11px] ${tab === 'changes' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
-                更改{changes?.changes?.length ? ` ${changes.changes.length}` : ''}
+                {copy.changed}{changes?.changes?.length ? ` ${changes.changes.length}` : ''}
               </button>
             </div>
           </div>
@@ -539,7 +535,7 @@ export function CodexWorkspacePanel({
                   <input
                     value={query}
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="搜索文件"
+                    placeholder={copy.search}
                     className="min-w-0 flex-1 bg-transparent outline-none text-[11px] placeholder:text-gray-400"
                   />
                   {searching && <RefreshCw size={12} className="animate-spin text-gray-400" />}
@@ -556,7 +552,7 @@ export function CodexWorkspacePanel({
                         <span className="block truncate text-[9px] text-gray-400">{entry.relativePath}</span>
                       </span>
                     </button>
-                    <button type="button" onClick={() => onAddReference(entry.relativePath)} className={`w-6 h-6 rounded-md flex items-center justify-center ${referencedPaths.has(entry.relativePath) ? 'text-blue-500 bg-blue-500/10' : 'opacity-0 group-hover:opacity-100 text-gray-400'}`} title="添加到对话">
+                    <button type="button" onClick={() => onAddReference(entry.relativePath)} className={`w-6 h-6 rounded-md flex items-center justify-center ${referencedPaths.has(entry.relativePath) ? 'text-blue-500 bg-blue-500/10' : 'opacity-0 group-hover:opacity-100 text-gray-400'}`} title={copy.add}>
                       <Plus size={13} />
                     </button>
                   </div>
@@ -569,10 +565,11 @@ export function CodexWorkspacePanel({
                     onPreview={showFile}
                     onAddReference={onAddReference}
                     referencedPaths={referencedPaths}
+                    copy={copy}
                   />
                 )}
                 {!searching && rows && rows.length === 0 && (
-                  <div className="py-10 text-center text-[11px] text-gray-400">没有匹配文件</div>
+                  <div className="py-10 text-center text-[11px] text-gray-400">{copy.noFiles}</div>
                 )}
               </div>
             </>
@@ -580,10 +577,10 @@ export function CodexWorkspacePanel({
             <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-2 py-3">
               {!changes?.baselineAvailable && (
                 <div className="mx-1 mb-2 rounded-lg bg-amber-500/8 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
-                  该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。
+                  {copy.noBaseline}
                 </div>
               )}
-              {changes?.branch && <div className="px-2 pb-2 text-[10px] text-gray-400">分支 · {changes.branch}</div>}
+              {changes?.branch && <div className="px-2 pb-2 text-[10px] text-gray-400">{copy.branch} · {changes.branch}</div>}
               {(changes?.changes || []).map(change => (
                 <button
                   key={`${change.status}:${change.relativePath}`}
@@ -592,17 +589,17 @@ export function CodexWorkspacePanel({
                   className="w-full min-h-11 px-2 py-1.5 rounded-lg flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
                 >
                   <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
-                    {changeLabel(change.status)}
+                    {changeLabel(change.status, copy)}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[11px]" title={change.relativePath}>{change.relativePath}</span>
-                    <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin)}{change.staged ? ' · 已暂存' : ''}</span>
+                    <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin, copy)}{change.staged ? ` · ${copy.staged}` : ''}</span>
                   </span>
                   <ChevronRight size={12} className="shrink-0 text-gray-400" />
                 </button>
               ))}
               {changes && changes.changes.length === 0 && (
-                <div className="py-12 text-center text-[11px] text-gray-400">工作区没有更改</div>
+                <div className="py-12 text-center text-[11px] text-gray-400">{copy.noChanges}</div>
               )}
             </div>
           )}

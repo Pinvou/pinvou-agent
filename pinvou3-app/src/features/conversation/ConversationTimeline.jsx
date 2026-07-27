@@ -14,12 +14,97 @@ import {
   elapsedMs,
   externalMarkdownUrl,
   fetchToolDetails,
-  formatElapsed,
   isFetchTool,
   isSearchTool,
   searchToolDetails,
   terminalStatus,
 } from './conversation-model.js';
+
+const DEFAULT_COPY = {
+  completed: '已完成',
+  failed: '失败',
+  interrupted: '已中断',
+  limitReached: '达到限制',
+  processing: '处理中',
+  waitingPermission: '等待授权',
+  waitingInput: '等待你的输入',
+  waitingInputShort: '等待输入',
+  goLatest: label => `${label}，前往最新消息`,
+  elapsed: milliseconds => {
+    const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+    if (seconds < 60) return `${seconds}秒`;
+    const minutes = Math.floor(seconds / 60);
+    const remaining = seconds % 60;
+    return remaining ? `${minutes}分${remaining}秒` : `${minutes}分`;
+  },
+  segments: count => `${count} 段`,
+  running: '执行中',
+  executionFailed: '执行失败',
+  executionFinished: '执行结束',
+  command: '命令',
+  workingDirectory: '工作目录',
+  output: '输出',
+  webContent: '网页内容',
+  iwencaiNews: '同花顺新闻',
+  webSearch: '网页搜索',
+  search: '搜索',
+  textContent: '文本',
+  webPage: '网页',
+  shellCommand: '执行 Shell 命令',
+  results: count => `${count} 条结果`,
+  recognizedResults: count => `识别到 ${count} 条结果`,
+  returnedResults: '已返回结果',
+  inProgress: '进行中',
+  searchCompacted: '搜索结果已交给 Agent 处理；当前压缩结果中没有可稳定提取的条目。',
+  resultSummaryOnly: '为控制上下文长度，这里只展示可识别的结果摘要。',
+  collapseRaw: '收起原始数据',
+  viewRaw: '查看原始数据',
+  rawData: '原始数据',
+  requestFailed: '请求失败',
+  returned: '已返回',
+  contentTruncated: '内容已截断',
+  contentPreview: '内容预览',
+  responseTruncated: '响应内容超过本次抓取上限，Agent 使用的是截断后的内容。',
+  fileChange: '文件变更',
+  tool: '工具',
+  arguments: '参数',
+  result: '结果',
+  executing: '正在执行',
+  executionSteps: '执行步骤',
+  items: count => `${count} 项`,
+  failedItems: count => `${count} 项失败`,
+  thinking: '思考中',
+  thoughtCompleted: '思考完成',
+  plan: '执行计划',
+  permissionRequest: agent => `${agent} 请求权限`,
+  protectedOperation: '执行受保护操作',
+  operationArguments: '操作参数',
+  allowOnce: '允许一次',
+  allowSession: '本会话允许',
+  reject: '拒绝',
+  handled: '已处理',
+  expired: '该请求已过期',
+  usage: (input, output) => `输入 ${input} · 输出 ${output}`,
+  contextUsage: (used, size) => `上下文 ${used} / ${size}`,
+  attachment: '附件',
+  operations: (count, failedCount) => `执行 ${count} 项${failedCount ? ` · ${failedCount} 项失败` : ''}`,
+};
+
+function conversationCopy(copy) {
+  return { ...DEFAULT_COPY, ...(copy || {}) };
+}
+
+function localizedSemanticLabel(value, copy) {
+  return {
+    同花顺新闻: copy.iwencaiNews,
+    网页搜索: copy.webSearch,
+    搜索: copy.search,
+    文本: copy.textContent,
+    网页内容: copy.webContent,
+    网页: copy.webPage,
+    '执行 Shell 命令': copy.shellCommand,
+  }[value] || value;
+}
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(String(text || '')), {
@@ -44,20 +129,21 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
   );
 }
 
-export function ConversationStatusBadge({ status }) {
+export function ConversationStatusBadge({ status, copy }) {
+  const c = conversationCopy(copy);
   const done = ['Completed', 'completed', 'done', 'end_turn'].includes(status);
   const failed = ['Failed', 'failed', 'Refused'].includes(status);
   const interrupted = ['Interrupted', 'interrupted', 'incomplete'].includes(status);
   const stopped = interrupted || status === 'LimitReached';
   const label = done
-    ? '已完成'
+    ? c.completed
     : failed
-      ? '失败'
+      ? c.failed
       : interrupted
-        ? '已中断'
+        ? c.interrupted
         : status === 'LimitReached'
-          ? '达到限制'
-          : '处理中';
+          ? c.limitReached
+          : c.processing;
   return (
     <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
       done ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
@@ -80,7 +166,9 @@ export function ConversationActivityIndicator({
   now = Date.now(),
   onRequestAttention,
   className = '',
+  copy,
 }) {
+  const c = conversationCopy(copy);
   if (!turn || turn.status !== 'running') return null;
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
@@ -88,16 +176,16 @@ export function ConversationActivityIndicator({
     || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
   const waitingAttention = waitingPermission || waitingInput;
   const label = waitingPermission
-    ? '等待授权'
+    ? c.waitingPermission
     : waitingInput
-      ? '等待你的输入'
-      : '正在处理';
+      ? c.waitingInput
+      : c.processing;
   const content = (
     <>
       {waitingAttention
         ? <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
         : <span className="w-3 h-3 rounded-full border-2 border-current/20 border-t-current animate-spin" />}
-      <span>{label} · {formatElapsed(elapsedMs(turn.startedAt, null, now))}</span>
+      <span>{label} · {c.elapsed(elapsedMs(turn.startedAt, null, now))}</span>
     </>
   );
   const sharedClass = `h-6 flex items-center gap-2 px-1 text-[12px] ${
@@ -108,7 +196,7 @@ export function ConversationActivityIndicator({
   if (waitingAttention && onRequestAttention) {
     return (
       <button type="button" onClick={onRequestAttention}
-        aria-label={`${label}，前往最新消息`}
+        aria-label={c.goLatest(label)}
         className={`${sharedClass} hover:text-amber-700 dark:hover:text-amber-200`}>
         {content}
       </button>
@@ -171,56 +259,59 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
   );
 }
 
-function CommandExecutionItem({ item, now }) {
+function CommandExecutionItem({ item, now, copy }) {
+  const c = conversationCopy(copy);
   const details = commandExecutionDetails(item.tool);
   const state = terminalStatus(item.status, details.exitCode);
   const [open, setOpen] = useState(false);
-  const countHint = details.commandCount > 1 ? ` · ${details.commandCount} 段` : '';
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const countHint = details.commandCount > 1 ? ` · ${c.segments(details.commandCount)}` : '';
+  const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const outcome = state === 'running'
-    ? `执行中 · ${duration}`
+    ? `${c.running} · ${duration}`
     : state === 'failed'
-      ? `执行失败${details.exitCode == null ? '' : ` · exit ${details.exitCode}`}`
-      : `执行结束${details.exitCode == null ? '' : ` · exit ${details.exitCode}`} · ${duration}`;
+      ? `${c.executionFailed}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`}`
+      : `${c.executionFinished}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`} · ${duration}`;
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
-      <CompactItemRow icon={<Terminal size={13} />} title={details.summary}
+      <CompactItemRow icon={<Terminal size={13} />} title={localizedSemanticLabel(details.summary, c)}
         meta={`${outcome}${countHint}`} status={state} open={open} onToggle={() => setOpen(value => !value)} />
       {open && (
         <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          <TerminalBlock label="命令" text={details.command} />
+          <TerminalBlock label={c.command} text={details.command} />
           {details.cwd && (
             <div className="mt-2 text-[10px] text-gray-400">
-              工作目录 <span className="ml-1 font-mono text-gray-600 dark:text-gray-300">{details.cwd}</span>
+              {c.workingDirectory} <span className="ml-1 font-mono text-gray-600 dark:text-gray-300">{details.cwd}</span>
             </div>
           )}
-          <TerminalBlock label="输出" text={details.output} />
+          <TerminalBlock label={c.output} text={details.output} />
         </div>
       )}
     </div>
   );
 }
 
-function SearchToolItem({ item, now, onOpenExternal }) {
+function SearchToolItem({ item, now, onOpenExternal, copy }) {
+  const c = conversationCopy(copy);
   const tool = item.tool || {};
   const details = searchToolDetails(tool);
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const query = details.query || tool.title || '网页内容';
+  const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const query = details.query || tool.title || c.webContent;
   const toolName = String(tool.name || '').trim() || 'web_search';
   const queryLabel = query.length > 48 ? `${query.slice(0, 48)}…` : query;
   const resultLabel = details.count != null
-    ? `${details.count} 条结果`
+    ? c.results(details.count)
     : details.results.length
-      ? `识别到 ${details.results.length} 条结果`
-      : '已返回结果';
+      ? c.recognizedResults(details.results.length)
+      : c.returnedResults;
+  const sourceLabel = localizedSemanticLabel(details.source, c);
   const meta = state === 'running'
-    ? `${queryLabel} · ${details.source} · 进行中 · ${duration}`
+    ? `${queryLabel} · ${sourceLabel} · ${c.inProgress} · ${duration}`
     : state === 'failed'
-      ? `${queryLabel} · ${details.source} · 失败`
-      : `${queryLabel} · ${details.source} · ${resultLabel}`;
+      ? `${queryLabel} · ${sourceLabel} · ${c.failed}`
+      : `${queryLabel} · ${sourceLabel} · ${resultLabel}`;
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Wrench size={13} />} title={toolName}
@@ -253,11 +344,11 @@ function SearchToolItem({ item, now, onOpenExternal }) {
             </div>
           ) : state === 'completed' ? (
             <div className="mt-2 text-[11px] leading-5 text-gray-400">
-              搜索结果已交给 Agent 处理；当前压缩结果中没有可稳定提取的条目。
+              {c.searchCompacted}
             </div>
           ) : null}
           {details.compacted && (
-            <div className="mt-2 text-[10px] text-gray-400">为控制上下文长度，这里只展示可识别的结果摘要。</div>
+            <div className="mt-2 text-[10px] text-gray-400">{c.resultSummaryOnly}</div>
           )}
           {details.rawOutput && (
             <div className="mt-2">
@@ -266,9 +357,9 @@ function SearchToolItem({ item, now, onOpenExternal }) {
                 onClick={() => setRawOpen(value => !value)}
                 className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
               >
-                {rawOpen ? '收起原始数据' : '查看原始数据'}
+                {rawOpen ? c.collapseRaw : c.viewRaw}
               </button>
-              {rawOpen && <TerminalBlock label="原始数据" text={details.rawOutput} />}
+              {rawOpen && <TerminalBlock label={c.rawData} text={details.rawOutput} />}
             </div>
           )}
         </div>
@@ -277,7 +368,8 @@ function SearchToolItem({ item, now, onOpenExternal }) {
   );
 }
 
-function FetchToolItem({ item, now, onOpenExternal }) {
+function FetchToolItem({ item, now, onOpenExternal, copy }) {
+  const c = conversationCopy(copy);
   const tool = item.tool || {};
   const details = fetchToolDetails(tool);
   const state = terminalStatus(item.status);
@@ -285,16 +377,18 @@ function FetchToolItem({ item, now, onOpenExternal }) {
   const visualState = responseWarning && state !== 'failed' ? 'warning' : state;
   const [open, setOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const toolName = String(tool.name || '').trim() || 'fetch_url';
   const statusLabel = details.status != null
     ? `HTTP ${details.status}`
     : state === 'failed'
-      ? '请求失败'
-      : '已返回';
+      ? c.requestFailed
+      : c.returned;
+  const targetLabel = localizedSemanticLabel(details.target, c);
+  const contentTypeLabel = localizedSemanticLabel(details.contentTypeLabel, c);
   const meta = state === 'running'
-    ? `${details.target} · 进行中 · ${duration}`
-    : `${details.target} · ${statusLabel} · ${details.contentTypeLabel}${details.truncated ? ' · 内容已截断' : ''}`;
+    ? `${targetLabel} · ${c.inProgress} · ${duration}`
+    : `${targetLabel} · ${statusLabel} · ${contentTypeLabel}${details.truncated ? ` · ${c.contentTruncated}` : ''}`;
   return (
     <div className={`rounded-xl border ${
       state === 'failed'
@@ -320,14 +414,14 @@ function FetchToolItem({ item, now, onOpenExternal }) {
           )}
           {details.preview && (
             <div className="mt-2">
-              <div className="mb-1 text-[10px] font-medium text-gray-400">内容预览</div>
+              <div className="mb-1 text-[10px] font-medium text-gray-400">{c.contentPreview}</div>
               <div className="max-h-24 overflow-hidden rounded-lg bg-black/[0.025] dark:bg-white/[0.035] px-3 py-2 text-[11px] leading-5 text-gray-600 dark:text-gray-300">
                 {details.preview}{details.contentLength > details.preview.length ? '…' : ''}
               </div>
             </div>
           )}
           {details.truncated && (
-            <div className="mt-2 text-[10px] text-gray-400">响应内容超过本次抓取上限，Agent 使用的是截断后的内容。</div>
+            <div className="mt-2 text-[10px] text-gray-400">{c.responseTruncated}</div>
           )}
           {details.rawOutput && (
             <div className="mt-2">
@@ -336,9 +430,9 @@ function FetchToolItem({ item, now, onOpenExternal }) {
                 onClick={() => setRawOpen(value => !value)}
                 className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
               >
-                {rawOpen ? '收起原始数据' : '查看原始数据'}
+                {rawOpen ? c.collapseRaw : c.viewRaw}
               </button>
-              {rawOpen && <TerminalBlock label="原始数据" text={details.rawOutput} />}
+              {rawOpen && <TerminalBlock label={c.rawData} text={details.rawOutput} />}
             </div>
           )}
         </div>
@@ -347,16 +441,17 @@ function FetchToolItem({ item, now, onOpenExternal }) {
   );
 }
 
-function GenericToolItem({ item, now }) {
+function GenericToolItem({ item, now, copy }) {
+  const c = conversationCopy(copy);
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const label = item.type === 'file_change' ? '文件变更' : (tool.kind || '工具');
+  const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const label = item.type === 'file_change' ? c.fileChange : (tool.kind || c.tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
-        meta={`${label} · ${state === 'running' ? `进行中 · ${duration}` : state === 'failed' ? '失败' : `已结束 · ${duration}`}`}
+        meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
         status={state} open={open} onToggle={() => setOpen(value => !value)} />
       {open && (
         <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
@@ -369,15 +464,16 @@ function GenericToolItem({ item, now }) {
               ))}
             </div>
           )}
-          <StructuredValue label="参数" value={tool.rawInput} />
-          <StructuredValue label="结果" value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
+          <StructuredValue label={c.arguments} value={tool.rawInput} />
+          <StructuredValue label={c.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
         </div>
       )}
     </div>
   );
 }
 
-function ToolGroup({ group, now, renderToolItem, onOpenExternal }) {
+function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
+  const c = conversationCopy(copy);
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
   const failedCount = items.filter(item => terminalStatus(
@@ -388,10 +484,10 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal }) {
   const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
   const runningLabel = runningItem
     ? (runningItem.tool && (runningItem.tool.name || runningItem.tool.title))
-      || (runningItem.type === 'file_change' ? '文件变更' : '')
+      || (runningItem.type === 'file_change' ? c.fileChange : '')
     : '';
-  const summary = `${running ? `正在执行${runningLabel ? ` · ${runningLabel}` : ''}` : '执行步骤'} · ${items.length} 项${
-    failedCount ? ` · ${failedCount} 项失败` : ''
+  const summary = `${running ? `${c.executing}${runningLabel ? ` · ${runningLabel}` : ''}` : c.executionSteps} · ${c.items(items.length)}${
+    failedCount ? ` · ${c.failedItems(failedCount)}` : ''
   }`;
   const [open, setOpen] = useState(running);
   const expanded = running || open;
@@ -409,12 +505,12 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal }) {
             const custom = renderToolItem && renderToolItem(item);
             if (custom !== undefined) return <React.Fragment key={item.id}>{custom}</React.Fragment>;
             return item.type === 'command_execution'
-              ? <CommandExecutionItem key={item.id} item={item} now={now} />
+              ? <CommandExecutionItem key={item.id} item={item} now={now} copy={c} />
               : isSearchTool(item.tool)
-                ? <SearchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} />
+                ? <SearchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} copy={c} />
                 : isFetchTool(item.tool)
-                  ? <FetchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} />
-                : <GenericToolItem key={item.id} item={item} now={now} />;
+                  ? <FetchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} copy={c} />
+                : <GenericToolItem key={item.id} item={item} now={now} copy={c} />;
           })}
         </div>
       )}
@@ -422,16 +518,17 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal }) {
   );
 }
 
-function ReasoningItem({ item, now }) {
+function ReasoningItem({ item, now, copy }) {
+  const c = conversationCopy(copy);
   const running = item.status === 'in_progress';
   const [open, setOpen] = useState(false);
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   return (
     <div>
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
-        <span>{running ? '思考中' : '思考完成'} · {duration}</span>
+        <span>{running ? c.thinking : c.thoughtCompleted} · {duration}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && item.text && (
@@ -443,12 +540,13 @@ function ReasoningItem({ item, now }) {
   );
 }
 
-function PlanBlock({ plan }) {
+function PlanBlock({ plan, copy }) {
+  const c = conversationCopy(copy);
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;
   return (
     <div className="rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
-      <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">执行计划</div>
+      <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">{c.plan}</div>
       <div className="space-y-2">
         {entries.map((entry, index) => (
           <div key={index} className="flex items-start gap-2 text-[13px]">
@@ -463,7 +561,8 @@ function PlanBlock({ plan }) {
   );
 }
 
-function PermissionCard({ permission, pending, onRespond, responding, agentLabel }) {
+function PermissionCard({ permission, pending, onRespond, responding, agentLabel, copy }) {
+  const c = conversationCopy(copy);
   const request = permission.request || {};
   const tool = request.toolCall || {};
   const options = request.options || [];
@@ -473,11 +572,11 @@ function PermissionCard({ permission, pending, onRespond, responding, agentLabel
       <div className="flex items-start gap-3">
         <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{agentLabel} 请求权限</div>
-          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || '执行受保护操作'}</div>
+          <div className="text-[13px] font-semibold">{c.permissionRequest(agentLabel)}</div>
+          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || c.protectedOperation}</div>
           {tool.rawInput && tool.rawInput.command
-            ? <TerminalBlock label="命令" text={String(tool.rawInput.command)} />
-            : <StructuredValue label="操作参数" value={tool.rawInput} />}
+            ? <TerminalBlock label={c.command} text={String(tool.rawInput.command)} />
+            : <StructuredValue label={c.operationArguments} value={tool.rawInput} />}
           <div className="mt-3 flex flex-wrap gap-2">
             {options.map(option => (
               <button key={option.optionId} disabled={!actionable || responding}
@@ -488,16 +587,16 @@ function PermissionCard({ permission, pending, onRespond, responding, agentLabel
                     : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
                 } disabled:opacity-45 disabled:cursor-not-allowed`}>
                 {option.optionId === 'allow_once'
-                  ? '允许一次'
+                  ? c.allowOnce
                   : option.optionId === 'allow_always'
-                    ? '本会话允许'
+                    ? c.allowSession
                     : option.optionId === 'reject_once'
-                      ? '拒绝'
+                      ? c.reject
                       : option.name}
               </button>
             ))}
           </div>
-          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? '已处理' : '该请求已过期'}</div>}
+          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? c.handled : c.expired}</div>}
         </div>
       </div>
     </div>
@@ -513,8 +612,9 @@ function DefaultItem({
   renderToolItem,
   onOpenExternal,
   agentLabel,
+  copy,
 }) {
-  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} />;
+  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
   if (item.type === 'tool_group') {
     return (
       <ToolGroup
@@ -522,10 +622,11 @@ function DefaultItem({
         now={now}
         renderToolItem={renderToolItem}
         onOpenExternal={onOpenExternal}
+        copy={copy}
       />
     );
   }
-  if (item.type === 'plan') return <PlanBlock plan={item.plan} />;
+  if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
   if (item.type === 'permission') {
     return (
       <PermissionCard
@@ -534,6 +635,7 @@ function DefaultItem({
         onRespond={onRespond}
         responding={responding}
         agentLabel={agentLabel}
+        copy={copy}
       />
     );
   }
@@ -559,23 +661,25 @@ export function ConversationTurn({
   onOpenExternal,
   agentLabel = 'Agent',
   assistantAvatar,
+  copy,
 }) {
+  const c = conversationCopy(copy);
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
   const waitingInput = turn.waitingInput
     || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
   const waitingAttention = waitingPermission || waitingInput;
   const running = turn.status === 'running';
-  const duration = formatElapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const duration = c.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
   const showTerminalDuration = Boolean(turn.startedAt && turn.completedAt);
   const presentation = turn.presentation || turn.items || [];
   const operationCount = Number(turn.operationCount || 0);
   const failedOperationCount = Number(turn.failedOperationCount || 0);
   const turnUsage = turn.usage || null;
   const usageLabel = turnUsage && ('inputTokens' in turnUsage || 'outputTokens' in turnUsage)
-    ? `输入 ${Number(turnUsage.inputTokens || 0).toLocaleString()} · 输出 ${Number(turnUsage.outputTokens || 0).toLocaleString()}`
+    ? c.usage(Number(turnUsage.inputTokens || 0).toLocaleString(), Number(turnUsage.outputTokens || 0).toLocaleString())
     : turnUsage && turnUsage.size
-      ? `上下文 ${Number(turnUsage.used || 0).toLocaleString()} / ${Number(turnUsage.size || 0).toLocaleString()}`
+      ? c.contextUsage(Number(turnUsage.used || 0).toLocaleString(), Number(turnUsage.size || 0).toLocaleString())
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
   const userContent = renderUser && turn.userItem
@@ -594,7 +698,7 @@ export function ConversationTurn({
                       title={attachment.name}
                     >
                       <span>📎</span>
-                      <span className="truncate">{attachment.name || '附件'}</span>
+                      <span className="truncate">{attachment.name || c.attachment}</span>
                     </span>
                   ))}
                 </div>
@@ -617,7 +721,7 @@ export function ConversationTurn({
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? '等待授权' : waitingInput ? '等待输入' : (turn.activityLabel || '正在处理')} · {duration}
+              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityLabel || c.processing)} · {duration}
             </div>
           )}
           {presentation.map((item, index) => {
@@ -637,16 +741,17 @@ export function ConversationTurn({
                 renderToolItem={renderToolItem}
                 onOpenExternal={onOpenExternal}
                 agentLabel={agentLabel}
+                copy={c}
               />
             );
           })}
           {(turn.lifecycleKnown || turn.completedAt || turn.error) && !running && (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-2">
-              <ConversationStatusBadge status={turn.status} />
+              <ConversationStatusBadge status={turn.status} copy={c} />
               {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}
               {operationCount > 0 && (
                 <span className="text-[11px] text-gray-400">
-                  执行 {operationCount} 项{failedOperationCount ? ` · ${failedOperationCount} 项失败` : ''}
+                  {c.operations(operationCount, failedOperationCount)}
                 </span>
               )}
               {usageLabel && <span className="text-[11px] text-gray-400">{usageLabel}</span>}

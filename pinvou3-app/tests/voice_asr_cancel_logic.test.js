@@ -48,8 +48,12 @@ vm.runInContext(
   const chatSource = fs.readFileSync(chatPath, "utf8");
   assert.match(chatSource, /onClick=\{\(\) => bridge\.voice\.cancelVoiceAsrSetup\(\)\}/);
   assert.match(chatSource, /disabled=\{su\.cancelling\}/);
-  assert.match(chatSource, /'取消下载'/);
-  assert.match(chatSource, /su\.installing \? '下载语音识别模型' : '启用本地语音识别'/);
+  assert.match(chatSource, /const chatCopy = t\.uiChat;/);
+  assert.match(
+    chatSource,
+    /su\.installing \? \(su\.cancelling \? chatCopy\.cancelling : chatCopy\.cancelDownload\) : chatCopy\.cancel/,
+  );
+  assert.match(chatSource, /su\.installing \? chatCopy\.asrDownloadTitle : chatCopy\.asrEnableTitle/);
   assert.match(chatSource, /\{!su\.installing && \(/);
 
   const voiceInputStart = bridgeSource.indexOf("  async function startVoiceInput(");

@@ -1043,7 +1043,7 @@ const WidgetCard = ({ title, children, theme }) => {
       );
     };
 
-    const InteractionArea = ({ cards, sessionId, theme }) => {
+    const InteractionArea = ({ cards, sessionId, theme, t }) => {
       const isDark = theme === 'dark';
       const pending = (cards || []).filter(c => !c.resolved);
       if (pending.length === 0) return null;
@@ -1061,7 +1061,7 @@ const WidgetCard = ({ title, children, theme }) => {
                   <div className={`rounded-[12px] border px-3 py-2 text-[13px] flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] border-white/10 text-[#C4C7C5]' : 'bg-white border-black/10 text-[#444746]'}`}><span>⚙️</span><span className="flex-1">{card.text || ''}</span></div>
                 ) : card.kind === 'artifact' ? (
                   <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-[#34A853]/40' : 'bg-white border-[#34A853]/40'}`}>
-                    <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{card.text || '🎉 工作流完成'}</div>
+                    <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{card.text || t.uiWorkflow.completed}</div>
                     <div className={`text-[12px] mb-3 break-all ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{card.path}</div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
                       <button className={cardBtnCls(isDark)} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>📁 打开所在文件夹</button>
@@ -1250,7 +1250,7 @@ const WidgetCard = ({ title, children, theme }) => {
           <div className={containerCls}>
             <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 pt-8 pb-4">
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
-              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>选择一个工作流模板开始</p>
+              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.pick}</p>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
               <div className="grid gap-4 max-w-7xl mx-auto px-4 sm:px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
@@ -1272,7 +1272,7 @@ const WidgetCard = ({ title, children, theme }) => {
                     }} />;
                 })}
                 {workflows.length === 0 && (
-                  <p className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>没有可用的工作流(检查 bundle/workflow/*/workflow.json)</p>
+                  <p className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.empty}</p>
                 )}
               </div>
             </div>
@@ -1327,7 +1327,7 @@ const WidgetCard = ({ title, children, theme }) => {
           const brief = result && result.brief && result.brief.user_request_raw;
           openRestart(typeof brief === 'string' ? brief : '');
         } catch (e) {
-          window.alert('停止工作流失败：' + String((e && e.message) || e));
+          window.alert(t.uiWorkflow.stopFailed(String((e && e.message) || e)));
         } finally {
           setStopping(false);
         }
@@ -1337,7 +1337,7 @@ const WidgetCard = ({ title, children, theme }) => {
         <div className={containerCls}>
           <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 md:px-10 pt-8 pb-4">
             <div>
-              <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || '工作流'}</h1>
+              <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || t.uiWorkflow.workflow}</h1>
               <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
             </div>
             <div className="flex items-center gap-2">
@@ -1363,7 +1363,7 @@ const WidgetCard = ({ title, children, theme }) => {
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
             <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
-              <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} />
+              <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} t={t} />
             </div>
           )}
           {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} sessionId={run.sessionId} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.workflow.closeWorkflowDrawer()} />}

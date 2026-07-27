@@ -70,6 +70,7 @@ import {
   resolvePet,
 } from './pet-registry.js';
 import { useReducedMotion } from '../../hooks/useReducedMotion.js';
+import { dict, TAG_TO_LANG } from '../../shared/i18n.js';
 import './pet.css';
 
 const TICK_MS = 600;
@@ -89,13 +90,6 @@ const PET_EVENTS = [
   'chat:delta', 'chat:tool_start', 'chat:tool_end',
   'chat:user_input_required', 'chat:done',
 ];
-
-const STATUS_LABEL = {
-  waiting: '需要输入',
-  failed: '遇到问题',
-  review: '可以查看',
-  running: '处理中',
-};
 
 const STATUS_SYMBOL = {
   waiting: '',
@@ -162,6 +156,9 @@ export default function PetWindow({
     ? Math.min(MAX_SCALE, Math.max(DEFAULT_SCALE, configuredScale))
     : DEFAULT_SCALE;
   const stateRef = useRef(createPetState());
+  const [language, setLanguage] = useState('zh');
+  const t = dict[language] || dict.zh;
+  const petCopy = t.uiPet;
   const [activePet, setActivePet] = useState(null);
   const [activationFailed, setActivationFailed] = useState(false);
   const petActivationRef = useRef(createPetActivationState());
@@ -269,6 +266,29 @@ export default function PetWindow({
 
   const animation = dragAnimation
     || (hovered ? 'jumping' : (baseAnimation !== 'idle' ? baseAnimation : (firstAwake ? 'waving' : 'idle')));
+  const activePetName = activePet
+    ? (t.uiPetSettings.pets[activePet.id]?.name || activePet.name)
+    : '';
+
+  useEffect(() => {
+    if (!isTauriAvailable()) return undefined;
+    let disposed = false;
+    let unlisten = null;
+    invokeTauri('get_settings').then((settings) => {
+      if (!disposed) setLanguage(TAG_TO_LANG[settings?.language] || 'zh');
+    }).catch(() => {});
+    tauriEvents.listen('ui:language_changed', (event) => {
+      const next = event.payload?.language;
+      if (!disposed && dict[next]) setLanguage(next);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const refresh = () => {
     const now = Date.now();
@@ -445,7 +465,7 @@ export default function PetWindow({
       dispatchCardUi({
         type: 'reply-failed',
         requestId: payload.request_id || payload.requestId,
-        error: payload.error || '发送失败',
+        error: payload.error || petCopy.sendFailed,
       });
       if (payload.unavailable && removeSessionActivity(stateRef.current, sid)) {
         dispatchCardUi({ type: 'dismiss', sessionId: String(sid || '') });
@@ -469,7 +489,7 @@ export default function PetWindow({
       window.clearTimeout(scheduledRefreshTimer);
       unlisteners.forEach((unlisten) => { try { unlisten(); } catch (_) {} });
     };
-  }, []);
+  }, [petCopy.sendFailed]);
 
   useLayoutEffect(() => {
     const core = isTauriAvailable() ? tauriCommands : null;
@@ -1162,7 +1182,7 @@ export default function PetWindow({
     dispatchCardUi({ type: 'submit-reply', requestId });
     const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) {
-      dispatchCardUi({ type: 'reply-failed', requestId, error: '无法连接主窗口' });
+      dispatchCardUi({ type: 'reply-failed', requestId, error: petCopy.noMain });
       return;
     }
     try {
@@ -1206,24 +1226,24 @@ export default function PetWindow({
                 <button
                   type="button"
                   className="pet-activity-open"
-                  aria-label={`打开定时任务${scheduledNotice.taskName}的本次运行`}
+                  aria-label={petCopy.openScheduled(scheduledNotice.taskName)}
                   onClick={openScheduledNotice}
                 />
                 <div className="pet-activity-main">
                   <div className="pet-activity-title-row">
-                    <span className="pet-activity-title">定时任务已完成</span>
-                    <span className="pet-scheduled-status" aria-label="已完成">✓</span>
+                    <span className="pet-activity-title">{petCopy.scheduledDone}</span>
+                    <span className="pet-scheduled-status" aria-label={petCopy.done}>✓</span>
                   </div>
                   <div className="pet-activity-body-row">
                     <span className="pet-activity-body">
-                      {formatScheduledNoticeBody(scheduledNotice)}
+                      {formatScheduledNoticeBody(scheduledNotice, t.langTag, petCopy.done)}
                     </span>
                   </div>
                 </div>
                 <button
                   type="button"
                   className="pet-activity-close"
-                  aria-label="关闭定时任务完成提醒"
+                  aria-label={petCopy.closeScheduled}
                   onClick={dismissScheduledNotice}
                 >
                   ×
@@ -1244,7 +1264,7 @@ export default function PetWindow({
                   <button
                     type="button"
                     className="pet-activity-open"
-                    aria-label={`打开${activity.title}对话`}
+                    aria-label={petCopy.openChat(activity.title)}
                     onClick={(event) => {
                       event.stopPropagation();
                       openMain(activity.sessionId);
@@ -1255,16 +1275,16 @@ export default function PetWindow({
                       <span className="pet-activity-title">{activity.title}</span>
                       <span
                         className="pet-activity-status"
-                        aria-label={STATUS_LABEL[activity.status]}
+                        aria-label={petCopy[activity.status]}
                       >
                         {STATUS_SYMBOL[activity.status]}
                       </span>
                       <button
                         type="button"
                         className="pet-activity-expand"
-                        aria-label={expanded ? '收起回复' : '展开回复'}
+                        aria-label={expanded ? petCopy.collapseReply : petCopy.expandReply}
                         aria-expanded={expanded}
-                        data-hint={expanded ? '收起' : '展开'}
+                        data-hint={expanded ? petCopy.collapse : petCopy.expand}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
@@ -1284,7 +1304,7 @@ export default function PetWindow({
                   <button
                     type="button"
                     className="pet-activity-close"
-                    aria-label={`关闭${activity.title}提醒`}
+                    aria-label={petCopy.closeNotice(activity.title)}
                     onClick={(event) => dismissActivity(event, activity.sessionId)}
                   >
                     ×
@@ -1298,7 +1318,7 @@ export default function PetWindow({
                       dispatchCardUi({ type: 'open-reply', sessionId: activity.sessionId });
                     }}
                   >
-                    回复
+                    {petCopy.reply}
                   </button>
                 </div>
                 {replying && (
@@ -1316,8 +1336,8 @@ export default function PetWindow({
                       rows={1}
                       value={cardUi.draft}
                       disabled={pending}
-                      aria-label={`回复${activity.title}`}
-                      placeholder="输入回复…"
+                      aria-label={petCopy.replyTo(activity.title)}
+                      placeholder={petCopy.replyPlaceholder}
                       onChange={(event) => dispatchCardUi({
                         type: 'edit-reply',
                         text: event.target.value,
@@ -1337,7 +1357,7 @@ export default function PetWindow({
                     />
                     <button
                       type="submit"
-                      aria-label="发送回复"
+                      aria-label={petCopy.sendReply}
                       disabled={pending || !normalizedPetReply(cardUi.draft)}
                     >
                       {pending ? '…' : (
@@ -1362,16 +1382,16 @@ export default function PetWindow({
                 <button
                   type="button"
                   className="pet-activity-open"
-                  aria-label="回到品悟"
+                  aria-label={petCopy.back}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => { event.stopPropagation(); openMain(null); }}
                 />
                 <div className="pet-activity-main">
                   <div className="pet-activity-title-row">
-                    <span className="pet-activity-title">{activePet.name}已就绪</span>
+                    <span className="pet-activity-title">{petCopy.ready(activePetName)}</span>
                   </div>
                   <div className="pet-activity-body-row">
-                    <span className="pet-activity-body">点击回到品悟</span>
+                    <span className="pet-activity-body">{petCopy.backHint}</span>
                   </div>
                 </div>
               </div>
@@ -1390,7 +1410,7 @@ export default function PetWindow({
               className="pet-character"
               role="button"
               tabIndex={0}
-              aria-label={`点击回到品悟，拖动${activePet.name}`}
+              aria-label={petCopy.drag(activePetName)}
               onContextMenu={onCharacterContextMenu}
               onPointerEnter={() => setHovered(true)}
               onPointerLeave={() => setHovered(false)}
@@ -1410,8 +1430,8 @@ export default function PetWindow({
           <button
             type="button"
             className={`pet-collapse-badge${cardsCollapsed ? ' pet-collapse-badge--count' : ''}`}
-            aria-label={cardsCollapsed ? `展开 ${activityBadgeCount} 条活动` : '收起活动卡片'}
-            title={cardsCollapsed ? '展开活动' : '收起活动'}
+            aria-label={cardsCollapsed ? petCopy.expandActivities(activityBadgeCount) : petCopy.collapseActivities}
+            title={cardsCollapsed ? petCopy.expandActivity : petCopy.collapseActivity}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();
@@ -1432,20 +1452,20 @@ export default function PetWindow({
             type="button"
             className="pet-activation-fallback"
             data-pet-activation-failed="true"
-            aria-label="公仔加载失败，重试"
+            aria-label={`${petCopy.loadFailed}，${petCopy.retry}`}
             onClick={() => { void activateSelectedPet(DEFAULT_PET_ID, true); }}
           >
             <span className="pet-activation-fallback-icon" aria-hidden="true">!</span>
-            <span className="pet-activation-fallback-title">公仔加载失败</span>
-            <span className="pet-activation-fallback-action">点击重试</span>
+            <span className="pet-activation-fallback-title">{petCopy.loadFailed}</span>
+            <span className="pet-activation-fallback-action">{petCopy.retry}</span>
           </button>
         )}
         {allowResize && (
           <div
             className="pet-resize-grip"
             role="separator"
-            aria-label="拖动调整公仔大小"
-            title="拖动调整大小"
+            aria-label={petCopy.resize}
+            title={petCopy.resizeTitle}
             onPointerDown={onResizePointerDown}
             onPointerMove={onResizePointerMove}
             onPointerUp={onResizePointerUp}
@@ -1471,7 +1491,7 @@ export default function PetWindow({
           onPointerDown={(event) => event.stopPropagation()}
         >
           <button type="button" className="pet-context-menu-item" onClick={hidePet}>
-            隐藏公仔
+            {petCopy.hide}
           </button>
         </div>
       )}

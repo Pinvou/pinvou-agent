@@ -294,7 +294,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const fmt = bs && bs.monitor && bs.monitor._fmt;
       const monitorError = bs && bs.monitorError;
       const monitorBridgeReady = !!(window.TauriBridge?.monitor && typeof window.TauriBridge.monitor.startMonitorPolling === 'function');
-      const loadingValue = !monitorBridgeReady ? '桥接未就绪' : (monitorError ? '读取失败' : '正在读取');
+      const loadingValue = !monitorBridgeReady ? t.uiMonitor.bridgeNotReady : (monitorError ? t.uiMonitor.readFailed : t.uiMonitor.reading);
 
       // Start/stop polling when view mounts/unmounts
       useEffect(() => {
@@ -331,7 +331,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const vllmHealthStatus = fmt ? fmt.vllmHealthStatus : 'offline';
       const vllmOnline = fmt ? fmt.vllmOnline : false;
       const vllmUpstream = fmt ? fmt.vllmUpstream : '—';
-      const vllmTargetKind = fmt ? fmt.vllmTargetKind : '配置异常';
+      const vllmTargetKind = fmt ? fmt.vllmTargetKind : t.uiMonitor.configError;
       const vllmIsRemote = fmt ? fmt.vllmIsRemote : false;
       const vllmDiagnostic = fmt ? fmt.vllmDiagnostic : null;
       const vllmMetricDiagnostic = fmt ? fmt.vllmMetricDiagnostic : null;
@@ -464,9 +464,9 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const tpsText = String(clearOverride ? clearOverride.tps : vllmTps).replace(/\s*tok\/s$/i, '');
       const kvText = String(clearOverride ? clearOverride.kv : vllmKv).replace('%', '');
       const statusText = vllmOnline ? t.available
-        : (vllmHealthStatus === 'missing_api_key' ? '未验证'
-          : (vllmHealthStatus === 'auth_failed' ? '鉴权失败'
-            : (vllmHealthStatus === 'unverified' ? '未验证' : t.unavailable)));
+        : (vllmHealthStatus === 'missing_api_key' ? t.uiMonitor.unverified
+          : (vllmHealthStatus === 'auth_failed' ? t.uiMonitor.authFailed
+            : (vllmHealthStatus === 'unverified' ? t.uiMonitor.unverified : t.unavailable)));
       const runModeText = vllmIsRemote ? t.remoteService : t.localRunning;
       const swapUsed = fmt && fmt.swapUsed ? fmt.swapUsed : loadingValue;
 
@@ -486,7 +486,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                         <span className="absolute h-full w-full rounded-full bg-[#8E8E93] opacity-60" />
                         <span className="relative h-2 w-2 rounded-full bg-[#8E8E93]" />
                       </span>
-                      <span className="text-[11px] font-bold tracking-[0.15em] uppercase text-black/50 dark:text-white/50">{!monitorBridgeReady ? '监控桥接未就绪：请确认打开的是 Tauri 应用窗口' : `监控读取失败：${monitorError}`}</span>
+                      <span className="text-[11px] font-bold tracking-[0.15em] uppercase text-black/50 dark:text-white/50">{!monitorBridgeReady ? t.uiMonitor.bridgeError : t.uiMonitor.readError(monitorError)}</span>
                     </div>
                   )}
                 </div>
@@ -558,7 +558,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                       </div>
                     </div>
                     <div className="mt-auto bg-white/55 dark:bg-[#2C2C2E] rounded-3xl p-4 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:hover:!bg-[#3A3A3C]">
-                      <span className="text-[10px] font-bold tracking-[0.04em] text-black/50 dark:text-white/50 block mb-3 px-2">运行活动</span>
+                      <span className="text-[10px] font-bold tracking-[0.04em] text-black/50 dark:text-white/50 block mb-3 px-2">{t.uiMonitor.activity}</span>
                       <MonitorActivityBars color={monitorColors.blue} />
                     </div>
                   </div>

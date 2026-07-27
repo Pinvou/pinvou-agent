@@ -1,21 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { isWeb, platform } from '../../shared/platform.js';
 
-const COPY = {
-  idle: ['正在准备远程控制', '正在初始化浏览器连接…'],
-  connecting: ['正在连接桌面端', '连接中断时会自动重试，尚未确认的操作不会重复执行。'],
-  desktop_offline: ['桌面端当前离线', '保持此页面打开；桌面端恢复运行后会自动续接。'],
-  credentials_missing: ['链接不完整', '请在桌面端启用远程控制，然后粘贴生成的完整链接。'],
-  denied: ['无法访问', '链接无效或已被刷新，请从桌面端复制新链接。'],
-  revoked: ['访问已停止', '桌面端已停止此远程控制链接。'],
-  replaced: ['已在另一浏览器接管', '同一远程控制链接只保留一个活动浏览器；刷新本页可重新接管。'],
-  incompatible_desktop: ['桌面端版本不兼容', '当前远程控制功能需要更新的桌面端，请先升级桌面端后再重新打开链接。'],
-  error: ['连接异常', '远程控制会继续尝试恢复连接。'],
-};
-
 const BLOCKING = new Set(['credentials_missing', 'denied', 'revoked', 'replaced', 'incompatible_desktop']);
 
-export function WebConnectionStatus({ theme }) {
+export function WebConnectionStatus({ theme, t }) {
   const [connection, setConnection] = useState(() => (
     isWeb && typeof platform.getConnectionState === 'function'
       ? platform.getConnectionState()
@@ -29,8 +17,10 @@ export function WebConnectionStatus({ theme }) {
 
   if (!isWeb || !connection || connection.status === 'connected') return null;
 
-  const [title, fallback] = COPY[connection.status] || COPY.error;
-  const message = connection.message || fallback;
+  const copy = t.uiWebConnection;
+  const [title, fallback] = copy[connection.status] || copy.error;
+  // 桌面端的已知状态可能携带旧版固定中文文案；界面统一使用当前语言字典。
+  const message = copy[connection.status] ? fallback : (connection.message || fallback);
   const dark = theme === 'dark';
   const card = (
     <div
