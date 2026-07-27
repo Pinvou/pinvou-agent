@@ -50,7 +50,7 @@ fn hash_dir(dir: &Path) -> u64 {
     let mut files: Vec<PathBuf> = Vec::new();
     collect_files(dir, &mut files);
     files.sort();
-    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for path in &files {
         println!("cargo:rerun-if-changed={}", path.display());
         hash = fnv1a_step(hash, path.to_string_lossy().as_bytes());
@@ -70,7 +70,12 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
         // __pycache__/.pyc 是跑过引擎测试的机器才有的本地缓存(gitignored 但在盘上),
         // 折进 hash 会让不同机器 hash 漂移→bundle 无谓重解包,且发布物夹 pyc。
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "__pycache__" || name.ends_with(".pyc") {
+        // 大小写不敏感:有些工具/平台会产出 .PYC(虽然 CPython 默认 .pyc)。
+        // clippy::case_sensitive_file_extension_comparisons 对 to_ascii_lowercase+ends_with
+        // 仍误报(它只认 Path::extension().eq_ignore_ascii_case 形式),此处是对文件名串的
+        // 字面后缀判断,小写化已正确,按需 allow。
+        #[allow(clippy::case_sensitive_file_extension_comparisons)]
+        if name.to_ascii_lowercase().ends_with(".pyc") || name == "__pycache__" {
             continue;
         }
         if path.is_dir() {
@@ -83,13 +88,13 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// 简易 FNV-1a 64 位 hash —— 不需要 cryptographic 强度，只要内容变化时 hash 变即可。
 fn fnv1a_64(bytes: &[u8]) -> u64 {
-    fnv1a_step(0xcbf29ce484222325, bytes)
+    fnv1a_step(0xcbf2_9ce4_8422_2325, bytes)
 }
 
 fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
     for b in bytes {
-        hash ^= *b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     hash
 }
@@ -108,7 +113,7 @@ fn sync_workflow_bundle() {
     sync_tree(data_src, dst);
     // 2. 引擎脚本 → bundle/scripts/（排 test_*，与 scheduler.py 同根路径假设对齐）
     let scripts_dst = dst.join("scripts");
-    let _ = std::fs::create_dir_all(&scripts_dst);
+    drop(std::fs::create_dir_all(&scripts_dst));
     // watch 目录本身：往 _engine/scripts 新增一个 .py，文件级 rerun-if-changed 看不到
     // （那条路径之前不存在），但目录 mtime 会变 → 触发 build.rs 重跑、新脚本进 bundle。
     println!("cargo:rerun-if-changed={}", engine_src.display());
@@ -120,7 +125,9 @@ fn sync_workflow_bundle() {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
-            if !name.ends_with(".py") || name.starts_with("test_") {
+            // 大小写不敏感匹配 .py(防御性:个别工具产出 .PY)。
+            #[allow(clippy::case_sensitive_file_extension_comparisons)]
+            if !name.to_ascii_lowercase().ends_with(".py") || name.starts_with("test_") {
                 continue;
             }
             println!("cargo:rerun-if-changed={}", p.display());
@@ -147,17 +154,20 @@ fn sync_tree(src: &Path, dst: &Path) {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
+        // 扩展名按小写比较(.ENV / .PYC 大小写变体也排除,避免误嵌)。同 collect_files,
+        // clippy::case_sensitive_file_extension_comparisons 对小写化 ends_with 仍误报,allow。
+        #[allow(clippy::case_sensitive_file_extension_comparisons)]
         if name == ".git"
             || name == ".gitignore"
             || name == "__pycache__"
-            || name.ends_with(".env")
-            || name.ends_with(".pyc")
+            || name.to_ascii_lowercase().ends_with(".env")
+            || name.to_ascii_lowercase().ends_with(".pyc")
         {
             continue;
         }
         let dp = dst.join(&name);
         if sp.is_dir() {
-            let _ = std::fs::create_dir_all(&dp);
+            drop(std::fs::create_dir_all(&dp));
             sync_tree(&sp, &dp);
         } else {
             println!("cargo:rerun-if-changed={}", sp.display());
@@ -176,5 +186,5 @@ fn copy_if_changed(src: &Path, dst: &Path) {
             return;
         }
     }
-    let _ = std::fs::write(dst, new_bytes);
+    drop(std::fs::write(dst, new_bytes));
 }
