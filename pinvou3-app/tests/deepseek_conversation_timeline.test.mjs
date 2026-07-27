@@ -217,8 +217,9 @@ try {
   assert.ok(chatView.includes('variant="timeline"'),
     'legacy DeepSeek tool details must use the shared timeline visual shell');
   assert.ok(toolRenderers.includes('data-tool-card-variant="timeline"')
-    && toolRenderers.includes('const shouldAutoExpand = !isTimeline'),
-  'timeline tool cards must stay compact while status changes unless manually toggled');
+    && toolRenderers.includes('const displayExpanded = hasLiveShellOutput || expanded')
+    && conversationView.includes('const expanded = running || open;'),
+  'timeline tool cards must stay compact except while a live shell operation needs visible output and controls');
   assert.ok(toolRenderers.includes('<QuestionChoiceCard'),
     'DeepSeek request_user_input must use the shared Codex-style choice card');
   assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')

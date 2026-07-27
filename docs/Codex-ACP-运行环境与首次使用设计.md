@@ -14,7 +14,7 @@
 并复用设备上已经安装且兼容的 Codex。设备没有 Codex，或系统版本与当前
 `codex-acp` 不兼容时，Pinvou 再按需下载固定版本的托管 Codex。
 
-Pinvou 安装包只携带体积较小的 **ACP Bridge Runtime**（私有 Node +
+Pinvou 安装包只携带体积较小的 **ACP Bridge Runtime**（应用隔离 Node +
 `codex-acp`，不携带大体积 Codex 平台二进制），从而保证 ACP Host 自身不依赖系统
 Node/npm。用户只负责完成 ChatGPT 登录或显式提供 API Key。
 
@@ -23,7 +23,7 @@ Node/npm。用户只负责完成 ChatGPT 登录或显式提供 API Key。
 ```text
 Pinvou 安装包管理
 └── <app-resources>/codex-bridge/
-    ├── 私有 Node
+    ├── 应用隔离 Node
     └── codex-acp
 
 系统已有，兼容时优先使用
@@ -55,7 +55,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
   `@agentclientprotocol/codex-acp`。
 - 通过该包的依赖获得 `@openai/codex` 和当前平台的 Codex 原生二进制，因此不强制要求
   用户全局安装 Codex CLI。
-- 优先使用环境变量指定、应用内置、Pinvou 私有目录中的 adapter，最后才回退到系统
+- 优先使用环境变量指定、应用内置、Pinvou 应用目录中的 adapter，最后才回退到系统
   `PATH`。
 - 调用 `codex-acp login` 发起登录。
 - 复用用户默认 `HOME` 下的 `~/.codex`，因此已登录用户可以继续使用自己的 Codex
@@ -88,7 +88,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 - 下载、安装、登录、检查、修复均有明确状态、进度和可恢复操作。
 - Bridge 和托管 Codex 版本固定、可审计、可校验、可回滚，不依赖终端现场执行 npm
   安装。
-- Codex Runtime 的安装或故障不能阻塞 Pinvou 启动，也不能影响 DeepSeek-TUI 原有功能。
+- Codex Runtime 的安装或故障不能阻塞 Pinvou 启动，也不能影响 CodeWhale 原有功能。
 - 首期完成 Linux x64 / arm64；架构保留 Windows x64 / arm64 与 macOS x64 / arm64
   扩展能力。
 
@@ -106,7 +106,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 
 AionUI 的成熟点是：
 
-- 管理私有 Node Runtime 和固定版本 ACP Tool。
+- 管理应用隔离 Node Runtime 和固定版本 ACP Tool。
 - 按操作系统和 CPU 架构准备独立产物。
 - 校验 `codex-acp` 包中对应平台的 Codex 原生二进制。
 - 使用 manifest、SHA256 和分类错误处理安装失败。
@@ -120,7 +120,7 @@ Pinvou 采用以下组合方案：
 
 | 能力 | 采用方案 |
 |---|---|
-| 私有 Node / ACP Tool | 随 Pinvou 内置小型 Bridge Runtime |
+| 应用隔离 Node / ACP Tool | 随 Pinvou 内置小型 Bridge Runtime |
 | Codex 原生二进制 | 系统兼容版本优先；缺失或不兼容时按需下载 |
 | 认证和配置目录 | 复用 Codex 默认 `~/.codex` |
 | ChatGPT 登录 | Pinvou 内发起，授权页面仍由官方 Codex 流程处理 |
@@ -145,7 +145,7 @@ flowchart TB
   Manager --> Auth[CodexAuthCoordinator]
   Manager --> Probe[CodexHealthProbe]
 
-  Manager --> Bridge[安装包内 ACP Bridge<br/>私有 Node + codex-acp]
+  Manager --> Bridge[安装包内 ACP Bridge<br/>应用隔离 Node + codex-acp]
   Resolver --> System[系统 Codex<br/>兼容时优先]
   Resolver --> Managed[按需下载的托管 Codex]
   Resolver --> Missing[缺失 / 不兼容]
@@ -206,7 +206,7 @@ Bridge Runtime 始终使用 Pinvou 固定版本，不从系统查找 Node 或 `c
 
 #### `CodexAuthCoordinator`
 
-- 启动私有 Runtime 中的 `codex-acp login`。
+- 启动应用隔离 Runtime 中的 `codex-acp login`。
 - 允许 adapter 调用系统浏览器完成官方授权。
 - 登录进程结束后不直接宣告成功，而是触发 `CodexHealthProbe`。
 - 不读取、不展示、不记录 OAuth token。
@@ -217,7 +217,7 @@ Bridge Runtime 始终使用 Pinvou 固定版本，不从系统查找 Node 或 `c
 分三层检查：
 
 1. **结构检查**：文件、版本、权限、平台和 SHA256。
-2. **进程检查**：私有 Node 能启动 adapter，ACP `initialize` 成功。
+2. **进程检查**：应用隔离 Node 能启动 adapter，ACP `initialize` 成功。
 3. **会话检查**：在 Pinvou 临时探测目录执行 `session/new`，能获得 Agent capability、
    模型/模式等会话信息。
 
@@ -266,7 +266,7 @@ Bridge 不能只固定顶层 `codex-acp` 而允许每次构建重新解析不同
 └── .staging/
 ```
 
-Rust 侧直接使用私有 Node 执行 adapter JS 入口，不依赖 `#!/usr/bin/env node`，也不修改
+Rust 侧直接使用应用隔离 Node 执行 adapter JS 入口，不依赖 `#!/usr/bin/env node`，也不修改
 应用或系统的 `PATH`：
 
 ```text
@@ -344,7 +344,7 @@ Pinvou 不应：
 首次未登录时：
 
 1. 用户点击“使用 ChatGPT 登录”。
-2. Pinvou 启动私有 Runtime 的 `codex-acp login`。
+2. Pinvou 启动应用隔离 Runtime 的 `codex-acp login`。
 3. 官方流程打开浏览器，用户完成授权。
 4. Pinvou 显示“等待浏览器授权”，支持取消和重新打开。
 5. 登录命令结束后自动执行真实 ACP 健康检查。
@@ -359,7 +359,7 @@ API Key 是高级备选，不是默认首次使用路径：
 - 优先允许用户自己通过系统环境提供 `OPENAI_API_KEY`。
 - 如果后续增加应用内录入，必须使用操作系统凭据存储；不得明文写入
   `settings.json`、session sidecar 或 timeline。
-- API Key 只注入 Codex 子进程，不注入 DeepSeek-TUI 或其他 connector。
+- API Key 只注入 Codex 子进程，不注入 CodeWhale 或其他 connector。
 - UI 只显示“已配置”，不提供读取原值能力。
 
 Linux 若目标发行版没有可用的 Secret Service，则第一阶段宁可只支持用户环境变量，也
@@ -569,13 +569,13 @@ codex-runtime://status
 
 ## 12. 与现有功能的隔离
 
-### 12.1 不影响 DeepSeek-TUI
+### 12.1 不影响 CodeWhale
 
 - Runtime 检查只在进入“代码”模式或设置中显式检查时触发。
 - Pinvou 应用启动不等待 Runtime 下载、登录或 ACP 探测。
-- 不修改全局 `PATH`、`HOME`、Node 环境或 DeepSeek-TUI Engine 配置。
+- 不修改全局 `PATH`、`HOME`、Node 环境或 CodeWhale Engine 配置。
 - Codex 子进程的环境变量仅作用于该子进程。
-- Codex Runtime 失败不发布 `chat:*` 事件，也不进入 DeepSeek 会话状态。
+- Codex Runtime 失败不发布 `chat:*` 事件，也不进入 CodeWhale 会话状态。
 - Runtime 文件只位于 `~/.pinvou3/runtimes/codex/`。
 
 ### 12.2 不破坏用户 Codex
@@ -632,12 +632,12 @@ codex-runtime://status
 
 - 删除/过期 `auth.json`、无效 API Key、错误 `config.toml` 能得到不同的准确提示。
 - `auth.json` 存在但无法建会话时不能显示“Codex 已连接”。
-- DeepSeek 页面和会话不受影响。
+- CodeWhale 页面和会话不受影响。
 
-### 阶段 B：私有 Bridge 与系统 Codex 优先
+### 阶段 B：应用隔离 Bridge 与系统 Codex 优先
 
 - 构建 Linux x64 / arm64 Bridge Runtime。
-- 使用私有 Node 启动 adapter，并通过 `CODEX_PATH` 使用系统 Codex。
+- 使用应用隔离 Node 启动 adapter，并通过 `CODEX_PATH` 使用系统 Codex。
 - 检测系统 Codex 的绝对路径、版本和兼容性。
 - 状态和诊断中明确展示当前使用系统还是托管 Codex。
 - 正式包不再依赖系统 Node/npm。
@@ -659,7 +659,7 @@ codex-runtime://status
 - 干净设备没有 `node`、`npm`、`codex`、`codex-acp` 时，下载托管 Codex 后可进入
   登录阶段。
 - 下载过程不调用 npm；Linux MVP 从 OpenAI 官方 npm registry 读取固定平台归档。
-- 下载失败不影响 Pinvou 和 DeepSeek-TUI。
+- 下载失败不影响 Pinvou 和 CodeWhale。
 - 托管 Codex 损坏可以重新下载，且系统 Codex 与 `~/.codex` 完全不变。
 
 ### 阶段 D：应用内登录闭环
@@ -703,7 +703,7 @@ codex-runtime://status
 | OpenAI 网络不可达 | 显示网络错误，不误报未安装 |
 | 用户取消浏览器登录 | 回到需要登录，可再次发起 |
 | 代码模式未就绪 | 历史可查看，发送和配置修改禁用 |
-| Codex 安装/登录失败 | DeepSeek 会话仍可正常创建和使用 |
+| Codex 安装/登录失败 | CodeWhale 会话仍可正常创建和使用 |
 | 删除托管 Codex | 不删除系统 Codex 和 `~/.codex` |
 
 自动测试至少覆盖：
@@ -715,7 +715,7 @@ codex-runtime://status
 - 登录取消、超时和进程回收。
 - ACP probe 成功、`auth_required`、配置错误和网络错误分类。
 - 日志脱敏。
-- Codex Runtime 事件不会进入 DeepSeek reducer。
+- Codex Runtime 事件不会进入 CodeWhale reducer。
 
 ## 16. 建议代码落点
 
@@ -767,5 +767,5 @@ pinvou3-app/scripts/codex-runtime/
 4. **ChatGPT 登录为默认路径**：API Key 是高级备选；没有安全凭据存储前不在 Pinvou
    配置文件中保存 Key。
 
-实施顺序为阶段 A → B → C → D：先改善判断和 UI，再接私有 Bridge 和系统 Codex
+实施顺序为阶段 A → B → C → D：先改善判断和 UI，再接应用隔离 Bridge 和系统 Codex
 检测，然后完成托管 Codex 按需下载，最后完成不打开终端的首次登录闭环。

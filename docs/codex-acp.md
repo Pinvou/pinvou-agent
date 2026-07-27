@@ -8,8 +8,8 @@
 pinvou3 在主页输入区提供“工作 / 代码”两种模式：“工作”保持原有品悟输入框，
 “代码”当前使用 Codex。两类会话按最近更新时间混排在左侧统一会话列表中，Codex
 会话以代码图标区分，不再占用单独的侧边栏入口。Codex 会话仍使用独立的 ACP
-事件、权限和持久化链路，不进入 DeepSeek `ChatView`；原有品悟对话继续固定使用
-DeepSeek-TUI。
+事件、权限和持久化链路，不进入 CodeWhale `ChatView`；原有品悟对话继续固定使用
+CodeWhale。
 
 ## 开发环境使用
 
@@ -83,7 +83,7 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 ./pinvou3-app/scripts/prepare-codex-acp-runtime.sh
 ```
 
-脚本会把当前 Linux 架构的私有 Node 与精简 `codex-acp` Bridge 放到
+脚本会把当前 Linux 架构的应用隔离 Node 与精简 `codex-acp` Bridge 放到
 `resources/platforms/linux/codex-bridge/`。项目统一构建入口也会自动准备该目录。
 生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含大体积 Codex 平台
 二进制。正式 Linux x64 / arm64 包不依赖系统 Node/npm，系统 Codex 缺失时由应用下载
@@ -96,4 +96,4 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 - MVP 不向 Codex 注入 pinvou bundle skill、MCP、知识库或 persona。
 - 附件入口位于代码输入框；图片按 Agent capability 发送，小型文本资源可内嵌，
   其他文件以资源链接发送。不支持的图片能力或格式会明确报错。
-- DeepSeek-TUI 的技能市场、知识库、工具、Plan/YOLO、远程控制和历史链路保持原样。
+- CodeWhale 的技能市场、知识库、工具、Plan/YOLO、远程控制和历史链路保持原样。

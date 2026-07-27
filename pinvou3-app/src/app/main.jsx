@@ -722,7 +722,6 @@ function workspaceDisplayName(path) {
           return {
             id: run.sessionId,
             title,
-            date: formatSessionDate(run.scheduledFor || run.createdAt, language),
             updatedAt: run.createdAt || run.scheduledFor || '',
             pinned: !!run.pinned,
             pinnedAt: run.pinnedAt || '',
@@ -889,6 +888,16 @@ function workspaceDisplayName(path) {
         if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
           setIsSidebarOpen(false);
         }
+      }
+
+      function scheduledRunLabel(value) {
+        return ({
+          queued: '等待中',
+          running: '运行中',
+          completed: '已完成',
+          failed: '失败',
+          canceled: '已取消',
+        }[value] || value || '未知');
       }
 
       async function handleOpenScheduledRunShortcut(run) {

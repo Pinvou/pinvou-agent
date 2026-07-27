@@ -24,7 +24,7 @@ const STATE_FILE: &str = "acp-state.json";
 /// Codex ACP 页面唯一消费的事件合同。
 ///
 /// 该合同刻意不复用 `chat:*`：ACP 的 reasoning、tool update、permission、
-/// plan、mode 和 config 都保留原始协议字段，DeepSeek UI 无需理解这些语义。
+/// plan、mode 和 config 都保留原始协议字段，工作会话 UI 无需理解这些语义。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpEventEnvelope {

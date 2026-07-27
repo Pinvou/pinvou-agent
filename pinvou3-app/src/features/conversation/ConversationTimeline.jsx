@@ -393,16 +393,17 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal }) {
   const summary = `${running ? `正在执行${runningLabel ? ` · ${runningLabel}` : ''}` : '执行步骤'} · ${items.length} 项${
     failedCount ? ` · ${failedCount} 项失败` : ''
   }`;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(running);
+  const expanded = running || open;
   return (
     <div>
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
         <span>{summary}</span>
-        <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={13} className={`ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
+      {expanded && (
         <div className="ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => {
             const custom = renderToolItem && renderToolItem(item);

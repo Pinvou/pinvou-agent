@@ -13,9 +13,9 @@ pinvou 采用“**Codex 作为 Agent 内核，pinvou 作为 ACP Host 和产品�
 
 - Codex 负责自身 system prompt、原生 tools、tool loop、上下文和原生 skill 发现。
 - pinvou 负责 ACP 进程托管、会话管理、权限交互、事件持久化和对话 UI。
-- DeepSeek-TUI 继续走现有 Engine / ToolRegistry / SkillRegistry / `chat:*` 链路，不因 Codex ACP 重构而改变原有行为。
+- CodeWhale 继续走现有 Engine / ToolRegistry / SkillRegistry / `chat:*` 链路，不因 Codex ACP 重构而改变原有行为。
 - 主页输入区统一提供“工作 / 代码”入口；两类会话在左侧按时间混排，通过图标区分。
-- Codex ACP 使用独立的事件模型和对话展示层，不再把 ACP 事件压成 DeepSeek 的消息和工具卡片。
+- Codex ACP 使用独立的事件模型和对话展示层，不再把 ACP 事件压成 CodeWhale 的消息和工具卡片。
 
 这个方案吸收 AionUI 对 ACP 的成熟处理方式，但不引入 AionCore、Electron、HTTP/WS 服务层和 Agent 市场等额外体系。
 
@@ -45,20 +45,20 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 ### 3.1 MVP 目标
 
 - 在 Linux 开发/内部体验环境中可安装、可登录、可创建和恢复 Codex ACP 会话。
-- 在同一个 pinvou 主窗口的主页提供“工作 / 代码”入口；左侧统一展示两类会话，不再通过现有 DeepSeek 输入框的 backend chip 或独立 Codex Tab 切换。
+- 在同一个 pinvou 主窗口的主页提供“工作 / 代码”入口；左侧统一展示两类会话，不再通过现有 CodeWhale 输入框的 backend chip 或独立 Codex Tab 切换。
 - 完整展示 ACP 中的回答、思考状态、tool call/update、plan、permission、model、mode、config、usage 和错误。
 - 会话内部的内容结构和操作方式参考 Codex/AionUI，整体视觉继续使用 pinvou 设计体系。
 - 保留 Codex 自己的 system prompt、tools、tool loop、skills、MCP 配置和上下文能力。
-- 不新增跨后端能力兼容，但必须保证 DeepSeek 现有会话、工具、skill、知识库、远程控制和历史记录零回归。
+- 不新增跨后端能力兼容，但必须保证 CodeWhale 现有会话、工具、skill、知识库、远程控制和历史记录零回归。
 
 ### 3.2 MVP 非目标
 
 - 不在 pinvou 里重写 Codex 的 tool loop、system prompt 或上下文压缩。
-- 不把 DeepSeek-TUI `ToolRegistry` 中的工具硬塞进 Codex 工具循环。
+- 不把 CodeWhale `ToolRegistry` 中的工具硬塞进 Codex 工具循环。
 - 不接入 pinvou skill、pinvou MCP、知识库和 persona。
-- 不做 Codex 富事件的远程控制兼容；现有 DeepSeek 远程控制保持不变。
+- 不做 Codex 富事件的远程控制兼容；现有 CodeWhale 远程控制保持不变。
 - 不新增独立操作系统窗口；MVP 使用同一主窗口内的“代码”模式。
-- 不要求正式发布所需的私有 Node runtime 在 MVP 内同步完成。
+- 不要求正式发布所需的应用隔离 Node runtime 在 MVP 内同步完成。
 - 不做通用 Agent 市场，也不一次性支持所有 ACP Agent。
 - 不复制 AionUI 的后端服务、数据库和整套前端。
 
@@ -67,7 +67,7 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 - 用户显式选择的 pinvou skill 通过 Codex 原生 skill 机制接入。
 - pinvou 工具和知识库通过 MCP 接入 Codex。
 - persona 作为可见、可选的首次 prompt 扩展接入，不替换 Codex system prompt。
-- 正式 Linux x64 / arm64 发布包内置 pinvou 私有 Node runtime，用户无需安装 Node/npm。
+- 正式 Linux x64 / arm64 发布包内置 Pinvou 应用隔离 Node runtime，用户无需安装 Node/npm。
 - Codex 富事件逐步接入远程控制。
 - 如有真实并排使用需求，再提供“弹出为独立窗口”，不改变同窗口“代码”模式作为默认入口。
 
@@ -80,7 +80,7 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 - 启动 ACP 子进程并通过 stdio 连接。
 - `initialize`、`session/new`、`session/load`、`prompt`、`cancel`、模型切换已接通。
 - pinvou session 与 ACP session ID / model 的映射已持久化。
-- 当前原型曾在 DeepSeek 输入框的 chip 中选择 Codex，创建后锁定 backend。目标设计改为主页“工作 / 代码”模式；“代码”当前选择 Codex，底层会话仍永久绑定 `codex-acp`，不能中途切换成 DeepSeek。
+- 当前原型曾在 CodeWhale 输入框的 chip 中选择 Codex，创建后锁定 backend。目标设计改为主页“工作 / 代码”模式；“代码”当前选择 Codex，底层会话仍永久绑定 `codex-acp`，不能中途切换成 CodeWhale。
 
 但它仍然是“通路原型”，不是可交付的完整 ACP 架构：
 
@@ -130,7 +130,7 @@ AionUI 并不会替换 Codex 自带的 Agent 内核。它的做法是：
 | 定位 | 最小 Codex ACP 通路 | 通用 ACP 产品平台 | 聚焦 Codex 的 ACP Host |
 | 后端 | Tauri/Rust 内直接托管 | Desktop + AionCore 完整服务层 | 保留 Tauri/Rust，补齐 ACP RuntimeManager |
 | 事件 | 压成旧 `chat:*` | ACP 类型化事件 | 版本化 `acp:event`，保留完整语义 |
-| UI | 复用 DeepSeek ChatView/ToolCard | 独立 ACP surface | 独立 ACP surface，共享外壳和基础组件 |
+| UI | 复用 CodeWhale ChatView/ToolCard | 独立 ACP surface | 独立 ACP surface，共享外壳和基础组件 |
 | 权限 | Plan/YOLO 自动决定 | 待处理列表 + UI 回复 | PermissionBroker + 可恢复内联卡片 |
 | MCP | 无 session 注入 | 按 capability 注入 | MVP 只保留 Codex 自身配置；pinvou session MCP 后置 |
 | skill | 直接 prepend skill body | Codex 用 native dir，其他 Agent 有降级 | MVP 只保留 Codex 原生发现；pinvou skill 后置 |
@@ -154,10 +154,10 @@ flowchart TB
 
   Window --> Nav
   Nav --> Shell
-  Shell --> DS[DeepSeekConversationSurface]
+  Shell --> DS[WorkConversationSurface]
   Shell --> ACPUI[CodexAcpConversationSurface]
 
-  DS --> Engine[DeepSeek-TUI EnginePool<br/>原有 chat:* 链路]
+  DS --> Engine[CodeWhale EnginePool<br/>原有 chat:* 链路]
 
   ACPUI --> Timeline[AcpTimeline / Reasoning / ToolStepGroup]
   ACPUI --> Permission[PermissionCard / Plan / RuntimeStatus]
@@ -186,11 +186,11 @@ flowchart TB
 
 - 主页输入区提供“工作 / 代码”模式，不在主导航增加独立 Codex Tab。
 - “工作”保持原有品悟输入框；“代码”当前只有 Codex，未来可扩展其他代码 Agent。
-- DeepSeek 与 Codex 会话在左侧统一列表中按最近更新时间混排，Codex 会话名前显示代码图标。
-- Codex 使用专属 timeline、输入框和运行状态，不复用 DeepSeek `ChatView` 的消息语义。
+- CodeWhale 与 Codex 会话在左侧统一列表中按最近更新时间混排，Codex 会话名前显示代码图标。
+- Codex 使用专属 timeline、输入框和运行状态，不复用 CodeWhale `ChatView` 的消息语义。
 - 代码草稿默认选择临时目录，首条发送时才物化会话；输入框下方也可选择项目目录或最近项目。
-- 现有 DeepSeek 输入框不再显示 Codex backend chip。
-- 每个 Codex 会话在数据层永久绑定 `codex-acp`，不能中途切换为 DeepSeek。
+- 现有 CodeWhale 输入框不再显示 Codex backend chip。
+- 每个 Codex 会话在数据层永久绑定 `codex-acp`，不能中途切换为 CodeWhale。
 - 后续可增加“弹出为独立窗口”，但它只是同一代码模式的一种承载方式，不是另一套会话实现。
 
 ### 6.2 分层原则
@@ -207,11 +207,11 @@ flowchart TB
 
 不共享：
 
-- DeepSeek 和 Codex 的消息数据、输入框逻辑与运行时状态；左侧列表只合并各自的会话摘要。
+- CodeWhale 和 Codex 的消息数据、输入框逻辑与运行时状态；左侧列表只合并各自的会话摘要。
 - 现有输入框中的 backend 选择 chip。
-- DeepSeek `ToolCard` 与 ACP tool step。
-- DeepSeek message reducer 与 ACP timeline reducer。
-- `pendingAssistantBlocks`、`toolMeta`、DeepSeek 专属 selector。
+- CodeWhale `ToolCard` 与 ACP tool step。
+- CodeWhale message reducer 与 ACP timeline reducer。
+- `pendingAssistantBlocks`、`toolMeta`、CodeWhale 专属 selector。
 - 用旧 history messages 重建 ACP 运行时时间线的逻辑。
 
 #### B. 后端内部可扩展，产品上只发 Codex
@@ -222,14 +222,14 @@ flowchart TB
 
 | 能力 | 主责 | pinvou 的职责 | 禁止做法 |
 |---|---|---|---|
-| Codex base system prompt | Codex | 不修改，仅记录当前 Agent/版本 | 注入 DeepSeek `instructions.md` 替换它 |
+| Codex base system prompt | Codex | 不修改，仅记录当前 Agent/版本 | 注入 CodeWhale `instructions.md` 替换它 |
 | Codex 原生 tools | Codex | 保真显示 ACP tool event | 在 pinvou 重写 tool loop |
 | Codex tool loop | Codex | 回应 permission，支持 cancel | 在前端推测下一步工具 |
-| Codex context/compaction | Codex | 显示 usage，保存 ACP session ID | 用 DeepSeek 压缩逻辑接管 |
+| Codex context/compaction | Codex | 显示 usage，保存 ACP session ID | 用 CodeWhale 压缩逻辑接管 |
 | Codex 原生 skills | Codex | MVP 不注入 pinvou skill，不干扰 Codex 自己发现 | 默认 prepend pinvou skill body |
 | Codex 自身 MCP 配置 | Codex | MVP 保留并验证实际可用性 | 为了简化 Host 而屏蔽 Codex 原生能力 |
 | pinvou skill | 后续扩展 | 通过 Codex 原生 skill 目录物化，MVP 不做 | 在 MVP 中继续沿用旧 prompt 注入 |
-| pinvou 自定义工具 | 后续 MCP server | 选择、配置并通过 ACP session 注入，MVP 不做 | 混入 DeepSeek ToolRegistry 后再伪装成 Codex tool |
+| pinvou 自定义工具 | 后续 MCP server | 选择、配置并通过 ACP session 注入，MVP 不做 | 混入 CodeWhale ToolRegistry 后再伪装成 Codex tool |
 | 知识库 | 后续 pinvou MCP | 提供 `kb_search` 等 MCP tool，MVP 不做 | 每轮在 prompt 里塞检索片段/工具引导 |
 | persona / assistant rules | 后续可选扩展 | 仅第一次 prompt 用明确标记的规则前缀，MVP 不做 | 声称替换了 Codex system prompt |
 | 权限决策 | 用户 + ACP option | 呈现、等待、回传、持久化决策 | Plan 就全拒绝，YOLO 就全允许 |
@@ -274,7 +274,7 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 
 ### 8.5 System prompt / persona
 
-- Codex base system prompt 是 Codex 内部实现，pinvou 不覆盖、不拼接 DeepSeek 的 `instructions.md`。
+- Codex base system prompt 是 Codex 内部实现，pinvou 不覆盖、不拼接 CodeWhale 的 `instructions.md`。
 - MVP 不向 Codex 注入 pinvou persona。
 - 后续用户显式加持 persona / assistant rules 时，仅在首次真实用户消息前加一段明确边界的扩展文本，并在 UI 中让用户看到本会话有额外规则。
 - 后续 persona 仍是“首次用户 prompt 扩展”，不对外称为 system prompt。
@@ -324,7 +324,7 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 2. tool call/update 都转成 `tool_upsert`，并保留 kind、status、title、raw input/output、content、locations 和 meta。
 3. ACP 新增未识别事件时，用 `unknown` 保留脱敏后的 raw payload，不静默丢弃。
 4. 大对象、base64、密钥和过长 terminal output 在进入前端/持久化前做大小限制和脱敏。
-5. 旧 `chat:*` 事件只服务 DeepSeek 链路和过渡期兼容，不再作为 ACP 的主数据模型。
+5. 旧 `chat:*` 事件只服务 CodeWhale 链路和过渡期兼容，不再作为 ACP 的主数据模型。
 
 ## 10. 权限模型
 
@@ -499,13 +499,13 @@ running -> cancelling -> ready
 
 - MVP 开发和内部体验阶段允许依赖机器已经安装的 Node 20+，优先完成 ACP 协议、会话和 UI。
 - 如果 adapter/node_modules 已随包提供，运行时只需要 Node；npm 仅用于未内置或损坏后的安装回退。
-- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。
+- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、Pinvou 应用隔离 Node runtime 及所需 native dependencies。
 - 正式用户不需要理解或手工安装 Node/npm。
 - 保留 `PINVOU3_CODEX_ACP_BIN` 作为开发/诊断覆盖，不作为普通用户安装步骤。
 
 ## 14. 远程控制和兼容
 
-- DeepSeek 现有远程协议不改。
+- CodeWhale 现有远程协议不改。
 - MVP 不接入 Codex 富事件远程控制，也不要求老远程端展示 Codex 会话。
 - 后续会话 snapshot 增加 `backend: "codex-acp"` 标识，最终 assistant 文本可进入旧兼容摘要。
 - 后续 reasoning、tool、permission 和 plan 使用单独、版本化的 ACP timeline 数据，新远程端按 capability 渐进支持。
@@ -535,23 +535,23 @@ running -> cancelling -> ready
 
 ### 阶段 3：代码模式 ACP UI
 
-- 在主页增加“工作 / 代码”模式，移除独立 Codex Tab 和现有 DeepSeek 输入框中的 Codex backend chip。
+- 在主页增加“工作 / 代码”模式，移除独立 Codex Tab 和现有 CodeWhale 输入框中的 Codex backend chip。
 - 把 Codex 会话摘要并入左侧统一会话列表，底层 timeline 和运行时状态继续隔离。
 - 建立 `features/chat/acp/`。
 - 完成 timeline、reasoning、tool upsert、permission、plan、runtime status 和 composer。
 - 按 Codex/AionUI 的内容结构和交互语义验收，并保持 pinvou 视觉体系。
-- 强制回归 DeepSeek 原有对话。
+- 强制回归 CodeWhale 原有对话。
 
 ### 阶段 4：原生扩展
 
 - skill 物化/链接、快照和清理。
 - MCP capability 过滤、session 注入和状态展示。
 - persona 首次 prompt 扩展。
-- 知识库通过 MCP 接入，不复用 DeepSeek 的 per-turn prompt 引导。
+- 知识库通过 MCP 接入，不复用 CodeWhale 的 per-turn prompt 引导。
 
 ### 阶段 5：发布与全链路回归
 
-- Linux x64 / arm64 私有 Node runtime 打包与无系统 Node 安装验收。
+- Linux x64 / arm64 应用隔离 Node runtime 打包与无系统 Node 安装验收。
 - 远程控制渐进兼容。
 - 断网、进程退出、重启、升级、会话恢复、过期 permission 回归。
 - 打包体积、启动时间、长对话内存和 timeline 上限验收。
@@ -562,7 +562,7 @@ running -> cancelling -> ready
 
 #### 基础链路
 
-- pinvou 主页有“工作 / 代码”入口，左侧会话按时间混排，现有 DeepSeek 输入框不再承担 backend 切换。
+- pinvou 主页有“工作 / 代码”入口，左侧会话按时间混排，现有 CodeWhale 输入框不再承担 backend 切换。
 - 未安装、安装中、未登录、登录成功、启动失败均有明确 UI。
 - MVP 环境缺少 Node 20+ 时给出明确诊断，不进入伪启动状态。
 - 新建会话、继续会话、切换会话、重启应用后恢复可用。
@@ -597,9 +597,9 @@ running -> cancelling -> ready
 
 #### 兼容
 
-- DeepSeek 新建/历史会话、工具、skill、知识库、Plan/YOLO 原行为回归通过。
+- CodeWhale 新建/历史会话、工具、skill、知识库、Plan/YOLO 原行为回归通过。
 - 旧会话数据不需迁移即可读。
-- DeepSeek 现有远程控制不受主页代码模式影响。
+- CodeWhale 现有远程控制不受主页代码模式影响。
 
 ### 16.2 后续阶段验收
 
@@ -628,16 +628,16 @@ running -> cancelling -> ready
 以下内容已在首轮评审中确认：
 
 1. Codex 原生能力做内核，pinvou 做 ACP Host、会话、权限、事件、持久化和 UI。
-2. Codex ACP 和 DeepSeek 使用独立消息语义和 UI surface。
+2. Codex ACP 和 CodeWhale 使用独立消息语义和 UI surface。
 3. 同一个 pinvou 主窗口以“工作 / 代码”模式承载两类输入，左侧统一展示会话；MVP 不创建新操作系统窗口。
-4. Codex 会话在数据层永久绑定 `codex-acp`，不能中途切换成 DeepSeek。
+4. Codex 会话在数据层永久绑定 `codex-acp`，不能中途切换成 CodeWhale。
 5. 视觉继续使用 pinvou 体系；Codex/AionUI 只作为会话内容结构和交互语义参考。
 6. MVP 只保留 Codex 自身 system prompt、tools、tool loop、skills、MCP 配置和 context，不接入 pinvou skill、MCP、知识库和 persona。
 7. pinvou 扩展统一后置：skill 走 Codex 原生目录，工具和知识库走 MCP，persona 只允许可见、可选的首次 prompt 扩展。
 8. collaboration mode 与 security permission 分离；Host 不再按 Plan/YOLO 自动允许或拒绝。
-9. MVP 开发/内部体验允许依赖 system Node 20+；正式 Linux x64 / arm64 包内置 pinvou 私有 Node runtime，用户无需安装 Node/npm。
-10. DeepSeek 跨后端能力兼容后置，但现有 DeepSeek 功能必须零回归。
-11. 不引入 AionCore，不重构 DeepSeek-TUI 底座。
+9. MVP 开发/内部体验允许依赖 system Node 20+；正式 Linux x64 / arm64 包内置 Pinvou 应用隔离 Node runtime，用户无需安装 Node/npm。
+10. CodeWhale 跨后端能力兼容后置，但现有 CodeWhale 功能必须零回归。
+11. 不引入 AionCore，不重构 CodeWhale 底座。
 12. Codex workspace 在创建会话时明确选择项目或临时目录，开始后不可更换；Pinvou 会话数据与项目目录分离。
 
 实施前仍需通过现场能力探测确认，而不是产品层拍板的项目：

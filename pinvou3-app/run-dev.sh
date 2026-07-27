@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 OS_NAME="$(uname -s)"
 
-# Linux 开发环境自动准备与正式包一致的私有 Node + 精简 ACP Bridge。生成物被
+# Linux 开发环境自动准备与正式包一致的应用隔离 Node + 精简 ACP Bridge。生成物被
 # gitignore；已有完整 Bridge 时不重复下载和安装。
 if [ "$OS_NAME" = "Linux" ]; then
   BRIDGE_NODE="src-tauri/resources/platforms/linux/codex-bridge/node/bin/node"

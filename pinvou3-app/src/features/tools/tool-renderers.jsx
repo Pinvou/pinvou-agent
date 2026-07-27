@@ -88,13 +88,13 @@ const ToolOutput = ({ item, isDark, t }) => {
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);
-      const shouldAutoExpand = !isTimeline && (hasLiveShellOutput || hasCard);
-      const [expanded, setExpanded] = useState(shouldAutoExpand);
+      const [expanded, setExpanded] = useState(!isTimeline && hasCard);
       useEffect(() => {
-        if (!isTimeline && shouldAutoExpand) {
+        if (!isTimeline && hasCard) {
           setExpanded(true);
         }
-      }, [isTimeline, shouldAutoExpand]);
+      }, [hasCard, isTimeline]);
+      const displayExpanded = hasLiveShellOutput || expanded;
       const isDone = item.state === 'done';
       const isFailed = item.state === 'failed';
       const quiet = QUIET_TOOLS.has(item.name);
@@ -143,7 +143,7 @@ const ToolOutput = ({ item, isDark, t }) => {
         </button>
       ) : null;
 
-      const detail = expanded ? (
+      const detail = displayExpanded ? (
         <div className={`${isTimeline ? 'px-3 pb-3' : 'px-4 pb-3'} border-t ${isDark ? 'border-white/5' : 'border-black/5'}`}>
           {item.output != null
             ? <div className="mt-2"><ToolOutput item={item} isDark={isDark} t={t} /></div>
@@ -188,7 +188,7 @@ const ToolOutput = ({ item, isDark, t }) => {
               </span>
               {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
               {cancelButton}
-              <ChevronDown size={13} className={`shrink-0 text-gray-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              <ChevronDown size={13} className={`shrink-0 text-gray-400 transition-transform ${displayExpanded ? 'rotate-180' : ''}`} />
             </div>
             {shellCancelError && (
               <div className="px-3 pb-2 text-[11px] text-red-500">{shellCancelError}</div>

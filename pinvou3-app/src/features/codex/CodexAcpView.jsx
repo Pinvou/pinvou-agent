@@ -1211,7 +1211,7 @@ export function CodexAcpView({
                 <div className="mt-5 text-[20px] font-semibold">用 Codex 处理代码任务</div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
-                    ? '工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有 DeepSeek 消息框架。'
+                    ? '工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有工作会话消息框架。'
                     : '直接输入即可创建临时会话，也可以从输入框左下角选择项目目录。'}
                 </div>
               </div>

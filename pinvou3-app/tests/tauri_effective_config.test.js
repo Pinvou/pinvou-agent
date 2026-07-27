@@ -7,6 +7,7 @@ const {
 } = require("../scripts/tauri/effective-config.js");
 const {
   configSpecs,
+  prepareLinuxArm64Connectors,
   prepareLinuxCodexBridge,
   prepareTauriArgs,
   tauriCommandIndex,
