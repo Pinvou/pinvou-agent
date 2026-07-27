@@ -46,6 +46,11 @@ static WECOM_SKILLS_DIR: Dir<'_> =
 static DINGTALK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/dingtalk-skills");
 
+/// 腾讯会议官方 CLI skill(tmeet-skill,来自 WorkBuddy 腾讯会议 CLI 连接器)。
+/// 独立放 `tmeet-skills/`，按腾讯会议连接 / 停用状态单独门控。
+static TMEET_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
+
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 static CONNECTOR_CLI_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/connectors");
@@ -62,6 +67,7 @@ const WECOM_SKILL_DIRS: [&str; 7] = [
 ];
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
+const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -81,8 +87,9 @@ const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 /// 0.13: 接入企微官方域技能(wecomcli-*,MIT):独立 wecom-skills/ 内嵌 + 独立门控
 /// 0.14: 接入钉钉官方 dws skill + Linux ARM64 内置 dws CLI
 /// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
+/// 0.16: 接入腾讯会议官方 tmeet CLI skill
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.15-",
+    "0.16-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -361,6 +368,15 @@ impl Pinvou3Bundle {
         if bundle_changed || !dingtalk_show {
             self.apply_dingtalk_skills(dingtalk_show)?;
         }
+        let tmeet_show = self.cached_tmeet_skills_visible();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:tmeet_cached_gate",
+            &format!("show={tmeet_show}"),
+        );
+        if bundle_changed || !tmeet_show {
+            self.apply_tmeet_skills(tmeet_show)?;
+        }
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
@@ -615,6 +631,27 @@ impl Pinvou3Bundle {
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
     }
 
+    /// 腾讯会议 mono skill 门控:`show` → 解包 `tmeet-skill` 到 `skills_dir`;否则删除。
+    /// 出处声明用 `NOTICE-tmeet.md`,避免覆盖其他 CLI 连接器 NOTICE。
+    pub fn apply_tmeet_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&TMEET_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in TMEET_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-tmeet.md"));
+        }
+        Ok(())
+    }
+
+    /// 同 [`cached_feishu_skills_visible`]，以完整的腾讯会议技能目录作为启动缓存。
+    fn cached_tmeet_skills_visible(&self) -> bool {
+        crate::platform::connector_state::tmeet_skills_visible()
+            && TMEET_SKILL_DIRS
+                .iter()
+                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+    }
     /// 递归解包 `include_dir::Dir` 到磁盘目标路径。
     /// `root` 是磁盘目标根(对应 include_dir 的顶层),`dir` 可以是任意层级子目录。
     /// `Dir::files()` 返回的 `path()` 是相对于 **include_dir 根** 的完整路径
@@ -898,6 +935,7 @@ mod tests {
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
+        assert!(!bundle.cached_tmeet_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
             let path = bundle.skills_dir.join(dir);
@@ -914,19 +952,28 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
+        for dir in TMEET_SKILL_DIRS {
+            let path = bundle.skills_dir.join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "test").unwrap();
+        }
         assert!(bundle.cached_feishu_skills_visible());
         assert!(bundle.cached_wecom_skills_visible());
         assert!(bundle.cached_dingtalk_skills_visible());
+        assert!(bundle.cached_tmeet_skills_visible());
 
         std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("dingtalk_disabled"), "1").unwrap();
+        std::fs::write(paths::pinvou3_home().join("tmeet_disabled"), "1").unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
+        assert!(!bundle.cached_tmeet_skills_visible());
         std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
+        std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
 
         std::fs::remove_file(bundle.skills_dir.join(LARK_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
         std::fs::remove_file(bundle.skills_dir.join(WECOM_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
@@ -937,9 +984,11 @@ mod tests {
                 .join("SKILL.md"),
         )
         .unwrap();
+        std::fs::remove_file(bundle.skills_dir.join(TMEET_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
+        assert!(!bundle.cached_tmeet_skills_visible());
         cleanup(&tmp);
     }
 

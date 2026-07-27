@@ -17,6 +17,7 @@ const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
   || tool.feishuCli
   || tool.wecomCli
   || tool.dingtalkCli
+  || tool.tmeetCli
 );
 
 const PlatformToolAction = (props) => {
@@ -46,6 +47,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   feishu: 'assets/tool-icons/wb-feishu.svg',
   wecom: 'assets/tool-icons/wecom-user.png',
   dingtalk: 'assets/tool-icons/dingtalk-user-v2.png',
+  tmeet: 'assets/tool-icons/wb-tencent-meeting.png',
   qcc: 'assets/tool-icons/qcc-user.png',
   'patsnap-search': 'assets/tool-icons/wb-patsnap-search.png',
   obsidian: 'assets/tool-icons/obsidian.ico',
@@ -59,7 +61,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   12: 'assets/tool-icons/wb-cnb-api.svg',
 };
 
-const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-yuandian-mcp.svg', 'assets/tool-icons/wecom-user.png']);
+const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-tencent-meeting.png', 'assets/tool-icons/wb-yuandian-mcp.svg', 'assets/tool-icons/wecom-user.png']);
 const CROPPED_TILE_LOGOS = new Set(['assets/tool-icons/wb-yuandian-mcp.svg']);
 
 const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallbackSize = 30, fallbackStrokeWidth = 1.5, children }) => {
@@ -118,6 +120,11 @@ const FEISHU_STEPS = [
       { key: 'cli', label: '安装连接组件', sub: 'dws · 首次约 40 秒' },
       { key: 'qr', label: '扫码登录', sub: '钉钉 App 扫一扫' },
     ];
+    const TMEET_STEPS = [
+      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'cli', label: '安装连接组件', sub: 'tmeet · 首次约 40 秒' },
+      { key: 'qr', label: '扫码登录', sub: '腾讯会议授权页' },
+    ];
     const FeishuStepIcon = ({ st }) => {
       if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
       if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
@@ -157,31 +164,39 @@ const FEISHU_STEPS = [
               );
             })}
           </div>
-          {flow.phase === 'qr' && (flow.qr || browserAuth) && (
+          {flow.phase === 'qr' && browserAuth && (
+            <div className="px-5 pb-5">
+              <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 px-4 py-3">
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-[14px] text-slate-900 dark:text-slate-100">已打开浏览器登录页</div>
+                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">请在浏览器中扫码确认。未弹出时可重新打开。</div>
+                </div>
+                {flow.qrUrl && (
+                  <button
+                    onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })}
+                    className="shrink-0 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    重新打开
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {flow.phase === 'qr' && !browserAuth && flow.qr && (
             <div className="px-5 pb-5">
               <div className="flex items-center gap-5 p-4 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10">
-                {browserAuth
-                  ? <div className="w-36 h-36 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 grid place-items-center text-blue-500 shrink-0 text-center text-[12px] px-3 leading-relaxed">已在浏览器<br/>打开登录页</div>
-                  : <img src={flow.qr} alt={`${name}二维码`} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />}
+                <img src={flow.qr} alt={`${name}二维码`} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />
                 <div>
-                  {browserAuth ? (
-                    <>
-                      <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">在浏览器里扫码登录{name}</div>
-                      <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">已自动打开{name}登录页 → 用手机{name} 扫<b>页面上的</b>二维码确认。没弹出就点下面重开。</div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
-                      <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
-                    </>
-                  )}
+                  <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
+                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
                   {flow.userCode && (
                     <div className="mb-3 inline-flex flex-col gap-1 rounded-lg bg-slate-100 dark:bg-white/10 px-3 py-2">
                       <span className="text-[11px] text-slate-500 dark:text-slate-400">页面验证码</span>
                       <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
                     </div>
                   )}
-                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{browserAuth ? '重新打开登录页 ↗' : '在浏览器打开 ↗'}</button>}
+                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开 ↗</button>}
                 </div>
               </div>
             </div>
@@ -372,6 +387,63 @@ const FEISHU_STEPS = [
         const p = e.payload || {};
         dingtalkConn.stopTick();
         dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+      });
+    }
+
+    // ── 腾讯会议连接流程 · 跨视图持久 store(镜像钉钉;纯 OAuth 扫码单段）──
+    const tmeetConn = {
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    function ensureTmeetListeners() {
+      if (tmeetConn.listenersReady) return;
+      const ev = isTauriAvailable() ? tauriEvents : null;
+      if (!ev) return;
+      tmeetConn.listenersReady = true;
+      ev.listen('tmeet:qr', (e) => {
+        const p = e.payload || {};
+        tmeetConn.stopTick();
+        if (p.url) {
+          invokeTauri('open_external_url', { url: p.url }).catch(err => {
+            console.error('open tmeet auth url failed:', err);
+          });
+        }
+        tmeetConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return { ...(f || {}), phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, browserAuth: true };
+        });
+      });
+      ev.listen('tmeet:connected', async () => {
+        tmeetConn.stopTick();
+        try {
+          const status = await invokeTauri('tmeet_status');
+          if (!(status && status.connected)) {
+            throw new Error('腾讯会议授权未完成，请完成浏览器登录后重试');
+          }
+          await invokeTauri('tmeet_apply_skills');
+          tmeetConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+          setTimeout(() => tmeetConn.setFlow(null), 1800);
+        } catch (e) {
+          tmeetConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+        }
+      });
+      ev.listen('tmeet:error', (e) => {
+        const p = e.payload || {};
+        tmeetConn.stopTick();
+        tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
       });
     }
 
@@ -646,6 +718,17 @@ const FEISHU_STEPS = [
       };
       useEffect(() => { refreshDingtalk(); }, []);
 
+      // 腾讯会议(CLI 路线)连接态:由 tmeet auth status 判定
+      const [tmeetConnected, setTmeetConnected] = useState(false);
+      const [tmeetFlow, setTmeetFlow] = useState(tmeetConn.flow);
+      const refreshTmeet = async () => {
+        try {
+          const s = await invokeTauri('tmeet_status');
+          setTmeetConnected(!!(s && s.connected));
+        } catch (e) { console.error('tmeet_status failed:', e); }
+      };
+      useEffect(() => { refreshTmeet(); }, []);
+
       useEffect(() => {
         const urls = [
           ...tsFeaturedCollections.map((item) => item.img),
@@ -728,6 +811,29 @@ const FEISHU_STEPS = [
         return unsub;
       }, [externalAuthAvailable]);
 
+      // 订阅腾讯会议 store(镜像钉钉):镜像进渲染 + 完成/失败收尾
+      useEffect(() => {
+        if (!externalAuthAvailable) return undefined;
+        ensureTmeetListeners();
+        let prevPhase = tmeetConn.flow && tmeetConn.flow.phase;
+        const unsub = tmeetConn.subscribe((flow) => {
+          setTmeetFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setTmeetConnected(true); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: '已连接腾讯会议', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'tmeet' });
+              notifyComposerToolsChanged();
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setTmeetFlow(tmeetConn.flow);
+        return unsub;
+      }, [externalAuthAvailable]);
+
       // 企微连接编排事件:后端推进度,前端驱动 UI。
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
@@ -768,6 +874,8 @@ const FEISHU_STEPS = [
             ? wecomConnected
             : t.dingtalkCli
             ? dingtalkConnected
+            : t.tmeetCli
+            ? tmeetConnected
             : t.oauthMcp
             ? authState?.status === 'connected'
             : (t.backendId ? (toolStates[t.backendId] || false) : false),
@@ -1283,6 +1391,49 @@ const FEISHU_STEPS = [
         }
       };
 
+      // 连接腾讯会议(单段 OAuth 授权):流程卡驱动(镜像钉钉),进度走 tmeet:* 事件。
+      const connectTmeet = async () => {
+        setBusyId('tmeet');
+        ensureTmeetListeners();
+        tmeetConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        tmeetConn.startTick();
+        try {
+          tmeetConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          await invokeTauri('tmeet_ensure_cli');
+          tmeetConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          await invokeTauri('tmeet_connect_begin');
+        } catch (e) {
+          console.error('tmeet connect failed:', e);
+          tmeetConn.stopTick();
+          setBusyId(null);
+          tmeetConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          });
+        }
+      };
+      const tmeetResetFlow = () => {
+        tmeetConn.stopTick();
+        invokeTauri('tmeet_cancel').catch(() => {});
+        tmeetConn.setFlow(null); setBusyId(null);
+      };
+      const tmeetRetry = () => { connectTmeet(); };
+      const disconnectTmeet = async () => {
+        setBusyId('tmeet');
+        try {
+          await invokeTauri('tmeet_logout');
+          await invokeTauri('tmeet_apply_skills').catch(() => {});
+          setTmeetConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开腾讯会议', isInstall: false, isError: false });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('tmeet logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
@@ -1314,6 +1465,13 @@ const FEISHU_STEPS = [
           const dt = tools.find(x => x.dingtalkCli) || tsToolsData.find(x => x.backendId === 'dingtalk');
           if (dt) setSelectedTool(dt);
           return connectDingtalk();
+        }
+        // 腾讯会议同走 CLI 连接流程(单段 OAuth 授权)
+        if (backendId === 'tmeet') {
+          if (isInstalled) return disconnectTmeet();
+          const tt = tools.find(x => x.tmeetCli) || tsToolsData.find(x => x.backendId === 'tmeet');
+          if (tt) setSelectedTool(tt);
+          return connectTmeet();
         }
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
@@ -1693,7 +1851,7 @@ const FEISHU_STEPS = [
                           </div>
                           <div className="flex flex-col items-center justify-center gap-1 pl-2">
                             {(() => {
-                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : null;
+                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
                               return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
                                 ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
                                 : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
@@ -1745,7 +1903,7 @@ const FEISHU_STEPS = [
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
-                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} />
                           : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
                       </div>
@@ -1781,6 +1939,9 @@ const FEISHU_STEPS = [
                   {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
                     <FeishuFlowCard flow={dingtalkFlow} steps={DINGTALK_STEPS} name="钉钉" twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
+                  {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
+                    <FeishuFlowCard flow={tmeetFlow} steps={TMEET_STEPS} name="腾讯会议" twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
+                  )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
@@ -1797,6 +1958,12 @@ const FEISHU_STEPS = [
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接钉钉 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+                  {selectedTool.tmeetCli && tmeetConnected && !tmeetFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接腾讯会议 · 官方技能已启用，可直接对它下指令</span>
                     </div>
                   )}
 
@@ -1818,4 +1985,4 @@ const FEISHU_STEPS = [
     // Shared Components
     // ==========================================
 
-export { FEISHU_STEPS, WECOM_STEPS, DINGTALK_STEPS, FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+export { FEISHU_STEPS, WECOM_STEPS, DINGTALK_STEPS, TMEET_STEPS, FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };

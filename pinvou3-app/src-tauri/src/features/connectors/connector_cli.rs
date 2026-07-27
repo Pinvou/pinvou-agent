@@ -260,10 +260,11 @@ pub struct ConnectorAuthGateRefresh {
     feishu_visible: bool,
     wecom_visible: bool,
     dingtalk_visible: bool,
+    tmeet_visible: bool,
     elapsed_ms: u64,
 }
 
-/// 首屏提交后刷新飞书 / 企微 / 钉钉鉴权门控。三个外部 CLI 在 blocking 线程池并行执行，
+/// 首屏提交后刷新飞书 / 企微 / 钉钉 / 腾讯会议鉴权门控。外部 CLI 在 blocking 线程池并行执行，
 /// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。
 pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
     let started = Instant::now();
@@ -290,23 +291,33 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
             .map_err(|e| format!("刷新钉钉技能门控失败: {e}"))?;
         Ok::<bool, String>(show)
     });
+    let tmeet = tokio::task::spawn_blocking(|| {
+        let show = crate::features::connectors::tmeet::tmeet_skills_should_show();
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_tmeet_skills(show)
+            .map_err(|e| format!("刷新腾讯会议技能门控失败: {e}"))?;
+        Ok::<bool, String>(show)
+    });
 
-    let (feishu_result, wecom_result, dingtalk_result) = tokio::join!(feishu, wecom, dingtalk);
+    let (feishu_result, wecom_result, dingtalk_result, tmeet_result) =
+        tokio::join!(feishu, wecom, dingtalk, tmeet);
     let feishu_visible = feishu_result.map_err(|e| format!("飞书鉴权探测任务失败: {e}"))??;
     let wecom_visible = wecom_result.map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
     let dingtalk_visible = dingtalk_result.map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
+    let tmeet_visible = tmeet_result.map_err(|e| format!("腾讯会议鉴权探测任务失败: {e}"))??;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::platform::startup::mark_with_detail(
         "rust",
         "connector_auth_refresh:done",
         &format!(
-            "elapsed_ms={elapsed_ms} feishu_visible={feishu_visible} wecom_visible={wecom_visible} dingtalk_visible={dingtalk_visible}"
+            "elapsed_ms={elapsed_ms} feishu_visible={feishu_visible} wecom_visible={wecom_visible} dingtalk_visible={dingtalk_visible} tmeet_visible={tmeet_visible}"
         ),
     );
     Ok(ConnectorAuthGateRefresh {
         feishu_visible,
         wecom_visible,
         dingtalk_visible,
+        tmeet_visible,
         elapsed_ms,
     })
 }

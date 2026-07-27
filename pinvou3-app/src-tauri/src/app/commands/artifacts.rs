@@ -896,6 +896,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://www.feishu.cn/",
     "https://open.larksuite.com/",
     "https://accounts.larksuite.com/",
+    // 腾讯会议 OAuth 授权页；连接腾讯会议时可从流程卡打开浏览器
+    "https://meeting.tencent.com/",
     // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载
     "https://obsidian.md/",
     // Canva 可画 MCP 返回的设计编辑链接/预览图资源

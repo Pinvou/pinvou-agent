@@ -18,7 +18,18 @@ function loadPuppeteer() {
 }
 const puppeteer = loadPuppeteer();
 const CHROME = process.env.CHROME ||
-  ['/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(fs.existsSync);
+  [
+    '/snap/bin/chromium',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  ].filter(Boolean).find(fs.existsSync);
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-tool-store-'));
 
@@ -34,7 +45,7 @@ function injectSource() {
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
-      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false},
+      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
@@ -92,8 +103,9 @@ function injectSource() {
         case 'feishu_status': return Promise.resolve({connected:state.connected.feishu});
         case 'wecom_status': return Promise.resolve({connected:state.connected.wecom});
         case 'dingtalk_status': return Promise.resolve({connected:state.connected.dingtalk});
-        case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': return Promise.resolve(null);
-        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'open_external_url': return Promise.resolve(null);
+        case 'tmeet_status': return Promise.resolve({connected:state.connected.tmeet});
+        case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'tmeet_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': case 'tmeet_connect_begin': return Promise.resolve(null);
+        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -314,9 +326,35 @@ async function closeDetail(page, title) {
     ['飞书（Lark）','feishu','feishu:connected',['feishu_ensure_cli','feishu_connect_begin']],
     ['企业微信','wecom','wecom:connected',['wecom_ensure_cli','wecom_connect_begin']],
     ['钉钉','dingtalk','dingtalk:connected',['dingtalk_ensure_cli','dingtalk_connect_begin','dingtalk_apply_skills']],
+    ['腾讯会议','tmeet','tmeet:connected',['tmeet_ensure_cli','tmeet_connect_begin','tmeet_apply_skills']],
   ];
   for(const [query,id,event,commands] of connectors){
     await action(page,query,'连接',id);
+    if(id==='tmeet'){
+      await page.evaluate(() => window.__emitTauri('tmeet:qr', {
+        phase: 'authorize',
+        url: 'https://meeting.tencent.com/test-auth',
+        qr_data_url: 'data:image/svg+xml;base64,PHN2Zy8+',
+      }));
+      await sleep(120);
+      rec('腾讯会议收到授权 URL 后自动打开浏览器', await page.evaluate(() => {
+        const call = [...window.__TOOL_STORE_TEST__.calls].reverse()
+          .find(x => x.cmd === 'open_external_url');
+        return call?.args?.url === 'https://meeting.tencent.com/test-auth'
+          && document.body.innerText.includes('已打开浏览器登录页');
+      }));
+      const beforeApply = await page.evaluate(() => window.__TOOL_STORE_TEST__.calls
+        .filter(x => x.cmd === 'tmeet_apply_skills').length);
+      await page.evaluate(() => window.__emitTauri('tmeet:connected', {}));
+      await sleep(180);
+      rec('腾讯会议成功事件必须二次确认真实登录态', await page.evaluate((beforeApply) => {
+        const afterApply = window.__TOOL_STORE_TEST__.calls
+          .filter(x => x.cmd === 'tmeet_apply_skills').length;
+        return afterApply === beforeApply
+          && !document.body.innerText.includes('已连接腾讯会议')
+          && document.body.innerText.includes('腾讯会议授权未完成');
+      }, beforeApply));
+    }
     await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);
     await sleep(180); await dismiss(page);
     const info=await page.evaluate(({commands})=>({calls:commands.every(c=>window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd===c)),seen:window.__TOOL_STORE_TEST__.calls.map(x=>x.cmd)}),{commands});

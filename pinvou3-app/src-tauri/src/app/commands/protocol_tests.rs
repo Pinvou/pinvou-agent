@@ -100,7 +100,15 @@ command_protocol!(
         "dingtalk_logout",
         "dingtalk_apply_skills",
         "set_dingtalk_enabled",
-        "dingtalk_skills_state"
+        "dingtalk_skills_state",
+        "tmeet_ensure_cli",
+        "tmeet_status",
+        "tmeet_connect_begin",
+        "tmeet_cancel",
+        "tmeet_logout",
+        "tmeet_apply_skills",
+        "set_tmeet_enabled",
+        "tmeet_skills_state"
     ]
 );
 command_protocol!(
