@@ -1,27 +1,65 @@
+<div align="center">
+
+<img src="pinvou3-app/src-tauri/icons/icon.png" alt="Pinvou Agent logo" width="120" />
+
 # Pinvou Agent
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+**An open-source desktop AI agent that uses tools, works with your files, builds knowledge, and delivers real artifacts.**
 
-**An open-source desktop AI agent that can use tools, work with files, build knowledge, and deliver real artifacts.**
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-[Website](https://pinvou.com/) · [CodeWhale engine](https://github.com/Pinvou/CodeWhale) · [Security](SECURITY.md) · [MIT License](LICENSE)
+[![CI](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml)
+[![License: MIT](https://img.shields.io/github/license/Pinvou/pinvou-agent)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.6.4-blue)](pinvou3-app/package.json)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-quick-start)
+[![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
 
-![Pinvou Agent desktop workspace](docs/assets/screenshots/home.webp)
+[Website](https://pinvou.com/) · [CodeWhale Engine](https://github.com/Pinvou/CodeWhale) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
 
-Pinvou Agent brings models, tools, personal knowledge, specialist personas, and reusable workflows into one desktop workspace. It is designed for work that should end with a result—not just another chat response.
+<img src="docs/assets/screenshots/home.webp" alt="Pinvou Agent desktop workspace" />
 
-Use a local model for a private loop, connect any OpenAI-compatible endpoint, or extend the agent through MCP servers, CLI connectors, Skills, and workflows.
+</div>
 
-## What you can do
+Pinvou Agent is more than a chat window. It brings models, tools, personal knowledge, specialist personas, and reusable workflows into one desktop workspace — designed for work that should end with **a result**, not just another chat response.
 
-- **Turn conversations into deliverables** — create and edit Markdown, documents, spreadsheets, code, and other files, then preview every generated artifact in one place.
-- **Work with your own context** — import PDF, Office, image, and text attachments; search local knowledge; and manage long-term memory explicitly.
-- **Let the agent use tools** — connect MCP servers, local CLI tools, and external APIs from a unified tool store.
-- **Reuse reliable methods** — package domain behavior as Skills, Commands, specialist personas, or multi-step workflows.
-- **Choose how the agent acts** — use Plan mode for review-first work or YOLO mode for direct execution.
-- **Run locally or in the cloud** — use local vLLM or any compatible model provider without locking the application to one vendor.
+Use a local model for a fully private loop, connect any OpenAI-compatible endpoint, and extend the agent with MCP servers, CLI connectors, Skills, and workflows.
 
-## A workspace built for outcomes
+## ✨ Features
+
+### 🎯 From conversation to deliverables
+
+- **Multi-session workspace** with title search — messages, tool calls, and artifacts persist with each session
+- **Attachments** for PDF, Office documents, images, and text — drag, drop, or paste them in
+- **Artifact panel** automatically collects every file the agent creates or edits; preview, locate, and open them in one place
+- **Editable Markdown artifacts** — edit directly, or select a passage and ask the agent to revise it
+- **Plan / YOLO modes** — review the plan first for complex work, or execute directly when the task is clear
+- **Code sessions over ACP** (e.g. Codex) bring a coding agent into the same workspace
+
+### 🧠 Knowledge and memory
+
+- **Local knowledge base** with file management, full-text search, and vector retrieval
+- **Memory center** captures long-term preferences and context, with explicit candidate review and confirmation
+- **Persona card pool** — create, save, and apply specialist roles for different domains
+- **Skills, Commands, and workflows** turn proven methods into stable, reusable capabilities
+
+### 🔌 Real tools and connectors
+
+- **Unified tool store** for local MCP servers, remote MCP servers, CLI tools, and API connectors
+- **OAuth / SSO authorization** where supported — no manual key pasting
+- Ready-made connectors for **Feishu (Lark), DingTalk, WeCom, Tencent Meeting, Tencent ima, Obsidian**, enterprise knowledge bases, and legal / enterprise data services
+- **Remote control** — scan a QR code from your phone to view and steer the running workspace
+
+### 🖥️ Built for daily operation
+
+- **Local voice input** with on-demand speech model downloads
+- **Centralized monitoring** of GPU, memory, disk, model service, and context usage
+- **In-app updates** on Linux, with OTA delivery on macOS and Windows
+- Sessions, settings, knowledge, and runtime extensions all live under `~/.pinvou3/`
+
+> [!NOTE]
+> Whether data leaves your machine depends on the model and tools you enable. A local model with local tools stays fully local. Cloud models, remote MCP servers, and third-party connectors send the relevant requests to their respective services.
+
+## 📸 Screenshots
 
 <table>
   <tr>
@@ -34,21 +72,21 @@ Use a local model for a private loop, connect any OpenAI-compatible endpoint, or
   </tr>
 </table>
 
-## Core capabilities
+## 🤖 Model Access
 
-| Area | Included |
-|---|---|
-| Agent runtime | Streaming responses, tool loops, sessions, hooks, compaction, Skills, and MCP |
-| Desktop workspace | Multi-session chat, attachment handling, artifact preview, and file editing |
-| Knowledge | Local files, full-text and vector retrieval, memory review, and knowledge management |
-| Automation | Scheduled tasks, reusable workflows, specialist personas, and structured deliverables |
-| Model access | Local vLLM, built-in provider templates, and custom OpenAI-compatible endpoints |
-| Extensibility | MCP servers, CLI connectors, APIs, Skills, Commands, and workflow packages |
+Pinvou Agent works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app and switch between them per session. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu, and MiMo — or fill in any custom compatible endpoint.
 
-> [!NOTE]
-> Whether data leaves your machine depends on the model and tools you enable. A local model with local tools can stay local. Cloud models, remote MCP servers, and third-party connectors send the relevant requests to their respective services.
+Local vLLM example:
 
-## Quick start
+```bash
+export DEEPSEEK_BASE_URL="http://127.0.0.1:8000/v1"
+export DEEPSEEK_API_KEY="local-no-auth"
+export DEEPSEEK_MODEL="your-model-name"
+```
+
+Endpoints, model names, and API keys can also be managed directly in the application settings. For a non-loopback plain HTTP endpoint in a trusted development network, explicitly set `DEEPSEEK_ALLOW_INSECURE_HTTP=1`.
+
+## 🚀 Quick Start
 
 ### Prerequisites
 
@@ -58,7 +96,7 @@ Use a local model for a private loop, connect any OpenAI-compatible endpoint, or
 - The [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform
 - An accessible OpenAI-compatible model endpoint
 
-The source tree supports Linux, Windows, and macOS. The initial macOS target is Apple Silicon on macOS 14 or later.
+The source tree supports **Linux, Windows, and macOS**. The initial macOS target is Apple Silicon on macOS 14 or later.
 
 ### Run from source
 
@@ -75,19 +113,12 @@ If you cloned without submodules:
 git submodule update --init --recursive
 ```
 
-### Connect a local model
+## 🏗️ Architecture
 
-Pinvou Agent supports local vLLM and custom OpenAI-compatible APIs. You can manage endpoints, models, and API keys from the application settings.
-
-```bash
-export DEEPSEEK_BASE_URL="http://127.0.0.1:8000/v1"
-export DEEPSEEK_API_KEY="local-no-auth"
-export DEEPSEEK_MODEL="your-model-name"
-```
-
-For a non-loopback plain HTTP endpoint in a trusted development network, explicitly set `DEEPSEEK_ALLOW_INSECURE_HTTP=1`.
-
-## Architecture
+[![Tauri](https://img.shields.io/badge/Tauri-2.0-24C8D8?logo=tauri&logoColor=white)](https://v2.tauri.app/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
+[![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
 ```text
 React + Vite UI
@@ -100,17 +131,17 @@ CodeWhale (agent engine submodule)
        └─ Skills, Commands, Hooks, and Compaction
 ```
 
-[CodeWhale](https://github.com/Pinvou/CodeWhale) provides the agent engine: model calls, streaming, tool execution, sessions, MCP, Skills, hooks, and compaction. `pinvou3-app/` owns the desktop UI, runtime configuration, orchestration, and operating-system integration.
+[CodeWhale](https://github.com/Pinvou/CodeWhale) provides the agent engine: model calls, streaming, tool execution, sessions, MCP, Skills, hooks, and compaction. `pinvou3-app/` owns the desktop UI, runtime configuration, orchestration, and operating-system integration — it never re-implements engine capabilities.
 
 | Extension goal | Where it belongs |
 |---|---|
 | Add a domain agent or tool bundle | A `SKILL.md` package |
 | Connect an external API | An independent MCP server or connector |
-| Guide model behavior | Bundle instructions |
+| Guide model behavior | Bundle instructions (`instructions.md`) |
 | Change desktop UI or system integration | `pinvou3-app/` |
-| Fix a reusable engine issue | The CodeWhale fork, following the fork policy |
+| Fix a reusable engine issue | The CodeWhale fork, following the [fork policy](docs/fork-policy.md) |
 
-## Repository layout
+## 📁 Repository Layout
 
 ```text
 pinvou3-app/          Tauri 2 + React/Vite desktop application
@@ -122,7 +153,7 @@ scripts/              Tests, guards, build, and release helpers
 docs/                 Architecture and maintenance documentation
 ```
 
-## Development checks
+## 🧪 Development Checks
 
 Run these commands from the repository root:
 
@@ -136,26 +167,28 @@ Run these commands from the repository root:
 ./scripts/fork-guard.sh --fast
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the current contribution workflow and [docs/fork-policy.md](docs/fork-policy.md) for CodeWhale maintenance rules.
+## 🤝 Contributing
 
-## Community and security
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and CI gates, and [docs/fork-policy.md](docs/fork-policy.md) for CodeWhale maintenance rules. By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Pinvou Agent is licensed under the [MIT License](LICENSE). Please use
-[GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) for reproducible
-bugs and focused feature requests, and
-[GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) for
-questions and ideas. Community support is best-effort; see
-[SUPPORT.md](SUPPORT.md).
+## 💬 Community & Security
 
-Do not report security vulnerabilities in public issues. Use the private
-reporting channel in [SECURITY.md](SECURITY.md), or email
-`security@pinvou.com`.
+- 🐛 [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) — reproducible bugs and focused feature requests
+- 💡 [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) — questions and ideas (community support is best-effort, see [SUPPORT.md](SUPPORT.md))
+- 🔒 **Do not report security vulnerabilities in public issues** — use the private channel in [SECURITY.md](SECURITY.md) or email `security@pinvou.com`
 
-Contributions follow our [Code of Conduct](CODE_OF_CONDUCT.md). Licensing,
-third-party attribution, SBOM, and brand-use boundaries are documented in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
-[docs/sbom.md](docs/sbom.md), and [TRADEMARKS.md](TRADEMARKS.md).
+Licensing, third-party attribution, SBOM, and brand-use boundaries are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), and [TRADEMARKS.md](TRADEMARKS.md).
+
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Pinvou/pinvou-agent&type=Date)](https://star-history.com/#Pinvou/pinvou-agent&Date)
 
 ---
 
-Pinvou Agent is under active development. The `main` branch and the latest release notes are the source of truth for current behavior.
+<div align="center">
+
+Pinvou Agent is under active development — the `main` branch and the latest release notes are the source of truth for current behavior.
+
+**[MIT License](LICENSE)** · Made with ❤️ by the Pinvou team and contributors
+
+</div>
