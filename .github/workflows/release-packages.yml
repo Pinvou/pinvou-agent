@@ -1,0 +1,501 @@
+name: release-packages
+
+# VERSION 或发布链路变更时自动构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
+#
+# 触发条件:
+# - push main 且根目录 VERSION 文件被修改(paths 限定);
+# - 影响版本/打包链路的 PR:无条件构建,在合入前验证四类发布产物;
+# - push 事件按 github.event.before..github.sha 做精确版本号 diff;
+# - workflow_dispatch 手动触发:跳过 diff,无条件全量构建(用于补打/重打某版本)。
+#
+# 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
+# scripts/sync-version.mjs --check 校验各处版本文件(tauri.conf.json / Cargo.toml /
+# package.json / package-lock.json)与 VERSION 一致;构建 job 构建前再跑 sync-version.mjs 同步,
+# 保证打进包里的任何版本号都来自 VERSION。
+#
+# 与其他 workflow 的分工:
+# - pr-check / mac-build:每次改动跑编译验证 gate(不产出可用产物)。
+# - release-packages(本 workflow):VERSION bump 或发布链路 PR 跑,产出全平台安装包 artifact。
+# - 本 workflow 只上传 CI artifact,绝不创建/推送 GitHub Release,release 由人工填写。
+#
+# 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
+# (signingIdentity="-",用户首次安装需 xattr -dr com.apple.quarantine)。
+# 零 secret 依赖,零外部副作用。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'VERSION'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'VERSION'
+      - 'scripts/sync-version.mjs'
+      - '.github/workflows/release-packages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-packages-${{ github.ref }}
+  # PR 连续更新时取消旧验证；main 的正式版本构建必须完整保留。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── Job 1: 版本号变更检测(gate,跑 ubuntu 快) ──────────────────────
+  # push 对比事件 before..sha 的 VERSION 内容,覆盖一次 push 含多个 commit 的情况。
+  # pull_request / workflow_dispatch 无条件放行,保证发布链路改动在合入前真实打包。
+  # 首次 push 或 before commit 不可达时直接放行,宁可多构建也不漏构建。
+  # 同时用 sync-version.mjs --check 校验三处版本文件与 VERSION 一致,不一致 fail。
+  check-version-bump:
+    name: 检测版本号变更
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version_bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 版本同步脚本测试
+        run: node --test scripts/tests/sync-version.test.mjs
+
+      # 版本号单一事实来源 = 根目录 VERSION。各处版本文件必须已与其同步,
+      # 否则包名/包内版本号可能不一致,直接 fail 提示先跑 sync-version.mjs。
+      - name: 校验各处版本文件与 VERSION 一致
+        run: node scripts/sync-version.mjs --check
+
+      - name: 对比 VERSION
+        id: diff
+        run: |
+          set -euo pipefail
+
+          V=$(tr -d '[:space:]' < VERSION)
+          echo "当前 VERSION: $V"
+
+          EVENT_NAME="${{ github.event_name }}"
+          BEFORE="${{ github.event.before }}"
+
+          # PR 改动需要在合入前验证真实产物;手动触发用于补打/重打。
+          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "✓ $EVENT_NAME 触发,无条件构建"
+            BUMPED=true
+          # 首次 push 的 before 为全零;强推后 before commit 也可能不可达。
+          elif [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "⚠️ before commit 不存在或不可达,视为版本 bump,放行"
+            BUMPED=true
+          else
+            V_OLD=$(git show "${BEFORE}:VERSION" 2>/dev/null | tr -d '[:space:]' || echo "")
+            echo "push 前 VERSION: $V_OLD"
+            if [ "$V" != "$V_OLD" ]; then
+              echo "✓ VERSION 变化,触发全平台构建"
+              BUMPED=true
+            else
+              echo "✗ VERSION 未变化(非版本字段改动),跳过"
+              BUMPED=false
+            fi
+          fi
+
+          echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  # ── Job 2: Linux x86_64 deb ─────────────────────────────────────────
+  build-linux-x64:
+    name: 构建 Linux x86_64 deb
+    needs: check-version-bump
+    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.check-version-bump.outputs.version }}
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: release-linux-x64
+
+      # pinvou3 编译链接的系统库(gtk/webkit/soup/rsvg/openssl/X11×3/appindicator),
+      # ubuntu runner 默认没装;cmake:reqwest 的 rustls 用 aws-lc-rs,其 build script
+      # 需 cmake + C 编译器。清单同 pr-check.yml。
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      # 版本号同步:把 VERSION 写入 tauri.conf.json / Cargo.toml / package.json /
+      # package-lock.json,保证打进 deb 的版本号来自单一事实来源。
+      - name: 同步版本号
+        run: node scripts/sync-version.mjs
+
+      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它。
+      # 当前配置已不直接引用 bge-m3,空占位是防御性保留(同 pr-check.yml 的做法),
+      # 防止资源清单日后恢复引用时 tauri-build 资源校验失败。
+      - name: bge-m3 占位 (防御性保留)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      # build.js 自动注入 config/platforms/linux overlay,并自动准备 codex bridge。
+      # 只打 deb(config overlay 的 targets 也只列了 deb)。
+      - name: 构建 deb
+        working-directory: pinvou3-app
+        run: node scripts/tauri/build.js build --bundles deb
+
+      # tauri deb 产物默认名 pinvou3_<version>_amd64.deb,重命名为 x64 后缀统一全平台命名。
+      - name: 校验产物 + 统一命名 + sha256
+        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        run: |
+          set -euo pipefail
+          SRC=$(ls pinvou3_*_amd64.deb)
+          DST="pinvou3_${VERSION}_x64.deb"
+          mv "$SRC" "$DST"
+          SHA=$(sha256sum "$DST" | awk '{print $1}')
+          echo "deb sha256: $SHA"
+          echo "$SHA  $DST" > "$DST.sha256"
+          ls -lh "$DST"
+
+      - name: 上传 deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinvou3-linux-${{ needs.check-version-bump.outputs.version }}-x64
+          path: |
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64.deb
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64.deb.sha256
+          retention-days: 90
+          if-no-files-found: error
+
+  # ── Job 3: Linux arm64 deb(GitHub 原生 arm64 runner,公共仓库免费) ──
+  build-linux-arm64:
+    name: 构建 Linux arm64 deb
+    needs: check-version-bump
+    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.check-version-bump.outputs.version }}
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: release-linux-arm64
+
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 同步版本号
+        run: node scripts/sync-version.mjs
+
+      - name: bge-m3 占位 (防御性保留)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      # arm64 原生构建:build.js 检测到 linux/arm64 会自动跑
+      # scripts/fetch-linux-arm64-connectors.sh 下载连接器二进制(gitignored)。
+      - name: 构建 deb
+        working-directory: pinvou3-app
+        run: node scripts/tauri/build.js build --bundles deb
+
+      # tauri deb 产物默认名 pinvou3_<version>_arm64.deb,与目标命名一致,无需重命名。
+      - name: 校验产物 + sha256
+        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        run: |
+          set -euo pipefail
+          DEB="pinvou3_${VERSION}_arm64.deb"
+          test -f "$DEB" || { echo "❌ deb 产物不存在: $DEB"; ls -la; exit 1; }
+          SHA=$(sha256sum "$DEB" | awk '{print $1}')
+          echo "deb sha256: $SHA"
+          echo "$SHA  $DEB" > "$DEB.sha256"
+          ls -lh "$DEB"
+
+      - name: 上传 deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinvou3-linux-${{ needs.check-version-bump.outputs.version }}-arm64
+          path: |
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_arm64.deb
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_arm64.deb.sha256
+          retention-days: 90
+          if-no-files-found: error
+
+  # ── Job 4: Windows x86_64 nsis(不签名,config/platforms/windows 无证书配置) ──
+  build-windows-x64:
+    name: 构建 Windows x86_64 nsis
+    needs: check-version-bump
+    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        # 统一用 Git Bash,sha256sum/通配符逻辑三平台一致。
+        shell: bash
+    env:
+      VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
+      # 用预生成 NASM 对象规避(同 pr-check.yml windows-rust-test 的结论)。
+      # 当前 Windows 默认发布目标仅 x86_64。
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: release-windows-x64
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 同步版本号
+        run: node scripts/sync-version.mjs
+
+      - name: bge-m3 占位 (防御性保留)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: 构建 nsis
+        working-directory: pinvou3-app
+        run: npm run build:nsis
+
+      # tauri nsis 产物默认名 pinvou3_<version>_x64-setup.exe,与目标命名一致。
+      - name: 校验产物 + sha256
+        working-directory: pinvou3-app/src-tauri/target/release/bundle/nsis
+        run: |
+          set -euo pipefail
+          EXE="pinvou3_${VERSION}_x64-setup.exe"
+          test -f "$EXE" || { echo "❌ nsis 产物不存在: $EXE"; ls -la; exit 1; }
+          SHA=$(sha256sum "$EXE" | awk '{print $1}')
+          echo "nsis sha256: $SHA"
+          echo "$SHA  $EXE" > "$EXE.sha256"
+          ls -lh "$EXE"
+
+      - name: 上传 nsis artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinvou3-windows-${{ needs.check-version-bump.outputs.version }}-x64
+          path: |
+            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64-setup.exe
+            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64-setup.exe.sha256
+          retention-days: 90
+          if-no-files-found: error
+
+  # ── Job 5: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
+  build-macos-universal:
+    name: 构建 macOS universal dmg
+    needs: check-version-bump
+    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    runs-on: macos-15
+    # 首次双 target + fat LTO 实跑约 48 分钟，50 分钟几乎无 runner 抖动余量。
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      VERSION: ${{ needs.check-version-bump.outputs.version }}
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 实际构建工具链由 src-tauri/rust-toolchain.toml 锁定；必须在该目录下把双 target
+      # 安装到 pinned toolchain。只给上面的 stable 引导工具链装 target 会导致 Tauri
+      # 切换到 pinned toolchain 后找不到 x86_64 target。
+      - name: 安装双 target (universal 构建)
+        working-directory: pinvou3-app/src-tauri
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: release-macos-universal
+
+      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
+      # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
+      # runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
+      # 注入,tauri build 会硬失败。同 mac-build.yml 的 workaround。
+      - name: macOS 27+ strip workaround
+        run: |
+          if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
+            echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
+            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
+            echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
+          else
+            echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
+          fi
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 同步版本号
+        run: node scripts/sync-version.mjs
+
+      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它。
+      # 当前配置已不直接引用 bge-m3,空占位是防御性保留(同 mac-build.yml 的做法),
+      # 防止资源清单日后恢复引用时 tauri-build 资源校验失败。
+      - name: bge-m3 占位 (防御性保留)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: 构建 dmg
+        working-directory: pinvou3-app
+        run: |
+          set -euo pipefail
+          # universal-apple-darwin 是 Tauri 合成 target(内部跑 aarch64+x86_64 两次 cargo + lipo),
+          # 产出可在 Intel + Apple Silicon 通用运行的 dmg/app。
+          node scripts/tauri/build.js build --target universal-apple-darwin
+
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_universal.dmg"
+          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app"
+
+          # dmg 打包偶发失败兜底:
+          # bundle_dmg.sh 调 osascript 做 Finder 图标美化,CI 无 head 交互环境下偶尔失败
+          # (残留临时镜像 / Finder 进程 / osascript 自动化权限)。非 macOS 固有 bug,重跑通常就好。
+          # 本 workflow 产出可用 dmg 作 artifact,不能用 continue-on-error,必须带兜底。
+          if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
+            echo "⚠️ Tauri dmg 打包未产出 dmg,重试 dmg bundling(跳过编译,只打包)"
+            node scripts/tauri/build.js build --target universal-apple-darwin --bundles dmg || echo "⚠️ 重试仍失败,降级手动 hdiutil"
+          fi
+
+          # 重试后仍无 dmg:手动 hdiutil 兜底(无 Finder 图标美化,但 dmg 功能完整)。
+          if [ ! -f "$DMG" ] && [ -d "$APP_BUNDLE" ]; then
+            echo "⚠️ 降级手动 hdiutil 打包(无 Finder 图标美化)"
+            DMG_DIR="$(dirname "$DMG")"
+            rm -f "$DMG_DIR"/rw.*.dmg 2>/dev/null || true
+            TMP_DMG="$DMG_DIR/rw.fallback.dmg"
+            hdiutil create -ov -volname "pinvou3" -srcfolder "$APP_BUNDLE" \
+              -fs HFS+ -format UDRW "$TMP_DMG" >/dev/null
+            DEV=$(hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" 2>/dev/null \
+                  | grep -E '^/dev/' | sed '1q' | awk '{print $1}')
+            ln -sf /Applications "/Volumes/pinvou3/Applications" 2>/dev/null || true
+            hdiutil detach "$DEV" >/dev/null 2>&1
+            hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null
+            rm -f "$TMP_DMG"
+            echo "✓ 手动 dmg 打包完成(无 Finder 图标美化)"
+          fi
+
+          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
+
+          # 校验 universal dmg 双架构完整性 + 写 checksum 文件(随 artifact 附带)
+          BIN="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+          echo "lipo 校验 universal 双切片:"
+          lipo "$BIN" -info || { echo "❌ universal 二进制校验失败"; exit 1; }
+          lipo "$BIN" -verify_arch x86_64 arm64 || { echo "❌ universal 缺 x86_64 或 arm64 切片"; exit 1; }
+          echo "✓ universal 双切片齐全 (arm64 + x86_64)"
+
+          cd src-tauri/target/universal-apple-darwin/release/bundle/dmg
+          SHA=$(shasum -a 256 "pinvou3_${VERSION}_universal.dmg" | awk '{print $1}')
+          echo "dmg sha256: $SHA"
+          echo "$SHA  pinvou3_${VERSION}_universal.dmg" > "pinvou3_${VERSION}_universal.dmg.sha256"
+          ls -lh "pinvou3_${VERSION}_universal.dmg"
+
+      - name: 上传 dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinvou3-macos-${{ needs.check-version-bump.outputs.version }}-universal
+          path: |
+            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_universal.dmg
+            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_universal.dmg.sha256
+          retention-days: 90
+          if-no-files-found: error

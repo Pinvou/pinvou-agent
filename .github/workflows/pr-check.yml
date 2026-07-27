@@ -2,6 +2,7 @@ name: PR Check
 
 # Jobs:
 # - commit-message:强制校验 PR/push/Merge Queue 的 Git commit 信息规范。
+# - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust/依赖、L1 harness 或前端改动,给编译/前端 job 做 paths filter。
 # - frontend-test:前端/Relay/WebUI 改动时跑 lint、构建、逻辑测试和浏览器旅程。
@@ -64,6 +65,26 @@ jobs:
             before="${{ github.event.before }}"
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
           fi
+
+  version-consistency:
+    name: version-consistency
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 版本同步脚本测试
+        run: node --test scripts/tests/sync-version.test.mjs
+
+      - name: 校验 VERSION 与各版本文件一致
+        run: node scripts/sync-version.mjs --check
 
   # PR 按路径选择检查；Merge Queue 对最新 main 组合跑完整检查。
   changes:
@@ -531,6 +552,7 @@ jobs:
     name: required-gate
     needs:
       - commit-message
+      - version-consistency
       - changes
       - fast-gate
       - frontend-test
@@ -544,6 +566,7 @@ jobs:
       - name: 汇总所有适用检查
         env:
           COMMIT_MESSAGE_RESULT: ${{ needs.commit-message.result }}
+          VERSION_CONSISTENCY_RESULT: ${{ needs.version-consistency.result }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           FAST_GATE_RESULT: ${{ needs.fast-gate.result }}
           FRONTEND_RESULT: ${{ needs.frontend-test.result }}
@@ -551,8 +574,8 @@ jobs:
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
         run: |
-          if [[ "$COMMIT_MESSAGE_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
-            echo "基础检查失败: commit-message=$COMMIT_MESSAGE_RESULT changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
+          if [[ "$COMMIT_MESSAGE_RESULT" != success || "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
+            echo "基础检查失败: commit-message=$COMMIT_MESSAGE_RESULT version-consistency=$VERSION_CONSISTENCY_RESULT changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
             exit 1
           fi
 
