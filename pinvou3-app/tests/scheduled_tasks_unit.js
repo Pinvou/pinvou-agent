@@ -605,6 +605,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     }
     if (cmd === "list_sessions" || cmd === "list_archived_sessions" || cmd === "list_personas" ||
         cmd === "get_session_persona_events" || cmd === "get_session_pinvou_reviews" ||
+        cmd === "get_session_timeline" ||
         cmd === "list_workspace_files" || cmd === "list_scheduled_task_runs" ||
         cmd === "list_scheduled_runs") return [];
     if (cmd === "get_mode_state") return { mode: "yolo" };
@@ -684,6 +685,42 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   };
 }
 
+async function deepSeekTurnTimelineLifecycleBehavior() {
+  var harness = createBridgeHarness();
+  var sessionId = "chat-turn-timeline";
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Turn timeline", message_count: 2 },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "旧问题" }] },
+        { role: "assistant", content: [{ type: "text", text: "旧回答" }] },
+      ],
+      artifacts: [],
+    };
+  };
+  harness.handlers.get_session_timeline = function () {
+    return [
+      { turn_id: "turn-old", event: "user_start", timestamp: Date.now() - 5000, ts: "2026-07-24T00:00:00Z" },
+      { turn_id: "turn-old", event: "assistant_done", timestamp: Date.now() - 4000, ts: "2026-07-24T00:00:01Z", status: "Completed" },
+      { turn_id: "turn-current", event: "user_start", timestamp: Date.now(), ts: "2026-07-24T00:00:05Z" },
+    ];
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "继续" });
+  await harness.emit("chat:turn_started", { session_id: sessionId });
+  var running = harness.bridge.state.get("chat").turnTimeline;
+  assert.strictEqual(running.length, 3, "turn_started must reuse a freshly loaded unmatched timing event");
+  assert.strictEqual(running[2].ui_turn_index, 1, "live lifecycle must bind to the visible user Turn");
+
+  await harness.emit("chat:done", { session_id: sessionId, status: "Failed", error: "模型失败" });
+  var completed = harness.bridge.state.get("chat").turnTimeline;
+  assert.strictEqual(completed.length, 4);
+  assert.strictEqual(completed[3].turn_id, "turn-current");
+  assert.strictEqual(completed[3].status, "Failed");
+  assert.strictEqual(completed[3].error, "模型失败");
+}
+
 async function scheduledRunUnreadBehavior() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -755,6 +792,9 @@ async function scheduledRunUnreadBehavior() {
         messages: [{ role: "user", content: [
           { type: "text", text: "<system-reminder>\ninternal policy: sudo/apt/systemctl/pkexec\n</system-reminder>\n\ndurable scheduled prompt" },
           { type: "text", text: "<turn_meta>\nCurrent workspace: C:\\\\Users\\\\demo\n</turn_meta>" },
+        ] }, { role: "user", content: [
+          { type: "text", text: "Tool calls have failed for 2 consecutive steps (web_search)." },
+          { type: "text", text: "<turn_meta>\nInput provenance: runtime\nInput authority: non_authoritative\n</turn_meta>" },
         ] }],
         artifacts: [],
       };
@@ -800,9 +840,14 @@ async function scheduledRunUnreadBehavior() {
   assert.ok(!visibleScheduledTranscript.includes("turn_meta"), "scheduled bubbles must hide turn metadata");
   assert.ok(!visibleScheduledTranscript.includes("sudo/apt/systemctl/pkexec"), "scheduled bubbles must hide internal policy text");
   assert.ok(!visibleScheduledTranscript.includes("Current workspace"), "scheduled bubbles must hide internal workspace metadata");
+  assert.ok(!visibleScheduledTranscript.includes("Tool calls have failed"), "runtime recovery hints must not render as user bubbles");
   assert.ok(
     JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).messages).includes("<system-reminder>"),
     "the raw scheduled message must remain intact for model context"
+  );
+  assert.ok(
+    JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).messages).includes("Tool calls have failed"),
+    "runtime recovery hints must remain intact in raw model context"
   );
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
   harness.emit("chat:delta", { session_id: "sched-buffered", text: "partial background output" });
@@ -3093,6 +3138,7 @@ async function remoteSessionDeletionConvergesPresentationState() {
 }
 
 Promise.resolve()
+  .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
   .then(scheduledRunNowSidebarLinkBehavior)

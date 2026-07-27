@@ -44,6 +44,80 @@
     .light-code .msg-md code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
     .light-code .msg-md pre { background:rgba(0,0,0,0.04); color:#1F1F1F; }
 
+    /* Codex ACP: scoped Markdown layout (Tailwind preflight removes native list styles). */
+    .codex-markdown > :first-child { margin-top:0; }
+    .codex-markdown > :last-child { margin-bottom:0; }
+    .codex-markdown p { margin:.55em 0; }
+    .codex-markdown h1,.codex-markdown h2,.codex-markdown h3,.codex-markdown h4 {
+      margin:1em 0 .4em;
+      font-weight:650;
+      line-height:1.35;
+    }
+    .codex-markdown h1 { font-size:1.35em; }
+    .codex-markdown h2 { font-size:1.2em; }
+    .codex-markdown h3 { font-size:1.08em; }
+    .codex-markdown ul,.codex-markdown ol {
+      margin:.55em 0;
+      padding-left:1.65em;
+    }
+    .codex-markdown ul { list-style:disc outside; }
+    .codex-markdown ol { list-style:decimal outside; }
+    .codex-markdown ul ul { list-style-type:circle; }
+    .codex-markdown ul ul ul { list-style-type:square; }
+    .codex-markdown li { margin:.18em 0; padding-left:.15em; }
+    .codex-markdown li > p { margin:.18em 0; }
+    .codex-markdown li::marker { color:rgba(107,114,128,.85); }
+    .codex-markdown a { color:#2563eb; text-decoration:underline; text-underline-offset:2px; }
+    .dark .codex-markdown a { color:#93c5fd; }
+    .codex-markdown code {
+      padding:.12em .36em;
+      border-radius:5px;
+      background:rgba(0,0,0,.055);
+      font-family:"JetBrains Mono","SF Mono",Consolas,monospace;
+      font-size:.88em;
+    }
+    .dark .codex-markdown code { background:rgba(255,255,255,.09); }
+    .codex-markdown pre {
+      margin:.7em 0;
+      padding:.85em 1em;
+      overflow-x:auto;
+      border:1px solid rgba(0,0,0,.06);
+      border-radius:12px;
+      background:rgba(0,0,0,.035);
+      font-size:.88em;
+      line-height:1.55;
+    }
+    .dark .codex-markdown pre {
+      border-color:rgba(255,255,255,.08);
+      background:rgba(0,0,0,.28);
+    }
+    .codex-markdown pre code { padding:0; background:none; }
+    .codex-markdown blockquote {
+      margin:.65em 0;
+      padding:.1em 0 .1em 1em;
+      border-left:3px solid rgba(99,102,241,.4);
+      color:#6b7280;
+    }
+    .dark .codex-markdown blockquote { color:#9ca3af; }
+    .codex-markdown hr {
+      margin:1em 0;
+      border:0;
+      border-top:1px solid rgba(128,128,128,.25);
+    }
+    .codex-markdown table {
+      display:block;
+      max-width:100%;
+      margin:.7em 0;
+      overflow-x:auto;
+      border-collapse:collapse;
+      font-size:.92em;
+    }
+    .codex-markdown th,.codex-markdown td {
+      padding:.4em .7em;
+      border:1px solid rgba(128,128,128,.25);
+      text-align:left;
+    }
+
     /* Tool card styles */
     .tool-card-output { max-height:200px; overflow-y:auto; font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
 

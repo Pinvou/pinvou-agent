@@ -3,19 +3,21 @@ import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 
-const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp }) => {
+const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false }) => {
       const isDark = theme === 'dark';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
+      const Root = nativeButton ? 'button' : 'div';
       return (
-        <div
+        <Root
+          {...(nativeButton ? { type: 'button', 'aria-label': label } : {})}
           onClick={clickH}
           {...dragProps}
           data-nav={dragKind || undefined}
           title={!isSidebarOpen ? label : ""}
           style={dragging ? { opacity: 0.4 } : undefined}
-          className={`group flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
+          className={`group border-0 text-left flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
           ${isSidebarOpen ? 'px-4 py-2 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
@@ -30,7 +32,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             )}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
-        </div>
+        </Root>
       );
     };
 
@@ -296,7 +298,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
       ) : null;
       if (editing) {
         return (
-          <div className="px-1.5 py-0.5">
+          <div className="flex h-11 items-center px-1.5">
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
               onClick={e => e.stopPropagation()}
@@ -313,14 +315,18 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           data-testid={chat.testId}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
-          className={`group flex items-center px-4 py-1.5 rounded-full cursor-pointer text-[15px] transition-all
+          className={`group flex h-11 items-center px-4 rounded-full cursor-pointer text-[15px] transition-all
             ${personaTarget ? ''
               : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
                      : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}>
           {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
-          {chat.leadingIcon && <span className="mr-3 shrink-0 opacity-95">{chat.leadingIcon}</span>}
+          {chat.leadingIcon && (
+            <span className="mr-3 flex h-5 w-5 shrink-0 items-center justify-center opacity-95">
+              {chat.leadingIcon}
+            </span>
+          )}
           <span className="min-w-0 flex-1 pr-2">
-            <span className={`block truncate whitespace-nowrap ${chat.subtitle ? 'leading-5' : 'leading-relaxed'}`}>{chat.title}</span>
+            <span className="block truncate whitespace-nowrap leading-5">{chat.title}</span>
             {chat.subtitle && (
               <span className={`block truncate text-[12px] leading-4 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{chat.subtitle}</span>
             )}

@@ -3,7 +3,8 @@
   "bundle": {
     "targets": ["deb"],
     "resources": {
-      "resources/platforms/linux/asr/": "runtime/asr"
+      "resources/platforms/linux/asr/": "runtime/asr",
+      "resources/platforms/linux/codex-bridge/": "runtime/codex-bridge"
     },
     "linux": {
       "deb": {

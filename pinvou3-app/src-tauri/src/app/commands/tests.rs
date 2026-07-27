@@ -1159,9 +1159,8 @@ fn merge_covers_recommendations_field() {
     );
 }
 
-/// `open_external_url` 必须只放已审计的外部入口域名,任何其他 host / 任何其他
-/// scheme(http、file、javascript)都立即 reject——这是前端 webview 万一被 XSS 的
-/// 最后一道防线,不许扩大白名单不加测试。
+/// `open_external_url` 只允许已审计外部入口和严格本机 loopback HTTP(S)。
+/// 任意其他 host / 危险 scheme 都立即 reject，这是前端 webview 的最后一道防线。
 #[tokio::test]
 async fn open_external_url_rejects_off_allowlist_targets() {
     let rejected = [
@@ -1177,6 +1176,9 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         "javascript:alert(1)",                                    // js scheme
         "file:///etc/passwd",                                     // file scheme
         "https://google.com/",                                    // 任何第三方域
+        "http://localhost.evil.com:8080/",                        // localhost 前缀钓鱼
+        "http://user@localhost:8080/",                            // 不允许 URL 凭据
+        "http://192.168.1.10:8080/",                              // 局域网地址不是 loopback
         "",                                                       // 空串
         "metaso.cn/",                                             // 缺 scheme
     ];
@@ -1216,6 +1218,9 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://meeting.tencent.com/qrcode-login.html?code=abc"
     ));
+    assert!(url_in_external_allowlist("http://localhost:8080/"));
+    assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
+    assert!(url_in_external_allowlist("http://[::1]:3000/"));
     assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
     assert!(!url_in_external_allowlist(
         "https://console.amap.com.evil.com/dev/key/app"
@@ -1239,6 +1244,11 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         "http://www.canva.cn/api/action?token=abc"
     ));
     assert!(!url_in_external_allowlist("https://evil.example.com/"));
+    assert!(!url_in_external_allowlist(
+        "http://localhost.evil.com:8080/"
+    ));
+    assert!(!url_in_external_allowlist("http://192.168.1.10:8080/"));
+    assert!(!url_in_external_allowlist("file://localhost/tmp/demo.html"));
 }
 
 /// detect_obsidian 选库规则:open:true 优先,否则 ts 最大;空/无 vaults → None;容忍 BOM。

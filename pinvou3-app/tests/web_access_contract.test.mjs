@@ -86,6 +86,9 @@ assert.match(commands, /forward_app_event\(&app, "session:deleted"/);
 assert.match(bridge, /Transcript persistence is authoritative in Rust/);
 assert.doesNotMatch(bridge, /saveSessionMessagesForClient/);
 assert.match(bridge, /session_turn_in_progress/);
+assert.match(bridge, /turnAlreadyInProgress/);
+assert.match(bridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
+  'turn admission conflicts must show product copy instead of an internal reservation error');
 assert.match(bridge, /var sid = state\.activeSessionId;/);
 assert.match(bridge, /if \(state\.activeSessionId !== sid\) return;/);
 assert.match(bridge, /remoteAdmissionKeys/);
@@ -167,8 +170,12 @@ for (const source of [settingsView, connectionStatus]) {
     'user-facing remote control copy must not expose the WebUI implementation name');
 }
 assert.match(chatView, /data-testid="chat-bottom-spacer"[\s\S]{0,180}className="w-full shrink-0"/,
-  'WebUI must use a real flex item for composer clearance because iOS Safari may omit trailing overflow padding');
-assert.match(chatView, /style=\{\(isWeb && hasMessages\) \? undefined : \{ paddingBottom:/,
-  'WebUI messages must use the real spacer while the non-scrolling empty state retains centering clearance');
+  'all chat surfaces must use a real flex item because WebKit may omit trailing overflow padding');
+assert.match(chatView, /style=\{hasMessages \? undefined : \{ paddingBottom:/,
+  'message lists must use the real spacer while the non-scrolling empty state retains centering clearance');
+assert.match(chatView, /composerH \? composerH \+ 64 : 176/,
+  'the bottom spacer must clear both the floating composer and its fade mask');
+assert.match(chatView, /composerH \? composerH \+ 48 : 172/,
+  'the fade mask must remain shorter than the bottom spacer');
 
 console.log('web access contract tests passed');

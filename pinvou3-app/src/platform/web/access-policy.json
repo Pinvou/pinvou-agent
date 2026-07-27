@@ -40,6 +40,7 @@
     "get_session_model_id",
     "get_session_persona_events",
     "get_session_pinvou_reviews",
+    "get_session_timeline",
     "get_settings",
     "get_workflow_state",
     "ignore_pending_memory",

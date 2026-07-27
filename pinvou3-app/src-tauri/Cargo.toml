@@ -38,7 +38,7 @@ include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = "2.11.1"
+tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -48,7 +48,14 @@ tauri-plugin-notification = "2"
 anyhow = "1.0"
 async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
 tokio = { version = "1.49", features = ["full"] }
-tokio-util = "0.7.16"
+tokio-util = { version = "0.7.16", features = ["compat"] }
+
+# Codex ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
+# @agentclientprotocol/codex-acp 提供，pinvou3 不复制其会话/工具循环。
+agent-client-protocol = { version = "1.0.0", features = [
+    "unstable_elicitation",
+    "unstable_session_fork",
+] }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
@@ -66,7 +73,8 @@ codewhale-secrets = { path = "../../CodeWhale/crates/secrets" }
 codewhale-config = { path = "../../CodeWhale/crates/config" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking", "stream"] }
+wait-timeout = "0.2"
 
 # Updater 用：下载 deb 的 sha256 校验；Windows OTA 包使用 zip + MD5；
 # 产物卡封面也会读 .pptx(zip)里的 docProps/thumbnail.jpeg。

@@ -3,7 +3,7 @@
 const dict = {
       zh: {
         langTag: 'zh',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', toolStore: '工具商店', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', toolStore: '工具商店', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【设置-任务收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【设置-任务收纳】', archiveSuccessView: '前往查看',
         archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
@@ -260,7 +260,7 @@ const dict = {
         rsOverwrite: '会直接覆写磁盘数据',
         rsFormat: '会格式化磁盘，数据全没',
         rsDefault: '这条命令可能破坏你的文件或系统',
-        uiqTitle: '🤔 AI 想问你几个问题',
+        uiqTitle: '品悟需要你的选择',
         uiOtherTitle: '💬 其他(自己写)', uiOtherDesc: '如果上面选项不合适,自己说一下', uiOtherPh: '写下你想说的...', uiSubmit: '提交',
         uiSubmitted: '✓ 已提交', uiCancelled: '✕ 已取消', uiSubmitting: '提交中…', uiSubmitFailed: e => `⚠️ 提交失败: ${e}`,
         apEmpty: '暂无产物', apOpenDir: '打开所在目录', apOpenExt: '外部打开', apSelect: '选择左侧产物预览',
@@ -280,7 +280,7 @@ const dict = {
       },
       en: {
         langTag: 'en',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
         archiveSession: 'Hide in Settings', archiveConfirmTitle: 'Hide in Settings?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored in Settings.', archiveConfirmAction: 'Hide',
         archiveSuccess: 'Hidden in Settings', archiveSuccessView: 'View',
         archivedTasks: 'Tasks hidden in Settings', archivedTasksDesc: '', archivedEmpty: 'No hidden tasks yet', restoreArchived: 'Restore to list',
@@ -537,7 +537,7 @@ const dict = {
         rsOverwrite: 'Would overwrite disk data directly',
         rsFormat: 'Would format the disk — all data gone',
         rsDefault: 'This command could damage your files or system',
-        uiqTitle: '🤔 The AI has a few questions for you',
+        uiqTitle: 'Pinvou needs your input',
         uiOtherTitle: '💬 Other (write your own)', uiOtherDesc: 'If none of the options fit, say it in your own words', uiOtherPh: 'Type what you want to say...', uiSubmit: 'Submit',
         uiSubmitted: '✓ Submitted', uiCancelled: '✕ Cancelled', uiSubmitting: 'Submitting…', uiSubmitFailed: e => `⚠️ Submit failed: ${e}`,
         apEmpty: 'No artifacts yet', apOpenDir: 'Open containing folder', apOpenExt: 'Open externally', apSelect: 'Select an artifact to preview',
@@ -557,7 +557,7 @@ const dict = {
       },
       ja: {
         langTag: 'ja',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
         archiveSession: '設定に隠す', archiveConfirmTitle: '設定に隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、設定から戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '設定に隠しました', archiveSuccessView: '表示',
         archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',
@@ -813,7 +813,7 @@ const dict = {
         rsOverwrite: 'ディスクのデータを直接上書きします',
         rsFormat: 'ディスクをフォーマットし、データが全て消えます',
         rsDefault: 'このコマンドはファイルやシステムを壊す可能性があります',
-        uiqTitle: '🤔 AI からいくつか質問があります',
+        uiqTitle: '品悟には選択が必要です',
         uiOtherTitle: '💬 その他（自由記述）', uiOtherDesc: '上の選択肢が合わなければ、自分の言葉でどうぞ', uiOtherPh: '伝えたいことを書いてください...', uiSubmit: '送信',
         uiSubmitted: '✓ 送信済み', uiCancelled: '✕ キャンセル済み', uiSubmitting: '送信中…', uiSubmitFailed: e => `⚠️ 送信に失敗: ${e}`,
         apEmpty: '成果物はまだありません', apOpenDir: 'フォルダを開く', apOpenExt: '外部で開く', apSelect: '左の成果物を選んでプレビュー',

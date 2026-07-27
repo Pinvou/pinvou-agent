@@ -16,6 +16,7 @@
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod chat;
+pub(crate) mod codex;
 pub(crate) mod connectors;
 pub(crate) mod dependencies;
 pub(crate) mod files;

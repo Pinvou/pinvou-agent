@@ -80,7 +80,7 @@ const protocolSources = {
 const expectedProtocolHashes = {
   orchestration: '978048c1070c0d876fa2cd1b0493b46f973d46d9ed8bf1b937dbe36b5fe6a9b3',
   artifacts: 'cbb7f68ec32ead55ad759859e2bb2df6af5eb9a649e985c313e665aee7c2f0af',
-  chat: 'c39bfda7f19e987b602e129001cc4b8c5d738290ac89671b9f80fec41f869373',
+  chat: '21a13c07752428b96bceb8c791755efd5ffb9d0c7d5ed455dae10839124aed95',
   dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
   knowledge: 'f1e6bf2e21474ba5573e9411e5c5e32d63ecdb0517b42320232ccd0940a59b69',
@@ -89,7 +89,7 @@ const expectedProtocolHashes = {
   personas: '5959bca3e4169cd3136db9dfff145370f1019ffeb865b357d2982b4d877fdf7e',
   remoteControl: '86e9f18726ad1302d4aed4fb5b8035a7b8daf1eab79466f60af5708cfe646a2b',
   scheduled: '239292d75c308973053cc0091e0ac9437191bf2375fd5fd8181ea26f4f749900',
-  sessions: '88e0af710e27c0347eec38ea48e666763ce947e12111e6f1128b230c8533adf5',
+  sessions: 'be05b4cd9ca96776a4deb292d6ebae7328a434cc098f83e5ee6d712b935254be',
   settings: 'dd2030cdf2001c3b9fffa91fd678c196089e0260f8b41dc658d2dbc7bd41e5da',
   updater: 'b4a287c32fc618553aa40d3fac078e9dc8536acefa4e064274e5766ec5cd88bc',
   voice: '2e6789eca3969f27e8e0fd9f034bd82e0b0e1f302152efc65c5714839fbf5b72',

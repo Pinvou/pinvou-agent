@@ -40,6 +40,14 @@ export function emitTauri(eventName, payload) {
 export const tauriCommands = Object.freeze({ invoke: invokeTauri });
 export const tauriEvents = Object.freeze({ listen: listenTauri, emit: emitTauri });
 
+export function openTauriDialog(options) {
+  const open = runtime()?.dialog?.open;
+  if (typeof open !== 'function') {
+    return Promise.reject(new Error('Tauri dialog.open is unavailable'));
+  }
+  return open(options);
+}
+
 function windowApi() {
   const api = runtime()?.window;
   if (!api) throw new Error('Tauri window API is unavailable');

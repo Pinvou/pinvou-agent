@@ -44,7 +44,7 @@
     var sessionSwitchRequestToken = 0;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -262,6 +262,8 @@
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
+    buf.turnTimeline = state.turnTimeline;
+    buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
@@ -279,6 +281,8 @@
   function loadWorkingSetFrom(buf) {
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
+    state.turnTimeline = buf.turnTimeline || [];
+    state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
@@ -301,6 +305,8 @@
     buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
     buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
     buf.chatItems = [];
+    buf.turnTimeline = [];
+    buf.activeTurnTimelineId = null;
     buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
       var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
       return { path: p, basename: basename(p) };
@@ -343,6 +349,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
@@ -580,8 +587,10 @@
 
     var personaEvents = [];
     var pinvouReviews = [];
+    var turnTimeline = [];
     try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
     try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
+    try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch (_) {}
     if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
@@ -605,6 +614,7 @@
       );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
@@ -622,6 +632,7 @@
       sessionStates[id].loadedFromDisk = true;
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
+      state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];
       state.artifacts = mergeHydratedArtifacts(saved.artifacts, []);
