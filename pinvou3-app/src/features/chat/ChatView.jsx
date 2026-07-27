@@ -522,7 +522,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return { w, h, touch };
       });
       const isTabletSized = Math.min(deviceMode.w, deviceMode.h) <= 820 || Math.max(deviceMode.w, deviceMode.h) <= 1180;
-      const tabletVoiceMode = deviceMode.touch || isTabletSized;
+      // 浮动语音球是给 Windows 平板/触屏大屏用的；手机输入栏已有麦克风，浮球只会遮挡消息。
+      const isPhoneSized = Math.min(deviceMode.w, deviceMode.h) < 640;
+      const tabletVoiceMode = (deviceMode.touch || isTabletSized) && !isPhoneSized;
       const primaryVoiceDisabled = !bridge.available || voiceBusy;
       const primaryVoiceLabel = voiceInput.status === 'recording'
         ? t.voiceStop

@@ -311,6 +311,7 @@ pub async fn set_active_model(id: String) -> Result<(), String> {
 pub async fn set_session_model(
     session_id: String,
     model_id: Option<String>,
+    app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     if let Some(mid) = &model_id {
@@ -320,7 +321,9 @@ pub async fn set_session_model(
     }
     pool.switch_session_model(&session_id, model_id)
         .await
-        .map_err(|error| format!("set_session_model({session_id}): {error:#}"))
+        .map_err(|error| format!("set_session_model({session_id}): {error:#}"))?;
+    super::sessions::emit_session_event(&app, "session:model_changed", &session_id, "model");
+    Ok(())
 }
 
 /// 读取聊天 chip 应显示的模型 id。定时会话尚未手动切换时显示任务初始模型，

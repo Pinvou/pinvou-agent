@@ -87,7 +87,7 @@ function workspaceDisplayName(path) {
         <div data-tauri-drag-region
           className={`h-9 shrink-0 flex items-center justify-between select-none ${titleBarBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
           <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-[13px] font-medium pointer-events-none">
-            <img src="/assets/brand/brand-blue.png" width={18} height={18} alt="" className="select-none" />
+            <PinvouLogo className="h-[18px] w-[18px] select-none" />
             {t.appTitle}
           </div>
           <div className="flex items-center h-full">
@@ -481,6 +481,7 @@ function workspaceDisplayName(path) {
       const t = dict[language];
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
+      const isWebAccessConnected = !!(bs && bs.webAccess && bs.webAccess.web_client_connected);
       function handleOpenWebAccess() {
         if (!can('webAccessAdmin')) return;
         setWebAccessOpen(true);
@@ -958,11 +959,12 @@ function workspaceDisplayName(path) {
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
+        // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
+        setCurrentView('chat');
+        closeMobileSidebar();
         const switched = await bridge.sessions.switchToSession(id);
         if (!switched) return;
         setActiveChat(id);
-        setCurrentView('chat');
-        closeMobileSidebar();
       }
 
       async function handleSearchSelect(id) {
@@ -1490,7 +1492,7 @@ function workspaceDisplayName(path) {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'cardpool', 'toolStore', 'monitor', 'settings'];
+      const mobileMoreViews = ['search', 'knowledge', 'toolStore', 'settings'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1810,21 +1812,21 @@ function workspaceDisplayName(path) {
               <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
                 {!isSidebarOpen && (
                   <>
-                    <button
+                    {can('webAccessAdmin') && <button
                       onClick={handleOpenWebAccess}
                       title={t.uiRemote.title}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
-                      {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                    </button>
-                    <button
+                      {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                    </button>}
+                    {can('pet') && <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
                       title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
-                    </button>
+                    </button>}
                     <button
                       data-testid="nav-settings"
                       onClick={() => openSettingsSection('general')}
@@ -1850,21 +1852,21 @@ function workspaceDisplayName(path) {
                 )}
                 {isSidebarOpen && (
                   <div className="flex items-center gap-1">
-                    <button
+                    {can('webAccessAdmin') && <button
                       onClick={handleOpenWebAccess}
                       title={t.uiRemote.title}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
                     >
                       <Smartphone size={18} />
-                      {bs && bs.webAccess && bs.webAccess.active && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
-                    </button>
-                    <button
+                      {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
+                    </button>}
+                    {can('pet') && <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
                       title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
-                    </button>
+                    </button>}
                     <button
                       data-testid="nav-settings"
                       onClick={() => navigateFromScheduledRun('settings')}
@@ -2003,7 +2005,7 @@ function workspaceDisplayName(path) {
                 <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
                   <div className="flex items-center gap-2 mb-3">
-                    <img src="brand-blue.png" width={22} height={22} alt="" className="select-none" />
+                    <PinvouLogo className="h-[22px] w-[22px] select-none" />
                     <div className="text-[17px] font-semibold">{t.apiKeyGateTitle}</div>
                   </div>
                   <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.apiKeyGateDesc}</div>
@@ -2022,7 +2024,7 @@ function workspaceDisplayName(path) {
                 <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
                   <div className="flex items-center gap-2 mb-3">
-                    <img src="/assets/brand/brand-blue.png" width={22} height={22} alt="" className="select-none" />
+                    <PinvouLogo className="h-[22px] w-[22px] select-none" />
                     <div className="text-[17px] font-semibold">{vllmDeclineConfirm && !bs.vllmBootstrapping && !bs.vllmBootstrapDone && !bs.vllmBootstrapError ? t.vllmDeclineTitle : t.vllmSetupTitle}</div>
                   </div>
                   {bs.vllmBootstrapping ? (
@@ -2108,8 +2110,12 @@ function workspaceDisplayName(path) {
                 onClick: () => mobileNavigate('chat') },
               { key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
                 active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
-              { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
-                active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
+              { key: 'monitor', label: t.monitor, icon: <BarChart2 size={18} />,
+                active: currentView === 'monitor',
+                onClick: () => mobileNavigate('monitor', () => {
+                  const liveBridge = window.TauriBridge || bridge;
+                  if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
+                }) },
               { key: 'more', label: t.mobileMore, icon: <MoreHorizontal size={18} />,
                 active: mobileMoreActive, dot: hasUpdate || scheduledUnread,
                 onClick: () => setMobileMoreOpen(true) },
@@ -2123,14 +2129,8 @@ function workspaceDisplayName(path) {
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),
-              { key: 'monitor', label: t.monitor, icon: <BarChart2 size={18} />,
-                active: currentView === 'monitor',
-                onClick: () => mobileNavigate('monitor', () => {
-                  const liveBridge = window.TauriBridge || bridge;
-                  if (liveBridge && typeof liveBridge.startMonitorPolling === 'function') liveBridge.startMonitorPolling();
-                }) },
-              { key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
-                active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
+              { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
+                active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
               { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
                 active: currentView === 'toolStore', onClick: () => mobileNavigate('toolStore') },
               { key: 'settings', label: t.settings, icon: <Settings size={18} />,
@@ -2197,7 +2197,7 @@ function workspaceDisplayName(path) {
                 ? 'bg-gradient-to-br from-[#2c2c35] to-[#1a1a20] border-white/[0.08]'
                 : 'bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80'
             }`}>
-              <img src="/assets/brand/brand-blue.png" alt="" className="w-6 h-6 object-contain" />
+              <PinvouLogo className="h-6 w-6" />
             </div>
 
             <div className="flex flex-col justify-center flex-1 min-w-0">
