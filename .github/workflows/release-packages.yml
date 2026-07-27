@@ -372,7 +372,8 @@ jobs:
     needs: check-version-bump
     if: needs.check-version-bump.outputs.version_bumped == 'true'
     runs-on: macos-15
-    timeout-minutes: 50
+    # 首次双 target + fat LTO 实跑约 48 分钟，50 分钟几乎无 runner 抖动余量。
+    timeout-minutes: 90
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
