@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
 
@@ -138,16 +138,24 @@ const FEISHU_STEPS = [
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false, steps = FEISHU_STEPS }) => {
+    const DEFAULT_FLOW_COPY = {
+      incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
+      cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`,
+      browserOpened:'已打开浏览器登录页', browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开',
+      qrAlt:name=>`${name}二维码`, authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
+      scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
+      openBrowser:'在浏览器打开 ↗', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
+    };
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false, steps = FEISHU_STEPS, copy = DEFAULT_FLOW_COPY }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
         <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 overflow-hidden">
           <div className="flex items-center gap-3 px-5 pt-4 pb-2">
             <span className={`w-2 h-2 rounded-full ${isErr ? 'bg-rose-500' : 'bg-blue-500 animate-pulse'}`} />
-            <span className="font-semibold text-[14px] text-slate-900 dark:text-slate-100">{isErr ? `${name}接入未完成` : (flow.phase === 'done' ? `已连接${name}` : `正在接入${name}`)}</span>
+            <span className="font-semibold text-[14px] text-slate-900 dark:text-slate-100">{isErr ? copy.incomplete(name) : (flow.phase === 'done' ? copy.connected(name) : copy.connecting(name))}</span>
             <span className="flex-1" />
-            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">取消</button>}
+            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">{copy.cancel}</button>}
           </div>
           <div className="px-5 pb-4 space-y-1">
             {steps.map(s => {
@@ -158,8 +166,8 @@ const FEISHU_STEPS = [
                   <div className="pt-0.5"><FeishuStepIcon st={st} /></div>
                   <div className="flex-1 min-w-0">
                     <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-900 dark:text-slate-100'}`}>{s.label}</div>
-                    {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">解压中 {Math.round(flow.pct || 0)}%</div></>)}
-                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || 'npm: starting…'}</div><div className="text-[11px] text-slate-400 tabular-nums">已 {flow.sec || 0}s</div></div></>)}
+                    {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">{copy.extracting(Math.round(flow.pct || 0))}</div></>)}
+                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || 'npm: starting…'}</div><div className="text-[11px] text-slate-400 tabular-nums">{copy.elapsed(flow.sec || 0)}</div></div></>)}
                     {!active && <div className="text-[11.5px] text-slate-400">{s.sub}</div>}
                   </div>
                 </div>
@@ -171,15 +179,15 @@ const FEISHU_STEPS = [
               <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 px-4 py-3">
                 <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium text-[14px] text-slate-900 dark:text-slate-100">已打开浏览器登录页</div>
-                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">请在浏览器中扫码确认。未弹出时可重新打开。</div>
+                  <div className="font-medium text-[14px] text-slate-900 dark:text-slate-100">{copy.browserOpened}</div>
+                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">{copy.browserHint}</div>
                 </div>
                 {flow.qrUrl && (
                   <button
                     onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })}
                     className="shrink-0 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
                   >
-                    重新打开
+                    {copy.reopen}
                   </button>
                 )}
               </div>
@@ -188,17 +196,17 @@ const FEISHU_STEPS = [
           {flow.phase === 'qr' && !browserAuth && flow.qr && (
             <div className="px-5 pb-5">
               <div className="flex items-center gap-5 p-4 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10">
-                <img src={flow.qr} alt={`${name}二维码`} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />
+                <img src={flow.qr} alt={copy.qrAlt(name)} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />
                 <div>
-                  <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? '第 2 步 / 共 2 步：扫码授权' : '第 1 步 / 共 2 步：扫码注册应用') : `扫码登录${name}`}</div>
-                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">用{name} App 扫一扫 → 确认</div>
+                  <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? copy.authorizeStep : copy.registerStep) : copy.scanLogin(name)}</div>
+                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">{copy.scanHint(name)}</div>
                   {flow.userCode && (
                     <div className="mb-3 inline-flex flex-col gap-1 rounded-lg bg-slate-100 dark:bg-white/10 px-3 py-2">
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">页面验证码</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">{copy.userCode}</span>
                       <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
                     </div>
                   )}
-                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开 ↗</button>}
+                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{copy.openBrowser}</button>}
                 </div>
               </div>
             </div>
@@ -206,11 +214,11 @@ const FEISHU_STEPS = [
           {isErr && (
             <div className="px-5 pb-5">
               <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 p-3">
-                <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">连接未完成</div>
+                <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">{copy.connectionIncomplete}</div>
                 <pre className="text-[11.5px] leading-relaxed text-rose-800/80 dark:text-rose-200/70 whitespace-pre-wrap max-h-28 overflow-auto font-mono">{flow.err}</pre>
                 <div className="flex gap-2 mt-3 justify-end">
-                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">关闭</button>
-                  <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">重试</button>
+                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">{copy.close}</button>
+                  <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">{copy.retry}</button>
                 </div>
               </div>
             </div>
@@ -660,6 +668,7 @@ const FEISHU_STEPS = [
     const ToolStoreView = ({ theme, t, onNewChat }) => {
       const isDark = theme === 'dark';
       const storeCopy = t.uiToolStore;
+      const detailCopy = t.uiToolDetails;
       const externalAuthAvailable = canStartExternalAuth();
       const canMutateToolStore = can('toolStoreMutations');
       const [searchQuery, setSearchQuery] = useState('');
@@ -835,7 +844,7 @@ const FEISHU_STEPS = [
           if (ph !== prevPhase) {
             if (ph === 'done') {
               setTmeetConnected(true); setBusyId(null);
-              setAlert({ visible: true, loading: false, title: '已连接腾讯会议', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'tmeet' });
+              setAlert({ visible: true, loading: false, title: detailCopy.actions.connectedTmeet, subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'tmeet' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId(null);
@@ -875,7 +884,7 @@ const FEISHU_STEPS = [
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
       const CAT_BY_ID = { 1: 'life', 2: 'finance', 3: 'collab', 4: 'docs', 5: 'docs', 6: 'docs', 7: 'collab', 8: 'collab', 9: 'collab', 10: 'collab', 11: 'dev', 12: 'dev', 13: 'finance', 14: 'docs', 99: 'collab' };
-      const tools = tsToolsData.map(t => {
+      const tools = tsToolsData.map(baseTool => localizeTool(baseTool, t)).map(t => {
         const authState = t.oauthMcp && t.backendId ? toolAuthStates[t.backendId] : null;
         return {
           ...t,
@@ -1269,12 +1278,12 @@ const FEISHU_STEPS = [
         const clientId = (values.IMA_CLIENT_ID || '').trim();
         const apiKey = (values.IMA_API_KEY || '').trim();
         setBusyId('ima');
-        setAlert({ loading: true, visible: false, title: '正在连接「腾讯 ima」', subtitle: '正在校验 OpenAPI 凭证并启用 Skill…', isInstall: true, isError: false });
+        setAlert({ loading: true, visible: false, title: detailCopy.actions.connectingIma, subtitle: detailCopy.actions.validatingIma, isInstall: true, isError: false });
         try {
           await invokeTauri('ima_connect', { clientId, apiKey });
           await loadBackendState();
           setImaConnected(true);
-          setAlert({ visible: true, loading: false, title: '已连接「腾讯 ima」', subtitle: 'IMA OpenAPI Skill 已启用，可新建对话直接使用。', isInstall: true, isError: false, toolId: 'ima' });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.connectedIma, subtitle: detailCopy.actions.imaEnabled, isInstall: true, isError: false, toolId: 'ima' });
           if (selectedTool && selectedTool.backendId === 'ima') {
             setSelectedTool(prev => ({ ...prev, installed: true }));
           }
@@ -1282,7 +1291,7 @@ const FEISHU_STEPS = [
         } catch (e) {
           console.error('ima connect failed:', e);
           setImaConnected(false);
-          setAlert({ visible: true, loading: false, title: 'IMA 连接失败', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.imaFailed, subtitle: detailCopy.actions.operationFailed, isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1295,14 +1304,14 @@ const FEISHU_STEPS = [
           await invokeTauri('ima_logout');
           await loadBackendState();
           setImaConnected(false);
-          setAlert({ visible: true, loading: false, title: '已断开「腾讯 ima」', isInstall: false, isError: false });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.disconnectedIma, isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === 'ima') {
             setSelectedTool(prev => ({ ...prev, installed: false }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('ima logout failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: detailCopy.actions.operationFailed, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1483,11 +1492,11 @@ const FEISHU_STEPS = [
           await invokeTauri('tmeet_logout');
           await invokeTauri('tmeet_apply_skills').catch(() => {});
           setTmeetConnected(false);
-          setAlert({ visible: true, loading: false, title: '已断开腾讯会议', isInstall: false, isError: false });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.disconnectedTmeet, isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('tmeet logout failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -2015,7 +2024,7 @@ const FEISHU_STEPS = [
                     <FeishuFlowCard flow={dingtalkFlow} steps={DINGTALK_STEPS} name="钉钉" twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow} steps={TMEET_STEPS} name="腾讯会议" twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
+                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
                   )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">

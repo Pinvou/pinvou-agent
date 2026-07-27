@@ -1935,6 +1935,7 @@ function workspaceDisplayName(path) {
             {codexAcpSupported && currentView === 'codex' && (
               <CodexAcpView
                 theme={activeTheme}
+                t={t}
                 sessions={codexSessions}
                 activeId={activeCodexId}
                 draftEpoch={codexDraftEpoch}

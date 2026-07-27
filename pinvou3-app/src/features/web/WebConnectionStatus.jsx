@@ -19,7 +19,8 @@ export function WebConnectionStatus({ theme, t }) {
 
   const copy = t.uiWebConnection;
   const [title, fallback] = copy[connection.status] || copy.error;
-  const message = connection.message || fallback;
+  // 桌面端的已知状态可能携带旧版固定中文文案；界面统一使用当前语言字典。
+  const message = copy[connection.status] ? fallback : (connection.message || fallback);
   const dark = theme === 'dark';
   const card = (
     <div

@@ -1291,20 +1291,24 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
       const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
-      const baseCatalogGroups = MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud;
+      const localizeProvider = group => group
+        ? { ...group, ...(settingsCopy.providerCatalog[group.key] || {}) }
+        : null;
+      const baseCatalogGroups = (MODEL_CATALOG[modelScope] || MODEL_CATALOG.cloud).map(localizeProvider);
       const catalogGroups = !initial.__new && modelScope === 'cloud'
         ? baseCatalogGroups.filter(group => initialProvider ? group.key === initialProvider.key : group.preset === initial.preset)
         : baseCatalogGroups;
       const activeProvider = modelScope === 'cloud'
-        ? (CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
+        ? localizeProvider(CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
         : null;
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
-          let message = String(value.message || (value.ok ? '连接成功，服务可用' : '连接失败，请稍后重试'));
+          let message = settingsCopy.connectionMessages[code]
+            || (value.ok ? settingsCopy.connectionMessages.ok : settingsCopy.connectionMessages.unknown);
           if (isCodingPlanProvider && (code === 'endpoint_not_found' || code === 'method_not_allowed')) {
-            message = '当前厂商接口暂时无法完成测试，但不影响保存配置';
+            message = settingsCopy.codingPlanTestUnavailable;
           }
           return {
             ok: !!value.ok,
@@ -1320,20 +1324,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           const legacy = {
             ok: status >= 200 && status < 300,
             code: status === 401 ? 'auth_invalid' : status === 403 ? 'auth_forbidden' : status === 429 ? 'rate_limited' : 'http_error',
-            message: status === 401 ? 'API Key 无效，请检查后重新填写'
-              : status === 403 ? '当前 API Key 没有访问权限'
-                : status === 429 ? '请求过于频繁或额度不足，请稍后再试'
-                  : (status >= 200 && status < 300 ? '连接成功，服务可用' : '连接失败，请检查配置后重试'),
+            message: status === 401 ? settingsCopy.connectionMessages.auth_invalid
+              : status === 403 ? settingsCopy.connectionMessages.auth_forbidden
+                : status === 429 ? settingsCopy.connectionMessages.rate_limited
+                  : (status >= 200 && status < 300 ? settingsCopy.connectionMessages.ok : settingsCopy.connectionMessages.http_error),
             detail: `HTTP ${status}`,
           };
           if (isCodingPlanProvider && (status === 404 || status === 405)) {
             legacy.code = status === 404 ? 'endpoint_not_found' : 'method_not_allowed';
-            legacy.message = '当前厂商接口暂时无法完成测试，但不影响保存配置';
+            legacy.message = settingsCopy.codingPlanTestUnavailable;
           }
           return legacy;
         }
-        if (raw === 'ok') return { ok: true, code: 'ok', message: '连接成功，服务可用', detail: '' };
-        return { ok: false, code: 'unknown', message: raw || '连接失败，请稍后重试', detail: '' };
+        if (raw === 'ok') return { ok: true, code: 'ok', message: settingsCopy.connectionMessages.ok, detail: '' };
+        return { ok: false, code: 'unknown', message: settingsCopy.connectionMessages.unknown, detail: '' };
       }
       function applyCatalogItem(group, item) {
         const p = group.preset;
@@ -1430,8 +1434,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const selectedProvider = isLocalPreset ? presetProviderLabel(preset, t) : (activeProvider ? (activeProvider.configTitle || activeProvider.title) : presetProviderLabel(preset, t));
       const selectedModelLabel = model || settingsCopy.customModel;
       const modalTitle = initial.__new
-        ? (isCodingPlan ? `${t.modelFormAddTitle} · ${selectedProvider}` : t.modelFormAddTitle)
-        : (isCodingPlan ? `${t.modelFormEditTitle} · ${selectedProvider}` : t.modelFormEditTitle);
+        ? (isCodingPlan ? settingsCopy.addProvider(selectedProvider) : t.modelFormAddTitle)
+        : (isCodingPlan ? settingsCopy.editProvider(selectedProvider) : t.modelFormEditTitle);
       const saveName = name.trim() || (isLocalPreset ? settingsCopy.localModelName(model.trim()) : (model.trim() ? model.trim() : selectedProvider));
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
@@ -1621,7 +1625,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const renderCloudProviderPicker = () => {
         const bySection = ['coding_plan', 'official_api', 'custom'].map(section => ({
           section,
-          title: MODEL_CATALOG_SECTIONS[section],
+          title: settingsCopy.catalogSections[section] || MODEL_CATALOG_SECTIONS[section],
           groups: catalogGroups.filter(group => (group.section || 'official_api') === section),
         })).filter(item => item.groups.length > 0);
         return (
@@ -1698,17 +1702,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                   <ProviderIcon preset="local_vllm" isDark={isDark} compact />
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>自动检测本地模型</span>
-                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>检测 vLLM、Ollama、LM Studio</span>
+                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.autoDetectLocalModel}</span>
+                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.localDetectionTargets}</span>
                   </span>
                   <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
-                    className={`${actionClass} disabled:opacity-45`}>{localDetecting ? '检测中…' : (localDetectResult ? '重新检测' : '检测')}</button>
+                    className={`${actionClass} disabled:opacity-45`}>{localDetecting ? t.detectingLocalVllm : (localDetectResult ? settingsCopy.redetect : settingsCopy.detect)}</button>
                 </div>
                 {localDetectResult && localDetectResult.error && (
                   <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#F28B82]' : 'border-black/[0.10] text-[#C5221F]'}`}>{localDetectResult.error}</div>
                 )}
                 {localDetectResult && !localDetectResult.error && rows.length === 0 && (
-                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#98989D]' : 'border-black/[0.10] text-[#8A8A8E]'}`}>未检测到运行中的本地模型</div>
+                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#98989D]' : 'border-black/[0.10] text-[#8A8A8E]'}`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
                 {rows.map(row => (
                   <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
@@ -1718,7 +1722,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{row.label} · {row.base_url}</span>
                     </span>
                     <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
-                      className={actionClass}>添加</button>
+                      className={actionClass}>{settingsCopy.add}</button>
                   </div>
                 ))}
               </div>
@@ -1729,8 +1733,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'}`}>
                   <ProviderIcon preset="local_vllm" isDark={isDark} compact />
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>手动添加本地模型</span>
-                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>填写 API 地址和模型 ID</span>
+                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.manualLocalModel}</span>
+                    <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.manualLocalModelDesc}</span>
                   </span>
                   <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
                 </button>
@@ -1755,8 +1759,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className="px-5 pt-4">
                 <div className={`p-1 rounded-full grid grid-cols-2 gap-1 ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
                   {[
-                    { key: 'cloud', label: '云端模型' },
-                    { key: 'local', label: '本地模型' },
+                    { key: 'cloud', label: settingsCopy.cloudModels },
+                    { key: 'local', label: settingsCopy.localModels },
                   ].map(tab => (
                     <button key={tab.key} type="button" onClick={() => setPickerTab(tab.key)}
                       className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? (isDark ? 'bg-[#3A3A3C] text-[#F2F2F7]' : 'bg-white text-[#007AFF] shadow-sm') : (isDark ? 'text-[#C7C7CC]' : 'text-[#636366]')}`}>
@@ -1777,7 +1781,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{modalTitle}</h2>
-                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? 'Coding Plan · 工具调用' : selectedProvider + ' · ' + selectedModelLabel}`}</p>
+                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? `Coding Plan · ${settingsCopy.toolCalling}` : selectedProvider + ' · ' + selectedModelLabel}`}</p>
               </div>
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
             </div>
@@ -1848,7 +1852,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>需要 API Key</label>
+                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.apiKeyRequired}</label>
                         <button type="button" onClick={() => setLocalKeyEnabled(v => !v)}
                           className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : (isDark ? 'bg-[#3A3A3C]' : 'bg-[#D1D1D6]')}`}
                           aria-pressed={localKeyEnabled}>
@@ -1860,9 +1864,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                          placeholder={hasSavedKey ? '••••••••' : '输入 API Key'}
+                          placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                           className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
-                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? '隐藏' : '显示'}</button>
+                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
                   </div>
@@ -1874,7 +1878,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : 'text-[#FF3B30]') : (isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]')}`}>
-                        {testResult ? testResult.message : '保存前可测试服务是否可用'}
+                        {testResult ? testResult.message : settingsCopy.testBeforeSave}
                       </span>
                       <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
                         className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`}>

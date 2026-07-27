@@ -6,9 +6,9 @@ import { IosSegmentedControl } from '../../components/IosControls.jsx';
 const HOME_DESIGN_MODE_ENABLED = false;
 
 const HOME_MODE_OPTIONS = [
-  { key: 'work', label: '工作', Icon: Briefcase, testId: 'home-mode-work' },
-  { key: 'design', label: '设计', Icon: Palette, testId: 'home-mode-design', enabled: HOME_DESIGN_MODE_ENABLED },
-  { key: 'code', label: '代码', Icon: Code, testId: 'home-mode-code' },
+  { key: 'work', labelKey: 'work', Icon: Briefcase, testId: 'home-mode-work' },
+  { key: 'design', labelKey: 'design', Icon: Palette, testId: 'home-mode-design', enabled: HOME_DESIGN_MODE_ENABLED },
+  { key: 'code', labelKey: 'code', Icon: Code, testId: 'home-mode-code' },
 ];
 
 const CODE_AGENT_OPTIONS = [
@@ -22,10 +22,11 @@ export function HomeModeSwitcher({
   onChange,
   codeSupported = true,
   isDark = false,
+  copy = { work: '工作', design: '设计', code: '代码' },
 }) {
-  const visibleModes = HOME_MODE_OPTIONS.filter(option => (
-    option.enabled !== false && (option.key !== 'code' || codeSupported)
-  ));
+  const visibleModes = HOME_MODE_OPTIONS
+    .filter(option => option.enabled !== false && (option.key !== 'code' || codeSupported))
+    .map(option => ({ ...option, label: copy[option.labelKey] }));
   const activeMode = visibleModes.some(option => option.key === mode) ? mode : 'work';
   const visibleCodeAgents = CODE_AGENT_OPTIONS.filter(option => option.enabled);
 

@@ -8,7 +8,7 @@ import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../pe
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
-import { ArtifactCard, tsToolsData } from '../tools/tool-common.jsx';
+import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
@@ -48,7 +48,7 @@ const openChatExternalUrl = (url) => {
 const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const [hovered, setHovered] = useState(null);
-      const tool = tsToolsData.find(t => t.backendId === toolId);
+      const tool = localizeTool(tsToolsData.find(item => item.backendId === toolId), t);
       if (!tool || !tool.welcomeQueries) return null;
       const ToolIcon = tool.icon || Sparkles;
       return (
@@ -815,6 +815,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <ConversationTimeline
                     turns={conversationProjection.turns}
                     now={conversationNow}
+                    copy={t.uiConversation}
                     agentLabel="品悟"
                     assistantAvatar={(
                       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
@@ -966,6 +967,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 codeSupported={codeModeAvailable}
                 isDark={isDark}
                 onChange={onSwitchHomeMode}
+                copy={t.uiHomeMode}
               />
             )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
@@ -988,6 +990,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               dark={isDark}
               parsingLabel={t.attachParsing}
               failedLabel={t.attachFailed}
+              removeLabel={t.uiAttachments.remove}
               formatError={formatAttachmentError}
               className="mb-2 px-2"
             />
@@ -1083,6 +1086,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 now={conversationNow}
                 onRequestAttention={scrollChatToBottom}
                 className="mb-0.5"
+                copy={t.uiConversation}
               />
               <textarea
                 ref={composerRef}

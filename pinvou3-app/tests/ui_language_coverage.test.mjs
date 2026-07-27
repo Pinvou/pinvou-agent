@@ -21,6 +21,12 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiToolStore',
     'uiPet',
     'uiWebConnection',
+    'uiConversation',
+    'uiHomeMode',
+    'uiAttachments',
+    'uiCodex',
+    'uiCodexWorkspace',
+    'uiToolDetails',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
@@ -40,6 +46,7 @@ assert.match(main, /emit\(['"]ui:language_changed['"], \{ language: lang \}\)/);
 assert.match(main, /<ToolStoreView[^>]*t=\{t\}/);
 assert.match(main, /<WebConnectionStatus[^>]*t=\{t\}/);
 assert.match(main, /<SettingsErrorBoundary[^>]*t=\{t\}/);
+assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
 assert.match(main, /accountCopy\.settingsLoadFailed/);
 assert.doesNotMatch(main, />设置页加载失败</);
 
@@ -56,6 +63,7 @@ assert.match(scheduledTasks, /scheduledCopy\.runHistory/);
 assert.doesNotMatch(scheduledTasks, />立即运行</);
 assert.match(source('features/workflow/WorkflowView.jsx'), /t\.uiWorkflow/);
 assert.match(source('features/tools/ToolStoreView.jsx'), /const storeCopy = t\.uiToolStore/);
+assert.match(source('features/tools/ToolStoreView.jsx'), /localizeTool\(baseTool, t\)/);
 const settings = source('features/settings/SettingsView.jsx');
 assert.match(settings, /t\.uiSettings/);
 assert.match(settings, /const settingsCopy = t\.uiSettingsDetail/);
@@ -68,6 +76,16 @@ assert.match(chat, /chatCopy\.asrDownloadTitle/);
 assert.match(chat, /chatCopy\.memoryMeta/);
 assert.doesNotMatch(chat, />下载语音识别模型</);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
+const conversation = source('features/conversation/ConversationTimeline.jsx');
+assert.match(conversation, /conversationCopy\(copy\)/);
+assert.doesNotMatch(conversation, />等待授权</);
+const codex = source('features/codex/CodexAcpView.jsx');
+assert.match(codex, /const codexCopy = t\.uiCodex/);
+assert.match(codex, /copy=\{t\.uiConversation\}/);
+assert.match(codex, /copy=\{t\.uiCodexWorkspace\}/);
+const workspace = source('features/codex/CodexWorkspacePanel.jsx');
+assert.match(workspace, /\{copy\.title\}/);
+assert.doesNotMatch(workspace, />工作区</);
 const personas = source('features/personas/Personas.jsx');
 assert.match(personas, /label: t\.expertPoolIndividualTab/);
 assert.doesNotMatch(personas, /expertPoolIndividualTab \|\|/);
