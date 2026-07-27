@@ -293,7 +293,9 @@ jobs:
     # changes 在 push 时被 skip,需 !cancelled() 才能让本 job 不被连带 skip。
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用
+    # (GitHub 默认 6h,此处收紧到 45min,与 mac-build 的 50min 量级一致)。
+    timeout-minutes: 45
     env:
       # 测试编译不需要完整 debug info:line-tables-only 保留 panic 行号,
       # 编译提速 ~30%、target/cache 体积大减(限额内能容纳更多份)。
@@ -309,6 +311,7 @@ jobs:
 
       # pinvou3 编译链接的系统库(本地 pkg-config 实测:gtk/webkit/soup/rsvg/openssl/
       # X11×3/appindicator)。ubuntu runner 默认没装,否则 glib-sys 等 build script 失败。
+      # cmake:reqwest 0.13 的 rustls 改用 aws-lc-rs,其 build script 需 cmake + C 编译器。
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
@@ -317,7 +320,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config
+            build-essential pkg-config cmake
 
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
@@ -396,9 +399,13 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
-    timeout-minutes: 40
+    # 45min:aws-lc-sys(NASM 预生成对象)冷编译比纯 Rust 图更久。
+    timeout-minutes: 45
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
+      # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
+      AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
