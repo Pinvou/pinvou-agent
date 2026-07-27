@@ -384,9 +384,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          # 装双 target:tauri universal 构建内部跑两次 cargo(aarch64+x86_64)+ lipo 合并。
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      # 实际构建工具链由 src-tauri/rust-toolchain.toml 锁定；必须在该目录下把双 target
+      # 安装到 pinned toolchain。只给上面的 stable 引导工具链装 target 会导致 Tauri
+      # 切换到 pinned toolchain 后找不到 x86_64 target。
+      - name: 安装双 target (universal 构建)
+        working-directory: pinvou3-app/src-tauri
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
