@@ -3,7 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::remote_control::manager;

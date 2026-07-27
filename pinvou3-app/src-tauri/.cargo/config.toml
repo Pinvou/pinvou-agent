@@ -1,0 +1,21 @@
+# pinvou3-app/src-tauri 的 cargo 构建配置。
+#
+# 关于链接器加速(可选,不强制):
+# 本文件**不**硬编码 linker/rustflags——硬编码 `linker = "clang"` + `-fuse-ld=lld` 会强制
+# 每台开发/CI 机器都装 clang+lld,缺失就编译失败,跨平台维护成本高。
+#
+# 想在本地用更快的链接器,请把覆盖写进 `.cargo/config.local.toml`(该文件不入版本控制),
+# 示例(Linux,mold/lld 任选其一):
+#   [target.x86_64-unknown-linux-gnu]
+#   linker = "clang"
+#   rustflags = ["-C", "link-arg=-fuse-ld=lld"]   # 或 "-C", "link-arg=-fuse-ld=mold"
+#
+#   [target.aarch64-unknown-linux-gnu]
+#   linker = "clang"
+#   rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+#
+# macOS 不换链接器:Tauri 依赖 Apple ld 处理 framework,换 lld/zld 风险高于收益。
+# Windows 不换链接器:MSVC link.exe 是 WebView2/Com 的唯一稳定选项。
+#
+# 未来若团队统一约定要强制(如 CI 已确认装好 clang+lld),再把这些 rustflags 从
+# config.local.toml 提升回这里,并同步更新 CI 镜像。

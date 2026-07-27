@@ -1,0 +1,75 @@
+# cargo-deny 配置 —— pinvou3-app/src-tauri
+# 用法:`cargo deny check`(需 `cargo install cargo-deny`)。CI 在 pr-check.yml 里调用。
+# 四类检查:advisories(RUSTSEC 漏洞)、licenses(开源合规)、bans(重复 crate / 禁用 crate)、
+# sources(只允许 crates.io + 本地 path 依赖)。
+
+[graph]
+# 只检查本 crate 的依赖图(含 path 依赖 CodeWhale)。
+all-features = true
+
+[advisories]
+version = 2
+# CI 里 `cargo deny check advisories` 命中新漏洞就 fail;下面是已评估、暂不能在本仓修复的条目。
+# 真漏洞(anyhow RUSTSEC-2026-0190、crossbeam-epoch RUSTSEC-2026-0204)已通过 cargo update
+# 修掉(anyhow 1.0.104 / crossbeam-epoch 0.9.20),不再命中。
+ignore = [
+    # quick-xml DoS/ReDoS(解析恶意 XML 的二次复杂度/内存耗尽)。本仓 quick-xml 原经
+    # calamine 0.26(→0.31.0)与 plist/tauri(→0.39.4)传递引入;均已只读解析用户提供的
+    # xlsx/plist,非网络面 XML 输入,风险中等。
+    # calamine 已在依赖升级 PR(reqwest/sha2/calamine/tokio-tungstenite 安全升级)升到 0.36
+    # (→quick-xml 0.41+),消除了 calamine 这一路的 0.31.0。
+    # 剩余 quick-xml 0.39.4 由 plist 1.9.0(pinned 在 tauri 2.11)传递引入,plist 的
+    # quick-xml 是 ^0.39.2,< 0.40,本仓不可单独抬;等 tauri 升级带 plist 升级后自然消失。
+    # 暂按已知风险接受(本 ignore 仍命中 plist 那一路;calamine 一路已不再命中)。
+    "RUSTSEC-2026-0194", # quick-xml 二次复杂度(plist/tauri 传递,等上游 plist)
+    "RUSTSEC-2026-0195", # quick-xml NsReader 内存耗尽(plist/tauri 传递,等上游 plist)
+]
+# unmaintained 保留 "workspace":父 crate 依赖图比子模块深
+# (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
+# glib VariantStrIter(unsound)、number_prefix、proc-macro-error、unic-* 等良性/上游锁定
+# 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
+# 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
+unmaintained = "workspace"
+
+[licenses]
+version = 2
+# 允许的许可证白名单(宽松许可)。补充 MIT-0 / BSL-1.0 / NCSA / CDLA-Permissive-2.0:
+# 这些是 fastembed/ort/tauri 生态里出现的宽松许可,均允许商用、无 copyleft 传染。
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "BSL-1.0",       # Boost Software License(tauri 生态)
+    "NCSA",          # University of Illinois/NCSA(llvm/MLIR 相关)
+    "CDLA-Permissive-2.0", # Community Data License(fastembed/ort 模型元数据)
+]
+confidence-threshold = 0.8
+
+[bans]
+# 重复 crate 只 warn 不 fail:Tauri + CodeWhale 共享图里天然有上百个多版本(reqwest
+# 0.12/0.13、toml_edit×4 等),逐个去重是长期工程,不该卡 CI。单版本强制(multiple-versions
+# = "deny")会把每次依赖升级都变成破坏性事件。
+# 注意:[bans] 不支持 version 键(只有 [advisories]/[licenses] 支持)。
+multiple-versions = "warn"
+# wildcards 保留 "warn"(不能升 deny):本仓 3 个 CodeWhale 子模块依赖是
+# path = "../../CodeWhale/..." 形式(AGENTS.md §2 禁止给它们加版本约束),
+# cargo-deny 把无版本的 path 依赖判为 "wildcard"。升 deny 会把这 3 个**不可改**的
+# 子模块依赖直接 fail CI。warn 维持可见性,真正的 `dep = "*"` 版本通配仍会被报出。
+wildcards = "warn"
+highlight = "all"
+
+[sources]
+# 只允许 crates.io + 本地 path 依赖。禁止任何 git/未知 registry。
+# 注意:[sources] 不支持 version 键(只有 [advisories]/[licenses] 支持)。
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
