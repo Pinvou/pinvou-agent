@@ -49,7 +49,8 @@ function injectSource() {
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
-    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}];
+    let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
     let ARCHIVED_SESSIONS=[];
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
@@ -71,8 +72,16 @@ function injectSource() {
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
+        case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve(SESSIONS);
+        case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
+        case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
+        case 'get_codex_acp_timeline': return Promise.resolve([]);
+        case 'get_codex_acp_pending_permissions': return Promise.resolve([]);
+        case 'get_codex_acp_pending_elicitations': return Promise.resolve([]);
+        case 'list_codex_workspace': return Promise.resolve({entries:[]});
+        case 'get_codex_workspace_changes': return Promise.resolve({changes:[]});
         case 'list_archived_sessions': return Promise.resolve(ARCHIVED_SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
@@ -98,8 +107,9 @@ function injectSource() {
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
         case 'set_session_archived':
           if (args && args.archived) {
-            const session = SESSIONS.find(function(s){ return s.id === args.id; }) || { id: args.id, title: '第三季度财报分析', created_at: 1, updated_at: 9 };
+            const session = SESSIONS.find(function(s){ return s.id === args.id; }) || CODEX_SESSIONS.find(function(s){ return s.id === args.id; }) || { id: args.id, title: '第三季度财报分析', created_at: Date.now()-1000, updated_at: Date.now() };
             SESSIONS = SESSIONS.filter(function(s){ return s.id !== args.id; });
+            CODEX_SESSIONS = CODEX_SESSIONS.filter(function(s){ return s.id !== args.id; });
             ARCHIVED_SESSIONS = [Object.assign({}, session, { archived_at: '2026-07-21T10:00:00Z' })].concat(ARCHIVED_SESSIONS.filter(function(s){ return s.id !== args.id; }));
           } else {
             const archived = ARCHIVED_SESSIONS.find(function(s){ return s.id === args.id; });
@@ -246,6 +256,43 @@ async function expand(page) {
     !sidebarTaskFilterMenu.hasCurrentChat && !sidebarTaskFilterMenu.hasRegularChat,
     JSON.stringify(sidebarTaskFilterMenu));
   await page.keyboard.press('Escape'); await sleep(200);
+
+  // ①a-2 对话管理页必须按 Codex 会话类型路由，不能误走普通聊天 switchToSession。
+  await clickText(page, '查看全部'); await sleep(500);
+  const codexManagedOpen = await page.evaluate(() => {
+    const label = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
+    const row = label && label.closest('div[class*="cursor-pointer"]');
+    if (!row) return { found: false };
+    row.click();
+    return { found: true };
+  });
+  await sleep(500);
+  const codexManagedState = await page.evaluate(() => ({
+    view: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
+    activeId: localStorage.getItem('pinvou_codex_active_session'),
+  }));
+  rec('①a-2 对话管理页正确打开 Codex 会话',
+    codexManagedOpen.found && codexManagedState.view === 'codex' && codexManagedState.activeId === 'codex-1',
+    JSON.stringify({ ...codexManagedOpen, ...codexManagedState }));
+
+  await clickText(page, '查看全部'); await sleep(400);
+  await clickText(page, '批量管理'); await sleep(200);
+  await page.evaluate(() => {
+    const label = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
+    label && label.closest('div[class*="cursor-pointer"]')?.click();
+  });
+  await clickText(page, '收纳'); await sleep(700);
+  const codexBatchArchive = await page.evaluate(() => ({
+    invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'set_session_archived' && call.args.id === 'codex-1' && call.args.archived === true),
+    archived: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
+    activeId: localStorage.getItem('pinvou_codex_active_session'),
+  }));
+  rec('①a-3 批量收纳 Codex 会话等待后端成功并清除激活态',
+    codexBatchArchive.invoked && codexBatchArchive.archived && codexBatchArchive.activeId === null,
+    JSON.stringify(codexBatchArchive));
+  await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
   // ①b 工作流入口已合入专家池：从「专家池 > 专家团队」进入三省六部运行态，
   // 仍可停止并预填原需求重开。
@@ -803,7 +850,7 @@ async function expand(page) {
   });
   rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
-  // ⑤b 收纳成功 toast 的「前往查看」必须直达设置页数据管理，且按钮不折行。
+  // ⑤b 收纳成功 toast 的「前往查看」必须直达对话管理页并展开「已收纳」面板，且按钮不折行。
   await expand(page); await sleep(200);
   const archiveMenuOpened = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
@@ -830,20 +877,20 @@ async function expand(page) {
     return {
       opened: !!button,
       noWrap: !!rect && rect.width >= 74 && rect.height <= 34,
-      text: document.body.innerText.includes('已收纳到【设置-任务收纳】'),
+      text: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
     };
   });
   await clickText(page, '前往查看');
   await sleep(600);
   const archiveToastGoto = await page.evaluate(() => ({
     currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
-    title: [...document.querySelectorAll('h1')].some(node => (node.textContent || '').trim() === '数据管理'),
+    archivedTabVisible: document.body.innerText.includes('已收纳'),
     archivedVisible: document.body.innerText.includes('第三季度财报分析'),
     noSettingsError: !document.body.innerText.includes('设置页加载失败'),
   }));
-  rec('⑤b 收纳 toast 前往查看直达设置-数据管理且按钮不折行',
+  rec('⑤b 收纳 toast 前往查看直达对话管理-已收纳且按钮不折行',
     archiveMenuOpened && archiveToastBefore.opened && archiveToastBefore.noWrap && archiveToastBefore.text &&
-    archiveToastGoto.currentView === 'settings' && archiveToastGoto.title && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
+    archiveToastGoto.currentView === 'search' && archiveToastGoto.archivedTabVisible && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
     JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
 
   // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。

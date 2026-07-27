@@ -1,13 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
-import { ArchivedDeleteConfirmDialog } from '../../components/layout/NavigationComponents.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel } from '../../hooks/useBridge.js';
-import { formatSessionDate } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
@@ -1964,7 +1961,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, onRestoreArchived, onDeleteArchived, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const isDark = activeTheme === 'dark';
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
@@ -1990,10 +1987,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
       const [feedbackNotice, setFeedbackNotice] = useState('');
-      const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
-      const archivedSessions = (bs && bs.archivedSessions) || [];
       const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
@@ -2092,11 +2087,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         } catch (e) {
           setFeedbackStatus({ state: 'failed_validation', message: String(e), receipt: null });
         }
-      };
-      const confirmArchivedDelete = () => {
-        const id = archivedDeleteConfirm && archivedDeleteConfirm.id;
-        setArchivedDeleteConfirm(null);
-        if (id && onDeleteArchived) onDeleteArchived(id);
       };
       // 进设置页自动体检一次可选依赖装齐没; 之后用户可手动「重新检测」
       useEffect(() => {
@@ -2332,6 +2322,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme} options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
             </IOSRow>
           </IOSSection>
+          <IOSSection title={t.sidebarSection}>
+            <IOSRow label={t.sidebarDateGrouping} desc={t.sidebarDateGroupingDesc}>
+              <IOSSwitch checked={sidebarDateGrouping} onChange={onSidebarDateGroupingChange} />
+            </IOSRow>
+          </IOSSection>
           {canConfigureDesktopNotifications && (
           <IOSSection title={t.uiSettings.notifications}>
             <IOSRow label={t.uiSettings.taskNotice} desc={t.uiSettings.taskNoticeDesc}>
@@ -2452,16 +2447,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           )}
         </>
       );
-      const renderData = () => (
-        <IOSSection title={settingsCopy.hiddenTasks}>
-          {archivedSessions.length ? archivedSessions.map(s => (
-            <IOSRow key={s.id} label={s.title || t.newChat} desc={settingsCopy.archivedAt(formatSessionDate(s.archived_at || s.updated_at || s.created_at, language))}>
-              <button onClick={() => onRestoreArchived && onRestoreArchived(s.id)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.restore}</button>
-              <button onClick={() => setArchivedDeleteConfirm(s)} className={`shrink-0 text-[14px] px-3 py-1.5 rounded-full ${actionButton('red')}`}>{settingsCopy.delete}</button>
-            </IOSRow>
-          )) : <IOSRow label={settingsCopy.noHiddenTasks} desc={settingsCopy.noHiddenTasksDesc} />}
-        </IOSSection>
-      );
       const renderUpdate = () => {
         const upd = bs && bs.updateInfo;
         const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
@@ -2580,7 +2565,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (activeSection === 'search') return renderSearch();
         if (activeSection === 'memory') return renderMemory();
         if (activeSection === 'permissions') return renderPermissions();
-        if (activeSection === 'data') return renderData();
         if (activeSection === 'update') return renderUpdate();
         if (activeSection === 'help') return renderHelp();
         return renderGeneral();
@@ -2591,7 +2575,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         search: t.uiSettings.search,
         memory: t.uiSettings.memory,
         permissions: t.uiSettings.permissions,
-        data: t.uiSettings.data,
         update: t.uiSettings.update,
         help: t.uiSettings.help,
       }[activeSection] || t.uiSettings.general;
@@ -2725,7 +2708,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
-                <SectionButton id="data" icon={<Archive size={17} />} label={t.uiSettings.data} />
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />
               </div>
@@ -2827,15 +2809,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </div>
           )}
           {restartDialog && <RestartDialog type={restartDialog} />}
-          {archivedDeleteConfirm && createPortal(
-            <ArchivedDeleteConfirmDialog
-              theme={activeTheme}
-              t={t}
-              onCancel={() => setArchivedDeleteConfirm(null)}
-              onConfirm={confirmArchivedDelete}
-            />,
-            document.body
-          )}
           {feedbackOpen && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={closeFeedback}>
               <div

@@ -26,8 +26,30 @@ function formatSessionDate(ts, language) {
       return d.toLocaleDateString(L.locale, opts);
     }
 
-    // ==========================================
-    // Search View (Gemini Style)
-    // ==========================================
+    // 侧栏任务列表按日期堆叠:本地日历日 key(YYYY-MM-DD),无时间戳归 'unknown'
+    function localDateKey(ts) {
+      if (!ts) return 'unknown';
+      const d = new Date(typeof ts === 'number' ? ts : ts);
+      if (isNaN(d.getTime())) return 'unknown';
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
 
-export { formatSessionDate };
+    // 日期组标题:今天/昨天用相对词,其余落本地化日期(跨年带年份)
+    function formatDateGroupLabel(key, language) {
+      const L = {
+        zh: { today: '今天', yesterday: '昨天', unknown: '时间未知', locale: 'zh-CN' },
+        ja: { today: '今日', yesterday: '昨日', unknown: '日時不明', locale: 'ja-JP' },
+        en: { today: 'Today', yesterday: 'Yesterday', unknown: 'Unknown time', locale: 'en-US' },
+      }[language] || { today: 'Today', yesterday: 'Yesterday', unknown: 'Unknown time', locale: 'en-US' };
+      if (key === 'unknown') return L.unknown;
+      if (key === localDateKey(Date.now())) return L.today;
+      if (key === localDateKey(Date.now() - 86400000)) return L.yesterday;
+      const [y, m, d] = key.split('-').map(Number);
+      const date = new Date(y, m - 1, d);
+      const opts = y === new Date().getFullYear()
+        ? { month: 'short', day: 'numeric' }
+        : { year: 'numeric', month: 'short', day: 'numeric' };
+      return date.toLocaleDateString(L.locale, opts);
+    }
+
+export { formatSessionDate, localDateKey, formatDateGroupLabel };

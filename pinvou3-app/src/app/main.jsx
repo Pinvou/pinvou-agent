@@ -11,7 +11,8 @@ import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
-import { formatSessionDate } from '../shared/date-utils.js';
+import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
+import { runSessionBatch, sessionRoute } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
@@ -434,6 +435,8 @@ function workspaceDisplayName(path) {
       const [webAccessOpen, setWebAccessOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
       const [settingsInitialSection, setSettingsInitialSection] = useState('general');
+      // 收纳 toast「前往查看」→ 对话管理页并直接展开「已收纳」面板(一次性信号,SearchView 消费后复位)
+      const [searchShowArchived, setSearchShowArchived] = useState(false);
       const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
       const petSnapshotRef = useRef([]);
       const petSnapshotSequenceRef = useRef(0);
@@ -776,6 +779,8 @@ function workspaceDisplayName(path) {
       const [taskListSort, setTaskListSort] = useState('recent');
       const [taskFilterOpen, setTaskFilterOpen] = useState(false);
       const taskFilterRef = useRef(null);
+      // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
+      const [dateGroupOpen, setDateGroupOpen] = useState({});
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
@@ -839,6 +844,25 @@ function workspaceDisplayName(path) {
             : (b.updatedAt || b.pinnedAt);
           return String(bTime || '').localeCompare(String(aTime || ''));
         });
+
+      // 任务列表按日期堆叠:今天默认展开、以往默认折叠;组内顺序沿用上面的筛选+排序结果,
+      // 组间按日期倒序,无时间戳的落 'unknown' 组沉底。
+      const todayDateKey = localDateKey(Date.now());
+      const sidebarTaskGroups = [];
+      {
+        const byDate = new Map();
+        sidebarTaskHistory.forEach(chat => {
+          const key = localDateKey(chat.updatedAt || chat.pinnedAt);
+          if (!byDate.has(key)) byDate.set(key, []);
+          byDate.get(key).push(chat);
+        });
+        byDate.forEach((rows, key) => sidebarTaskGroups.push({ key, rows }));
+        sidebarTaskGroups.sort((a, b) => {
+          if (a.key === 'unknown') return 1;
+          if (b.key === 'unknown') return -1;
+          return b.key.localeCompare(a.key);
+        });
+      }
 
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
@@ -1217,7 +1241,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleArchiveSession(id) {
-        const chat = sidebarTaskHistory.find(c => c.id === id);
+        const chat = allSidebarTasks.find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
       }
 
@@ -1226,20 +1250,75 @@ function workspaceDisplayName(path) {
         const isCodexSession = archiveConfirm && archiveConfirm.taskKind === 'codex';
         setArchiveConfirm(null);
         if (id && bridge.available) {
-          if (isCodexSession) {
-            await invokeTauri('set_session_archived', { id, archived: true });
-            if (activeCodexId === id) updateActiveCodexSession(null);
-            await refreshCodexSessions().catch(() => {});
-          } else {
-            await bridge.sessions.archiveSession(id);
+          try {
+            const archived = await bridge.sessions.archiveSession(id);
+            if (archived === false) {
+              setSettingsToast(t.sessionBatchFailed(1));
+              return;
+            }
+            if (isCodexSession) {
+              if (activeCodexId === id) updateActiveCodexSession(null);
+              await refreshCodexSessions().catch(() => {});
+            }
+            setArchiveToast(true);
+          } catch (error) {
+            console.warn('archive session failed', error);
+            setSettingsToast(t.sessionBatchFailed(1));
           }
-          setArchiveToast(true);
         }
       }
 
       async function handleRestoreArchivedSession(id) {
         if (bridge.available) await bridge.sessions.restoreArchivedSession(id);
         await refreshCodexSessions().catch(() => {});
+      }
+
+      function sessionRowsForIds(ids) {
+        const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
+        return (ids || []).map(id => byId.get(id) || { id });
+      }
+
+      function reportBatchFailures(result) {
+        if (result.failed > 0) setSettingsToast(t.sessionBatchFailed(result.failed));
+      }
+
+      // 对话管理页批量操作:按会话类型分流并等待全部结果,避免未执行完成就误报成功。
+      async function handleBatchArchiveSessions(ids) {
+        if (!bridge.available || !ids || !ids.length) return;
+        const result = await runSessionBatch(sessionRowsForIds(ids), 'archive', {
+          archive: id => bridge.sessions.archiveSession(id),
+          archiveCodex: id => bridge.sessions.archiveSession(id),
+        });
+        const nextCodexSessions = await refreshCodexSessions().catch(() => null);
+        if (activeCodexId && Array.isArray(nextCodexSessions) && !nextCodexSessions.some(session => session.id === activeCodexId)) {
+          updateActiveCodexSession(null);
+        }
+        if (result.succeeded > 0) setArchiveToast(true);
+        reportBatchFailures(result);
+        return result;
+      }
+
+      async function handleBatchDeleteSessions(ids) {
+        if (!bridge.available || !ids || !ids.length) return;
+        const result = await runSessionBatch(sessionRowsForIds(ids), 'delete', {
+          delete: id => bridge.sessions.deleteSession(id),
+        });
+        const nextCodexSessions = await refreshCodexSessions().catch(() => null);
+        if (activeCodexId && Array.isArray(nextCodexSessions) && !nextCodexSessions.some(session => session.id === activeCodexId)) {
+          updateActiveCodexSession(null);
+        }
+        reportBatchFailures(result);
+        return result;
+      }
+
+      async function handleBatchRestoreArchived(ids) {
+        if (!bridge.available || !ids || !ids.length) return;
+        const result = await runSessionBatch(ids.map(id => ({ id })), 'restore', {
+          restore: id => bridge.sessions.restoreArchivedSession(id),
+        });
+        await refreshCodexSessions().catch(() => {});
+        reportBatchFailures(result);
+        return result;
       }
 
       useEffect(() => {
@@ -1414,6 +1493,11 @@ function workspaceDisplayName(path) {
         }
       }
 
+      // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
+      function handleSetSidebarDateGrouping(enabled) {
+        if (bridge.available) bridge.settings.saveSettings(buildFullSettings({ sidebar: { date_grouping: !!enabled } }));
+      }
+
       function buildAdvancedOverrides(overrides) {
         const baseAdvanced = (bs && bs.settings && bs.settings.advanced) ? bs.settings.advanced : {};
         const nextPreset = overrides.model_preset !== undefined ? overrides.model_preset : modelPreset;
@@ -1494,6 +1578,36 @@ function workspaceDisplayName(path) {
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
+      // 侧栏任务列表按日期折叠(默认开;settings.sidebar.date_grouping === false 时平铺)
+      const sidebarDateGrouping = !bs || !bs.settings || !bs.settings.sidebar || bs.settings.sidebar.date_grouping !== false;
+      // 日期分组/平铺两种布局共用的任务项渲染
+      const renderSidebarTaskItem = (chat) => (
+        <RecentItem
+          key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
+          chat={chat}
+          theme={activeTheme}
+          t={t}
+          active={chat.taskKind === 'codex'
+            ? activeCodexId === chat.id && currentView === 'codex'
+            : chat.scheduledRun
+              ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+              : activeChat === chat.id && currentView === 'chat'}
+          personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+          onSelect={chat.taskKind === 'codex'
+            ? handleSwitchCodexSession
+            : chat.scheduledRun
+              ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+              : handleSwitchSession}
+          onRename={handleRenameSession}
+          onDelete={handleDeleteSession}
+          onTogglePinned={handleToggleSessionPinned}
+          onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+          onArchive={handleArchiveSession}
+          dragging={chat.taskKind !== 'codex' && canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
+          onPickUp={chat.taskKind !== 'codex' && canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
+        />
+      );
+
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
@@ -1536,7 +1650,8 @@ function workspaceDisplayName(path) {
               onClose={() => setArchiveToast(false)}
               onView={() => {
                 setArchiveToast(false);
-                openSettingsSection('data');
+                setSearchShowArchived(true);
+                navigateFromScheduledRun('search');
               }}
             />,
             document.body
@@ -1710,25 +1825,35 @@ function workspaceDisplayName(path) {
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
                 <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
                   <div ref={taskFilterRef} className="relative mb-2">
-                    <div className={`h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold ${
+                    <div className={`group h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold ${
                       activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
                     }`}>
                       <span className="truncate">
                         {t.sidebarTaskList || '任务列表'} ({sidebarTaskHistory.length})
                       </span>
-                      <button
-                        type="button"
-                        data-testid="sidebar-task-filter"
-                        onClick={() => setTaskFilterOpen(v => !v)}
-                        title={t.sidebarTaskFilter || '筛选'}
-                        className={`w-7 h-7 -mr-2 shrink-0 rounded-full flex items-center justify-center transition-colors ${
-                          taskFilterOpen
-                            ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
-                            : (activeTheme === 'dark' ? 'hover:bg-[#282A2C]' : 'hover:bg-[#E1E5EA]')
-                        }`}
-                      >
-                        <Filter size={15} />
-                      </button>
+                      <span className="flex items-center">
+                        {/* 对话管理页入口:悬停任务列表行显现(触屏常显),替代原搜索入口 */}
+                        <button
+                          type="button"
+                          onClick={() => navigateFromScheduledRun('search')}
+                          className={`mr-1 h-6 px-2 shrink-0 rounded-full text-[12px] font-normal transition-opacity opacity-0 group-hover:opacity-100 max-sm:opacity-100 ${activeTheme === 'dark' ? 'text-[#A8C7FA] hover:bg-[#282A2C]' : 'text-[#0B57D0] hover:bg-[#E1E5EA]'}`}
+                        >
+                          {t.sidebarViewAll || '查看全部'}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="sidebar-task-filter"
+                          onClick={() => setTaskFilterOpen(v => !v)}
+                          title={t.sidebarTaskFilter || '筛选'}
+                          className={`w-7 h-7 -mr-2 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                            taskFilterOpen
+                              ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
+                              : (activeTheme === 'dark' ? 'hover:bg-[#282A2C]' : 'hover:bg-[#E1E5EA]')
+                          }`}
+                        >
+                          <Filter size={15} />
+                        </button>
+                      </span>
                     </div>
                     {taskFilterOpen && (
                       <div
@@ -1769,33 +1894,35 @@ function workspaceDisplayName(path) {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-0.5">
-                    {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map((chat) => (
-                      <RecentItem
-                        key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
-                        chat={chat}
-                        theme={activeTheme}
-                        t={t}
-                        active={chat.taskKind === 'codex'
-                          ? activeCodexId === chat.id && currentView === 'codex'
-                          : chat.scheduledRun
-                            ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
-                            : activeChat === chat.id && currentView === 'chat'}
-                        personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
-                        onSelect={chat.taskKind === 'codex'
-                          ? handleSwitchCodexSession
-                          : chat.scheduledRun
-                            ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
-                            : handleSwitchSession}
-                        onRename={handleRenameSession}
-                        onDelete={handleDeleteSession}
-                        onTogglePinned={handleToggleSessionPinned}
-                        onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
-                        onArchive={handleArchiveSession}
-                        dragging={chat.taskKind !== 'codex' && canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-                        onPickUp={chat.taskKind !== 'codex' && canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
-                      />
-                    )) : (
+                  <div className="space-y-1">
+                    {!sidebarDateGrouping ? (
+                      <div className="space-y-0.5">
+                        {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
+                          <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                            {t.sidebarTaskEmpty || '暂无任务'}
+                          </div>
+                        )}
+                      </div>
+                    ) : sidebarTaskGroups.length > 0 ? sidebarTaskGroups.map((group) => {
+                      const isOpen = dateGroupOpen[group.key] ?? (group.key === todayDateKey);
+                      return (
+                        <div key={group.key}>
+                          <button
+                            type="button"
+                            onClick={() => setDateGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                            className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                          >
+                            <span className="truncate">{formatDateGroupLabel(group.key, language)} ({group.rows.length})</span>
+                            <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                          </button>
+                          {isOpen && (
+                            <div className="mt-1 space-y-0.5">
+                              {group.rows.map(renderSidebarTaskItem)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }) : (
                       <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
                         {t.sidebarTaskEmpty || '暂无任务'}
                       </div>
@@ -1920,8 +2047,8 @@ function workspaceDisplayName(path) {
                   languageNeedsRestart={languageNeedsRestart}
                   bs={bs}
                   t={t}
-                  onRestoreArchived={handleRestoreArchivedSession}
-                  onDeleteArchived={handleDeleteSession}
+                  sidebarDateGrouping={sidebarDateGrouping}
+                  onSidebarDateGroupingChange={handleSetSidebarDateGrouping}
                   updateFocusTick={settingsUpdateFocusTick}
                   initialSection={settingsInitialSection}
                   onCloseSettings={() => navigateFromScheduledRun('chat')}
@@ -1958,7 +2085,29 @@ function workspaceDisplayName(path) {
                 onRemove={() => bridge.available && bridge.personas.unequipPersona()}
                 onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
             )}
-            {currentView === 'search' && <SearchView theme={activeTheme} history={chatHistory} t={t} onSelect={handleSwitchSession} />}
+            {currentView === 'search' && (
+              <SearchView
+                theme={activeTheme} history={allSidebarTasks} t={t} language={language}
+                activeId={activeChat}
+                activeCodexId={activeCodexId}
+                activeScheduledId={(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId) || ''}
+                archived={(bs && bs.archivedSessions) || []}
+                showArchived={searchShowArchived}
+                onShowArchivedConsumed={() => setSearchShowArchived(false)}
+                onSelect={handleSwitchSession}
+                onOpenCodex={handleSwitchCodexSession}
+                onOpenScheduledRun={handleOpenScheduledRunShortcut}
+                onRename={handleRenameSession}
+                onDelete={handleDeleteSession}
+                onTogglePinned={handleToggleSessionPinned}
+                onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+                onArchive={handleArchiveSession}
+                onArchiveMany={handleBatchArchiveSessions}
+                onDeleteMany={handleBatchDeleteSessions}
+                onRestoreArchived={handleRestoreArchivedSession}
+                onRestoreMany={handleBatchRestoreArchived}
+              />
+            )}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
             {can('webAccessAdmin') && webAccessOpen && (
@@ -2382,21 +2531,252 @@ function workspaceDisplayName(path) {
       );
     };
 
-    const SearchView = ({ theme, history, t, onSelect }) => {
+    // 对话管理页:上方搜索框,工具行「对话|已收纳」切换 + 批量管理,左侧日期栏,右侧对话列表。
+    // 已收纳与在线对话共用同一套日期分组/搜索/多选管线,仅数据源与行操作不同
+    // (在线:置顶/重命名/收纳/删除;已收纳:恢复/永久删除,按对话自身更新时间分组)。
+    // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
+    // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
+    const SearchView = ({ theme, history, t, language, activeId, activeCodexId, activeScheduledId, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
       const isDark = theme === 'dark';
       const [query, setQuery] = useState('');
+      const [selectedDate, setSelectedDate] = useState(null);
+      const [showArchived, setShowArchived] = useState(false);
+      const [batchMode, setBatchMode] = useState(false);
+      const [selectedIds, setSelectedIds] = useState(() => new Set());
+      const [batchDeleteConfirming, setBatchDeleteConfirming] = useState(false);
+      const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
+      const [listFilter, setListFilter] = useState('all'); // all | pinned | scheduled(仅对话面板生效,与侧栏任务列表同款)
+      const [listSort, setListSort] = useState('pinned_first'); // pinned_first | recent
+      const [filterOpen, setFilterOpen] = useState(false);
+      const filterRef = useRef(null);
       const inputRef = useRef(null);
-      const filtered = query
-        ? history.filter(h => h.title.toLowerCase().includes(query.toLowerCase()))
-        : history;
+      const listRef = useRef(null);
+      const groupRefs = useRef({});
+
+      // 收纳 toast「前往查看」的一次性信号:展开「已收纳」面板后立刻消费,避免下次进页又自动打开
+      useEffect(() => {
+        if (showArchivedProp) {
+          setShowArchived(true);
+          onShowArchivedConsumed && onShowArchivedConsumed();
+        }
+      }, [showArchivedProp]);
+
+      const archivedList = archived || [];
+      // 已收纳复用同一套日期分组管线:归一成 history 形状(updatedAt 取对话自身更新时间),
+      // 原始 DTO 挂 raw 供恢复/删除按钮取 archived_at 等信息
+      const archivedHistory = archivedList.map(s => ({
+        id: s.id,
+        title: s.title || t.newChat,
+        date: formatSessionDate(s.updated_at || s.created_at, language),
+        updatedAt: s.updated_at || s.created_at || '',
+        raw: s,
+      }));
+      // 筛选/排序与左侧任务列表同款(仅对话面板):全部/置顶/定时任务 + 置顶优先/最近更新
+      const searchFilterOptions = [
+        { id: 'all', label: t.sidebarTaskFilterAll },
+        { id: 'pinned', label: t.sidebarTaskFilterPinned },
+        { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
+      ];
+      const searchSortOptions = [
+        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
+        { id: 'recent', label: t.sidebarTaskSortRecent },
+      ];
+      const sourceHistory = (showArchived ? archivedHistory : (history || []))
+        .filter(c => {
+          if (showArchived || listFilter === 'all') return true;
+          if (listFilter === 'pinned') return !!c.pinned;
+          if (listFilter === 'scheduled') return c.taskKind === 'scheduled';
+          return true;
+        })
+        .sort((a, b) => {
+          if (showArchived || listSort === 'recent') {
+            return String(b.updatedAt || b.pinnedAt || '').localeCompare(String(a.updatedAt || a.pinnedAt || ''));
+          }
+          if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+          const aTime = a.pinned ? (a.pinnedAt || a.updatedAt) : (a.updatedAt || a.pinnedAt);
+          const bTime = b.pinned ? (b.pinnedAt || b.updatedAt) : (b.updatedAt || b.pinnedAt);
+          return String(bTime || '').localeCompare(String(aTime || ''));
+        });
+
+      // 筛选菜单:点外部/Escape 关闭(与侧栏筛选菜单同款交互)
+      useEffect(() => {
+        if (!filterOpen) return undefined;
+        const closeOnPointerDown = (event) => {
+          if (filterRef.current && !filterRef.current.contains(event.target)) setFilterOpen(false);
+        };
+        const closeOnEscape = (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setFilterOpen(false);
+          }
+        };
+        document.addEventListener('pointerdown', closeOnPointerDown);
+        window.addEventListener('keydown', closeOnEscape);
+        return () => {
+          document.removeEventListener('pointerdown', closeOnPointerDown);
+          window.removeEventListener('keydown', closeOnEscape);
+        };
+      }, [filterOpen]);
+
+      // 按本地日历日分组:组内时间倒序,组间日期倒序,无时间戳落 'unknown' 沉底
+      const dateGroups = [];
+      {
+        const byDate = new Map();
+        // sourceHistory 已按当前面板排好序(置顶优先/最近更新),组内顺序即排序结果
+        sourceHistory.forEach(chat => {
+          const key = localDateKey(chat.updatedAt);
+          if (!byDate.has(key)) byDate.set(key, []);
+          byDate.get(key).push(chat);
+        });
+        byDate.forEach((rows, key) => dateGroups.push({ key, rows }));
+        dateGroups.sort((a, b) => {
+          if (a.key === 'unknown') return 1;
+          if (b.key === 'unknown') return -1;
+          return b.key.localeCompare(a.key);
+        });
+      }
+      // 'all' = 全部日期;未选或所选日期已不存在时,默认落在最近一天
+      const activeDate = selectedDate === 'all'
+        ? 'all'
+        : dateGroups.some(g => g.key === selectedDate)
+          ? selectedDate
+          : (dateGroups[0] ? dateGroups[0].key : null);
+
+      const q = query.trim().toLowerCase();
+      const searching = q.length > 0;
+      const matchedGroups = searching
+        ? dateGroups
+            .map(g => ({ key: g.key, rows: g.rows.filter(c => c.title.toLowerCase().includes(q)) }))
+            .filter(g => g.rows.length > 0)
+        : dateGroups;
+      // 左侧日期栏:搜索时只保留有匹配项的日期
+      const railGroups = searching ? matchedGroups : dateGroups;
+      const railTotal = railGroups.reduce((n, g) => n + g.rows.length, 0);
+      const activeGroup = dateGroups.find(g => g.key === activeDate) || null;
+
+      // 当前右侧可见的会话 id(全选范围):搜索态=全部匹配,否则=所选日期(或「全部」)的分组
+      const visibleGroups = searching ? matchedGroups : (activeDate === 'all' ? dateGroups : (activeGroup ? [activeGroup] : []));
+      const visibleIds = visibleGroups.flatMap(g => g.rows.map(c => c.id));
+      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
+
+      const exitBatch = () => { setBatchMode(false); setSelectedIds(new Set()); setBatchDeleteConfirming(false); };
+      const toggleSelect = (id) => setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+      });
+      const toggleSelectAll = () => setSelectedIds(allVisibleSelected ? new Set() : new Set(visibleIds));
+      const switchPanel = (toArchived) => { setShowArchived(toArchived); exitBatch(); };
+      const runBatchArchive = () => { if (onArchiveMany) onArchiveMany(Array.from(selectedIds)); exitBatch(); };
+      const runBatchDelete = () => { if (onDeleteMany) onDeleteMany(Array.from(selectedIds)); exitBatch(); };
+      const runBatchRestore = () => { if (onRestoreMany) onRestoreMany(Array.from(selectedIds)); exitBatch(); };
+
+      const handlePickDate = (key) => {
+        setSelectedDate(key);
+        if (!searching) return;
+        // 搜索态:右侧是全部匹配的长列表,点击日期滚动到对应分组,「全部」回顶部
+        const container = listRef.current;
+        if (!container) return;
+        if (key === 'all') { container.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+        const el = groupRefs.current[key];
+        if (el) container.scrollTo({ top: el.offsetTop, behavior: 'smooth' });
+      };
+
+      const renderChatRow = (chat) => {
+        if (batchMode) {
+          const selected = selectedIds.has(chat.id);
+          return (
+            <div
+              key={chat.id}
+              onClick={() => toggleSelect(chat.id)}
+              className={`flex items-center gap-3 px-4 py-[10px] cursor-pointer rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
+            >
+              <span className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
+                selected
+                  ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
+                  : (isDark ? 'border-[#5F6368]' : 'border-[#C4C7C5]')
+              }`}>
+                {selected && <Check size={13} />}
+              </span>
+              {chat.pinned && <PinIcon size={12} className={`shrink-0 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
+              <span className={`flex-1 min-w-0 truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.title}</span>
+              <span className={`text-[13px] shrink-0 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{chat.date}</span>
+            </div>
+          );
+        }
+        if (showArchived) {
+          // 已收纳行:恢复 / 永久删除(删除走 ArchivedDeleteConfirmDialog 二次确认)
+          const s = chat.raw || chat;
+          return (
+            <div
+              key={chat.id}
+              className={`flex items-center gap-2 px-4 py-[12px] rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
+            >
+              <span className="flex-1 min-w-0 pr-2">
+                <span className={`block truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.title}</span>
+                <span className={`block truncate text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                  {t.searchArchivedAt(formatSessionDate(s.archived_at || s.updated_at || s.created_at, language))}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => onRestoreArchived && onRestoreArchived(chat.id)}
+                className={`shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]'}`}
+              >
+                {t.searchRestore}
+              </button>
+              <button
+                type="button"
+                onClick={() => setArchivedDeleteConfirm(s)}
+                className={`shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
+              >
+                {t.cpDelete}
+              </button>
+            </div>
+          );
+        }
+        // 与左侧任务列表同款行项目:置顶/重命名/删除/收纳/打开文件夹/右键菜单;
+        // 定时任务运行项点按进入运行会话(与侧栏一致)
+        const route = sessionRoute(chat);
+        return (
+          <RecentItem
+            key={chat.id}
+            chat={chat}
+            theme={theme}
+            t={t}
+            active={route === 'codex'
+              ? chat.id === activeCodexId
+              : route === 'scheduled'
+                ? chat.id === activeScheduledId
+                : chat.id === activeId}
+            personaTarget={false}
+            onSelect={route === 'codex'
+              ? () => onOpenCodex && onOpenCodex(chat.id)
+              : route === 'scheduled'
+                ? () => onOpenScheduledRun && onOpenScheduledRun(chat.scheduledRun)
+                : onSelect}
+            onRename={onRename}
+            onDelete={onDelete}
+            onTogglePinned={onTogglePinned}
+            onOpenFolder={onOpenFolder}
+            onArchive={onArchive}
+          />
+        );
+      };
+
+      const renderDateHeader = (key) => (
+        <div className={`px-4 pt-4 pb-1 text-[13px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+          {formatDateGroupLabel(key, language)}
+        </div>
+      );
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pt-16 pb-20">
-            <div className="max-w-[768px] mx-auto flex flex-col">
+          <div className="flex-1 min-h-0 flex flex-col px-6 pt-16 pb-6">
+            <div className="max-w-[960px] w-full mx-auto flex flex-col flex-1 min-h-0 relative">
 
               {/* Centered Search Bar */}
-              <div className={`flex items-center gap-3 px-6 py-4 rounded-full mb-10 transition-colors ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
+              <div className={`shrink-0 flex items-center gap-3 px-6 py-4 rounded-full mb-4 transition-colors ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
                 <Search size={22} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
                 <input
                   ref={inputRef}
@@ -2419,27 +2799,240 @@ function workspaceDisplayName(path) {
                 ) : null}
               </div>
 
-              {/* List Section */}
-              <div className={`text-[14px] font-medium mb-3 px-4 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                {t.recent}
+              {/* 工具行:「对话|已收纳」切换(批量模式下换成全选) + 批量管理开关;与搜索框同宽对齐 */}
+              <div className="shrink-0 h-9 mb-2 flex items-center justify-between">
+                {batchMode ? (
+                  <button
+                    type="button"
+                    onClick={toggleSelectAll}
+                    className={`h-8 px-2 flex items-center gap-2 rounded-full text-[13px] transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
+                  >
+                    <span className={`w-4 h-4 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
+                      allVisibleSelected
+                        ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
+                        : (isDark ? 'border-[#5F6368]' : 'border-[#C4C7C5]')
+                    }`}>
+                      {allVisibleSelected && <Check size={11} />}
+                    </span>
+                    <span>{t.searchSelectAll} · {t.searchSelectedCount(selectedIds.size)}</span>
+                  </button>
+                ) : (
+                  <div className={`flex items-center gap-0.5 p-0.5 rounded-full ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+                    {[{ key: false, label: t.searchPanelChats }, { key: true, label: `${t.searchArchivedEntry} (${archivedList.length})` }].map(tab => (
+                      <button
+                        key={String(tab.key)}
+                        type="button"
+                        onClick={() => switchPanel(tab.key)}
+                        className={`h-7 px-3 rounded-full text-[13px] font-medium transition-colors ${
+                          showArchived === tab.key
+                            ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#1F1F1F] shadow-sm')
+                            : (isDark ? 'text-[#C4C7C5]' : 'text-[#444746]')
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center gap-1">
+                  {!showArchived && (
+                    <div ref={filterRef} className="relative">
+                      <button
+                        type="button"
+                        title={t.sidebarTaskFilter}
+                        onClick={() => setFilterOpen(v => !v)}
+                        className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                          filterOpen || listFilter !== 'all' || listSort !== 'pinned_first'
+                            ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
+                            : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                        }`}
+                      >
+                        <Filter size={15} />
+                      </button>
+                      {filterOpen && (
+                        <div className={`absolute right-0 top-9 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${isDark ? 'border-white/10 bg-[#202124]' : 'border-black/10 bg-white'}`}>
+                          <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                            {t.sidebarTaskFilter}
+                          </div>
+                          {searchFilterOptions.map(option => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() => setListFilter(option.id)}
+                              className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
+                            >
+                              <span className="w-4 shrink-0">{listFilter === option.id && <Check size={13} />}</span>
+                              <span className="truncate">{option.label}</span>
+                            </button>
+                          ))}
+                          <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
+                          <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                            {t.sidebarTaskSort}
+                          </div>
+                          {searchSortOptions.map(option => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() => setListSort(option.id)}
+                              className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
+                            >
+                              <span className="w-4 shrink-0">{listSort === option.id && <Check size={13} />}</span>
+                              <span className="truncate">{option.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}
+                    className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${
+                      batchMode
+                        ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
+                        : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                    }`}
+                  >
+                    {batchMode ? t.searchBatchDone : t.searchBatchManage}
+                  </button>
+                </div>
               </div>
 
-              <div className="flex flex-col">
-                {filtered.map(chat => (
-                  <div
-                    key={chat.id}
-                    onClick={() => onSelect && onSelect(chat.id)}
-                    className={`flex justify-between items-center px-4 py-[14px] cursor-pointer rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
+              {/* 主体:左日期栏 + 右对话列表 */}
+              <div className="flex-1 min-h-0 flex gap-2">
+                {/* 日期栏(跟随「对话|已收纳」切换的数据集) */}
+                <div className="w-[150px] max-sm:w-[112px] shrink-0 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handlePickDate('all')}
+                    className={`w-full h-9 px-3 shrink-0 flex items-center justify-between gap-2 rounded-[12px] text-[13px] transition-colors ${
+                      activeDate === 'all'
+                        ? (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] font-medium' : 'bg-[#F0F4F9] text-[#1F1F1F] font-medium')
+                        : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                    }`}
                   >
-                    <span className={`text-[15px] truncate pr-4 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-                      {chat.title}
-                    </span>
-                    <span className={`text-[13px] shrink-0 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                      {chat.date}
-                    </span>
-                  </div>
-                ))}
+                    <span className="truncate">{t.searchDateAll}</span>
+                    <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{railTotal}</span>
+                  </button>
+                  {railGroups.map(g => {
+                    const active = g.key === activeDate;
+                    return (
+                      <button
+                        key={g.key}
+                        type="button"
+                        onClick={() => handlePickDate(g.key)}
+                        className={`w-full h-9 px-3 shrink-0 flex items-center justify-between gap-2 rounded-[12px] text-[13px] transition-colors ${
+                          active
+                            ? (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] font-medium' : 'bg-[#F0F4F9] text-[#1F1F1F] font-medium')
+                            : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                        }`}
+                      >
+                        <span className="truncate">{formatDateGroupLabel(g.key, language)}</span>
+                        <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{g.rows.length}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 对话列表:「对话|已收纳」共用日期分组渲染,仅行项目不同 */}
+                <div ref={listRef} className="relative flex-1 min-w-0 overflow-y-auto custom-scrollbar">
+                  {showArchived && archivedList.length === 0 && !searching ? (
+                    <div className={`px-4 py-10 text-center text-[14px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                      {t.searchArchivedEmpty}
+                    </div>
+                  ) : searching ? (
+                    matchedGroups.length > 0 ? matchedGroups.map(g => (
+                      <div key={g.key} ref={el => { if (el) groupRefs.current[g.key] = el; }}>
+                        {renderDateHeader(g.key)}
+                        {g.rows.map(renderChatRow)}
+                      </div>
+                    )) : (
+                      <div className={`px-4 py-10 text-center text-[14px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                        {t.searchNoResults}
+                      </div>
+                    )
+                  ) : (
+                    activeDate === 'all' ? dateGroups.map(g => (
+                      <div key={g.key}>
+                        {renderDateHeader(g.key)}
+                        {g.rows.map(renderChatRow)}
+                      </div>
+                    )) : (
+                      activeGroup && (
+                        <div>
+                          {renderDateHeader(activeGroup.key)}
+                          {activeGroup.rows.map(renderChatRow)}
+                        </div>
+                      )
+                    )
+                  )}
+                </div>
               </div>
+
+              {/* 批量操作条:多选模式下吸附底部(在线=收纳/删除,已收纳=恢复/删除) */}
+              {batchMode && (
+                <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 pl-4 pr-2 py-2 rounded-full shadow-xl border ${isDark ? 'bg-[#202124] border-white/10' : 'bg-white border-black/10'}`}>
+                  <span className={`text-[13px] whitespace-nowrap ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                    {t.searchSelectedCount(selectedIds.size)}
+                  </span>
+                  {batchDeleteConfirming ? (
+                    <span className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                      <span className={`text-[13px] whitespace-nowrap ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
+                      <button
+                        type="button"
+                        title={t.riDelConfirm}
+                        disabled={selectedIds.size === 0}
+                        onClick={runBatchDelete}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
+                      >
+                        <Check size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        title={t.cpCancel}
+                        onClick={() => setBatchDeleteConfirming(false)}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}
+                      >
+                        <X size={14} />
+                      </button>
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={selectedIds.size === 0}
+                        onClick={showArchived ? runBatchRestore : runBatchArchive}
+                        className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 ${isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]'}`}
+                      >
+                        {showArchived ? t.searchRestore : t.archiveSession}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={selectedIds.size === 0}
+                        onClick={() => setBatchDeleteConfirming(true)}
+                        className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
+                      >
+                        {t.cpDelete}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* 永久删除已收纳对话(二次确认,沿用原设置页同款弹窗) */}
+              {archivedDeleteConfirm && createPortal(
+                <ArchivedDeleteConfirmDialog
+                  theme={theme}
+                  t={t}
+                  onCancel={() => setArchivedDeleteConfirm(null)}
+                  onConfirm={() => {
+                    const id = archivedDeleteConfirm.id;
+                    setArchivedDeleteConfirm(null);
+                    if (id && onDelete) onDelete(id);
+                  }}
+                />,
+                document.body
+              )}
 
             </div>
           </div>
