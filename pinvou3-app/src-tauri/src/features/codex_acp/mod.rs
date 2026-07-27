@@ -1514,17 +1514,17 @@ fn codex_path_for_adapter(adapter: &Path) -> Option<PathBuf> {
 
 fn resolve_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PINVOU3_CODEX_ACP_BIN").map(PathBuf::from) {
-        if path.is_file() {
+        if nonempty_file(&path) {
             return Some(path);
         }
     }
     if let Some(path) = bundled {
-        if path.is_file() {
+        if nonempty_file(path) {
             return Some(path.to_path_buf());
         }
     }
     let managed = managed_adapter_path();
-    if managed.is_file() {
+    if nonempty_file(&managed) {
         return Some(managed);
     }
     find_in_path(if crate::platform::capabilities::is_windows() {
@@ -1538,7 +1538,12 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| nonempty_file(candidate))
+}
+
+fn nonempty_file(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
 fn installed_node_version(node: &Path) -> Option<String> {
@@ -1609,6 +1614,20 @@ mod tests {
         assert_eq!(node_major_version("20.18.1"), Some(20));
         assert_eq!(node_major_version("v20.18.1"), None);
         assert_eq!(node_major_version("unknown"), None);
+    }
+
+    #[test]
+    fn empty_adapter_file_is_not_treated_as_installed() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-codex-adapter-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create adapter test directory");
+        let adapter = root.join("codex-acp.js");
+        std::fs::File::create(&adapter).expect("empty adapter");
+        assert!(!nonempty_file(&adapter));
+        std::fs::write(&adapter, "console.log('ok');").expect("write adapter");
+        assert!(nonempty_file(&adapter));
+        std::fs::remove_dir_all(root).expect("cleanup adapter test directory");
     }
 
     #[test]

@@ -7,12 +7,24 @@ OUT_DIR="$APP_DIR/src-tauri/resources/platforms/linux/codex-bridge"
 
 NODE_VERSION="22.22.0"
 CODEX_ACP_VERSION="1.1.5"
+CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 
-READY_NODE="$OUT_DIR/node/bin/node"
-READY_ENTRY="$OUT_DIR/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
-if [ -x "$READY_NODE" ] && [ -f "$READY_ENTRY" ] \
-  && "$READY_NODE" "$READY_ENTRY" --version >/dev/null 2>&1; then
+bridge_runtime_valid() {
+  local root="$1"
+  local node="$root/node/bin/node"
+  local entry="$root/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
+  local package_json="$root/acp/node_modules/@agentclientprotocol/codex-acp/package.json"
+  local version_output
+  [ -x "$node" ] && [ -s "$entry" ] && [ -s "$package_json" ] || return 1
+  version_output="$(
+    env CODEX_PATH="$(command -v codex || true)" \
+      "$node" "$entry" --version 2>/dev/null
+  )" || return 1
+  [ "$version_output" = "$CODEX_ACP_PACKAGE $CODEX_ACP_VERSION" ]
+}
+
+if bridge_runtime_valid "$OUT_DIR"; then
   echo "Codex ACP Bridge already ready: $OUT_DIR"
   exit 0
 fi
@@ -39,7 +51,11 @@ for command_name in curl sha256sum tar; do
   }
 done
 
-BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pinvou3-codex-bridge.XXXXXX")"
+# Node 解压与 npm 安装需要数百 MB。把 staging 放到资源目录同一文件系统，
+# 避免容量较小的 /tmp 留下半成品，也让最终目录切换只做同盘 rename。
+RESOURCE_PARENT="$(dirname "$OUT_DIR")"
+mkdir -p "$RESOURCE_PARENT"
+BUILD_DIR="$(mktemp -d "$RESOURCE_PARENT/.codex-bridge-build.XXXXXX")"
 trap 'rm -rf -- "$BUILD_DIR"' EXIT
 
 NODE_ARCHIVE="node-v${NODE_VERSION}-${NODE_TARGET}.tar.xz"
@@ -79,14 +95,13 @@ if find "$ACP_ROOT/node_modules/@openai" -maxdepth 1 -mindepth 1 \
   exit 1
 fi
 
-rm -rf -- "$OUT_DIR/node" "$OUT_DIR/acp"
-rm -f -- "$OUT_DIR/manifest.json"
-mkdir -p "$OUT_DIR/node/bin" "$OUT_DIR/acp"
-install -m 0755 "$NODE_DIST_ROOT/bin/node" "$OUT_DIR/node/bin/node"
-install -m 0644 "$NODE_DIST_ROOT/LICENSE" "$OUT_DIR/node/LICENSE"
-mv -- "$ACP_ROOT/node_modules" "$OUT_DIR/acp/node_modules"
+READY_DIR="$BUILD_DIR/ready"
+mkdir -p "$READY_DIR/node/bin" "$READY_DIR/acp"
+install -m 0755 "$NODE_DIST_ROOT/bin/node" "$READY_DIR/node/bin/node"
+install -m 0644 "$NODE_DIST_ROOT/LICENSE" "$READY_DIR/node/LICENSE"
+mv -- "$ACP_ROOT/node_modules" "$READY_DIR/acp/node_modules"
 
-"$OUT_DIR/node/bin/node" -e '
+"$READY_DIR/node/bin/node" -e '
 const fs = require("fs");
 const path = require("path");
 const out = process.argv[1];
@@ -101,13 +116,27 @@ const manifest = {
   requires_codex_path: true
 };
 fs.writeFileSync(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
-' "$OUT_DIR" "$NODE_VERSION" "$CODEX_ACP_VERSION"
+' "$READY_DIR" "$NODE_VERSION" "$CODEX_ACP_VERSION"
 
-env CODEX_PATH="$(command -v codex || true)" \
-  "$OUT_DIR/node/bin/node" \
-  "$OUT_DIR/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js" \
-  --version
+bridge_runtime_valid "$READY_DIR" || {
+  echo "生成的 Codex ACP Bridge 未通过完整性检查" >&2
+  exit 1
+}
 
-test -x "$OUT_DIR/node/bin/node"
-test -f "$OUT_DIR/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
+mkdir -p "$OUT_DIR"
+rm -rf -- "$OUT_DIR/node.next" "$OUT_DIR/acp.next"
+rm -f -- "$OUT_DIR/manifest.json.next"
+mv -- "$READY_DIR/node" "$OUT_DIR/node.next"
+mv -- "$READY_DIR/acp" "$OUT_DIR/acp.next"
+mv -- "$READY_DIR/manifest.json" "$OUT_DIR/manifest.json.next"
+rm -rf -- "$OUT_DIR/node" "$OUT_DIR/acp"
+rm -f -- "$OUT_DIR/manifest.json"
+mv -- "$OUT_DIR/node.next" "$OUT_DIR/node"
+mv -- "$OUT_DIR/acp.next" "$OUT_DIR/acp"
+mv -- "$OUT_DIR/manifest.json.next" "$OUT_DIR/manifest.json"
+
+bridge_runtime_valid "$OUT_DIR" || {
+  echo "Codex ACP Bridge 安装后完整性检查失败" >&2
+  exit 1
+}
 echo "Codex ACP Bridge ready: $OUT_DIR"
