@@ -66,7 +66,7 @@ Pinvou Agent 按“业务功能优先、平台适配次之”组织：
 - `pinvou3-app/`：Tauri 2 + React/Vite 桌面应用与 Engine wrapper。
 - `CodeWhale/`：Pinvou/CodeWhale submodule，改动遵循“CodeWhale 与 fork 边界”。
 - 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge）。
-- bundle 扩展源码在 `pinvou3-app/src-tauri/resources/common/bundle/`，编译进应用并释放到 `~/.pinvou3/bundle/`。
+- bundle 扩展源码在 `pinvou3-app/src-tauri/resources/common/bundle/`，编译进应用并释放到 `~/.pinvou3/bundle/`；`instructions.md` 为核心提示词主干，按模型分档追加 `instructions.local.md`（本地 vLLM）或 `instructions.frontier.md`（云端），选择逻辑在 `bridge.rs`。
 - 开发启动使用 `./pinvou3-app/run-dev.sh`。
 - 版本号以根目录 `VERSION` 为单一来源；修改后运行 `node scripts/sync-version.mjs`，CI 使用 `--check` 校验一致性。
 

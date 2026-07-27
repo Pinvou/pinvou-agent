@@ -328,10 +328,29 @@ impl Pinvou3Bridge {
         paths::session_workspace_dir(session_id)
     }
 
+    /// instructions 按模型分档的 profile 选择器:本地 vLLM 弱模型 → Local 变体
+    /// (脚手架补充),其余(云端强模型)→ Frontier 变体(长程任务段)。
+    /// 键用 preset/provider,绝不用模型名——vLLM probe 会改写模型名(EnginePool
+    /// 探测 served name 后克隆→改名→塞回 session_model),按名字判必错。
+    fn instructions_profile(&self) -> &'static str {
+        let is_local = self.provider() == "vllm"
+            || self
+                .effective_model()
+                .is_some_and(|m| m.preset == ModelPreset::LocalVllm);
+        if is_local {
+            bundle::INSTRUCTIONS_LOCAL_MD
+        } else {
+            bundle::INSTRUCTIONS_FRONTIER_MD
+        }
+    }
+
     /// session 专属 `EngineConfig.instructions` 注入:
     ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
     ///      不写 disk — 见 C 方案 P-no-disk 决策);
-    ///   2. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
+    ///   2. 按模型分档的 profile 变体(本地 vLLM → Local 脚手架段;云端 → Frontier
+    ///      长程任务段,见 [`Self::instructions_profile`],变体无占位符无需替换);
+    ///   3. 用户自定义 `~/.pinvou3/user/instructions.md`(可选,仍走 `File`)。
+    ///   底座按声明顺序拼接多源(prompts.rs),主干在前、变体在后。
     ///
     /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
     /// `Vec<PathBuf>` 给底座 — 改用 `InstructionSource::Inline` 后:
@@ -344,6 +363,10 @@ impl Pinvou3Bridge {
         out.push(InstructionSource::Inline {
             name: format!("pinvou3:sessions/{session_id}/instructions"),
             content: rendered,
+        });
+        out.push(InstructionSource::Inline {
+            name: format!("pinvou3:sessions/{session_id}/instructions.profile"),
+            content: self.instructions_profile().to_string(),
         });
         let user = paths::user_instructions();
         if user.is_file() {
@@ -651,8 +674,9 @@ impl Pinvou3Bridge {
 
     /// env > prefs.advanced > 24576 (24K)。
     /// 24K 而非 64K:系统 prompt 强制"大产物分块写"(write_file skeleton ≤8KB →
-    /// append_file chunks ≤16KB/次,见 bundle/instructions.md §4 + Pinvou 审查 >20KB
-    /// 单写判 CRITICAL),且 thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ 3-5K tokens。
+    /// append_file chunks ≤16KB/次,分块规则自带于 write_file/append_file 工具描述
+    /// (底座 crates/tui/src/tools/file.rs),+ Pinvou 审查 >20KB 单写判
+    /// CRITICAL),且 thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ 3-5K tokens。
     /// 24K 覆盖该上限 + 弱模型偶尔超写到 ~24KB 的 margin;同时把输入预算从 189K(74%)
     /// 抬到 230K(90%),让自动压缩更晚触发。64K 是 ~4x 设计上限的过度预留。
     pub fn max_output_tokens(&self) -> u32 {
@@ -759,14 +783,21 @@ impl Pinvou3Bridge {
         threshold.clamp(4_096, (window * 3 / 4).max(4_096))
     }
 
-    /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
-    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 INSTRUCTIONS_MD 原文
-    /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
+    /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + profile 变体
+    /// + 用户自定义。跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用
+    /// INSTRUCTIONS_MD 原文(不做模板替换);profile 变体走同一 selector
+    /// ([`Self::instructions_profile`]),保证 harness 与生产分档一致。
     pub fn instructions(&self) -> Vec<InstructionSource> {
-        let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
-            name: "pinvou3:bundle/instructions".to_string(),
-            content: INSTRUCTIONS_MD.to_string(),
-        }];
+        let mut out: Vec<InstructionSource> = vec![
+            InstructionSource::Inline {
+                name: "pinvou3:bundle/instructions".to_string(),
+                content: INSTRUCTIONS_MD.to_string(),
+            },
+            InstructionSource::Inline {
+                name: "pinvou3:bundle/instructions.profile".to_string(),
+                content: self.instructions_profile().to_string(),
+            },
+        ];
         let user = paths::user_instructions();
         if user.is_file() {
             out.push(InstructionSource::File(user));
@@ -2495,6 +2526,64 @@ mod tests {
             !prompt.contains(session_id),
             "workspace 路径(含 session_id)必须移出静态 system → turn_meta, 实际仍含: {}",
             prompt.chars().take(200).collect::<String>()
+        );
+    }
+
+    /// instructions 按模型分档:本地 vLLM → 「本地模型补充」脚手架段;云端模型 →
+    /// 「长程任务」段且不含本地段。键用 preset/provider 而非模型名(vLLM probe 会改写
+    /// 模型名,见 instructions_profile 注释)。session_instructions 与 instructions()
+    /// 共用同一 selector,这里经 headless 路径 instructions() 断言组装结果(避免
+    /// session_instructions 里的 memory runtime prompt 写盘)。
+    #[test]
+    fn instructions_profile_follows_preset_not_model_name() {
+        let inline_contents = |bridge: &Pinvou3Bridge| -> String {
+            bridge
+                .instructions()
+                .into_iter()
+                .filter_map(|src| match src {
+                    InstructionSource::Inline { content, .. } => Some(content),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 本地 vLLM(preset 判定,与模型名无关)
+        let mut local = fixture_bridge();
+        set_active_model(
+            &mut local,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
+        let local_prompt = inline_contents(&local);
+        assert!(
+            local_prompt.contains("## 本地模型补充"),
+            "本地 vLLM 应追加 Local 变体「本地模型补充」段:\n{local_prompt}"
+        );
+        assert!(
+            !local_prompt.contains("## 长程任务"),
+            "本地 vLLM 不应注入 Frontier 变体「长程任务」段"
+        );
+
+        // 云端模型(Kimi)→ Frontier
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::Kimi,
+            ModelPreset::Kimi.default_model(),
+            ModelPreset::Kimi.default_base_url(),
+            "sk-test",
+        );
+        let cloud_prompt = inline_contents(&cloud);
+        assert!(
+            cloud_prompt.contains("## 长程任务"),
+            "云端模型应追加 Frontier 变体「长程任务」段:\n{cloud_prompt}"
+        );
+        assert!(
+            !cloud_prompt.contains("## 本地模型补充"),
+            "云端模型不应注入 Local 变体「本地模型补充」段"
         );
     }
 

@@ -102,6 +102,14 @@ pub const BUNDLE_VERSION: &str = concat!(
 pub const INSTRUCTIONS_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions.md");
 
+/// instructions.md 的按模型分档变体,编译时内嵌,由 bridge 按 profile 追加为第二个
+/// Inline source(底座按声明顺序拼接多源)。变体不含占位符,注入时无需模板替换。
+/// Local: 仅本地 vLLM 弱模型追加的脚手架段;Frontier: 仅云端强模型追加的长程任务段。
+pub const INSTRUCTIONS_LOCAL_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions.local.md");
+pub const INSTRUCTIONS_FRONTIER_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions.frontier.md");
+
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
 /// 目录。目录名与 frontmatter 均使用 v0.9 要求的安全命令名 `visual-design`；中文触发词
@@ -279,9 +287,8 @@ impl Pinvou3Bundle {
     /// 比对 `bundle/VERSION` 与 [`BUNDLE_VERSION`]：相同跳过；
     /// 不同则覆写 bundle 内文件并更新 VERSION。**不动 user/ 和 settings.json**。
     ///
-    /// 解包时对 `INSTRUCTIONS_MD` 做模板替换，把 `{{PINVOU3_WORKSPACE}}` 占位符
-    /// 替换成 `~/.pinvou3/workspace/` 的实际绝对路径——让 AI 直接拿到完整路径
-    /// 给 write_file 用，避免先 exec_shell 探一遍 env var。
+    /// 解包时对 `INSTRUCTIONS_MD` 做模板替换(`{{PINVOU3_SUDO_INSTRUCTION}}` /
+    /// `{{PINVOU3_TITLE_LANG}}`,详见下方 rendered 构造)。
     pub fn ensure_extracted(&self) -> std::io::Result<()> {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
@@ -391,7 +398,6 @@ impl Pinvou3Bundle {
         // 漏到 LLM 看到的 system prompt(engine boot 时是从 disk 读的)。
         // 用户切换开关时 set_super_permission 会 sync_session 重写。
         let rendered = INSTRUCTIONS_MD
-            .replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
