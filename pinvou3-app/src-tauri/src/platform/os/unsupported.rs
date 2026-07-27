@@ -1,3 +1,11 @@
+//! 不支持平台(linux/macos/windows 之外)的契约存根。
+//!
+//! 这些函数构成跨平台 OS trait 的「不支持」分支:当某能力在当前平台未实现时返回
+//! Err/None/false。它们在具体平台编译目标下会被 `macos`/`linux`/`windows` 模块的同名
+//! 实现通过 glob re-export 阴影,因此 clippy 在某平台下会误报为 dead code,但删除会
+//! 破坏其它平台的 `pub use` 解析。整文件豁免 dead_code。
+#![allow(dead_code)]
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;

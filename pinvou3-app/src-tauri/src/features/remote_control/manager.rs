@@ -2848,7 +2848,7 @@ fn canonicalize_json(value: &Value) -> Value {
         Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
         Value::Object(values) => {
             let mut entries = values.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_unstable_by_key(|(left, _)| *left);
             Value::Object(
                 entries
                     .into_iter()

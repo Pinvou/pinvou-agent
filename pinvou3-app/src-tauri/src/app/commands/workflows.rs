@@ -1364,7 +1364,7 @@ pub async fn find_resumable_run(
         let mtime = std::fs::metadata(&progress)
             .and_then(|md| md.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        if best.as_ref().map_or(true, |(bt, _, _, _)| mtime > *bt) {
+        if best.as_ref().is_none_or(|(bt, _, _, _)| mtime > *bt) {
             best = Some((mtime, m.id.clone(), pd.clone(), scenario));
         }
     }

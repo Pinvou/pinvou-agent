@@ -467,7 +467,7 @@ impl Store {
 /// 但调用处 SQL 未加 `ESCAPE '\'`，所以仅做最朴素处理——把已有反斜杠也保留。
 /// v0 文件名含 `%`/`_` 的子串搜索可能略宽，可接受；FTS5 路径(≥3 字符)才是主路径。
 fn escape_like(s: &str) -> String {
-    s.replace('%', "").replace('_', "")
+    s.replace(['%', '_'], "")
 }
 
 #[cfg(test)]

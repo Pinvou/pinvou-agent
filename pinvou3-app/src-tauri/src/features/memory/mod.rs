@@ -846,7 +846,7 @@ fn clean_memory_label(value: &str) -> Option<String> {
                     '“' | '”' | '‘' | '’' | '《' | '》' | '「' | '」' | '：' | ':'
                 )
         })
-        .trim_end_matches(|c| matches!(c, '吧' | '呗' | '哦' | '哈' | '啦' | '呀'))
+        .trim_end_matches(['吧', '呗', '哦', '哈', '啦', '呀'])
         .trim();
     let cleaned = clean_text(cleaned, 24);
     if cleaned.is_empty() || cleaned.chars().count() > 12 {
@@ -2580,7 +2580,7 @@ fn discover_turn_suggestions(user: &str) -> Vec<MemorySuggestion> {
     }
 
     let clauses: Vec<String> = text
-        .split(|c| matches!(c, '。' | '！' | '？' | '；' | ';' | '\n'))
+        .split(['。', '！', '？', '；', ';', '\n'])
         .map(|s| clean_text(s, 160))
         .filter(|s| !s.is_empty())
         .collect();
@@ -3238,7 +3238,7 @@ fn active_recent_work(items: &[RecentWorkItem], now: DateTime<Utc>) -> Vec<&Rece
 }
 
 fn recent_work_is_expired(item: &RecentWorkItem, now: DateTime<Utc>) -> bool {
-    if parse_time(&item.expires_at).map_or(false, |expires_at| expires_at <= now) {
+    if parse_time(&item.expires_at).is_some_and(|expires_at| expires_at <= now) {
         return true;
     }
     parse_time(&item.last_hit)

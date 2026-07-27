@@ -2184,6 +2184,8 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 }
 
 #[cfg(test)]
+// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
 

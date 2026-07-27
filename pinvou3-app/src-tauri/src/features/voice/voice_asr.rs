@@ -2,6 +2,12 @@
 //!
 //! Platform runtime policy is owned by the sibling `platform` module. This module keeps
 //! platform-neutral status, transcription, model download, and Tauri command glue.
+//!
+//! 其中 model_available、download_current_model、transcribe、sha256_file、
+//! model_file_verified 等函数仅被 `platform/{windows,linux}.rs` 调用;macOS 用系统
+//! Speech 框架(见 `platform/voice_asr_speech.rs`),不引用这些函数。因此它们在 macOS
+//! 编译目标下被 clippy 误报为 dead code,但删除会破坏 Windows/Linux 构建。
+#![allow(dead_code)]
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

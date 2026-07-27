@@ -171,7 +171,7 @@ pub(super) fn merge_resolutions(
                 None => continue,
             };
             for (j, ni) in new_items.iter_mut().enumerate() {
-                if ni.get("resolution").map_or(false, |v| !v.is_null()) {
+                if ni.get("resolution").is_some_and(|v| !v.is_null()) {
                     continue; // new 已带裁决，尊重 new（含 Boss 改裁决/取消）
                 }
                 if let Some(old_res) = old_items.get(j).and_then(|x| x.get("resolution")) {

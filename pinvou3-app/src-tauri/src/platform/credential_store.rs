@@ -51,7 +51,9 @@ impl CredentialReference {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CredentialState {
+    #[default]
     Missing,
     Configured,
     EnvOverride,
@@ -59,11 +61,6 @@ pub enum CredentialState {
     Unavailable,
 }
 
-impl Default for CredentialState {
-    fn default() -> Self {
-        Self::Missing
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

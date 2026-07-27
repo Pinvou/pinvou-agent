@@ -205,18 +205,6 @@ pub fn install_prompt_overrides() {
     }));
 }
 
-/// 内置 MCP 默认配置:注册 present_artifact server(成品卡)。`{{PINVOU3_PRESENT_SERVER}}`
-/// 占位符在 `ensure_extracted` 写出时被替换成解包后的 server 脚本绝对路径(常量无法
-/// 编译期拿到 `~/.pinvou3/bundle/` 运行时路径,同 INSTRUCTIONS_MD 的 `{{PINVOU3_WORKSPACE}}`)。
-/// server key `pinvou3` + tool `present_artifact` → 底座透传给前端的工具名是
-/// `mcp_pinvou3_present_artifact`(底座 `mcp.rs:all_tools` 格式 `mcp_{server}_{tool}`)。
-/// **server 名特意取 `pinvou3`(=产品名)而非 `pinvou`**:Qwen3.6 上下文里 `pinvou3`
-/// (产品名 + 满屏 `.pinvou3/` 工作目录路径)无处不在、`pinvou` 仅工具引导一处出现,
-/// 采样必把 server 名漂成 `pinvou3` → 旧名 `pinvou` 稳定复现 `Failed to find MCP
-/// server: pinvou3`。对齐产品名消除「差一个 3」的撞脸。改名安全:instructions.md 引导名
-/// 与前端 `isPresentArtifactTool` 的 `endsWith("present_artifact")` 后缀匹配都不破。
-pub const DEFAULT_MCP_JSON: &str = "{\n  \"servers\": {\n    \"pinvou3\": {\n      \"command\": \"python3\",\n      \"args\": [\"{{PINVOU3_PRESENT_SERVER}}\"]\n    }\n  }\n}\n";
-
 /// present_artifact MCP server 脚本(零依赖 python stdio),编译期内嵌,解包到
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
@@ -491,7 +479,8 @@ impl Pinvou3Bundle {
     /// 不能删除所有未知目录:未来/本地可能有自定义 MCP 工具。这里只精确处理曾经内置、
     /// 现在源码资源已经移除的 marketplace 工具。
     fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
-        for tool_id in ["data_analysis"] {
+        {
+            let tool_id = "data_analysis";
             let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
 
             let mut disabled = crate::features::marketplace::load_disabled_connectors();
@@ -701,7 +690,7 @@ impl Pinvou3Bundle {
             }),
         );
         let json = serde_json::to_string_pretty(&mcp)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(&self.mcp_json, json)
     }
 
@@ -740,7 +729,7 @@ impl Pinvou3Bundle {
         }
         if changed {
             let json = serde_json::to_string_pretty(&mcp)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
             std::fs::write(&self.mcp_json, json)?;
         }
         Ok(())

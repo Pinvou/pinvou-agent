@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 pub(crate) struct HiddenCommand;
 
 impl HiddenCommand {
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<S: AsRef<OsStr>>(program: S) -> Command {
         let mut command = Command::new(program);
         hide_std_console(&mut command);
@@ -96,9 +97,15 @@ fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
     detail.chars().take(4000).collect()
 }
 
+// HiddenTokioCommand 为 Windows 隐藏控制台窗口的异步子进程创建预留,当前各平台
+// 均未接入调用方,故在 lib 视角下被误报为 dead code;new 返回 Command 而非 Self
+// 是有意设计(构造器语义)。
+#[allow(dead_code)]
 pub(crate) struct HiddenTokioCommand;
 
 impl HiddenTokioCommand {
+    #[allow(dead_code)]
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<S: AsRef<OsStr>>(program: S) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(program);
         hide_tokio_console(&mut command);
@@ -124,4 +131,5 @@ pub(crate) fn hide_tokio_console(command: &mut tokio::process::Command) {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}

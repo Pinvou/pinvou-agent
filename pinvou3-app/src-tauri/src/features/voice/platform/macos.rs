@@ -14,6 +14,10 @@ pub fn engine_binary_name() -> &'static str {
     "pinvou-asr"
 }
 
+/// 平台 ASR 引擎完整性契约:macOS 二期未打包 ASR 引擎,恒为完整。
+/// 该函数与 linux/windows 同名实现构成跨平台接口,仅被 voice_asr 内部调用;
+/// macOS 用 Speech 框架不走该路径,故在此目标下为间接死代码。
+#[allow(dead_code)]
 pub fn bundled_engine_intact(_path: &Path, _bundled_dir: Option<&Path>) -> bool {
     // macOS 二期没有打包 ASR 引擎。
     true

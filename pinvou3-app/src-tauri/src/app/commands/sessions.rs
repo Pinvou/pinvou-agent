@@ -73,7 +73,7 @@ pub async fn list_sessions(
             && !store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
-                .map_or(true, |b| b.project_dir.is_none())
+                .is_none_or(|b| b.project_dir.is_none())
     });
     Ok(metas
         .into_iter()
@@ -102,7 +102,7 @@ pub async fn list_archived_sessions(
         store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
-                .map_or(true, |b| b.project_dir.is_none())
+                .is_none_or(|b| b.project_dir.is_none())
     });
     metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(metas

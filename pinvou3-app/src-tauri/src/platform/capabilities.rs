@@ -29,10 +29,14 @@ pub(crate) const fn is_windows() -> bool {
     cfg!(target_os = "windows")
 }
 
+// is_linux / is_unix 仅被测试或条件编译分支引用,在 lib 视角下被误报为 dead code。
+// 保留它们作为 cfg! 的语义化别名,提升条件分支可读性(与 is_windows 对称)。
+#[allow(dead_code)]
 pub(crate) const fn is_linux() -> bool {
     cfg!(target_os = "linux")
 }
 
+#[allow(dead_code)]
 pub(crate) const fn is_unix() -> bool {
     cfg!(unix)
 }

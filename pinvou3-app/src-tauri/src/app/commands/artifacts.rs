@@ -504,7 +504,7 @@ pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value,
                             .and_then(|r| r.strip_suffix(".md"))
                             .and_then(|n| n.parse::<u32>().ok())
                         {
-                            if best.as_ref().map_or(true, |(s, _)| seq > *s) {
+                            if best.as_ref().is_none_or(|(s, _)| seq > *s) {
                                 best = Some((seq, path));
                             }
                         }

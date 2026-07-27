@@ -10,6 +10,8 @@ pub struct WorkflowInfo {
     pub name: Option<String>,
     pub enabled: bool,
     pub scenarios: Vec<String>,
+    // dir 记录 workflow 所在目录,当前 Rust 路径不读取(改由 id 推导),保留以备调试/定位。
+    #[allow(dead_code)]
     pub dir: PathBuf,
     pub ui: serde_json::Value,
 }

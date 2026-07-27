@@ -1,3 +1,6 @@
+// 本文件为命令层测试,借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;跨 await 持有无竞争者,不会死锁。
+#![allow(clippy::await_holding_lock)]
+
 use super::prelude::*;
 use super::{
     artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,

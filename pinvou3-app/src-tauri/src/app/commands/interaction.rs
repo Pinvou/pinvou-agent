@@ -32,9 +32,6 @@ pub async fn get_mode_state(
 
 // ===================== 卡片池: 专家面具 =====================
 
-/// 列出全部专家卡的**摘要**（不含 body，~200 卡）。前端进卡片池拉一次缓存。
-/// Side B: body 太大（~6K 字/张），不随 list 下发，加持/详情时按需取。
-
 /// 用户在 composer chip 选 Plan：设 mode=Plan。
 /// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
 #[tauri::command]

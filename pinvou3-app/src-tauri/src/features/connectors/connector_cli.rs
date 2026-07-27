@@ -190,7 +190,9 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     tx: mpsc::Sender<String>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(r).lines().flatten() {
+        for line in BufReader::new(r).lines() {
+            // 跳过读取失败的行(坏行不中断日志排空,连接器只需首个 URL)。
+            let Ok(line) = line else { continue };
             if let Some(u) = ctx.extract_url(&line) {
                 let _ = tx.send(u);
             }

@@ -341,7 +341,7 @@ fn ledger_from_entries(
         r.get("verdict").and_then(Value::as_str).is_some()
             || r.get("issues")
                 .and_then(Value::as_array)
-                .map_or(false, |a| !a.is_empty())
+                .is_some_and(|a| !a.is_empty())
     })?;
     let latest_pos = latest.get("pos").and_then(Value::as_u64).unwrap_or(0);
     let passed = latest
@@ -366,7 +366,7 @@ fn ledger_from_entries(
         if rv
             .get("issues")
             .and_then(Value::as_array)
-            .map_or(true, |a| a.is_empty())
+            .is_none_or(|a| a.is_empty())
         {
             return None;
         }
@@ -583,6 +583,7 @@ fn review_reasoning_dialect(
     }
 }
 
+#[allow(clippy::if_same_then_else)]
 fn review_reasoning_dialect_from_base_url(base_url: &str, model: &str) -> ReviewReasoningDialect {
     let normalized = base_url
         .trim()

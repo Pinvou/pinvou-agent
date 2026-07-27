@@ -17,6 +17,9 @@ pub enum AgentBackend {
     CodexAcp,
 }
 
+// parse/as_str 是 backend 字符串表示(序列化契约)的公开解析入口,当前仅测试
+// 引用;保留以固定别名契约,后续接入后端切换时由业务代码消费。
+#[allow(dead_code)]
 impl AgentBackend {
     pub fn parse(value: Option<&str>) -> Result<Self> {
         match value.unwrap_or("deepseek") {
@@ -134,6 +137,9 @@ impl SessionAgentStore {
             .unwrap_or_default()
     }
 
+    /// 显式切换会话后端。当前后端由 set_codex_workspace / set_acp_session 隐式
+    /// 设置,前端尚未暴露切换入口;保留该 API 供后续后端切换功能使用。
+    #[allow(dead_code)]
     pub fn set_backend(&self, session_id: &str, backend: AgentBackend) -> Result<()> {
         {
             let mut records = self.records.write();

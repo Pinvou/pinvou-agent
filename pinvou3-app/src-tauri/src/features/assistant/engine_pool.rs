@@ -170,6 +170,8 @@ where
     store.delete_scheduled_run(session_id, expected_task_id)
 }
 
+/// EnginePool 预备 API(含测试覆盖,待 Tauri command 层接入);在 lib 生产视角下为 dead code。
+#[allow(dead_code)]
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,
@@ -246,6 +248,7 @@ pub struct EnginePool {
 
 impl EnginePool {
     /// boot bridge(一次)并建空池。不预热任何 engine(lazy)。
+    #[allow(dead_code)]
     pub fn new(app: AppHandle, store: SessionStore) -> Result<Self> {
         Self::new_with_dependencies(
             app,
@@ -438,6 +441,7 @@ impl EnginePool {
     /// Delete an ordinary chat under the exact turn gate used by lazy spawn
     /// and send. No queued sender can slip between engine reclaim, disk delete,
     /// and lifecycle cleanup to resurrect the session.
+    #[allow(dead_code)]
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
         delete_chat_session_with_gate(
             &self.turn_locks,
@@ -579,6 +583,7 @@ impl EnginePool {
     }
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
+    #[allow(dead_code)]
     pub async fn send_user_message(
         &self,
         session_id: &str,
@@ -648,7 +653,7 @@ impl EnginePool {
             .map(crate::features::personas::equip_anchor);
         let restrict_tools = active_card
             .as_ref()
-            .map_or(false, |c| c.conversational_only);
+            .is_some_and(|c| c.conversational_only);
         let restrict_tools = restrict_tools || restrict_tools_for_turn;
         self.get_or_spawn(session_id)
             .await?
@@ -1025,6 +1030,8 @@ fn resolve_spawn_model(
 }
 
 #[cfg(test)]
+// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+#[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
         delete_chat_session_with_gate, delete_scheduled_run_with_gate,

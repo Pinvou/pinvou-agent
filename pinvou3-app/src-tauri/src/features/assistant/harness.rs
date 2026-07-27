@@ -21,7 +21,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::platform::paths;
 
@@ -42,7 +42,10 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
 }
 
 // ── 调度器 JSON 结构 ──
-
+// 这些 struct 镜像 Python scheduler.py 产出的 JSON schema;部分字段(all_actionable、
+// failed_roles、output_path)由 Python 端产出但 Rust 当前未读取,保留是为了显式记录
+// 契约,避免日后 Python 改字段时 Rust 端无感知。
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SchedulerDecision {
     pub action: String,
@@ -64,6 +67,7 @@ pub struct SchedulerDecision {
 }
 
 /// [per_page] scheduler 展开的单页任务（scheduler.py build_tasks_for 产出）。
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SchedulerTask {
     pub page: u32,
@@ -107,16 +111,6 @@ struct GateFinding {
     /// 由 find_rollback_rule 显式告警兜底，不静默猜。
     #[serde(default)]
     violation_type: String,
-}
-
-// ── 事件结构 ──
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentStateEvent {
-    pub role_id: String,
-    pub role_name: String,
-    pub status: String,
-    pub message: String,
 }
 
 // ── Harness 返回值 ──
@@ -527,7 +521,7 @@ pub fn find_project_dir(workspace: &Path) -> Option<PathBuf> {
                 continue;
             }
             if p.file_name()
-                .map_or(false, |n| n.to_string_lossy().starts_with('.'))
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
             {
                 continue;
             }
@@ -748,10 +742,8 @@ fn materialize_dispatch_graph(project: &Path) -> Result<(), String> {
         return Err(format!("dispatch_graph.py not found: {}", script.display()));
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = vec![
-        script.to_string_lossy().to_string(),
-        project.to_string_lossy().to_string(),
-    ];
+    let args = [script.to_string_lossy().to_string(),
+        project.to_string_lossy().to_string()];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     run_python(&arg_refs, scripts_dir).map(|_| ())
 }
@@ -920,10 +912,8 @@ fn run_warmup(project: &Path) -> Result<serde_json::Value, String> {
         return Err(format!("warmup_check.py not found: {}", script.display()));
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = vec![
-        script.to_string_lossy().to_string(),
-        project.to_string_lossy().to_string(),
-    ];
+    let args = [script.to_string_lossy().to_string(),
+        project.to_string_lossy().to_string()];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     match run_python_with_timeout(&arg_refs, scripts_dir, WARMUP_TIMEOUT_SECS) {
         Ok(stdout) => match serde_json::from_str(&stdout) {
@@ -1110,6 +1100,9 @@ fn workflow_failure_reason_for_project(project: &Path) -> Option<String> {
     })
 }
 
+/// 公开入口版本(预留 API,待 command 层接入);当前生产路径直接调
+/// workflow_failure_reason_for_project。保留 pub(crate) 签名以便未来暴露。
+#[allow(dead_code)]
 pub(crate) fn workflow_failure_reason(workspace: &Path) -> Option<String> {
     workflow_failure_reason_for_project(&find_project_dir(workspace)?)
 }
@@ -1134,12 +1127,10 @@ fn run_gate_runner(project: &Path) -> Result<GateResult, String> {
         });
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = vec![
-        script.to_string_lossy().to_string(),
+    let args = [script.to_string_lossy().to_string(),
         deck_dir.to_string_lossy().to_string(),
         "--layer".to_string(),
-        "1".to_string(),
-    ];
+        "1".to_string()];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let out = run_python(&arg_refs, scripts_dir)?;
     serde_json::from_str(&out).map_err(|e| format!("parse gate_runner: {e}"))
@@ -1154,11 +1145,9 @@ fn run_deliverable_check(project: &Path, role_id: &str) -> Result<GateResult, St
         });
     }
     let scripts_dir = script.parent().unwrap_or(project);
-    let args = vec![
-        script.to_string_lossy().to_string(),
+    let args = [script.to_string_lossy().to_string(),
         project.to_string_lossy().to_string(),
-        role_id.to_string(),
-    ];
+        role_id.to_string()];
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let out = run_python(&arg_refs, scripts_dir)?;
     let v: serde_json::Value =
@@ -1550,15 +1539,6 @@ pub fn approve_gate(workspace: &Path, role_id: &str) -> HarnessAction {
 /// 语义对齐 gate local fail：--fail 计次 → 耗尽则 Blocked，否则带失败原因重派同角色。
 pub fn agent_failed(workspace: &Path, role_id: &str, error: &str) -> HarnessAction {
     agent_failed_impl(workspace, role_id, None, error)
-}
-
-pub(crate) fn agent_failed_for_agent(
-    workspace: &Path,
-    role_id: &str,
-    agent_id: &str,
-    error: &str,
-) -> HarnessAction {
-    agent_failed_impl(workspace, role_id, Some(agent_id), error)
 }
 
 fn agent_failed_impl(
@@ -2611,7 +2591,7 @@ fn dispatch_or_wait(decision: SchedulerDecision, project: &Path, scenario: &str)
             let no_upstream = read_role_def(&role_id)
                 .get("depends_on")
                 .and_then(|v| v.as_array())
-                .map_or(false, |a| a.is_empty());
+                .is_some_and(|a| a.is_empty());
             let addendum = if no_upstream {
                 let user_req = read_user_request(project);
                 if user_req.trim().is_empty() {

@@ -498,7 +498,7 @@ impl L1Store {
             let rows = stmt.query_map(params![collection_id, m, lim as i64], map)?;
             rows.collect()
         } else {
-            let like = format!("%{}%", q.replace('%', "").replace('_', ""));
+            let like = format!("%{}%", q.replace(['%', '_'], ""));
             let mut stmt = c.prepare(
                 "SELECT d.id,k.text,0.0 AS score,d.name,d.path,k.ord \
                  FROM chunks k JOIN documents d ON d.id=k.document_id \

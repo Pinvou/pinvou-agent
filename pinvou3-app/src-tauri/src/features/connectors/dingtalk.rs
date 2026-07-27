@@ -75,7 +75,7 @@ fn extract_user_code(line: &str) -> Option<String> {
         return None;
     }
     line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-        .filter(|s| {
+        .rfind(|s| {
             let len = s.len();
             (6..=32).contains(&len)
                 && s.chars()
@@ -83,7 +83,6 @@ fn extract_user_code(line: &str) -> Option<String> {
                 && s.chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
         })
-        .last()
         .map(|s| s.to_string())
 }
 
@@ -148,7 +147,9 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
     tx: mpsc::Sender<AuthEvent>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in std::io::BufRead::lines(std::io::BufReader::new(r)).flatten() {
+        for line in std::io::BufRead::lines(std::io::BufReader::new(r)) {
+            // 跳过读取失败的行(坏行不中断认证事件排空)。
+            let Ok(line) = line else { continue };
             if let Some(safe_line) = safe_auth_log_line(&line) {
                 let _ = tx.send(AuthEvent::Line(safe_line));
             }

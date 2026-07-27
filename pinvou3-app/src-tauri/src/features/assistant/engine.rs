@@ -5,7 +5,7 @@
 //!     [`EngineConfig`] / [`DtConfig`]，然后 `spawn_engine`，存到 Tauri State
 //!  2. 后台 task 持续读 `EngineHandle::rx_event`，转译成 Tauri 事件
 //!     （`chat:delta` / `chat:tool_start` / `chat:tool_end` / `chat:done`
-//!      / `chat:plan_ready`）
+//!     / `chat:plan_ready`）
 //!  3. 暴露 `send_user_message()` 给 [`commands::chat`] 调用
 //!
 //! 所有配置决策（model / paths / locale / allow_shell ...）都在 bridge 里，
@@ -1025,7 +1025,7 @@ impl AppEngine {
                 reservation.mark_submitted();
                 Ok(())
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 
@@ -1152,6 +1152,7 @@ fn format_instructions(sources: &[deepseek_tui::prompts::InstructionSource]) -> 
 /// 底座两层 plan 结构：
 ///   - `update_plan`         → strategy 层（`plan_snapshot`）
 ///   - `checklist_write` / `todo_write` → leaf task 层（`todos_snapshot`）
+///
 /// 任一调过 + plan_phase=Planning → TurnComplete 时 emit `chat:plan_ready`。
 /// 参考底座 `tui/ui.rs:1072-1085` 的 `plan_tool_used_in_turn` 判据 +
 /// `prompts/modes/plan.md` "Use update_plan ... and checklist_write ..." 双工具引导。
@@ -2804,8 +2805,8 @@ fn apply_scheduled_turn_policy(
     };
 
     *mode = profile.execution_mode().to_app_mode();
-    *route = Box::new(resolved_route);
-    *compaction = Box::new(compaction_config);
+    **route = resolved_route;
+    **compaction = compaction_config;
     *auto_model = false;
     *allow_shell = profile.allow_shell;
     *trust_mode = profile.trust_mode;
@@ -2823,7 +2824,7 @@ fn scheduled_tool_should_auto_approve(
     profile: Option<&ScheduledRunProfile>,
     approval_force_prompt: bool,
 ) -> bool {
-    profile.map_or(true, |profile| {
+    profile.is_none_or(|profile| {
         profile.auto_approve && !approval_force_prompt
     })
 }
@@ -3447,6 +3448,8 @@ mod scheduled_turn_tests {
 }
 
 #[cfg(test)]
+// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+#[allow(clippy::await_holding_lock)]
 mod live_tests {
     use super::*;
     use crate::core::mode_state::SerializableMode;
