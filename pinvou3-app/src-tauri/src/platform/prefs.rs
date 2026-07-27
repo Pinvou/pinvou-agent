@@ -1193,6 +1193,7 @@ mod tests {
             search: SearchPrefs::default(),
             notifications: NotificationPrefs::default(),
             pet: PetPrefs::default(),
+            sidebar: SidebarPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),

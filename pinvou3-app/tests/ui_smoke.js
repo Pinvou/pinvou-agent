@@ -49,7 +49,7 @@ function injectSource() {
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
-    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:1,updated_at:9}];
+    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}];
     let ARCHIVED_SESSIONS=[];
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
@@ -98,7 +98,7 @@ function injectSource() {
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
         case 'set_session_archived':
           if (args && args.archived) {
-            const session = SESSIONS.find(function(s){ return s.id === args.id; }) || { id: args.id, title: '第三季度财报分析', created_at: 1, updated_at: 9 };
+            const session = SESSIONS.find(function(s){ return s.id === args.id; }) || { id: args.id, title: '第三季度财报分析', created_at: Date.now()-1000, updated_at: Date.now() };
             SESSIONS = SESSIONS.filter(function(s){ return s.id !== args.id; });
             ARCHIVED_SESSIONS = [Object.assign({}, session, { archived_at: '2026-07-21T10:00:00Z' })].concat(ARCHIVED_SESSIONS.filter(function(s){ return s.id !== args.id; }));
           } else {
@@ -803,7 +803,7 @@ async function expand(page) {
   });
   rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
-  // ⑤b 收纳成功 toast 的「前往查看」必须直达设置页数据管理，且按钮不折行。
+  // ⑤b 收纳成功 toast 的「前往查看」必须直达对话管理页并展开「已收纳」面板，且按钮不折行。
   await expand(page); await sleep(200);
   const archiveMenuOpened = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
@@ -830,20 +830,20 @@ async function expand(page) {
     return {
       opened: !!button,
       noWrap: !!rect && rect.width >= 74 && rect.height <= 34,
-      text: document.body.innerText.includes('已收纳到【设置-任务收纳】'),
+      text: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
     };
   });
   await clickText(page, '前往查看');
   await sleep(600);
   const archiveToastGoto = await page.evaluate(() => ({
     currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
-    title: [...document.querySelectorAll('h1')].some(node => (node.textContent || '').trim() === '数据管理'),
+    archivedTabVisible: document.body.innerText.includes('已收纳'),
     archivedVisible: document.body.innerText.includes('第三季度财报分析'),
     noSettingsError: !document.body.innerText.includes('设置页加载失败'),
   }));
-  rec('⑤b 收纳 toast 前往查看直达设置-数据管理且按钮不折行',
+  rec('⑤b 收纳 toast 前往查看直达对话管理-已收纳且按钮不折行',
     archiveMenuOpened && archiveToastBefore.opened && archiveToastBefore.noWrap && archiveToastBefore.text &&
-    archiveToastGoto.currentView === 'settings' && archiveToastGoto.title && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
+    archiveToastGoto.currentView === 'search' && archiveToastGoto.archivedTabVisible && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
     JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
 
   // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
