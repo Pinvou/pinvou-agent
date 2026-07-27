@@ -53,11 +53,11 @@ mod tests {
     }
 
     #[test]
-    fn capacity_is_exact_no_excess() {
-        // 预分配 2*n 容量 + 逐字节写,结果长度应恰好等于容量(无 realloc)。
+    fn output_length_is_two_chars_per_byte() {
+        // 每个字节固定编码为两个十六进制字符。
+        // String 只保证容量不小于预分配值，不能把“容量恰好相等”当成跨平台契约。
         let s = hex_lower(&[0xab; 32]);
         assert_eq!(s.len(), 64);
-        assert_eq!(s.capacity(), 64);
     }
 
     #[test]
