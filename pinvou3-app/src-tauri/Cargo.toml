@@ -7,7 +7,7 @@ license = "MIT"
 edition = "2021"
 # MSRV:rust-version 是「能编译本 crate 的最低版本」下限;
 # 实际构建工具链由 rust-toolchain.toml 锁定到具体版本(可复现),二者语义互补。
-rust-version = "1.88"
+rust-version = "1.89"
 # 主 binary 是 Tauri app(src/main.rs);src/bin/dump_system_prompt.rs 是 dev 工具,
 # 加这个键让 `cargo run`(不带 --bin)默认跑主 app,不再因为多 bin 报错。
 default-run = "pinvou3-tauri"

@@ -54,11 +54,11 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
-# 重复 crate 只 warn 不 fail:Tauri + CodeWhale 共享图里天然有上百个多版本(reqwest
-# 0.12/0.13、toml_edit×4 等),逐个去重是长期工程,不该卡 CI。单版本强制(multiple-versions
-# = "deny")会把每次依赖升级都变成破坏性事件。
+# Tauri + CodeWhale 共享图里天然有上百个多版本(reqwest 0.12/0.13、toml_edit×4 等),
+# 逐个去重是长期工程,不该卡 CI,也不应让每次审计输出数十万字的已知重复图。
+# 这里关闭重复版本报告;漏洞、许可证、来源和通配依赖仍按各自规则独立审计。
 # 注意:[bans] 不支持 version 键(只有 [advisories]/[licenses] 支持)。
-multiple-versions = "warn"
+multiple-versions = "allow"
 # wildcards 保留 "warn"(不能升 deny):本仓 3 个 CodeWhale 子模块依赖是
 # path = "../../CodeWhale/..." 形式(AGENTS.md §2 禁止给它们加版本约束),
 # cargo-deny 把无版本的 path 依赖判为 "wildcard"。升 deny 会把这 3 个**不可改**的

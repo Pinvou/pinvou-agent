@@ -1,6 +1,6 @@
 # 锁定构建工具链具体版本，保证本地与 CI 完全可复现（不写 floating "stable",
 # 避免 stable 自动滚动导致本地/CI 编译器版本漂移）。
-# 版本要求:>= Cargo.toml 的 rust-version(MSRV 1.88);选当前 stable 具体版。
+# 版本要求:>= Cargo.toml 的 rust-version(MSRV 1.89);选当前 stable 具体版。
 # 升级方式:改这里一个数字即可,CI(dtolnay/rust-toolchain 读取本文件)与本地自动一致。
 # 带上 clippy / rustfmt 组件，配合 lint 门禁。
 [toolchain]
