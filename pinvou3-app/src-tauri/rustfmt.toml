@@ -1,0 +1,7 @@
+# pinvou3-app/src-tauri 代码风格配置。
+# 只用 stable rustfmt 支持的选项，保证 `cargo fmt --check` 门禁在任何 stable 工具链上都能跑。
+# imports_granularity / group_imports 等 import 整理项是 nightly-only，不在此声明——
+# 它们会让 stable `cargo fmt` 直接报错。import 顺序靠人工 + review 保证。
+edition = "2021"
+max_width = 100
+use_try_shorthand = true

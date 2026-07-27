@@ -36,7 +36,7 @@ function injectSource() {
     const TASKS = [];
     const RUNS = [{
       id: 'run-1', automationId: 'task-1', sessionId: 'sched-run-1', status: 'completed',
-      scheduledFor: '2026-07-10T08:00:00Z', createdAt: '2026-07-10T08:00:00Z', unread: true,
+      scheduledFor: new Date().toISOString(), createdAt: new Date().toISOString(), unread: true,
       sessionTitle: '每天给我推送时尚新闻', pinned: false, pinnedAt: null
     }];
     const RUN_MESSAGES = [

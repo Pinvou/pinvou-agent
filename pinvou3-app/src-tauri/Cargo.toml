@@ -3,9 +3,11 @@ name = "pinvou3-tauri"
 version = "0.6.4"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
-license = ""
+license = "MIT"
 edition = "2021"
-rust-version = "1.88"
+# MSRV:rust-version 是「能编译本 crate 的最低版本」下限;
+# 实际构建工具链由 rust-toolchain.toml 锁定到具体版本(可复现),二者语义互补。
+rust-version = "1.89"
 # 主 binary 是 Tauri app(src/main.rs);src/bin/dump_system_prompt.rs 是 dev 工具,
 # 加这个键让 `cargo run`(不带 --bin)默认跑主 app,不再因为多 bin 报错。
 default-run = "pinvou3-tauri"
@@ -73,12 +75,22 @@ codewhale-secrets = { path = "../../CodeWhale/crates/secrets" }
 codewhale-config = { path = "../../CodeWhale/crates/config" }
 
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking", "stream"] }
+# 0.13 与 CodeWhale 子模块对齐；feature `rustls`(0.13 改名,自带 aws-lc-rs)。
+# aws-lc-rs 构建需 cmake,CI 已加安装步骤。
+# 注意:oauth2(经 reqwest 0.12 传递)会把 rustls 0.23 的 `ring` feature 也拉进图,
+# 使 rustls 同时启用 aws-lc-rs + ring。tokio-tungstenite 的无参 ClientConfig::builder()
+# 在两 provider 共存时会 panic,故需在启动时显式 install_default(见 lib.rs)。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking", "stream", "query"] }
 wait-timeout = "0.2"
 
-# Updater 用：下载 deb 的 sha256 校验；Windows OTA 包使用 zip + MD5；
-# 产物卡封面也会读 .pptx(zip)里的 docProps/thumbnail.jpeg。
-sha2 = "0.10"
+# rustls 直依赖:仅为在启动时调 aws_lc_rs::default_provider().install_default()
+# 选定进程级 CryptoProvider(见上方 panic 根因)。只声明 aws-lc-rs;ring 由传递依赖启用。
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+
+# Updater 用：sha256 校验；Windows OTA 包使用 MD5；产物卡封面读 .pptx 里的 thumbnail。
+# 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
+# (见 src/platform/encoding.rs)。
+sha2 = "0.11"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 md5 = "0.7"
 flate2 = "1"
@@ -105,10 +117,10 @@ walkdir = "2"
 
 # 本地 embedding（L1 语义检索）：fastembed-rs 进程内 ONNX 推理（CPU EP），**不依赖 vLLM**。
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
-# 电子表格解析（file_ingest 用）：纯 Rust 读 xlsx/xls/ods 的**全部工作表**。
-# 旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件会丢 90% 内容（实测散热
-# 报告 4 sheet 只抽到首页 418 字）；calamine 直接按 reader 嗅探格式、逐 sheet 逐行读。
-calamine = "0.26"
+# 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
+# 0.36 拉入 quick-xml 0.41+,修 RUSTSEC-2026-0194/0195 ReDoS。
+# 剩余 quick-xml 0.39.4 由 plist/tauri 传递,等上游。
+calamine = "0.36"
 # 文本附件编码兜底：把国内常见 GBK / GB18030 文件真正转成 UTF-8，
 # 避免 `from_utf8_lossy` 把中文正文替换成一串 U+FFFD。
 encoding_rs = "0.8"
@@ -117,7 +129,8 @@ encoding_rs = "0.8"
 # 纯 Rust,不依赖各 CLI 自带的 qrcode 子命令(wecom-cli 就没有)。关默认的 image 渲染器
 # (省掉 image crate 依赖),只用 svg 渲染器。
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# 0.30:Message::Text 的 String→Utf8Bytes、Ping/Pong 的 Vec→Bytes,relay_client.rs 已适配。
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.9"
 base64 = "0.22"
@@ -174,3 +187,91 @@ webkit2gtk = "2.0"
 # 多窗口撕离(detach.rs begin_detach_drag):X11 全局鼠标坐标+左键状态,
 # 驱动鬼影跨屏跟随 + 松手落位。Wayland 下不可用 → 降级(后续 task)。
 device_query = "2"
+
+# =============================================================================
+# Lint 门禁 —— 硬门禁设计:只启用「当前实测零欠账」的 lint(deny);
+# 有欠账的 lint/group 显式 allow 并注明欠账规模,由清理 PR(#35 及后续)消化后逐个启用。
+# CI(pr-check.yml rust-lint job)直接跑 `cargo clippy --lib --no-deps`(无 continue-on-error),
+# deny 命中即 fail;allow 的欠账 lint 被静默,不产生告警噪声。
+# 实测基线(rust 1.97.1,2026-07-27):clippy::all 组 54 处欠账,rustc 默认 lint 113 处。
+# =============================================================================
+[lints.rust]
+# —— 零欠账,deny 硬门禁(实测 0 违规)——
+# unsafe 代码块内部仍要求显式 unsafe 操作,避免误用:
+unsafe_op_in_unsafe_fn = "deny"
+# 多余的花括号 import,如 `use std::{collections::{HashMap}};`
+unused_import_braces = "deny"
+# 能省略的显式 lifetime 标注:
+unused_lifetimes = "deny"
+# 未使用的 import / 变量 / mut(本 PR 已清零 3 处,deny 防回流):
+unused_imports = "deny"
+unused_variables = "deny"
+unused_mut = "deny"
+
+# —— 有欠账,显式 allow;注释给出欠账规模,清理 PR(#35 及后续)消化后升 deny ——
+# unreachable_pub:1795 处欠账(全 crate pub 未收口,工程量大,单独清理)。
+unreachable_pub = "allow"
+# let_underscore_drop:306 处欠账(`let _ =` 吞 Drop 副作用,需逐个确认语义)。
+let_underscore_drop = "allow"
+# dead_code:96 处欠账(历史保留代码/平台条件编译残留,需甄别后清理)。
+dead_code = "allow"
+# private_interfaces:14 处欠账(pub 接口暴露私有类型,随 unreachable_pub 一起收口)。
+private_interfaces = "allow"
+
+[lints.clippy]
+# —— all / pedantic 组有历史欠账,整组 allow(priority=-1 保证下方具体 lint 的 deny 生效)——
+# all 组(correctness+suspicious+style+complexity+perf)实测 54 处欠账;
+# pedantic 组欠账更多(原方案全量 warn 实测近 2000 条告警,等于无门禁)。
+# 欠账由清理 PR(#35 及后续)消化后,再整组或逐 lint 升 deny。
+all = { level = "allow", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+
+# —— 精选零欠账「防回归」lint,deny 硬门禁(实测 0 违规,新增即 fail CI)——
+# dbg!/todo!/unimplemented! 会在运行时 panic 或留下调试残留:遗留即隐患。
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# 多余 unwrap(正确性,误报极低)。
+unnecessary_unwrap = "deny"
+# 禁 `dep = "*"` 通配版本(防未来新增不锁版本的危险依赖)。
+wildcard_dependencies = "deny"
+# 注:print_stdout/print_stderr 未启用——本 app 启动诊断大量用 eprintln!(早于日志
+#     后端就绪),启用会刷出大量噪声;待日志链路统一后再评估。
+# 注:cargo_common_metadata 未启用——本 crate 是 private bin(不发布 crates.io),
+#     repository/readme/keywords/categories 无意义。
+
+# =============================================================================
+# 构建优化 Profile —— release 开启「安全范围内最大优化」
+# =============================================================================
+# panic="unwind"(非 abort):底座 CodeWhale 用 catch_unwind 做工具调用 panic 隔离,
+# 改 abort 会破坏「单次工具 panic 不拖垮整个会话」的设计。
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# macOS 27+ 发布链路会注入 CARGO_PROFILE_RELEASE_STRIP=none 绕过 dyld 对齐 bug,
+# 本设置主要作用于 Linux deb / Windows MSI 产物。
+strip = "symbols"
+debug = "line-tables-only"
+panic = "unwind"
+incremental = false
+
+# 专为 Release 测试/CI 用的轻量 profile:不 LTO、不禁 incremental,编译快但仍走 release 优化。
+# mac-build.yml 的编译冒烟与 universal bundle 冒烟均用此 profile,
+# 两者产物可互相复用(同 profile 同 target dir),避免 CI 里两套 profile 重复编译全图。
+# 真正发版的 fat-LTO 产物由 scripts/release-macos.sh(走真 --release)产出。
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+# debug 不再重复声明:release 已是 line-tables-only,继承即同值。
+
+# Dev profile:line-tables-only 编译提速、overflow-checks 在调试期暴露整数回绕。
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 0
+overflow-checks = true
+# 依赖在 dev 下也做轻量优化(否则全 debug 编译,运行太慢影响本地调试体验)。
+[profile.dev.package."*"]
+opt-level = 2

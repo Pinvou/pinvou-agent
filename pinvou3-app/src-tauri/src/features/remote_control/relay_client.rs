@@ -376,7 +376,7 @@ async fn run_revocation_loop(
 
         let (mut write, mut read) = ws.split();
         let revoke = revoke_message_parts(&endpoint_id, &desktop_secret);
-        if let Err(error) = write.send(Message::Text(revoke.to_string())).await {
+        if let Err(error) = write.send(Message::Text(revoke.to_string().into())).await {
             if tx_in
                 .send(RelayInbound::Connection {
                     endpoint_id: endpoint_id.clone(),
@@ -418,7 +418,7 @@ async fn run_revocation_loop(
                                 Ok(value) => {
                                     let terminal = terminal_message(&value, &endpoint_id);
                                     drop(value);
-                                    if tx_in.send(RelayInbound::Message(text)).await.is_err() {
+                                    if tx_in.send(RelayInbound::Message(text.to_string())).await.is_err() {
                                         return;
                                     }
                                     if terminal.is_some() {
@@ -562,7 +562,7 @@ async fn run_loop(
         let register_result = tokio::select! {
             biased;
             _ = shutdown.cancelled() => return,
-            result = write.send(Message::Text(register.to_string())) => result,
+            result = write.send(Message::Text(register.to_string().into())) => result,
         };
         if let Err(error) = register_result {
             if !send_inbound_until_shutdown(
@@ -601,7 +601,7 @@ async fn run_loop(
             let send_result = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return,
-                result = write.send(Message::Text(frame.text.clone())) => result,
+                result = write.send(Message::Text(frame.text.clone().into())) => result,
             };
             if let Err(error) = send_result {
                 push_pending_front(&mut pending, frame);
@@ -642,7 +642,7 @@ async fn run_loop(
                             let send_result = tokio::select! {
                                 biased;
                                 _ = shutdown.cancelled() => return,
-                                result = write.send(Message::Text(frame.text.clone())) => result,
+                                result = write.send(Message::Text(frame.text.clone().into())) => result,
                             };
                             if let Err(error) = send_result {
                                 push_pending_front(&mut pending, frame);
@@ -677,7 +677,7 @@ async fn run_loop(
                                     drop(value);
                                     if !send_inbound_until_shutdown(
                                         &tx_in,
-                                        RelayInbound::Message(text),
+                                        RelayInbound::Message(text.to_string()),
                                         &shutdown,
                                     ).await {
                                         return;
@@ -710,7 +710,7 @@ async fn run_loop(
                     let ping_result = tokio::select! {
                         biased;
                         _ = shutdown.cancelled() => return,
-                        result = write.send(Message::Ping(Vec::new())) => result,
+                        result = write.send(Message::Ping(Vec::<u8>::new().into())) => result,
                     };
                     if ping_result.is_err() { break; }
                 }

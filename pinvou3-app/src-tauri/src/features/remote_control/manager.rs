@@ -2259,15 +2259,30 @@ impl RemoteControlManager {
                         &capability_commands,
                         &capability_events,
                     )];
-                    messages.extend(events.into_iter().map(|event| {
-                        event_message(&endpoint_id, lease_id, &inner.stream.epoch, &event)
-                    }));
+                    messages.extend(subscription_filtered_replay_messages(
+                        events,
+                        &inner.subscriptions,
+                        ReplayMessageContext {
+                            endpoint_id: &endpoint_id,
+                            lease_id,
+                            stream_epoch: &inner.stream.epoch,
+                            capability_commands: &capability_commands,
+                            capability_events: &capability_events,
+                        },
+                    ));
                     messages
                 }
-                Some(events) => events
-                    .into_iter()
-                    .map(|event| event_message(&endpoint_id, lease_id, &inner.stream.epoch, &event))
-                    .collect::<Vec<_>>(),
+                Some(events) => subscription_filtered_replay_messages(
+                    events,
+                    &inner.subscriptions,
+                    ReplayMessageContext {
+                        endpoint_id: &endpoint_id,
+                        lease_id,
+                        stream_epoch: &inner.stream.epoch,
+                        capability_commands: &capability_commands,
+                        capability_events: &capability_events,
+                    },
+                ),
                 None => {
                     // The browser reload behavior deliberately persists the new
                     // epoch with cursor zero. Resetting the journal here makes
@@ -2825,12 +2840,7 @@ fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, String> {
     let encoded = serde_json::to_vec(&(command, canonical))
         .map_err(|error| format!("serialize Web RPC fingerprint: {error}"))?;
     let digest = Sha256::digest(encoded);
-    let mut fingerprint = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(fingerprint, "{byte:02x}");
-    }
-    Ok(fingerprint)
+    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 fn canonicalize_json(value: &Value) -> Value {
@@ -3027,6 +3037,57 @@ fn event_message(
         "event": event.event,
         "payload": event.payload,
     })
+}
+
+#[derive(Clone, Copy)]
+struct ReplayMessageContext<'a> {
+    endpoint_id: &'a str,
+    lease_id: &'a str,
+    stream_epoch: &'a str,
+    capability_commands: &'a [String],
+    capability_events: &'a [String],
+}
+
+fn subscription_filtered_replay_messages(
+    events: Vec<StreamEvent>,
+    subscriptions: &HashSet<String>,
+    context: ReplayMessageContext<'_>,
+) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(events.len());
+    let mut skipped_through = None;
+    for event in events {
+        if is_event_subscribed(subscriptions, &event.event) {
+            if let Some(seq) = skipped_through.take() {
+                messages.push(snapshot_message(
+                    context.endpoint_id,
+                    context.lease_id,
+                    context.stream_epoch,
+                    seq,
+                    context.capability_commands,
+                    context.capability_events,
+                ));
+            }
+            messages.push(event_message(
+                context.endpoint_id,
+                context.lease_id,
+                context.stream_epoch,
+                &event,
+            ));
+        } else {
+            skipped_through = Some(event.seq);
+        }
+    }
+    if let Some(seq) = skipped_through {
+        messages.push(snapshot_message(
+            context.endpoint_id,
+            context.lease_id,
+            context.stream_epoch,
+            seq,
+            context.capability_commands,
+            context.capability_events,
+        ));
+    }
+    messages
 }
 
 fn stream_reset_message(
@@ -3937,6 +3998,40 @@ mod tests {
 
         assert!(is_event_subscribed(&subscriptions, "session:deleted"));
         assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
+    }
+
+    #[test]
+    fn replay_skips_unsubscribed_events_without_creating_sequence_gaps() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "session:deleted", json!({ "id": "one" }));
+        record_stream_event(&mut stream, "session:list_changed", json!({}));
+        record_stream_event(&mut stream, "chat:done", json!({ "id": "one" }));
+        let events = stream.replay_after(0).expect("replay");
+        let subscriptions = HashSet::from(["session:deleted".to_string(), "chat:done".to_string()]);
+        let commands = Vec::new();
+        let capabilities = Vec::new();
+
+        let messages = subscription_filtered_replay_messages(
+            events,
+            &subscriptions,
+            ReplayMessageContext {
+                endpoint_id: TEST_ENDPOINT_ID,
+                lease_id: TEST_LEASE_ID,
+                stream_epoch: &stream.epoch,
+                capability_commands: &commands,
+                capability_events: &capabilities,
+            },
+        );
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["type"], "event");
+        assert_eq!(messages[0]["seq"], 1);
+        assert_eq!(messages[0]["event"], "session:deleted");
+        assert_eq!(messages[1]["type"], "desktop_snapshot");
+        assert_eq!(messages[1]["seq"], 2);
+        assert_eq!(messages[2]["type"], "event");
+        assert_eq!(messages[2]["seq"], 3);
+        assert_eq!(messages[2]["event"], "chat:done");
     }
 
     #[test]

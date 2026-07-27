@@ -80,7 +80,7 @@ pub fn kb_model_cancel() {
 /// React 首帧提交后调用：在 blocking 线程池读取并构建 embedding 模型，完成后原子换入
 /// KnowledgeService。模型未安装/加载失败时保持纯全文降级，不影响主界面。
 pub async fn kb_model_load_after_first_frame(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     service: tauri::State<'_, KnowledgeService>,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<bool, String> {
@@ -263,11 +263,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         hasher.update(&buf[..n]);
     }
     let digest = hasher.finalize();
-    let mut s = String::with_capacity(digest.len() * 2);
-    for b in digest.iter() {
-        s.push_str(&format!("{b:02x}"));
-    }
-    Ok(s)
+    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 fn extract_targz(targz: &Path, dest: &Path) -> Result<(), String> {

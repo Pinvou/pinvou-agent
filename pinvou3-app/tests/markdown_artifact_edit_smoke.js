@@ -87,7 +87,7 @@ function injectSource() {
     window.__MD_READ_TEXT__ = ${JSON.stringify(INITIAL_MD)};
     window.__MD_EXISTS__ = true;
     window.__MD_MTIME__ = 1;
-    var SESSIONS = [{id:'s-md',title:'Markdown编辑测试',created_at:1,updated_at:9}];
+    var SESSIONS = [{id:'s-md',title:'Markdown编辑测试',created_at:Date.now()-1000,updated_at:Date.now()}];
     var CONV = { 's-md': {
       metadata:{id:'s-md',title:'Markdown编辑测试'},
       artifacts:[{path:${JSON.stringify(ARTIFACT_PATH)},basename:'meeting.md'}],

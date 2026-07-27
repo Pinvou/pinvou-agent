@@ -6,11 +6,14 @@ name: PR Check
 # - changes:检测本 PR 有没有 Rust/依赖、L1 harness 或前端改动,给编译/前端 job 做 paths filter。
 # - frontend-test:前端/Relay/WebUI 改动时跑 lint、构建、逻辑测试和浏览器旅程。
 # - rust-test(编译类):**仅当改了 Rust/Cargo/submodule 才跑**(非 Rust PR 直接 skip,不耗
-#   编译时间)。占位 bge-m3 → cargo test --lib(~240 单测;真 bge-m3/vLLM 测试已 #[ignore])。
+#   编译时间)。占位 bge-m3 → cargo test --lib(真 bge-m3/vLLM 测试已 #[ignore])。
+# - rust-lint:fmt / clippy / cargo-deny 三项硬门禁(均无 continue-on-error),
+#   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
+#   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
+#   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test:只在 main push 跑，不作为 PR 或 Merge Queue 合入门禁。
 # - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
 # - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
-# 未上:clippy/fmt(现有代码各 75/329 处不符合,要先清理才能加 -D gate)。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
@@ -286,6 +289,73 @@ jobs:
       - name: Relay 回归
         run: npm --prefix remote-control-relay test
 
+  # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
+  # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
+  # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
+  rust-lint:
+    name: rust-lint
+    needs: changes
+    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      # 同 rust-test:tauri/webkit 系统库 + cmake(aws-lc-sys build script 需要)。
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake
+
+      # 本 step 只作 rustup 引导;实际工具链由 pinvou3-app/src-tauri/rust-toolchain.toml
+      # 锁定具体版本(下方 cargo 步骤 working-directory 在 src-tauri,rustup 按该文件
+      # 自动安装并使用 pinned 版本,本地与 CI 不漂移)。
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # fmt 硬门禁:风格规则见 rustfmt.toml(只用 stable 可用选项)。
+      - name: cargo fmt --check (硬门禁)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo fmt -- --check
+
+      # clippy 硬门禁(无 continue-on-error):lint 配置走 Cargo.toml [lints] 表,
+      # 不用命令行 -W/-D(避免与本地行为分叉)。[lints] 只启用实测零欠账的 lint(deny),
+      # deny 命中即非零退出;欠账 lint/group 显式 allow(见表内注释,清理 PR 消化后启用)。
+      # --lib:只检查主库,不编译 tests/examples。--no-deps:不 lint 依赖;
+      # CodeWhale 子模块(path 依赖)的告警不受本仓 [lints] 约束,属上游欠账,仅显示不挡。
+      - name: cargo clippy --lib (硬门禁,[lints] deny 命中即 fail)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo clippy --lib --no-deps
+
+      # cargo-deny 硬门禁:advisories(RUSTSEC)/licenses/bans/sources,规则见 deny.toml。
+      - name: cargo-deny (advisories/licenses/bans/sources)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny check (硬门禁)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo deny check advisories licenses bans sources
+
   rust-test:
     name: rust-test
     needs: changes
@@ -293,11 +363,11 @@ jobs:
     # changes 在 push 时被 skip,需 !cancelled() 才能让本 job 不被连带 skip。
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # 测试编译不需要完整 debug info:line-tables-only 保留 panic 行号,
-      # 编译提速 ~30%、target/cache 体积大减(限额内能容纳更多份)。
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用
+    # (GitHub 默认 6h,此处收紧到 45min,与 mac-build 的 50min 量级一致)。
+    timeout-minutes: 45
+    # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
+    # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v4
@@ -309,6 +379,7 @@ jobs:
 
       # pinvou3 编译链接的系统库(本地 pkg-config 实测:gtk/webkit/soup/rsvg/openssl/
       # X11×3/appindicator)。ubuntu runner 默认没装,否则 glib-sys 等 build script 失败。
+      # cmake:reqwest 0.13 的 rustls 改用 aws-lc-rs,其 build script 需 cmake + C 编译器。
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
@@ -317,7 +388,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config
+            build-essential pkg-config cmake
 
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
@@ -332,6 +403,13 @@ jobs:
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # rust-toolchain.toml 在 src-tauri 下,对从仓库根用 --manifest-path 调用的 cargo 不生效;
+      # 把该文件锁定的工具链设为 default,保证 CI 与本地同一 pinned 版本(单一真相源是文件,
+      # 版本号不在 workflow 里重复硬编码,升级只改 rust-toolchain.toml)。
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
       # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
       # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
@@ -396,9 +474,12 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
-    timeout-minutes: 40
+    # 45min:aws-lc-sys(NASM 预生成对象)冷编译比纯 Rust 图更久。
+    timeout-minutes: 45
     env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
+      # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
+      AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -410,6 +491,13 @@ jobs:
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # 同 rust-test:把 src-tauri/rust-toolchain.toml 锁定的工具链设为 default,
+      # 保证从仓库根 --manifest-path 调用 cargo 时与本地同一 pinned 版本。
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        shell: bash
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
       - name: Node.js
         uses: actions/setup-node@v4
@@ -447,6 +535,7 @@ jobs:
       - fast-gate
       - frontend-test
       - relay-test
+      - rust-lint
       - rust-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
@@ -459,6 +548,7 @@ jobs:
           FAST_GATE_RESULT: ${{ needs.fast-gate.result }}
           FRONTEND_RESULT: ${{ needs.frontend-test.result }}
           RELAY_RESULT: ${{ needs.relay-test.result }}
+          RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
         run: |
           if [[ "$COMMIT_MESSAGE_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
@@ -470,6 +560,7 @@ jobs:
           for item in \
             "frontend-test:$FRONTEND_RESULT" \
             "relay-test:$RELAY_RESULT" \
+            "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"
