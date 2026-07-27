@@ -35,12 +35,18 @@ const LEASE_ID_WIRE_PLACEHOLDER: &str = "lease_000000000000000000000000";
 const RPC_CACHE_CAPACITY: usize = 512;
 const RPC_CACHE_BYTES_CAPACITY: usize = 32 * 1024 * 1024;
 const MAX_RPC_IN_FLIGHT: usize = 32;
+/// 浏览器端 `invoke` 180s 即超时放弃；桌面命令卡死时按此上限惰性释放
+/// in-flight 槽位，避免 `too_many_in_flight_requests` 永久拒绝后续请求。
+const RPC_IN_FLIGHT_TTL: Duration = Duration::from_secs(300);
 const MAX_RPC_COMMAND_BYTES: usize = 128;
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const RPC_LEDGER_VERSION: u8 = 1;
 const MAX_HOST_ENTRIES: usize = 5_000;
 pub const MAX_ARTIFACT_CHUNK_BYTES: usize = 256 * 1024;
+/// 会话分块单独放大：首开会话在高延迟链路上按 256KB 串行拉取过慢。
+/// 上限受 `MAX_RPC_RESPONSE_BYTES`（2MiB）约束，base64 膨胀后仍需留出 JSON 外壳余量。
+pub const MAX_SESSION_CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_WEB_ATTACHMENTS: usize = 16;
 const MAX_WEB_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WEB_ATTACHMENTS_TOTAL_BYTES: usize = 64 * 1024 * 1024;
@@ -72,6 +78,9 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:user_input_required",
     "scheduled_task:run_updated",
     "session:deleted",
+    "session:list_changed",
+    "session:model_changed",
+    "session:persona_changed",
 ];
 
 #[derive(Clone)]
@@ -244,6 +253,7 @@ struct PendingRpc {
     fingerprint: String,
     dispatched_generation: Option<String>,
     acknowledged_generation: Option<String>,
+    dispatched_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -1848,6 +1858,36 @@ impl RemoteControlManager {
             let endpoint_id = endpoint.config.endpoint_id.clone();
             let sender = endpoint.sender.clone();
             let bridge_generation = inner.bridge_generation.clone();
+            // 浏览器已在 180 秒超时后放弃的卡死请求，超过 TTL 后转为终态错误，
+            // 释放 in-flight 槽位。迟到的 begin/complete 会命中 Complete 并被幂等忽略。
+            let now = Instant::now();
+            let expired: Vec<String> = inner
+                .rpc_cache
+                .iter()
+                .filter_map(|(id, entry)| match entry {
+                    RpcCacheEntry::Pending(pending)
+                        if rpc_in_flight_expired(pending.dispatched_at, now) =>
+                    {
+                        Some(id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            for id in expired {
+                if let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get(&id) {
+                    let fingerprint = pending.fingerprint.clone();
+                    inner.rpc_cache.insert(
+                        id,
+                        RpcCacheEntry::Complete {
+                            fingerprint,
+                            completion: rpc_error_completion(
+                                "rpc_timed_out",
+                                "远程控制请求执行超时，已释放该请求",
+                            ),
+                        },
+                    );
+                }
+            }
             let in_flight_count = inner
                 .rpc_cache
                 .values()
@@ -1949,6 +1989,7 @@ impl RemoteControlManager {
                                         fingerprint,
                                         dispatched_generation: bridge_generation.clone(),
                                         acknowledged_generation: None,
+                                        dispatched_at: Instant::now(),
                                     }),
                                 );
                                 inner.rpc_order.push_back(request_id.clone());
@@ -2024,6 +2065,7 @@ impl RemoteControlManager {
                                             fingerprint,
                                             dispatched_generation: bridge_generation.clone(),
                                             acknowledged_generation: None,
+                                            dispatched_at: Instant::now(),
                                         }),
                                     );
                                     inner.rpc_order.push_back(request_id.clone());
@@ -2217,15 +2259,30 @@ impl RemoteControlManager {
                         &capability_commands,
                         &capability_events,
                     )];
-                    messages.extend(events.into_iter().map(|event| {
-                        event_message(&endpoint_id, lease_id, &inner.stream.epoch, &event)
-                    }));
+                    messages.extend(subscription_filtered_replay_messages(
+                        events,
+                        &inner.subscriptions,
+                        ReplayMessageContext {
+                            endpoint_id: &endpoint_id,
+                            lease_id,
+                            stream_epoch: &inner.stream.epoch,
+                            capability_commands: &capability_commands,
+                            capability_events: &capability_events,
+                        },
+                    ));
                     messages
                 }
-                Some(events) => events
-                    .into_iter()
-                    .map(|event| event_message(&endpoint_id, lease_id, &inner.stream.epoch, &event))
-                    .collect::<Vec<_>>(),
+                Some(events) => subscription_filtered_replay_messages(
+                    events,
+                    &inner.subscriptions,
+                    ReplayMessageContext {
+                        endpoint_id: &endpoint_id,
+                        lease_id,
+                        stream_epoch: &inner.stream.epoch,
+                        capability_commands: &capability_commands,
+                        capability_events: &capability_events,
+                    },
+                ),
                 None => {
                     // The browser reload behavior deliberately persists the new
                     // epoch with cursor zero. Resetting the journal here makes
@@ -2319,6 +2376,7 @@ impl RemoteControlManager {
             let lease_id = endpoint.lease_id.clone();
             let client_ready = endpoint.client_ready;
             let sender = endpoint.sender.clone();
+            let subscribed = is_event_subscribed(&inner.subscriptions, event);
             // Journal every allowlisted event independently of the current
             // lease's subscribe handshake. A reconnect can otherwise lose
             // deltas emitted between `web_client_connected` and the browser's
@@ -2363,6 +2421,11 @@ impl RemoteControlManager {
             if !client_ready {
                 // Subscriptions arrive before client_ready. Keep journaling,
                 // but do not let a live high sequence overtake its replay.
+                return Ok(());
+            }
+            if !subscribed {
+                // 旧版 WebUI 没有协商的新事件不能直接推送，否则会把桌面端判为
+                // 不兼容并断开；事件已写入 journal，后续订阅客户端仍可通过回放恢复。
                 return Ok(());
             }
             debug_assert_eq!(
@@ -2446,6 +2509,14 @@ impl RemoteControlManager {
 enum EventSource {
     Rust,
     Frontend,
+}
+
+fn is_event_subscribed(subscriptions: &HashSet<String>, event: &str) -> bool {
+    subscriptions.contains(event)
+}
+
+fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {
+    now.duration_since(dispatched_at) > RPC_IN_FLIGHT_TTL
 }
 
 enum RpcRequestAction {
@@ -2966,6 +3037,57 @@ fn event_message(
         "event": event.event,
         "payload": event.payload,
     })
+}
+
+#[derive(Clone, Copy)]
+struct ReplayMessageContext<'a> {
+    endpoint_id: &'a str,
+    lease_id: &'a str,
+    stream_epoch: &'a str,
+    capability_commands: &'a [String],
+    capability_events: &'a [String],
+}
+
+fn subscription_filtered_replay_messages(
+    events: Vec<StreamEvent>,
+    subscriptions: &HashSet<String>,
+    context: ReplayMessageContext<'_>,
+) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(events.len());
+    let mut skipped_through = None;
+    for event in events {
+        if is_event_subscribed(subscriptions, &event.event) {
+            if let Some(seq) = skipped_through.take() {
+                messages.push(snapshot_message(
+                    context.endpoint_id,
+                    context.lease_id,
+                    context.stream_epoch,
+                    seq,
+                    context.capability_commands,
+                    context.capability_events,
+                ));
+            }
+            messages.push(event_message(
+                context.endpoint_id,
+                context.lease_id,
+                context.stream_epoch,
+                &event,
+            ));
+        } else {
+            skipped_through = Some(event.seq);
+        }
+    }
+    if let Some(seq) = skipped_through {
+        messages.push(snapshot_message(
+            context.endpoint_id,
+            context.lease_id,
+            context.stream_epoch,
+            seq,
+            context.capability_commands,
+            context.capability_events,
+        ));
+    }
+    messages
 }
 
 fn stream_reset_message(
@@ -3870,6 +3992,62 @@ mod tests {
     const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
 
     #[test]
+    fn event_delivery_requires_current_web_subscription() {
+        let mut subscriptions = HashSet::new();
+        subscriptions.insert("session:deleted".to_string());
+
+        assert!(is_event_subscribed(&subscriptions, "session:deleted"));
+        assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
+    }
+
+    #[test]
+    fn replay_skips_unsubscribed_events_without_creating_sequence_gaps() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "session:deleted", json!({ "id": "one" }));
+        record_stream_event(&mut stream, "session:list_changed", json!({}));
+        record_stream_event(&mut stream, "chat:done", json!({ "id": "one" }));
+        let events = stream.replay_after(0).expect("replay");
+        let subscriptions = HashSet::from(["session:deleted".to_string(), "chat:done".to_string()]);
+        let commands = Vec::new();
+        let capabilities = Vec::new();
+
+        let messages = subscription_filtered_replay_messages(
+            events,
+            &subscriptions,
+            ReplayMessageContext {
+                endpoint_id: TEST_ENDPOINT_ID,
+                lease_id: TEST_LEASE_ID,
+                stream_epoch: &stream.epoch,
+                capability_commands: &commands,
+                capability_events: &capabilities,
+            },
+        );
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["type"], "event");
+        assert_eq!(messages[0]["seq"], 1);
+        assert_eq!(messages[0]["event"], "session:deleted");
+        assert_eq!(messages[1]["type"], "desktop_snapshot");
+        assert_eq!(messages[1]["seq"], 2);
+        assert_eq!(messages[2]["type"], "event");
+        assert_eq!(messages[2]["seq"], 3);
+        assert_eq!(messages[2]["event"], "chat:done");
+    }
+
+    #[test]
+    fn stalled_in_flight_rpc_expires_after_ttl_only() {
+        let dispatched_at = Instant::now();
+        assert!(!rpc_in_flight_expired(
+            dispatched_at,
+            dispatched_at + Duration::from_secs(180)
+        ));
+        assert!(rpc_in_flight_expired(
+            dispatched_at,
+            dispatched_at + RPC_IN_FLIGHT_TTL + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
     fn packaged_defaults_target_the_production_remote_endpoint() {
         assert_eq!(
             DEFAULT_PUBLIC_BASE_URL,
@@ -4038,6 +4216,12 @@ mod tests {
         assert!(policy.events.contains("chat:transcript_committed"));
         assert!(policy.events.contains("session:deleted"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"session:deleted"));
+        assert!(policy.events.contains("session:list_changed"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"session:list_changed"));
+        assert!(policy.events.contains("session:model_changed"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"session:model_changed"));
+        assert!(policy.events.contains("session:persona_changed"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"session:persona_changed"));
     }
 
     #[test]
@@ -4105,6 +4289,7 @@ mod tests {
             fingerprint: "a".repeat(64),
             dispatched_generation: dispatched_generation.map(ToOwned::to_owned),
             acknowledged_generation: acknowledged_generation.map(ToOwned::to_owned),
+            dispatched_at: Instant::now(),
         })
     }
 

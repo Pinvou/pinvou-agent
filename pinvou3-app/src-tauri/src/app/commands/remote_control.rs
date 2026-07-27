@@ -141,10 +141,11 @@ pub fn web_access_list_host_files(
 /// pointer used by the native window.
 #[tauri::command]
 pub async fn web_access_create_session(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<WebSessionMetadata, String> {
-    let metadata = super::sessions::create_session(Some(false), store, pool).await?;
+    let metadata = super::sessions::create_session(Some(false), app, store, pool).await?;
     let transcript_revision = crate::features::sessions::transcript_revision(&[])
         .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
     Ok(WebSessionMetadata {
@@ -193,11 +194,11 @@ pub async fn web_access_load_session_chunk(
 ) -> Result<SessionDataChunk, String> {
     crate::features::sessions::validate_session_id(&id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
-    let limit = limit.unwrap_or(manager::MAX_ARTIFACT_CHUNK_BYTES);
-    if limit == 0 || limit > manager::MAX_ARTIFACT_CHUNK_BYTES {
+    let limit = limit.unwrap_or(manager::MAX_SESSION_CHUNK_BYTES);
+    if limit == 0 || limit > manager::MAX_SESSION_CHUNK_BYTES {
         return Err(format!(
             "Session chunk limit must be between 1 and {}",
-            manager::MAX_ARTIFACT_CHUNK_BYTES
+            manager::MAX_SESSION_CHUNK_BYTES
         ));
     }
     let offset = usize::try_from(offset).map_err(|_| "Session offset is too large".to_string())?;
@@ -428,10 +429,11 @@ pub async fn web_access_transcribe_voice_audio(
 #[tauri::command]
 pub async fn web_access_start_skill_session(
     name: String,
+    app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<super::workflows::StartSkillSessionResult, String> {
-    super::workflows::start_skill_session(name, Some(false), store, pool).await
+    super::workflows::start_skill_session(name, Some(false), app, store, pool).await
 }
 
 /// Read a bounded chunk from a Session-owned artifact. The resolver rejects

@@ -4,7 +4,7 @@ import { Edit2, Menu } from '../icons.jsx';
 
 // 移动壳层（仅 Web 紧凑视口渲染，桌面窗口不受影响）：
 // 顶部栏（☰ 会话抽屉 + 标题 + 新对话）、底部主导航 Tab、「更多」底部面板。
-// 主导航收敛为 对话/工作流/知识库 三个 Tab，其余入口全部走「更多」；
+// 主导航收敛为 对话/卡池/运行状态 三个 Tab，其余入口全部走「更多」；
 // 会话列表复用现有侧栏抽屉（max-sm 下是 overlay），不重建第二套列表。
 
 const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {

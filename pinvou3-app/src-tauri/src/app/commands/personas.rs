@@ -18,6 +18,7 @@ pub async fn read_persona_body(persona_id: String) -> Result<String, String> {
 pub async fn equip_persona(
     session_id: String,
     persona_id: String,
+    app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<crate::features::personas::PersonaSummary, String> {
     let card = crate::features::personas::get(&persona_id)
@@ -28,6 +29,7 @@ pub async fn equip_persona(
         Some(crate::features::personas::equip_body_injection(&card)),
     );
     store.set_active_persona(&session_id, Some(persona_id));
+    super::sessions::emit_session_event(&app, "session:persona_changed", &session_id, "equipped");
     Ok(summary)
 }
 
@@ -213,10 +215,12 @@ pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json
 #[tauri::command]
 pub async fn unequip_persona(
     session_id: String,
+    app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     store.set_active_persona(&session_id, None);
     store.set_pending_persona_body(&session_id, None);
+    super::sessions::emit_session_event(&app, "session:persona_changed", &session_id, "unequipped");
     Ok(())
 }
 

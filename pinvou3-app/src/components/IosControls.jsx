@@ -104,7 +104,7 @@ function IosSegmentedControl({
 
   return (
     <div
-      className={`inline-flex shrink-0 items-center ${compact ? 'h-9 gap-1 rounded-[14px] p-1' : 'gap-3'} ${className}`}
+      className={`inline-flex shrink-0 items-center ${compact ? 'h-9 gap-1 rounded-[14px] p-1' : 'gap-3 max-sm:gap-1'} ${className}`}
       style={{
         background: compact ? controlFill(isDark) : 'transparent',
         boxShadow: compact ? (isDark ? 'inset 0 0 0 1px rgba(255,255,255,.06)' : 'inset 0 0 0 1px rgba(0,0,0,.06)') : 'none',
@@ -120,7 +120,7 @@ function IosSegmentedControl({
             data-testid={testId}
             aria-pressed={selected}
             onClick={() => onChange && onChange(key)}
-            className={`inline-flex items-center justify-center transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold' : 'h-9 gap-2 px-3 text-[24px] font-normal tracking-tight'}`}
+            className={`inline-flex items-center justify-center whitespace-nowrap transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold' : 'h-9 gap-2 px-3 text-[24px] font-normal tracking-tight max-sm:h-8 max-sm:gap-1.5 max-sm:px-2 max-sm:text-[17px]'}`}
             style={compact
               ? (selected
                 ? {

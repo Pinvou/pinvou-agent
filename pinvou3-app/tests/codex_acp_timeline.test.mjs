@@ -321,7 +321,7 @@ try {
     && main.includes('<CodexLogo')
     && codexView.includes('<CodexLogo'),
   'Codex identity must reuse the project OpenAI mark in the home, sidebar, and conversation');
-  assert.ok(pinvouLogo.includes('/assets/brand/brand-blue.png')
+  assert.ok(pinvouLogo.includes("resolveAppAssetUrl('assets/brand/brand-blue.png')")
     && chatView.includes('assistantAvatar={(')
     && chatView.includes('<PinvouLogo className="h-5 w-5" title="品悟"')
     && codexView.includes('<CodexLogo className="h-5 w-5" title="Codex"'),

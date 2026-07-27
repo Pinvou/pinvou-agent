@@ -119,6 +119,7 @@ pub struct ActiveSkillState {
 pub async fn start_skill_session(
     name: String,
     set_active: Option<bool>,
+    app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<StartSkillSessionResult, String> {
@@ -195,6 +196,7 @@ pub async fn start_skill_session(
         },
     );
     store.save_skill_bindings();
+    super::sessions::emit_session_event(&app, "session:list_changed", &sid, "created");
 
     Ok(StartSkillSessionResult {
         session: session.metadata,

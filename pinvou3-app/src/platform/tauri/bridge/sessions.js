@@ -5,6 +5,7 @@
   registry.sessions = function (context) {
     var state = context.state;
     var invoke = context.invoke;
+    var listen = context.listen;
     var notify = context.notify;
     var sessionStates = context.sessionStates;
     var scheduledRunSessionOwners = context.scheduledRunSessionOwners;
@@ -773,24 +774,65 @@
     loadWorkingSetFrom(freshBuffer());
   }
 
-  async function deleteSession(id) {
+  function applyDeletedSession(id) {
+    if (typeof id !== "string" || !id) return false;
     invalidateScheduledRecentRunsForSession(id);
+    purgeSessionBuffer(id);
+    state.sessions = state.sessions.filter(function (session) { return session.id !== id; });
+    state.archivedSessions = (state.archivedSessions || []).filter(function (session) {
+      return session.id !== id;
+    });
+    state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
+      return !run || run.sessionId !== id;
+    });
+    notify();
+    return true;
+  }
+
+  if (typeof listen === "function") {
+    listen("session:deleted", function (event) {
+      var payload = event && event.payload || {};
+      applyDeletedSession(payload.id);
+    }).catch(function (error) {
+      console.error("[sessions] session:deleted listener failed", error);
+    });
+    listen("session:list_changed", function () {
+      refreshHistoryList().catch(function (error) {
+        console.error("[sessions] session:list_changed refresh failed", error);
+      });
+    }).catch(function (error) {
+      console.error("[sessions] session:list_changed listener failed", error);
+    });
+    listen("session:model_changed", function (event) {
+      var payload = event && event.payload || {};
+      if (payload.id !== state.activeSessionId) return;
+      Promise.resolve(loadSessionModel(payload.id)).catch(function (error) {
+        console.error("[sessions] session:model_changed refresh failed", error);
+      });
+    }).catch(function (error) {
+      console.error("[sessions] session:model_changed listener failed", error);
+    });
+    listen("session:persona_changed", function (event) {
+      var payload = event && event.payload || {};
+      if (payload.id !== state.activeSessionId) return;
+      Promise.resolve(syncActivePersona()).then(notify).catch(function (error) {
+        console.error("[sessions] session:persona_changed refresh failed", error);
+      });
+    }).catch(function (error) {
+      console.error("[sessions] session:persona_changed listener failed", error);
+    });
+  }
+
+  async function deleteSession(id) {
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id: id });
-      // 统一清理工作集、实时状态、定时创建上下文与当前视图，避免手写字段漂移。
-      purgeSessionBuffer(id);
-      state.sessions = state.sessions.filter(function (s) { return s.id !== id; });
-      state.archivedSessions = (state.archivedSessions || []).filter(function (s) { return s.id !== id; });
-      state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      state.scheduledTaskRuns = (state.scheduledTaskRuns || []).filter(function (run) {
-        return !run || run.sessionId !== id;
-      });
-      notify();
-      return true;
+      // 复用远端事件与本地操作的统一清理路径，并保留批量操作所需的结果语义。
+      return applyDeletedSession(id);
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);
       return false;
@@ -985,6 +1027,7 @@
       exitScheduledRunChat: exitScheduledRunChat,
       recentScheduledRunForSession: recentScheduledRunForSession,
       leaveSessionView: leaveSessionView,
+      applyDeletedSession: applyDeletedSession,
       deleteSession: deleteSession,
       renameSession: renameSession,
       toggleSessionPinned: toggleSessionPinned,

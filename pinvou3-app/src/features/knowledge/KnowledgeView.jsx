@@ -5,6 +5,7 @@ import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
@@ -120,7 +121,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         zip: '/file-icons/zip.svg', rar: '/file-icons/zip.svg', '7z': '/file-icons/zip.svg', tar: '/file-icons/zip.svg', gz: '/file-icons/zip.svg',
       };
       const FILE_ICON_BY_CAT = { web: '/file-icons/html.svg', doc: '/file-icons/docx.svg', img: '/file-icons/photo.svg', ppt: '/file-icons/pptx.svg' };
-      const fileIconSrc = (ext, category) => FILE_ICON_BY_EXT[String(ext || '').toLowerCase()] || FILE_ICON_BY_CAT[category] || '/file-icons/genericfile.svg';
+      const fileIconSrc = (ext, category) => resolveAppAssetUrl(
+        FILE_ICON_BY_EXT[String(ext || '').toLowerCase()]
+          || FILE_ICON_BY_CAT[category]
+          || '/file-icons/genericfile.svg',
+      );
       const OutputFileIcon = ({ meta, ext, category }) => {
         const lowerExt = String(ext || '').toLowerCase();
         const code = lowerExt.toUpperCase().slice(0, 4) || meta.label;

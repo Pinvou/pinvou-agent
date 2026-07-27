@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Brain, BrainCircuit, CheckCircle2, Clock, Cpu, Database, RefreshCw, RotateCcw, Server } from '../../components/icons.jsx';
+import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ListRow, ProgressBar, WidgetCard } from '../workflow/WorkflowView.jsx';
 
@@ -479,7 +480,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                 style={{ borderColor: isDark ? 'rgba(255,255,255,.10)' : 'rgba(198,198,200,.55)' }}
               >
                 <div>
-                  <h1 className="text-[26px] font-normal tracking-tight text-black/90 dark:text-white/90">{t.sysStatus}</h1>
+                  <h1 className="text-[26px] font-normal tracking-tight text-black/90 dark:text-white/90 max-sm:hidden">{t.sysStatus}</h1>
                   {(!monitorBridgeReady || monitorError) && (
                     <div className="mt-2 flex items-center gap-2.5 bg-black/[0.04] dark:bg-white/[0.06] px-3 py-1.5 rounded-full w-fit">
                       <span className="relative flex h-2 w-2">
@@ -543,7 +544,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                   <div className="flex-1 flex flex-col justify-between">
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-2">
-                        <img src="/assets/brand/brand-blue.png" alt="" className="w-7 h-7 rounded-lg object-cover shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
+                        <PinvouLogo className="h-7 w-7 rounded-lg shadow-[0_2px_8px_rgba(0,0,0,0.12)]" />
                         <h2 className="text-xl font-bold">pinvou3-app</h2>
                       </div>
                     </div>
