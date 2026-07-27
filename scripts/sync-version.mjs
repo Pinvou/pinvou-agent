@@ -15,7 +15,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const CHECK_ONLY = process.argv.includes('--check');
 
 const VERSION_FILE = resolve(REPO_ROOT, 'VERSION');
@@ -24,10 +25,18 @@ const CARGO_TOML = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.toml');
 const PACKAGE_JSON = resolve(REPO_ROOT, 'pinvou3-app/package.json');
 const PACKAGE_LOCK = resolve(REPO_ROOT, 'pinvou3-app/package-lock.json');
 
+// SemVer 2.0.0：禁止数字段前导零，预发布数字标识同样禁止前导零；
+// 允许合法的预发布与构建元数据，例如 1.2.3-rc.1+build.7。
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+export function isValidVersion(version) {
+  return SEMVER_RE.test(version);
+}
+
 // 读取单一事实来源：根目录 VERSION 文件（内容只有一行版本号）
 function readTargetVersion() {
   const version = readFileSync(VERSION_FILE, 'utf8').trim();
-  if (!/^\d+\.\d+\.\d+([-.0-9A-Za-z]*)$/.test(version)) {
+  if (!isValidVersion(version)) {
     console.error(`VERSION 文件内容不是合法版本号: "${version}"`);
     process.exit(2);
   }
@@ -102,7 +111,7 @@ function writeCargoVersion(path, version) {
   writeFileSync(path, lines.join('\n'));
 }
 
-function main() {
+export function main() {
   const target = readTargetVersion();
   const targets = [
     { name: 'pinvou3-app/src-tauri/tauri.conf.json', read: () => readJsonVersion(TAURI_CONF), write: () => writeJsonVersion(TAURI_CONF, target) },
@@ -139,4 +148,6 @@ function main() {
   }
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+  main();
+}

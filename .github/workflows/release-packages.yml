@@ -1,10 +1,11 @@
 name: release-packages
 
-# VERSION 文件变更时自动构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
+# VERSION 或发布链路变更时自动构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
 #
 # 触发条件:
 # - push main 且根目录 VERSION 文件被修改(paths 限定);
-# - job 1 再做精确版本号 diff:VERSION 内容没变(如只改了换行)就跳过后续构建;
+# - 影响版本/打包链路的 PR:无条件构建,在合入前验证五个平台真实产物;
+# - push 事件按 github.event.before..github.sha 做精确版本号 diff;
 # - workflow_dispatch 手动触发:跳过 diff,无条件全量构建(用于补打/重打某版本)。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
@@ -14,7 +15,7 @@ name: release-packages
 #
 # 与其他 workflow 的分工:
 # - pr-check / mac-build:每次改动跑编译验证 gate(不产出可用产物)。
-# - release-packages(本 workflow):仅 VERSION bump 跑,产出全平台可用安装包 artifact。
+# - release-packages(本 workflow):VERSION bump 或发布链路 PR 跑,产出全平台安装包 artifact。
 # - 本 workflow 只上传 CI artifact,绝不创建/推送 GitHub Release,release 由人工填写。
 #
 # 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
@@ -26,6 +27,12 @@ on:
     branches: [main]
     paths:
       - 'VERSION'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'VERSION'
+      - 'scripts/sync-version.mjs'
+      - '.github/workflows/release-packages.yml'
   workflow_dispatch:
 
 permissions:
@@ -33,12 +40,14 @@ permissions:
 
 concurrency:
   group: release-packages-${{ github.ref }}
-  cancel-in-progress: false
+  # PR 连续更新时取消旧验证；main 的正式版本构建必须完整保留。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ── Job 1: 版本号变更检测(gate,跑 ubuntu 快) ──────────────────────
-  # 对比当前 commit 与父 commit 的 VERSION 内容。没变 → version_bumped=false,跳过构建。
-  # workflow_dispatch 手动触发无条件放行。首提交(无 HEAD~1)直接放行。
+  # push 对比事件 before..sha 的 VERSION 内容,覆盖一次 push 含多个 commit 的情况。
+  # pull_request / workflow_dispatch 无条件放行,保证发布链路改动在合入前真实打包。
+  # 首次 push 或 before commit 不可达时直接放行,宁可多构建也不漏构建。
   # 同时用 sync-version.mjs --check 校验三处版本文件与 VERSION 一致,不一致 fail。
   check-version-bump:
     name: 检测版本号变更
@@ -48,16 +57,18 @@ jobs:
       version_bumped: ${{ steps.diff.outputs.bumped }}
       version: ${{ steps.diff.outputs.version }}
     steps:
-      # fetch-depth: 2 取当前 commit + 父 commit,够做 VERSION diff。
-      # 默认 fetch-depth:1(浅克隆)拿不到 HEAD~1,diff 会误判为"首提交放行"。
+      # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: 版本同步脚本测试
+        run: node --test scripts/tests/sync-version.test.mjs
 
       # 版本号单一事实来源 = 根目录 VERSION。各处版本文件必须已与其同步,
       # 否则包名/包内版本号可能不一致,直接 fail 提示先跑 sync-version.mjs。
@@ -72,17 +83,20 @@ jobs:
           V=$(tr -d '[:space:]' < VERSION)
           echo "当前 VERSION: $V"
 
-          # 手动触发:无条件构建(补打/重打场景)。
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "✓ workflow_dispatch 手动触发,无条件构建"
+          EVENT_NAME="${{ github.event_name }}"
+          BEFORE="${{ github.event.before }}"
+
+          # PR 改动需要在合入前验证真实产物;手动触发用于补打/重打。
+          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "✓ $EVENT_NAME 触发,无条件构建"
             BUMPED=true
-          # 父 commit 不存在(首提交/浅克隆边界)→ 视为首次 bump,放行。
-          elif ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-            echo "⚠️ 无父 commit(浅克隆或首提交),视为版本 bump,放行"
+          # 首次 push 的 before 为全零;强推后 before commit 也可能不可达。
+          elif [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "⚠️ before commit 不存在或不可达,视为版本 bump,放行"
             BUMPED=true
           else
-            V_OLD=$(git show HEAD~1:VERSION 2>/dev/null | tr -d '[:space:]' || echo "")
-            echo "父 commit VERSION: $V_OLD"
+            V_OLD=$(git show "${BEFORE}:VERSION" 2>/dev/null | tr -d '[:space:]' || echo "")
+            echo "push 前 VERSION: $V_OLD"
             if [ "$V" != "$V_OLD" ]; then
               echo "✓ VERSION 变化,触发全平台构建"
               BUMPED=true
