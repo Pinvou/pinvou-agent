@@ -25,8 +25,6 @@
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ 观看 90 秒功能演示：7 月 17—23 日功能更新</strong></a>
 </p>
 
-<img src="docs/assets/screenshots/home.webp" alt="Pinvou Agent 主界面" />
-
 </div>
 
 Pinvou Agent 不只是一个聊天界面。它把模型、工具、个人知识、专家角色和工作流放进同一个桌面应用，让 AI 从“回答问题”进一步走到“**完成任务**”。模型既可以运行在本地，也可以接入任意 OpenAI-compatible 服务；工具与连接器按需启用。

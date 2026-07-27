@@ -25,8 +25,6 @@
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ Watch the 90-second feature demo (Chinese)</strong></a>
 </p>
 
-<img src="docs/assets/screenshots/home.webp" alt="Pinvou Agent desktop workspace" />
-
 </div>
 
 Pinvou Agent is more than a chat window. It brings models, tools, personal knowledge, specialist personas, and reusable workflows into one desktop workspace — designed for work that should end with **a result**, not just another chat response.
