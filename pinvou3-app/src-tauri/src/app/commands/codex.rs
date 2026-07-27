@@ -3,6 +3,7 @@
 //! 这里只保留传输边界与会话元数据编排；Codex 进程、ACP 协议、权限和事件适配
 //! 均由 `features::codex_acp` 领域模块负责。
 
+use anyhow::Context;
 use deepseek_tui::session_manager::SessionMetadata;
 use serde::Serialize;
 use tauri::State;
@@ -26,6 +27,17 @@ pub struct CodexAcpSessionListItem {
     pub pinned_at: Option<String>,
     #[serde(flatten)]
     pub workspace: CodexAcpWorkspaceInfo,
+}
+
+fn ensure_codex_workspace_root(
+    kind: CodexWorkspaceKind,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    if kind == CodexWorkspaceKind::Temporary {
+        std::fs::create_dir_all(path)
+            .with_context(|| format!("创建 Codex 临时工作目录失败: {}", path.display()))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -402,6 +414,15 @@ pub async fn create_codex_acp_session(
     } else {
         CodexWorkspaceKind::Temporary
     };
+    if kind == CodexWorkspaceKind::Temporary {
+        let temporary_workspace = store
+            .execution_workspace(&session.metadata.id)
+            .map_err(|error| format!("解析 Codex 临时工作目录失败: {error:#}"))?;
+        if let Err(error) = ensure_codex_workspace_root(kind, &temporary_workspace) {
+            let _ = store.delete(&session.metadata.id);
+            return Err(format!("{error:#}"));
+        }
+    }
     if let Err(error) =
         acp_pool
             .agents()
@@ -427,4 +448,36 @@ pub async fn create_codex_acp_session(
         return Err(format!("创建 Codex 工作区基线失败: {error:#}"));
     }
     Ok(session.metadata)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_workspace_exists_before_baseline_capture() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-workspace-test-{}-temporary",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("session").join("workspace");
+        ensure_codex_workspace_root(CodexWorkspaceKind::Temporary, &workspace)
+            .expect("create temporary Codex workspace");
+        assert!(workspace.is_dir());
+        std::fs::remove_dir_all(root).expect("cleanup temporary Codex workspace");
+    }
+
+    #[test]
+    fn project_workspace_is_not_created_implicitly() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-workspace-test-{}-project",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("missing-project");
+        ensure_codex_workspace_root(CodexWorkspaceKind::Project, &workspace)
+            .expect("project workspace is caller-validated");
+        assert!(!workspace.exists());
+    }
 }
