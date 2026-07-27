@@ -212,8 +212,8 @@ try {
     'Codex sessions must share the global recent-session list');
   assert.ok(main.includes("taskKind: 'codex'") && main.includes("testId: 'codex-sidebar-item'"),
     'global sessions must visually identify Codex records');
-  assert.ok(main.includes("useState('recent')"),
-    'work and code sessions must be mixed by recent update time by default');
+  assert.ok(main.includes("useState('pinned_first')"),
+    'pinned sessions float first by default; unpinned work and code sessions still mix by recent update time');
   assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode || '代码' }")
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
