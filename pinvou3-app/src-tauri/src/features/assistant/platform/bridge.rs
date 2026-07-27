@@ -2132,7 +2132,6 @@ mod tests {
             }),
             "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境"
         );
-
         let Op::SendMessage {
             hook_executor: Some(message_executor),
             ..

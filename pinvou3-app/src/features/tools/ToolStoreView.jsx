@@ -18,6 +18,7 @@ const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
   || tool.wecomCli
   || tool.dingtalkCli
   || tool.tmeetCli
+  || tool.imaOpenapi
 );
 
 const PlatformToolAction = (props) => {
@@ -50,6 +51,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   tmeet: 'assets/tool-icons/wb-tencent-meeting.png',
   qcc: 'assets/tool-icons/qcc-user.png',
   'patsnap-search': 'assets/tool-icons/wb-patsnap-search.png',
+  ima: 'assets/tool-icons/wb-ima-mcp.png',
   obsidian: 'assets/tool-icons/obsidian.ico',
   'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',
   3: 'assets/tool-icons/wb-qq-mail.png',
@@ -61,7 +63,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   12: 'assets/tool-icons/wb-cnb-api.svg',
 };
 
-const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-tencent-meeting.png', 'assets/tool-icons/wb-yuandian-mcp.svg', 'assets/tool-icons/wecom-user.png']);
+const FULL_TILE_LOGOS = new Set(['assets/tool-icons/amap-user-v3.png', 'assets/tool-icons/dingtalk-user-v2.png', 'assets/tool-icons/iwencai-user-v3.png', 'assets/tool-icons/qcc-user.png', 'assets/tool-icons/wb-ima-mcp.png', 'assets/tool-icons/wb-tencent-meeting.png', 'assets/tool-icons/wb-yuandian-mcp.svg', 'assets/tool-icons/wecom-user.png']);
 const CROPPED_TILE_LOGOS = new Set(['assets/tool-icons/wb-yuandian-mcp.svg']);
 
 const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallbackSize = 30, fallbackStrokeWidth = 1.5, children }) => {
@@ -729,6 +731,16 @@ const FEISHU_STEPS = [
       };
       useEffect(() => { refreshTmeet(); }, []);
 
+      // 腾讯 IMA(OpenAPI Skill)连接态:本机凭据 + ima-skills 均就绪才算已连接。
+      const [imaConnected, setImaConnected] = useState(false);
+      const refreshIma = async () => {
+        try {
+          const s = await invokeTauri('ima_status');
+          setImaConnected(!!(s && s.connected));
+        } catch (e) { console.error('ima_status failed:', e); }
+      };
+      useEffect(() => { refreshIma(); }, []);
+
       useEffect(() => {
         const urls = [
           ...tsFeaturedCollections.map((item) => item.img),
@@ -876,6 +888,8 @@ const FEISHU_STEPS = [
             ? dingtalkConnected
             : t.tmeetCli
             ? tmeetConnected
+            : t.imaOpenapi
+            ? imaConnected
             : t.oauthMcp
             ? authState?.status === 'connected'
             : (t.backendId ? (toolStates[t.backendId] || false) : false),
@@ -1249,6 +1263,50 @@ const FEISHU_STEPS = [
         }
       };
 
+      const connectIma = async (values = {}) => {
+        if (!canMutateToolStore) return;
+        const clientId = (values.IMA_CLIENT_ID || '').trim();
+        const apiKey = (values.IMA_API_KEY || '').trim();
+        setBusyId('ima');
+        setAlert({ loading: true, visible: false, title: '正在连接「腾讯 ima」', subtitle: '正在校验 OpenAPI 凭证并启用 Skill…', isInstall: true, isError: false });
+        try {
+          await invokeTauri('ima_connect', { clientId, apiKey });
+          await loadBackendState();
+          setImaConnected(true);
+          setAlert({ visible: true, loading: false, title: '已连接「腾讯 ima」', subtitle: 'IMA OpenAPI Skill 已启用，可新建对话直接使用。', isInstall: true, isError: false, toolId: 'ima' });
+          if (selectedTool && selectedTool.backendId === 'ima') {
+            setSelectedTool(prev => ({ ...prev, installed: true }));
+          }
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('ima connect failed:', e);
+          setImaConnected(false);
+          setAlert({ visible: true, loading: false, title: 'IMA 连接失败', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      const disconnectIma = async () => {
+        if (!canMutateToolStore) return;
+        setBusyId('ima');
+        try {
+          await invokeTauri('ima_logout');
+          await loadBackendState();
+          setImaConnected(false);
+          setAlert({ visible: true, loading: false, title: '已断开「腾讯 ima」', isInstall: false, isError: false });
+          if (selectedTool && selectedTool.backendId === 'ima') {
+            setSelectedTool(prev => ({ ...prev, installed: false }));
+          }
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('ima logout failed:', e);
+          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 连接飞书(config init --new 自建 app,两段扫码):事件驱动。
       // 进度走后端事件 feishu:qr / feishu:phase / feishu:connected / feishu:error
       //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
@@ -1473,6 +1531,22 @@ const FEISHU_STEPS = [
           if (tt) setSelectedTool(tt);
           return connectTmeet();
         }
+        // IMA 是 OpenAPI Skill 连接器:校验凭据 + 安装 skill,不写 mcp.json。
+        if (backendId === 'ima') {
+          if (isInstalled) return disconnectIma();
+          const it = tools.find(x => x.backendId === 'ima') || tsToolsData.find(x => x.backendId === 'ima');
+          if (!it) return;
+          setConfigDialog({
+            backendId,
+            name: it.title,
+            fields: it.configFields || [],
+            configTitle: it.configTitle,
+            configDescription: it.configDescription,
+            configDocUrl: it.configDocUrl,
+            configDocLabel: it.configDocLabel,
+          });
+          return;
+        }
         const t = tsToolsData.find(x => x.backendId === backendId);
         const name = t ? t.title : backendId;
 
@@ -1568,7 +1642,7 @@ const FEISHU_STEPS = [
             config={externalAuthAvailable ? configDialog : null}
             theme={theme}
             onCancel={() => setConfigDialog(null)}
-            onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); doInstall(bid, values); }}
+            onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); if (bid === 'ima') connectIma(values); else doInstall(bid, values); }}
           />, document.body)}
           {createPortal(<TsObsidianGuide
             guide={obsidianGuide}
@@ -1964,6 +2038,12 @@ const FEISHU_STEPS = [
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接腾讯会议 · 官方技能已启用，可直接对它下指令</span>
+                    </div>
+                  )}
+                  {selectedTool.imaOpenapi && imaConnected && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接腾讯 ima · OpenAPI Skill 已启用，可直接对它下指令</span>
                     </div>
                   )}
 

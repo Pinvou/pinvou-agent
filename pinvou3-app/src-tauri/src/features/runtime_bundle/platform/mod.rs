@@ -88,8 +88,9 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.14: 接入钉钉官方 dws skill + Linux ARM64 内置 dws CLI
 /// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
 /// 0.16: 接入腾讯会议官方 tmeet CLI skill
+/// 0.17: 接入腾讯 ima OpenAPI Skill（原生受控工具）
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.16-",
+    "0.17-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -261,7 +262,6 @@ pub const DENY_SENSITIVE_PATHS_PS1: &str =
 
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
 pub const SHELL_ENV_SH: &str = include_str!("../../../../resources/common/bundle/shell_env.sh");
-
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
