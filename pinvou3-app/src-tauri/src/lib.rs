@@ -935,6 +935,7 @@ mod blocklist_contract {
 
 #[cfg(test)]
 mod web_template_seed {
+    #[cfg(unix)]
     use std::fs;
     use std::path::PathBuf;
 
