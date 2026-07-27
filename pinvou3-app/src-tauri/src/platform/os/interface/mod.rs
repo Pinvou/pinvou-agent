@@ -12,8 +12,6 @@ pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
     super_permission_turn_reminder,
 };
-#[cfg(target_os = "windows")]
-pub use system::bios_serial_number;
 pub use system::{
     archive_dependency_packages, archive_tool_exists, archive_tool_path, command_exists,
     email_dependency_packages, email_tool_exists, libreoffice_missing_message,
