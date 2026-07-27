@@ -21,20 +21,43 @@ const MARKER_PATH = path.join(
 const PREPARE_FORMAT_VERSION = 1;
 const NPM_CI_ARGS = ["ci", "--prefer-offline", "--no-audit", "--no-fund"];
 
-function npmInvocation({
+function npmInstallInvocation({
   platform = process.platform,
-  env = process.env,
+  environment = process.env,
+  nodeExecutable = process.execPath,
+  npmArgs = NPM_CI_ARGS,
 } = {}) {
-  if (platform === "win32") {
+  const args = [...npmArgs];
+  if (args.some((argument) => !/^[A-Za-z0-9@._=:/-]+$/u.test(argument))) {
+    throw new Error("npm 参数包含不受支持的字符");
+  }
+  if (platform !== "win32") {
+    return { command: "npm", args };
+  }
+
+  const npmExecPath = String(environment.npm_execpath || "").trim();
+  if (npmExecPath && !/\.(?:cmd|bat)$/iu.test(npmExecPath)) {
     return {
-      command: env.ComSpec || "cmd.exe",
-      args: ["/d", "/s", "/c", `npm.cmd ${NPM_CI_ARGS.join(" ")}`],
+      command: nodeExecutable,
+      args: [npmExecPath, ...args],
     };
   }
+
+  // Newer Node releases reject spawning .cmd files directly with EINVAL.
+  // Keep the fallback command static and run it through the Windows command
+  // interpreter instead of enabling `shell` for arbitrary arguments.
+  const commandInterpreter = String(
+    environment.ComSpec || environment.COMSPEC || "cmd.exe",
+  ).trim();
   return {
-    command: "npm",
-    args: NPM_CI_ARGS,
+    command: commandInterpreter || "cmd.exe",
+    args: ["/d", "/s", "/c", `npm.cmd ${args.join(" ")}`],
   };
+}
+
+// 保留旧的内部 helper 形状，避免已有脚本或测试在迁移期间失效。
+function npmInvocation({ platform = process.platform, env = process.env } = {}) {
+  return npmInstallInvocation({ platform, environment: env });
 }
 
 function expectedMarker({
@@ -68,6 +91,8 @@ function isPrepared(expected = expectedMarker()) {
 function prepareWebTemplate({
   platform = process.platform,
   architecture = process.arch,
+  environment = process.env,
+  nodeExecutable = process.execPath,
   spawn = spawnSync,
 } = {}) {
   const expected = expectedMarker({ platform, architecture });
@@ -78,16 +103,20 @@ function prepareWebTemplate({
     return false;
   }
 
-  const npm = npmInvocation({ platform });
+  const invocation = npmInstallInvocation({
+    platform,
+    environment,
+    nodeExecutable,
+  });
   console.log(
     `[web-template] 为 ${platform}/${architecture} 从 package-lock.json 准备离线模板依赖`,
   );
   const result = spawn(
-    npm.command,
-    npm.args,
+    invocation.command,
+    invocation.args,
     {
       cwd: WEB_TEMPLATE_ROOT,
-      env: process.env,
+      env: environment,
       stdio: "inherit",
     },
   );
@@ -123,6 +152,7 @@ module.exports = {
   expectedMarker,
   isPrepared,
   main,
+  npmInstallInvocation,
   npmInvocation,
   prepareWebTemplate,
 };

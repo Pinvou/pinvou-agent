@@ -207,7 +207,7 @@ try {
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<CodexAcpView'));
-  assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay Linux capability-gated');
+  assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay platform capability-gated');
   assert.ok(main.includes(".concat(codexHistory)"),
     'Codex sessions must share the global recent-session list');
   assert.ok(main.includes("taskKind: 'codex'") && main.includes("testId: 'codex-sidebar-item'"),

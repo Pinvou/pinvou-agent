@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   buildResourceManifest,
@@ -9,7 +11,9 @@ const {
   configSpecs,
   prepareLinuxArm64Connectors,
   prepareLinuxCodexBridge,
+  prepareWindowsCodexBridge,
   prepareTauriArgs,
+  runTauri,
   tauriCommandIndex,
 } = require("../scripts/tauri/build.js");
 const {
@@ -17,6 +21,7 @@ const {
   platformConfigPath,
 } = require("../scripts/tauri/platform-config.js");
 const { requireWrapper, WRAPPER_ENV } = require("../scripts/tauri/require-wrapper.js");
+const { WINDOWS_BRIDGE_CONFIG_PATH } = require("../scripts/tauri/codex-bridge.js");
 
 let preparedBridge = null;
 prepareLinuxCodexBridge({
@@ -36,6 +41,11 @@ prepareLinuxCodexBridge({
   },
 });
 assert.equal(preparedBridge, null);
+assert.equal(
+  prepareWindowsCodexBridge({ platform: "linux" }),
+  false,
+  "Linux 不应准备 Windows Codex Bridge",
+);
 
 assert.throws(() => requireWrapper({}), /禁止绕过平台 overlay/);
 assert.doesNotThrow(() => requireWrapper({ [WRAPPER_ENV]: "1" }));
@@ -63,11 +73,44 @@ assert.deepEqual(configSpecs(bundleArgs), [
   platformConfigPath("win32"),
   explicitOverlay,
 ]);
+const windowsCodexArgs = prepareTauriArgs(
+  ["build", "-c", explicitOverlay],
+  {
+    platform: "win32",
+    additionalConfigs: [WINDOWS_BRIDGE_CONFIG_PATH],
+  },
+);
+assert.deepEqual(configSpecs(windowsCodexArgs), [
+  platformConfigPath("win32"),
+  WINDOWS_BRIDGE_CONFIG_PATH,
+  explicitOverlay,
+]);
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "linux" }),
   ["dev"],
   "dev must not receive packaging overlays",
 );
+const buildSource = fs.readFileSync(
+  path.join(__dirname, "..", "scripts", "tauri", "build.js"),
+  "utf8",
+);
+assert.match(
+  buildSource,
+  /if \(isDev\)[\s\S]*?prepareWindowsCodexBridge\(\)/,
+  "Windows dev must prepare the ACP Bridge without packaging overlays",
+);
+let tauriInvocation = null;
+assert.equal(
+  runTauri(["--version"], (command, args, options) => {
+    tauriInvocation = { command, args, options };
+    return { status: 0 };
+  }),
+  0,
+);
+assert.equal(tauriInvocation.command, process.execPath);
+assert.match(tauriInvocation.args[0], /@tauri-apps[\\/]cli[\\/]tauri\.js$/);
+assert.equal(tauriInvocation.args[1], "--version");
+assert.equal(tauriInvocation.options.env[WRAPPER_ENV], "1");
 
 const linux = composeEffectiveConfig([platformConfigPath("linux")]).effectiveConfig;
 assert.deepEqual(linux.bundle.targets, ["deb"]);

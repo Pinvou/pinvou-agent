@@ -295,11 +295,18 @@ pub struct AcpPool {
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
         let resource_root = app.path().resource_dir().ok();
-        let development_bridge = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("platforms")
-            .join("linux")
-            .join("codex-bridge");
+        let development_bridge = if crate::platform::capabilities::is_windows() {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("windows-runtime")
+                .join("codex-bridge")
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("platforms")
+                .join("linux")
+                .join("codex-bridge")
+        };
         let bundled_adapter = resource_root.as_ref().and_then(|root| {
             [
                 root.join("runtime")
@@ -360,6 +367,7 @@ impl AcpPool {
                 "node"
             };
             [
+                root.join("runtime").join("node").join(node_name),
                 root.join("runtime")
                     .join("codex-bridge")
                     .join("node")
@@ -1234,7 +1242,7 @@ impl AcpPool {
         if let Some(path) = self.bundled_node.as_ref().filter(|path| path.is_file()) {
             return Some(path.clone());
         }
-        if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
+        if adapter_needs_path_node_lookup(adapter, crate::platform::capabilities::is_windows()) {
             return find_in_path(if crate::platform::capabilities::is_windows() {
                 "node.exe"
             } else {
@@ -1447,10 +1455,22 @@ fn adapter_filename() -> &'static str {
 }
 
 fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Command> {
+    adapter_command_for_platform(adapter, node, crate::platform::capabilities::is_windows())
+}
+
+fn adapter_command_for_platform(
+    adapter: &Path,
+    node: Option<&Path>,
+    is_windows: bool,
+) -> Result<Command> {
     if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
         let node = node.context("Codex ACP Bridge 缺少可用 Node")?;
         let mut command = Command::new(node);
         command.arg(adapter);
+        Ok(command)
+    } else if is_windows_cmd_for_platform(adapter, is_windows) {
+        let mut command = Command::new("cmd");
+        command.args(["/D", "/S", "/C"]).arg(adapter);
         Ok(command)
     } else {
         Ok(Command::new(adapter))
@@ -1458,9 +1478,7 @@ fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Command> {
 }
 
 fn codex_login_command(codex: &Path) -> Command {
-    if crate::platform::capabilities::is_windows()
-        && codex.extension().and_then(|value| value.to_str()) == Some("cmd")
-    {
+    if is_windows_cmd(codex) {
         let mut command = Command::new("cmd");
         command.args(["/D", "/S", "/C"]).arg(codex).arg("login");
         command
@@ -1469,6 +1487,18 @@ fn codex_login_command(codex: &Path) -> Command {
         command.arg("login");
         command
     }
+}
+
+fn adapter_needs_path_node_lookup(adapter: &Path, is_windows: bool) -> bool {
+    is_windows || adapter.extension().and_then(|value| value.to_str()) == Some("js")
+}
+
+fn is_windows_cmd(path: &Path) -> bool {
+    is_windows_cmd_for_platform(path, crate::platform::capabilities::is_windows())
+}
+
+fn is_windows_cmd_for_platform(path: &Path, is_windows: bool) -> bool {
+    is_windows && path.extension().and_then(|value| value.to_str()) == Some("cmd")
 }
 
 async fn capture_login_output<R>(reader: R, login_url: Arc<parking_lot::RwLock<Option<String>>>)
@@ -1628,6 +1658,57 @@ mod tests {
         std::fs::write(&adapter, "console.log('ok');").expect("write adapter");
         assert!(nonempty_file(&adapter));
         std::fs::remove_dir_all(root).expect("cleanup adapter test directory");
+    }
+
+    #[test]
+    fn javascript_adapter_uses_node_runtime() {
+        let adapter = Path::new("C:\\runtime\\codex-acp.js");
+        let command =
+            adapter_command_for_platform(adapter, Some(Path::new("C:\\runtime\\node.exe")), true)
+                .expect("build JavaScript adapter command");
+
+        assert_eq!(command.as_std().get_program(), "C:\\runtime\\node.exe");
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["C:\\runtime\\codex-acp.js"]
+        );
+    }
+
+    #[test]
+    fn windows_cmd_adapter_uses_command_interpreter() {
+        let adapter = Path::new("C:\\runtime\\codex-acp.cmd");
+        let command = adapter_command_for_platform(adapter, None, true)
+            .expect("build Windows command-shim adapter command");
+
+        assert_eq!(command.as_std().get_program(), "cmd");
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["/D", "/S", "/C", "C:\\runtime\\codex-acp.cmd"]
+        );
+    }
+
+    #[test]
+    fn windows_adapter_status_always_checks_node_runtime() {
+        assert!(adapter_needs_path_node_lookup(
+            Path::new("C:\\runtime\\codex-acp.cmd"),
+            true
+        ));
+        assert!(adapter_needs_path_node_lookup(
+            Path::new("/runtime/codex-acp.js"),
+            false
+        ));
+        assert!(!adapter_needs_path_node_lookup(
+            Path::new("/runtime/codex-acp"),
+            false
+        ));
     }
 
     #[test]

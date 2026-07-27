@@ -49,15 +49,12 @@ struct ManagedCodexArtifact {
 }
 
 fn managed_artifact() -> Result<ManagedCodexArtifact> {
-    if std::env::consts::OS != "linux" {
-        bail!(
-            "当前托管 Codex 下载仅支持 Linux，当前平台: {}-{}",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        );
-    }
-    match std::env::consts::ARCH {
-        "x86_64" => Ok(ManagedCodexArtifact {
+    managed_artifact_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn managed_artifact_for(os: &str, arch: &str) -> Result<ManagedCodexArtifact> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok(ManagedCodexArtifact {
             urls: &[
                 "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-linux-x64.tgz",
                 "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-linux-x64.tgz",
@@ -65,7 +62,7 @@ fn managed_artifact() -> Result<ManagedCodexArtifact> {
             integrity: "sha512-4E7EnzCg0OnBxCyYnwJ+qnZwWHYe0YScr5ucKWbngE9u4+0XrpWELqq2Kn9jl5GZK8MDjU7PrJwFIwusHOHjuw==",
             vendor_triple: "x86_64-unknown-linux-musl",
         }),
-        "aarch64" => Ok(ManagedCodexArtifact {
+        ("linux", "aarch64") => Ok(ManagedCodexArtifact {
             urls: &[
                 "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-linux-arm64.tgz",
                 "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-linux-arm64.tgz",
@@ -73,7 +70,15 @@ fn managed_artifact() -> Result<ManagedCodexArtifact> {
             integrity: "sha512-PGiLXMN+2IQRkf7tOLi64dMInjU1pRLbz0Rwfj/yt2Y97SZQqAjFQoi2wmswmqtqMDnfwCPTC1DRXVQkvU6T6Q==",
             vendor_triple: "aarch64-unknown-linux-musl",
         }),
-        arch => bail!("当前托管 Codex 下载不支持 CPU 架构: {arch}"),
+        ("windows", "x86_64") => Ok(ManagedCodexArtifact {
+            urls: &[
+                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-win32-x64.tgz",
+                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-win32-x64.tgz",
+            ],
+            integrity: "sha512-dN39VnjEthKz5io1RNWwZDtErdSn07nW3pGUgvlA6DMxgm/nuGaIAZO/sG/Hgxq/x5j9HteAENfrFgVkpZ0lFg==",
+            vendor_triple: "x86_64-pc-windows-msvc",
+        }),
+        _ => bail!("当前托管 Codex 下载不支持平台: {os}-{arch}"),
     }
 }
 
@@ -368,5 +373,13 @@ mod tests {
     fn archive_path_rejects_parent_segments() {
         assert!(validate_relative_archive_path(Path::new("../codex")).is_err());
         assert!(validate_relative_archive_path(Path::new("package/vendor/bin/codex")).is_ok());
+    }
+
+    #[test]
+    fn windows_x64_managed_artifact_is_available() {
+        let artifact = managed_artifact_for("windows", "x86_64").unwrap();
+        assert_eq!(artifact.vendor_triple, "x86_64-pc-windows-msvc");
+        assert!(artifact.urls[0].starts_with("https://"));
+        assert!(artifact.integrity.starts_with("sha512-"));
     }
 }
