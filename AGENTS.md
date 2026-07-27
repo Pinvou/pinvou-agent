@@ -120,6 +120,8 @@ pinvou3 按“业务功能优先、平台适配次之”组织。新增代码按
 
 启动：`./pinvou3-app/run-dev.sh`
 
+版本号单一事实来源是根目录 `VERSION` 文件；bump 版本 = 改 `VERSION` 后运行 `node scripts/sync-version.mjs`（同步 tauri.conf.json / Cargo.toml / package.json 三处，`--check` 供 CI 校验）。
+
 ## 参考文档
 
 - `CONTRIBUTING.md` — 贡献 / PR 流程 + CI 门控(人类协作者入口)

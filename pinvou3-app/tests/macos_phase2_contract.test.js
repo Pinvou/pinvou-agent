@@ -57,7 +57,7 @@ assert.match(
 );
 
 const macBuild = read(".github/workflows/mac-build.yml");
-const macRelease = read(".github/workflows/macos-release.yml");
+const macRelease = read(".github/workflows/release-packages.yml");
 const bundleStart = macBuild.indexOf("- name: Tauri bundle smoke");
 const verifyStart = macBuild.indexOf("- name: Verify 脚本", bundleStart);
 assert.ok(bundleStart >= 0 && verifyStart > bundleStart, "macOS bundle steps must exist");
@@ -70,7 +70,7 @@ assert.doesNotMatch(
 );
 for (const [name, source] of [
   ["mac-build.yml", macBuild],
-  ["macos-release.yml", macRelease],
+  ["release-packages.yml", macRelease],
 ]) {
   assert.match(
     source,

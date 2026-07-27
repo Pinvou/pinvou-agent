@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -62,7 +62,8 @@
     "test:bridge-smoke": "npm run test:ui-smoke && npm run test:settings-ui && npm run test:kb-smoke && npm run test:composer-tools-smoke && npm run test:tool-store",
     "test:webui": "npm run build:web && node ../remote-control-relay/test/web-ui.smoke.cjs",
     "test:markdown": "node tests/render_markdown_smoke.js",
-    "test:user-journey": "../scripts/run-user-journey-tests.sh"
+    "test:user-journey": "../scripts/run-user-journey-tests.sh",
+    "sync:version": "node ../scripts/sync-version.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
