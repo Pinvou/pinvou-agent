@@ -60,6 +60,16 @@ function rememberWorkspace(path) {
   return next;
 }
 
+function forgetWorkspace(path) {
+  const next = loadRecentWorkspaces().filter(item => item !== path);
+  try {
+    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage 不可用时仍允许当前窗口继续创建新会话。
+  }
+  return next;
+}
+
 function configChoices(option) {
   const raw = option && option.options;
   if (!Array.isArray(raw)) return [];
@@ -706,6 +716,11 @@ export function CodexAcpView({
     () => sessions.find(session => session.id === activeId) || null,
     [sessions, activeId],
   );
+  const workspaceUnavailable = Boolean(
+    activeSession
+      && activeSession.workspace_kind === 'project'
+      && activeSession.workspace_available === false,
+  );
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
   const attachments = attachmentDrafts[attachmentKey] || [];
   const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
@@ -795,6 +810,14 @@ export function CodexAcpView({
     setSessionInfo(null);
     setError('');
     if (onActiveSessionChange) onActiveSessionChange(null);
+  }
+
+  function recreateUnavailableWorkspaceSession() {
+    if (activeSession && activeSession.workspace_path) {
+      setRecentWorkspaces(forgetWorkspace(activeSession.workspace_path));
+    }
+    beginDraft(null);
+    setWorkspaceMenuOpen(true);
   }
 
   async function chooseProjectDraft() {
@@ -1056,6 +1079,7 @@ export function CodexAcpView({
       setError('附件仍在解析，请稍候');
       return;
     }
+    if (workspaceUnavailable) return;
     if (activeId && !sessionInfo) {
       setError('Codex 会话配置仍在同步，请稍候');
       return;
@@ -1174,7 +1198,7 @@ export function CodexAcpView({
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {`Codex · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : '临时工作区'}${activeSession.workspace_available ? '' : ' · 目录不可用'}`}
+              {`Codex · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : '临时工作区'}${activeSession.workspace_available ? '' : ' · 原项目目录已不存在'}`}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">配置应用中…</span>}
@@ -1204,7 +1228,25 @@ export function CodexAcpView({
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
         <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <div className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
-            <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
+            {workspaceUnavailable ? (
+              <div
+                data-testid="codex-workspace-unavailable"
+                className="rounded-xl bg-red-500/8 px-3 py-2 text-[12px] text-red-600 dark:text-red-300"
+              >
+                原项目目录已不存在，
+                <button
+                  type="button"
+                  data-testid="codex-recreate-session"
+                  onClick={recreateUnavailableWorkspaceSession}
+                  className="font-medium underline underline-offset-2 hover:text-red-700 dark:hover:text-red-200"
+                >
+                  重新创建会话
+                </button>
+                。
+              </div>
+            ) : (
+              <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} />
+            )}
             {!projection.turns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
                 <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><CodexLogo className="h-8 w-8" /></div>

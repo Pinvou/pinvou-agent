@@ -271,6 +271,13 @@ try {
     && codexView.includes('data-testid="codex-workspace-selector"')
     && codexView.includes('最近项目'),
   'only the draft composer must expose temporary, directory picker, and recent-project choices');
+  assert.ok(codexView.includes('data-testid="codex-workspace-unavailable"')
+    && codexView.includes('原项目目录已不存在')
+    && codexView.includes('data-testid="codex-recreate-session"')
+    && codexView.includes('recreateUnavailableWorkspaceSession')
+    && codexView.includes('beginDraft(null)')
+    && codexView.includes('setWorkspaceMenuOpen(true)'),
+  'missing project sessions must keep their history and offer a link into the existing new-session workspace menu');
   const composerFooterIndex = codexView.indexOf('data-testid="codex-composer-footer"');
   const workspaceSelectorIndex = codexView.indexOf('data-testid="codex-workspace-selector"');
   const attachmentButtonIndex = codexView.indexOf('title="添加附件"', composerFooterIndex);
