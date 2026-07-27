@@ -263,11 +263,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         hasher.update(&buf[..n]);
     }
     let digest = hasher.finalize();
-    let mut s = String::with_capacity(digest.len() * 2);
-    for b in digest.iter() {
-        s.push_str(&format!("{b:02x}"));
-    }
-    Ok(s)
+    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 fn extract_targz(targz: &Path, dest: &Path) -> Result<(), String> {

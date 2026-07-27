@@ -1906,7 +1906,9 @@ fn generate_session_id() -> String {
 /// edit that was based on the same messages.
 pub fn transcript_revision(messages: &[Message]) -> Result<String> {
     let encoded = serde_json::to_vec(messages).context("serialize transcript for revision")?;
-    Ok(format!("{:x}", Sha256::digest(encoded)))
+    Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
+        encoded,
+    )))
 }
 
 fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -> bool {

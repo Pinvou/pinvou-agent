@@ -523,7 +523,8 @@ async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(data);
-    assert_eq!(output.sha256, format!("{:x}", hasher.finalize()));
+    let expected = crate::platform::encoding::hex_lower(&hasher.finalize());
+    assert_eq!(output.sha256, expected);
     assert_eq!(output.byte_size, data.len() as u64);
 }
 

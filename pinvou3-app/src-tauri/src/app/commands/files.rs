@@ -73,7 +73,7 @@ pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, Stri
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(VerifyUploadOutput {
-        sha256: format!("{:x}", hasher.finalize()),
+        sha256: crate::platform::encoding::hex_lower(&hasher.finalize()),
         byte_size: bytes.len() as u64,
     })
 }
