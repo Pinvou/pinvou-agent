@@ -4,7 +4,7 @@ API base path: `openapi/note/v1`.
 
 Use notes APIs when the user's real target is a note: search notes, list notebooks, list notes, read note content, create a new note, or append to an existing note.
 
-Do not run separate shell commands to inspect `IMA_CLIENT_ID` or `IMA_API_KEY`. Call `ima_api.cjs` directly; the helper is the only reliable credential check inside Pinvou.
+Do not use shell commands or environment inspection for credentials. Call the native `ima_openapi` tool; credentials are never tool arguments.
 
 ## Operations
 
@@ -27,16 +27,16 @@ Do not run separate shell commands to inspect `IMA_CLIENT_ID` or `IMA_API_KEY`. 
 
 ## Examples
 
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/note/v1/search_note" '{"search_type":0,"query_info":{"title":"会议纪要"},"start":0,"end":20}'
+```json
+{"api_path":"openapi/note/v1/search_note","body":{"search_type":0,"query_info":{"title":"会议纪要"},"start":0,"end":20}}
 ```
 
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/note/v1/get_doc_content" '{"note_id":"<note_id>","target_content_format":0}'
+```json
+{"api_path":"openapi/note/v1/get_doc_content","body":{"note_id":"<note_id>","target_content_format":0}}
 ```
 
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/note/v1/import_doc" '{"content_format":1,"content":"# 标题\n\n正文"}'
+```json
+{"api_path":"openapi/note/v1/import_doc","body":{"content_format":1,"content":"# 标题\n\n正文"}}
 ```
 
 ## Response Handling

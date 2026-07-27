@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn install_ima_preset_with_api_helper() {
+    fn install_ima_preset_with_native_tool_instructions() {
         let tmp = fresh_dir("ima");
         let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
 
@@ -701,8 +701,8 @@ mod tests {
         let skill_dir = tmp.join("ima-skills");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert!(
-            skill_dir.join("ima_api.cjs").is_file(),
-            "IMA API helper 应一并复制"
+            !skill_dir.join("ima_api.cjs").exists(),
+            "不得复制本地凭据 helper"
         );
         assert!(
             skill_dir.join("knowledge-base").join("SKILL.md").is_file(),

@@ -4,7 +4,7 @@ API base path: `openapi/wiki/v1`.
 
 Use knowledge-base APIs when the user's target is a knowledge-base entry, folder, file, imported URL, or source media.
 
-Do not run separate shell commands to inspect `IMA_CLIENT_ID` or `IMA_API_KEY`. Call `ima_api.cjs` directly; the helper is the only reliable credential check inside Pinvou.
+Do not use shell commands or environment inspection for credentials. Call the native `ima_openapi` tool; credentials are never tool arguments.
 
 ## Operations
 
@@ -26,16 +26,16 @@ Do not run separate shell commands to inspect `IMA_CLIENT_ID` or `IMA_API_KEY`. 
 
 ## Examples
 
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/wiki/v1/search_knowledge_base" '{"query":"","cursor":"","limit":20}'
+```json
+{"api_path":"openapi/wiki/v1/search_knowledge_base","body":{"query":"","cursor":"","limit":20}}
 ```
 
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/wiki/v1/search_knowledge" '{"query":"排期","knowledge_base_id":"<kb_id>","cursor":""}'
+```json
+{"api_path":"openapi/wiki/v1/search_knowledge","body":{"query":"排期","knowledge_base_id":"<kb_id>","cursor":""}}
 ```
 
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/wiki/v1/import_urls" '{"knowledge_base_id":"<kb_id>","urls":["https://example.com/article"]}'
+```json
+{"api_path":"openapi/wiki/v1/import_urls","body":{"knowledge_base_id":"<kb_id>","urls":["https://example.com/article"]}}
 ```
 
 ## File Upload Guard

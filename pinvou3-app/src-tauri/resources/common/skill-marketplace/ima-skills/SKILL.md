@@ -1,7 +1,7 @@
 ---
 name: ima-skills
 description: Tencent IMA OpenAPI skill for notes and knowledge-base operations. Use after the user connects IMA in Pinvou tool store.
-version: 1.1.8-pinvou1
+version: 1.1.8-pinvou2
 display_name: "腾讯 ima"
 ---
 
@@ -11,18 +11,13 @@ Use this skill when the user asks to search, read, create, append, upload, or or
 
 ## Credential Rules
 
-Pinvou stores IMA credentials in the local system credential store and injects them as environment variables when the connector is enabled.
-
-Required environment variables:
-
-- `IMA_CLIENT_ID`
-- `IMA_API_KEY`
+Pinvou stores IMA credentials in the local system credential store. The native `ima_openapi` tool reads them only when it sends a request to the fixed official endpoint.
 
 Do not ask the user to paste credentials into the chat. Do not write credentials to `~/.config/ima`, repository files, logs, notes, or artifacts.
 
-Do not probe credentials with ad-hoc shell commands such as `echo $IMA_API_KEY`, `$env:IMA_CLIENT_ID`, `printenv`, or `env`. Pinvou injects IMA credentials only for the bundled helper process, so direct environment checks can report a false negative and must not be used to decide whether the connector is enabled.
+Do not probe credentials with shell commands, environment inspection, local files, or ad-hoc network requests. Never pass a host, URL, Client ID, API Key, or HTTP header as tool input.
 
-To verify access or perform any IMA operation, call `ima_api.cjs` directly. If the helper exits non-zero with a missing-credential message, then tell the user to connect "腾讯 ima" from the Pinvou tool store.
+To verify access or perform any IMA operation, call `ima_openapi`. If it reports missing credentials, tell the user to connect "腾讯 ima" from the Pinvou tool store.
 
 ## Module Routing
 
@@ -32,26 +27,18 @@ Read the relevant child instruction before operating:
 - Knowledge base: read `knowledge-base/SKILL.md` for knowledge-base search, browsing, upload, URL import, add note to knowledge base, or get media info.
 - Cross-module tasks: read both child instructions before acting.
 
-## API Helper
+## Native Tool
 
-All calls go through the bundled helper:
-
-```bash
-node "$SKILL_DIR/ima_api.cjs" "openapi/check_skill_update" '{"version":"1.1.8"}'
-```
-
-In a shell, resolve `SKILL_DIR` to this skill directory before calling:
-
-```bash
-SKILL_DIR="$(pwd)"
-node "$SKILL_DIR/ima_api.cjs" "openapi/wiki/v1/search_knowledge_base" '{"query":"","cursor":"","limit":20}'
-```
-
-The helper sends HTTP POST JSON requests only to `https://ima.qq.com` by default. It returns successful server responses on stdout. On program errors it exits non-zero and writes redacted JSON to stderr:
+All calls go through Pinvou's native `ima_openapi` tool. Pass only an allowlisted `api_path` and a JSON object in `body`:
 
 ```json
-{"code":-100,"msg":"..."}
+{
+  "api_path": "openapi/wiki/v1/search_knowledge_base",
+  "body": {"query": "", "cursor": "", "limit": 20}
+}
 ```
+
+The tool sends POST JSON requests only to `https://ima.qq.com`, applies a response-size limit, and does not expose credentials to the model or subprocesses.
 
 Always parse the response JSON. IMA business success uses `code: 0`; for any non-zero business code, show the returned `msg` to the user without exposing credentials or internal headers.
 

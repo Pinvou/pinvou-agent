@@ -1059,27 +1059,6 @@ impl Pinvou3Bridge {
             name: Some("pinvou3-sensitive-firewall".into()),
         }];
 
-        // Windows 的 exec_shell 也会走底座 sanitized child env，普通 parent env 中的
-        // `*_API_KEY` 会被过滤。IMA 是 OpenAPI Skill，本地 helper 通过 env/options
-        // 取凭据；这里只在命令实际调用 ima_api.cjs 时把 IMA 凭据注入该子进程。
-        #[cfg(windows)]
-        let hooks = {
-            let mut hooks = hooks;
-            let script = self.bundle.ima_shell_env_ps1.to_string_lossy();
-            hooks.push(Hook {
-                event: HookEvent::ShellEnv,
-                command: format!(
-                    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{script}\""
-                ),
-                condition: None,
-                timeout_secs: 5,
-                background: false,
-                continue_on_error: false,
-                name: Some("pinvou3-ima-shell-env".into()),
-            });
-            hooks
-        };
-
         // Linux/macOS 桌面安装通常不继承用户登录 shell 的 PATH/SDK 环境。
         // 复用底座现有 shell_env 扩展点，仅给 exec_shell 注入过滤后的终端环境；
         // MCP、RLM、JS、其他 hooks 仍保持各自原有环境策略，底座无需 fork patch。
@@ -2153,16 +2132,6 @@ mod tests {
             }),
             "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境"
         );
-        #[cfg(windows)]
-        assert!(
-            hooks.hooks.iter().any(|hook| {
-                hook.event == HookEvent::ShellEnv
-                    && hook.name.as_deref() == Some("pinvou3-ima-shell-env")
-                    && hook.command.contains("ima_shell_env.ps1")
-            }),
-            "Windows PINVOU 必须在 ima_api.cjs 调用中注入 IMA 凭据 env"
-        );
-
         let Op::SendMessage {
             hook_executor: Some(message_executor),
             ..
@@ -2223,84 +2192,6 @@ mod tests {
             result.content
         );
         assert!(!result.content.contains("must-not-leak"));
-        let _ = std::fs::remove_dir_all(workspace);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_ima_shell_env_hook_is_scoped_to_ima_helper() {
-        let _env = EnvGuard::new(&[
-            "IMA_CLIENT_ID",
-            "IMA_API_KEY",
-            "IMA_OPENAPI_CLIENTID",
-            "IMA_OPENAPI_APIKEY",
-        ]);
-        std::env::set_var("IMA_CLIENT_ID", "client-secret-test");
-        std::env::set_var("IMA_API_KEY", "api-secret-test");
-        std::env::set_var("IMA_OPENAPI_CLIENTID", "client-secret-test");
-        std::env::set_var("IMA_OPENAPI_APIKEY", "api-secret-test");
-
-        let workspace = std::env::temp_dir().join(format!(
-            "pinvou3-ima-shell-env-runtime-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&workspace).unwrap();
-        let script = workspace.join("ima_shell_env.ps1");
-        std::fs::write(&script, bundle::IMA_SHELL_ENV_PS1).unwrap();
-
-        let mut bridge = fixture_bridge();
-        bridge.workspace.clone_from(&workspace);
-        bridge.bundle.ima_shell_env_ps1 = script;
-        let executor = bridge.build_hook_executor();
-        let non_ima = deepseek_tui::hooks::HookContext::new()
-            .with_tool_name("exec_shell")
-            .with_tool_args(&serde_json::json!({ "command": "env" }));
-        assert!(
-            executor.collect_shell_env(&non_ima).is_empty(),
-            "非 IMA shell 命令不能收到 IMA 凭据"
-        );
-
-        let probe = deepseek_tui::hooks::HookContext::new()
-            .with_tool_name("exec_shell")
-            .with_tool_args(
-                &serde_json::json!({ "command": "$env:IMA_CLIENT_ID -and $env:IMA_API_KEY" }),
-            );
-        let probe_env = executor.collect_shell_env(&probe);
-        assert_eq!(
-            probe_env.get("IMA_CLIENT_ID").map(String::as_str),
-            Some("__PINVOU3_IMA_CONNECTED__")
-        );
-        assert_eq!(
-            probe_env.get("IMA_API_KEY").map(String::as_str),
-            Some("__PINVOU3_IMA_CONNECTED__")
-        );
-        assert!(
-            !probe_env
-                .values()
-                .any(|value| value.contains("secret-test")),
-            "IMA env 探测只能收到占位值，不能泄露真实凭据"
-        );
-
-        let ima = deepseek_tui::hooks::HookContext::new()
-            .with_tool_name("exec_shell")
-            .with_tool_args(&serde_json::json!({ "command": "node ima_api.cjs openapi/note/v1/search_note {}" }));
-        let env = executor.collect_shell_env(&ima);
-        assert_eq!(
-            env.get("IMA_CLIENT_ID").map(String::as_str),
-            Some("client-secret-test")
-        );
-        assert_eq!(
-            env.get("IMA_API_KEY").map(String::as_str),
-            Some("api-secret-test")
-        );
-        assert_eq!(
-            env.get("IMA_OPENAPI_CLIENTID").map(String::as_str),
-            Some("client-secret-test")
-        );
-        assert_eq!(
-            env.get("IMA_OPENAPI_APIKEY").map(String::as_str),
-            Some("api-secret-test")
-        );
         let _ = std::fs::remove_dir_all(workspace);
     }
 
