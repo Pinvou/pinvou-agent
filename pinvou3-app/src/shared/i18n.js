@@ -116,7 +116,7 @@ const codexEn = {
   reopenAuth:'Reopen authorization page', waitAuth:'Waiting for authorization…', authorize:'Authorize',
   chooseProjectDialog:'Choose Codex project directory', addAttachmentDialog:'Add attachments',
   attachmentsParsing:'Attachments are still being parsed. Please wait', sessionSyncing:'Codex session configuration is still syncing. Please wait',
-  operationFailed:'Codex operation failed. Please retry', showRawErrors:false,
+  operationFailed:'Codex operation failed. Please retry', showRawErrors:true,
   runtimeSources:{ system:'System Codex', managed:'Managed Codex', override:'Custom Codex', legacy_bundled:'Bundled Codex' },
 };
 const codexJa = {
@@ -146,7 +146,7 @@ const codexJa = {
   reopenAuth:'認証ページを再度開く', waitAuth:'認証待ち…', authorize:'認証ログイン',
   chooseProjectDialog:'Codex プロジェクトディレクトリを選択', addAttachmentDialog:'添付ファイルを追加',
   attachmentsParsing:'添付ファイルを解析中です。しばらくお待ちください', sessionSyncing:'Codex セッション設定を同期中です。しばらくお待ちください',
-  operationFailed:'Codex の操作に失敗しました。再試行してください', showRawErrors:false,
+  operationFailed:'Codex の操作に失敗しました。再試行してください', showRawErrors:true,
   runtimeSources:{ system:'システム Codex', managed:'管理対象 Codex', override:'カスタム Codex', legacy_bundled:'内蔵 Codex' },
 };
 

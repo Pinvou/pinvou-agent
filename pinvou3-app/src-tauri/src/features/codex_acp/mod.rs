@@ -4,6 +4,7 @@
 //! Codex 的模型调用、工具循环、会话与权限协议都由 `codex-acp` Agent 提供。
 
 mod attachments;
+mod diagnostics;
 mod events;
 mod runtime;
 mod store;
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationRequest,
@@ -42,7 +43,8 @@ use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use runtime::{
-    codex_version, install_managed_codex, resolve_codex_path, ResolvedCodex, MANAGED_CODEX_VERSION,
+    install_managed_codex, is_managed_newer_than, resolve_codex_path, ResolvedCodex,
+    MANAGED_CODEX_VERSION,
 };
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
@@ -174,7 +176,7 @@ impl AcpSession {
         content: String,
         blocks: Vec<ContentBlock>,
         attachments: Vec<CodexDisplayAttachment>,
-    ) {
+    ) -> bool {
         let turn_id = self.bridge.begin_turn(&content, &attachments);
         let result = self
             .connection
@@ -197,15 +199,18 @@ impl AcpSession {
                     None,
                 );
                 self.bridge.finish_turn(&turn_id, status, None);
+                false
             }
             Err(error) => {
                 let message = format!("Codex ACP: {error}");
+                let upgrade_required = codex_upgrade_required(&message);
                 crate::features::assistant::timing::finish_turn(
                     &self.bridge_session_id(),
                     "Failed",
                     Some(&message),
                 );
                 self.bridge.finish_turn(&turn_id, "Failed", Some(&message));
+                upgrade_required
             }
         }
     }
@@ -288,8 +293,17 @@ pub struct AcpPool {
     downloaded_bytes: Arc<AtomicU64>,
     download_total_bytes: Arc<AtomicU64>,
     last_error: Arc<parking_lot::RwLock<Option<String>>>,
+    runtime_probe: Arc<parking_lot::RwLock<RuntimeProbeCache>>,
+    runtime_probe_gate: Arc<Mutex<()>>,
     bundled_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeProbeCache {
+    initialized: bool,
+    node_version: Option<String>,
+    codex: Option<ResolvedCodex>,
 }
 
 impl AcpPool {
@@ -400,6 +414,8 @@ impl AcpPool {
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             download_total_bytes: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(parking_lot::RwLock::new(None)),
+            runtime_probe: Arc::new(parking_lot::RwLock::new(RuntimeProbeCache::default())),
+            runtime_probe_gate: Arc::new(Mutex::new(())),
             bundled_adapter,
             bundled_node,
         })
@@ -458,20 +474,14 @@ impl AcpPool {
 
     pub fn status(&self) -> CodexAcpStatus {
         let adapter = self.resolve_adapter();
-        let node = adapter
-            .as_deref()
-            .and_then(|adapter| self.resolve_node(adapter));
-        let node_version = node.as_deref().and_then(installed_node_version);
+        let probe = self.runtime_probe.read().clone();
+        let node_version = probe.node_version;
         let node_supported = node_version
             .as_deref()
             .and_then(node_major_version)
             .is_some_and(|major| major >= 20);
-        let codex = adapter
-            .as_deref()
-            .and_then(|adapter| self.resolve_codex(adapter));
-        let codex_version = codex
-            .as_ref()
-            .and_then(|resolved| codex_version(&resolved.path));
+        let codex = probe.codex;
+        let codex_version = codex.as_ref().map(|resolved| resolved.version.clone());
         let downloaded_bytes = self.downloaded_bytes.load(Ordering::Acquire);
         let download_total_bytes = self.download_total_bytes.load(Ordering::Acquire);
         let download_progress = (download_total_bytes > 0).then(|| {
@@ -507,30 +517,161 @@ impl AcpPool {
         }
     }
 
+    pub async fn refresh_status(&self) -> CodexAcpStatus {
+        self.refresh_runtime_probe(false).await;
+        self.status()
+    }
+
+    async fn refresh_runtime_probe(&self, force: bool) {
+        if !force && self.runtime_probe.read().initialized {
+            return;
+        }
+        let _gate = self.runtime_probe_gate.lock().await;
+        if !force && self.runtime_probe.read().initialized {
+            return;
+        }
+
+        let operation_id = diagnostics::operation_id("probe");
+        let started = Instant::now();
+        let adapter = self.resolve_adapter();
+        let node = adapter
+            .as_deref()
+            .and_then(|adapter| self.resolve_node(adapter));
+        let system_codex = find_in_path(if crate::platform::capabilities::is_windows() {
+            "codex.cmd"
+        } else {
+            "codex"
+        });
+        let legacy_codex = adapter.as_deref().and_then(codex_path_for_adapter);
+        diagnostics::write(
+            &operation_id,
+            "probe:start",
+            format!(
+                "force={force} node_path={} system_codex_path={} managed_version={MANAGED_CODEX_VERSION}",
+                node.as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "none".to_string()),
+                system_codex
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+        );
+        let detected = tokio::task::spawn_blocking(move || RuntimeProbeCache {
+            initialized: true,
+            node_version: node.as_deref().and_then(installed_node_version),
+            codex: resolve_codex_path(system_codex, legacy_codex),
+        })
+        .await;
+
+        match detected {
+            Ok(probe) => {
+                diagnostics::write(
+                    &operation_id,
+                    "probe:complete",
+                    format!(
+                        "elapsed_ms={} node_version={} codex_path={} codex_version={} runtime_source={}",
+                        started.elapsed().as_millis(),
+                        probe.node_version.as_deref().unwrap_or("none"),
+                        probe
+                            .codex
+                            .as_ref()
+                            .map(|resolved| resolved.path.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "none".to_string()),
+                        probe
+                            .codex
+                            .as_ref()
+                            .map(|resolved| resolved.version.as_str())
+                            .unwrap_or("none"),
+                        probe
+                            .codex
+                            .as_ref()
+                            .map(|resolved| resolved.source.as_str())
+                            .unwrap_or("none")
+                    ),
+                );
+                *self.runtime_probe.write() = probe;
+            }
+            Err(error) => {
+                diagnostics::write(
+                    &operation_id,
+                    "probe:failed",
+                    format!(
+                        "elapsed_ms={} error={error:#}",
+                        started.elapsed().as_millis()
+                    ),
+                );
+                *self.runtime_probe.write() = RuntimeProbeCache {
+                    initialized: true,
+                    ..RuntimeProbeCache::default()
+                };
+            }
+        }
+    }
+
     pub async fn ensure_installed(&self) -> Result<CodexAcpStatus> {
+        let operation_id = diagnostics::operation_id("prepare");
+        self.refresh_runtime_probe(false).await;
         let status = self.status();
+        diagnostics::write(
+            &operation_id,
+            "prepare:start",
+            format!(
+                "bridge_ready={} codex_available={} installing={} runtime_source={} log_path={}",
+                status.bridge_ready,
+                status.codex_available,
+                status.installing,
+                status.runtime_source.unwrap_or("none"),
+                diagnostics::log_path().display()
+            ),
+        );
         if !status.bridge_ready {
+            diagnostics::write(
+                &operation_id,
+                "prepare:bridge_unavailable",
+                format!(
+                    "adapter_path={} node_available={} node_supported={} node_version={}",
+                    status.adapter_path.as_deref().unwrap_or("none"),
+                    status.node_available,
+                    status.node_supported,
+                    status.node_version.as_deref().unwrap_or("none")
+                ),
+            );
             bail!("Pinvou 安装包缺少可用的 Codex ACP Bridge，请重新安装或重新生成 Bridge Runtime");
         }
         if status.codex_available {
+            diagnostics::write(&operation_id, "prepare:already_available", "result=success");
             return Ok(status);
         }
         if self.installing.swap(true, Ordering::AcqRel) {
+            diagnostics::write(
+                &operation_id,
+                "prepare:already_installing",
+                "result=rejected",
+            );
             bail!("托管 Codex 正在下载，请稍候");
         }
         let result = install_managed_codex(
             self.downloaded_bytes.clone(),
             self.download_total_bytes.clone(),
+            &operation_id,
         )
         .await;
         self.installing.store(false, Ordering::Release);
         match result {
             Ok(_) => {
+                self.refresh_runtime_probe(true).await;
                 *self.last_error.write() = None;
+                diagnostics::write(&operation_id, "prepare:complete", "result=success");
                 Ok(self.status())
             }
             Err(error) => {
-                *self.last_error.write() = Some(format!("{error:#}"));
+                let detail = format!("{error:#}");
+                diagnostics::write(&operation_id, "prepare:failed", &detail);
+                *self.last_error.write() = Some(format!(
+                    "{detail}（诊断编号：{operation_id}；日志：{}）",
+                    diagnostics::log_path().display()
+                ));
                 Err(error)
             }
         }
@@ -538,7 +679,14 @@ impl AcpPool {
 
     pub async fn login(&self) -> Result<CodexAcpStatus> {
         self.ensure_installed().await?;
+        let operation_id = diagnostics::operation_id("login");
+        diagnostics::write(&operation_id, "login:start", "request=login");
         if codex_authenticated() {
+            diagnostics::write(
+                &operation_id,
+                "login:already_authenticated",
+                "result=success",
+            );
             return Ok(self.status());
         }
         let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
@@ -546,14 +694,26 @@ impl AcpPool {
             .resolve_codex(&adapter)
             .context("未检测到可用 Codex；请下载托管 Codex")?;
         if self.login_in_progress.swap(true, Ordering::AcqRel) {
+            diagnostics::write(
+                &operation_id,
+                "login:already_in_progress",
+                "result=accepted",
+            );
             return Ok(self.status());
         }
         *self.login_url.write() = None;
         *self.last_error.write() = None;
         let pool = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = pool.run_login(codex.path).await {
-                *pool.last_error.write() = Some(format!("Codex 授权登录失败: {error:#}"));
+            if let Err(error) = pool.run_login(codex.path, &operation_id).await {
+                let detail = format!("Codex 授权登录失败: {error:#}");
+                diagnostics::write(&operation_id, "login:failed", &detail);
+                *pool.last_error.write() = Some(format!(
+                    "{detail}（诊断编号：{operation_id}；日志：{}）",
+                    diagnostics::log_path().display()
+                ));
+            } else {
+                diagnostics::write(&operation_id, "login:complete", "result=success");
             }
             pool.login_in_progress.store(false, Ordering::Release);
         });
@@ -592,7 +752,12 @@ impl AcpPool {
         crate::platform::os::open_target(&url, "Codex 授权页面").map_err(anyhow::Error::msg)
     }
 
-    async fn run_login(&self, codex_path: PathBuf) -> Result<()> {
+    async fn run_login(&self, codex_path: PathBuf, operation_id: &str) -> Result<()> {
+        diagnostics::write(
+            operation_id,
+            "login:spawn",
+            format!("codex_path={}", codex_path.display()),
+        );
         let mut command = codex_login_command(&codex_path);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().context("启动 Codex CLI 登录失败")?;
@@ -604,6 +769,7 @@ impl AcpPool {
         let status = match tokio::time::timeout(Duration::from_secs(600), child.wait()).await {
             Ok(result) => result.context("等待 Codex 登录进程失败")?,
             Err(_) => {
+                diagnostics::write(operation_id, "login:timeout", "timeout_seconds=600");
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 bail!("授权等待超过 10 分钟，请重新登录");
@@ -611,6 +777,12 @@ impl AcpPool {
         };
         let _ = stdout_reader.await;
         let _ = stderr_reader.await;
+
+        diagnostics::write(
+            operation_id,
+            "login:process_exit",
+            format!("status={status}"),
+        );
 
         if !status.success() {
             bail!("Codex 登录进程退出: {status}");
@@ -646,8 +818,87 @@ impl AcpPool {
         if runtime.busy.swap(true, Ordering::AcqRel) {
             bail!("Codex ACP 会话仍在生成");
         }
-        tokio::spawn(runtime.prompt(content, prepared.blocks, prepared.display_attachments));
+        let pool = self.clone();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            if runtime
+                .prompt(content, prepared.blocks, prepared.display_attachments)
+                .await
+            {
+                pool.handle_outdated_codex_runtime(&session_id).await;
+            }
+        });
         Ok(())
+    }
+
+    async fn handle_outdated_codex_runtime(&self, session_id: &str) {
+        let operation_id = diagnostics::operation_id("runtime-upgrade");
+        let current = self.runtime_probe.read().codex.clone();
+        diagnostics::write(
+            &operation_id,
+            "upgrade_required:detected",
+            format!(
+                "session_id={session_id} current_source={} current_version={} managed_version={MANAGED_CODEX_VERSION}",
+                current
+                    .as_ref()
+                    .map(|resolved| resolved.source.as_str())
+                    .unwrap_or("none"),
+                current
+                    .as_ref()
+                    .map(|resolved| resolved.version.as_str())
+                    .unwrap_or("none")
+            ),
+        );
+
+        let can_switch_to_managed = current
+            .as_ref()
+            .is_some_and(|resolved| is_managed_newer_than(&resolved.version));
+        if !can_switch_to_managed {
+            *self.last_error.write() = Some(format!(
+                "当前 Codex {} 已无法支持所选模型，且内置托管版本 {MANAGED_CODEX_VERSION} 不更新。请升级 Pinvou 后重试。",
+                current
+                    .as_ref()
+                    .map(|resolved| resolved.version.as_str())
+                    .unwrap_or("未知版本")
+            ));
+            diagnostics::write(
+                &operation_id,
+                "upgrade_required:app_update_needed",
+                "managed_runtime_not_newer",
+            );
+            return;
+        }
+
+        *self.last_error.write() = Some(format!(
+            "当前系统 Codex 版本过旧，正在切换到托管 Codex {MANAGED_CODEX_VERSION}；完成后请重试。"
+        ));
+        self.evict(session_id).await;
+        *self.runtime_probe.write() = RuntimeProbeCache::default();
+        match self.ensure_installed().await {
+            Ok(status) => {
+                *self.last_error.write() = Some(format!(
+                    "已切换到 Codex {}，请重新发送刚才的消息。",
+                    status
+                        .codex_version
+                        .as_deref()
+                        .unwrap_or(MANAGED_CODEX_VERSION)
+                ));
+                diagnostics::write(
+                    &operation_id,
+                    "upgrade_required:managed_ready",
+                    format!(
+                        "runtime_source={} version={}",
+                        status.runtime_source.unwrap_or("none"),
+                        status.codex_version.as_deref().unwrap_or("none")
+                    ),
+                );
+            }
+            Err(error) => {
+                let detail = format!("切换托管 Codex 失败: {error:#}");
+                *self.last_error.write() = Some(detail.clone());
+                diagnostics::write(&operation_id, "upgrade_required:managed_failed", detail);
+            }
+        }
     }
 
     pub async fn cancel(&self, session_id: &str) {
@@ -1252,15 +1503,8 @@ impl AcpPool {
         None
     }
 
-    fn resolve_codex(&self, adapter: &Path) -> Option<ResolvedCodex> {
-        resolve_codex_path(
-            find_in_path(if crate::platform::capabilities::is_windows() {
-                "codex.cmd"
-            } else {
-                "codex"
-            }),
-            codex_path_for_adapter(adapter),
-        )
+    fn resolve_codex(&self, _adapter: &Path) -> Option<ResolvedCodex> {
+        self.runtime_probe.read().codex.clone()
     }
 
     fn adapter_command(&self, adapter: &Path) -> Result<Command> {
@@ -1576,6 +1820,12 @@ fn nonempty_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
+fn codex_upgrade_required(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("requires a newer version of codex")
+}
+
 fn installed_node_version(node: &Path) -> Option<String> {
     let output = std::process::Command::new(node)
         .arg("--version")
@@ -1755,5 +2005,13 @@ mod tests {
             extract_codex_login_url("https://example.com/not-codex"),
             None
         );
+    }
+
+    #[test]
+    fn detects_server_request_for_newer_codex_runtime() {
+        assert!(codex_upgrade_required(
+            "The 'gpt-5.6-sol' model requires a newer version of Codex."
+        ));
+        assert!(!codex_upgrade_required("Codex ACP connection closed"));
     }
 }

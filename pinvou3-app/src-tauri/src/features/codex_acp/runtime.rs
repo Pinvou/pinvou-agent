@@ -14,6 +14,8 @@ use sha2::{Digest, Sha512};
 use tokio::io::AsyncWriteExt;
 use wait_timeout::ChildExt;
 
+use super::diagnostics;
+
 pub const MANAGED_CODEX_VERSION: &str = "0.144.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -40,6 +42,7 @@ impl CodexRuntimeSource {
 pub struct ResolvedCodex {
     pub path: PathBuf,
     pub source: CodexRuntimeSource,
+    pub version: String,
 }
 
 struct ManagedCodexArtifact {
@@ -117,74 +120,137 @@ pub fn resolve_codex_path(
     legacy_bundled: Option<PathBuf>,
 ) -> Option<ResolvedCodex> {
     if let Some(path) = std::env::var_os("PINVOU3_CODEX_PATH").map(PathBuf::from) {
-        if codex_is_usable(&path) {
-            return Some(ResolvedCodex {
-                path,
-                source: CodexRuntimeSource::Override,
-            });
+        if let Some(resolved) = probe_codex(path, CodexRuntimeSource::Override) {
+            if version_meets_minimum(&resolved.version) {
+                return Some(resolved);
+            }
         }
     }
-    if let Some(path) = system_codex.filter(|path| codex_is_usable(path)) {
-        return Some(ResolvedCodex {
-            path,
-            source: CodexRuntimeSource::System,
-        });
-    }
-    if let Some(path) = managed_codex_path().filter(|path| codex_is_usable(path)) {
-        return Some(ResolvedCodex {
-            path,
-            source: CodexRuntimeSource::Managed,
-        });
-    }
-    legacy_bundled
-        .filter(|path| codex_is_usable(path))
-        .map(|path| ResolvedCodex {
-            path,
-            source: CodexRuntimeSource::LegacyBundled,
-        })
+
+    select_newest_eligible([
+        legacy_bundled.and_then(|path| probe_codex(path, CodexRuntimeSource::LegacyBundled)),
+        system_codex.and_then(|path| probe_codex(path, CodexRuntimeSource::System)),
+        managed_codex_path().and_then(|path| probe_codex(path, CodexRuntimeSource::Managed)),
+    ])
 }
 
-fn codex_is_usable(path: &Path) -> bool {
-    path.is_file() && codex_version(path).is_some()
+fn probe_codex(path: PathBuf, source: CodexRuntimeSource) -> Option<ResolvedCodex> {
+    if !path.is_file() {
+        return None;
+    }
+    let version = codex_version(&path)?;
+    Some(ResolvedCodex {
+        path,
+        source,
+        version,
+    })
+}
+
+fn select_newest_eligible<const N: usize>(
+    candidates: [Option<ResolvedCodex>; N],
+) -> Option<ResolvedCodex> {
+    candidates
+        .into_iter()
+        .flatten()
+        .filter(|candidate| version_meets_minimum(&candidate.version))
+        .max_by(|left, right| compare_versions(&left.version, &right.version))
+}
+
+pub fn version_meets_minimum(version: &str) -> bool {
+    compare_versions(version, MANAGED_CODEX_VERSION).is_ge()
+}
+
+pub fn is_managed_newer_than(version: &str) -> bool {
+    compare_versions(MANAGED_CODEX_VERSION, version).is_gt()
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    parse_version(left).cmp(&parse_version(right))
+}
+
+fn parse_version(version: &str) -> Vec<u64> {
+    version
+        .split(['.', '-', '+'])
+        .take_while(|part| part.chars().all(|character| character.is_ascii_digit()))
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
 }
 
 pub fn codex_version(path: &Path) -> Option<String> {
+    codex_version_result(path).ok()
+}
+
+fn codex_version_result(path: &Path) -> Result<String> {
     let mut child = std::process::Command::new(path)
         .arg("--version")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
-    let status = match child.wait_timeout(Duration::from_secs(3)).ok()? {
+        .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
+    let status = match child
+        .wait_timeout(Duration::from_secs(3))
+        .context("等待 Codex 自检进程失败")?
+    {
         Some(status) => status,
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            return None;
+            bail!("Codex 自检超过 3 秒");
         }
     };
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
     if !status.success() {
-        return None;
+        bail!("Codex 自检进程退出: {status}; stderr={}", stderr.trim());
     }
     let mut stdout = String::new();
-    child.stdout.take()?.read_to_string(&mut stdout).ok()?;
+    child
+        .stdout
+        .take()
+        .context("读取 Codex 自检标准输出失败")?
+        .read_to_string(&mut stdout)
+        .context("解析 Codex 自检标准输出失败")?;
     stdout
         .split_whitespace()
         .last()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+        .context("Codex 自检未返回版本号")
 }
 
 pub async fn install_managed_codex(
     downloaded_bytes: Arc<AtomicU64>,
     total_bytes: Arc<AtomicU64>,
+    operation_id: &str,
 ) -> Result<PathBuf> {
-    if let Some(path) = managed_codex_path().filter(|path| codex_is_usable(path)) {
+    if let Some(path) = managed_codex_path().filter(|path| {
+        codex_version(path)
+            .as_deref()
+            .is_some_and(version_meets_minimum)
+    }) {
+        diagnostics::write(
+            operation_id,
+            "runtime:already_available",
+            format!("path={}", path.display()),
+        );
         return Ok(path);
     }
     let artifact = managed_artifact()?;
     let runtime_root = runtime_root();
+    diagnostics::write(
+        operation_id,
+        "runtime:start",
+        format!(
+            "version={MANAGED_CODEX_VERSION} platform={}-{} vendor_triple={} runtime_root={}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            artifact.vendor_triple,
+            runtime_root.display()
+        ),
+    );
     tokio::fs::create_dir_all(&runtime_root)
         .await
         .context("创建 Codex Runtime 目录失败")?;
@@ -197,6 +263,11 @@ pub async fn install_managed_codex(
     tokio::fs::create_dir_all(&extracted)
         .await
         .context("创建 Codex 下载 staging 目录失败")?;
+    diagnostics::write(
+        operation_id,
+        "runtime:staging_ready",
+        format!("staging={} target={}", staging.display(), target.display()),
+    );
 
     downloaded_bytes.store(0, Ordering::Release);
     total_bytes.store(0, Ordering::Release);
@@ -204,16 +275,47 @@ pub async fn install_managed_codex(
         let client = reqwest::Client::new();
         let mut response = None;
         let mut last_error = None;
-        for url in artifact.urls {
+        for (source_index, url) in artifact.urls.iter().enumerate() {
+            diagnostics::write(
+                operation_id,
+                "download:attempt",
+                format!("source_index={source_index}"),
+            );
             match client.get(*url).send().await {
                 Ok(candidate) => match candidate.error_for_status() {
                     Ok(candidate) => {
+                        diagnostics::write(
+                            operation_id,
+                            "download:response",
+                            format!(
+                                "source_index={source_index} status={} content_length={}",
+                                candidate.status(),
+                                candidate
+                                    .content_length()
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_else(|| "unknown".to_string())
+                            ),
+                        );
                         response = Some(candidate);
                         break;
                     }
-                    Err(error) => last_error = Some(format!("{url}: {error}")),
+                    Err(error) => {
+                        diagnostics::write(
+                            operation_id,
+                            "download:http_error",
+                            format!("source_index={source_index} error={error:#}"),
+                        );
+                        last_error = Some(format!("{url}: {error}"));
+                    }
                 },
-                Err(error) => last_error = Some(format!("{url}: {error}")),
+                Err(error) => {
+                    diagnostics::write(
+                        operation_id,
+                        "download:transport_error",
+                        format!("source_index={source_index} error={error:#}"),
+                    );
+                    last_error = Some(format!("{url}: {error}"));
+                }
             }
         }
         let response = response.with_context(|| {
@@ -244,15 +346,28 @@ pub async fn install_managed_codex(
         file.flush().await.context("刷新 Codex 下载文件失败")?;
         drop(file);
 
+        diagnostics::write(
+            operation_id,
+            "download:complete",
+            format!(
+                "downloaded_bytes={} expected_bytes={}",
+                downloaded_bytes.load(Ordering::Acquire),
+                total_bytes.load(Ordering::Acquire)
+            ),
+        );
+
         verify_integrity(&hasher.finalize(), artifact.integrity)?;
+        diagnostics::write(operation_id, "integrity:verified", "algorithm=sha512");
         let archive_for_extract = archive_path.clone();
         let extract_for_task = extracted.clone();
         let triple = artifact.vendor_triple.to_string();
+        diagnostics::write(operation_id, "extract:start", "format=tgz");
         tokio::task::spawn_blocking(move || {
             extract_vendor_archive(&archive_for_extract, &extract_for_task, &triple)
         })
         .await
         .context("等待 Codex 解压任务失败")??;
+        diagnostics::write(operation_id, "extract:complete", "result=success");
 
         let codex = extracted
             .join("vendor")
@@ -266,28 +381,119 @@ pub async fn install_managed_codex(
         if !codex.is_file() {
             bail!("托管 Codex 解压完成，但未找到可执行文件");
         }
-        if codex_version(&codex).is_none() {
-            bail!("托管 Codex 可执行文件自检失败");
-        }
+        let version = codex_version_result(&codex).context("托管 Codex 可执行文件自检失败")?;
+        diagnostics::write(
+            operation_id,
+            "self_test:complete",
+            format!("path={} version={version}", codex.display()),
+        );
 
         if target.exists() {
+            diagnostics::write(
+                operation_id,
+                "activation:remove_existing",
+                format!("target={}", target.display()),
+            );
             tokio::fs::remove_dir_all(&target)
                 .await
                 .context("清理损坏的旧 Codex Runtime 失败")?;
         }
-        tokio::fs::rename(&extracted, &target)
-            .await
-            .context("激活托管 Codex Runtime 失败")?;
-        managed_codex_path().context("托管 Codex 激活后仍不可用")
+        activate_runtime_with_retry(&extracted, &target, operation_id).await?;
+        diagnostics::write(
+            operation_id,
+            "activation:renamed",
+            format!("target={}", target.display()),
+        );
+        let activated = managed_codex_path().context("托管 Codex 激活后仍不可用")?;
+        diagnostics::write(
+            operation_id,
+            "activation:verified",
+            format!("path={}", activated.display()),
+        );
+        Ok(activated)
     }
     .await;
 
-    let _ = tokio::fs::remove_dir_all(&staging).await;
-    if result.is_err() {
+    match remove_staging_with_retry(&staging, operation_id).await {
+        Ok(()) => diagnostics::write(operation_id, "staging:cleaned", "result=success"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            diagnostics::write(operation_id, "staging:cleaned", "result=already_absent")
+        }
+        Err(error) => diagnostics::write(
+            operation_id,
+            "staging:cleanup_failed",
+            format!("path={} error={error}", staging.display()),
+        ),
+    }
+    if let Err(error) = &result {
+        diagnostics::write(operation_id, "runtime:failed", format!("error={error:#}"));
         downloaded_bytes.store(0, Ordering::Release);
         total_bytes.store(0, Ordering::Release);
+    } else {
+        diagnostics::write(operation_id, "runtime:complete", "result=success");
     }
     result
+}
+
+async fn activate_runtime_with_retry(
+    extracted: &Path,
+    target: &Path,
+    operation_id: &str,
+) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 12;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match tokio::fs::rename(extracted, target).await {
+            Ok(()) => return Ok(()),
+            Err(error) if should_retry_windows_file_lock(&error) && attempt < MAX_ATTEMPTS => {
+                let delay_ms = u64::from(attempt.min(5)) * 500;
+                diagnostics::write(
+                    operation_id,
+                    "activation:retry",
+                    format!(
+                        "attempt={attempt} max_attempts={MAX_ATTEMPTS} delay_ms={delay_ms} error={error}"
+                    ),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => {
+                return Err(error).context("激活托管 Codex Runtime 失败");
+            }
+        }
+    }
+    unreachable!("activation retry loop always returns")
+}
+
+async fn remove_staging_with_retry(staging: &Path, operation_id: &str) -> io::Result<()> {
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match tokio::fs::remove_dir_all(staging).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(error),
+            Err(error) if should_retry_windows_file_lock(&error) && attempt < MAX_ATTEMPTS => {
+                let delay_ms = u64::from(attempt) * 300;
+                diagnostics::write(
+                    operation_id,
+                    "staging:cleanup_retry",
+                    format!(
+                        "attempt={attempt} max_attempts={MAX_ATTEMPTS} delay_ms={delay_ms} error={error}"
+                    ),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("staging cleanup retry loop always returns")
+}
+
+fn should_retry_windows_file_lock(error: &io::Error) -> bool {
+    should_retry_file_lock_for_platform(error, crate::platform::capabilities::is_windows())
+}
+
+fn should_retry_file_lock_for_platform(error: &io::Error, is_windows: bool) -> bool {
+    is_windows
+        && (error.kind() == io::ErrorKind::PermissionDenied
+            || matches!(error.raw_os_error(), Some(5 | 32)))
 }
 
 fn verify_integrity(actual: &[u8], integrity: &str) -> Result<()> {
@@ -381,5 +587,70 @@ mod tests {
         assert_eq!(artifact.vendor_triple, "x86_64-pc-windows-msvc");
         assert!(artifact.urls[0].starts_with("https://"));
         assert!(artifact.integrity.starts_with("sha512-"));
+    }
+
+    #[test]
+    fn minimum_version_rejects_old_system_codex() {
+        assert!(!version_meets_minimum("0.139.0"));
+        assert!(version_meets_minimum("0.144.6"));
+        assert!(version_meets_minimum("0.145.0"));
+    }
+
+    #[test]
+    fn newest_eligible_candidate_wins() {
+        let selected = select_newest_eligible([
+            Some(ResolvedCodex {
+                path: PathBuf::from("system"),
+                source: CodexRuntimeSource::System,
+                version: "0.145.0".to_string(),
+            }),
+            Some(ResolvedCodex {
+                path: PathBuf::from("managed"),
+                source: CodexRuntimeSource::Managed,
+                version: MANAGED_CODEX_VERSION.to_string(),
+            }),
+        ])
+        .unwrap();
+        assert_eq!(selected.source, CodexRuntimeSource::System);
+        assert_eq!(selected.version, "0.145.0");
+    }
+
+    #[test]
+    fn managed_candidate_replaces_old_system_candidate() {
+        let selected = select_newest_eligible([
+            Some(ResolvedCodex {
+                path: PathBuf::from("system"),
+                source: CodexRuntimeSource::System,
+                version: "0.139.0".to_string(),
+            }),
+            Some(ResolvedCodex {
+                path: PathBuf::from("managed"),
+                source: CodexRuntimeSource::Managed,
+                version: MANAGED_CODEX_VERSION.to_string(),
+            }),
+        ])
+        .unwrap();
+        assert_eq!(selected.source, CodexRuntimeSource::Managed);
+        assert_eq!(selected.version, MANAGED_CODEX_VERSION);
+    }
+
+    #[test]
+    fn windows_file_lock_errors_are_retryable() {
+        assert!(should_retry_file_lock_for_platform(
+            &io::Error::from_raw_os_error(5),
+            true
+        ));
+        assert!(should_retry_file_lock_for_platform(
+            &io::Error::from_raw_os_error(32),
+            true
+        ));
+        assert!(!should_retry_file_lock_for_platform(
+            &io::Error::from_raw_os_error(2),
+            true
+        ));
+        assert!(!should_retry_file_lock_for_platform(
+            &io::Error::from_raw_os_error(5),
+            false
+        ));
     }
 }
