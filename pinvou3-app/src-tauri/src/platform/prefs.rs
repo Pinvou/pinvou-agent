@@ -575,6 +575,20 @@ pub struct PetPrefs {
     pub enabled: bool,
 }
 
+/// 侧栏任务列表偏好。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarPrefs {
+    /// 任务列表按日期分组折叠(今天默认展开);false = 平铺列表。
+    pub date_grouping: bool,
+}
+
+impl Default for SidebarPrefs {
+    fn default() -> Self {
+        Self { date_grouping: true }
+    }
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -586,6 +600,7 @@ pub struct UserPrefs {
     pub search: SearchPrefs,
     pub notifications: NotificationPrefs,
     pub pet: PetPrefs,
+    pub sidebar: SidebarPrefs,
     pub advanced: AdvancedPrefs,
 }
 
