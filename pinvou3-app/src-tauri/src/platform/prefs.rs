@@ -585,7 +585,9 @@ pub struct SidebarPrefs {
 
 impl Default for SidebarPrefs {
     fn default() -> Self {
-        Self { date_grouping: true }
+        Self {
+            date_grouping: true,
+        }
     }
 }
 
