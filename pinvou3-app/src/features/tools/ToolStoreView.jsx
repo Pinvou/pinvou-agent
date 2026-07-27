@@ -1845,7 +1845,7 @@ const FEISHU_STEPS = [
 
                   {filteredTools.length > 0 ? (
                     (isSkillTab && !searching) ? (
-                    <div key="tool-store-card-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 pb-7">
+                    <div key="tool-store-card-grid" className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-7">
                       {filteredTools.map((tool) => {
                         const v = tool.todayVariant || 'fallback';
                         const bar = (
@@ -1911,7 +1911,7 @@ const FEISHU_STEPS = [
                       })}
                     </div>
                     ) : (
-                    <div key="tool-store-list-grid" className="grid gap-x-10 gap-y-0" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                    <div key="tool-store-list-grid" className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7">
                       {filteredTools.map((tool) => (
                         <div
                           key={`list-${tool.id}`}

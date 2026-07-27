@@ -1179,28 +1179,53 @@ const WidgetCard = ({ title, children, theme }) => {
     // —— 工作流模板卡（未启动时显示）——
     const TemplateCard = ({ theme, onOpen, title, badge, desc, banner }) => {
       const isDark = theme === 'dark';
-      // banner 自带标题/流程文字 → 整张图即入口,点击即打开,不叠任何卡片文字。
-      if (banner) {
-        return (
-          <button onClick={onOpen} title={title} style={{ gridColumn: '1 / -1', maxWidth: 1400 }}
-            className={`group self-start block w-full rounded-[16px] overflow-hidden border text-left transition-all ${isDark ? 'border-white/10 hover:border-white/25 hover:shadow-lg hover:shadow-black/30' : 'border-black/10 hover:shadow-md'}`}>
-            <img src={banner} alt={title} className="w-full h-auto block transition-transform duration-300 group-hover:scale-[1.02]" />
-          </button>
-        );
-      }
       return (
-        <div className={`flex flex-col rounded-[16px] border overflow-hidden ${isDark ? 'bg-[#1E1F20] border-white/10 hover:border-white/20' : 'bg-white border-black/10 hover:shadow-md'} transition-all`}>
-          <div className="flex flex-col flex-1 p-5">
-            <div className="flex items-start justify-between gap-2 mb-1">
-              <h3 className={`text-[15px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{title}</h3>
-              <span className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${isDark ? 'bg-[#333537] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>{badge}</span>
+        <button
+          onClick={onOpen}
+          title={title}
+          className={`group relative flex min-h-[360px] w-full flex-col overflow-hidden rounded-[28px] border p-3 text-left backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 ${
+            isDark
+              ? 'border-white/10 bg-white/[0.075] shadow-none hover:border-white/16 hover:bg-white/[0.105]'
+              : 'border-slate-200/70 bg-white/88 shadow-[0_18px_48px_-30px_rgba(15,23,42,0.50)] hover:border-slate-300 hover:bg-white hover:shadow-[0_24px_58px_-34px_rgba(15,23,42,0.60)]'
+          }`}
+        >
+          <div className={`relative aspect-[16/7] overflow-hidden rounded-[20px] ${isDark ? 'bg-white/8' : 'bg-slate-100'}`}>
+            {banner ? (
+              <img src={banner} alt={title} className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.025]" />
+            ) : (
+              <div className={`h-full w-full ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`} />
+            )}
+            <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/55 to-transparent" />
+            {badge && (
+              <span className="absolute left-4 top-4 rounded-full bg-black/45 px-3 py-1 text-[11px] font-bold text-white backdrop-blur-md">
+                {badge}
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-1 flex-col px-2 pb-2 pt-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h3 className={`truncate text-[21px] font-semibold tracking-tight ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</h3>
+                <p className={`mt-2 line-clamp-3 text-[14px] font-medium leading-5 ${isDark ? 'text-[#8E8E93]' : 'text-[#6E6E73]'}`}>{desc || '选择模板后创建一个新的工作流任务。'}</p>
+              </div>
+              <span className={`shrink-0 rounded-full px-4 py-1.5 text-[13px] font-bold ${
+                isDark ? 'bg-[#0A84FF] text-white' : 'bg-[#007AFF] text-white'
+              }`}>
+                打开
+              </span>
             </div>
-            <p className={`text-[12px] leading-relaxed mb-3 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{desc}</p>
-            <div className="mt-auto pt-2">
-              <button onClick={onOpen} className={cardBtnCls(isDark, 'primary')}>打开</button>
+
+            <div className="mt-auto flex items-center gap-2 pt-5">
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isDark ? 'bg-white/10 text-[#C7C7CC]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
+                工作流模板
+              </span>
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isDark ? 'bg-white/10 text-[#C7C7CC]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
+                专家团队
+              </span>
             </div>
           </div>
-        </div>
+        </button>
       );
     };
 
@@ -1248,12 +1273,8 @@ const WidgetCard = ({ title, children, theme }) => {
       if (!inBoard) {
         return (
           <div className={containerCls}>
-            <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 md:px-10 pt-8 pb-4">
-              <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.workflow}</h1>
-              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.pick}</p>
-            </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pb-10">
-              <div className="grid gap-4 max-w-7xl mx-auto px-4 sm:px-6 md:px-10" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+              <div className="grid grid-cols-1 gap-5 pt-8 lg:grid-cols-2">
                 {/* [工作流分离 Stage D] 模板卡 = 后端 list_workflows(各 workflow.json 的
                     ui.template)。点开:当前 run 属于该工作流(scenario 命中它认领的场景)
                     → 续看板;否则弹该工作流自己的新建表单。 */}
