@@ -777,7 +777,7 @@ function workspaceDisplayName(path) {
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
       const [taskListFilter, setTaskListFilter] = useState('all');
-      const [taskListSort, setTaskListSort] = useState('recent');
+      const [taskListSort, setTaskListSort] = useState('pinned_first');
       const [taskFilterOpen, setTaskFilterOpen] = useState(false);
       const taskFilterRef = useRef(null);
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
@@ -848,11 +848,17 @@ function workspaceDisplayName(path) {
 
       // 任务列表按日期堆叠:今天默认展开、以往默认折叠;组内顺序沿用上面的筛选+排序结果,
       // 组间按日期倒序,无时间戳的落 'unknown' 组沉底。
+      // 「置顶优先」排序下置顶项提升到所有日期组之上,否则旧会话会埋进默认折叠的以往分组,
+      // 只剩置顶标志、没有置顶效果。
       const todayDateKey = localDateKey(Date.now());
+      const sidebarPinnedHoisted = taskListSort === 'pinned_first'
+        ? sidebarTaskHistory.filter(chat => !!chat.pinned)
+        : [];
       const sidebarTaskGroups = [];
       {
         const byDate = new Map();
         sidebarTaskHistory.forEach(chat => {
+          if (sidebarPinnedHoisted.length && chat.pinned) return;
           const key = localDateKey(chat.updatedAt || chat.pinnedAt);
           if (!byDate.has(key)) byDate.set(key, []);
           byDate.get(key).push(chat);
@@ -1905,7 +1911,14 @@ function workspaceDisplayName(path) {
                           </div>
                         )}
                       </div>
-                    ) : sidebarTaskGroups.length > 0 ? sidebarTaskGroups.map((group) => {
+                    ) : (sidebarPinnedHoisted.length > 0 || sidebarTaskGroups.length > 0) ? (
+                      <>
+                        {sidebarPinnedHoisted.length > 0 && (
+                          <div className="space-y-0.5">
+                            {sidebarPinnedHoisted.map(renderSidebarTaskItem)}
+                          </div>
+                        )}
+                        {sidebarTaskGroups.map((group) => {
                       const isOpen = dateGroupOpen[group.key] ?? (group.key === todayDateKey);
                       return (
                         <div key={group.key}>
@@ -1924,7 +1937,9 @@ function workspaceDisplayName(path) {
                           )}
                         </div>
                       );
-                    }) : (
+                        })}
+                      </>
+                    ) : (
                       <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
                         {t.sidebarTaskEmpty || '暂无任务'}
                       </div>
