@@ -2751,7 +2751,8 @@ function workspaceDisplayName(path) {
           );
         }
         // 与左侧任务列表同款行项目:置顶/重命名/删除/收纳/打开文件夹/右键菜单;
-        // 定时任务运行项点按进入运行会话(与侧栏一致)
+        // 定时任务运行项点按进入运行会话(与侧栏一致)。
+        // 管理页只是会话清单,不高亮当前会话(active 恒 false),避免打开过的对话残留"选中"背景。
         const route = sessionRoute(chat);
         return (
           <RecentItem
@@ -2759,11 +2760,7 @@ function workspaceDisplayName(path) {
             chat={chat}
             theme={theme}
             t={t}
-            active={route === 'codex'
-              ? chat.id === activeCodexId
-              : route === 'scheduled'
-                ? chat.id === activeScheduledId
-                : chat.id === activeId}
+            active={false}
             personaTarget={false}
             onSelect={route === 'codex'
               ? () => onOpenCodex && onOpenCodex(chat.id)
