@@ -19,6 +19,23 @@ const MARKER_PATH = path.join(
   ".pinvou-prepared.json",
 );
 const PREPARE_FORMAT_VERSION = 1;
+const NPM_CI_ARGS = ["ci", "--prefer-offline", "--no-audit", "--no-fund"];
+
+function npmInvocation({
+  platform = process.platform,
+  env = process.env,
+} = {}) {
+  if (platform === "win32") {
+    return {
+      command: env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", `npm.cmd ${NPM_CI_ARGS.join(" ")}`],
+    };
+  }
+  return {
+    command: "npm",
+    args: NPM_CI_ARGS,
+  };
+}
 
 function expectedMarker({
   platform = process.platform,
@@ -61,13 +78,13 @@ function prepareWebTemplate({
     return false;
   }
 
-  const npm = platform === "win32" ? "npm.cmd" : "npm";
+  const npm = npmInvocation({ platform });
   console.log(
     `[web-template] 为 ${platform}/${architecture} 从 package-lock.json 准备离线模板依赖`,
   );
   const result = spawn(
-    npm,
-    ["ci", "--prefer-offline", "--no-audit", "--no-fund"],
+    npm.command,
+    npm.args,
     {
       cwd: WEB_TEMPLATE_ROOT,
       env: process.env,
@@ -106,5 +123,6 @@ module.exports = {
   expectedMarker,
   isPrepared,
   main,
+  npmInvocation,
   prepareWebTemplate,
 };

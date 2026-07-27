@@ -2,6 +2,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const {
+  npmInvocation,
+} = require("../scripts/tauri/web-template.js");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(APP_ROOT, "..");
@@ -51,5 +54,30 @@ assert.match(prepareSource, /package-lock\.json/);
 assert.match(prepareSource, /"ci"/);
 assert.match(prepareSource, /platform/);
 assert.match(prepareSource, /architecture/);
+
+assert.deepEqual(
+  npmInvocation({
+    platform: "win32",
+    env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+  }),
+  {
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      "npm.cmd ci --prefer-offline --no-audit --no-fund",
+    ],
+  },
+  "Windows 必须经 cmd.exe 调用 npm.cmd，避免 Node spawnSync EINVAL",
+);
+assert.deepEqual(
+  npmInvocation({ platform: "linux" }),
+  {
+    command: "npm",
+    args: ["ci", "--prefer-offline", "--no-audit", "--no-fund"],
+  },
+  "非 Windows 平台继续直接调用 npm",
+);
 
 console.log("web template packaging contract ok");
