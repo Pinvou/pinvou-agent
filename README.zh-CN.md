@@ -8,6 +8,8 @@ Pinvou Agent 不只是一个聊天界面。它把模型、工具、个人知识�
 
 ![Pinvou Agent 主界面](docs/assets/screenshots/home.webp)
 
+[▶ 观看 90 秒功能演示：7 月 17—23 日功能更新](https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4)
+
 ## 能做什么
 
 ### 从对话到可交付产物
