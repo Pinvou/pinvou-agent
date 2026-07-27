@@ -2769,12 +2769,7 @@ fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, String> {
     let encoded = serde_json::to_vec(&(command, canonical))
         .map_err(|error| format!("serialize Web RPC fingerprint: {error}"))?;
     let digest = Sha256::digest(encoded);
-    let mut fingerprint = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(fingerprint, "{byte:02x}");
-    }
-    Ok(fingerprint)
+    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 fn canonicalize_json(value: &Value) -> Value {

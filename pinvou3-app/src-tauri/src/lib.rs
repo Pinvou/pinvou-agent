@@ -152,8 +152,25 @@ fn ensure_release_env() {
     }
 }
 
+/// 进程级选定并安装 rustls 的 CryptoProvider(aws-lc-rs)。
+///
+/// 幂等:`install_default` 返回 `Err` 表示已装过(本次或之前的 reqwest/tungstenite 调用),
+/// 用 `drop` 吞掉即可,不会二次注册。装在 `run()` 最前,保证后续 reqwest / relay 的
+/// `connect_async` 都用已确定的 provider,避开「aws-lc-rs + ring 同时启用时无参
+/// ClientConfig::builder().expect() panic」(见 Cargo.toml rustls 注释)。
+fn install_rustls_provider() {
+    drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 必须最先执行:进程级选定 rustls CryptoProvider。
+    // 见 Cargo.toml 的 rustls/reqwest 注释——reqwest 0.13 自带 aws-lc-rs 但只「借用」
+    // provider,不写入默认槽;而 oauth2(经 reqwest 0.12)把 rustls 0.23 的 `ring` feature
+    // 也拉进图,使 rustls 同时启用 aws-lc-rs + ring 两个 provider。tokio-tungstenite 0.30
+    // 的 TLS 连接器走无参 ClientConfig::builder(),两 provider 共存时会 panic。此处选定
+    // aws-lc-rs(FIPS 可候选、性能优于 ring),在任何 TLS 连接之前装好。
+    install_rustls_provider();
     ensure_release_env();
     startup::init();
     startup::mark("environment:ready");

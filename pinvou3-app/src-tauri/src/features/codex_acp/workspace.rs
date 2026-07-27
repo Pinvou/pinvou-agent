@@ -685,7 +685,7 @@ fn fingerprint(path: &Path, include_hash: bool) -> Result<Option<FileFingerprint
             }
             digest.update(&buffer[..read]);
         }
-        Some(format!("{:x}", digest.finalize()))
+        Some(crate::platform::encoding::hex_lower(&digest.finalize()))
     } else {
         None
     };
