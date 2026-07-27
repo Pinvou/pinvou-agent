@@ -27,6 +27,8 @@ name: PR Check
 #   mtime,cargo 按 mtime 判 dirty,CodeWhale path 依赖 + 主 crate 每轮必重编(~5min)。
 #   sccache 按内容哈希缓存编译产物(GHA cache 后端,scoping 与 actions/cache 一致),
 #   仓库内 crate 源码不变即全命中;main push 恒跑 rust-test 同时充当 sccache 暖源。
+#   PR/merge queue 侧 SCCACHE_GHA_RW_MODE=READ_ONLY(对齐 rust-cache save-if 仅 main),
+#   只读暖 cache,不向共享 10GB 配额写入。
 
 on:
   pull_request:
@@ -340,6 +342,8 @@ jobs:
       # sccache 按内容哈希缓存编译产物,解决 checkout 刷新 mtime 导致仓库内 crate 每轮重编。
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v4
@@ -418,6 +422,8 @@ jobs:
       # 同 rust-lint:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
@@ -541,6 +547,8 @@ jobs:
       # 同 rust-test:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
