@@ -608,6 +608,7 @@ pub fn run() {
             commands::settings::get_session_model_id,
             commands::codex::get_codex_acp_status,
             commands::codex::prepare_codex_acp,
+            commands::codex::install_codex_homebrew,
             commands::codex::login_codex_acp,
             commands::codex::open_codex_login_url,
             commands::codex::get_codex_acp_session_info,

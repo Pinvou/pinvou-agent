@@ -11,6 +11,12 @@ src-tauri/resources/**/web-template/node_modules/
 # Tauri 生成的快照
 src-tauri/gen/
 
+# Codex ACP Bridge 由 prepare-codex-bridge-runtime.sh 按目标平台生成(Linux 规则在仓库根 .gitignore)。
+src-tauri/resources/platforms/macos/codex-bridge/node/
+src-tauri/resources/platforms/macos/codex-bridge/acp/
+src-tauri/resources/platforms/macos/codex-bridge/manifest.json
+src-tauri/resources/platforms/macos/.codex-bridge-build.*/
+
 # OS
 .DS_Store
 Thumbs.db

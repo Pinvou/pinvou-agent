@@ -589,7 +589,7 @@ function Turn({
   );
 }
 
-function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin, copy }) {
+function RuntimeNotice({ status, working, error, onPrepare, onBrewInstall, onLogin, onOpenLogin, copy }) {
   if (!status) return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
@@ -609,6 +609,34 @@ function RuntimeNotice({ status, working, error, onPrepare, onLogin, onOpenLogin
   }
   if (!status.codex_available) {
     const progress = status.download_progress;
+    const installMethod = status.install_method;
+    if (installMethod === 'homebrew' || installMethod === 'manual') {
+      const incompatible = Boolean(status.system_codex_incompatible);
+      const brewInstallable = installMethod === 'homebrew' && status.brew_available;
+      return (
+        <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
+          <Terminal size={19} className="text-blue-500 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-semibold">{incompatible ? copy.codexIncompatible : copy.codexMissing}</div>
+            <div className="text-[12px] text-gray-500">
+              {incompatible
+                ? copy.codexIncompatibleHint(status.min_codex_version)
+                : installMethod === 'manual'
+                  ? copy.manualInstallHint
+                  : status.brew_available
+                    ? copy.brewInstallHint
+                    : copy.brewMissingHint}
+            </div>
+            {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
+          </div>
+          {brewInstallable && (
+            <button onClick={onBrewInstall} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
+              {working ? copy.brewInstalling : copy.brewInstall}
+            </button>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
         <Terminal size={19} className="text-blue-500 shrink-0" />
@@ -1066,6 +1094,14 @@ export function CodexAcpView({
     finally { window.clearInterval(poll); await refreshStatus().catch(() => {}); setWorking(false); }
   }
 
+  async function brewInstall() {
+    setWorking(true); setError('');
+    const poll = window.setInterval(() => refreshStatus().catch(() => {}), 500);
+    try { setStatus(await invoke('install_codex_homebrew')); }
+    catch (err) { showError(err); }
+    finally { window.clearInterval(poll); await refreshStatus().catch(() => {}); setWorking(false); }
+  }
+
   async function login() {
     setWorking(true); setError('');
     try { setStatus(await invoke('login_codex_acp')); }
@@ -1245,7 +1281,7 @@ export function CodexAcpView({
                 </button>
               </div>
             ) : (
-              <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onLogin={login} onOpenLogin={openLogin} copy={codexCopy} />
+              <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onBrewInstall={brewInstall} onLogin={login} onOpenLogin={openLogin} copy={codexCopy} />
             )}
             {!projection.turns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">

@@ -68,6 +68,55 @@ pub(super) fn managed_artifact(architecture: &str) -> Result<ManagedCodexArtifac
     current::managed_artifact(architecture)
 }
 
+/// 当前平台的 Codex 安装方式（status.install_method 契约字段）：
+/// "managed_download"（linux/windows）/ "homebrew"（macOS）/ "manual"（其他）。
+pub(super) fn install_method() -> &'static str {
+    current::INSTALL_METHOD
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn brew_bin() -> &'static str {
+    current::brew_bin()
+}
+
+/// Homebrew 仅 macOS 使用；其他平台给保守默认值，仅保证编译通过。
+#[cfg(not(target_os = "macos"))]
+pub(super) fn brew_bin() -> &'static str {
+    "brew"
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn brew_available() -> bool {
+    current::brew_available()
+}
+
+/// 仅 macOS 探测 Homebrew；其他平台恒 false。
+#[cfg(not(target_os = "macos"))]
+pub(super) fn brew_available() -> bool {
+    false
+}
+
 pub(super) fn should_retry_file_lock(error: &io::Error) -> bool {
     current::should_retry_file_lock(error)
+}
+
+/// 测试辅助：当前平台是否类 Unix（假 codex 脚本依赖可执行位）。
+#[cfg(test)]
+pub(super) fn unix_like() -> bool {
+    cfg!(unix)
+}
+
+/// 测试辅助：为测试脚本加可执行位；非 Unix 平台为空操作。
+#[cfg(test)]
+pub(super) fn make_executable(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }

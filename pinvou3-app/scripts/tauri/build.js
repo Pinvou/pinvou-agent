@@ -2,7 +2,7 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
 const {
-  prepareLinuxCodexBridge,
+  prepareCodexBridge,
   prepareWindowsCodexBridge,
   WINDOWS_BRIDGE_CONFIG_PATH,
 } = require("./codex-bridge.js");
@@ -104,13 +104,13 @@ function main() {
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
   const additionalConfigs = [];
   if (isDev) {
-    prepareLinuxCodexBridge();
+    prepareCodexBridge();
     prepareWindowsCodexBridge();
   }
   if (hasTauriBuildCommand) {
     prepareLinuxArm64Connectors();
     prepareWebTemplate();
-    prepareLinuxCodexBridge();
+    prepareCodexBridge();
     prepareWindowsCodexBridge();
     if (process.platform === "win32") {
       additionalConfigs.push(WINDOWS_BRIDGE_CONFIG_PATH);
@@ -142,7 +142,7 @@ module.exports = {
   configSpecs,
   main,
   prepareLinuxArm64Connectors,
-  prepareLinuxCodexBridge,
+  prepareCodexBridge,
   prepareWindowsCodexBridge,
   prepareTauriArgs,
   runTauri,
