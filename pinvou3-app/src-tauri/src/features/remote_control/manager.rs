@@ -4618,6 +4618,7 @@ mod tests {
             "web_access_get_gate_report",
             "web_access_update_settings",
             "web_access_create_session",
+            "web_access_create_session_and_chat",
             "web_access_chat",
             "web_access_ingest_file",
             "web_access_upload_attachment_chunk",

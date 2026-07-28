@@ -342,6 +342,54 @@ pub fn web_access_abort_attachment_upload(
     Ok(())
 }
 
+/// Materialize a draft Web conversation and admit its first turn as one
+/// idempotent RPC. The Relay request ledger guarantees that reconnecting with
+/// the same client_request_id cannot create or submit the turn twice.
+#[tauri::command]
+pub async fn web_access_create_session_and_chat(
+    message: String,
+    attachment_handles: Option<Vec<String>>,
+    restrict_tools: Option<bool>,
+    manager: State<'_, RemoteControlManager>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<WebSessionMetadata, String> {
+    let transcript_revision = crate::features::sessions::transcript_revision(&[])
+        .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
+    let metadata = super::sessions::create_session_record(false, &store, &pool)?;
+    let session_id = metadata.id.clone();
+
+    if let Err(error) = web_access_chat_for_session(
+        message,
+        attachment_handles,
+        session_id.clone(),
+        restrict_tools,
+        &manager,
+        &pool,
+        &store,
+        &app,
+    )
+    .await
+    {
+        pool.evict(&session_id).await;
+        let rollback = store
+            .delete(&session_id)
+            .map_err(|rollback_error| format!("rollback Session {session_id}: {rollback_error:#}"));
+        pool.forget_session(&session_id);
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{error}; {rollback_error}")),
+        };
+    }
+
+    super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "created");
+    Ok(WebSessionMetadata {
+        metadata,
+        transcript_revision,
+    })
+}
+
 /// Web-safe chat entry point: Session routing is mandatory and attachment
 /// contents never cross Relay in either direction.
 #[tauri::command]
@@ -354,6 +402,29 @@ pub async fn web_access_chat(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
     app: AppHandle,
+) -> Result<(), String> {
+    web_access_chat_for_session(
+        message,
+        attachment_handles,
+        session_id,
+        restrict_tools,
+        &manager,
+        &pool,
+        &store,
+        &app,
+    )
+    .await
+}
+
+async fn web_access_chat_for_session(
+    message: String,
+    attachment_handles: Option<Vec<String>>,
+    session_id: String,
+    restrict_tools: Option<bool>,
+    manager: &RemoteControlManager,
+    pool: &EnginePool,
+    store: &SessionStore,
+    app: &AppHandle,
 ) -> Result<(), String> {
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
@@ -369,7 +440,7 @@ pub async fn web_access_chat(
     let attachment_handles = attachment_handles.unwrap_or_default();
     let (attachment_reservation, attachments) =
         manager.reserve_web_attachments(&attachment_handles)?;
-    let attachments = match stage_uploaded_attachments(attachments, &session_id, &store) {
+    let attachments = match stage_uploaded_attachments(attachments, &session_id, store) {
         Ok(attachments) => attachments,
         Err(error) => {
             if let Err(release_error) = manager.finish_web_attachment_reservation(
@@ -390,9 +461,9 @@ pub async fn web_access_chat(
         session_id,
         restrict_tools,
         turn_reservation,
-        &pool,
-        &store,
-        &app,
+        pool,
+        store,
+        app,
     )
     .await;
     let consume = result.is_ok();

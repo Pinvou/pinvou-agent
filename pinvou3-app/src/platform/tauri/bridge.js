@@ -527,6 +527,7 @@
   var sendMessage = chatFeature.sendMessage;
   var getComposerDraft = chatFeature.getComposerDraft;
   var setComposerDraft = chatFeature.setComposerDraft;
+  var retryFirstTurn = chatFeature.retryFirstTurn;
   var prefillComposer = chatFeature.prefillComposer;
   var removeQueued = chatFeature.removeQueued;
   var summonPinvou = chatFeature.summonPinvou;
@@ -1707,6 +1708,7 @@
       sendMessageToSession: sendMessageToSession,
       getComposerDraft: getComposerDraft,
       setComposerDraft: setComposerDraft,
+      retryFirstTurn: retryFirstTurn,
       prefillComposer: prefillComposer,
       removeQueued: removeQueued,
       cancelGeneration: cancelGeneration,

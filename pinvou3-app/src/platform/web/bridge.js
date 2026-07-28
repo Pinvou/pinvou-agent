@@ -20,6 +20,9 @@
   }
 
   const { invoke } = TAURI.core;
+  const invokeWithRequestId = typeof TAURI.core.invokeWithRequestId === "function"
+    ? TAURI.core.invokeWithRequestId
+    : function (command, args) { return invoke(command, args); };
   const { listen } = TAURI.event;
   const dialogOpen = TAURI.dialog?.open;
   const PLATFORM = window.PinvouPlatform || { kind: "desktop", capabilities: {} };
@@ -28,6 +31,15 @@
     if (IS_WEB && typeof PLATFORM.can === "function") return PLATFORM.can(name) === true;
     if (IS_WEB) return !!(PLATFORM.capabilities && PLATFORM.capabilities[name] === true);
     return !PLATFORM.capabilities || PLATFORM.capabilities[name] !== false;
+  }
+  function canInvoke(command) {
+    return !IS_WEB || (typeof PLATFORM.canInvoke === "function" && PLATFORM.canInvoke(command) === true);
+  }
+  function webRequestId(prefix) {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return prefix + "_" + window.crypto.randomUUID();
+    }
+    return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
@@ -388,6 +400,9 @@
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
+  // Web 草稿首条消息的本地提交记录。内容只留在当前页面内，用固定 RPC ID
+  // 支撑断线重发与人工重试；切走草稿后不会把待发内容泄漏到其他会话。
+  var firstTurnSubmissions = Object.create(null);
   var authoritativeTranscriptSyncs = Object.create(null);
   var scheduledRunSessionOwners = Object.create(null);
   var scheduledRunOpenInFlight = Object.create(null);
@@ -1977,6 +1992,9 @@
   // session 在首次有实质内容(发消息 / 加卡牌,见 ensureSession)时才物化——这样会话列表里
   // 永远不会堆积没用过的空「新对话」(ChatGPT/Claude 式 lazy session)。
   function enterDraft() {
+    state.chatItems.forEach(function (item) {
+      if (item && item.clientMessageId) delete firstTurnSubmissions[item.clientMessageId];
+    });
     sessionSwitchRequestToken += 1; // 新建/返回草稿会话使任何仍在等待的 load_session 结果失效
     state.scheduledRunContext = null;
     state.draftEpoch++; // 每次点击都自增——含下面提前返回的「已在草稿态」分支,让前端能重置 welcomeToolId
@@ -3473,6 +3491,219 @@
     return { accepted: true, queued: false, completion: completion };
   }
 
+  function findFirstTurnItem(clientMessageId) {
+    return state.chatItems.find(function (item) {
+      return item && item.clientMessageId === clientMessageId;
+    }) || null;
+  }
+
+  function firstTurnStillVisible(submission) {
+    return !!submission &&
+      !state.activeSessionId &&
+      state.draftEpoch === submission.draftEpoch &&
+      !!findFirstTurnItem(submission.clientMessageId);
+  }
+
+  function restoreFirstTurnUiState(submission) {
+    if (!submission || !submission.uiSnapshot || !firstTurnStillVisible(submission)) return;
+    var snapshot = submission.uiSnapshot;
+    state.scheduledTaskPendingGuide = snapshot.scheduledTaskPendingGuide;
+    state.scheduledTaskCreationSessionId = snapshot.scheduledTaskCreationSessionId;
+    state.scheduledTaskDraft = snapshot.scheduledTaskDraft;
+    state.activeSkill = snapshot.activeSkill;
+  }
+
+  function consumeFirstTurnUiState(text) {
+    var snapshot = {
+      scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
+      scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
+      scheduledTaskDraft: state.scheduledTaskDraft,
+      activeSkill: state.activeSkill,
+    };
+    var payloadText = text;
+    var restrictTools = false;
+    if (state.scheduledTaskPendingGuide) {
+      payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+      restrictTools = true;
+      state.scheduledTaskPendingGuide = null;
+      state.scheduledTaskDraft = null;
+    }
+    state.activeSkill = null;
+    return { snapshot: snapshot, payloadText: payloadText, restrictTools: restrictTools };
+  }
+
+  function seedAcceptedFirstTurn(buffer, submission) {
+    var existingUser = null;
+    for (var index = buffer.chatItems.length - 1; index >= 0; index--) {
+      if (buffer.chatItems[index] && buffer.chatItems[index].type === "user") {
+        existingUser = buffer.chatItems[index];
+        break;
+      }
+    }
+    if (existingUser) {
+      existingUser.deliveryState = "accepted";
+      existingUser.clientMessageId = submission.clientMessageId;
+      return;
+    }
+
+    var nextItemId = Math.max(
+      Number(buffer.stream && buffer.stream.itemIdSeq || 0),
+      Number(submission.optimisticItemId || 0),
+    ) + 1;
+    var userItem = {
+      id: nextItemId,
+      type: "user",
+      text: submission.displayText,
+      time: submission.time,
+      deliveryState: "accepted",
+      clientMessageId: submission.clientMessageId,
+    };
+    buffer.chatItems.push(userItem);
+    buffer.messages.push({
+      role: "user",
+      content: [{ type: "text", text: submission.displayText }],
+    });
+    buffer.localTurnOwned = true;
+    buffer.remoteTurnActive = false;
+    buffer.remoteTerminalSeen = false;
+    buffer.busy = true;
+    buffer.thinking = {
+      active: true,
+      phase: "thinking",
+      toolName: "",
+      startedAt: Date.now(),
+    };
+    if (!buffer.stream) buffer.stream = {};
+    buffer.stream.itemIdSeq = nextItemId;
+  }
+
+  function syncNewFirstTurnSessionInBackground() {
+    // The new session already starts with the local default mode/persona/KB
+    // state. Only refresh the sidebar here: the other sync helpers read and
+    // write the globally active session, so running them after the user has
+    // navigated elsewhere could overwrite the newly selected session's UI.
+    Promise.resolve(refreshHistoryList()).then(function () {
+      notify();
+    }, function (error) {
+      console.warn("[sessions] first-turn history refresh failed", error);
+      notify();
+    });
+  }
+
+  function acceptFirstTurnSubmission(submission, metadata) {
+    var sessionId = String(metadata && metadata.id || "").trim();
+    if (!sessionId) throw new Error("桌面端未返回新会话 ID");
+    var existingMetaIndex = state.sessions.findIndex(function (session) {
+      return session && session.id === sessionId;
+    });
+    if (existingMetaIndex >= 0) state.sessions[existingMetaIndex] = metadata;
+    else state.sessions.unshift(metadata);
+
+    var buffer = getBuffer(sessionId);
+    buffer.loadedFromDisk = true;
+    buffer.sessionRevision = String(
+      metadata.transcript_revision || metadata.transcriptRevision || buffer.sessionRevision || "",
+    );
+    seedAcceptedFirstTurn(buffer, submission);
+
+    var shouldActivate = firstTurnStillVisible(submission);
+    if (shouldActivate) {
+      if (submission.uiSnapshot && submission.uiSnapshot.scheduledTaskPendingGuide) {
+        state.scheduledTaskCreationSessionId = sessionId;
+      }
+      state.attachments = state.attachments.filter(function (attachment) {
+        return submission.readyAttachments.indexOf(attachment) < 0;
+      });
+      delete firstTurnSubmissions[submission.clientMessageId];
+      switchActiveTo(sessionId);
+      notify();
+    } else {
+      delete firstTurnSubmissions[submission.clientMessageId];
+    }
+    syncNewFirstTurnSessionInBackground();
+  }
+
+  async function runFirstTurnSubmission(submission) {
+    if (!submission || submission.inFlight) return;
+    submission.inFlight = true;
+    var item = findFirstTurnItem(submission.clientMessageId);
+    if (item) {
+      item.deliveryState = "sending";
+      item.deliveryError = "";
+      notify();
+    }
+    try {
+      var metadata = await invokeWithRequestId(
+        "web_access_create_session_and_chat",
+        submission.args,
+        submission.requestId,
+      );
+      acceptFirstTurnSubmission(submission, metadata);
+    } catch (error) {
+      submission.inFlight = false;
+      submission.lastErrorCode = String(error && error.code || "rpc_failed");
+      submission.lastError = String(error && error.message ? error.message : error || "");
+      if (!firstTurnStillVisible(submission)) return;
+      var failedItem = findFirstTurnItem(submission.clientMessageId);
+      if (failedItem) {
+        failedItem.deliveryState = submission.lastErrorCode === "outcome_unknown"
+          ? "unknown"
+          : "failed";
+        failedItem.deliveryError = submission.lastError;
+      }
+      restoreFirstTurnUiState(submission);
+      notify();
+    }
+  }
+
+  function submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload) {
+    var prepared = consumeFirstTurnUiState(text);
+    var clientMessageId = webRequestId("chat");
+    var requestId = "first_turn_" + clientMessageId;
+    var time = timeStr();
+    var optimisticItem = {
+      type: "user",
+      text: displayText,
+      time: time,
+      deliveryState: "sending",
+      deliveryError: "",
+      clientMessageId: clientMessageId,
+    };
+    addChatItem(optimisticItem);
+    var submission = {
+      clientMessageId: clientMessageId,
+      requestId: requestId,
+      draftEpoch: state.draftEpoch,
+      optimisticItemId: optimisticItem.id,
+      time: time,
+      displayText: displayText,
+      readyAttachments: readyAttachments.slice(),
+      uiSnapshot: prepared.snapshot,
+      args: {
+        message: prepared.payloadText,
+        attachmentHandles: attachmentsPayload.map(function (attachment) {
+          return attachment && attachment.handle;
+        }).filter(Boolean),
+        restrictTools: !!prepared.restrictTools,
+      },
+      inFlight: false,
+      lastErrorCode: "",
+      lastError: "",
+    };
+    firstTurnSubmissions[clientMessageId] = submission;
+    notify();
+    runFirstTurnSubmission(submission);
+  }
+
+  function retryFirstTurn(clientMessageId) {
+    var submission = firstTurnSubmissions[String(clientMessageId || "")];
+    if (!submission || submission.inFlight || !firstTurnStillVisible(submission)) return;
+    if (submission.lastErrorCode !== "rpc_timeout") {
+      submission.requestId = "first_turn_" + webRequestId("retry");
+    }
+    runFirstTurnSubmission(submission);
+  }
+
   async function sendMessage(text, meta) {
     text = (text || "").trim();
     var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
@@ -3487,17 +3718,26 @@
       return;
     }
 
+    var displayText = readyAttachments.length > 0
+      ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
+      : text;
+    var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
+
+    if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
+      var existingFirstTurn = state.chatItems.some(function (item) {
+        return item && item.type === "user" && !!item.deliveryState;
+      });
+      if (existingFirstTurn) return;
+      submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload);
+      return;
+    }
+
     if (!state.activeSessionId) {
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
       if (!state.activeSessionId) return;
     }
     var sid = state.activeSessionId;
     var activeTurnBuffer = getBuffer(sid);
-    // 展示文本：把附件 chip 名附在用户消息末尾
-    var displayText = readyAttachments.length > 0
-      ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
-      : text;
-    var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
     function consumeUiTurnState() {
       var consumed = {
         scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
@@ -7221,6 +7461,7 @@
     sendMessageToSession: sendMessageToSession,
     getComposerDraft: getComposerDraft,
     setComposerDraft: setComposerDraft,
+    retryFirstTurn: retryFirstTurn,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
@@ -7497,7 +7738,7 @@
     lifecycle: { init: flat.init },
     state: { get: get, getMany: getMany, subscribe: subscribe, subscribeMany: subscribeMany },
     platform: {},
-    chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "prefillComposer", "removeQueued", "cancelGeneration", "cancelShellTask"]),
+    chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "retryFirstTurn", "prefillComposer", "removeQueued", "cancelGeneration", "cancelShellTask"]),
     voice: domain(["startVoiceInput", "installVoiceAsr", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText", "runVoiceInputDebugAssertions"]),
     knowledge: domain(["downloadKbModel", "cancelKbModel", "mountCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
     scheduled: domain(["loadScheduledTasks", "readScheduledTask", "loadScheduledTaskRuns", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "clearScheduledTaskSelection", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "toggleScheduledTaskPinned", "deleteScheduledTask", "runScheduledTaskNow", "pickFolder", "startScheduledTaskChat", "confirmScheduledTaskDraft", "clearScheduledTaskDraft", "openScheduledRunChat", "exitScheduledRunChat"]),

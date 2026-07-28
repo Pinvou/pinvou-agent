@@ -299,4 +299,125 @@ async function connectWithCapabilities(events, listener) {
     'an older desktop without upload support must keep the device upload entry hidden');
 }
 
+// 首条消息使用调用方提供的稳定请求 ID。WebSocket 重连后必须复用同一 ID，
+// 桌面端才能从持久 RPC ledger 返回原结果而不重复创建 Session 或发送消息。
+{
+  const command = 'web_access_create_session_and_chat';
+  const harness = bootClient({ allowed_commands: [command], allowed_events: [] });
+  const { window, MockWebSocket, timers } = harness;
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  client.markFrontendReady();
+  await new Promise(resolve => setImmediate(resolve));
+  client.markStateReady();
+
+  const firstSocket = MockWebSocket.instances[0];
+  firstSocket.open();
+  firstSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_one',
+    desktop_connected: true,
+  });
+  firstSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [command], events: [] } },
+  });
+
+  const stableId = 'first_turn_chat_00000000-0000-4000-8000-000000000000';
+  const resultPromise = window.__TAURI__.core.invokeWithRequestId(
+    command,
+    { message: 'hello', attachmentHandles: [], restrictTools: false },
+    stableId,
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  const firstRequest = firstSocket.sent.find(message => message.type === 'rpc_request');
+  assert.ok(firstRequest, JSON.stringify({
+    sent: firstSocket.sent,
+    frontendReady: client.frontendReady,
+    stateReady: client.stateReady,
+    desktopCapabilitiesReady: client.desktopCapabilitiesReady,
+    allowedCommands: Array.from(client.allowedCommands || []),
+  }));
+  assert.equal(firstRequest.id, stableId);
+  assert.equal(firstRequest.client_request_id, stableId);
+
+  firstSocket.close();
+  const reconnectTimer = timers.find(timer => timer.delay < 10_000);
+  assert.ok(reconnectTimer, 'disconnect must schedule a reconnect while the RPC remains pending');
+  reconnectTimer.callback();
+  const secondSocket = MockWebSocket.instances[1];
+  secondSocket.open();
+  secondSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_two',
+    desktop_connected: true,
+  });
+  secondSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [command], events: [] } },
+  });
+  const retriedRequest = secondSocket.sent.find(message => message.type === 'rpc_request');
+  assert.equal(retriedRequest.id, stableId, 'reconnect retry must preserve the idempotency key');
+  assert.deepEqual(retriedRequest.args, firstRequest.args, 'reconnect retry must preserve the command fingerprint');
+  secondSocket.message({
+    v: 2,
+    type: 'rpc_response',
+    id: stableId,
+    ok: true,
+    result: { id: 'session_created_once' },
+  });
+  assert.equal((await resultPromise).id, 'session_created_once');
+}
+
+// 结构化错误码必须传到 Bridge，才能区分可安全重试的超时和结果未知。
+{
+  const command = 'web_access_create_session_and_chat';
+  const harness = bootClient({ allowed_commands: [command], allowed_events: [] });
+  const client = harness.window.PinvouWebClient;
+  await client.policyPromise;
+  client.markFrontendReady();
+  await Promise.resolve();
+  client.markStateReady();
+  const socket = harness.MockWebSocket.instances[0];
+  socket.open();
+  socket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  socket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [command], events: [] } },
+  });
+  const requestId = 'first_turn_outcome_unknown';
+  const rejected = harness.window.__TAURI__.core.invokeWithRequestId(command, { message: 'hello' }, requestId);
+  await new Promise(resolve => setImmediate(resolve));
+  socket.message({
+    v: 2,
+    type: 'rpc_response',
+    id: requestId,
+    ok: false,
+    error: 'outcome cannot be replayed safely',
+    error_code: 'outcome_unknown',
+  });
+  await assert.rejects(rejected, error => (
+    error.code === 'outcome_unknown' && error.requestId === requestId
+  ));
+}
+
 console.log('web bootstrap transport tests passed');

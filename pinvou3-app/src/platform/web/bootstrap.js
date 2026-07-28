@@ -354,8 +354,12 @@
       if (!entry) return;
       this.pending.delete(message.id);
       window.clearTimeout(entry.timeout);
-      if (message.ok === false) entry.reject(new Error(message.error || "远程调用失败"));
-      else entry.resolve(message.result);
+      if (message.ok === false) {
+        const error = new Error(message.error || "远程调用失败");
+        error.code = message.error_code || "rpc_failed";
+        error.requestId = entry.id;
+        entry.reject(error);
+      } else entry.resolve(message.result);
     }
 
     applyDesktopCapabilities(capabilities) {
@@ -402,15 +406,28 @@
     }
 
     async invoke(command, args) {
+      return this.invokeWithRequestId(command, args, randomId("rpc"));
+    }
+
+    async invokeWithRequestId(command, args, requestId) {
       await this.policyPromise;
       if (!this.allowedCommands.has(command)) throw new Error(`远程控制不允许调用 ${command}`);
-      const id = randomId("rpc");
+      const id = String(requestId || "").trim();
+      if (!/^[A-Za-z0-9_-]{8,256}$/.test(id)) {
+        throw new Error("远程调用请求 ID 无效");
+      }
+      if (this.pending.has(id)) {
+        throw new Error("远程调用请求正在进行中");
+      }
       return new Promise((resolve, reject) => {
         const entry = {
           id, command, args: args || {}, resolve, reject,
           timeout: window.setTimeout(() => {
             if (!this.pending.delete(id)) return;
-            reject(new Error(`远程调用超时：${command}`));
+            const error = new Error(`远程调用超时：${command}`);
+            error.code = "rpc_timeout";
+            error.requestId = id;
+            reject(error);
           }, 180_000),
         };
         this.pending.set(id, entry);
@@ -542,7 +559,12 @@
     },
   });
   window.__TAURI__ = {
-    core: { invoke(command, args) { return client.invoke(command, args); } },
+    core: {
+      invoke(command, args) { return client.invoke(command, args); },
+      invokeWithRequestId(command, args, requestId) {
+        return client.invokeWithRequestId(command, args, requestId);
+      },
+    },
     event: {
       listen(eventName, callback) { return client.listen(eventName, callback); },
       emit() { return Promise.resolve(); },

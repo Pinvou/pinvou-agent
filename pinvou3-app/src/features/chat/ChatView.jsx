@@ -579,7 +579,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
-      const canSend = hasDraftText || hasReadyAttachment;
+      const firstTurnPending = !activeSessionId && chatItems.some(item => (
+        item && item.type === 'user' && !!item.deliveryState
+      ));
+      const canSend = !firstTurnPending && (hasDraftText || hasReadyAttachment);
       const canFloatingSend = canSend && !voiceActive;
       const canClearInput = hasDraftText && !voiceActive;
       const [deviceMode, setDeviceMode] = useState(() => {
@@ -1529,6 +1532,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     const UserBubble = ({ item, theme, editable, t, conversationVariant }) => {
       const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
+      const deliveryState = item.deliveryState || '';
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
@@ -1540,6 +1544,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           setCopied(true);
           setTimeout(function () { setCopied(false); }, 1200);
         });
+      }
+      function retryDelivery() {
+        if (!item.clientMessageId || !bridge.available || !bridge.chat.retryFirstTurn) return;
+        bridge.chat.retryFirstTurn(item.clientMessageId);
       }
       if (editing) {
         return (
@@ -1587,13 +1595,38 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
                 : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
             }`}>{item.text}</div>
+            {deliveryState && (
+              <div data-testid={`message-delivery-${deliveryState}`} title={item.deliveryError || undefined} className={`mt-1 flex items-center gap-1.5 pr-1 text-[11px] ${
+                deliveryState === 'failed' || deliveryState === 'unknown'
+                  ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
+                  : deliveryState === 'accepted'
+                    ? (isDark ? 'text-[#81C995]' : 'text-[#188038]')
+                    : (isDark ? 'text-[#9AA0A6]' : 'text-[#747775]')
+              }`}>
+                {deliveryState === 'sending' && <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />}
+                <span>
+                  {deliveryState === 'sending'
+                    ? t.messageSending
+                    : deliveryState === 'accepted'
+                      ? t.messageAccepted
+                      : deliveryState === 'unknown'
+                        ? t.messageOutcomeUnknown
+                        : t.messageFailed}
+                </span>
+                {deliveryState === 'failed' && (
+                  <button type="button" onClick={retryDelivery} className="font-medium underline underline-offset-2">
+                    {t.resend}
+                  </button>
+                )}
+              </div>
+            )}
             {/* iOS 风操作条：hover 气泡时下方浮现；窄屏无 hover，常显保证触屏可达。复制=所有 query；编辑重发=仅最新(editable)。 */}
             <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity duration-150">
               <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
                 className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                 {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}
               </button>
-              {editable && (
+              {editable && !deliveryState && (
                 <button title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
                   className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                   <Edit2 size={14} />

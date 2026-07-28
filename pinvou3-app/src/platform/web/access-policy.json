@@ -118,6 +118,7 @@
     "web_access_artifact_info",
     "web_access_chat",
     "web_access_create_session",
+    "web_access_create_session_and_chat",
     "web_access_get_gate_report",
     "web_access_get_role_logs",
     "web_access_get_role_outputs",

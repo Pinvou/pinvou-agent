@@ -460,6 +460,9 @@
       notify();
     }
   }
+  // WebUI 草稿首条消息失败时的专用重试入口。桌面端没有远程草稿，
+  // 保留同名空实现以维持跨宿主 Bridge API 的稳定形状。
+  function retryFirstTurn() {}
   function prefillComposer(text) {
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
     notify();
@@ -650,6 +653,7 @@
       sendMessage: sendMessage,
       getComposerDraft: getComposerDraft,
       setComposerDraft: setComposerDraft,
+      retryFirstTurn: retryFirstTurn,
       prefillComposer: prefillComposer,
       removeQueued: removeQueued,
       summonPinvou: summonPinvou,

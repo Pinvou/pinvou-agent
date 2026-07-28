@@ -68,6 +68,7 @@ for (const command of [
 
 for (const command of [
   'web_access_chat',
+  'web_access_create_session_and_chat',
   'web_access_ingest_file',
   'web_access_upload_attachment_chunk',
   'web_access_abort_attachment_upload',
@@ -91,7 +92,7 @@ assert.match(webBridge, /DEVICE_UPLOAD_MAX_BYTES = 20 \* 1024 \* 1024/,
   'the browser preflight must mirror file_ingest::MAX_FILE_BYTES');
 assert.match(webBridge, /web_access_abort_attachment_upload/,
   'cancelled or failed uploads must release the desktop buffer');
-assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, &session_id, &store\)/,
+assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, &session_id, &?store\)/,
   'uploaded attachments must be staged into the Session workspace before the engine sees their paths');
 
 assert.match(bootstrap, /sendRaw\(\{ \.\.\.value, v: protocolVersion, lease_id: this\.leaseId \}\)/);
