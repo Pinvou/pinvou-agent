@@ -23,6 +23,13 @@ name: PR Check
 # - save-if 仅 main:PR 侧只读不写,不再刷爆限额挤掉暖 cache。
 # - rust-cache 的 restore 有前缀回退(restoreKey 不含 lockfile hash),PR 改 Cargo.lock
 #   也能从 main cache 增量编译,不再全冷。
+# - sccache(2026-07 补充):rust-cache 只罩第三方依赖;checkout 会刷新仓库内源文件
+#   mtime,cargo 按 mtime 判 dirty,CodeWhale path 依赖 + 主 crate 每轮必重编(~5min)。
+#   sccache 按内容哈希缓存编译产物(GHA cache 后端,scoping 与 actions/cache 一致),
+#   仓库内 crate 源码不变即全命中;main push 恒跑 rust-test 同时充当 sccache 暖源。
+#   PR/merge queue 侧 SCCACHE_GHA_RW_MODE=READ_ONLY(对齐 rust-cache save-if 仅 main),
+#   只读暖 cache,不向共享 10GB 配额写入。
+#   接入范围仅 rust-test / windows-rust-test;rust-lint 不接入(见该 job 注释)。
 
 on:
   pull_request:
@@ -326,6 +333,8 @@ jobs:
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
   # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
+  # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍,
+  # 而本 job 仅 ~2-3min、收益过小,权衡 10GB 配额压力后不接入(#47 评审结论)。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -400,6 +409,12 @@ jobs:
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用
     # (GitHub 默认 6h,此处收紧到 45min,与 mac-build 的 50min 量级一致)。
     timeout-minutes: 45
+    env:
+      # 同 rust-lint:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
@@ -472,6 +487,12 @@ jobs:
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: v0.16.0
+
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
@@ -514,6 +535,11 @@ jobs:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
       AWS_LC_SYS_PREBUILT_NASM: "1"
+      # 同 rust-test:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -549,6 +575,12 @@ jobs:
           workspaces: pinvou3-app/src-tauri
           shared-key: windows-rust-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: v0.16.0
 
       - name: Windows 架构与 Tauri 资源契约
         run: |
