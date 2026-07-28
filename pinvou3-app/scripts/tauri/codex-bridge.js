@@ -5,6 +5,10 @@ const { spawnSync } = require("node:child_process");
 
 const { APP_ROOT } = require("./platform-config.js");
 const { npmInstallInvocation } = require("./web-template.js");
+const {
+  codexAcpInheritsSettings,
+  patchCodexAcpInheritSettings,
+} = require("./codex-acp-patch.js");
 
 const BRIDGE_PACKAGE_ROOT = path.join(APP_ROOT, "scripts", "codex-bridge-runtime");
 const LOCKFILE_PATH = path.join(BRIDGE_PACKAGE_ROOT, "package-lock.json");
@@ -40,7 +44,7 @@ const BRIDGE_PACKAGE_JSON = path.join(
   "package.json",
 );
 const MARKER_NAME = "manifest.json";
-const PREPARE_FORMAT_VERSION = 3;
+const PREPARE_FORMAT_VERSION = 4;
 const CODEX_PATH_SPAWN =
   'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })';
 const HIDDEN_CODEX_PATH_SPAWN =
@@ -86,6 +90,7 @@ function expectedMarker({ architecture = process.arch } = {}) {
     entrypoint: BRIDGE_ENTRYPOINT.replaceAll(path.sep, "/"),
     requires_managed_codex: true,
     windows_child_processes_hidden: true,
+    inherits_codex_settings_by_default: true,
   };
 }
 
@@ -168,6 +173,9 @@ function isPrepared(
       packageJson.version === expected.codex_acp_version &&
       nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
       windowsChildProcessesHidden(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
+      codexAcpInheritsSettings(
+        fs.readFileSync(path.join(outputRoot, BRIDGE_ENTRYPOINT), "utf8"),
+      ) &&
       nonemptyFile(path.join(nodeRoot, "node.exe")) &&
       fileSha256(path.join(nodeRoot, "node.exe")) ===
         expected.node_executable_sha256
@@ -338,6 +346,7 @@ function prepareWindowsCodexBridge({
       "安装 Windows ACP Bridge",
     );
 
+    patchCodexAcpInheritSettings(path.join(bridgeRoot, BRIDGE_ENTRYPOINT));
     hideWindowsChildProcesses(path.join(bridgeRoot, BRIDGE_ENTRYPOINT));
 
     fs.rmSync(path.join(acpRoot, "package.json"), { force: true });

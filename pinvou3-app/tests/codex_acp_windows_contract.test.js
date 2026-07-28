@@ -62,6 +62,9 @@ const {
   WINDOWS_NODE_VERSION,
   windowsBridgeOverlay,
 } = require("../scripts/tauri/codex-bridge.js");
+const {
+  patchCodexAcpInheritSettings,
+} = require("../scripts/tauri/codex-acp-patch.js");
 
 assert.match(
   capabilities,
@@ -117,6 +120,11 @@ assert.match(
   bridgeBuildScript,
   /windowsHide: true[\s\S]*?hideWindowsChildProcesses/,
   "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
+);
+assert.match(
+  bridgeBuildScript,
+  /patchCodexAcpInheritSettings\(path\.join\(bridgeRoot, BRIDGE_ENTRYPOINT\)\)/,
+  "the packaged ACP Bridge must inherit system Codex settings before applying explicit session overrides",
 );
 assert.match(
   codexRuntime,
@@ -181,6 +189,18 @@ try {
     ].join("\n"),
   );
   hideWindowsChildProcesses(bridgeEntrypoint);
+  fs.writeFileSync(
+    bridgeEntrypoint,
+    [
+      fs.readFileSync(bridgeEntrypoint, "utf8"),
+      "  static ReadOnly = new _AgentMode(\n",
+      "  static DEFAULT_AGENT_MODE = _AgentMode.Agent;",
+      "    return [_AgentMode.ReadOnly, _AgentMode.Agent, _AgentMode.AgentFullAccess];",
+      "      approvalPolicy: agentMode.approvalPolicy,",
+      "      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),",
+    ].join("\n"),
+  );
+  patchCodexAcpInheritSettings(bridgeEntrypoint);
   fs.writeFileSync(nodeExecutable, fakeNode);
 
   assert.equal(expected.node_version, WINDOWS_NODE_VERSION);

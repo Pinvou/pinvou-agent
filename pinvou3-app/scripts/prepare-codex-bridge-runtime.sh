@@ -9,6 +9,7 @@ NODE_VERSION="22.22.0"
 CODEX_ACP_VERSION="1.1.5"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
+PATCH_SCRIPT="$SCRIPT_DIR/tauri/codex-acp-patch.js"
 
 bridge_runtime_valid() {
   local root="$1"
@@ -21,7 +22,8 @@ bridge_runtime_valid() {
     env CODEX_PATH="$(command -v codex || true)" \
       "$node" "$entry" --version 2>/dev/null
   )" || return 1
-  [ "$version_output" = "$CODEX_ACP_PACKAGE $CODEX_ACP_VERSION" ]
+  [ "$version_output" = "$CODEX_ACP_PACKAGE $CODEX_ACP_VERSION" ] || return 1
+  "$node" "$PATCH_SCRIPT" --check "$entry" >/dev/null 2>&1
 }
 
 if bridge_runtime_valid "$OUT_DIR"; then
@@ -86,6 +88,9 @@ PATH="$NODE_DIST_ROOT/bin:$PATH" "$NODE_DIST_ROOT/bin/npm" ci \
   --no-audit \
   --no-fund \
   --omit=dev
+
+"$NODE_DIST_ROOT/bin/node" "$PATCH_SCRIPT" \
+  "$ACP_ROOT/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
 
 # Bridge 总是通过 CODEX_PATH 启动系统或托管 Codex，不需要随包携带平台 Codex。
 rm -rf -- "$ACP_ROOT/node_modules/@openai"/codex-*

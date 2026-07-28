@@ -53,8 +53,8 @@ pub struct SessionAgentRecord {
     pub acp_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_model_id: Option<String>,
-    /// 用户明确选择的 Codex 权限模式。ACP Agent 在 new/load 时会恢复默认
-    /// `agent`，所以 Pinvou 必须在运行时就绪前重新应用该期望值。
+    /// 用户明确选择的 Codex 权限模式。未选择时保留 None，让 ACP Agent 使用
+    /// `inherit` 默认值并继承系统 Codex 配置；仅在用户主动覆盖后才恢复该模式。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_mode_id: Option<String>,
     /// Codex 的执行目录类型。旧记录没有该字段时按临时会话兼容。
