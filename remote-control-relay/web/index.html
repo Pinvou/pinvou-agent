@@ -465,6 +465,7 @@
       </article>
     </section>
   </div>
+  <script src="purify.min.js"></script>
   <script>
     function syncViewportMetrics() {
       const viewport = window.visualViewport;
@@ -1296,12 +1297,19 @@
       doc.innerHTML = renderMarkdown(text || '');
       node.replaceChildren(doc);
     }
-    // 桌面端 bridge 已用 DOMPurify 消毒 assistant html；此处再加一层兜底，
+    // 桌面端 bridge 已用 DOMPurify 消毒 assistant html；此处用同一库做纵深防御，
     // 防止 relay 链路上其它来源的 html 直接进入 innerHTML（CodeQL js/xss）。
+    // 注意：必须保持 `DOMPurify.sanitize(...)` 的裸全局调用形式，不要写成
+    // window.DOMPurify.sanitize —— CodeQL 只对前者建模为 sanitizer。
     function sanitizeAssistantHtml(html) {
-      return String(html || '')
-        .replace(/<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi, '&lt;$1&gt;')
-        .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+      if (window.DOMPurify) {
+        return DOMPurify.sanitize(String(html || ''), {
+          FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'link', 'meta'],
+          FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+        });
+      }
+      // fail closed：purify.min.js 加载失败时退化为纯文本转义，绝不原样写 innerHTML。
+      return escapeHtml(String(html || ''));
     }
     function addAssistantHtml(html) {
       const div = document.createElement('div');
