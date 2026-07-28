@@ -30,7 +30,7 @@ assert.match(runtime, /platform::should_retry_file_lock\(&error\)/);
 assert.match(windows, /SYSTEM_CODEX_NAME: &str = "codex\.cmd"/);
 assert.match(windows, /MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex\.exe"/);
 assert.match(windows, /external_application_path\(adapter\)/);
-assert.match(windows, /Command::new\("cmd"\)/);
+assert.match(windows, /HiddenTokioCommand::new\("cmd"\)/);
 assert.match(windows, /x86_64-pc-windows-msvc/);
 
 assert.match(linux, /SYSTEM_CODEX_NAME: &str = "codex"/);

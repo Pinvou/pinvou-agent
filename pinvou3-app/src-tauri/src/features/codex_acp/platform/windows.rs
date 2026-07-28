@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
 use super::ManagedCodexArtifact;
+use crate::platform::process::HiddenTokioCommand;
 
 pub(super) const NODE_EXECUTABLE_NAME: &str = "node.exe";
 pub(super) const SYSTEM_CODEX_NAME: &str = "codex.cmd";
@@ -27,26 +28,27 @@ pub(super) fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Com
     let adapter = crate::platform::os::external_application_path(adapter);
     if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
         let node = node.context("Codex ACP Bridge 缺少可用 Node")?;
-        let mut command = Command::new(crate::platform::os::external_application_path(node));
+        let mut command =
+            HiddenTokioCommand::new(crate::platform::os::external_application_path(node));
         command.arg(adapter);
         Ok(command)
     } else if adapter.extension().and_then(|value| value.to_str()) == Some("cmd") {
-        let mut command = Command::new("cmd");
+        let mut command = HiddenTokioCommand::new("cmd");
         command.args(["/D", "/S", "/C"]).arg(adapter);
         Ok(command)
     } else {
-        Ok(Command::new(adapter))
+        Ok(HiddenTokioCommand::new(adapter))
     }
 }
 
 pub(super) fn codex_login_command(codex: &Path) -> Command {
     let codex = crate::platform::os::external_application_path(codex);
     if codex.extension().and_then(|value| value.to_str()) == Some("cmd") {
-        let mut command = Command::new("cmd");
+        let mut command = HiddenTokioCommand::new("cmd");
         command.args(["/D", "/S", "/C"]).arg(codex).arg("login");
         command
     } else {
-        let mut command = Command::new(codex);
+        let mut command = HiddenTokioCommand::new(codex);
         command.arg("login");
         command
     }

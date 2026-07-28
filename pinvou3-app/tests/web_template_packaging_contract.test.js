@@ -9,6 +9,7 @@ const {
 const {
   WINDOWS_NPM_CI_ARGS,
   expectedMarker: expectedBridgeMarker,
+  hideWindowsChildProcesses,
 } = require("../scripts/tauri/codex-bridge.js");
 
 const APP_ROOT = path.resolve(__dirname, "..");
@@ -87,6 +88,29 @@ assert.deepEqual(
 
 assert.ok(WINDOWS_NPM_CI_ARGS.includes("--omit=optional"));
 assert.equal(expectedBridgeMarker({ architecture: "x64" }).requires_managed_codex, true);
+assert.equal(
+  expectedBridgeMarker({ architecture: "x64" }).windows_child_processes_hidden,
+  true,
+);
+const bridgePatchRoot = fs.mkdtempSync(
+  path.join(require("node:os").tmpdir(), "pinvou3-codex-bridge-"),
+);
+try {
+  const entrypoint = path.join(bridgePatchRoot, "index.js");
+  fs.writeFileSync(
+    entrypoint,
+    [
+      'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })',
+      'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })',
+    ].join("\n"),
+  );
+  hideWindowsChildProcesses(entrypoint);
+  const patched = fs.readFileSync(entrypoint, "utf8");
+  assert.match(patched, /shell: true, env: spawnEnv, windowsHide: true/);
+  assert.match(patched, /bundledCodexPath[\s\S]*?windowsHide: true/);
+} finally {
+  fs.rmSync(bridgePatchRoot, { recursive: true, force: true });
+}
 const packageJson = JSON.parse(fs.readFileSync(path.join(APP_ROOT, "package.json"), "utf8"));
 assert.equal(
   packageJson.scripts["prepare:codex-bridge"],

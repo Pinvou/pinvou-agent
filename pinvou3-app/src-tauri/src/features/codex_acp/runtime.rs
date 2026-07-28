@@ -141,12 +141,14 @@ pub fn codex_version(path: &Path) -> Option<String> {
 }
 
 fn codex_version_result(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new(path)
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
+    let mut child = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(path),
+    )
+    .arg("--version")
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
     let status = match child
         .wait_timeout(Duration::from_secs(3))
         .context("等待 Codex 自检进程失败")?

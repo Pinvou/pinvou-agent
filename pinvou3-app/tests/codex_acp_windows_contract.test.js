@@ -53,9 +53,11 @@ const codexRuntime = read(
   "runtime.rs",
 );
 const buildScript = read("scripts", "tauri", "build.js");
+const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
 const {
   BRIDGE_ENTRYPOINT,
   expectedMarker,
+  hideWindowsChildProcesses,
   isPrepared,
   WINDOWS_NODE_VERSION,
   windowsBridgeOverlay,
@@ -78,8 +80,13 @@ assert.match(
 );
 assert.match(
   codexAcpWindows,
-  /Command::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
+  /HiddenTokioCommand::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
   "codex-acp.cmd must run through cmd /D /S /C",
+);
+assert.match(
+  codexAcpWindows,
+  /HiddenTokioCommand::new\(crate::platform::os::external_application_path\(node\)\)/,
+  "the installed Node Bridge must start without a visible Windows console",
 );
 assert.match(
   codexAcpWindows,
@@ -93,7 +100,7 @@ assert.match(
 );
 assert.match(
   codexAcpWindows,
-  /Command::new\(crate::platform::os::external_application_path\(node\)\)[\s\S]*?command\.arg\(adapter\)/,
+  /HiddenTokioCommand::new\(crate::platform::os::external_application_path\(node\)\)[\s\S]*?command\.arg\(adapter\)/,
   "bundled Node and the JavaScript Bridge must receive normalized installed paths",
 );
 assert.match(
@@ -105,6 +112,11 @@ assert.match(
   codexAcp,
   /"session:bridge_stderr"[\s\S]*?"session:initialize_failed"[\s\S]*?exit_status=/,
   "Bridge stderr and exit status must remain available in persistent ACP diagnostics",
+);
+assert.match(
+  bridgeBuildScript,
+  /windowsHide: true[\s\S]*?hideWindowsChildProcesses/,
+  "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
 );
 assert.match(
   codexRuntime,
@@ -160,7 +172,15 @@ try {
     packageJsonPath,
     JSON.stringify({ version: expected.codex_acp_version }),
   );
-  fs.writeFileSync(path.join(bridgeRoot, BRIDGE_ENTRYPOINT), "bridge");
+  const bridgeEntrypoint = path.join(bridgeRoot, BRIDGE_ENTRYPOINT);
+  fs.writeFileSync(
+    bridgeEntrypoint,
+    [
+      'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })',
+      'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })',
+    ].join("\n"),
+  );
+  hideWindowsChildProcesses(bridgeEntrypoint);
   fs.writeFileSync(nodeExecutable, fakeNode);
 
   assert.equal(expected.node_version, WINDOWS_NODE_VERSION);

@@ -1830,10 +1830,12 @@ fn codex_upgrade_required(message: &str) -> bool {
 }
 
 fn installed_node_version(node: &Path) -> Option<String> {
-    let output = std::process::Command::new(crate::platform::os::external_application_path(node))
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(node),
+    )
+    .arg("--version")
+    .output()
+    .ok()?;
     if !output.status.success() {
         return None;
     }
