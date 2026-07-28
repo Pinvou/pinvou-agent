@@ -145,6 +145,13 @@ function checkedSpawn(spawn, command, args, options, label) {
   return result;
 }
 
+// curl/tar 使用 Windows 内置 System32 副本的绝对路径，避免 PATH 劫持
+// （CodeQL js/shell-command-injection-from-environment）。
+function windowsSystemTool(name) {
+  const systemRoot = process.env.SystemRoot || "C:\\Windows";
+  return path.join(systemRoot, "System32", name);
+}
+
 function downloadWindowsNode(archivePath, {
   environment,
   spawn,
@@ -153,7 +160,7 @@ function downloadWindowsNode(archivePath, {
   for (const url of WINDOWS_NODE_URLS) {
     fs.rmSync(archivePath, { force: true });
     const result = spawn(
-      "curl.exe",
+      windowsSystemTool("curl.exe"),
       [
         "--fail",
         "--location",
@@ -200,7 +207,7 @@ function prepareWindowsNode(stagingRoot, {
   fs.mkdirSync(extractedRoot, { recursive: true });
   checkedSpawn(
     spawn,
-    "tar.exe",
+    windowsSystemTool("tar.exe"),
     ["-xf", archivePath, "-C", extractedRoot],
     { env: environment, stdio: "inherit" },
     "解压 Windows Node.js Runtime",

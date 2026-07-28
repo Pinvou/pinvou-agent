@@ -19,6 +19,9 @@ on:
       - "pinvou3-app/src-tauri/src/platform/paths.rs"
       - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
 
+permissions:
+  contents: read
+
 jobs:
   verify-linux-arm64-connectors:
     runs-on: ubuntu-24.04-arm
