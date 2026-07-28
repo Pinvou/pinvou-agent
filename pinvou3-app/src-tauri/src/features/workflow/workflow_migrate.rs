@@ -60,10 +60,10 @@ fn strip_project_prefix(dir_name: &str) -> Option<&str> {
 /// `ppt-20260601-120000-solution_deck` → `wf-20260601-1200-<4hex>`。
 /// 前缀后解析不出合法时间戳 → None（调用方警告跳过）。
 ///
-/// salt：撞名去重用。不同 session 下同名目录推出同 run_id，第二个项目对
-/// `"<dirname>#<salt>"` 重新散列（salt 从 2 起）；salt<=1 用原目录名——
+/// dedup_seq：撞名去重序号。不同 session 下同名目录推出同 run_id，第二个项目对
+/// `"<dirname>#<dedup_seq>"` 重新散列（序号从 2 起）；序号<=1 用原目录名——
 /// 与历史推导完全兼容，同目录续跑永远推出同 id（幂等前提）。
-fn derive_run_id_salted(dir_name: &str, salt: usize) -> Option<String> {
+fn derive_run_id_dedup(dir_name: &str, dedup_seq: usize) -> Option<String> {
     let rest = strip_project_prefix(dir_name)?;
     let date = rest.get(0..8)?;
     let time6 = rest.get(9..15)?;
@@ -74,10 +74,10 @@ fn derive_run_id_salted(dir_name: &str, salt: usize) -> Option<String> {
         return None;
     }
     let hhmm = &time6[..4];
-    let key = if salt <= 1 {
+    let key = if dedup_seq <= 1 {
         dir_name.to_string()
     } else {
-        format!("{dir_name}#{salt}")
+        format!("{dir_name}#{dedup_seq}")
     };
     let id = format!("wf-{date}-{hhmm}-{:04x}", fnv1a64(&key) & 0xffff);
     // 产物必须过统一校验（路径穿越防线同源），过不了宁可跳过
@@ -85,7 +85,7 @@ fn derive_run_id_salted(dir_name: &str, salt: usize) -> Option<String> {
 }
 
 fn derive_run_id(dir_name: &str) -> Option<String> {
-    derive_run_id_salted(dir_name, 1)
+    derive_run_id_dedup(dir_name, 1)
 }
 
 /// 目录名尾段取 scenario：`<前缀><8位日期>-<6位时间>-<scenario>`。
@@ -129,7 +129,7 @@ fn migrate_one(src: &Path, dir_name: &str) -> Result<bool, String> {
         );
         return Ok(false);
     };
-    let mut salt = 1usize;
+    let mut dedup_seq = 1usize;
     loop {
         let occupied = paths::workflow_project_dir(&run_id);
         if !occupied.exists() {
@@ -140,16 +140,16 @@ fn migrate_one(src: &Path, dir_name: &str) -> Result<bool, String> {
         if !paths::workflow_run_dir(&run_id).join("run.json").exists() {
             write_run_meta(&run_id, &occupied, dir_name)?;
         }
-        salt += 1;
-        if salt > 0xffff {
+        dedup_seq += 1;
+        if dedup_seq > 0xffff {
             return Err(format!("run_id 去重耗尽（撞名规模异常）: {dir_name}"));
         }
         eprintln!(
-            "[workflow_migrate] run_id 撞名，去重重推: {} -> {dir_name}#{salt}",
+            "[workflow_migrate] run_id 撞名，去重重推: {} -> {dir_name}#{dedup_seq}",
             src.display()
         );
-        run_id = derive_run_id_salted(dir_name, salt)
-            .ok_or_else(|| format!("去重 run_id 推导失败: {dir_name}#{salt}"))?;
+        run_id = derive_run_id_dedup(dir_name, dedup_seq)
+            .ok_or_else(|| format!("去重 run_id 推导失败: {dir_name}#{dedup_seq}"))?;
     }
     let run_dir = paths::workflow_run_dir(&run_id);
     let target = paths::workflow_project_dir(&run_id);
