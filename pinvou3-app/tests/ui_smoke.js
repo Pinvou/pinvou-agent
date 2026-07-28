@@ -89,7 +89,9 @@ function injectSource() {
         case 'list_archived_sessions': return Promise.resolve(ARCHIVED_SESSIONS);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
-        case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
+        case 'get_backend_status':
+          if(window.__PAUSE_BACKEND_STATUS_POLL__) return new Promise(function(){});
+          return Promise.resolve({online:true,ok:true,status:'online',model:'qwen36_35b_256k'});
         case 'get_memory_overview': return Promise.resolve({profile:null,preferences:[],work_context:[],current_focus:[],recent_activity:[],recent_work:[],pending:[],never:[],runtime:null,snapshot_path:''});
         case 'confirm_pending_memory': return Promise.resolve({value:true});
         case 'ignore_pending_memory': return Promise.resolve({value:true});
@@ -905,10 +907,12 @@ async function expand(page) {
     JSON.stringify({ambiguousBeforeEnd,shellIdentity}));
 
   const unchangedPollNotifications = await page.evaluate(async () => {
+    window.__PAUSE_BACKEND_STATUS_POLL__=true;
     let count=0;
     const unsubscribe=window.TauriBridge.state.subscribe('chat', () => { count+=1; });
     await new Promise(resolve=>setTimeout(resolve,650));
     unsubscribe();
+    window.__PAUSE_BACKEND_STATUS_POLL__=false;
     return count;
   });
   rec('③d-2 Shell 快照未变化时不做全量状态广播', unchangedPollNotifications===0, String(unchangedPollNotifications));
