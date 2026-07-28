@@ -69,7 +69,7 @@ pub async fn list_sessions(
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     metas.retain(|m| {
         matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
-            && !acp_pool.is_codex(&m.id)
+            && !acp_pool.is_codex_metadata(m)
             && !store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
