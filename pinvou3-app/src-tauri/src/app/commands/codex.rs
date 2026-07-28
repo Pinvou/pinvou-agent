@@ -15,7 +15,7 @@ use crate::features::codex_acp::workspace::{
 use crate::features::codex_acp::{
     validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation,
     CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
-    CodexWorkspaceKind,
+    CodexWorkspaceKind, CODEX_ACP_SESSION_MODEL,
 };
 use crate::features::sessions::{SessionKind, SessionStore};
 
@@ -372,7 +372,7 @@ pub async fn list_codex_acp_sessions(
         .map_err(|error| format!("list_codex_acp_sessions: {error:?}"))?;
     metas.retain(|metadata| {
         matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
-            && acp_pool.is_codex(&metadata.id)
+            && acp_pool.is_codex_metadata(metadata)
             && !store.is_hidden(&metadata.id)
     });
     metas
@@ -407,7 +407,11 @@ pub async fn create_codex_acp_session(
         .clone()
         .unwrap_or_else(|| pool.bridge.workspace.clone());
     let session = store
-        .create_new("Codex (ACP)".to_string(), None, metadata_workspace)
+        .create_new(
+            CODEX_ACP_SESSION_MODEL.to_string(),
+            None,
+            metadata_workspace,
+        )
         .map_err(|error| format!("create_codex_acp_session: {error:?}"))?;
     let kind = if project_workspace.is_some() {
         CodexWorkspaceKind::Project

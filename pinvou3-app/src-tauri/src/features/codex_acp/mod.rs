@@ -41,6 +41,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::features::sessions::SessionStore;
 use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
+use deepseek_tui::session_manager::SessionMetadata;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use runtime::{
@@ -52,7 +53,12 @@ pub use store::{
 };
 
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
+pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
+
+fn is_codex_session(backend: AgentBackend, model: &str) -> bool {
+    backend == AgentBackend::CodexAcp || model == CODEX_ACP_SESSION_MODEL
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexAcpStatus {
@@ -413,8 +419,23 @@ impl AcpPool {
         &self.agents
     }
 
+    /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的模型类型兜底。
+    ///
+    /// `session-agents.json` 是可重建的辅助索引，缺失或损坏时不能让历史 Codex
+    /// 会话掉回普通聊天列表；创建会话时写入的 `Codex (ACP)` 元数据才是长期兼容
+    /// 依据。列表调用已经持有 metadata，应使用本方法避免重复读取 transcript。
+    pub fn is_codex_metadata(&self, metadata: &SessionMetadata) -> bool {
+        is_codex_session(self.agents.backend(&metadata.id), &metadata.model)
+    }
+
     pub fn is_codex(&self, session_id: &str) -> bool {
-        self.agents.backend(session_id) == AgentBackend::CodexAcp
+        let backend = self.agents.backend(session_id);
+        if backend == AgentBackend::CodexAcp {
+            return true;
+        }
+        self.session_store
+            .load(session_id)
+            .is_ok_and(|session| is_codex_session(backend, &session.metadata.model))
     }
 
     pub fn workspace_info(&self, session_id: &str) -> Result<CodexAcpWorkspaceInfo> {
@@ -1886,6 +1907,19 @@ fn codex_authenticated() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_session_classification_survives_missing_auxiliary_index() {
+        assert!(is_codex_session(
+            AgentBackend::Deepseek,
+            CODEX_ACP_SESSION_MODEL
+        ));
+        assert!(is_codex_session(
+            AgentBackend::CodexAcp,
+            "unexpected legacy model"
+        ));
+        assert!(!is_codex_session(AgentBackend::Deepseek, "deepseek-chat"));
+    }
 
     #[test]
     fn managed_path_is_versioned() {
