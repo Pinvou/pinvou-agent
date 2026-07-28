@@ -237,8 +237,9 @@ export function projectDeepSeekConversation({
   }
   const unassignedRecords = timeline.filter(record => !assigned.has(record.id));
   const unassignedTurns = userTurns.filter(turn => !turn.lifecycleKnown);
-  const trailingRecords = unassignedRecords.slice(-unassignedTurns.length);
-  const trailingTurns = unassignedTurns.slice(-trailingRecords.length);
+  const trailingPairCount = Math.min(unassignedRecords.length, unassignedTurns.length);
+  const trailingRecords = trailingPairCount > 0 ? unassignedRecords.slice(-trailingPairCount) : [];
+  const trailingTurns = trailingPairCount > 0 ? unassignedTurns.slice(-trailingPairCount) : [];
   trailingRecords.forEach((record, index) => {
     Object.assign(trailingTurns[index], {
       status: record.status,

@@ -220,6 +220,32 @@ impl SessionAgentStore {
         self.persist()
     }
 
+    pub(super) fn restore_missing_codex_record(
+        &self,
+        session_id: &str,
+        recovered: SessionAgentRecord,
+    ) -> Result<()> {
+        if recovered.backend != AgentBackend::CodexAcp
+            || recovered
+                .acp_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            anyhow::bail!("恢复的 Codex 会话索引不完整");
+        }
+        {
+            let mut records = self.records.write();
+            if records
+                .get(session_id)
+                .is_some_and(|record| record.backend == AgentBackend::CodexAcp)
+            {
+                return Ok(());
+            }
+            records.insert(session_id.to_string(), recovered);
+        }
+        self.persist()
+    }
+
     pub fn remove(&self, session_id: &str) -> Result<()> {
         self.records.write().remove(session_id);
         self.persist()
@@ -327,6 +353,42 @@ mod tests {
             store.get("session-1").workspace_path.as_deref(),
             Some(root.as_path())
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovered_codex_record_is_persisted_atomically() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-recovery-store-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let store = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .restore_missing_codex_record(
+                "session-1",
+                SessionAgentRecord {
+                    backend: AgentBackend::CodexAcp,
+                    acp_session_id: Some("acp-session-1".to_string()),
+                    acp_model_id: Some("gpt-test".to_string()),
+                    acp_mode_id: Some("agent".to_string()),
+                    workspace_kind: CodexWorkspaceKind::Project,
+                    workspace_path: Some(root.clone()),
+                },
+            )
+            .unwrap();
+
+        let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let recovered = persisted.sessions.get("session-1").unwrap();
+        assert_eq!(recovered.backend, AgentBackend::CodexAcp);
+        assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session-1"));
+        assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(recovered.workspace_path.as_deref(), Some(root.as_path()));
         fs::remove_dir_all(&root).unwrap();
     }
 

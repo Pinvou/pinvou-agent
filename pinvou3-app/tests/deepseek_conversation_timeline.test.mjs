@@ -145,6 +145,19 @@ try {
   assert.equal(paired.length, 1, 'send_error timing records must not shift visible user turns');
   assert.equal(paired[0].status, 'incomplete');
 
+  const emptyHistory = projectDeepSeekConversation({
+    chatItems: [],
+    sessionId: 'empty-session',
+    timelineEvents: [
+      { turn_id: 'orphan-turn', event: 'user_start', timestamp: 10, ts: '1970-01-01T00:00:00Z' },
+    ],
+  });
+  assert.equal(
+    emptyHistory.turns.length,
+    0,
+    'orphan timeline records must not be assigned when the restored session has no visible turns',
+  );
+
   const search = searchToolDetails({
     name: 'web_search',
     rawInput: { query: '2026 年 AI 新闻' },
