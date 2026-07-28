@@ -3781,7 +3781,7 @@ pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, Str
         .map(PathBuf::from)
         .unwrap_or_else(paths::user_home_dir);
     let directory =
-        crate::features::files::file_ingest::validate_path(&requested.to_string_lossy())?;
+        crate::features::files::file_ingest::validate_browsable_path(&requested.to_string_lossy())?;
     if !directory.is_dir() {
         return Err(format!(
             "host path is not a directory: {}",
@@ -3794,9 +3794,9 @@ pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, Str
     for entry in read_dir.take(MAX_HOST_ENTRIES) {
         let Ok(entry) = entry else { continue };
         let entry_path = entry.path();
-        let Ok(authorized_path) =
-            crate::features::files::file_ingest::validate_path(&entry_path.to_string_lossy())
-        else {
+        let Ok(authorized_path) = crate::features::files::file_ingest::validate_browsable_path(
+            &entry_path.to_string_lossy(),
+        ) else {
             continue;
         };
         let Ok(metadata) = std::fs::metadata(&authorized_path) else {
@@ -3819,7 +3819,7 @@ pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, Str
     Ok(HostFileListing {
         path: platform::display_path(&directory),
         parent: directory.parent().and_then(|parent| {
-            crate::features::files::file_ingest::validate_path(&parent.to_string_lossy())
+            crate::features::files::file_ingest::validate_browsable_path(&parent.to_string_lossy())
                 .ok()
                 .map(|path| platform::display_path(&path))
         }),
@@ -4056,6 +4056,17 @@ mod tests {
         assert_eq!(
             DEFAULT_RELAY_WS_URL,
             "ws://127.0.0.1:8787/pinvou3/remote/ws"
+        );
+    }
+
+    #[test]
+    fn host_file_listing_accepts_the_default_home_directory() {
+        let listing = list_host_files(None).expect("default home directory should be browsable");
+
+        assert!(!listing.path.is_empty());
+        assert!(
+            listing.roots.iter().any(|root| root.path == listing.path),
+            "home root should match the initial listing path"
         );
     }
 
