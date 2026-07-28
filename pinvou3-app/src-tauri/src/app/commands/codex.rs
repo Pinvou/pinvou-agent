@@ -10,7 +10,8 @@ use tauri::State;
 
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::codex_acp::workspace::{
-    self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
+    self, WorkspaceArtifact, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing,
+    WorkspacePreview,
 };
 use crate::features::codex_acp::{
     validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation,
@@ -263,6 +264,64 @@ pub async fn reveal_codex_workspace_file(
         crate::platform::os::external_application_path(directory),
         "Codex 工作区目录",
     )
+}
+
+/// Reconcile Codex outputs into Pinvou's shared Session artifact index.
+///
+/// ACP Code mode bypasses the regular chat tool-event bridge, so without this
+/// explicit handoff its files can be browsed in the workspace but cannot be
+/// previewed or managed as Pinvou artifacts.
+#[tauri::command]
+pub async fn reconcile_codex_acp_artifacts(
+    session_id: String,
+    store: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<WorkspaceArtifact>, String> {
+    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let workspace_info = acp_pool
+        .workspace_info(&session_id)
+        .map_err(|error| format!("读取 Codex 工作目录失败: {error:#}"))?;
+    let timeline = acp_pool
+        .timeline(&session_id)
+        .map_err(|error| format!("读取 Codex ACP timeline 失败: {error:#}"))?;
+    let saved = store
+        .load(&session_id)
+        .map_err(|error| format!("读取 Codex 会话产出物失败: {error:#}"))?;
+    let retained = saved
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.storage_path.clone())
+        .collect::<Vec<_>>();
+    let temporary = workspace_info.workspace_kind == CodexWorkspaceKind::Temporary;
+    let discovery_session_id = session_id.clone();
+    let artifacts = tauri::async_runtime::spawn_blocking(move || {
+        workspace::discover_artifacts(
+            &discovery_session_id,
+            &root,
+            temporary,
+            &timeline,
+            &retained,
+        )
+        .map_err(|error| format!("识别 Codex 会话产出物失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("识别 Codex 会话产出物任务失败: {error}"))??;
+
+    let next_paths = artifacts
+        .iter()
+        .map(|artifact| artifact.path.clone())
+        .collect::<Vec<_>>();
+    let current_paths = saved
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.storage_path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    if current_paths != next_paths {
+        store
+            .update_artifacts(&session_id, next_paths)
+            .map_err(|error| format!("保存 Codex 会话产出物失败: {error:#}"))?;
+    }
+    Ok(artifacts)
 }
 
 #[tauri::command]

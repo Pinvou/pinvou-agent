@@ -630,6 +630,7 @@ pub fn run() {
             commands::codex::get_codex_workspace_diff,
             commands::codex::open_codex_workspace_file,
             commands::codex::reveal_codex_workspace_file,
+            commands::codex::reconcile_codex_acp_artifacts,
             commands::settings::test_model_connection,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,

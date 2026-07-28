@@ -243,6 +243,10 @@ try {
   assert.ok(codexCommands.includes('pub async fn get_codex_acp_pending_elicitations'));
   assert.ok(codexCommands.includes('pub async fn respond_codex_acp_elicitation'));
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
+  assert.ok(codexCommands.includes('pub async fn reconcile_codex_acp_artifacts'),
+    'Code mode must reconcile outputs into the shared Pinvou artifact index');
+  assert.ok(codexCommands.includes('.update_artifacts(&session_id, next_paths)'),
+    'reconciled Codex outputs must be persisted with the Session');
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
@@ -278,6 +282,13 @@ try {
     && codexView.includes('beginDraft(null)')
     && codexView.includes('setWorkspaceMenuOpen(true)'),
   'missing project sessions must keep their history and offer a link into the existing new-session workspace menu');
+  assert.ok(codexView.includes('data-testid="codex-artifacts-entry"')
+    && codexView.includes('<ArtifactsPanel')
+    && codexView.includes("invoke('reconcile_codex_acp_artifacts'"),
+  'Code mode must expose the standard Pinvou artifact manager and refresh its durable index');
+  assert.ok(codexView.includes("type === 'turn_completed'")
+    && codexView.includes('refreshArtifacts(incoming.sessionId)'),
+  'completed Codex turns must automatically reconcile their deliverables');
   const composerFooterIndex = codexView.indexOf('data-testid="codex-composer-footer"');
   const workspaceSelectorIndex = codexView.indexOf('data-testid="codex-workspace-selector"');
   const attachmentButtonIndex = codexView.indexOf('title={codexCopy.addAttachment}', composerFooterIndex);

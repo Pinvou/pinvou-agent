@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
-  Sparkles, StopCircle, Terminal, Wrench,
+  Package, Sparkles, StopCircle, Terminal, Wrench,
 } from '../../components/icons.jsx';
 import { CodexLogo } from '../../components/CodexLogo.jsx';
+import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import {
   appendAcpEvent,
@@ -681,6 +682,8 @@ export function CodexAcpView({
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [artifacts, setArtifacts] = useState([]);
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [configApplying, setConfigApplying] = useState('');
@@ -734,6 +737,11 @@ export function CodexAcpView({
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
   const attachments = attachmentDrafts[attachmentKey] || [];
   const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
+  const artifactState = useMemo(() => ({
+    activeSessionId: activeId,
+    artifacts,
+    artifactChange: null,
+  }), [activeId, artifacts]);
 
   function applySessionInfo(info) {
     setSessionInfo(info);
@@ -753,18 +761,35 @@ export function CodexAcpView({
     return next;
   }
 
+  async function refreshArtifacts(id = activeIdRef.current) {
+    if (!id) return [];
+    const next = await invoke('reconcile_codex_acp_artifacts', { sessionId: id });
+    const list = Array.isArray(next) ? next.map(item => ({
+      ...item,
+      basename: item.basename || workspaceName(item.path, item.path),
+      sessionId: id,
+    })) : [];
+    if (activeIdRef.current === id) setArtifacts(list);
+    return list;
+  }
+
   async function loadSession(id) {
     activeIdRef.current = id;
     setError('');
     setSessionInfo(null);
-    const [timeline, permissions, elicitations] = await Promise.all([
+    const [timeline, permissions, elicitations, discoveredArtifacts] = await Promise.all([
       invoke('get_codex_acp_timeline', { sessionId: id }),
       invoke('get_codex_acp_pending_permissions', { sessionId: id }),
       invoke('get_codex_acp_pending_elicitations', { sessionId: id }),
+      refreshArtifacts(id).catch(error => {
+        console.warn('[codex] artifact reconciliation failed', error);
+        return [];
+      }),
     ]);
     setEvents(timeline || []);
     setPending(permissions || []);
     setPendingElicitations(elicitations || []);
+    if (activeIdRef.current === id) setArtifacts(discoveredArtifacts || []);
     const runtime = await refreshStatus();
     if (runtime.installed && runtime.node_supported) {
       try {
@@ -817,6 +842,8 @@ export function CodexAcpView({
     setEvents([]);
     setPending([]);
     setPendingElicitations([]);
+    setArtifacts([]);
+    setArtifactsOpen(false);
     setSessionInfo(null);
     setError('');
     if (onActiveSessionChange) onActiveSessionChange(null);
@@ -959,8 +986,14 @@ export function CodexAcpView({
             item => item.elicitationId !== data.elicitationId,
           ));
         } else if (type === 'permission_resolved' || type === 'turn_completed') {
-          if (type === 'permission_resolved') setPending(current => current.filter(item => item.toolCallId !== data.toolCallId));
-          refreshSessions().catch(() => {});
+          if (type === 'permission_resolved') {
+            setPending(current => current.filter(item => item.toolCallId !== data.toolCallId));
+            refreshSessions().catch(() => {});
+          } else {
+            refreshArtifacts(incoming.sessionId)
+              .catch(error => console.warn('[codex] artifact reconciliation failed', error))
+              .finally(() => refreshSessions().catch(() => {}));
+          }
         } else if (type === 'runtime_ready') {
           invoke('get_codex_acp_session_info', { sessionId: incoming.sessionId }).then(applySessionInfo).catch(() => {});
         }
@@ -977,6 +1010,8 @@ export function CodexAcpView({
       setEvents([]);
       setPending([]);
       setPendingElicitations([]);
+      setArtifacts([]);
+      setArtifactsOpen(false);
       setSessionInfo(null);
       return;
     }
@@ -1206,7 +1241,33 @@ export function CodexAcpView({
           {busy && <StatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            data-testid="codex-artifacts-entry"
+            onClick={() => {
+              setWorkspaceOpen(false);
+              setArtifactsOpen(true);
+              refreshArtifacts(activeId).catch(showError);
+            }}
+            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
+              artifactsOpen
+                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+            }`}
+            title={t.artifacts}
+          >
+            <Package size={14} />
+            <span>{t.artifacts}</span>
+            {artifacts.length > 0 && (
+              <span className="min-w-4 h-4 px-1 rounded-full bg-blue-500 text-white inline-flex items-center justify-center text-[9px] font-medium">
+                {artifacts.length > 99 ? '99+' : artifacts.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setArtifactsOpen(false);
+              setWorkspaceOpen(value => !value);
+            }}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -1531,6 +1592,15 @@ export function CodexAcpView({
             refreshToken={events.length}
             onChangeCount={setWorkspaceChangeCount}
             copy={t.uiCodexWorkspace}
+          />
+        )}
+        {activeSession && artifactsOpen && (
+          <ArtifactsPanel
+            bs={artifactState}
+            theme={theme}
+            t={t}
+            onClose={() => setArtifactsOpen(false)}
+            isWide={false}
           />
         )}
         </div>

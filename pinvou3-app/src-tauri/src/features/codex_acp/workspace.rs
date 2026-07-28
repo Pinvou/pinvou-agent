@@ -10,12 +10,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
+use super::events::AcpEventEnvelope;
+
 const LIST_LIMIT: usize = 500;
 const SEARCH_LIMIT: usize = 300;
 const WALK_LIMIT: usize = 20_000;
 const PREVIEW_LIMIT: usize = 512 * 1024;
 const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
 const DIFF_LIMIT: usize = 1024 * 1024;
+
+const DELIVERABLE_EXTENSIONS: &[&str] = &[
+    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
+    "jpeg", "svg", "gif", "webp", "zip",
+];
 
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
@@ -89,6 +96,22 @@ pub struct WorkspaceDiff {
     pub relative_path: String,
     pub text: String,
     pub truncated: bool,
+}
+
+/// A user-facing deliverable discovered in a Codex workspace.
+///
+/// Code mode has its own ACP event stream, so it does not pass through the
+/// regular chat bridge's `write_file` artifact tracker.  This compact record is
+/// returned to the Code UI and persisted into the shared Session artifact
+/// index so previews and Local Knowledge can consume the same source of truth.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceArtifact {
+    pub path: String,
+    pub basename: String,
+    pub relative_path: String,
+    pub size: u64,
+    pub modified: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +277,173 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
         data_url: None,
         truncated: false,
     })
+}
+
+/// Discover durable, user-facing outputs produced by a Codex session.
+///
+/// Temporary workspaces are fully session-owned, so deliverable-shaped files
+/// can be indexed directly.  Project workspaces may contain unrelated user
+/// files; there we only retain previously indexed outputs, structured ACP diff
+/// paths, and files that the workspace baseline attributes to this session.
+/// Every candidate is canonicalized back under the workspace root before it is
+/// returned.
+pub fn discover_artifacts(
+    session_id: &str,
+    root: &Path,
+    temporary_workspace: bool,
+    events: &[AcpEventEnvelope],
+    retained_paths: &[PathBuf],
+) -> Result<Vec<WorkspaceArtifact>> {
+    let root = canonical_workspace(root)?;
+    let mut candidates = BTreeSet::new();
+
+    for path in retained_paths {
+        if let Some(path) = resolve_artifact_candidate(&root, path) {
+            candidates.insert(path);
+        }
+    }
+
+    for raw in timeline_diff_paths(events) {
+        if let Some(path) = resolve_artifact_candidate(&root, Path::new(&raw)) {
+            candidates.insert(path);
+        }
+    }
+
+    if temporary_workspace {
+        for entry in WalkDir::new(&root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(should_walk)
+            .filter_map(|entry| entry.ok())
+            .take(WALK_LIMIT)
+        {
+            if entry.depth() == 0 || !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.into_path();
+            let Ok(relative) = path.strip_prefix(&root) else {
+                continue;
+            };
+            if !is_deliverable_path(relative) {
+                continue;
+            }
+            if let Some(path) = resolve_artifact_candidate(&root, &path) {
+                candidates.insert(path);
+            }
+        }
+    } else {
+        // Baseline comparison is an enrichment path. If a legacy session has
+        // no usable baseline (or git status temporarily fails), keep the
+        // retained/timeline candidates instead of making its artifact panel
+        // unavailable altogether.
+        if let Ok(changes) = workspace_changes(session_id, &root) {
+            for change in changes.changes {
+                if change.origin != "session" && change.origin != "preexisting_modified" {
+                    continue;
+                }
+                if let Some(path) =
+                    resolve_artifact_candidate(&root, Path::new(&change.relative_path))
+                {
+                    candidates.insert(path);
+                }
+            }
+        }
+    }
+
+    let mut artifacts = candidates
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            let basename = path.file_name()?.to_str()?.to_string();
+            let relative_path = relative_text(&root, &path).ok()?;
+            Some(WorkspaceArtifact {
+                path: path.to_string_lossy().into_owned(),
+                basename,
+                relative_path,
+                size: metadata.len(),
+                modified: modified_seconds(&metadata),
+            })
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    Ok(artifacts)
+}
+
+fn timeline_diff_paths(events: &[AcpEventEnvelope]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for envelope in events {
+        if envelope.event.event_type != "tool_call"
+            && envelope.event.event_type != "tool_call_update"
+        {
+            continue;
+        }
+        let Some(content) = envelope
+            .event
+            .data
+            .get("update")
+            .and_then(|value| value.get("content"))
+        else {
+            continue;
+        };
+        collect_diff_paths(content, &mut paths);
+    }
+    paths
+}
+
+fn collect_diff_paths(value: &serde_json::Value, paths: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_diff_paths(item, paths);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.get("type").and_then(|value| value.as_str()) == Some("diff") {
+                if let Some(path) = object.get("path").and_then(|value| value.as_str()) {
+                    paths.push(path.to_string());
+                }
+            }
+            for child in object.values() {
+                if child.is_array() || child.is_object() {
+                    collect_diff_paths(child, paths);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_artifact_candidate(root: &Path, candidate: &Path) -> Option<PathBuf> {
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    let canonical = fs::canonicalize(joined).ok()?;
+    let relative = canonical.strip_prefix(root).ok()?;
+    if !canonical.is_file() || !is_deliverable_path(relative) {
+        return None;
+    }
+    Some(canonical)
+}
+
+fn is_deliverable_path(path: &Path) -> bool {
+    if path.components().any(|component| {
+        matches!(component, Component::Normal(value) if value == "tmp" || is_ignored_directory(&value.to_string_lossy()))
+    }) {
+        return false;
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    DELIVERABLE_EXTENSIONS.contains(&extension.as_str())
 }
 
 pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
@@ -984,5 +1174,84 @@ mod tests {
             classify_origin(root.path(), Some(&baseline), "new.txt").unwrap(),
             "session"
         );
+    }
+
+    #[test]
+    fn temporary_workspace_discovers_deliverables_without_process_files() {
+        let root = TestDir::new("temporary-artifacts");
+        fs::create_dir_all(root.path().join("public")).unwrap();
+        fs::create_dir_all(root.path().join("tmp")).unwrap();
+        fs::create_dir_all(root.path().join("node_modules/pkg")).unwrap();
+        fs::write(root.path().join("public/game.html"), "<html>game</html>").unwrap();
+        fs::write(root.path().join("README.md"), "# Game").unwrap();
+        fs::write(root.path().join("package.json"), "{}").unwrap();
+        fs::write(root.path().join("tmp/draft.html"), "draft").unwrap();
+        fs::write(root.path().join("node_modules/pkg/demo.html"), "ignored").unwrap();
+
+        let artifacts =
+            discover_artifacts("missing-baseline", root.path(), true, &[], &[]).unwrap();
+        let paths = artifacts
+            .iter()
+            .map(|artifact| artifact.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"public/game.html"));
+        assert!(paths.contains(&"README.md"));
+        assert!(!paths.contains(&"package.json"));
+        assert!(!paths.contains(&"tmp/draft.html"));
+        assert!(!paths.contains(&"node_modules/pkg/demo.html"));
+    }
+
+    #[test]
+    fn project_workspace_uses_structured_diff_paths_and_rejects_escape() {
+        let root = TestDir::new("project-artifacts");
+        let outside = TestDir::new("outside-artifacts");
+        fs::create_dir_all(root.path().join("public")).unwrap();
+        fs::write(root.path().join("public/game.html"), "<html>game</html>").unwrap();
+        fs::write(root.path().join("preexisting.md"), "old").unwrap();
+        fs::write(outside.path().join("secret.html"), "secret").unwrap();
+        let event: AcpEventEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "sessionId": "session-1",
+            "turnId": "turn-1",
+            "seq": 1,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "event": {
+                "type": "tool_call",
+                "data": {
+                    "update": {
+                        "kind": "edit",
+                        "content": [
+                            { "type": "diff", "path": "public/game.html" },
+                            { "type": "diff", "path": outside.path().join("secret.html") }
+                        ]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let artifacts =
+            discover_artifacts("missing-baseline", root.path(), false, &[event], &[]).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].relative_path, "public/game.html");
+    }
+
+    #[test]
+    fn project_workspace_discovers_shell_generated_deliverables_from_baseline() {
+        let root = TestDir::new("project-shell-artifacts");
+        let session_id = format!("workspace-artifact-test-{}", std::process::id());
+        fs::write(root.path().join("preexisting.md"), "old").unwrap();
+        capture_baseline(&session_id, root.path()).unwrap();
+        fs::create_dir_all(root.path().join("release")).unwrap();
+        fs::write(
+            root.path().join("release/report.html"),
+            "<html>report</html>",
+        )
+        .unwrap();
+
+        let artifacts = discover_artifacts(&session_id, root.path(), false, &[], &[]).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].relative_path, "release/report.html");
+        let _ = fs::remove_file(baseline_path(&session_id));
     }
 }
