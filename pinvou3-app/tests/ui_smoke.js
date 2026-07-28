@@ -49,7 +49,10 @@ function injectSource() {
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
-    let SESSIONS=[{id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}];
+    let SESSIONS=[
+      {id:'s-pinned-old',title:'置顶旧会话',created_at:'2026-06-01T08:00:00Z',updated_at:'2026-06-01T08:00:00Z',pinned:true,pinned_at:'2026-07-20T08:00:00Z'},
+      {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
+    ];
     let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
     let ARCHIVED_SESSIONS=[];
     window.__SHELL_JOBS__=[{
@@ -235,6 +238,25 @@ async function expand(page) {
   rec('①a 侧边栏任务合并为单一任务列表',
     sidebarTaskShell.hasTaskList && !sidebarTaskShell.hasPinnedGroup && !sidebarTaskShell.hasRegularGroup && sidebarTaskShell.hasFilterButton,
     JSON.stringify(sidebarTaskShell));
+  const pinnedSidebarState = await page.evaluate(() => {
+    const visible = (node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const pinnedRows = [...document.querySelectorAll('[data-testid="regular-sidebar-item"]')]
+      .filter(node => (node.textContent || '').includes('置顶旧会话') && node.getBoundingClientRect().left < 330 && visible(node));
+    const todayLabel = [...document.querySelectorAll('span')]
+      .find(node => /^今天 \(\d+\)$/.test((node.textContent || '').trim()) && node.getBoundingClientRect().left < 330 && visible(node));
+    const pinnedRow = pinnedRows[0];
+    return {
+      count: pinnedRows.length,
+      beforeToday: !!(pinnedRow && todayLabel && pinnedRow.getBoundingClientRect().top < todayLabel.getBoundingClientRect().top),
+      pinVisible: !!(pinnedRow && [...pinnedRow.querySelectorAll('svg')].some(icon => icon.classList.contains('rotate-45'))),
+    };
+  });
+  rec('①a-1 默认置顶会话跨日期分组上浮且不重复',
+    pinnedSidebarState.count === 1 && pinnedSidebarState.beforeToday && pinnedSidebarState.pinVisible,
+    JSON.stringify(pinnedSidebarState));
   await page.click('[data-testid="sidebar-task-filter"]'); await sleep(200);
   const sidebarTaskFilterMenu = await page.evaluate(() => {
     const menu = document.querySelector('[data-testid="sidebar-task-filter-menu"]');
@@ -250,14 +272,14 @@ async function expand(page) {
       hasRegularChat: text.includes('普通会话'),
     };
   });
-  rec('①a-1 任务筛选弹层只保留有效筛选与排序项',
+  rec('①a-2 任务筛选弹层只保留有效筛选与排序项',
     sidebarTaskFilterMenu.exists && sidebarTaskFilterMenu.hasAll && sidebarTaskFilterMenu.hasPinned &&
     sidebarTaskFilterMenu.hasScheduled && sidebarTaskFilterMenu.hasPinnedFirst && sidebarTaskFilterMenu.hasRecent &&
     !sidebarTaskFilterMenu.hasCurrentChat && !sidebarTaskFilterMenu.hasRegularChat,
     JSON.stringify(sidebarTaskFilterMenu));
   await page.keyboard.press('Escape'); await sleep(200);
 
-  // ①a-2 对话管理页必须按 Codex 会话类型路由，不能误走普通聊天 switchToSession。
+  // ①a-3 对话管理页必须按 Codex 会话类型路由，不能误走普通聊天 switchToSession。
   await clickText(page, '查看全部'); await sleep(500);
   const codexManagedOpen = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
@@ -272,11 +294,23 @@ async function expand(page) {
     view: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
     activeId: localStorage.getItem('pinvou_codex_active_session'),
   }));
-  rec('①a-2 对话管理页正确打开 Codex 会话',
+  rec('①a-3 对话管理页正确打开 Codex 会话',
     codexManagedOpen.found && codexManagedState.view === 'codex' && codexManagedState.activeId === 'codex-1',
     JSON.stringify({ ...codexManagedOpen, ...codexManagedState }));
 
   await clickText(page, '查看全部'); await sleep(400);
+  const managedActiveState = await page.evaluate(() => {
+    const label = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
+    const row = label && label.closest('div[class*="cursor-pointer"]');
+    return {
+      found: !!row,
+      activeClass: !!(row && (row.classList.contains('bg-[#333537]') || row.classList.contains('bg-[#E1E5EA]'))),
+    };
+  });
+  rec('①a-4 对话管理页不残留当前会话选中背景',
+    managedActiveState.found && !managedActiveState.activeClass,
+    JSON.stringify(managedActiveState));
   await clickText(page, '批量管理'); await sleep(200);
   await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
@@ -289,7 +323,7 @@ async function expand(page) {
     archived: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
     activeId: localStorage.getItem('pinvou_codex_active_session'),
   }));
-  rec('①a-3 批量收纳 Codex 会话等待后端成功并清除激活态',
+  rec('①a-5 批量收纳 Codex 会话等待后端成功并清除激活态',
     codexBatchArchive.invoked && codexBatchArchive.archived && codexBatchArchive.activeId === null,
     JSON.stringify(codexBatchArchive));
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
