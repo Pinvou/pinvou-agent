@@ -29,6 +29,7 @@ name: PR Check
 #   仓库内 crate 源码不变即全命中;main push 恒跑 rust-test 同时充当 sccache 暖源。
 #   PR/merge queue 侧 SCCACHE_GHA_RW_MODE=READ_ONLY(对齐 rust-cache save-if 仅 main),
 #   只读暖 cache,不向共享 10GB 配额写入。
+#   接入范围仅 rust-test / windows-rust-test;rust-lint 不接入(见该 job 注释)。
 
 on:
   pull_request:
@@ -332,18 +333,14 @@ jobs:
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
   # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
+  # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍,
+  # 而本 job 仅 ~2-3min、收益过小,权衡 10GB 配额压力后不接入(#47 评审结论)。
   rust-lint:
     name: rust-lint
     needs: changes
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      # sccache 按内容哈希缓存编译产物,解决 checkout 刷新 mtime 导致仓库内 crate 每轮重编。
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
-      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v4
@@ -378,12 +375,6 @@ jobs:
           workspaces: pinvou3-app/src-tauri
           shared-key: rust-lint
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
-      - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-        with:
-          version: v0.16.0
 
       # fmt 硬门禁:风格规则见 rustfmt.toml(只用 stable 可用选项)。
       - name: cargo fmt --check (硬门禁)
