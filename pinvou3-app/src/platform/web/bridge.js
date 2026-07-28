@@ -90,6 +90,9 @@
     // 跨页面预填输入框请求。比如本地知识 → 产出物点击「续写/新项目」：
     // 只把草稿放进 composer，不自动发送给模型。
     composerPrefill: { id: 0, text: "" },
+    // 当前会话未发送的输入草稿。只存内存，随 session working set 切换；
+    // 不落盘，避免把敏感的未发送内容带到下次启动。
+    composerDraft: "",
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
     // DeepSeek Turn 生命周期(user_start / assistant_done)，来自 timing_events.jsonl；
@@ -390,7 +393,7 @@
   var personaPlaceholderTitles = {};
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -606,6 +609,7 @@
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
+    buf.composerDraft = state.composerDraft || "";
     buf.turnTimeline = state.turnTimeline;
     buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
@@ -625,6 +629,7 @@
   function loadWorkingSetFrom(buf) {
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
+    state.composerDraft = buf.composerDraft || "";
     state.turnTimeline = buf.turnTimeline || [];
     state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
@@ -1966,7 +1971,11 @@
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
-    if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) { notify(); return; }
+    if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
+      state.composerDraft = "";
+      notify();
+      return;
+    }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
@@ -1982,7 +1991,11 @@
     // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
     try {
       var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
+      // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
+      var composerDraft = state.composerDraft || "";
       switchActiveTo(meta.id, { fresh: true });
+      state.composerDraft = composerDraft;
+      sessionStates[meta.id].composerDraft = composerDraft;
       getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
       await refreshHistoryList();
       await syncModeState();
@@ -3554,6 +3567,16 @@
       });
       notify();
     }
+  }
+  function getComposerDraft() {
+    return String(state.composerDraft || "");
+  }
+  function setComposerDraft(value) {
+    var text = value == null ? "" : String(value);
+    state.composerDraft = text;
+    var activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
+    if (activeBuffer) activeBuffer.composerDraft = text;
+    return text;
   }
   function prefillComposer(text) {
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
@@ -7115,6 +7138,8 @@
     init: init,
     sendMessage: sendMessage,
     sendMessageToSession: sendMessageToSession,
+    getComposerDraft: getComposerDraft,
+    setComposerDraft: setComposerDraft,
     prefillComposer: prefillComposer,
     removeQueued: removeQueued,
     startVoiceInput: startVoiceInput,
@@ -7332,7 +7357,7 @@
   var fields = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
@@ -7390,7 +7415,7 @@
     lifecycle: { init: flat.init },
     state: { get: get, getMany: getMany, subscribe: subscribe, subscribeMany: subscribeMany },
     platform: {},
-    chat: domain(["sendMessage", "sendMessageToSession", "prefillComposer", "removeQueued", "cancelGeneration", "cancelShellTask"]),
+    chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "prefillComposer", "removeQueued", "cancelGeneration", "cancelShellTask"]),
     voice: domain(["startVoiceInput", "installVoiceAsr", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText", "runVoiceInputDebugAssertions"]),
     knowledge: domain(["downloadKbModel", "cancelKbModel", "mountCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
     scheduled: domain(["loadScheduledTasks", "readScheduledTask", "loadScheduledTaskRuns", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "clearScheduledTaskSelection", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "toggleScheduledTaskPinned", "deleteScheduledTask", "runScheduledTaskNow", "pickFolder", "startScheduledTaskChat", "confirmScheduledTaskDraft", "clearScheduledTaskDraft", "openScheduledRunChat", "exitScheduledRunChat"]),

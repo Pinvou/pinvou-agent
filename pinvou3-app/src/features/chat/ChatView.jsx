@@ -253,9 +253,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
-      const [inputText, setInputTextState] = useState('');
-      const [inputLimitReached, setInputLimitReached] = useState(false);
-      const inputTextRef = useRef('');
+      const initialInput = constrainChatInput(
+        bridge.available && bridge.chat && bridge.chat.getComposerDraft
+          ? bridge.chat.getComposerDraft()
+          : ((bs && bs.composerDraft) || '')
+      );
+      const [inputText, setInputTextState] = useState(initialInput.text);
+      const [inputLimitReached, setInputLimitReached] = useState(initialInput.limitReached);
+      const inputTextRef = useRef(initialInput.text);
       const setInputText = useCallback((valueOrUpdater) => {
         const rawValue = typeof valueOrUpdater === 'function'
           ? valueOrUpdater(inputTextRef.current)
@@ -264,6 +269,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         inputTextRef.current = constrained.text;
         setInputTextState(constrained.text);
         setInputLimitReached(constrained.limitReached);
+        if (bridge.available && bridge.chat && bridge.chat.setComposerDraft) {
+          bridge.chat.setComposerDraft(constrained.text);
+        }
       }, []);
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
@@ -507,6 +515,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (!activeSessionId) setArtifactsOpen(false);
       }, [activeSessionId]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
+      // 从设置、工具商店等页面返回时 ChatView 会重新挂载，初始 state 也从
+      // 同一份内存草稿恢复。
+      useEffect(() => {
+        const restored = bridge.available && bridge.chat && bridge.chat.getComposerDraft
+          ? bridge.chat.getComposerDraft()
+          : ((bs && bs.composerDraft) || '');
+        setInputText(restored);
+      }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
       const voiceRecording = voiceInput.status === 'recording';
@@ -1095,6 +1112,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               />
               <textarea
                 ref={composerRef}
+                data-testid="chat-composer-input"
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}

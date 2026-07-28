@@ -28,6 +28,20 @@
     var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
+  // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆
+  // 整个 chat slice 并触发 App 重渲染。会话切换本身会 notify，ChatView 会在
+  // activeSessionId 变化后主动读取目标 working set 的草稿。
+  function getComposerDraft() {
+    return String(state.composerDraft || "");
+  }
+  function setComposerDraft(value) {
+    var text = value == null ? "" : String(value);
+    state.composerDraft = text;
+    var activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
+    if (activeBuffer) activeBuffer.composerDraft = text;
+    return text;
+  }
+
   // ── Chat Items (display format for React) ────────────────────────
   function addChatItem(item) {
     item.id = ++context.itemIdSeq;
@@ -634,6 +648,8 @@
       flushQueued: flushQueued,
       sendMessageToSession: sendMessageToSession,
       sendMessage: sendMessage,
+      getComposerDraft: getComposerDraft,
+      setComposerDraft: setComposerDraft,
       prefillComposer: prefillComposer,
       removeQueued: removeQueued,
       summonPinvou: summonPinvou,
