@@ -41,6 +41,10 @@ pub(crate) const fn is_unix() -> bool {
     cfg!(unix)
 }
 
+pub(crate) const fn is_musl() -> bool {
+    cfg!(all(target_os = "linux", target_env = "musl"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

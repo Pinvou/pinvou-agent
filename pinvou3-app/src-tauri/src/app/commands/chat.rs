@@ -39,8 +39,8 @@ pub async fn chat(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    if acp_pool.is_codex(&sid) {
-        return Err("Codex ACP 会话必须通过独立 Codex 页面发送".to_string());
+    if acp_pool.is_acp(&sid) {
+        return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
     }
     let reservation = pool
         .reserve_turn(&sid)

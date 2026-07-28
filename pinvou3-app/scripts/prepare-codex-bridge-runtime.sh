@@ -30,20 +30,30 @@ fi
 NODE_VERSION="22.22.0"
 CODEX_ACP_VERSION="1.1.5"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
+CLAUDE_ACP_VERSION="0.62.0"
+CLAUDE_ACP_PACKAGE="@agentclientprotocol/claude-agent-acp"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 
 bridge_runtime_valid() {
   local root="$1"
   local node="$root/node/bin/node"
   local entry="$root/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
+  local claude_entry="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
   local package_json="$root/acp/node_modules/@agentclientprotocol/codex-acp/package.json"
+  local claude_package_json="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/package.json"
   local version_output
-  [ -x "$node" ] && [ -s "$entry" ] && [ -s "$package_json" ] || return 1
+  [ -x "$node" ] && [ -s "$entry" ] && [ -s "$package_json" ] \
+    && [ -s "$claude_entry" ] && [ -s "$claude_package_json" ] || return 1
   version_output="$(
     env CODEX_PATH="$(command -v codex || true)" \
       "$node" "$entry" --version 2>/dev/null
   )" || return 1
-  [ "$version_output" = "$CODEX_ACP_PACKAGE $CODEX_ACP_VERSION" ]
+  [ "$version_output" = "$CODEX_ACP_PACKAGE $CODEX_ACP_VERSION" ] || return 1
+  local claude_version
+  claude_version="$(
+    "$node" -e 'process.stdout.write(require(process.argv[1]).version)' "$claude_package_json"
+  )" || return 1
+  [ "$claude_version" = "$CLAUDE_ACP_VERSION" ]
 }
 
 if bridge_runtime_valid "$OUT_DIR"; then
@@ -130,9 +140,17 @@ mkdir -p "$ACP_ROOT"
 cp $DD "$BRIDGE_PACKAGE_DIR/package.json" "$BRIDGE_PACKAGE_DIR/package-lock.json" "$ACP_ROOT/"
 PATH="$NODE_DIST_ROOT/bin:$PATH" "$NODE_DIST_ROOT/bin/npm" ci \
   --prefix "$ACP_ROOT" \
+  --os=linux \
+  --cpu="${NODE_TARGET#linux-}" \
+  --libc=glibc \
   --no-audit \
   --no-fund \
   --omit=dev
+
+# Anthropic SDK currently declares both glibc and musl Linux packages as optional
+# dependencies. Pinvou's deb build targets glibc, so retaining the musl duplicate
+# would add about 250 MB without being reachable at runtime.
+rm -rf -- "$ACP_ROOT/node_modules/@anthropic-ai/claude-agent-sdk-linux-${NODE_TARGET#linux-}-musl"
 
 # Bridge 总是通过 CODEX_PATH 启动系统或托管 Codex，不需要随包携带平台 Codex。
 rm -rf $DD "$ACP_ROOT/node_modules/@openai"/codex-*
@@ -156,14 +174,18 @@ const manifest = {
   schema_version: 1,
   node_version: process.argv[2],
   codex_acp_version: process.argv[3],
+  claude_acp_version: process.argv[4],
   platform: process.platform,
   arch: process.arch,
   node: "node/bin/node",
-  entrypoint: "acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+  entrypoints: {
+    codex: "acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+    claude: "acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+  },
   requires_codex_path: true
 };
 fs.writeFileSync(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
-' "$READY_DIR" "$NODE_VERSION" "$CODEX_ACP_VERSION"
+' "$READY_DIR" "$NODE_VERSION" "$CODEX_ACP_VERSION" "$CLAUDE_ACP_VERSION"
 
 bridge_runtime_valid "$READY_DIR" || {
   echo "生成的 Codex ACP Bridge 未通过完整性检查" >&2

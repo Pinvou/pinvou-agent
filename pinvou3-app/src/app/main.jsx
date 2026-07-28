@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
-import { CodexLogo } from '../components/CodexLogo.jsx';
+import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
@@ -713,7 +713,7 @@ function workspaceDisplayName(path) {
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
         taskKind: 'codex',
-        leadingIcon: <CodexLogo className="h-[18px] w-[18px]" title="Codex" />,
+        leadingIcon: <AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]" title={session.agent_name || 'ACP Agent'} />,
         testId: 'codex-sidebar-item',
         menuTestId: 'codex-sidebar-menu',
         codexSession: session,

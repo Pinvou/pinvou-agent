@@ -7,14 +7,16 @@ use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-const STORE_VERSION: u32 = 3;
+const STORE_VERSION: u32 = 4;
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentBackend {
     #[default]
     Deepseek,
     CodexAcp,
+    ClaudeAcp,
+    KimiAcp,
 }
 
 // parse/as_str 是 backend 字符串表示(序列化契约)的公开解析入口,当前仅测试
@@ -25,15 +27,42 @@ impl AgentBackend {
         match value.unwrap_or("deepseek") {
             "deepseek" => Ok(Self::Deepseek),
             "codex-acp" | "codex" => Ok(Self::CodexAcp),
+            "claude-acp" | "claude" => Ok(Self::ClaudeAcp),
+            "kimi-acp" | "kimi" => Ok(Self::KimiAcp),
             other => anyhow::bail!("不支持的 Agent 后端: {other}"),
         }
     }
 
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deepseek => "deepseek",
             Self::CodexAcp => "codex-acp",
+            Self::ClaudeAcp => "claude-acp",
+            Self::KimiAcp => "kimi-acp",
         }
+    }
+
+    pub fn agent_id(self) -> Option<&'static str> {
+        match self {
+            Self::Deepseek => None,
+            Self::CodexAcp => Some("codex"),
+            Self::ClaudeAcp => Some("claude"),
+            Self::KimiAcp => Some("kimi"),
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Deepseek => "品悟",
+            Self::CodexAcp => "Codex",
+            Self::ClaudeAcp => "Claude Code",
+            Self::KimiAcp => "Kimi",
+        }
+    }
+
+    pub fn is_acp(self) -> bool {
+        !matches!(self, Self::Deepseek)
     }
 }
 
@@ -53,11 +82,11 @@ pub struct SessionAgentRecord {
     pub acp_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_model_id: Option<String>,
-    /// 用户明确选择的 Codex 权限模式。ACP Agent 在 new/load 时会恢复默认
+    /// 用户明确选择的 ACP 权限模式。ACP Agent 在 new/load 时可能恢复默认
     /// `agent`，所以 Pinvou 必须在运行时就绪前重新应用该期望值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_mode_id: Option<String>,
-    /// Codex 的执行目录类型。旧记录没有该字段时按临时会话兼容。
+    /// ACP Agent 的执行目录类型。旧记录没有该字段时按临时会话兼容。
     #[serde(default)]
     pub workspace_kind: CodexWorkspaceKind,
     /// 项目会话保存创建时选定的绝对目录；临时会话目录由 session id 推导。
@@ -101,18 +130,16 @@ impl SessionAgentStore {
         })
     }
 
-    /// Codex ACP 是可选能力，它的辅助索引损坏时不能阻断 Pinvou 主程序启动。
+    /// 外部 Agent ACP 是可选能力，它的辅助索引损坏时不能阻断 Pinvou 主程序启动。
     ///
-    /// 这里保留原始文件供排障，不主动覆盖；只有用户后续实际创建或更新 Codex
+    /// 这里保留原始文件供排障，不主动覆盖；只有用户后续实际创建或更新 ACP
     /// 会话时，`persist` 才会用新的有效内容替换它。
     pub fn load_or_empty() -> Self {
         match Self::load() {
             Ok(store) => store,
             Err(error) => {
                 let path = crate::platform::paths::pinvou3_home().join("session-agents.json");
-                eprintln!(
-                    "[pinvou3-app] Codex ACP session index unavailable, starting empty: {error:#}"
-                );
+                eprintln!("[pinvou3-app] ACP session index unavailable, starting empty: {error:#}");
                 Self {
                     path,
                     records: Arc::new(RwLock::new(HashMap::new())),
@@ -137,8 +164,10 @@ impl SessionAgentStore {
             .unwrap_or_default()
     }
 
-    /// 显式切换会话后端。当前后端由 set_codex_workspace / set_acp_session 隐式
-    /// 设置,前端尚未暴露切换入口;保留该 API 供后续后端切换功能使用。
+    /// 在 ACP 会话创建时永久绑定 Agent 与执行目录。
+    ///
+    /// `set_acp_workspace` 是当前前端创建会话时的主入口；这个更窄的 API 保留给
+    /// 后续仅切换后端、不变更工作区的场景。
     #[allow(dead_code)]
     pub fn set_backend(&self, session_id: &str, backend: AgentBackend) -> Result<()> {
         {
@@ -156,17 +185,20 @@ impl SessionAgentStore {
         self.persist()
     }
 
-    /// 在 Codex 会话创建时永久绑定执行目录。
     ///
-    /// ACP session 一旦建立就不允许换目录，避免同一个 Codex 上下文跨项目漂移。
-    pub fn set_codex_workspace(
+    /// ACP session 一旦建立就不允许换目录，避免同一个 Agent 上下文跨项目漂移。
+    pub fn set_acp_workspace(
         &self,
         session_id: &str,
+        backend: AgentBackend,
         kind: CodexWorkspaceKind,
         workspace_path: Option<PathBuf>,
     ) -> Result<()> {
+        if !backend.is_acp() {
+            anyhow::bail!("ACP 会话不能绑定非 ACP 后端");
+        }
         if kind == CodexWorkspaceKind::Project && workspace_path.is_none() {
-            anyhow::bail!("项目会话缺少 Codex 工作目录");
+            anyhow::bail!("项目会话缺少 ACP 工作目录");
         }
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
@@ -177,9 +209,9 @@ impl SessionAgentStore {
             if record.acp_session_id.is_some()
                 && (record.workspace_kind != kind || record.workspace_path != workspace_path)
             {
-                anyhow::bail!("Codex 会话已开始，不能更换工作目录；请新建会话");
+                anyhow::bail!("ACP 会话已开始，不能更换工作目录；请新建会话");
             }
-            record.backend = AgentBackend::CodexAcp;
+            record.backend = backend;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
         }
@@ -195,7 +227,6 @@ impl SessionAgentStore {
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
-            record.backend = AgentBackend::CodexAcp;
             record.acp_session_id = Some(acp_session_id);
             record.acp_model_id = model_id;
         }
@@ -291,6 +322,15 @@ mod tests {
             AgentBackend::CodexAcp
         );
         assert_eq!(AgentBackend::CodexAcp.as_str(), "codex-acp");
+        assert_eq!(
+            AgentBackend::parse(Some("claude")).unwrap(),
+            AgentBackend::ClaudeAcp
+        );
+        assert_eq!(
+            AgentBackend::parse(Some("kimi-acp")).unwrap(),
+            AgentBackend::KimiAcp
+        );
+        assert!(AgentBackend::ClaudeAcp.is_acp());
     }
 
     #[test]
@@ -341,13 +381,23 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .set_codex_workspace("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+            )
             .unwrap();
         store
             .set_acp_session("session-1", "acp-1".to_string(), None)
             .unwrap();
         assert!(store
-            .set_codex_workspace("session-1", CodexWorkspaceKind::Temporary, None)
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
             .is_err());
         assert_eq!(
             store.get("session-1").workspace_path.as_deref(),
