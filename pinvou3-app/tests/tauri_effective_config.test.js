@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const {
+  BASE_CONFIG_PATH,
   buildResourceManifest,
   composeEffectiveConfig,
   mergeConfig,
@@ -155,6 +156,24 @@ assert.ok(
   !macosManifest.files.some((file) => file.destination.startsWith("runtime/asr/")),
   "macOS resource manifest must not contain a legacy ASR runtime",
 );
+
+// macOS 主窗口走系统原生红绿灯顶栏(titleBarStyle=Overlay),前端据此隐藏自绘三键。
+// --config overlay 按 JSON Merge Patch 合并,windows 数组整体替换,因此 overlay 必须
+// 携带完整窗口定义,且与基础配置主窗口的共有字段保持一致(防漂移)。
+const baseWindow = JSON.parse(fs.readFileSync(BASE_CONFIG_PATH, "utf8")).app.windows[0];
+assert.equal(macos.app.windows.length, 1);
+const macosWindow = macos.app.windows[0];
+assert.equal(macosWindow.label, "main");
+assert.equal(macosWindow.decorations, true, "macOS 主窗口必须使用系统原生顶栏");
+assert.equal(macosWindow.titleBarStyle, "Overlay", "macOS 主窗口必须使用 Overlay 红绿灯");
+assert.equal(macosWindow.hiddenTitle, true);
+for (const key of ["url", "title", "width", "height", "resizable", "fullscreen", "maximized"]) {
+  assert.deepEqual(
+    macosWindow[key],
+    baseWindow[key],
+    `macOS overlay 窗口字段需与基础配置同步: ${key}`,
+  );
+}
 
 const nullRemoval = mergeConfig(
   { bundle: { resources: { common: "common-target", runtime: "runtime-target" } } },
