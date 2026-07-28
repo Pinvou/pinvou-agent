@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -81,10 +81,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -108,8 +108,8 @@ jobs:
       relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
       windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'pull_request'
         with:
@@ -201,7 +201,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout (含 submodule,fork 为 public 直接拉)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: false
           fetch-depth: 0
@@ -230,7 +230,7 @@ jobs:
           ./scripts/ci-fork-link-check.sh "origin/$base_ref"
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
@@ -267,9 +267,9 @@ jobs:
       run:
         working-directory: pinvou3-app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -316,9 +316,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -343,7 +343,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: false
 
@@ -419,7 +419,7 @@ jobs:
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: false
 
@@ -463,7 +463,7 @@ jobs:
       # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
       # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
       - name: Node.js (relay e2e)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -542,7 +542,7 @@ jobs:
       SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: false
 
@@ -560,7 +560,7 @@ jobs:
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -602,10 +602,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm

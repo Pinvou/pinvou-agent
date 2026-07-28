@@ -58,12 +58,12 @@ jobs:
       version: ${{ steps.diff.outputs.version }}
     steps:
       # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -120,7 +120,7 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -147,7 +147,7 @@ jobs:
             build-essential pkg-config cmake
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -193,7 +193,7 @@ jobs:
           ls -lh "$DST"
 
       - name: 上传 deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pinvou3-linux-${{ needs.check-version-bump.outputs.version }}-x64
           path: |
@@ -213,7 +213,7 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -237,7 +237,7 @@ jobs:
             build-essential pkg-config cmake
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -277,7 +277,7 @@ jobs:
           ls -lh "$DEB"
 
       - name: 上传 deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pinvou3-linux-${{ needs.check-version-bump.outputs.version }}-arm64
           path: |
@@ -305,7 +305,7 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -319,7 +319,7 @@ jobs:
           shared-key: release-windows-x64
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -357,7 +357,7 @@ jobs:
           ls -lh "$EXE"
 
       - name: 上传 nsis artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pinvou3-windows-${{ needs.check-version-bump.outputs.version }}-x64
           path: |
@@ -379,7 +379,7 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -414,7 +414,7 @@ jobs:
           fi
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -491,7 +491,7 @@ jobs:
           ls -lh "pinvou3_${VERSION}_universal.dmg"
 
       - name: 上传 dmg artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pinvou3-macos-${{ needs.check-version-bump.outputs.version }}-universal
           path: |
