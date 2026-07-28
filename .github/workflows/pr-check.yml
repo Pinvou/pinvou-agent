@@ -414,7 +414,8 @@ jobs:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
       # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
-      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
+      # 【临时】稳态 A/B 实验:本分支强制 READ_WRITE,实验结束后还原。
+      SCCACHE_GHA_RW_MODE: READ_WRITE
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
@@ -483,9 +484,10 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           # 稳定 key 前缀(跨 PR/push 一致);restore 按前缀回退,lock 变了也增量。
-          shared-key: rust-test
-          # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # 【临时】稳态 A/B 实验:独立 shared-key + 本分支可写,避免与 main 既有
+          # key 冲突写不进;实验结束后还原为 rust-test + 仅 main 保存。
+          shared-key: rust-test-steady
+          save-if: true
 
       # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
       - name: sccache
@@ -526,7 +528,8 @@ jobs:
   windows-rust-test:
     name: windows-rust-test
     # 跨平台构建不作为 PR 检测项；合入 main 后再做 Windows 原生验证。
-    if: ${{ github.event_name == 'push' }}
+    # 【临时】稳态 A/B 实验:允许 PR 触发以验证 windows sccache 接入,实验结束后还原。
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 45min:aws-lc-sys(NASM 预生成对象)冷编译比纯 Rust 图更久。
@@ -539,7 +542,8 @@ jobs:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
       # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
-      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
+      # 【临时】稳态 A/B 实验:本分支强制 READ_WRITE,实验结束后还原。
+      SCCACHE_GHA_RW_MODE: READ_WRITE
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -573,8 +577,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
-          shared-key: windows-rust-test
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # 【临时】稳态 A/B 实验:独立 shared-key + 本分支可写;实验结束后还原为
+          # windows-rust-test + 仅 main 保存。
+          shared-key: windows-rust-test-steady
+          save-if: true
 
       # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
       - name: sccache
