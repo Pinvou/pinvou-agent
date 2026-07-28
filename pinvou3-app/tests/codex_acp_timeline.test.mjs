@@ -347,6 +347,10 @@ try {
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
     && codexView.includes('workspaceReferences'),
   'Codex prompts must keep external attachments and workspace references as separate inputs');
+  assert.ok(!codexView.includes('if (activeId && !sessionInfo)')
+    && !codexView.includes('throw new Error(codexCopy.sessionSyncing)')
+    && !codexView.includes('(activeId && !sessionInfo) ||'),
+  'Codex prompts must let the backend initialize or restore the ACP session instead of blocking forever on stale UI state');
   assert.ok(codexView.includes('<CodexWorkspacePanel')
     && codexView.includes('copy={t.uiCodexWorkspace}')
     && codexWorkspace.includes('copy.files')

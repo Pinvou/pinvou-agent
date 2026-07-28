@@ -1198,13 +1198,51 @@ impl AcpPool {
     }
 
     async fn get_or_spawn(&self, session_id: &str) -> Result<Arc<AcpSession>> {
+        let operation_id = diagnostics::operation_id("session");
+        diagnostics::write(
+            &operation_id,
+            "session:resolve_start",
+            format!("session_id={session_id}"),
+        );
         let mut sessions = self.sessions.lock().await;
         if let Some(runtime) = sessions.get(session_id) {
+            diagnostics::write(
+                &operation_id,
+                "session:reused",
+                format!("session_id={session_id}"),
+            );
             return Ok(runtime.clone());
         }
-        self.ensure_installed().await?;
-        let runtime = Arc::new(self.spawn_session(session_id).await?);
+        if let Err(error) = self.ensure_installed().await {
+            diagnostics::write(
+                &operation_id,
+                "session:runtime_failed",
+                format!("session_id={session_id} error={error:#}"),
+            );
+            return Err(error);
+        }
+        diagnostics::write(
+            &operation_id,
+            "session:spawn_start",
+            format!("session_id={session_id}"),
+        );
+        let runtime = match self.spawn_session(session_id).await {
+            Ok(runtime) => Arc::new(runtime),
+            Err(error) => {
+                diagnostics::write(
+                    &operation_id,
+                    "session:spawn_failed",
+                    format!("session_id={session_id} error={error:#}"),
+                );
+                return Err(error);
+            }
+        };
         sessions.insert(session_id.to_string(), runtime.clone());
+        diagnostics::write(
+            &operation_id,
+            "session:ready",
+            format!("session_id={session_id}"),
+        );
         Ok(runtime)
     }
 

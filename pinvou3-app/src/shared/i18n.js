@@ -85,7 +85,7 @@ const codexZh = {
   openingAuth:'正在启动 Codex 授权页面，请稍候…', loginHint:'使用 Codex CLI / ChatGPT 账号完成授权',
   reopenAuth:'重新打开授权页', waitAuth:'等待授权…', authorize:'授权登录',
   chooseProjectDialog:'选择 Codex 项目目录', addAttachmentDialog:'添加附件',
-  attachmentsParsing:'附件仍在解析，请稍候', sessionSyncing:'Codex 会话配置仍在同步，请稍候',
+  attachmentsParsing:'附件仍在解析，请稍候',
   operationFailed:'Codex 操作失败，请重试', showRawErrors:true,
   runtimeSources:{ system:'系统 Codex', managed:'托管 Codex', override:'自定义 Codex', legacy_bundled:'内置 Codex' },
 };
@@ -115,7 +115,7 @@ const codexEn = {
   openingAuth:'Opening the Codex authorization page…', loginHint:'Authorize with Codex CLI / your ChatGPT account',
   reopenAuth:'Reopen authorization page', waitAuth:'Waiting for authorization…', authorize:'Authorize',
   chooseProjectDialog:'Choose Codex project directory', addAttachmentDialog:'Add attachments',
-  attachmentsParsing:'Attachments are still being parsed. Please wait', sessionSyncing:'Codex session configuration is still syncing. Please wait',
+  attachmentsParsing:'Attachments are still being parsed. Please wait',
   operationFailed:'Codex operation failed. Please retry', showRawErrors:true,
   runtimeSources:{ system:'System Codex', managed:'Managed Codex', override:'Custom Codex', legacy_bundled:'Bundled Codex' },
 };
@@ -145,7 +145,7 @@ const codexJa = {
   openingAuth:'Codex 認証ページを開いています…', loginHint:'Codex CLI / ChatGPT アカウントで認証',
   reopenAuth:'認証ページを再度開く', waitAuth:'認証待ち…', authorize:'認証ログイン',
   chooseProjectDialog:'Codex プロジェクトディレクトリを選択', addAttachmentDialog:'添付ファイルを追加',
-  attachmentsParsing:'添付ファイルを解析中です。しばらくお待ちください', sessionSyncing:'Codex セッション設定を同期中です。しばらくお待ちください',
+  attachmentsParsing:'添付ファイルを解析中です。しばらくお待ちください',
   operationFailed:'Codex の操作に失敗しました。再試行してください', showRawErrors:true,
   runtimeSources:{ system:'システム Codex', managed:'管理対象 Codex', override:'カスタム Codex', legacy_bundled:'内蔵 Codex' },
 };
