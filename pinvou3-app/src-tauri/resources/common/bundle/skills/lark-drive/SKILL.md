@@ -1,7 +1,7 @@
 ---
 name: lark-drive
 version: 1.0.0
-description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书云空间（云盘/云存储）：管理 Drive 文件和文件夹，包含上传/下载、创建文件夹、复制/移动/删除、查看元数据、评论/权限/订阅、标题、版本和本地文件导入。用户需要整理云盘目录、处理云空间资源 URL/token，或导入 Word/Markdown/Excel/CSV/PPTX/.base 为 docx/sheet/bitable/slides 时使用；doubao.com 云空间 URL/token 也按资源路径和 token 路由，不回退 WebFetch。不负责：文档内容编辑（走 lark-doc）、表格/Base 表内数据操作（走 lark-sheets/lark-base）、知识空间节点/成员管理（走 lark-wiki）、原生 Markdown 文件读写/patch/diff（走 lark-markdown）。"
+description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书云空间:管理 Drive 文件/文件夹,上传下载、复制移动删除、评论、权限、版本,导入本地 Word/Markdown/Excel/CSV/PPTX/.base 为在线文档;doubao.com 云空间 URL 同样路由到本 skill,不回退 WebFetch。不负责:文档内容编辑(lark-doc)、表格/Base 表内数据(lark-sheets/lark-base)、知识库节点(lark-wiki)。"
 metadata:
   requires:
     bins: ["lark-cli"]
@@ -10,7 +10,7 @@ metadata:
 
 # drive (v1)
 
-**CRITICAL — 开始前 MUST 先用 Read 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
+**CRITICAL — 开始前 MUST 先用 `read_file` 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
 
 > **术语说明：** 飞书云空间也常被称为"云盘"、"云存储"、"网盘"或"我的空间"，这些说法通常指的是同一个产品，是飞书官方的云端文件存储与管理中心。
 
@@ -23,18 +23,14 @@ metadata:
 - 用户要**搜文档 / Wiki / 电子表格 / 多维表格 / 云空间（云盘/云存储）对象**，优先使用 `lark-cli drive +search`。自然语言里"最近我编辑过的"、"我创建的"（→ `--created-by-me`，原始创建者语义）、"我负责/owner 的"（→ `--mine`，owner 语义）、"最近一周我打开过的 xxx"、"某人 owner 的 docx" 等直接映射到扁平 flag，避免手写嵌套 JSON。
 - 用户要**根据文档评论定位正文位置**，例如 根据评论 review 文档、根据评论内容回看文档、区分多处相同引用文本时，对于 docx 类型（`file_type=docx`）的文档支持通过 `need_relation=true` 返回评论位置，其他类型暂不支持，具体用法需要先阅读 [`references/lark-drive-comment-location.md`](references/lark-drive-comment-location.md) 了解。
 - 用户给出 doubao.com 的云空间资源 URL/token，或明确提到豆包里的 file/folder/docx/sheet/bitable/wiki 资源时，仍按资源类型、URL 路径和 token 路由到本 skill；不要因为域名不是飞书而回退到 WebFetch。
-- 用户要把本地 `.xlsx` / `.csv` / `.base` 导入成 Base / 多维表格 / bitable，第一步必须使用 `lark-cli drive +import --type bitable`。
-- 用户要把本地 `.md` / `.docx` / `.doc` / `.txt` / `.html` 导入成在线文档，使用 `lark-cli drive +import --type docx`。
-- 用户要把本地 `.pptx` 导入成飞书幻灯片，使用 `lark-cli drive +import --type slides`；当前 PPTX 导入上限是 500MB。
-- 用户要在 Drive 里上传、创建、读取、局部 patch 或覆盖更新**原生 `.md` 文件**（不是导入成 docx），切到 [`lark-markdown`](../lark-markdown/SKILL.md)。
-- 用户要比较原生 `.md` 文件的**历史版本差异**，或比较远端 Markdown 与本地草稿，切到 [`lark-markdown`](../lark-markdown/SKILL.md) 的 `lark-cli markdown +diff`；需要版本号时先用 `drive +version-history`。
+- 导入目标类型映射:bitable←.xlsx/.csv/.base;docx←.md/.docx/.doc/.txt/.html;slides←.pptx(上限 500MB);sheet←.xlsx/.xls/.csv,均用 `lark-cli drive +import --type <类型>`
+- 用户要在 Drive 里上传、创建、读取、局部 patch 或覆盖更新**原生 `.md` 文件**(不是导入成 docx):本环境无 lark-markdown 技能;远端下载用 `drive +download`、本地编辑用文件工具、回传用 `drive +upload`。
+- 比较原生 `.md` 历史版本差异:先用 `drive +version-history` / `+version-get` 拿到历史版本到本地,再用本地 diff。
 - 用户要查看、下载、回滚或删除文件的**历史版本**，使用 `drive +version-history`、`drive +version-get`、`drive +version-revert`、`drive +version-delete`；这组命令同时支持 `--as user` 和 `--as bot`，自动化场景优先 `--as bot`。
-- 用户要把本地 `.xlsx` / `.xls` / `.csv` 导入成电子表格，使用 `lark-cli drive +import --type sheet`。
 - 用户要在云空间（云盘/云存储）里新建文件夹，优先使用 `lark-cli drive +create-folder`。
 - 用户要查看某个文件有哪些可下载预览格式，或想下载 PDF / HTML / 文本 / 图片等预览产物，使用 `lark-cli drive +preview`。
 - 用户要获取某个文件的封面图，优先使用 `lark-cli drive +cover`；先 `--list-only` 看规格，再选 `--spec` 下载。
 - 用户要把本地文件上传到知识库 / 文档库里的某个 wiki 节点下时，仍然使用 `lark-cli drive +upload --wiki-token <wiki_token>`；不要误切到 `wiki` 域命令。
-- `lark-base` 只负责导入完成后的 Base 内部操作（表、字段、记录、视图），不要在“本地文件 -> Base”这一步提前切到 `lark-base`。
 - 用户给的是 wiki URL / token，且后续还没明确底层资源类型时，先用 `lark-cli drive +inspect` 解包；`+inspect` 失败后不要自动切到别的写接口继续尝试，先按错误提示处理权限、scope 或链接问题。
 - `drive +inspect` / `drive +upload` 遇到 `not found`、`permission denied`、`missing scope` 时，默认停止重试；只有 `rate limit` 或临时网络错误才适合有限重试。
 
@@ -112,7 +108,7 @@ lark-cli drive +inspect --url 'https://xxx.feishu.cn/wiki/wikcnXXX'
 - 电子表格单元格、筛选、公式、样式等表内操作：使用 [`lark-sheets`](../lark-sheets/SKILL.md)。
 - Base / 多维表格内部的表、字段、记录、视图、仪表盘等操作：使用 [`lark-base`](../lark-base/SKILL.md)。
 - 知识空间、Wiki 节点层级、空间成员管理：使用 [`lark-wiki`](../lark-wiki/SKILL.md)；上传本地文件到 wiki 节点仍用 `drive +upload --wiki-token`。
-- 原生 Markdown 文件读取、写入、patch、diff：使用 [`lark-markdown`](../lark-markdown/SKILL.md)；把 Markdown 导入成在线 docx 才用 `drive +import --type docx`。
+- 原生 Markdown 文件的在线读写/patch/diff:本环境无专门技能,按上述 download/本地编辑/upload 组合处理
 
 ## Shortcuts（推荐优先使用）
 

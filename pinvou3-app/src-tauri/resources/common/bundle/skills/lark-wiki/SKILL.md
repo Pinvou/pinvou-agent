@@ -1,7 +1,7 @@
 ---
 name: lark-wiki
 version: 1.0.1
-description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书知识库：管理知识空间、空间成员和文档节点。创建和查询知识空间、查看和管理空间成员、管理节点层级结构、在知识库中组织文档和快捷方式。当用户需要在知识库中查找或创建文档、浏览知识空间结构、查看或管理空间成员、移动或复制节点时使用。当用户给出 doubao.com 的 /wiki/ URL/token 时，也应直接使用本 skill，不要因为域名不是飞书而回退到 WebFetch；路由依据是 URL 路径模式和 token，而不是域名。不负责：上传文件到知识库节点下（走 lark-drive）、编辑文档/表格/Base 内容（走 lark-doc / lark-sheets / lark-base）。"
+description: "【何时用:仅当用户明确指向飞书/Lark 知识库;泛指做文档默认走本地工具】飞书知识库:创建/查询知识空间、管理空间成员、管理节点层级(移动/复制/删除)、组织文档与快捷方式。doubao.com 的 /wiki/ URL 也走本 skill。不负责:上传文件(走 lark-drive)、编辑文档/表格/Base 内容(走 lark-doc/lark-sheets/lark-base)。"
 metadata:
   requires:
     bins: ["lark-cli"]
@@ -10,7 +10,7 @@ metadata:
 
 # wiki (v2)
 
-**CRITICAL — 开始前 MUST 先用 Read 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
+**CRITICAL — 开始前 MUST 先用 `read_file` 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
 
 > **成员管理硬限制：**
 > - 如果目标是“部门”，先判断身份，再决定是否继续。
@@ -34,9 +34,7 @@ metadata:
   - 用户明确选定后再执行 `lark-cli wiki +delete-space --space-id <ID> --yes`（高风险写操作，必须显式 `--yes`）。
   - 反例：不要把 wiki URL / 名称直接当 `--space-id`（如 `--space-id "https://.../wiki/<wiki_token>"`）；务必先用 `wiki spaces get_node` 解析出 `data.node.space_id` 再传。
 - 用户要在知识库中创建新节点，优先使用 `lark-cli wiki +node-create`。
-- 用户说“给知识库添加成员/管理员”：先把目标解析成“用户 / 群 / 部门 / 应用”四类之一，再决定 `--member-type`，不要先调 `wiki +member-add` 再根据报错反推类型。
-- 用户说“部门 + bot”：这是已知不支持路径。不要继续尝试 `wiki +member-add --as bot`；直接提示必须改成 `--as user`，或明确告知当前要求无法完成。
-- 用户说“用户 / 群 / 应用 + 添加成员”：先解析对应 ID，再执行 `wiki +member-add`。
+- 用户说"添加成员/管理员":先按「成员添加流程」把目标解析成用户/群/部门/应用并确认身份可行,再调 `wiki +member-add`;不要先调再按报错反推。
 - 用户说“查看 / 列出空间成员”：用 `wiki +member-list`；该 shortcut 默认只取一页，多成员场景显式加 `--page-all`。
 - 用户说“移除 / 删除空间成员”：用 `wiki +member-remove`，必须传齐原始授予时的 `--member-type` 和 `--member-role`（不知道就先 `wiki +member-list` 查一下）。
 

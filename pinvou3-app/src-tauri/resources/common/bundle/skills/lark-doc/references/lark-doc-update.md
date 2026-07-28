@@ -1,7 +1,7 @@
 
 # docs +update（更新飞书云文档）
 
-> **前置条件（MUST READ）：** 生成文档内容前，必须先用 Read 工具读取以下文件，缺一不可：
+> **前置条件（MUST READ）：** 生成文档内容前，必须先用 `read_file` 工具读取以下文件，缺一不可：
 > 1. [`lark-doc-xml.md`](lark-doc-xml.md) — XML 语法规则（使用 Markdown 格式时改读 [`lark-doc-md.md`](lark-doc-md.md)）
 > 2. [`lark-doc-update-workflow.md`](style/lark-doc-update-workflow.md) — 改写增强工作流（Code-Act Loop、并行执行策略）
 >
@@ -196,7 +196,7 @@ lark-cli docs +update --api-version v2 --doc "<doc_id>" --command block_move_aft
 | `result` | `success` \| `partial_success` \| `failed` |
 | `updated_blocks_count` | 实际更新的 block 数量 |
 | `warnings` | 警告信息列表 |
-| `document.new_blocks` | 本次操作新增的 block 列表（如画板）。`block_id` 可用于后续精确编辑；`block_token` 是资源块 token（如画板）可交给 `lark-whiteboard` 等 skill 继续操作 |
+| `document.new_blocks` | 本次操作新增的 block 列表（如画板）。`block_id` 可用于后续精确编辑；`block_token` 是资源块 token（如画板），画板后续操作用 `lark-cli whiteboard +query` / `+update`（lark-whiteboard skill 未随包收录，用法以 `--help` 为准） |
 
 ## 典型工作流
 
@@ -231,7 +231,7 @@ lark-cli docs +update --api-version v2 --doc "<doc_id>" --command str_replace \
 
 ## 画板处理
 
-> **`docs +update` 不能直接编辑已有画板的内容。** 本命令只能**新增**画板块；要修改已有画板，先用 `docs +fetch --api-version v2` 取到 `<whiteboard token="...">`，再按 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md) 启动 SubAgent 读取 [`lark-whiteboard`](../../lark-whiteboard/SKILL.md) 并写入。
+> **`docs +update` 不能直接编辑已有画板的内容。** 本命令只能**新增**画板块；要修改已有画板，先用 `docs +fetch --api-version v2` 取到 `<whiteboard token="...">`，再按 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md) 步骤 3B 启动 SubAgent 写入（lark-whiteboard skill 未随包收录）。
 
 画板的语法选型与插入示例见 [`lark-doc-style.md`](style/lark-doc-style.md) 的「画板语法与插入」章节。
 

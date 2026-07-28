@@ -9,8 +9,6 @@ metadata:
 
 # 通讯录成员查询技能
 
-> `wecom-cli` 是企业微信提供的命令行程序，所有操作通过执行 `wecom-cli` 命令完成。
-
 获取当前用户可见范围内的通讯录成员，并在本地按姓名/别名进行筛选匹配。
 
 ## 操作
@@ -46,16 +44,7 @@ wecom-cli contact get_userlist '{}'
 }
 ```
 
-**返回字段说明：**
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `errcode` | integer | 返回码，`0` 表示成功 |
-| `errmsg` | string | 错误信息 |
-| `userlist` | array | 用户列表 |
-| `userlist[].userid` | string | 用户唯一 ID |
-| `userlist[].name` | string | 用户姓名 |
-| `userlist[].alias` | string | 用户别名，可能为空 |
+**返回字段**：`errcode`（0=成功）、`errmsg`、`userlist[]`（每项含 `userid`/`name`/`alias`，alias 可能为空）。
 
 ---
 
@@ -89,7 +78,6 @@ wecom-cli contact get_userlist '{}'
 - `userid` 是用户的唯一标识，在需要传递用户 ID 给其他接口时使用此字段
 - `alias` 字段可能为空字符串，搜索时需做空值判断
 - 若搜索结果有多个同名人员，需将所有候选人展示给用户选择，不得自行决定
-- 若 `errcode` 不为 `0`，说明接口调用失败，需告知用户错误信息（`errmsg`）
 
 ---
 
@@ -99,11 +87,7 @@ wecom-cli contact get_userlist '{}'
 
 用户问："帮我查一下 Sam 是谁？"
 
-1. 
-```bash
-wecom-cli contact get_userlist '{}'
-```
- 获取全量成员列表
+1. 调用 get_userlist 获取全量成员（示例见上）
 
 2. 在结果中筛选 `alias` 为 `Sam` 或 `name` 包含 `Sam` 的成员
 3. 若找到唯一匹配，直接展示结果：
@@ -126,6 +110,8 @@ wecom-cli contact get_userlist '{}'
 请问您要查询的是哪一位？
 ```
 
+> 注意：批量查询多个人员时只需调用一次 `get_userlist`，在本地对结果进行多次筛选，避免重复调用接口。
+
 ---
 
 ### 工作流 2：为其他功能提供 userid 转换
@@ -140,39 +126,3 @@ wecom-cli contact get_userlist '{}'
 
 2. 筛选 `name` 为"张三"的成员，确认 `userid`
 3. 将 `userid` 传递给消息发送接口
-
----
-
-### 工作流 3：批量查询多个人员
-
-用户问："帮我查一下张三和李四分别是谁？"
-
-1. 
-```bash
-wecom-cli contact get_userlist '{}'
-```
- 获取全量成员列表
-
-2. 分别筛选"张三"和"李四"的匹配结果
-3. 汇总后一并展示
-
-> 注意：只需调用一次 `get_userlist`，在本地对结果进行多次筛选，避免重复调用接口。
-
----
-
-## 快速参考
-
-### 接口说明
-
-| 接口 | 用途 | 输入 | 返回 |
-|------|------|------|------|
-| `get_userlist` | 获取可见范围内全量通讯录成员 | 无 | 用户列表（userid、name、alias） |
-
-### 本地筛选策略
-
-| 场景 | 策略 |
-|------|------|
-| 精确匹配（name 或 alias 完全一致） | 直接使用，无需用户确认 |
-| 模糊匹配（name 或 alias 包含关键词），唯一结果 | 直接使用，向用户展示结果 |
-| 模糊匹配，多个结果 | 展示候选列表，请用户选择 |
-| 无匹配结果 | 告知用户未找到对应人员 |

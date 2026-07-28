@@ -1,7 +1,7 @@
 ---
 name: lark-shared
 version: 1.0.0
-description: "Use when first setting up lark-cli, running auth login, switching user/bot identity (--as), handling permission denied or scope errors, needing to update lark-cli, or seeing _notice in JSON output."
+description: "飞书 lark-cli 共享规则:首次配置(config init)、认证登录(auth login split-flow)、--as user/bot 身份切换、权限不足与 scope 错误处理、lark-cli update 更新、高风险操作审批(exit 10)。任何 lark-* 技能操作前的认证/权限问题,以及首次使用 lark-cli 时阅读。"
 ---
 
 # lark-cli 共享规则
@@ -12,9 +12,9 @@ description: "Use when first setting up lark-cli, running auth login, switching 
 
 首次使用需运行 `lark-cli config init` 完成应用配置。
 
-当你帮用户初始化配置时，使用background方式使用下面的命令发起配置应用流程，启动后读取输出，从中提取授权链接并发给用户。
+当你帮用户初始化配置时，以后台方式运行下面的命令发起配置应用流程，启动后读取输出，从中提取授权链接并发给用户。
 
-**URL 转发规则**：当命令输出 `verification_url`、`verification_uri_complete`、`console_url` 等 URL 字段时：**必须生成二维码**：你必须调用 `lark-cli auth qrcode` 将 URL 转为二维码并展示给用户，这是必须步骤，不要跳过。优先生成 PNG 二维码（--output）；仅当用户明确要求时才使用 ASCII（--ascii）。**URL 输出规则**：将 URL 视为不可修改的 opaque string，不要做任何修改（包括 URL 编码/解码、添加空格或标点、重新拼接 query），二维码和链接请一起展示给用户。
+**URL 转发规则**：当命令输出 `verification_url`、`verification_uri_complete`、`console_url` 等 URL 字段时：**必须生成二维码**：你必须调用 `lark-cli auth qrcode` 将 URL 转为二维码并展示给用户，这是必须步骤，不要跳过。优先生成 PNG 二维码（--output）；仅当用户明确要求时才使用 ASCII（--ascii）。**URL 输出规则**：将 URL 视为不可修改的 opaque string，不要做任何修改（包括 URL 编码/解码、添加空格或标点、重新拼接 query），二维码和链接请一起展示给用户。split-flow 场景见下文『Agent 代理发起认证』。
 
 ```bash
 # 发起配置（该命令会阻塞直到用户打开链接并完成操作或过期）
@@ -88,8 +88,7 @@ lark-cli auth login --device-code <device_code>
 1. 执行 `lark-cli auth login --scope "xxx" --no-wait --json`（必须加 `--no-wait --json`）
 2. 从 JSON 输出中提取 `verification_url` 和 `device_code`
 3. 生成二维码：`lark-cli auth qrcode <verification_url> --output "xxx"`
-4. 将 URL 和二维码展示给用户（先 URL，后二维码）
-5. **结束本轮对话前，必须明确告知用户**："请完成授权后，回来告诉我已授权完成，我会帮你完成后续步骤"
+4. **结束本轮对话前，必须明确告知用户**："请完成授权后，回来告诉我已授权完成，我会帮你完成后续步骤"
 
 **第二步：完成授权（后续轮）**
 
@@ -101,7 +100,6 @@ lark-cli auth login --device-code <device_code>
 **关键规则**：
 
 - **你必须亲自执行 `--device-code` 命令**，不要指示用户自行执行
-- **不要在同一轮中展示 URL 后立刻执行 `--device-code`**，这会导致用户看不到 URL
 - **禁止缓存 `verification_url` 或 `device_code`**：每次需要授权时，必须重新执行 `lark-cli auth login --no-wait --json` 生成新的链接。不要将授权链接和 device code 存入上下文供后续复用
 
 ## 更新检查
@@ -118,8 +116,6 @@ lark-cli 命令执行后，如果检测到新版本，JSON 输出中会包含 `_
 3. 更新完成后提醒用户：**退出并重新打开 AI Agent** 以加载最新 Skills
 
 **重要**：始终使用 `lark-cli update` 更新，它会同时更新 CLI 和 AI Skills。
-
-**规则**：不要静默忽略更新提示。即使当前任务与更新无关，也应在完成用户请求后补充告知。
 
 ## 安全规则
 

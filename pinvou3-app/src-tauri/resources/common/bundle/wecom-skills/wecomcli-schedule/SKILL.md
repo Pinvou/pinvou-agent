@@ -9,9 +9,6 @@ metadata:
 
 # 企业微信日程管理技能
 
-> `wecom-cli` 是企业微信提供的命令行程序，所有操作通过执行 `wecom-cli` 命令完成。
-
-
 通过 `wecom-cli schedule <接口名> '<json入参>'` 与企业微信日程系统交互。
 
 ## 注意事项
@@ -19,8 +16,7 @@ metadata:
 - 日程列表查询仅支持**当日前后 30 天**，时间格式 `YYYY-MM-DD` 或 `YYYY-MM-DD HH:mm:ss`
 - 涉及参与者 userid 时，需先使用 **wecomcli-contact** 技能获取；存在同名时展示候选让用户选择（禁止暴露 userid）
 - 创建/修改/取消前，先确认目标日程和参与者信息
-- `errcode != 0` 时展示错误信息；返回的 `start_time`/`end_time` 为 Unix 时间戳（秒），需转为可读格式
-- **注意时间格式转换**：接口入参使用字符串格式（如 `YYYY-MM-DD HH:mm:ss`），但返回值多为 Unix 时间戳，使用时需进行格式转换
+- `errcode != 0` 时展示错误；入参用 `YYYY-MM-DD HH:mm:ss` 字符串，返回的 `start_time`/`end_time` 是 Unix 秒级时间戳，展示前需转换。
 
 ---
 
@@ -93,10 +89,7 @@ wecom-cli schedule check_availability '{"check_user_list": ["USER_ID_1", "USER_I
 
 **经典 query 示例：**
 - "我今天有哪些日程？"
-- "帮我看看这周三下午有没有会议"
-- "明天的日程安排是什么？"
 - "查一下最近有没有关于项目评审的日程"
-- "我下周一到周五的日程都有哪些？"
 
 **流程：**
 1. 根据用户意图计算时间范围（如"今天"→当日 00:00:00 至 23:59:59，"这周"→本周一至周日）
@@ -109,14 +102,11 @@ wecom-cli schedule check_availability '{"check_user_list": ["USER_ID_1", "USER_I
 
 **经典 query 示例：**
 - "帮我创建一个明天下午 2 点到 3 点的会议，标题叫需求评审"
-- "安排一个周五全天的团建活动"
 - "创建日程：后天上午 10 点和张三、李四开产品方案讨论会，地点在 3 楼会议室"
-- "帮我建个日程，下周一 14:00-15:00，提前 15 分钟提醒"
-- "约一个明天上午的日程，邀请王伟参加"
 
 **流程：**
 1. 解析用户意图，提取时间、标题、地点、参与人、提醒设置等信息
-2. 若涉及参与人，先通过 **wecomcli-contact** 查询 userid；存在同名时展示候选让用户选择
+2. 涉及参与人：先经 wecomcli-contact 取 userid（规则见「注意事项」）
 3. 若用户未指定提醒，默认设置提前 15 分钟提醒（`remind_before_event_secs: 900`）
 4. 若用户说"全天"，设置 `is_whole_day: 1`，时间设为当天 00:00:00 至 23:59:59
 5. 向用户确认日程信息（标题、时间、地点、参与人等）后调用 `create_schedule`
@@ -125,10 +115,7 @@ wecom-cli schedule check_availability '{"check_user_list": ["USER_ID_1", "USER_I
 
 **经典 query 示例：**
 - "把明天的需求评审改到后天下午 3 点"
-- "帮我修改下今天下午的会议标题，改成技术方案评审"
 - "我今天 14 点的日程地点改成线上腾讯会议"
-- "把周五的团建活动推迟一个小时"
-- "帮我给明天的周会加个描述：讨论 Q2 规划"
 
 **流程：**
 1. 先通过查询工作流定位目标日程（根据用户提到的时间、标题等关键词匹配）
@@ -140,7 +127,6 @@ wecom-cli schedule check_availability '{"check_user_list": ["USER_ID_1", "USER_I
 
 **经典 query 示例：**
 - "取消明天下午的需求评审"
-- "帮我把周五的团建日程删掉"
 - "我不想开今天 15 点的会了，帮我取消"
 
 **流程：**
@@ -152,12 +138,10 @@ wecom-cli schedule check_availability '{"check_user_list": ["USER_ID_1", "USER_I
 
 **经典 query 示例：**
 - "把张三加到明天的需求评审会议里"
-- "帮我把李四从周五的日程里移除"
 - "明天下午的会议再邀请一下王伟和赵敏"
-- "把我后天那个技术分享的参与人里去掉刘强"
 
 **流程：**
-1. 通过 **wecomcli-contact** 获取目标人员 userid；存在同名时展示候选让用户选择
+1. 涉及参与人：先经 wecomcli-contact 取 userid（规则见「注意事项」）
 2. 通过查询工作流定位目标日程
 3. 调用 `add_schedule_attendees` 或 `del_schedule_attendees` 完成添加/移除
 
@@ -165,8 +149,6 @@ wecom-cli schedule check_availability '{"check_user_list": ["USER_ID_1", "USER_I
 
 **经典 query 示例：**
 - "帮我看看张三和李四明天下午有没有空"
-- "查一下我和王伟这周的空闲时间，想约个会"
-- "我想跟产品组的小明、小红开个会，看看大家什么时候有空"
 - "找一个明天下午大家都有空的时段，安排一个 1 小时的会议"
 
 **流程：**

@@ -203,7 +203,7 @@ stdout 的 JSON 输出不受影响。`open_time` / `create_time` 不做 snap。
 - **身份 flag 互斥**：`--mine` 和 `--creator-ids` 不要同时传；`--created-by-me` 和 `--original-creator-ids` 不要同时传。owner 维度与原始创建者维度可以组合，例如“我创建后转给王五 owner”用 `--created-by-me --creator-ids ou_wangwu`。
 - **实体补全**：
   - 用户说"某个群里"，先用 `lark-im` 查 `chat_id`
-  - 用户说“某人负责/owner 的 / 某人创建的 / 某人分享的”（非自己），先用 `lark-contact` 查 open_id，再按语义填 `--creator-ids` / `--original-creator-ids` / `--sharer-ids`
+  - 用户说“某人负责/owner 的 / 某人创建的 / 某人分享的”（非自己），先用 `lark-cli contact +search-user` 查 open_id（lark-contact skill 未随包收录），再按语义填 `--creator-ids` / `--original-creator-ids` / `--sharer-ids`
 - **查询语义下推**：`--query` 支持的服务端高级语法（`intitle:`、`""`、`OR`、`-`）优先使用，不要先模糊搜再在客户端二次过滤。
 - **query 填写边界**：只有标题片段、业务名词、项目名、会议名、文件内容关键词才应进入 `--query`。仅描述动作、时间范围、所有权、统计方式的词不算关键词，保持 `--query ""` 并依赖 filters。
 - **证据核验**：列表/统计类答案必须来自搜索结果中的实际 URL/token 和类型/时间字段；内容问答必须能指出使用了哪些非污染候选。没有可验证候选时先扩大 query 或翻页，不要直接编总结。

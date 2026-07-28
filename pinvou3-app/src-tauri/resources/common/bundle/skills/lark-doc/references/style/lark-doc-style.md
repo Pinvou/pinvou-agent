@@ -14,7 +14,7 @@
 
 ## 二、元素选择指南
 
-需要图表时，按类型选择插入方式：思维导图/时序图/类图/饼图/甘特图可用 `<whiteboard type="mermaid">` 直接内嵌；其他新图表可启动 SubAgent 插入 `<whiteboard type="svg">完整 SVG</whiteboard>`；只有编辑**已有**画板时才调用 **lark-whiteboard** skill。
+需要图表时，按类型选择插入方式：思维导图/时序图/类图/饼图/甘特图可用 `<whiteboard type="mermaid">` 直接内嵌；其他新图表可启动 SubAgent 插入 `<whiteboard type="svg">完整 SVG</whiteboard>`；只有编辑**已有**画板时才用 `lark-cli whiteboard +update`（lark-whiteboard skill 未随包收录，用法以 `--help` 为准）。
 
 | 场景                                         | 可选表达方式                                |
 |--------------------------------------------|---------------------------------------|

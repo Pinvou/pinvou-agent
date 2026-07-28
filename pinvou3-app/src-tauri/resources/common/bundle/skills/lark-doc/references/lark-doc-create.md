@@ -1,6 +1,6 @@
 # docs +create（创建飞书云文档）
 
-> **前置条件（MUST READ）：** 生成文档内容前，必须先用 Read 工具读取以下文件，缺一不可：
+> **前置条件（MUST READ）：** 生成文档内容前，必须先用 `read_file` 工具读取以下文件，缺一不可：
 > 1. [`lark-doc-xml.md`](lark-doc-xml.md) — XML 语法规则（使用 Markdown 格式时改读 [`lark-doc-md.md`](lark-doc-md.md)）
 > 2. [`lark-doc-create-workflow.md`](style/lark-doc-create-workflow.md) — 从零创作工作流（Code-Act Loop、并行执行策略）
 >
@@ -47,7 +47,7 @@ lark-cli docs +create --api-version v2 --doc-format markdown --content $'# 项�
 }
 ```
 
-- **`document.new_blocks`**：本次操作新增的 block 列表（如画板）。`block_id` 可用于 `docs +update` 的 `--block-id` 做精确编辑；`block_token` 是资源块（如画板）的 token，可交给 `lark-whiteboard` 等 skill 继续操作
+- **`document.new_blocks`**：本次操作新增的 block 列表（如画板）。`block_id` 可用于 `docs +update` 的 `--block-id` 做精确编辑；`block_token` 是资源块（如画板）的 token，画板后续操作用 `lark-cli whiteboard +query` / `+update`（lark-whiteboard skill 未随包收录，用法以 `--help` 为准）
 
 > \[!IMPORTANT]
 > 如果文档是**以应用身份（bot）创建**的，如 `lark-cli docs +create --as bot` 在文档创建成功后，CLI 会**尝试为当前 CLI 用户自动授予该文档的 `full_access`（可管理权限）**。

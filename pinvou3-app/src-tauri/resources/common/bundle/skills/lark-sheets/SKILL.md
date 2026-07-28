@@ -1,7 +1,7 @@
 ---
 name: lark-sheets
 version: 2.0.0
-description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书电子表格：创建和操作电子表格。支持创建表格、管理工作表与行列结构（增删/合并/调整尺寸/隐藏/冻结）、读写单元格（值/公式/样式/批注/单元格图片）、查找替换、多操作原子批量更新，以及图表、透视表、条件格式、筛选器、迷你图、浮动图片等对象的创建与维护。当用户需要创建电子表格、管理工作表、批量读写或编辑数据、统计汇总与可视化、表格美化、公式计算（含 Excel 公式迁移）等任务时使用。若用户是想按名称或关键词搜索云空间（云盘/云存储）里的表格文件，请改用 lark-drive 的 drive +search 先定位资源。当用户给出 doubao.com 的 /sheets/ URL/token 时，也应直接使用本 skill，不要因为域名不是飞书而回退到 WebFetch；路由依据是 URL 路径模式和 token，而不是域名。仅针对飞书在线电子表格，不适用于本地 Excel 文件。"
+description: "【何时用:仅当用户明确指向飞书/Lark 电子表格;泛指做表格默认走本地工具】创建/操作飞书电子表格:工作表与行列结构、读写单元格(值/公式/样式/批注/图片)、查找替换、批量更新、图表/透视表/条件格式/筛选/迷你图/浮动图片。按名称搜索云空间表格文件改用 lark-drive 的 drive +search。doubao.com 的 /sheets/ URL 也走本 skill。不适用本地 Excel。"
 metadata:
   requires:
     bins: ["lark-cli"]
@@ -11,7 +11,7 @@ metadata:
 
 # sheets
 
-**CRITICAL — 开始前 MUST 先用 Read 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理。**
+**CRITICAL — 开始前 MUST 先用 `read_file` 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理。**
 
 ## 术语约定
 
@@ -52,7 +52,6 @@ metadata:
 | 调整列宽 / 行高 | `+cols-resize` / `+rows-resize`（行、列是两个独立命令） | `--dimension`（无此 flag） |
 | 分组汇总 / 透视 | `+pivot-create`（默认不传落点 flag → 自动新建子表，零覆盖） | 用 SUMIF / 本地脚本拼一张假透视表 |
 
-> ⚠️ **定位 flag**：`+cells-get` / `+cells-set` / `+csv-get` 用 `--range`；`+csv-put` 规范用 `--start-cell`（单个左上角锚点格），也接受 `--range` 别名（区间自动取左上角），二者择一即可。
 > ⚠️ **读取附加信息**一律走 `+cells-get --include …`，**没有** `--with-styles` 这类 flag；**看合并单元格**用 `+sheet-info` 的 `merged_cells`，不要在 `+cells-get` 里找 merge flag。
 
 ## References
@@ -106,7 +105,7 @@ metadata:
 2. **sheet 定位（公共四件套 shortcut 必填）**：`--sheet-id` 与 `--sheet-name` 二选一，**必须给其中之一**。两个都不给 → 校验报错 `specify at least one of --sheet-id or --sheet-name`。
    - ⚠️ **不确定 sheet 名时禁止直接猜 `Sheet1`**：除非用户对话明确说出 sheet 名 / id，或上下文（之前的工具调用 / URL 锚点 `?sheet=xxx`）已经出现过具体值，否则**第一步先调 `+workbook-info --url "..."`**（或 `--spreadsheet-token`）拿 `sheets[].sheet_id` / `sheets[].title` 列表再选。中文环境下子表常叫"数据" / "Sheet"（无数字）/ "工作表 1" / 业务名，猜 `Sheet1` 大概率撞 `sheet not found`，比先查多耗一次失败调用 + 重试。
    - ⚠️ **`--range` 里的 `Sheet1!` 前缀不能替代 sheet 定位**：即使写了 `--range 'Sheet1!A1:B2'`，仍**必须**额外传 `--sheet-id` 或 `--sheet-name`，否则照样报上面的错。
-   - ⚠️ **A1 reference 含 `!`**（`--source` / `--range` / `--ranges`）**：shell session 起手先 `set +H`** 关 bash history expansion，否则 `"Sheet1!A1"` 会被拦成 `event not found`；含特殊字符（`-` / 空格 / 非 ASCII）的 sheet 名还要内部 single-quote 包，如 `--source "'Sales-2025'!A1:D100"`。
+   - ⚠️ **A1 reference 含 `!`**(`--source` / `--range` / `--ranges`):**整段用单引号包裹**,如 `--range 'Sheet1!A1:B2'`——单引号挡住 history expansion,对 bash 与 sh/dash 一致安全;**不要** `set +H`(sh/dash 下是非法选项,会让整条命令失败)。sheet 名含特殊字符(`-` / 空格 / 非 ASCII)内部再包单引号,如 `--source "'Sales-2025'!A1:D100"`。
    - **例外**：徽章标为 `_公共：URL/token（无 sheet 定位）…_` 的 shortcut（如 `+workbook-info` / `+workbook-export` / `+batch-update` / `+dropdown-update|delete` / `+cells-batch-set-style` / `+cells-batch-clear` / `+sheet-create`）**不接受也不需要** sheet 定位，只给一组 spreadsheet 定位即可。`+pivot-create` 用 `--target-sheet-id` / `--target-sheet-name`（XOR，可都不传，落点细节见 `lark-sheets-pivot-table`）。
 
 | Flag | Type | 必填 | 说明 |
@@ -150,7 +149,7 @@ flag 帮助里标注支持 **Stdin** 的入参，当 payload 较大、含换行 
 
 ```bash
 # TMPFILE 指向系统临时目录下的 payload 文件（脚本里用 tempfile.gettempdir() / os.tmpdir() 等取临时目录）
-lark-cli sheets +cells-set --url "..." --sheet-name "Sheet1" --range "A1:B2" --cells - < "$TMPFILE"
+lark-cli sheets +cells-set --url "..." --sheet-name "<真实表名>" --range "A1:B2" --cells - < "$TMPFILE"
 ```
 
 **`@file` 接绝对路径会被拒，且被拒后不要照报错提示做。** `@file` 出于安全只接受 cwd 下的相对路径，传 cwd 之外的绝对路径会被拒。此时报错会建议"先 cd 到目标目录，或改用相对路径"——**两条都不要照做**：cd 过去、或把临时文件写进用户项目目录，都会污染工作目录。正解是改用 stdin（`--<flag> - < 文件`）。

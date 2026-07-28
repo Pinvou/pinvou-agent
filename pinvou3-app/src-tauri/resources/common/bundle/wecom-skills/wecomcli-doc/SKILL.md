@@ -1,6 +1,6 @@
 ---
 name: wecomcli-doc
-description: 企业微信文档、表格（在线表格）、智能表格和智能文档（原名智能主页）管理技能。提供文档的创建、读取、编辑能力，表格和智能表格的内容读取，智能表格的创建，以及智能文档的创建和内容导出。适用场景：(1) 以 Markdown 格式获取文档/表格/智能表格完整内容 (2) 新建文档或智能表格 (3) 用 Markdown 格式覆写文档内容 (4) 创建智能文档，将本地 Markdown 文件发布为智能文档 (5) 导出智能文档内容为 Markdown。支持通过 docid 或文档 URL 定位文档。用户提及 `https://doc.weixin.qq.com/xxxx` 格式的URL链接时，触发该技能。
+description: 企业微信文档/表格/智能表格/智能文档管理。文档的创建、Markdown 读取与覆写,智能表格创建,智能文档创建与导出。支持 docid 或 URL 定位。用户提及 `https://doc.weixin.qq.com/` 链接时触发;智能表格结构管理见 wecomcli-smartsheet。
 metadata:
   requires:
     bins: ["wecom-cli"]
@@ -8,8 +8,6 @@ metadata:
 ---
 
 # 企业微信文档管理
-
-> `wecom-cli` 是企业微信提供的命令行程序，所有操作通过执行 `wecom-cli` 命令完成。
 
 管理企业微信文档和智能文档（原名智能主页）的创建、读取和编辑。文档接口支持通过 `docid` 或 `url` 二选一定位文档。
 
@@ -26,13 +24,7 @@ metadata:
 | `https://doc.weixin.qq.com/smartsheet/*` | **智能表格**（doc_type=10） | 参阅 `wecomcli-smartsheet` skill |
 | `https://doc.weixin.qq.com/smartpage/*` | **智能文档**（原名智能主页） | `smartpage_export_task` → `smartpage_get_export_result` |
 
-**判断规则**：
-- URL 路径以 `/doc/*` 开头 → 文档 → 用 `get_doc_content`
-- URL 路径以 `/smartsheet/*` 开头 → 智能表格 → **使用 `wecomcli-smartsheet` skill**
-- URL 路径以 `/sheet/*` 开头 → 表格（在线表格） → 用 `get_doc_content`
-- URL 路径以 `/smartpage/*` 开头 → 智能文档（原名智能主页） → 用 `smartpage_export_task`
-
-> ⚠️ **表格 ≠ 智能表格**：二者是不同品类（`/sheet/` vs `/smartsheet/`），但读取内容都使用同一个 `get_doc_content` 接口。仅在写入/管理结构时才需要区分（智能表格的结构与记录管理见 `wecomcli-smartsheet` skill；普通表格本 skill 仅支持读取）。
+> ⚠️ `/sheet/`（表格）与 `/smartsheet/`（智能表格）是不同品类；读取都用 `get_doc_content`，智能表格的结构/记录管理见 `wecomcli-smartsheet` skill。
 
 ## 调用方式
 
@@ -127,8 +119,6 @@ wecom-cli doc edit_doc_content '{"docid": "DOCID", "content": "# 标题\n\n正�
 适用品类：智能文档（用户说「智能文档」或「智能主页」时触发）
 适用 URL：`/smartpage/*`
 
-> ⚠️ 只有当用户明确指定「智能文档」或「智能主页」时，才使用以下接口。其他「文档」场景请使用上方的企微文档接口。
-
 适用场景：
 1. 将本地 Markdown 文件创建为智能文档
 2. 异步导出智能文档内容为 Markdown
@@ -178,44 +168,7 @@ wecom-cli doc smartpage_get_export_result '{"task_id": "TASK_ID"}'
 参见 [API 详情](references/smartpage-export.md)。
 
 ## 典型工作流
-
-> **关键提示**：读取内容前先看 URL 判断品类。`/doc/`、`/sheet/` → `get_doc_content`；`/smartsheet/` → `wecomcli-smartsheet` skill；`/smartpage/` → `smartpage_export_task`。只有用户明确提到「智能文档」或「智能主页」时才走 smartpage 流程，其他文档场景一律使用企微文档接口。
-
-### 文档 / 表格读取与文档编辑
-
-1. **读取文档 / 表格** → 
-```bash
-wecom-cli doc get_doc_content '{"docid": "DOCID", "type": 2}'
-```
-   或通过 URL（`/doc/*`、`/sheet/*` 适用）：
-```bash
-wecom-cli doc get_doc_content '{"url": "https://doc.weixin.qq.com/sheet/xxx", "type": 2}'
-```
-   若 `task_done` 为 false 则携带 `task_id` 继续轮询
-   > 智能表格（`/smartsheet/*`）请使用 `wecomcli-smartsheet` skill
-2. **创建新文档** → 
-```bash
-wecom-cli doc create_doc '{"doc_type": 3, "doc_name": "文档名"}'
-```
-，保存返回的 docid
-3. **编辑文档** → 先 get_doc_content 了解当前内容，再 edit_doc_content 覆写
-
-### 智能文档操作
-
-1. **创建智能文档**（仅当用户明确要求「智能文档」或「智能主页」时） → 
-```bash
-wecom-cli doc +smartpage_create '{"title": "标题", "pages": [{"page_title": "子页面", "content_type": 1, "page_filepath": "/path/to/file.md"}]}'
-```
-，保存返回的 docid
-2. **获取智能文档内容**（URL 含 `/smartpage/`，异步两步）：
-   - **第一步**：发起导出任务 →
-```bash
-wecom-cli doc smartpage_export_task '{"docid": "DOCID", "content_type": 1}'
-```
-，获取 `task_id`
-   - **第二步**：轮询导出结果 →
-```bash
-wecom-cli doc smartpage_get_export_result '{"task_id": "TASK_ID"}'
-```
-，若 `task_done` 为 `false` 则继续轮询，直到 `task_done` 为 `true`，返回的 `content` 字段即为 Markdown 内容
+- 读内容：先按 URL 表定品类 → `/doc/`、`/sheet/` 走 `get_doc_content`（轮询至 `task_done`）；`/smartpage/` 走 `smartpage_export_task` → `smartpage_get_export_result`。
+- 建文档：`create_doc`（doc_type=3），保存返回的 docid（仅创建时返回）。
+- 改文档：先 `get_doc_content` 了解现状，再 `edit_doc_content` 覆写。
 
