@@ -193,7 +193,8 @@ device_query = "2"
 # 有欠账的 lint/group 显式 allow 并注明欠账规模,由清理 PR(#35 及后续)消化后逐个启用。
 # CI(pr-check.yml rust-lint job)直接跑 `cargo clippy --lib --no-deps`(无 continue-on-error),
 # deny 命中即 fail;allow 的欠账 lint 被静默,不产生告警噪声。
-# 实测基线(rust 1.97.1,2026-07-27):clippy::all 组 54 处欠账,rustc 默认 lint 113 处。
+# 实测基线(rust 1.97.1,2026-07-28):应用 crate 的 clippy::all 组 20 处欠账
+# (不含 CodeWhale),rustc 默认 lint 既有基线为 113 处。
 # =============================================================================
 [lints.rust]
 # —— 零欠账,deny 硬门禁(实测 0 违规)——
@@ -220,7 +221,7 @@ private_interfaces = "allow"
 
 [lints.clippy]
 # —— all / pedantic 组有历史欠账,整组 allow(priority=-1 保证下方具体 lint 的 deny 生效)——
-# all 组(correctness+suspicious+style+complexity+perf)实测 54 处欠账;
+# all 组(correctness+suspicious+style+complexity+perf)应用 crate 实测 20 处欠账;
 # pedantic 组欠账更多(原方案全量 warn 实测近 2000 条告警,等于无门禁)。
 # 欠账由清理 PR(#35 及后续)消化后,再整组或逐 lint 升 deny。
 all = { level = "allow", priority = -1 }

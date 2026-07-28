@@ -38,7 +38,7 @@ fn parse_tmeet_version(s: &str) -> Option<(u64, u64, u64)> {
         .char_indices()
         .find(|(_, c)| c.is_ascii_digit() || *c == 'v')?
         .0;
-    let version = tail[start..].trim_start_matches(|c| c == 'v' || c == 'V');
+    let version = tail[start..].trim_start_matches(['v', 'V']);
     let mut nums = version
         .split(|c: char| !c.is_ascii_digit())
         .filter(|p| !p.is_empty())
@@ -218,7 +218,15 @@ fn drain_for_auth_url<R: std::io::Read + Send + 'static>(
     tx: mpsc::Sender<(Option<String>, Option<String>)>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in std::io::BufRead::lines(std::io::BufReader::new(r)).flatten() {
+        for line in std::io::BufRead::lines(std::io::BufReader::new(r)) {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    // 管道读取错误通常不可恢复；继续迭代可能反复返回 Err 并空转。
+                    log::warn!("[tmeet] 授权输出读取失败，停止排空：{error}");
+                    break;
+                }
+            };
             let safe = safe_auth_log_line(&line);
             let url = TMEET_CTX.extract_url(&line);
             let _ = tx.send((url, safe));
