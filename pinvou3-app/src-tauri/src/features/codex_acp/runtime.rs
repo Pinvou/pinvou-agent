@@ -394,9 +394,7 @@ pub async fn install_managed_codex(
                 "activation:remove_existing",
                 format!("target={}", target.display()),
             );
-            tokio::fs::remove_dir_all(&target)
-                .await
-                .context("清理损坏的旧 Codex Runtime 失败")?;
+            remove_existing_runtime_with_retry(&target, operation_id).await?;
         }
         activate_runtime_with_retry(&extracted, &target, operation_id).await?;
         diagnostics::write(
@@ -461,6 +459,31 @@ async fn activate_runtime_with_retry(
         }
     }
     unreachable!("activation retry loop always returns")
+}
+
+async fn remove_existing_runtime_with_retry(target: &Path, operation_id: &str) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 12;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match tokio::fs::remove_dir_all(target).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if should_retry_windows_file_lock(&error) && attempt < MAX_ATTEMPTS => {
+                let delay_ms = u64::from(attempt.min(5)) * 500;
+                diagnostics::write(
+                    operation_id,
+                    "activation:remove_existing_retry",
+                    format!(
+                        "attempt={attempt} max_attempts={MAX_ATTEMPTS} delay_ms={delay_ms} error={error}"
+                    ),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => {
+                return Err(error).context("清理损坏的旧 Codex Runtime 失败");
+            }
+        }
+    }
+    unreachable!("existing runtime cleanup retry loop always returns")
 }
 
 async fn remove_staging_with_retry(staging: &Path, operation_id: &str) -> io::Result<()> {

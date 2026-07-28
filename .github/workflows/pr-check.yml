@@ -13,6 +13,7 @@ name: PR Check
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test:只在 main push 跑，不作为 PR 或 Merge Queue 合入门禁。
+# - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
 # - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
 # - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
 #
@@ -98,6 +99,7 @@ jobs:
       pet: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.pet }}
       frontend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.frontend }}
       relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
+      windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -172,6 +174,17 @@ jobs:
               - '.github/workflows/pr-check.yml'
             relay:
               - 'remote-control-relay/**'
+              - '.github/workflows/pr-check.yml'
+            windows_codex:
+              - 'pinvou3-app/scripts/codex-bridge-runtime/**'
+              - 'pinvou3-app/scripts/tauri/build.js'
+              - 'pinvou3-app/scripts/tauri/codex-bridge.js'
+              - 'pinvou3-app/scripts/tauri/effective-config.js'
+              - 'pinvou3-app/src-tauri/src/features/codex_acp/**'
+              - 'pinvou3-app/src-tauri/src/platform/capabilities.rs'
+              - 'pinvou3-app/tests/codex_acp_*'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -548,6 +561,30 @@ jobs:
 
       - name: Windows Rust 单元测试链接检查
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+
+  windows-codex-runtime-test:
+    name: windows-codex-runtime-test
+    needs: changes
+    if: ${{ needs.changes.outputs.windows_codex == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装构建依赖
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Windows Codex Runtime 原生打包冒烟
+        run: npm --prefix pinvou3-app run test:codex-acp-windows-runtime
+
   required-gate:
     name: required-gate
     needs:
@@ -559,6 +596,7 @@ jobs:
       - relay-test
       - rust-lint
       - rust-test
+      - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -573,6 +611,7 @@ jobs:
           RELAY_RESULT: ${{ needs.relay-test.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
           if [[ "$COMMIT_MESSAGE_RESULT" != success || "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
             echo "基础检查失败: commit-message=$COMMIT_MESSAGE_RESULT version-consistency=$VERSION_CONSISTENCY_RESULT changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
@@ -584,7 +623,8 @@ jobs:
             "frontend-test:$FRONTEND_RESULT" \
             "relay-test:$RELAY_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
-            "rust-test:$RUST_RESULT"; do
+            "rust-test:$RUST_RESULT" \
+            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"
             case "$result" in

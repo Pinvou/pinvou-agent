@@ -28,6 +28,7 @@
     "test:marketplace-oauth": "node tests/marketplace_oauth_logic.test.js",
     "test:composer-tools": "node tests/composer_tool_menu_logic.test.js",
     "test:codex-acp": "node tests/codex_acp_windows_contract.test.js && node tests/codex_acp_timeline.test.mjs && node tests/deepseek_conversation_timeline.test.mjs",
+    "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",
     "test:session-management": "node tests/session_management_logic.test.mjs",
     "test:chat-input-limit": "node tests/chat_input_limit_logic.test.js",
     "test:voice-input": "node tests/voice_input_error_logic.test.js",

@@ -8,18 +8,20 @@ const { npmInstallInvocation } = require("./web-template.js");
 
 const BRIDGE_PACKAGE_ROOT = path.join(APP_ROOT, "scripts", "codex-bridge-runtime");
 const LOCKFILE_PATH = path.join(BRIDGE_PACKAGE_ROOT, "package-lock.json");
-const WINDOWS_BRIDGE_ROOT = path.join(
+const WINDOWS_RUNTIME_ROOT = path.join(
   APP_ROOT,
   "src-tauri",
   "target",
   "windows-runtime",
+);
+const WINDOWS_BRIDGE_ROOT = path.join(
+  WINDOWS_RUNTIME_ROOT,
   "codex-bridge",
 );
+const WINDOWS_NODE_ROOT = path.join(WINDOWS_RUNTIME_ROOT, "node");
+const WINDOWS_NODE_EXECUTABLE = path.join(WINDOWS_NODE_ROOT, "node.exe");
 const WINDOWS_BRIDGE_CONFIG_PATH = path.join(
-  APP_ROOT,
-  "src-tauri",
-  "target",
-  "windows-runtime",
+  WINDOWS_RUNTIME_ROOT,
   "codex-bridge.tauri.conf.json",
 );
 const BRIDGE_ENTRYPOINT = path.join(
@@ -38,7 +40,17 @@ const BRIDGE_PACKAGE_JSON = path.join(
   "package.json",
 );
 const MARKER_NAME = "manifest.json";
-const PREPARE_FORMAT_VERSION = 1;
+const PREPARE_FORMAT_VERSION = 2;
+const WINDOWS_NODE_VERSION = "22.22.0";
+const WINDOWS_NODE_ARCHIVE_NAME = `node-v${WINDOWS_NODE_VERSION}-win-x64.zip`;
+const WINDOWS_NODE_ARCHIVE_SHA256 =
+  "c97fa376d2becdc8863fcd3ca2dd9a83a9f3468ee7ccf7a6d076ec66a645c77a";
+const WINDOWS_NODE_EXECUTABLE_SHA256 =
+  "bae898add4643fcf890a83ad8ae56e20dce7e781cab161a53991ceba70c99ffb";
+const WINDOWS_NODE_URLS = [
+  `https://nodejs.org/dist/v${WINDOWS_NODE_VERSION}/${WINDOWS_NODE_ARCHIVE_NAME}`,
+  `https://npmmirror.com/mirrors/node/v${WINDOWS_NODE_VERSION}/${WINDOWS_NODE_ARCHIVE_NAME}`,
+];
 const WINDOWS_NPM_CI_ARGS = [
   "ci",
   "--prefer-offline",
@@ -59,6 +71,9 @@ function expectedMarker({ architecture = process.arch } = {}) {
     arch: architecture,
     codex_acp_version: packageJson.dependencies["@agentclientprotocol/codex-acp"],
     lockfile_sha256: crypto.createHash("sha256").update(lockfile).digest("hex"),
+    node_version: WINDOWS_NODE_VERSION,
+    node_archive_sha256: WINDOWS_NODE_ARCHIVE_SHA256,
+    node_executable_sha256: WINDOWS_NODE_EXECUTABLE_SHA256,
     node: "../node/node.exe",
     entrypoint: BRIDGE_ENTRYPOINT.replaceAll(path.sep, "/"),
     requires_managed_codex: true,
@@ -73,11 +88,16 @@ function nonemptyFile(filePath) {
   }
 }
 
+function fileSha256(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
 function windowsBridgeOverlay() {
   return {
     bundle: {
       resources: {
         "target/windows-runtime/codex-bridge/": "runtime/codex-bridge",
+        "target/windows-runtime/node/": "runtime/node",
       },
     },
   };
@@ -94,6 +114,7 @@ function writeWindowsBridgeOverlay() {
 function isPrepared(
   expected = expectedMarker(),
   outputRoot = WINDOWS_BRIDGE_ROOT,
+  nodeRoot = WINDOWS_NODE_ROOT,
 ) {
   try {
     const actual = JSON.parse(
@@ -105,11 +126,109 @@ function isPrepared(
     return (
       JSON.stringify(actual) === JSON.stringify(expected) &&
       packageJson.version === expected.codex_acp_version &&
-      nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT))
+      nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
+      nonemptyFile(path.join(nodeRoot, "node.exe")) &&
+      fileSha256(path.join(nodeRoot, "node.exe")) ===
+        expected.node_executable_sha256
     );
   } catch {
     return false;
   }
+}
+
+function checkedSpawn(spawn, command, args, options, label) {
+  const result = spawn(command, args, options);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${label}失败，退出码：${result.status ?? "unknown"}`);
+  }
+  return result;
+}
+
+function downloadWindowsNode(archivePath, {
+  environment,
+  spawn,
+} = {}) {
+  let lastError = null;
+  for (const url of WINDOWS_NODE_URLS) {
+    fs.rmSync(archivePath, { force: true });
+    const result = spawn(
+      "curl.exe",
+      [
+        "--fail",
+        "--location",
+        "--retry",
+        "2",
+        "--connect-timeout",
+        "15",
+        url,
+        "--output",
+        archivePath,
+      ],
+      {
+        env: environment,
+        stdio: "inherit",
+      },
+    );
+    if (!result.error && result.status === 0) return;
+    lastError = result.error || new Error(`curl.exe 退出码：${result.status ?? "unknown"}`);
+  }
+  throw new Error(`下载 Windows Node.js Runtime 失败：${lastError?.message || "未知错误"}`);
+}
+
+function prepareWindowsNode(stagingRoot, {
+  environment,
+  spawn,
+} = {}) {
+  const archivePath = path.join(stagingRoot, WINDOWS_NODE_ARCHIVE_NAME);
+  const extractedRoot = path.join(stagingRoot, "node-extracted");
+  const distributionRoot = path.join(
+    extractedRoot,
+    `node-v${WINDOWS_NODE_VERSION}-win-x64`,
+  );
+  const nodeRoot = path.join(stagingRoot, "node");
+
+  console.log(`[codex-bridge] 准备 Windows Node.js ${WINDOWS_NODE_VERSION} Runtime`);
+  downloadWindowsNode(archivePath, { environment, spawn });
+  const archiveSha256 = fileSha256(archivePath);
+  if (archiveSha256 !== WINDOWS_NODE_ARCHIVE_SHA256) {
+    throw new Error(
+      `Windows Node.js Runtime 完整性校验失败：expected=${WINDOWS_NODE_ARCHIVE_SHA256} actual=${archiveSha256}`,
+    );
+  }
+
+  fs.mkdirSync(extractedRoot, { recursive: true });
+  checkedSpawn(
+    spawn,
+    "tar.exe",
+    ["-xf", archivePath, "-C", extractedRoot],
+    { env: environment, stdio: "inherit" },
+    "解压 Windows Node.js Runtime",
+  );
+
+  fs.mkdirSync(nodeRoot, { recursive: true });
+  fs.copyFileSync(path.join(distributionRoot, "node.exe"), path.join(nodeRoot, "node.exe"));
+  fs.copyFileSync(path.join(distributionRoot, "LICENSE"), path.join(nodeRoot, "LICENSE"));
+  if (fileSha256(path.join(nodeRoot, "node.exe")) !== WINDOWS_NODE_EXECUTABLE_SHA256) {
+    throw new Error("Windows node.exe 完整性校验失败");
+  }
+
+  const versionResult = checkedSpawn(
+    spawn,
+    path.join(nodeRoot, "node.exe"),
+    ["--version"],
+    { env: environment, encoding: "utf8" },
+    "验证 Windows Node.js Runtime",
+  );
+  if (String(versionResult.stdout || "").trim() !== `v${WINDOWS_NODE_VERSION}`) {
+    throw new Error(
+      `Windows Node.js Runtime 版本不匹配：${String(versionResult.stdout || "").trim()}`,
+    );
+  }
+
+  fs.rmSync(archivePath, { force: true });
+  fs.rmSync(extractedRoot, { recursive: true, force: true });
+  return nodeRoot;
 }
 
 function prepareWindowsCodexBridge({
@@ -131,12 +250,20 @@ function prepareWindowsCodexBridge({
     return false;
   }
 
-  const stagingRoot = `${WINDOWS_BRIDGE_ROOT}.tmp-${process.pid}-${Date.now()}`;
-  const acpRoot = path.join(stagingRoot, "acp");
+  const stagingRoot = path.join(
+    WINDOWS_RUNTIME_ROOT,
+    `.codex-bridge.tmp-${process.pid}-${Date.now()}`,
+  );
+  const bridgeRoot = path.join(stagingRoot, "codex-bridge");
+  const acpRoot = path.join(bridgeRoot, "acp");
   fs.rmSync(stagingRoot, { recursive: true, force: true });
   fs.mkdirSync(acpRoot, { recursive: true });
 
   try {
+    const nodeRoot = prepareWindowsNode(stagingRoot, {
+      environment,
+      spawn,
+    });
     for (const fileName of ["package.json", "package-lock.json"]) {
       fs.copyFileSync(
         path.join(BRIDGE_PACKAGE_ROOT, fileName),
@@ -151,30 +278,36 @@ function prepareWindowsCodexBridge({
       npmArgs: WINDOWS_NPM_CI_ARGS,
     });
     console.log("[codex-bridge] 从锁文件准备 Windows ACP Bridge");
-    const result = spawn(invocation.command, invocation.args, {
-      cwd: acpRoot,
-      env: environment,
-      stdio: "inherit",
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      throw new Error(`Windows ACP Bridge 安装失败，npm ci 退出码：${result.status}`);
-    }
+    checkedSpawn(
+      spawn,
+      invocation.command,
+      invocation.args,
+      {
+        cwd: acpRoot,
+        env: environment,
+        stdio: "inherit",
+      },
+      "安装 Windows ACP Bridge",
+    );
 
     fs.rmSync(path.join(acpRoot, "package.json"), { force: true });
     fs.rmSync(path.join(acpRoot, "package-lock.json"), { force: true });
     fs.writeFileSync(
-      path.join(stagingRoot, MARKER_NAME),
+      path.join(bridgeRoot, MARKER_NAME),
       `${JSON.stringify(expected, null, 2)}\n`,
     );
-    if (!isPrepared(expected, stagingRoot)) {
-      throw new Error("Windows ACP Bridge 准备后校验失败");
+    if (!isPrepared(expected, bridgeRoot, nodeRoot)) {
+      throw new Error("Windows ACP Bridge 与 Node Runtime 准备后校验失败");
     }
 
     fs.rmSync(WINDOWS_BRIDGE_ROOT, { recursive: true, force: true });
-    fs.renameSync(stagingRoot, WINDOWS_BRIDGE_ROOT);
+    fs.rmSync(WINDOWS_NODE_ROOT, { recursive: true, force: true });
+    fs.renameSync(bridgeRoot, WINDOWS_BRIDGE_ROOT);
+    fs.renameSync(nodeRoot, WINDOWS_NODE_ROOT);
     writeWindowsBridgeOverlay();
-    console.log(`[codex-bridge] Windows ACP Bridge ready: ${WINDOWS_BRIDGE_ROOT}`);
+    console.log(
+      `[codex-bridge] Windows ACP Bridge + Node ready: ${WINDOWS_BRIDGE_ROOT}`,
+    );
     return true;
   } finally {
     fs.rmSync(stagingRoot, { recursive: true, force: true });
@@ -228,6 +361,11 @@ module.exports = {
   LOCKFILE_PATH,
   WINDOWS_BRIDGE_ROOT,
   WINDOWS_BRIDGE_CONFIG_PATH,
+  WINDOWS_NODE_ARCHIVE_SHA256,
+  WINDOWS_NODE_EXECUTABLE,
+  WINDOWS_NODE_EXECUTABLE_SHA256,
+  WINDOWS_NODE_ROOT,
+  WINDOWS_NODE_VERSION,
   WINDOWS_NPM_CI_ARGS,
   expectedMarker,
   isPrepared,
