@@ -1009,7 +1009,12 @@ const FEISHU_STEPS = [
       useEffect(() => { loadBackendState(); }, []);
 
       const beginOAuthRequest = (backendId) => {
-        const requestId = `${Date.now()}-${Math.random()}`;
+        // OAuth 请求关联 ID 需不可预测，避免用 Math.random()（CodeQL js/insecure-randomness）。
+        const randomHex = Array.from(
+          window.crypto.getRandomValues(new Uint8Array(8)),
+          (b) => b.toString(16).padStart(2, '0'),
+        ).join('');
+        const requestId = `${Date.now()}-${randomHex}`;
         oauthRequestRef.current[backendId] = requestId;
         return requestId;
       };

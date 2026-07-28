@@ -1517,7 +1517,8 @@ def download_and_convert_image(
         return None
 
     cache_dir = _ensure_image_cache_dir()
-    url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
+    # 仅作磁盘缓存文件名，非安全用途；仍用 sha256 避免弱哈希（CodeQL py/weak-sensitive-data-hashing）。
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
     local_path = os.path.join(cache_dir, f"{url_hash}.png")
 
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
