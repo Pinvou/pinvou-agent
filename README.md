@@ -186,6 +186,10 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for th
 
 Licensing, third-party attribution, SBOM, and brand-use boundaries are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), and [TRADEMARKS.md](TRADEMARKS.md).
 
+## 🔗 Friendly Links
+
+- [LINUX DO](https://linux.do/)
+
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Pinvou/pinvou-agent&type=Date)](https://star-history.com/#Pinvou/pinvou-agent&Date)
