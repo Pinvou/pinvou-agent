@@ -1,0 +1,43 @@
+name: cache-janitor
+
+# Actions 缓存定期清理(10GB 配额保护),规则实现见 scripts/cache-janitor.sh:
+# - 已关闭/合并 PR 作用域的全部缓存(PR 缓存互不可见,关闭后即死重);
+# - 创建超过 7 天的 sccache 对象(内容寻址,暖源由 main 持续重写);
+# - codeql-overlay 每语言只留最新 1 份;node-cache 每平台只留最新 1 份。
+# 保护:main 作用域的 v0-rust-* 系列(rust-test/rust-lint/windows-rust-test/
+# mac-build/release-*)不在删除范围。
+# 手动触发默认 dry-run(只打印不删除),确认后可关 dry-run 实删。
+
+on:
+  schedule:
+    - cron: '23 3 * * 0'   # 每周日 03:23(避开整点/半点高峰)
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: '只打印不删除(true/false)'
+        type: boolean
+        default: true
+
+permissions:
+  actions: write       # gh cache delete
+  contents: read
+  pull-requests: read  # 查 PR 开关状态
+
+jobs:
+  clean:
+    name: clean
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 清理缓存
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.dry-run }}" = "false" ]; then
+            bash scripts/cache-janitor.sh
+          else
+            bash scripts/cache-janitor.sh --dry-run
+          fi

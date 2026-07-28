@@ -132,6 +132,8 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-linux-x64
+          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # pinvou3 编译链接的系统库(gtk/webkit/soup/rsvg/openssl/X11×3/appindicator),
       # ubuntu runner 默认没装;cmake:reqwest 的 rustls 用 aws-lc-rs,其 build script
@@ -225,6 +227,8 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-linux-arm64
+          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
@@ -317,6 +321,8 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-windows-x64
+          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -398,6 +404,8 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-macos-universal
+          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 2GB+ 缓存。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
       # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
