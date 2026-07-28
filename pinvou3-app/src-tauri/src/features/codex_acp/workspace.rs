@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 use anyhow::{bail, Context, Result};
@@ -735,7 +734,7 @@ fn filesystem_changes(
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {
-    let output = Command::new("git")
+    let output = crate::platform::process::HiddenCommand::new("git")
         .current_dir(root)
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -753,7 +752,7 @@ fn git_branch(root: &Path) -> Option<String> {
 }
 
 fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
-    let output = Command::new("git")
+    let output = crate::platform::process::HiddenCommand::new("git")
         .current_dir(root)
         .args([
             "status",
@@ -815,7 +814,7 @@ fn git_status_label(x: char, y: char) -> &'static str {
 }
 
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = crate::platform::process::HiddenCommand::new("git")
         .current_dir(root)
         .args(arguments)
         .output()

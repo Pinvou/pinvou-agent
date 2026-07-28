@@ -40,7 +40,15 @@ const BRIDGE_PACKAGE_JSON = path.join(
   "package.json",
 );
 const MARKER_NAME = "manifest.json";
-const PREPARE_FORMAT_VERSION = 2;
+const PREPARE_FORMAT_VERSION = 3;
+const CODEX_PATH_SPAWN =
+  'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })';
+const HIDDEN_CODEX_PATH_SPAWN =
+  'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv, windowsHide: true })';
+const BUNDLED_CODEX_SPAWN =
+  'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })';
+const HIDDEN_BUNDLED_CODEX_SPAWN =
+  'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv, windowsHide: true })';
 const WINDOWS_NODE_VERSION = "22.22.0";
 const WINDOWS_NODE_ARCHIVE_NAME = `node-v${WINDOWS_NODE_VERSION}-win-x64.zip`;
 const WINDOWS_NODE_ARCHIVE_SHA256 =
@@ -77,7 +85,39 @@ function expectedMarker({ architecture = process.arch } = {}) {
     node: "../node/node.exe",
     entrypoint: BRIDGE_ENTRYPOINT.replaceAll(path.sep, "/"),
     requires_managed_codex: true,
+    windows_child_processes_hidden: true,
   };
+}
+
+function hideWindowsChildProcesses(entrypointPath) {
+  let source = fs.readFileSync(entrypointPath, "utf8");
+  const replacements = [
+    [CODEX_PATH_SPAWN, HIDDEN_CODEX_PATH_SPAWN],
+    [BUNDLED_CODEX_SPAWN, HIDDEN_BUNDLED_CODEX_SPAWN],
+  ];
+
+  for (const [visibleSpawn, hiddenSpawn] of replacements) {
+    if (source.includes(hiddenSpawn)) continue;
+    if (!source.includes(visibleSpawn)) {
+      throw new Error(
+        "Windows ACP Bridge 子进程入口已变化，无法安全应用隐藏控制台补丁",
+      );
+    }
+    source = source.replace(visibleSpawn, hiddenSpawn);
+  }
+  fs.writeFileSync(entrypointPath, source);
+}
+
+function windowsChildProcessesHidden(entrypointPath) {
+  try {
+    const source = fs.readFileSync(entrypointPath, "utf8");
+    return (
+      source.includes(HIDDEN_CODEX_PATH_SPAWN)
+      && source.includes(HIDDEN_BUNDLED_CODEX_SPAWN)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function nonemptyFile(filePath) {
@@ -127,6 +167,7 @@ function isPrepared(
       JSON.stringify(actual) === JSON.stringify(expected) &&
       packageJson.version === expected.codex_acp_version &&
       nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
+      windowsChildProcessesHidden(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
       nonemptyFile(path.join(nodeRoot, "node.exe")) &&
       fileSha256(path.join(nodeRoot, "node.exe")) ===
         expected.node_executable_sha256
@@ -297,6 +338,8 @@ function prepareWindowsCodexBridge({
       "安装 Windows ACP Bridge",
     );
 
+    hideWindowsChildProcesses(path.join(bridgeRoot, BRIDGE_ENTRYPOINT));
+
     fs.rmSync(path.join(acpRoot, "package.json"), { force: true });
     fs.rmSync(path.join(acpRoot, "package-lock.json"), { force: true });
     fs.writeFileSync(
@@ -375,6 +418,7 @@ module.exports = {
   WINDOWS_NODE_VERSION,
   WINDOWS_NPM_CI_ARGS,
   expectedMarker,
+  hideWindowsChildProcesses,
   isPrepared,
   main,
   prepareLinuxCodexBridge,

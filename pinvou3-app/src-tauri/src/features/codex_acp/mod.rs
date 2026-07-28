@@ -6,11 +6,12 @@
 mod attachments;
 mod diagnostics;
 mod events;
+mod platform;
 mod runtime;
 mod store;
 pub(crate) mod workspace;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -309,18 +310,8 @@ struct RuntimeProbeCache {
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
         let resource_root = app.path().resource_dir().ok();
-        let development_bridge = if crate::platform::capabilities::is_windows() {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join("windows-runtime")
-                .join("codex-bridge")
-        } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("resources")
-                .join("platforms")
-                .join("linux")
-                .join("codex-bridge")
-        };
+        let development_bridge =
+            platform::development_bridge_root(Path::new(env!("CARGO_MANIFEST_DIR")));
         let bundled_adapter = resource_root.as_ref().and_then(|root| {
             [
                 root.join("runtime")
@@ -352,7 +343,8 @@ impl AcpPool {
                     .join("codex-acp")
                     .join("dist")
                     .join("index.js"),
-                root.join("codex-acp").join(adapter_filename()),
+                root.join("codex-acp")
+                    .join(platform::bundled_adapter_name()),
                 root.join("resources")
                     .join("codex-acp")
                     .join("node_modules")
@@ -362,7 +354,7 @@ impl AcpPool {
                     .join("index.js"),
                 root.join("resources")
                     .join("codex-acp")
-                    .join(adapter_filename()),
+                    .join(platform::bundled_adapter_name()),
                 development_bridge
                     .join("acp")
                     .join("node_modules")
@@ -375,11 +367,7 @@ impl AcpPool {
             .find(|candidate| candidate.is_file())
         });
         let bundled_node = resource_root.as_ref().and_then(|root| {
-            let node_name = if crate::platform::capabilities::is_windows() {
-                "node.exe"
-            } else {
-                "node"
-            };
+            let node_name = platform::node_executable_name();
             [
                 root.join("runtime").join("node").join(node_name),
                 root.join("runtime")
@@ -537,11 +525,7 @@ impl AcpPool {
         let node = adapter
             .as_deref()
             .and_then(|adapter| self.resolve_node(adapter));
-        let system_codex = find_in_path(if crate::platform::capabilities::is_windows() {
-            "codex.cmd"
-        } else {
-            "codex"
-        });
+        let system_codex = find_in_path(platform::system_codex_name());
         let legacy_codex = adapter.as_deref().and_then(codex_path_for_adapter);
         diagnostics::write(
             &operation_id,
@@ -758,7 +742,7 @@ impl AcpPool {
             "login:spawn",
             format!("codex_path={}", codex_path.display()),
         );
-        let mut command = codex_login_command(&codex_path);
+        let mut command = platform::codex_login_command(&codex_path);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().context("启动 Codex CLI 登录失败")?;
         let stdout = child.stdout.take().context("读取 Codex 登录标准输出失败")?;
@@ -1226,7 +1210,7 @@ impl AcpPool {
             "session:spawn_start",
             format!("session_id={session_id}"),
         );
-        let runtime = match self.spawn_session(session_id).await {
+        let runtime = match self.spawn_session(session_id, &operation_id).await {
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
                 diagnostics::write(
@@ -1246,7 +1230,11 @@ impl AcpPool {
         Ok(runtime)
     }
 
-    async fn spawn_session(&self, pinvou_session_id: &str) -> Result<AcpSession> {
+    async fn spawn_session(
+        &self,
+        pinvou_session_id: &str,
+        operation_id: &str,
+    ) -> Result<AcpSession> {
         let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
         let workspace = self.execution_workspace(pinvou_session_id)?;
         if self.agents.get(pinvou_session_id).workspace_kind == CodexWorkspaceKind::Temporary {
@@ -1266,12 +1254,26 @@ impl AcpPool {
             .with_context(|| format!("启动 {} 失败", adapter.display()))?;
         let stdin = child.stdin.take().context("Codex ACP stdin 不可用")?;
         let stdout = child.stdout.take().context("Codex ACP stdout 不可用")?;
+        let stderr_tail = Arc::new(parking_lot::Mutex::new(VecDeque::<String>::new()));
         if let Some(stderr) = child.stderr.take() {
             let sid = pinvou_session_id.to_string();
+            let operation_id = operation_id.to_string();
+            let stderr_tail = stderr_tail.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    eprintln!("[codex-acp:{sid}] {line}");
+                    {
+                        let mut tail = stderr_tail.lock();
+                        if tail.len() >= 40 {
+                            tail.pop_front();
+                        }
+                        tail.push_back(line.chars().take(2_000).collect());
+                    }
+                    diagnostics::write(
+                        &operation_id,
+                        "session:bridge_stderr",
+                        format!("session_id={sid} stderr={line}"),
+                    );
                 }
             });
         }
@@ -1422,11 +1424,43 @@ impl AcpPool {
             }
         });
 
-        let (connection, initialized) = tokio::time::timeout(Duration::from_secs(30), ready_rx)
-            .await
-            .context("Codex ACP initialize 超时")?
-            .context("Codex ACP initialize 通道中断")?
-            .context("Codex ACP initialize 失败")?;
+        let ready_result: Result<_> = async {
+            let received = tokio::time::timeout(Duration::from_secs(30), ready_rx)
+                .await
+                .context("Codex ACP initialize 超时")?;
+            let initialized = received.context("Codex ACP initialize 通道中断")?;
+            initialized.context("Codex ACP initialize 失败")
+        }
+        .await;
+        let (connection, initialized) = match ready_result {
+            Ok(initialized) => initialized,
+            Err(error) => {
+                // Give the process and stderr reader a brief chance to publish the real failure.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let exit_status = child
+                    .try_wait()
+                    .map(|status| {
+                        status
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "running".to_string())
+                    })
+                    .unwrap_or_else(|wait_error| format!("unknown ({wait_error})"));
+                let stderr = stderr_tail
+                    .lock()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                diagnostics::write(
+                    operation_id,
+                    "session:initialize_failed",
+                    format!(
+                        "session_id={pinvou_session_id} exit_status={exit_status} stderr={stderr} error={error:#}"
+                    ),
+                );
+                return Err(error);
+            }
+        };
 
         let saved = self.agents.get(pinvou_session_id);
         let (acp_session_id, mut mode_state, mut config_options) =
@@ -1531,12 +1565,8 @@ impl AcpPool {
         if let Some(path) = self.bundled_node.as_ref().filter(|path| path.is_file()) {
             return Some(path.clone());
         }
-        if adapter_needs_path_node_lookup(adapter, crate::platform::capabilities::is_windows()) {
-            return find_in_path(if crate::platform::capabilities::is_windows() {
-                "node.exe"
-            } else {
-                "node"
-            });
+        if platform::adapter_needs_node(adapter) {
+            return find_in_path(platform::node_executable_name());
         }
         None
     }
@@ -1546,14 +1576,17 @@ impl AcpPool {
     }
 
     fn adapter_command(&self, adapter: &Path) -> Result<Command> {
-        adapter_command(adapter, self.resolve_node(adapter).as_deref())
+        platform::adapter_command(adapter, self.resolve_node(adapter).as_deref())
     }
 
     fn configure_codex_path(&self, command: &mut Command, adapter: &Path) -> Result<()> {
         let codex = self
             .resolve_codex(adapter)
             .context("未检测到可用 Codex；请下载托管 Codex")?;
-        command.env("CODEX_PATH", &codex.path);
+        command.env(
+            "CODEX_PATH",
+            crate::platform::os::external_application_path(&codex.path),
+        );
         Ok(())
     }
 }
@@ -1717,70 +1750,10 @@ fn managed_runtime_dir() -> PathBuf {
 }
 
 fn managed_adapter_path() -> PathBuf {
-    let name = if crate::platform::capabilities::is_windows() {
-        "codex-acp.cmd"
-    } else {
-        "codex-acp"
-    };
     managed_runtime_dir()
         .join("node_modules")
         .join(".bin")
-        .join(name)
-}
-
-fn adapter_filename() -> &'static str {
-    if crate::platform::capabilities::is_windows() {
-        "codex-acp.exe"
-    } else {
-        "codex-acp"
-    }
-}
-
-fn adapter_command(adapter: &Path, node: Option<&Path>) -> Result<Command> {
-    adapter_command_for_platform(adapter, node, crate::platform::capabilities::is_windows())
-}
-
-fn adapter_command_for_platform(
-    adapter: &Path,
-    node: Option<&Path>,
-    is_windows: bool,
-) -> Result<Command> {
-    if adapter.extension().and_then(|value| value.to_str()) == Some("js") {
-        let node = node.context("Codex ACP Bridge 缺少可用 Node")?;
-        let mut command = Command::new(node);
-        command.arg(adapter);
-        Ok(command)
-    } else if is_windows_cmd_for_platform(adapter, is_windows) {
-        let mut command = Command::new("cmd");
-        command.args(["/D", "/S", "/C"]).arg(adapter);
-        Ok(command)
-    } else {
-        Ok(Command::new(adapter))
-    }
-}
-
-fn codex_login_command(codex: &Path) -> Command {
-    if is_windows_cmd(codex) {
-        let mut command = Command::new("cmd");
-        command.args(["/D", "/S", "/C"]).arg(codex).arg("login");
-        command
-    } else {
-        let mut command = Command::new(codex);
-        command.arg("login");
-        command
-    }
-}
-
-fn adapter_needs_path_node_lookup(adapter: &Path, is_windows: bool) -> bool {
-    is_windows || adapter.extension().and_then(|value| value.to_str()) == Some("js")
-}
-
-fn is_windows_cmd(path: &Path) -> bool {
-    is_windows_cmd_for_platform(path, crate::platform::capabilities::is_windows())
-}
-
-fn is_windows_cmd_for_platform(path: &Path, is_windows: bool) -> bool {
-    is_windows && path.extension().and_then(|value| value.to_str()) == Some("cmd")
+        .join(platform::managed_adapter_name())
 }
 
 async fn capture_login_output<R>(reader: R, login_url: Arc<parking_lot::RwLock<Option<String>>>)
@@ -1803,11 +1776,7 @@ fn extract_codex_login_url(line: &str) -> Option<&str> {
 }
 
 fn codex_path_for_adapter(adapter: &Path) -> Option<PathBuf> {
-    let name = if crate::platform::capabilities::is_windows() {
-        "codex.cmd"
-    } else {
-        "codex"
-    };
+    let name = platform::system_codex_name();
     if adapter
         .parent()?
         .file_name()
@@ -1839,11 +1808,7 @@ fn resolve_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
     if nonempty_file(&managed) {
         return Some(managed);
     }
-    find_in_path(if crate::platform::capabilities::is_windows() {
-        "codex-acp.cmd"
-    } else {
-        "codex-acp"
-    })
+    find_in_path(platform::managed_adapter_name())
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -1865,10 +1830,12 @@ fn codex_upgrade_required(message: &str) -> bool {
 }
 
 fn installed_node_version(node: &Path) -> Option<String> {
-    let output = std::process::Command::new(node)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(node),
+    )
+    .arg("--version")
+    .output()
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1946,57 +1913,6 @@ mod tests {
         std::fs::write(&adapter, "console.log('ok');").expect("write adapter");
         assert!(nonempty_file(&adapter));
         std::fs::remove_dir_all(root).expect("cleanup adapter test directory");
-    }
-
-    #[test]
-    fn javascript_adapter_uses_node_runtime() {
-        let adapter = Path::new("C:\\runtime\\codex-acp.js");
-        let command =
-            adapter_command_for_platform(adapter, Some(Path::new("C:\\runtime\\node.exe")), true)
-                .expect("build JavaScript adapter command");
-
-        assert_eq!(command.as_std().get_program(), "C:\\runtime\\node.exe");
-        assert_eq!(
-            command
-                .as_std()
-                .get_args()
-                .map(|value| value.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec!["C:\\runtime\\codex-acp.js"]
-        );
-    }
-
-    #[test]
-    fn windows_cmd_adapter_uses_command_interpreter() {
-        let adapter = Path::new("C:\\runtime\\codex-acp.cmd");
-        let command = adapter_command_for_platform(adapter, None, true)
-            .expect("build Windows command-shim adapter command");
-
-        assert_eq!(command.as_std().get_program(), "cmd");
-        assert_eq!(
-            command
-                .as_std()
-                .get_args()
-                .map(|value| value.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec!["/D", "/S", "/C", "C:\\runtime\\codex-acp.cmd"]
-        );
-    }
-
-    #[test]
-    fn windows_adapter_status_always_checks_node_runtime() {
-        assert!(adapter_needs_path_node_lookup(
-            Path::new("C:\\runtime\\codex-acp.cmd"),
-            true
-        ));
-        assert!(adapter_needs_path_node_lookup(
-            Path::new("/runtime/codex-acp.js"),
-            false
-        ));
-        assert!(!adapter_needs_path_node_lookup(
-            Path::new("/runtime/codex-acp"),
-            false
-        ));
     }
 
     #[test]

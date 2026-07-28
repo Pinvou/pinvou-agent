@@ -21,6 +21,30 @@ const codexAcp = read(
   "codex_acp",
   "mod.rs",
 );
+const codexAcpPlatform = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "platform",
+  "mod.rs",
+);
+const codexAcpWindows = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "platform",
+  "windows.rs",
+);
+const windowsPath = read(
+  "src-tauri",
+  "src",
+  "platform",
+  "os",
+  "windows",
+  "windows_path.rs",
+);
 const codexRuntime = read(
   "src-tauri",
   "src",
@@ -29,9 +53,11 @@ const codexRuntime = read(
   "runtime.rs",
 );
 const buildScript = read("scripts", "tauri", "build.js");
+const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
 const {
   BRIDGE_ENTRYPOINT,
   expectedMarker,
+  hideWindowsChildProcesses,
   isPrepared,
   WINDOWS_NODE_VERSION,
   windowsBridgeOverlay,
@@ -43,24 +69,54 @@ assert.match(
   "Windows and Linux must advertise Codex ACP capability",
 );
 assert.match(
-  codexAcp,
-  /fn adapter_needs_path_node_lookup[\s\S]*?is_windows\s*\|\|[\s\S]*?Some\("js"\)/,
+  codexAcpWindows,
+  /fn adapter_needs_node\(_adapter: &Path\) -> bool \{\s*true\s*\}/,
   "Windows adapters must validate Node even when the adapter is a command shim",
 );
 assert.match(
-  codexAcp,
-  /fn is_windows_cmd_for_platform[\s\S]*?Some\("cmd"\)/,
+  codexAcpWindows,
+  /adapter\.extension\(\)[\s\S]*?Some\("cmd"\)/,
   "Windows command shims must be detected explicitly",
 );
 assert.match(
-  codexAcp,
-  /is_windows_cmd_for_platform\(adapter, is_windows\)[\s\S]*?Command::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
+  codexAcpWindows,
+  /HiddenTokioCommand::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
   "codex-acp.cmd must run through cmd /D /S /C",
 );
 assert.match(
-  codexRuntime,
-  /\("windows", "x86_64"\)[\s\S]*?x86_64-pc-windows-msvc/,
+  codexAcpWindows,
+  /HiddenTokioCommand::new\(crate::platform::os::external_application_path\(node\)\)/,
+  "the installed Node Bridge must start without a visible Windows console",
+);
+assert.match(
+  codexAcpWindows,
+  /"x86_64"[\s\S]*?x86_64-pc-windows-msvc/,
   "Windows x64 must have a managed Codex artifact",
+);
+assert.match(
+  windowsPath,
+  /fn platform_compat_path[\s\S]*?strip_prefix\(r"\\\\\?\\UNC\\"\)[\s\S]*?strip_prefix\(r"\\\\\?\\"\)/,
+  "Windows OS paths must remove verbatim prefixes before external-process launch",
+);
+assert.match(
+  codexAcpWindows,
+  /HiddenTokioCommand::new\(crate::platform::os::external_application_path\(node\)\)[\s\S]*?command\.arg\(adapter\)/,
+  "bundled Node and the JavaScript Bridge must receive normalized installed paths",
+);
+assert.match(
+  codexAcpPlatform,
+  /#\[cfg\(target_os = "windows"\)\][\s\S]*?use windows as current/,
+  "Codex platform behavior must be selected at compile time",
+);
+assert.match(
+  codexAcp,
+  /"session:bridge_stderr"[\s\S]*?"session:initialize_failed"[\s\S]*?exit_status=/,
+  "Bridge stderr and exit status must remain available in persistent ACP diagnostics",
+);
+assert.match(
+  bridgeBuildScript,
+  /windowsHide: true[\s\S]*?hideWindowsChildProcesses/,
+  "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
 );
 assert.match(
   codexRuntime,
@@ -116,7 +172,15 @@ try {
     packageJsonPath,
     JSON.stringify({ version: expected.codex_acp_version }),
   );
-  fs.writeFileSync(path.join(bridgeRoot, BRIDGE_ENTRYPOINT), "bridge");
+  const bridgeEntrypoint = path.join(bridgeRoot, BRIDGE_ENTRYPOINT);
+  fs.writeFileSync(
+    bridgeEntrypoint,
+    [
+      'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })',
+      'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })',
+    ].join("\n"),
+  );
+  hideWindowsChildProcesses(bridgeEntrypoint);
   fs.writeFileSync(nodeExecutable, fakeNode);
 
   assert.equal(expected.node_version, WINDOWS_NODE_VERSION);
