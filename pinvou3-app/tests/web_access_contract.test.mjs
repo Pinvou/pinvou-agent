@@ -72,6 +72,7 @@ for (const command of [
   'web_access_ingest_file',
   'web_access_upload_attachment_chunk',
   'web_access_abort_attachment_upload',
+  'web_access_discard_attachment',
   'web_access_load_session_chunk',
   'web_access_transcribe_voice_audio',
 ]) {
@@ -79,8 +80,11 @@ for (const command of [
 }
 
 // 浏览器本机上传:双入口按能力协商门控,分块有界,取消/失败路径完备。
-assert.match(bootstrap, /deviceFileUpload: \["web_access_upload_attachment_chunk", "web_access_abort_attachment_upload"\]/,
-  'the device upload capability must require both chunk and abort commands');
+assert.match(
+  bootstrap,
+  /deviceFileUpload:\s*\[[\s\S]*?"web_access_upload_attachment_chunk"[\s\S]*?"web_access_abort_attachment_upload"[\s\S]*?"web_access_discard_attachment"[\s\S]*?\]/,
+  'the device upload capability must require chunk, abort, and discard commands',
+);
 assert.match(chatView, /can\('deviceFileUpload'\)/,
   'the attach button must gate the dual-entry menu on the negotiated capability');
 assert.match(chatView, /bridge\.attachments\.uploadDeviceFiles\(files\)/);
@@ -92,6 +96,8 @@ assert.match(webBridge, /DEVICE_UPLOAD_MAX_BYTES = 20 \* 1024 \* 1024/,
   'the browser preflight must mirror file_ingest::MAX_FILE_BYTES');
 assert.match(webBridge, /web_access_abort_attachment_upload/,
   'cancelled or failed uploads must release the desktop buffer');
+assert.match(webBridge, /web_access_discard_attachment/,
+  'removed or late-cancelled attachments must release their opaque desktop handle');
 assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, &session_id, &?store\)/,
   'uploaded attachments must be staged into the Session workspace before the engine sees their paths');
 

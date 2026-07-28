@@ -106,7 +106,7 @@ function openSocket() {
   });
 }
 
-function minimalRpcResult(command) {
+function minimalRpcResult(command, args = {}) {
   switch (command) {
     case 'get_settings':
       return { theme: 'genesis', language: 'zh-Hans' };
@@ -126,6 +126,16 @@ function minimalRpcResult(command) {
         updated_at: new Date().toISOString(),
         message_count: 0,
         transcript_revision: 'empty-smoke-revision',
+      };
+    case 'web_access_upload_attachment_chunk':
+      if (!args.commit) return null;
+      return {
+        handle: `attachment_${String(args.uploadId || 'smoke').replace(/[^A-Za-z0-9_-]/g, '_')}`,
+        kind: 'text',
+        basename: String(args.fileName || 'smoke.txt'),
+        token_estimate: 1,
+        byte_size: Number(args.total || 0),
+        warning: null,
       };
     case 'get_mode_state':
       return { mode: 'yolo' };
@@ -217,7 +227,7 @@ class SimulatedDesktop {
         deferred.request = message;
         deferred.resolveSeen(message);
       } else {
-        this.respondRpc(message, true, minimalRpcResult(message.command));
+        this.respondRpc(message, true, minimalRpcResult(message.command, message.args));
       }
     }
     for (const waiter of [...this.waiters]) {
@@ -808,6 +818,42 @@ async function main() {
   const deferredFailure = desktop.deferNextRpc(firstTurnCommand);
   await mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), failedText);
   const failedRequest = await deferredFailure.seen;
+
+  // The previous Session may still stream while the next draft is waiting for
+  // its atomic create-and-chat response. Its background event must not replace
+  // the visible draft working set with a fresh empty buffer.
+  desktop.send({
+    type: 'event',
+    lease_id: desktop.leaseId,
+    event: 'chat:delta',
+    stream_epoch: streamEpoch,
+    seq: 2,
+    payload: { session_id: optimisticSessionId, text: 'late-previous-session-delta' },
+  });
+  await mobilePage.waitForFunction(id => {
+    const cursor = JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}');
+    return cursor.after_seq === 2;
+  }, { timeout: 5_000 }, endpointId);
+  const preservedSecondDraft = await mobilePage.evaluate(text => {
+    const sessions = window.TauriBridge.state.get('sessions');
+    const chat = window.TauriBridge.state.get('chat');
+    return {
+      activeSessionId: sessions.activeSessionId,
+      userTexts: chat.chatItems
+        .filter(item => item && item.type === 'user')
+        .map(item => item.text),
+      sending: !!document.querySelector('[data-testid="message-delivery-sending"]'),
+      greeting: !!document.querySelector('[data-testid="chat-greeting"]'),
+      expectedText: text,
+    };
+  }, failedText);
+  record('旧会话迟到事件不会清空第二个新对话的乐观消息',
+    preservedSecondDraft.activeSessionId === null
+      && preservedSecondDraft.userTexts.includes(failedText)
+      && preservedSecondDraft.sending
+      && !preservedSecondDraft.greeting,
+    JSON.stringify(preservedSecondDraft));
+
   deferredFailure.reject('simulated first-turn rejection', 'command_failed');
   await mobilePage.waitForSelector('[data-testid="message-delivery-failed"] button', { timeout: 5_000 });
 
@@ -831,6 +877,68 @@ async function main() {
     failedRequest.client_request_id !== retryRequest.client_request_id
       && /^first_turn_/.test(retryRequest.client_request_id || ''));
 
+  await mobilePage.evaluate(() => window.TauriBridge.sessions.createNewSession());
+  await mobilePage.evaluate(async () => {
+    const file = new File(['remove-me'], 'remove-me.txt', { type: 'text/plain' });
+    await window.TauriBridge.attachments.uploadDeviceFiles([file]);
+  });
+  await mobilePage.waitForFunction(() => (
+    window.TauriBridge.state.get('chat').attachments.some(attachment => attachment.status === 'ready')
+  ), { timeout: 5_000 });
+  const discardStart = desktop.messages.length;
+  const removedHandle = await mobilePage.evaluate(() => {
+    const attachment = window.TauriBridge.state.get('chat').attachments
+      .find(candidate => candidate.status === 'ready');
+    window.TauriBridge.attachments.removeAttachment(attachment.id);
+    return attachment.result.handle;
+  });
+  const discardRequest = await desktop.waitFor(message => (
+    message.type === 'rpc_request'
+      && message.command === 'web_access_discard_attachment'
+  ), discardStart, 5_000);
+  record('移除已上传附件会立即释放桌面端句柄',
+    discardRequest.args?.handle === removedHandle
+      && await mobilePage.evaluate(() => window.TauriBridge.state.get('chat').attachments.length === 0));
+
+  await mobilePage.evaluate(async () => {
+    const file = new File(['consumed'], 'consumed.txt', { type: 'text/plain' });
+    await window.TauriBridge.attachments.uploadDeviceFiles([file]);
+  });
+  await mobilePage.waitForFunction(() => (
+    window.TauriBridge.state.get('chat').attachments.some(attachment => attachment.status === 'ready')
+  ), { timeout: 5_000 });
+  const consumedHandle = await mobilePage.evaluate(() => (
+    window.TauriBridge.state.get('chat').attachments
+      .find(attachment => attachment.status === 'ready').result.handle
+  ));
+  const deferredBackgroundSuccess = desktop.deferNextRpc(firstTurnCommand);
+  await mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), '切页附件消费测试');
+  const backgroundRequest = await deferredBackgroundSuccess.seen;
+  await mobilePage.evaluate(() => window.TauriBridge.sessions.createNewSession());
+  await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
+  deferredBackgroundSuccess.respond({
+    id: 'session-background-attachment-smoke',
+    title: '新对话',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 0,
+    transcript_revision: 'empty-background-attachment-revision',
+  });
+  await mobilePage.waitForFunction(() => (
+    window.TauriBridge.state.get('chat').attachments.length === 0
+  ), { timeout: 5_000 });
+  const backgroundSuccessState = await mobilePage.evaluate(() => ({
+    activeSessionId: window.TauriBridge.state.get('sessions').activeSessionId,
+    attachments: window.TauriBridge.state.get('chat').attachments.length,
+    greeting: !!document.querySelector('[data-testid="chat-greeting"]'),
+  }));
+  record('首轮发送期间切页不会把已消费附件遗留给新草稿',
+    backgroundRequest.args?.attachmentHandles?.includes(consumedHandle)
+      && backgroundSuccessState.activeSessionId === null
+      && backgroundSuccessState.attachments === 0
+      && backgroundSuccessState.greeting,
+    JSON.stringify(backgroundSuccessState));
+
   await mobilePage.evaluate(async () => {
     window.__webuiSmokeEvents = [];
     window.__webuiSmokeUnlisten = await window.__TAURI__.event.listen('chat:delta', event => {
@@ -843,25 +951,25 @@ async function main() {
     lease_id: desktop.leaseId,
     event: 'chat:delta',
     stream_epoch: streamEpoch,
-    seq: 2,
+    seq: 3,
     payload: { session_id: 'webui-smoke', text: 'stream-event-smoke' },
   });
   await mobilePage.waitForFunction(() => window.__webuiSmokeEvents?.length === 1);
   const cursor = await mobilePage.evaluate(id => (
     JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}')
   ), endpointId);
-  assert.deepEqual(cursor, { stream_epoch: streamEpoch, after_seq: 2 });
+  assert.deepEqual(cursor, { stream_epoch: streamEpoch, after_seq: 3 });
 
   const reconnectStart = desktop.messages.length;
   await mobilePage.reload({ waitUntil: 'networkidle0' });
   const resumed = await desktop.waitFor(message => (
     message.type === 'web_client_connected'
       && message.stream_epoch === streamEpoch
-      && message.after_seq === 2
+      && message.after_seq === 3
   ), reconnectStart, 15_000);
   await waitForSharedUi(mobilePage, 390, 844);
   record('事件序号写入游标并在页面重连时续传',
-    resumed.stream_epoch === streamEpoch && resumed.after_seq === 2);
+    resumed.stream_epoch === streamEpoch && resumed.after_seq === 3);
 
   const credentialLeak = relayHttpRequestTargets.find(target => (
     target.includes('#')

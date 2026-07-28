@@ -259,7 +259,11 @@ async function connectWithCapabilities(events, listener) {
 // 设备文件上传能力:未收到快照前 fail closed;旧桌面缺任一命令保持关闭,
 // 两条命令齐备才开放,与桌面附件双入口的显示/隐藏协商一致。
 {
-  const uploadCommands = ['web_access_upload_attachment_chunk', 'web_access_abort_attachment_upload'];
+  const uploadCommands = [
+    'web_access_upload_attachment_chunk',
+    'web_access_abort_attachment_upload',
+    'web_access_discard_attachment',
+  ];
   const negotiate = (snapshotCommands) => {
     const harness = bootClient({ allowed_commands: uploadCommands, allowed_events: ['chat:delta'] });
     const client = harness.window.PinvouWebClient;
@@ -292,8 +296,10 @@ async function connectWithCapabilities(events, listener) {
     });
   };
   assert.equal(await negotiate(uploadCommands), true,
-    'a desktop advertising both upload commands must enable the device upload entry');
-  assert.equal(await negotiate(['web_access_upload_attachment_chunk']), false,
+    'a desktop advertising the complete upload lifecycle must enable the device upload entry');
+  assert.equal(await negotiate(uploadCommands.slice(0, 2)), false,
+    'a desktop missing attachment discard must keep the device upload entry hidden');
+  assert.equal(await negotiate(uploadCommands.slice(0, 1)), false,
     'an older desktop missing the abort command must keep the device upload entry hidden');
   assert.equal(await negotiate([]), false,
     'an older desktop without upload support must keep the device upload entry hidden');

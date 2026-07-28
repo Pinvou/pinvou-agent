@@ -306,6 +306,7 @@ command_protocol!(
         "web_access_ingest_file",
         "web_access_upload_attachment_chunk",
         "web_access_abort_attachment_upload",
+        "web_access_discard_attachment",
         "web_access_create_session_and_chat",
         "web_access_chat",
         "web_access_save_session_messages_chunk",

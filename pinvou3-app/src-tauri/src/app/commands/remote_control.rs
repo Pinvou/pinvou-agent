@@ -342,6 +342,17 @@ pub fn web_access_abort_attachment_upload(
     Ok(())
 }
 
+/// Release a parsed attachment after the browser removes its chip. If a chat
+/// turn already reserved the handle, cleanup is deferred until that turn
+/// finishes so the engine keeps a stable source path.
+#[tauri::command]
+pub fn web_access_discard_attachment(
+    handle: String,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<(), String> {
+    manager.discard_web_attachment(&handle)
+}
+
 /// Materialize a draft Web conversation and admit its first turn as one
 /// idempotent RPC. The Relay request ledger guarantees that reconnecting with
 /// the same client_request_id cannot create or submit the turn twice.

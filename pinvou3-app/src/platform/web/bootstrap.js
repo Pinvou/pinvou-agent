@@ -18,7 +18,11 @@
     artifactDownload: ["web_access_artifact_info", "web_access_read_artifact_chunk"],
     browserMicrophone: ["web_access_transcribe_voice_audio"],
     sessionModelSwitch: ["set_session_model"],
-    deviceFileUpload: ["web_access_upload_attachment_chunk", "web_access_abort_attachment_upload"],
+    deviceFileUpload: [
+      "web_access_upload_attachment_chunk",
+      "web_access_abort_attachment_upload",
+      "web_access_discard_attachment",
+    ],
   };
 
   if (window.__TAURI__) {

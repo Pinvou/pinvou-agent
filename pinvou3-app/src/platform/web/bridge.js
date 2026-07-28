@@ -810,8 +810,13 @@
     var bg = sessionStates[sid]; if (!bg) return;
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
-    var draftComposer = realId ? "" : (state.composerDraft || "");
-    saveWorkingSetTo(getBuffer(realId));
+    // A null active id no longer guarantees an empty draft: WebUI can already
+    // be showing an optimistic first message while its Session is being
+    // materialized, and #70 also keeps unsent composer text there. Snapshot
+    // the complete draft just like a regular Session before routing a late
+    // event from another Session in the background.
+    var returnBuffer = realId ? getBuffer(realId) : freshBuffer();
+    saveWorkingSetTo(returnBuffer);
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
     var prev = suppressNotify; suppressNotify = true;
@@ -820,13 +825,10 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
-      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
-      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净工作集，
-      // 但要保留用户正在输入的未发送文本。
-      var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
-      if (!realId) restoreBuffer.composerDraft = draftComposer;
-      loadWorkingSetFrom(restoreBuffer);
+      // Restore the exact draft/Session working set that was visible before
+      // the background event; replacing a draft with freshBuffer() would erase
+      // its optimistic first message or unsent composer text.
+      loadWorkingSetFrom(returnBuffer);
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -3606,14 +3608,18 @@
     );
     seedAcceptedFirstTurn(buffer, submission);
 
+    // The desktop consumed these one-shot handles even if the user navigated
+    // away while the atomic first turn was in flight. Remove the exact
+    // attachment objects from whichever composer is now visible so a later
+    // draft cannot retry already-consumed handles.
+    state.attachments = state.attachments.filter(function (attachment) {
+      return submission.readyAttachments.indexOf(attachment) < 0;
+    });
     var shouldActivate = firstTurnStillVisible(submission);
     if (shouldActivate) {
       if (submission.uiSnapshot && submission.uiSnapshot.scheduledTaskPendingGuide) {
         state.scheduledTaskCreationSessionId = sessionId;
       }
-      state.attachments = state.attachments.filter(function (attachment) {
-        return submission.readyAttachments.indexOf(attachment) < 0;
-      });
       delete firstTurnSubmissions[submission.clientMessageId];
       switchActiveTo(sessionId);
       notify();
@@ -6335,11 +6341,27 @@
       await addAttachmentByPath(path);
     } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
   }
+  function releaseAttachmentOnDesktop(attachment) {
+    var handle = attachment && attachment.result && attachment.result.handle;
+    if (handle && canInvoke("web_access_discard_attachment")) {
+      invoke("web_access_discard_attachment", { handle: handle }).catch(function () {});
+      return;
+    }
+    if (attachment && attachment.uploadId && canInvoke("web_access_abort_attachment_upload")) {
+      invoke("web_access_abort_attachment_upload", { uploadId: attachment.uploadId }).catch(function () {});
+    }
+  }
   function removeAttachment(id) {
+    var removed = state.attachments.find(function (attachment) { return attachment.id === id; });
     state.attachments = state.attachments.filter(function (a) { return a.id !== id; });
+    releaseAttachmentOnDesktop(removed);
     notify();
   }
-  function clearAttachments() { state.attachments = []; }
+  function clearAttachments() {
+    var removed = state.attachments.slice();
+    state.attachments = [];
+    removed.forEach(releaseAttachmentOnDesktop);
+  }
   // 打开系统文件选择器并摄入为附件
   async function pickAndAttach() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
@@ -6373,7 +6395,10 @@
     }
     var id = ++attachIdSeq;
     var uploadId = "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
-    var att = { id: id, basename: file.name, status: "uploading", progress: 0, result: null, error: null };
+    var att = {
+      id: id, uploadId: uploadId, basename: file.name,
+      status: "uploading", progress: 0, result: null, error: null,
+    };
     state.attachments.push(att); notify();
     // 用户点掉 chip(removeAttachment)即取消:下一块边界停止并通知桌面释放缓冲。
     function assertActive() {
@@ -6400,7 +6425,11 @@
       att.status = "ready"; att.progress = 100; att.result = summary;
       att.basename = summary.basename || att.basename;
     } catch (e) {
-      invoke("web_access_abort_attachment_upload", { uploadId: uploadId }).catch(function () {});
+      if (summary && summary.handle && canInvoke("web_access_discard_attachment")) {
+        invoke("web_access_discard_attachment", { handle: summary.handle }).catch(function () {});
+      } else {
+        invoke("web_access_abort_attachment_upload", { uploadId: uploadId }).catch(function () {});
+      }
       if (e !== DEVICE_UPLOAD_CANCELLED) {
         att.status = "error"; att.error = String(e && e.message ? e.message : e);
         addSystemItem(bt("deviceUploadFailed") + att.error);

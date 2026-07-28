@@ -225,6 +225,10 @@ struct CachedWebAttachment {
     result: crate::features::files::file_ingest::IngestResult,
     bytes: usize,
     reservation_id: Option<String>,
+    /// The browser removed the chip while a chat submission still held the
+    /// handle. Defer deletion until that reservation finishes so the engine
+    /// never races a disappearing upload source.
+    discard_requested: bool,
     /// 浏览器本机上传的桌面暂存目录。附件被消费、淘汰或清空时随之删除，
     /// 保证上传文件不留存；桌面主机文件附件恒为 None。
     upload_dir: Option<PathBuf>,
@@ -950,6 +954,7 @@ impl RemoteControlManager {
                 result,
                 bytes,
                 reservation_id: None,
+                discard_requested: false,
                 upload_dir,
             },
         );
@@ -1006,42 +1011,36 @@ impl RemoteControlManager {
         Ok((reservation_id, results))
     }
 
+    /// Discard an opaque attachment handle after its browser chip is removed.
+    /// Unknown handles are accepted for idempotency. A handle currently owned
+    /// by a chat turn is marked for deletion and cleaned when that reservation
+    /// finishes, regardless of whether the turn succeeds or fails.
+    pub fn discard_web_attachment(&self, handle: &str) -> Result<(), String> {
+        if handle.len() < 12
+            || handle.len() > 128
+            || !handle.starts_with("attachment_")
+            || !handle
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err("远程控制附件句柄无效".into());
+        }
+        request_web_attachment_discard(&mut self.inner.lock(), handle);
+        Ok(())
+    }
+
     pub fn finish_web_attachment_reservation(
         &self,
         reservation_id: &str,
         handles: &[String],
         consume: bool,
     ) -> Result<(), String> {
-        let mut inner = self.inner.lock();
-        for handle in handles {
-            let Some(cached) = inner.web_attachments.get(handle) else {
-                // Stop/rotate deliberately clears the whole lease cache.
-                continue;
-            };
-            if cached.reservation_id.as_deref() != Some(reservation_id) {
-                return Err(format!("远程控制附件预留已不再持有句柄：{handle}"));
-            }
-        }
-        if consume {
-            let handle_set = handles.iter().map(String::as_str).collect::<HashSet<_>>();
-            for handle in handles {
-                if let Some(cached) = inner.web_attachments.remove(handle) {
-                    inner.web_attachment_bytes =
-                        inner.web_attachment_bytes.saturating_sub(cached.bytes);
-                    remove_web_attachment_upload_dir(&cached);
-                }
-            }
-            inner
-                .web_attachment_order
-                .retain(|handle| !handle_set.contains(handle.as_str()));
-        } else {
-            for handle in handles {
-                if let Some(cached) = inner.web_attachments.get_mut(handle) {
-                    cached.reservation_id = None;
-                }
-            }
-        }
-        Ok(())
+        finish_web_attachment_reservation_inner(
+            &mut self.inner.lock(),
+            reservation_id,
+            handles,
+            consume,
+        )
     }
 
     /// 累积浏览器本机文件的一个有界分块；最后一块 `commit` 时返回完整文件名
@@ -2774,6 +2773,58 @@ fn clear_web_attachments(inner: &mut Inner) {
     inner.web_session_download_order.clear();
 }
 
+fn remove_cached_web_attachment(inner: &mut Inner, handle: &str) -> bool {
+    let Some(cached) = inner.web_attachments.remove(handle) else {
+        return false;
+    };
+    inner.web_attachment_bytes = inner.web_attachment_bytes.saturating_sub(cached.bytes);
+    inner
+        .web_attachment_order
+        .retain(|candidate| candidate != handle);
+    remove_web_attachment_upload_dir(&cached);
+    true
+}
+
+fn request_web_attachment_discard(inner: &mut Inner, handle: &str) {
+    if let Some(cached) = inner.web_attachments.get_mut(handle) {
+        if cached.reservation_id.is_some() {
+            cached.discard_requested = true;
+            return;
+        }
+    }
+    remove_cached_web_attachment(inner, handle);
+}
+
+fn finish_web_attachment_reservation_inner(
+    inner: &mut Inner,
+    reservation_id: &str,
+    handles: &[String],
+    consume: bool,
+) -> Result<(), String> {
+    for handle in handles {
+        let Some(cached) = inner.web_attachments.get(handle) else {
+            // Stop/rotate deliberately clears the whole lease cache.
+            continue;
+        };
+        if cached.reservation_id.as_deref() != Some(reservation_id) {
+            return Err(format!("远程控制附件预留已不再持有句柄：{handle}"));
+        }
+    }
+    for handle in handles {
+        let should_remove = consume
+            || inner
+                .web_attachments
+                .get(handle)
+                .is_some_and(|cached| cached.discard_requested);
+        if should_remove {
+            remove_cached_web_attachment(inner, handle);
+        } else if let Some(cached) = inner.web_attachments.get_mut(handle) {
+            cached.reservation_id = None;
+        }
+    }
+    Ok(())
+}
+
 fn append_web_attachment_upload_chunk(
     inner: &mut Inner,
     upload_id: &str,
@@ -4445,6 +4496,27 @@ mod tests {
         );
     }
 
+    fn cached_upload_for_test(
+        staging: &std::path::Path,
+        reservation_id: Option<&str>,
+    ) -> CachedWebAttachment {
+        CachedWebAttachment {
+            result: crate::features::files::file_ingest::IngestResult {
+                kind: "text".into(),
+                basename: "notes.txt".into(),
+                path: staging.join("notes.txt").to_string_lossy().into_owned(),
+                markdown: Some("abc".into()),
+                token_estimate: 2,
+                byte_size: 3,
+                warning: None,
+            },
+            bytes: 64,
+            reservation_id: reservation_id.map(str::to_string),
+            discard_requested: false,
+            upload_dir: Some(staging.to_path_buf()),
+        }
+    }
+
     #[test]
     fn clearing_web_attachments_removes_upload_staging_dirs() {
         let staging = std::env::temp_dir().join(format!(
@@ -4459,20 +4531,7 @@ mod tests {
         inner.web_attachment_order.push_back("attachment_a".into());
         inner.web_attachments.insert(
             "attachment_a".into(),
-            CachedWebAttachment {
-                result: crate::features::files::file_ingest::IngestResult {
-                    kind: "text".into(),
-                    basename: "notes.txt".into(),
-                    path: staging.join("notes.txt").to_string_lossy().into_owned(),
-                    markdown: Some("abc".into()),
-                    token_estimate: 2,
-                    byte_size: 3,
-                    warning: None,
-                },
-                bytes: 64,
-                reservation_id: None,
-                upload_dir: Some(staging.clone()),
-            },
+            cached_upload_for_test(&staging, None),
         );
         inner.web_attachment_bytes = 64;
 
@@ -4481,6 +4540,80 @@ mod tests {
         assert!(
             !staging.exists(),
             "clearing attachments must delete the upload staging dir"
+        );
+    }
+
+    #[test]
+    fn discarding_unreserved_web_attachment_removes_cache_and_staging_dir() {
+        let staging = std::env::temp_dir().join(format!(
+            "pinvou-webup-discard-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(8)
+        ));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("notes.txt"), b"abc").unwrap();
+
+        let mut inner = Inner::default();
+        inner.web_attachment_order.push_back("attachment_a".into());
+        inner.web_attachments.insert(
+            "attachment_a".into(),
+            cached_upload_for_test(&staging, None),
+        );
+        inner.web_attachment_bytes = 64;
+
+        request_web_attachment_discard(&mut inner, "attachment_a");
+
+        assert!(inner.web_attachments.is_empty());
+        assert!(inner.web_attachment_order.is_empty());
+        assert_eq!(inner.web_attachment_bytes, 0);
+        assert!(
+            !staging.exists(),
+            "discarding a ready attachment must delete its staging dir"
+        );
+    }
+
+    #[test]
+    fn discarding_reserved_web_attachment_waits_for_turn_cleanup() {
+        let staging = std::env::temp_dir().join(format!(
+            "pinvou-webup-deferred-discard-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(8)
+        ));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("notes.txt"), b"abc").unwrap();
+
+        let mut inner = Inner::default();
+        inner.web_attachment_order.push_back("attachment_a".into());
+        inner.web_attachments.insert(
+            "attachment_a".into(),
+            cached_upload_for_test(&staging, Some("reservation_a")),
+        );
+        inner.web_attachment_bytes = 64;
+
+        request_web_attachment_discard(&mut inner, "attachment_a");
+        assert!(
+            staging.exists(),
+            "an active turn still needs the source file"
+        );
+        assert!(inner
+            .web_attachments
+            .get("attachment_a")
+            .is_some_and(|cached| cached.discard_requested));
+
+        finish_web_attachment_reservation_inner(
+            &mut inner,
+            "reservation_a",
+            &["attachment_a".into()],
+            false,
+        )
+        .expect("a rejected turn still honors the deferred discard");
+
+        assert!(inner.web_attachments.is_empty());
+        assert!(inner.web_attachment_order.is_empty());
+        assert_eq!(inner.web_attachment_bytes, 0);
+        assert!(
+            !staging.exists(),
+            "turn cleanup must delete a browser-discarded attachment"
         );
     }
 
@@ -4623,6 +4756,7 @@ mod tests {
             "web_access_ingest_file",
             "web_access_upload_attachment_chunk",
             "web_access_abort_attachment_upload",
+            "web_access_discard_attachment",
             "web_access_load_session_chunk",
             "web_access_start_skill_session",
         ] {
