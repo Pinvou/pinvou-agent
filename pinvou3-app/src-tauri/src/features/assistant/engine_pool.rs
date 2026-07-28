@@ -218,8 +218,45 @@ struct EngineEntry {
     engine: AppEngine,
     /// 该 engine 的 event forwarder,evict 时 abort,避免僵尸 task 继续 emit。
     forwarder: JoinHandle<()>,
-    /// 创建该 engine 时实际使用的运行时模型和非敏感凭据版本。
-    runtime_model: PreparedRuntimeModel,
+    /// 创建该 engine 时实际使用的运行时模型、提供器版本和本地模型修订号。
+    runtime_model: PreparedRuntimeState,
+}
+
+#[derive(Clone, Default)]
+struct ModelUpdateRevisions {
+    revisions: Arc<SyncMutex<HashMap<String, u64>>>,
+}
+
+impl ModelUpdateRevisions {
+    fn current(&self, model_id: &str) -> u64 {
+        self.revisions.lock().get(model_id).copied().unwrap_or(0)
+    }
+
+    fn bump(&self, model_id: &str) -> u64 {
+        let mut revisions = self.revisions.lock();
+        let revision = revisions.entry(model_id.to_string()).or_default();
+        *revision = revision.saturating_add(1);
+        *revision
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PreparedRuntimeState {
+    prepared: PreparedRuntimeModel,
+    model_update_revision: u64,
+}
+
+impl PreparedRuntimeState {
+    fn new(prepared: PreparedRuntimeModel, model_update_revision: u64) -> Self {
+        Self {
+            prepared,
+            model_update_revision,
+        }
+    }
+
+    fn requires_rebuild_from(&self, previous: &Self) -> bool {
+        self != previous
+    }
 }
 
 pub type EngineToolFactory =
@@ -241,6 +278,7 @@ fn should_sync_session(_is_scheduled: bool, _has_messages: bool) -> bool {
 pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     runtime_model_locks: SessionTurnLocks,
+    model_update_revisions: ModelUpdateRevisions,
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
@@ -292,6 +330,7 @@ impl EnginePool {
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
             runtime_model_locks: SessionTurnLocks::default(),
+            model_update_revisions: ModelUpdateRevisions::default(),
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
@@ -316,6 +355,12 @@ impl EnginePool {
             None if user_api_key_required => ModelCredentialMode::UserManaged,
             None => ModelCredentialMode::None,
         }
+    }
+
+    /// 模型配置或用户托管凭据保存成功后调用。只递增非敏感内存修订号；
+    /// 已在生成的引擎不被立即打断，下次 turn 会在发送前安全回收并重建。
+    pub(crate) fn mark_model_updated(&self, model_id: &str) {
+        self.model_update_revisions.bump(model_id);
     }
 
     pub fn compute_disallowed_tools(&self) -> Vec<String> {
@@ -380,6 +425,7 @@ impl EnginePool {
         pins_scheduled_model: bool,
     ) -> Pinvou3Bridge {
         bridge.session_model = Some(prepared.model.clone());
+        bridge.runtime_model_credential = prepared.credential.clone();
         // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
         // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
@@ -432,6 +478,8 @@ impl EnginePool {
         let (bridge, prepared, pins_scheduled_model) = self
             .prepare_runtime_model(session_id, scheduled_unattended)
             .await?;
+        let model_update_revision = self.model_update_revisions.current(&prepared.model.id);
+        let prepared = PreparedRuntimeState::new(prepared, model_update_revision);
 
         let stale = {
             let mut entries = self.entries.lock().await;
@@ -448,7 +496,7 @@ impl EnginePool {
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
         let bridge = self
-            .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
+            .finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model)
             .await;
         let shell_workspace = self
             .store
@@ -1134,9 +1182,11 @@ mod scheduled_model_tests {
     use super::{
         delete_chat_session_with_gate, delete_scheduled_run_with_gate,
         quiesce_engine_before_reclaim, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_sync_session, ScheduledUnattendedGuard,
-        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
+        scheduled_profile_after_turn_gate, should_sync_session, ModelUpdateRevisions,
+        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
+        SessionTurnLifecycles, SessionTurnLocks,
     };
+    use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::prefs::{ModelPreset, SavedModel};
@@ -1259,6 +1309,31 @@ mod scheduled_model_tests {
         );
         managers.remove("session-1");
         assert!(managers.get("session-1").is_none());
+    }
+
+    #[test]
+    fn saved_model_update_revision_forces_next_turn_rebuild() {
+        let revisions = ModelUpdateRevisions::default();
+        let prepared = PreparedRuntimeModel::unchanged(model("model-1", "wire-model"));
+        let previous = PreparedRuntimeState::new(prepared.clone(), revisions.current("model-1"));
+
+        revisions.bump("model-1");
+        let after_save = PreparedRuntimeState::new(prepared, revisions.current("model-1"));
+
+        assert!(after_save.requires_rebuild_from(&previous));
+    }
+
+    #[tokio::test]
+    async fn runtime_preparation_locks_are_isolated_between_sessions() {
+        let locks = SessionTurnLocks::default();
+        let first = locks.for_session("session-1").await;
+        let second = locks.for_session("session-2").await;
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        let _first_guard = first.lock().await;
+        let _second_guard = tokio::time::timeout(std::time::Duration::from_secs(1), second.lock())
+            .await
+            .expect("a slow provider for one session must not block another session");
     }
 
     #[test]

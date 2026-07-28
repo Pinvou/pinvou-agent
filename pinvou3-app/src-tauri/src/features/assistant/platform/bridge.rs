@@ -34,6 +34,7 @@ use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
 /// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
@@ -101,6 +102,9 @@ pub struct Pinvou3Bridge {
     /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
     /// active。EnginePool spawn 时按该 session 的 model_id 注入(见 `with_session_model`)。
     pub session_model: Option<SavedModel>,
+    /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
+    /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
+    pub runtime_model_credential: Option<RuntimeModelCredential>,
     /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。EnginePool spawn
     /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
     /// active_route_limits，并与 output profile 一起推导压缩阈值。
@@ -181,6 +185,7 @@ impl Pinvou3Bridge {
             bundle,
             workspace: paths::user_home_dir(),
             session_model: None,
+            runtime_model_credential: None,
             probed_context_tokens: None,
         };
         this.wire_max_output_tokens_env();
@@ -460,6 +465,9 @@ impl Pinvou3Bridge {
 
     /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
     pub fn api_key(&self) -> String {
+        if let Some(credential) = &self.runtime_model_credential {
+            return credential.expose_api_key().to_string();
+        }
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
             if !v.trim().is_empty() {
                 return v;
@@ -1312,6 +1320,7 @@ mod tests {
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
             session_model: None,
+            runtime_model_credential: None,
             probed_context_tokens: None,
         }
     }
@@ -2498,6 +2507,38 @@ mod tests {
         assert_eq!(bridge.provider(), "env-provider");
         assert_eq!(bridge.base_url(), "http://env:8000/v1");
         assert_eq!(bridge.api_key(), "env-key");
+    }
+
+    #[test]
+    fn runtime_credential_is_final_and_reaches_model_client_config() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "runtime-model",
+            "https://api.openai.com/v1",
+            "saved-key",
+        );
+        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
+        bridge.runtime_model_credential =
+            Some(RuntimeModelCredential::api_key("runtime-key").expect("runtime credential"));
+
+        assert_eq!(bridge.api_key(), "runtime-key");
+        let config = bridge.build_dt_config();
+        assert_eq!(config.api_key.as_deref(), Some("runtime-key"));
+        assert_eq!(
+            config
+                .providers
+                .as_ref()
+                .and_then(|providers| providers.openai.api_key.as_deref()),
+            Some("runtime-key")
+        );
     }
 
     #[test]

@@ -271,13 +271,16 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
 
 /// 增或改一条模型(按 id)。前端负责生成稳定 id。
 #[tauri::command]
-pub async fn save_model(model: SavedModel) -> Result<(), String> {
+pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
+    let model_id = model.id.clone();
     let mut prefs = UserPrefs::load();
     let old = prefs.model_by_id(&model.id).cloned();
     let model = apply_model_credential(model, old.as_ref())
         .map_err(|e| sanitize_command_error("save_model", e))?;
     prefs.upsert_model(model);
-    prefs.save().map_err(|e| format!("save_model: {e:?}"))
+    prefs.save().map_err(|e| format!("save_model: {e:?}"))?;
+    pool.mark_model_updated(&model_id);
+    Ok(())
 }
 
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
