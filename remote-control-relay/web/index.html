@@ -1296,10 +1296,17 @@
       doc.innerHTML = renderMarkdown(text || '');
       node.replaceChildren(doc);
     }
+    // 桌面端 bridge 已用 DOMPurify 消毒 assistant html；此处再加一层兜底，
+    // 防止 relay 链路上其它来源的 html 直接进入 innerHTML（CodeQL js/xss）。
+    function sanitizeAssistantHtml(html) {
+      return String(html || '')
+        .replace(/<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi, '&lt;$1&gt;')
+        .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    }
     function addAssistantHtml(html) {
       const div = document.createElement('div');
       div.className = 'msg assistant';
-      div.innerHTML = html || '';
+      div.innerHTML = sanitizeAssistantHtml(html);
       return appendToMessages(div);
     }
     function addSystem(text) {
@@ -2010,7 +2017,9 @@
       el.previewToolbar.classList.add('hidden');
       previewFrameId = '';
       previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
-      if (preview.type === 'image' && preview.data_url) {
+      // data_url 由桌面端按图片 mime 白名单构造；此处再校验前缀，
+      // 防伪造 preview payload（CodeQL js/xss、js/client-side-unvalidated-url-redirection）。
+      if (preview.type === 'image' && /^data:image\//.test(preview.data_url || '')) {
         const img = document.createElement('img');
         img.alt = payload.basename || 'artifact preview';
         img.src = preview.data_url;
