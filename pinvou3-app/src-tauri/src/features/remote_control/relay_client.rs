@@ -889,9 +889,7 @@ mod tests {
             sender
                 .try_send(RelayOutbound::Message(json!(index)))
                 .unwrap();
-            let frame = match receiver.try_recv().unwrap() {
-                QueuedOutbound::Message(frame) => frame,
-            };
+            let QueuedOutbound::Message(frame) = receiver.try_recv().unwrap();
             pending_bytes += frame.text.len();
             push_pending(&mut pending, frame);
         }
@@ -920,9 +918,7 @@ mod tests {
         );
 
         for expected in MAX_PENDING_MESSAGES..(MAX_PENDING_MESSAGES + OUTBOUND_CHANNEL_CAPACITY) {
-            let frame = match receiver.try_recv().unwrap() {
-                QueuedOutbound::Message(frame) => frame,
-            };
+            let QueuedOutbound::Message(frame) = receiver.try_recv().unwrap();
             assert_eq!(frame.text, expected.to_string());
         }
         assert!(matches!(
@@ -970,9 +966,7 @@ mod tests {
         sender
             .try_send(RelayOutbound::Message(value.clone()))
             .unwrap();
-        let frame = match receiver.try_recv().unwrap() {
-            QueuedOutbound::Message(frame) => frame,
-        };
+        let QueuedOutbound::Message(frame) = receiver.try_recv().unwrap();
         let mut pending = VecDeque::new();
         push_pending(&mut pending, frame);
         assert_eq!(sender.byte_budget.available_permits(), budget - bytes);
@@ -1063,26 +1057,20 @@ mod tests {
             assert_eq!(latest["lease_id"], "C");
         }
 
-        let blocker = match receiver.recv().await.unwrap() {
-            QueuedOutbound::Message(frame) => frame,
-        };
+        let QueuedOutbound::Message(blocker) = receiver.recv().await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&blocker.text).unwrap()["kind"],
             "blocker"
         );
         drop(blocker);
 
-        let first = match receiver.recv().await.unwrap() {
-            QueuedOutbound::Message(frame) => frame,
-        };
+        let QueuedOutbound::Message(first) = receiver.recv().await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&first.text).unwrap()["lease_id"],
             "A"
         );
         drop(first);
-        let latest = match receiver.recv().await.unwrap() {
-            QueuedOutbound::Message(frame) => frame,
-        };
+        let QueuedOutbound::Message(latest) = receiver.recv().await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&latest.text).unwrap()["lease_id"],
             "C"

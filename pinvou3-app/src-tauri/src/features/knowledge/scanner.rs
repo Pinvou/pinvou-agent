@@ -50,7 +50,7 @@ pub fn scan(
         // 增量：mtime + size 都没变 → 跳过（省去 upsert 写入 + FTS 触发器开销）。
         if let Some(&(mt, sz)) = existing.get(&rec.path) {
             if mt == rec.mtime && sz == rec.size {
-                if walked % 5000 == 0 {
+                if walked.is_multiple_of(5000) {
                     on_progress(walked);
                 }
                 continue;
@@ -62,7 +62,7 @@ pub fn scan(
             buf.clear();
             std::thread::sleep(Duration::from_millis(THROTTLE_MS));
         }
-        if walked % 5000 == 0 {
+        if walked.is_multiple_of(5000) {
             on_progress(walked);
         }
     }

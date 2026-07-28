@@ -31,7 +31,7 @@ pub async fn chat(
     app: AppHandle,
 ) -> Result<(), String> {
     let trimmed = message.trim();
-    if trimmed.is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
+    if trimmed.is_empty() && attachments.as_ref().is_none_or(|a| a.is_empty()) {
         return Err("empty message".to_string());
     }
     // 多 session 并发:消息显式路由到指定 session(前端传 session_id);兼容旧前端时
@@ -70,7 +70,7 @@ pub(crate) async fn chat_with_reservation(
     store: &SessionStore,
     app: &AppHandle,
 ) -> Result<(), String> {
-    if message.trim().is_empty() && attachments.as_ref().map_or(true, |a| a.is_empty()) {
+    if message.trim().is_empty() && attachments.as_ref().is_none_or(|a| a.is_empty()) {
         return Err("empty message".to_string());
     }
     let chat_started_at = std::time::Instant::now();

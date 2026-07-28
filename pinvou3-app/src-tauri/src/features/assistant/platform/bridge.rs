@@ -1255,6 +1255,8 @@ fn reminder_for(mode: AppMode) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
 
@@ -2305,7 +2307,7 @@ mod tests {
         assert!(
             !prompt.contains(session_id),
             "workspace 路径(含 session_id)必须移出静态 system → turn_meta, 实际仍含: {}",
-            &prompt.chars().take(200).collect::<String>()
+            prompt.chars().take(200).collect::<String>()
         );
     }
 

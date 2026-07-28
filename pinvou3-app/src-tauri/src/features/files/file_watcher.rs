@@ -134,7 +134,7 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
             "event": event_type,
         });
         let _ = app.emit("artifact:disk", payload.clone());
-        crate::platform::app_events::forward_app_event(&app, "artifact:disk", payload);
+        crate::platform::app_events::forward_app_event(app, "artifact:disk", payload);
     }
 }
 

@@ -451,6 +451,12 @@ pub struct MarketplaceManager<S: CredentialStore = SystemCredentialStore> {
     credential_store: S,
 }
 
+impl Default for MarketplaceManager<SystemCredentialStore> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarketplaceManager<SystemCredentialStore> {
     pub fn new() -> Self {
         Self::with_store(SystemCredentialStore::new())
@@ -1351,6 +1357,8 @@ fn default_mcp_json() -> serde_json::Value {
 }
 
 #[cfg(test)]
+// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
@@ -1685,7 +1693,7 @@ mod tests {
         };
         let response = format!(
             "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.as_bytes().len()
+            body.len()
         );
         stream.write_all(response.as_bytes()).await
     }

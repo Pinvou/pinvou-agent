@@ -3,6 +3,7 @@
 //! 背景见 docs/context-compaction-设计.md §6。两条线用不同的尺:
 //!   - T(should_compact):对「可摘要子集」用 raw 尺(bytes÷4,无放大)
 //!   - E(emergency):对「全量」用 conservative 尺(raw×1.5 + system÷3 + framing)
+//!
 //! 本 harness 程序化对拍两把尺,定 T 公式常数 k/S/R/framing,不依赖真机/vLLM。
 //!
 //! 跑法:

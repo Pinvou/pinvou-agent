@@ -14,33 +14,28 @@ use crate::platform::credential_store::{
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum Theme {
+    #[default]
     Genesis,
     LiquidLight,
     LiquidDark,
 }
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::Genesis
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ColorScheme {
     Light,
     Dark,
+    #[default]
     System,
 }
-impl Default for ColorScheme {
-    fn default() -> Self {
-        ColorScheme::System
-    }
-}
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum Language {
     #[serde(rename = "zh-Hans")]
+    #[default]
     ZhHans,
     #[serde(rename = "en")]
     En,
@@ -48,11 +43,6 @@ pub enum Language {
     /// LLM 回复语言链路零改动。
     #[serde(rename = "ja")]
     Ja,
-}
-impl Default for Language {
-    fn default() -> Self {
-        Language::ZhHans
-    }
 }
 impl Language {
     pub fn locale_tag(self) -> &'static str {
@@ -245,17 +235,14 @@ impl ModelPreset {
 ///   自带额度,key 必填(留空底座直接报 "requires API key")。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SearchProvider {
+    #[default]
     Bing,
     Metaso,
     Bocha,
     Baidu,
     Tavily,
-}
-impl Default for SearchProvider {
-    fn default() -> Self {
-        SearchProvider::Bing
-    }
 }
 
 impl SearchProvider {

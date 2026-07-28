@@ -81,6 +81,9 @@ pub struct PlatformAsset {
 pub enum DownloadUpdateResult {
     #[allow(dead_code)]
     Path(String),
+    // Prepared 为平台更新流程的预留变体,当前各平台实现均不构造,
+    // 故在 lib 视角下被误报为 dead code;保留以备后续平台接入。
+    #[allow(dead_code)]
     Prepared(PreparedUpdate),
 }
 

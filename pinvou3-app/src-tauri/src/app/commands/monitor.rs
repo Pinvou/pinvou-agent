@@ -102,7 +102,7 @@ fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
         return None;
     }
     let port: u16 = port.parse().ok()?;
-    if !matches!(port, 8000 | 8001 | 8002 | 11434 | 1234) {
+    if !matches!(port, 8000..=8002 | 11434 | 1234) {
         return None;
     }
     Some(format!("http://{host}:{port}/v1"))

@@ -75,7 +75,7 @@ fn extract_user_code(line: &str) -> Option<String> {
         return None;
     }
     line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-        .filter(|s| {
+        .rfind(|s| {
             let len = s.len();
             (6..=32).contains(&len)
                 && s.chars()
@@ -83,7 +83,6 @@ fn extract_user_code(line: &str) -> Option<String> {
                 && s.chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
         })
-        .last()
         .map(|s| s.to_string())
 }
 
@@ -148,7 +147,15 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
     tx: mpsc::Sender<AuthEvent>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in std::io::BufRead::lines(std::io::BufReader::new(r)).flatten() {
+        for line in std::io::BufRead::lines(std::io::BufReader::new(r)) {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    // 管道读取错误通常不可恢复；继续迭代可能反复返回 Err 并空转。
+                    log::warn!("[dingtalk] 授权输出读取失败，停止排空：{error}");
+                    break;
+                }
+            };
             if let Some(safe_line) = safe_auth_log_line(&line) {
                 let _ = tx.send(AuthEvent::Line(safe_line));
             }

@@ -55,7 +55,8 @@ pub fn command_exists(command: &str) -> bool {
     }
     // cask 类 GUI 应用(如 LibreOffice)装在 /Applications/*.app/Contents/MacOS/,
     // 不在 Homebrew bin 目录,也不在 GUI 进程 PATH 内 → 依赖体检系统性误报缺失。
-    for cask_dir in ["/Applications/LibreOffice.app/Contents/MacOS"] {
+    {
+        let cask_dir = "/Applications/LibreOffice.app/Contents/MacOS";
         let path = Path::new(cask_dir).join(command);
         if path.is_file() && is_executable(&path) {
             return true;
@@ -132,30 +133,10 @@ pub fn libreoffice_missing_message() -> &'static str {
     "需要 LibreOffice。可通过 Homebrew 安装（brew install --cask libreoffice），或从 https://www.libreoffice.org/download 下载。"
 }
 
-pub fn sevenzip_missing_message() -> &'static str {
-    "压缩包解析需要 7-Zip。可通过 Homebrew 安装（brew install p7zip），或从 https://www.7-zip.org 下载。"
-}
-
-pub fn python3_missing_message() -> &'static str {
-    "邮件解析需要 python3。macOS 自带 python3（需安装 Xcode Command Line Tools：xcode-select --install）；如仍缺失可从 https://www.python.org/downloads 下载。"
-}
-
-pub fn msgconvert_missing_message() -> &'static str {
-    ".msg 邮件解析需要 msgconvert（Perl 模块 Email::Outlook::Message）。Homebrew 无对应 formula，请运行：sudo cpan -i Email::Outlook::Message，或改用其他工具转换 .msg 文件。"
-}
-
-pub fn libreoffice_dependency_packages() -> &'static str {
-    "libreoffice"
-}
-
-pub fn sevenzip_dependency_packages() -> &'static str {
-    "p7zip"
-}
-
 pub fn email_dependency_packages() -> &'static str {
     // msgconvert 需要 Perl 模块 Email::Outlook::Message，Homebrew 无对应 formula，
     // 无法一键安装。返回空串 → check_dependencies 的 apt 字段为空 → 前端不显示
-    // 「一键安装」按钮，用户按 msgconvert_missing_message 的指引手动安装。
+    // 「一键安装」按钮，用户需自行通过 `sudo cpan -i Email::Outlook::Message` 安装。
     ""
 }
 

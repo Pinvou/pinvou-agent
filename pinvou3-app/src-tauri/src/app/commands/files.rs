@@ -41,13 +41,7 @@ pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, Stri
     let file_path = match std::fs::read_dir(&upload_dir).ok().and_then(|entries| {
         entries
             .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_type()
-                    .map(|kind| kind.is_file())
-                    .unwrap_or(false)
-            })
-            .next()
+            .find(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
             .map(|entry| entry.path())
     }) {
         Some(path) => path,

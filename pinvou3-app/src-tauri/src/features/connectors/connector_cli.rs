@@ -190,7 +190,15 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     tx: mpsc::Sender<String>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(r).lines().flatten() {
+        for line in BufReader::new(r).lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    // 管道读取错误通常不可恢复；继续迭代可能反复返回 Err 并空转。
+                    log::warn!("[{}] 授权输出读取失败，停止排空：{error}", ctx.cli_bin);
+                    break;
+                }
+            };
             if let Some(u) = ctx.extract_url(&line) {
                 let _ = tx.send(u);
             }
@@ -325,6 +333,7 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Error, Read};
 
     const TEST_CTX: CliCtx = CliCtx {
         cli_bin: "test-cli",
@@ -351,6 +360,27 @@ mod tests {
     #[test]
     fn extract_url_none_without_url() {
         assert_eq!(TEST_CTX.extract_url("纯文本,没有链接"), None);
+    }
+
+    struct ReadErrorThenPanic {
+        failed: bool,
+    }
+
+    impl Read for ReadErrorThenPanic {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.failed {
+                panic!("读取错误后不应继续轮询同一管道");
+            }
+            self.failed = true;
+            Err(Error::other("test read failure"))
+        }
+    }
+
+    #[test]
+    fn drain_for_url_stops_after_read_error() {
+        let (tx, _rx) = mpsc::channel();
+        let handle = drain_for_url(TEST_CTX, ReadErrorThenPanic { failed: false }, tx);
+        assert!(handle.join().is_ok(), "读取错误后应退出排空线程");
     }
 
     /// 本地生成二维码:任意 URL 都能出码(不依赖各 CLI 的 qrcode 子命令),

@@ -1679,7 +1679,10 @@ fn clean_msg_text(value: &str) -> String {
 
 fn decode_msg_html_payload(value: &str) -> String {
     let value = clean_msg_text(value);
-    if value.len() < 8 || value.len() % 2 != 0 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if value.len() < 8
+        || !value.len().is_multiple_of(2)
+        || !value.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return value;
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
@@ -2050,7 +2053,7 @@ fn detect_utf16(bytes: &[u8]) -> Option<(Utf16Endian, usize)> {
     if bytes.starts_with(&[0xFE, 0xFF]) {
         return Some((Utf16Endian::Big, 2));
     }
-    if bytes.len() < 4 || bytes.len() % 2 != 0 {
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
         return None;
     }
 
@@ -2087,7 +2090,7 @@ fn decode_utf16(
         Utf16Endian::Little => "UTF-16 LE",
         Utf16Endian::Big => "UTF-16 BE",
     };
-    if payload.len() % 2 != 0 {
+    if !payload.len().is_multiple_of(2) {
         return (
             None,
             Some(format!("检测到 {label} 编码,但文件字节数不完整,未读取内容")),
@@ -3113,8 +3116,8 @@ mod tests {
         ];
 
         println!(
-            "\n{:<14} {:<12} {:<5} {:>6}  {}",
-            "文件", "kind", "md", "tokens", "warning / 内容预览"
+            "\n{:<14} {:<12} {:<5} {:>6}  warning / 内容预览",
+            "文件", "kind", "md", "tokens",
         );
         println!("{}", "-".repeat(100));
         let mut failures = Vec::new();
