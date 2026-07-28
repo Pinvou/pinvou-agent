@@ -2185,6 +2185,17 @@ pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String>
     Ok(target)
 }
 
+/// 供远程上传落盘使用的文件名清洗：在 `sanitize_filename` 基础上兜底拒绝
+/// `.` / `..`，保证 join 后仍留在上传暂存目录内。
+pub(crate) fn sanitize_upload_filename(raw: &str) -> String {
+    let cleaned = sanitize_filename(raw);
+    if cleaned == "." || cleaned == ".." {
+        "file".into()
+    } else {
+        cleaned
+    }
+}
+
 /// 把文件名做 sanitize：去掉路径分隔符、控制字符；保留中英文 + 常见标点。
 fn sanitize_filename(raw: &str) -> String {
     let trimmed = raw.rsplit(['/', '\\']).next().unwrap_or("file");

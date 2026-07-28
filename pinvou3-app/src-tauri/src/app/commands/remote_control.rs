@@ -274,6 +274,74 @@ pub async fn web_access_ingest_file(
     manager.cache_web_attachment(result)
 }
 
+/// Receive one bounded chunk of a browser-device file. Relay only forwards the
+/// chunk frames; on the final `commit` the bytes land in a short-lived staging
+/// directory, run through the shared ingest pipeline, and come back as the same
+/// opaque `WebAttachmentSummary` the host-file flow returns. Nothing survives
+/// past attachment consumption, eviction, or endpoint teardown.
+#[tauri::command]
+pub async fn web_access_upload_attachment_chunk(
+    upload_id: String,
+    file_name: String,
+    offset: usize,
+    total: usize,
+    data_base64: String,
+    commit: bool,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<Option<manager::WebAttachmentSummary>, String> {
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .map_err(|error| format!("decode attachment upload chunk: {error}"))?;
+    if data.len() > manager::MAX_ARTIFACT_CHUNK_BYTES {
+        return Err("attachment upload chunk exceeds 256 KiB".into());
+    }
+    let Some((file_name, bytes)) = manager
+        .append_web_attachment_upload(&upload_id, &file_name, offset, total, &data, commit)?
+    else {
+        return Ok(None);
+    };
+    let staging_dir = manager::web_attachment_uploads_base().join(format!(
+        "{}{}",
+        manager::WEB_ATTACHMENT_UPLOAD_DIR_PREFIX,
+        crate::features::remote_control::short_token(24)
+    ));
+    let ingest_dir = staging_dir.clone();
+    let ingested = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        std::fs::create_dir_all(&ingest_dir)
+            .map_err(|error| format!("create attachment upload dir: {error}"))?;
+        let path = ingest_dir
+            .join(crate::features::files::file_ingest::sanitize_upload_filename(&file_name));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| format!("write uploaded attachment: {error}"))?;
+        file.write_all(&bytes)
+            .map_err(|error| format!("write uploaded attachment: {error}"))?;
+        Ok(crate::features::files::file_ingest::ingest(&path))
+    })
+    .await
+    .map_err(|error| format!("ingest uploaded attachment task: {error}"))
+    .and_then(std::convert::identity);
+    ingested
+        .and_then(|result| manager.cache_web_attachment_from_upload(result, staging_dir.clone()))
+        .map(Some)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+        })
+}
+
+/// Cancel an in-progress browser-device upload and release its desktop buffer.
+/// Idempotent so a late cancel after commit or expiry stays silent.
+#[tauri::command]
+pub fn web_access_abort_attachment_upload(
+    upload_id: String,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<(), String> {
+    manager.abort_web_attachment_upload(&upload_id);
+    Ok(())
+}
+
 /// Web-safe chat entry point: Session routing is mandatory and attachment
 /// contents never cross Relay in either direction.
 #[tauri::command]
@@ -301,6 +369,21 @@ pub async fn web_access_chat(
     let attachment_handles = attachment_handles.unwrap_or_default();
     let (attachment_reservation, attachments) =
         manager.reserve_web_attachments(&attachment_handles)?;
+    let attachments = match stage_uploaded_attachments(attachments, &session_id, &store) {
+        Ok(attachments) => attachments,
+        Err(error) => {
+            if let Err(release_error) = manager.finish_web_attachment_reservation(
+                &attachment_reservation,
+                &attachment_handles,
+                false,
+            ) {
+                eprintln!(
+                    "[web-access] release staged attachment reservation failed: {release_error}"
+                );
+            }
+            return Err(error);
+        }
+    };
     let result = super::chat::chat_with_reservation(
         message,
         Some(attachments),
@@ -334,6 +417,40 @@ pub async fn web_access_chat(
         }
     }
     result
+}
+
+/// 浏览器本机上传的附件落在短生命周期暂存目录里。引擎会按 `IngestResult.path`
+/// 再次读取文件（图片拷贝进 workspace、超长文本注入路径供 `read_file`），因此
+/// 在把路径交给引擎之前先复制进该会话的 workspace 并改写 path，暂存目录的
+/// 清理就永远不会与后续读取竞争。桌面主机文件附件的路径原样保留。
+fn stage_uploaded_attachments(
+    mut attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    session_id: &str,
+    store: &SessionStore,
+) -> Result<Vec<crate::features::files::file_ingest::IngestResult>, String> {
+    let uploads_base = manager::web_attachment_uploads_base();
+    if attachments
+        .iter()
+        .all(|attachment| !std::path::Path::new(&attachment.path).starts_with(&uploads_base))
+    {
+        return Ok(attachments);
+    }
+    let workspace = store
+        .execution_workspace(session_id)
+        .map_err(|error| format!("resolve attachment workspace: {error:#}"))?;
+    for attachment in &mut attachments {
+        if !std::path::Path::new(&attachment.path).starts_with(&uploads_base) {
+            continue;
+        }
+        let staged = super::attachments::stage_remote_attachment_source(
+            &attachment.path,
+            &attachment.basename,
+            &workspace,
+        )
+        .ok_or_else(|| format!("暂存远程上传附件失败：{}", attachment.basename))?;
+        attachment.path = staged.to_string_lossy().into_owned();
+    }
+    Ok(attachments)
 }
 
 /// Persist a potentially large Web transcript through bounded upload chunks.

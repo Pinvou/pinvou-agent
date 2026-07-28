@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
 
-function bootClient() {
+function bootClient(policy) {
   const storage = new Map();
   const dispatched = [];
   const timers = [];
@@ -99,7 +99,7 @@ function bootClient() {
     fetch: async () => ({
       ok: true,
       async json() {
-        return { allowed_commands: [], allowed_events: ['chat:delta'] };
+        return policy || { allowed_commands: [], allowed_events: ['chat:delta'] };
       },
     }),
     WebSocket: MockWebSocket,
@@ -254,6 +254,49 @@ async function connectWithCapabilities(events, listener) {
   await client.eventDispatch;
   assert.equal(handled, 1);
   assert.equal(JSON.parse(storage.get('pinvou.web.cursor.endpoint_test')).after_seq, 1);
+}
+
+// 设备文件上传能力:未收到快照前 fail closed;旧桌面缺任一命令保持关闭,
+// 两条命令齐备才开放,与桌面附件双入口的显示/隐藏协商一致。
+{
+  const uploadCommands = ['web_access_upload_attachment_chunk', 'web_access_abort_attachment_upload'];
+  const negotiate = (snapshotCommands) => {
+    const harness = bootClient({ allowed_commands: uploadCommands, allowed_events: ['chat:delta'] });
+    const client = harness.window.PinvouWebClient;
+    return client.policyPromise.then(() => {
+      client.markFrontendReady();
+      return Promise.resolve().then(() => {
+        client.markStateReady();
+        assert.equal(harness.window.PinvouPlatform.can('deviceFileUpload'), false,
+          'device upload must fail closed before the desktop capability snapshot arrives');
+        const socket = harness.MockWebSocket.instances[0];
+        socket.open();
+        socket.message({
+          v: 2,
+          type: 'web_client_joined',
+          endpoint_id: 'endpoint_test',
+          lease_id: 'lease_test',
+          desktop_connected: true,
+        });
+        socket.message({
+          v: 2,
+          type: 'desktop_snapshot',
+          stream_epoch: 'epoch_test',
+          seq: 0,
+          snapshot: {
+            capabilities: { protocol_version: 2, commands: snapshotCommands, events: ['chat:delta'] },
+          },
+        });
+        return harness.window.PinvouPlatform.can('deviceFileUpload');
+      });
+    });
+  };
+  assert.equal(await negotiate(uploadCommands), true,
+    'a desktop advertising both upload commands must enable the device upload entry');
+  assert.equal(await negotiate(['web_access_upload_attachment_chunk']), false,
+    'an older desktop missing the abort command must keep the device upload entry hidden');
+  assert.equal(await negotiate([]), false,
+    'an older desktop without upload support must keep the device upload entry hidden');
 }
 
 console.log('web bootstrap transport tests passed');

@@ -311,6 +311,9 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
+      deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
+      deviceUploadFailed: "⚠️ Upload failed: ",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
@@ -331,6 +334,9 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
+      deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
+      deviceUploadFailed: "⚠️ アップロードに失敗: ",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
@@ -351,6 +357,9 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
+      deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
+      deviceUploadFailed: "⚠️ 上传失败: ",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
@@ -3468,9 +3477,13 @@
     text = (text || "").trim();
     var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
-    // 还有解析中的附件 → 等
+    // 还有解析中/上传中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
       addSystemItem(bt("attachStillParsing"));
+      return;
+    }
+    if (state.attachments.some(function (a) { return a.status === "uploading"; })) {
+      addSystemItem(bt("attachStillUploading"));
       return;
     }
 
@@ -6097,6 +6110,70 @@
       for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
+
+  // ── 浏览器本机文件上传 ──────────────────────────────────────────
+  // 「从此设备上传」入口:文件按 256KB 分块经 Relay 转发(Relay 只转发不保存),
+  // 桌面端最后一块落盘 + ingest 后返回与桌面文件附件相同的 WebAttachmentSummary。
+  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_ARTIFACT_CHUNK_BYTES
+  var DEVICE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;  // 对齐 file_ingest::MAX_FILE_BYTES
+  var DEVICE_UPLOAD_CANCELLED = new Error("device-upload-cancelled");
+
+  function bytesToBase64(bytes) {
+    var out = "";
+    for (var i = 0; i < bytes.length; i += 0x8000) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(out);
+  }
+
+  async function uploadDeviceFile(file) {
+    if (file.size > DEVICE_UPLOAD_MAX_BYTES) {
+      addSystemItem(bt("deviceUploadTooLarge")(file.name));
+      return;
+    }
+    var id = ++attachIdSeq;
+    var uploadId = "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
+    var att = { id: id, basename: file.name, status: "uploading", progress: 0, result: null, error: null };
+    state.attachments.push(att); notify();
+    // 用户点掉 chip(removeAttachment)即取消:下一块边界停止并通知桌面释放缓冲。
+    function assertActive() {
+      if (state.attachments.indexOf(att) < 0) throw DEVICE_UPLOAD_CANCELLED;
+    }
+    try {
+      var offset = 0;
+      var summary = null;
+      do {
+        var slice = file.slice(offset, Math.min(offset + DEVICE_UPLOAD_CHUNK_BYTES, file.size));
+        var bytes = new Uint8Array(await slice.arrayBuffer());
+        assertActive();
+        summary = await invoke("web_access_upload_attachment_chunk", {
+          uploadId: uploadId, fileName: file.name, offset: offset,
+          total: file.size, dataBase64: bytesToBase64(bytes),
+          commit: offset + bytes.length >= file.size,
+        });
+        offset += bytes.length;
+        att.progress = file.size ? Math.min(99, Math.round((offset / file.size) * 100)) : 99;
+        notify();
+      } while (offset < file.size);
+      assertActive();
+      if (!summary || !summary.handle) throw new Error("upload did not return an attachment handle");
+      att.status = "ready"; att.progress = 100; att.result = summary;
+      att.basename = summary.basename || att.basename;
+    } catch (e) {
+      invoke("web_access_abort_attachment_upload", { uploadId: uploadId }).catch(function () {});
+      if (e !== DEVICE_UPLOAD_CANCELLED) {
+        att.status = "error"; att.error = String(e && e.message ? e.message : e);
+        addSystemItem(bt("deviceUploadFailed") + att.error);
+      }
+    }
+    notify();
+  }
+
+  // 顺序处理选中的多个文件;桌面端另有并发缓冲与总量上限兜底。
+  async function uploadDeviceFiles(files) {
+    var list = Array.prototype.slice.call(files || []).filter(Boolean);
+    for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
+  }
   if (!IS_WEB) initAttachmentDrop();
 
 
@@ -7255,6 +7332,7 @@
     removeAttachment: removeAttachment,
     clearAttachments: clearAttachments,
     pickAndAttach: pickAndAttach,
+    uploadDeviceFiles: uploadDeviceFiles,
     markResolved: markResolved,
     // 工作流
     loadSkills: loadSkills,
@@ -7438,7 +7516,7 @@
       refreshRemoteControlStatus: "refreshWebAccessStatus"
     }),
     artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverables", "listDeliverableIndex", "openExternalUrl"]),
-    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach"]),
+    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles"]),
     resolutions: domain(["markResolved"]),
     workflow: domain(["loadSkills", "activateSkill", "deactivateSkill", "openDemo", "closeDemo", "setCurrentPhase", "startWorkflowTask", "stopWorkflowTask", "listWorkflows", "resetWorkflowRun", "selectWorkflowRole", "closeWorkflowDrawer", "getRolePrompt", "getRoleOutputs", "getGateReport", "getRoleLogs", "submitWorkflowUserInput", "pickAndAddMaterials", "addMaterialsToSession", "attachRun", "resumeWorkflowOnBoot", "approveWorkflowGate", "rejectWorkflowGate", "retryWorkflowRole"]),
     files: domain(["pickFiles", "pickFeedbackFiles"]),

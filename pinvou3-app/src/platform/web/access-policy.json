@@ -114,6 +114,7 @@
     "wecom_skills_state",
     "wecom_status",
     "web_access_list_host_files",
+    "web_access_abort_attachment_upload",
     "web_access_artifact_info",
     "web_access_chat",
     "web_access_create_session",
@@ -132,6 +133,7 @@
     "web_access_start_skill_session",
     "web_access_transcribe_voice_audio",
     "web_access_update_settings",
+    "web_access_upload_attachment_chunk",
     "web_access_write_artifact_text"
   ],
   "allowed_events": [

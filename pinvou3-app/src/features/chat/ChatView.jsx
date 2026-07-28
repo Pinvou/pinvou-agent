@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, X, Zap } from '../../components/icons.jsx';
+import { ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Monitor, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
@@ -119,6 +119,54 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // 输入框底栏:知识库挂载选择器(与 ComposerModelSelector/ComposerToolMenu 同款 pill,
     // class 暗色策略)。给当前对话挂一个知识集(会话级粘连),挂上后每条消息发送前后端自动
     // 检索注入相关片段(commands::chat)。草稿态选集会经 bridge.knowledge.mountCollection 先物化 session。
+    // 附件入口。桌面端与旧桌面实例保持原有单入口(直开各自的文件选择器);
+    // 仅当桌面实例通过能力协商声明支持浏览器上传(deviceFileUpload)时,才展开
+    // "从此设备上传 / 从桌面实例选择"双入口菜单。能力在点击时评估,不依赖
+    // 能力快照到达时机的渲染竞态。
+    const ComposerAttachButton = ({ t, compact }) => {
+      const [open, setOpen] = useState(false);
+      const triggerRef = useRef(null);
+      const fileInputRef = useRef(null);
+      function onTriggerClick() {
+        if (!bridge.available) return;
+        if (can('deviceFileUpload')) setOpen(v => !v);
+        else bridge.attachments.pickAndAttach();
+      }
+      function pickFromDevice() {
+        setOpen(false);
+        if (fileInputRef.current) fileInputRef.current.click();
+      }
+      function pickFromHost() {
+        setOpen(false);
+        bridge.attachments.pickAndAttach();
+      }
+      function onFilesChosen(event) {
+        const files = event.target.files;
+        if (files && files.length && bridge.available) bridge.attachments.uploadDeviceFiles(files);
+        event.target.value = '';
+      }
+      const entryCls = 'w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group';
+      return (
+        <div className="relative">
+          <button ref={triggerRef} onClick={onTriggerClick} title={t.attachAdd} className={COMPOSER_ICON_BUTTON_CLASS}>
+            <Paperclip size={18} />
+          </button>
+          <input ref={fileInputRef} type="file" multiple className="hidden" data-testid="device-file-input" onChange={onFilesChosen} />
+          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-56 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            <button onClick={pickFromDevice} className={entryCls}>
+              <Upload size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+              {t.attachFromDevice}
+            </button>
+            <button onClick={pickFromHost} className={entryCls}>
+              <Monitor size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+              {t.attachFromHost}
+            </button>
+          </ComposerPopover>
+        </div>
+      );
+    };
+
     const ComposerKbSelector = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
@@ -1011,6 +1059,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               onRemove={id => bridge.attachments.removeAttachment(id)}
               dark={isDark}
               parsingLabel={t.attachParsing}
+              uploadingLabel={t.attachUploading}
               failedLabel={t.attachFailed}
               removeLabel={t.uiAttachments.remove}
               formatError={formatAttachmentError}
@@ -1131,10 +1180,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               )}
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  <button onClick={() => bridge.available && bridge.attachments.pickAndAttach()} title={t.attachAdd}
-                    className={COMPOSER_ICON_BUTTON_CLASS}>
-                    <Paperclip size={18} />
-                  </button>
+                  <ComposerAttachButton t={t} compact={composerCompact} />
                   <button onClick={handleVoiceClick} disabled={primaryVoiceDisabled} aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
                     className={`${
                       voiceRecording

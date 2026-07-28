@@ -682,6 +682,8 @@ pub fn run() {
             commands::remote_control::web_access_create_session,
             commands::remote_control::web_access_load_session_chunk,
             commands::remote_control::web_access_ingest_file,
+            commands::remote_control::web_access_upload_attachment_chunk,
+            commands::remote_control::web_access_abort_attachment_upload,
             commands::remote_control::web_access_chat,
             commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
