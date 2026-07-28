@@ -191,6 +191,10 @@ docs/                 架构设计、验证报告与维护文档
 - [SBOM 说明](docs/sbom.md)
 - [工具市场设计](docs/工具市场.md)
 
+## 🔗 友情链接
+
+- [LINUX DO](https://linux.do/)
+
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Pinvou/pinvou-agent&type=Date)](https://star-history.com/#Pinvou/pinvou-agent&Date)
