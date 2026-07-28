@@ -4,11 +4,15 @@
 # 删除规则:
 #   A. 已关闭/已合并 PR(refs/pull/N/merge)作用域的全部缓存
 #      (PR 作用域缓存互不可见,PR 关闭后即死重;历史上 node-cache、sccache、
-#       release 打包缓存都在 PR 作用域产生过 GB 级残留)
+#       release 打包缓存都在 PR 作用域产生过 GB 级残留;PR 状态查询失败一律保留)
 #   B. 创建超过 N 天的 sccache 对象(默认 7 天;内容寻址,陈旧条目命中前
 #      早已被新编译产物替代,暖源由 main 持续重写,不依赖陈旧条目)
-#   C. codeql-overlay 每种语言只保留最新 1 份(CodeQL 只消费最新 base)
-#   D. node-cache 每个平台只保留最新 1 份(旧 lockfile 哈希没有 restore 路径)
+#   C. codeql-overlay 每种语言每个作用域只保留最新 1 份(CodeQL 只消费最新 base)
+#   D. node-cache 每个平台每个作用域只保留最新 1 份(同平台旧 lockfile 哈希
+#      仅有 restore-keys 前缀回退价值,留最新即可)
+#
+# 注意:规则 C/D 必须按缓存作用域(ref)分组。作用域之间互不可见,跨 ref
+# 只留最新会把 main 的可用缓存换成 PR 作用域的(main 读不到),等于误删。
 #
 # 保护:main 作用域的 v0-rust-* 系列(rust-test / rust-lint / windows-rust-test /
 # mac-build / release-*)不在任何规则范围内。
@@ -71,8 +75,9 @@ for r in sorted(refs): print(r)
 for ref in $PR_REFS; do
   pr_num="${ref#refs/pull/}"; pr_num="${pr_num%%/*}"
   state=$(gh pr view "$pr_num" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
-  if [ "$state" = "OPEN" ]; then
-    echo "  PR #$pr_num OPEN,保留 $ref"
+  # 只删确认已关闭/合并的;查询失败(UNKNOWN)一律保留,避免 API 抖动误删开放 PR 的缓存
+  if [ "$state" != "CLOSED" ] && [ "$state" != "MERGED" ]; then
+    echo "  PR #$pr_num 状态=$state,保留 $ref"
     continue
   fi
   echo "  PR #$pr_num 状态=$state,清理 $ref"
@@ -113,10 +118,12 @@ entries = [c for c in json.load(open('/tmp/cache-janitor-list.json')) if c['key'
 groups = {}
 for c in entries:
     # key 形如 codeql-overlay-base-database-1-<sha>-<lang>-<version>-...
+    # 按 (语言, 作用域) 分组:缓存作用域互不可见,跨 ref 只留最新会把 main 的
+    # 缓存换成 PR 作用域的(main 读不到),等于删掉 main 的可用缓存。
     parts = c['key'].split('-')
     lang = parts[6] if len(parts) > 6 else c['key']
-    groups.setdefault(lang, []).append(c)
-for lang, items in groups.items():
+    groups.setdefault((lang, c['ref']), []).append(c)
+for group, items in groups.items():
     items.sort(key=lambda c: c['createdAt'], reverse=True)
     for c in items[1:]: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
 ")
@@ -132,9 +139,10 @@ entries = [c for c in json.load(open('/tmp/cache-janitor-list.json')) if c['key'
 groups = {}
 for c in entries:
     # key 形如 node-cache-<platform>-npm-<hash>,平台段取 npm- 之前的部分
+    # 按 (平台, 作用域) 分组:同规则 C,跨 ref 只留最新会误删 main 的可用缓存。
     platform = c['key'].split('-npm-')[0]
-    groups.setdefault(platform, []).append(c)
-for platform, items in groups.items():
+    groups.setdefault((platform, c['ref']), []).append(c)
+for group, items in groups.items():
     items.sort(key=lambda c: c['createdAt'], reverse=True)
     for c in items[1:]: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
 ")
