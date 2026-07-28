@@ -457,7 +457,7 @@ impl Pinvou3Bridge {
             ModelPreset::OpenaiCompatible => "https://api.openai.com/v1".to_string(),
             ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3".to_string(),
-            ModelPreset::Minimax => "https://api.minimax.chat/v1".to_string(),
+            ModelPreset::Minimax => "https://api.minimaxi.com/v1".to_string(),
             ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4".to_string(),
             ModelPreset::Mimo => "https://api.xiaomimimo.com/v1".to_string(),
         }

@@ -435,7 +435,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
       qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
       doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
-      minimax:     { baseUrl: 'https://api.minimax.chat/v1',            model: 'MiniMax-M3' },
+      minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
       glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
       mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
     };
@@ -645,7 +645,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           vendor: 'qwen',
           items: [
             { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '最新推荐' },
-            { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '快速响应' },
+            { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '旗舰推理' },
+            { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '高性价比' },
+            { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
             { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
           ],
         },

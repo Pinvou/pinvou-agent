@@ -202,7 +202,7 @@ impl ModelPreset {
             ModelPreset::OpenaiCompatible => "https://api.openai.com/v1",
             ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3",
-            ModelPreset::Minimax => "https://api.minimax.chat/v1",
+            ModelPreset::Minimax => "https://api.minimaxi.com/v1",
             ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4",
             ModelPreset::Mimo => "https://api.xiaomimimo.com/v1",
         }
@@ -429,6 +429,19 @@ impl SavedModel {
 
     fn normalize_provider_metadata(&mut self) {
         self.base_url = strip_chat_completions_suffix(&self.base_url);
+        // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
+        // 存量配置在 load 时一次性改写,避免继续打已下线域名。
+        const LEGACY_MINIMAX_PREFIX: &str = "https://api.minimax.chat/";
+        if self
+            .base_url
+            .to_ascii_lowercase()
+            .starts_with(LEGACY_MINIMAX_PREFIX)
+        {
+            self.base_url = format!(
+                "https://api.minimaxi.com/{}",
+                &self.base_url[LEGACY_MINIMAX_PREFIX.len()..]
+            );
+        }
         if let Some((vendor, canonical_base_url)) = identify_coding_plan_endpoint(&self.base_url) {
             self.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.to_string());
             self.vendor = Some(vendor.to_string());
@@ -1066,6 +1079,32 @@ mod tests {
             Some(MODEL_PROVIDER_KIND_OFFICIAL_API)
         );
         assert!(model.vendor.is_none());
+    }
+
+    #[test]
+    fn legacy_minimax_chat_domain_is_rewritten() {
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.upsert_model(SavedModel {
+            id: "minimax-api".into(),
+            name: "MiniMax".into(),
+            preset: ModelPreset::Minimax,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "MiniMax-M3".into(),
+            base_url: "https://api.minimax.chat/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+
+        let model = prefs.model_by_id("minimax-api").expect("minimax model");
+        assert_eq!(model.base_url, "https://api.minimaxi.com/v1");
     }
 
     #[test]
