@@ -11,7 +11,7 @@ Pinvou3 仅负责随应用内置并按用户连接状态门控该 skill。dws CL
 
 依据 Apache-2.0 §4(b) 登记对 `dws/SKILL.md` 的本地修改（2026-07-25）。下次升级 dws npm 版本时本节修改需重放。
 
-1. frontmatter `description` 重写：修复「在线电子表格」重复出现、补入 AI应用与目标管理(Agoal)，并压缩为一句话触发说明。
+1. frontmatter `description` 重写：修复「在线电子表格」重复出现，删除随包 CLI 不支持且引用缺失的 AI应用入口，补入目标管理(Agoal)，并压缩为一句话触发说明。
 2. 修正脚本能力描述：`scripts/` 下无 AI 应用创建轮询脚本，删除该说法（MUST DO「脚本优先」条与「详细参考」scripts 行两处）。
 3. 修正「脚本均支持 `--dry-run` 预览、`--format json` 输出」的不实表述，改为提示各脚本参数不统一、先用 `--help` 确认 flag。
 4. 产品总览表补 `agoal`（目标管理）行，与意图决策树已有路由对齐。

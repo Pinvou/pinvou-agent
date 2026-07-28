@@ -126,4 +126,3 @@ wecom-cli contact get_userlist '{}'
 
 2. 筛选 `name` 为"张三"的成员，确认 `userid`
 3. 将 `userid` 传递给消息发送接口
-
