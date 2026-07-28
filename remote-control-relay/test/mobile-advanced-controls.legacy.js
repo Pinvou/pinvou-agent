@@ -13,6 +13,16 @@ import { JSDOM } from 'jsdom';
 
 const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
 
+test('legacy DOMPurify 资源从 Relay base 根目录加载', () => {
+  const match = html.match(/<script src="([^"]*purify\.min\.js)"><\/script>/);
+  assert.ok(match, '页面应加载 vendored DOMPurify');
+  const assetUrl = new URL(
+    match[1],
+    'https://relay.test/pinvou3/remote/r/rc_e2e#token=tok',
+  );
+  assert.equal(assetUrl.pathname, '/pinvou3/remote/purify.min.js');
+});
+
 function createPage() {
   const sent = [];
   const dom = new JSDOM(html, {
