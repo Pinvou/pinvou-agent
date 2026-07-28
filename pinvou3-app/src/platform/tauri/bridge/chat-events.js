@@ -195,6 +195,7 @@
         var acceptedMode = payload.mode_state || payload.modeState;
         state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
       }
+      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn) {
         if (operation === "edit_last") {
           for (var index = state.chatItems.length - 1; index >= 0; index--) {
@@ -517,7 +518,6 @@
       var error = e.payload && e.payload.error;
       recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
-      if (error) addSystemItem("⚠️ " + error);
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
@@ -640,7 +640,13 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     refreshEffectiveModelConfigAfterAuthError(error);
-    if (error) addSystemItem("⚠️ " + error);
+    if (error) {
+      var notice = "⚠️ " + error;
+      var duplicate = state.chatItems.some(function (item) {
+        return item && item.turnErrorNotice && item.text === notice;
+      });
+      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+    }
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
