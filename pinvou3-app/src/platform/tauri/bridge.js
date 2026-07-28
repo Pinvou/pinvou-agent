@@ -1094,7 +1094,7 @@
     return textParts.filter(function (text) {
       var trimmed = text.trim();
       return !(
-        (trimmed.indexOf("<turn_meta>") === 0 && trimmed.lastIndexOf("</turn_meta>") === trimmed.length - "</turn_meta>".length) ||
+        (trimmed.indexOf("<turn_meta>") === 0 && trimmed.endsWith("</turn_meta>")) ||
         trimmed === "<turn_meta_unchanged />"
       );
     }).map(function (text) {
