@@ -77,7 +77,7 @@ const codexZh = {
   connected:'Codex 已连接', notReady:'Codex 未就绪',
   notSet:'未设置', choiceTitle:'Codex 需要你的选择', submit:'提交', cancel:'取消', submitted:'已提交', canceled:'已取消', inputExpired:'该输入请求已过期',
   checking:'正在检查 Codex ACP…', bridgeUnavailable:'Codex ACP Bridge 不可用',
-  bridgeRepair:'请修复或重新安装 Pinvou。开发环境可运行 prepare-codex-bridge-runtime.sh。',
+  bridgeRepair:'请修复或重新安装 Pinvou。开发环境可运行 npm run prepare:codex-bridge。',
   codexMissing:'未检测到系统 Codex', managedAvailable:version=>`可下载 Pinvou 托管 Codex ${version}，不修改系统环境`,
   downloading:'正在下载…', downloadProgress:progress=>`下载 ${progress}%`, downloadManaged:'下载托管 Codex',
   waitingLogin:'等待 Codex 授权', notLoggedIn:'Codex 尚未登录',
@@ -85,7 +85,7 @@ const codexZh = {
   openingAuth:'正在启动 Codex 授权页面，请稍候…', loginHint:'使用 Codex CLI / ChatGPT 账号完成授权',
   reopenAuth:'重新打开授权页', waitAuth:'等待授权…', authorize:'授权登录',
   chooseProjectDialog:'选择 Codex 项目目录', addAttachmentDialog:'添加附件',
-  attachmentsParsing:'附件仍在解析，请稍候', sessionSyncing:'Codex 会话配置仍在同步，请稍候',
+  attachmentsParsing:'附件仍在解析，请稍候',
   operationFailed:'Codex 操作失败，请重试', showRawErrors:true,
   runtimeSources:{ system:'系统 Codex', managed:'托管 Codex', override:'自定义 Codex', legacy_bundled:'内置 Codex' },
 };
@@ -107,7 +107,7 @@ const codexEn = {
   connected:'Codex connected', notReady:'Codex not ready',
   notSet:'Not set', choiceTitle:'Codex needs your choice', submit:'Submit', cancel:'Cancel', submitted:'Submitted', canceled:'Canceled', inputExpired:'This input request has expired',
   checking:'Checking Codex ACP…', bridgeUnavailable:'Codex ACP Bridge unavailable',
-  bridgeRepair:'Repair or reinstall Pinvou. In development, run prepare-codex-bridge-runtime.sh.',
+  bridgeRepair:'Repair or reinstall Pinvou. In development, run npm run prepare:codex-bridge.',
   codexMissing:'System Codex not detected', managedAvailable:version=>`Download Pinvou-managed Codex ${version} without changing the system environment`,
   downloading:'Downloading…', downloadProgress:progress=>`Downloading ${progress}%`, downloadManaged:'Download managed Codex',
   waitingLogin:'Waiting for Codex authorization', notLoggedIn:'Codex is not signed in',
@@ -115,8 +115,8 @@ const codexEn = {
   openingAuth:'Opening the Codex authorization page…', loginHint:'Authorize with Codex CLI / your ChatGPT account',
   reopenAuth:'Reopen authorization page', waitAuth:'Waiting for authorization…', authorize:'Authorize',
   chooseProjectDialog:'Choose Codex project directory', addAttachmentDialog:'Add attachments',
-  attachmentsParsing:'Attachments are still being parsed. Please wait', sessionSyncing:'Codex session configuration is still syncing. Please wait',
-  operationFailed:'Codex operation failed. Please retry', showRawErrors:false,
+  attachmentsParsing:'Attachments are still being parsed. Please wait',
+  operationFailed:'Codex operation failed. Please retry', showRawErrors:true,
   runtimeSources:{ system:'System Codex', managed:'Managed Codex', override:'Custom Codex', legacy_bundled:'Bundled Codex' },
 };
 const codexJa = {
@@ -137,7 +137,7 @@ const codexJa = {
   connected:'Codex 接続済み', notReady:'Codex は準備できていません',
   notSet:'未設定', choiceTitle:'Codex が選択を求めています', submit:'送信', cancel:'キャンセル', submitted:'送信済み', canceled:'キャンセル済み', inputExpired:'この入力リクエストは期限切れです',
   checking:'Codex ACP を確認中…', bridgeUnavailable:'Codex ACP Bridge を利用できません',
-  bridgeRepair:'Pinvou を修復または再インストールしてください。開発環境では prepare-codex-bridge-runtime.sh を実行できます。',
+  bridgeRepair:'Pinvou を修復または再インストールしてください。開発環境では npm run prepare:codex-bridge を実行できます。',
   codexMissing:'システム Codex が見つかりません', managedAvailable:version=>`システム環境を変更せず、Pinvou 管理の Codex ${version} をダウンロードできます`,
   downloading:'ダウンロード中…', downloadProgress:progress=>`ダウンロード ${progress}%`, downloadManaged:'管理対象 Codex をダウンロード',
   waitingLogin:'Codex の認証待ち', notLoggedIn:'Codex にログインしていません',
@@ -145,8 +145,8 @@ const codexJa = {
   openingAuth:'Codex 認証ページを開いています…', loginHint:'Codex CLI / ChatGPT アカウントで認証',
   reopenAuth:'認証ページを再度開く', waitAuth:'認証待ち…', authorize:'認証ログイン',
   chooseProjectDialog:'Codex プロジェクトディレクトリを選択', addAttachmentDialog:'添付ファイルを追加',
-  attachmentsParsing:'添付ファイルを解析中です。しばらくお待ちください', sessionSyncing:'Codex セッション設定を同期中です。しばらくお待ちください',
-  operationFailed:'Codex の操作に失敗しました。再試行してください', showRawErrors:false,
+  attachmentsParsing:'添付ファイルを解析中です。しばらくお待ちください',
+  operationFailed:'Codex の操作に失敗しました。再試行してください', showRawErrors:true,
   runtimeSources:{ system:'システム Codex', managed:'管理対象 Codex', override:'カスタム Codex', legacy_bundled:'内蔵 Codex' },
 };
 

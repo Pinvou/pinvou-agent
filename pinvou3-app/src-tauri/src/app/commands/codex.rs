@@ -41,8 +41,8 @@ fn ensure_codex_workspace_root(
 }
 
 #[tauri::command]
-pub fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> CodexAcpStatus {
-    acp_pool.status()
+pub async fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpStatus, String> {
+    Ok(acp_pool.refresh_status().await)
 }
 
 #[tauri::command]

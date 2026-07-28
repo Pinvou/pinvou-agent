@@ -765,7 +765,7 @@ export function CodexAcpView({
     setEvents(timeline || []);
     setPending(permissions || []);
     setPendingElicitations(elicitations || []);
-    const runtime = status || await refreshStatus();
+    const runtime = await refreshStatus();
     if (runtime.installed && runtime.node_supported) {
       try {
         return applySessionInfo(await invoke('get_codex_acp_session_info', { sessionId: id }));
@@ -1090,18 +1090,12 @@ export function CodexAcpView({
       return;
     }
     if (workspaceUnavailable) return;
-    if (activeId && !sessionInfo) {
-      setError(codexCopy.sessionSyncing);
-      return;
-    }
     setWorking(true); setError('');
     try {
       let targetId = activeId;
-      let targetInfo = sessionInfo;
       if (!targetId) {
         const created = await createSession(draftWorkspacePath);
         targetId = created.id;
-        targetInfo = created.info;
         setAttachmentDrafts(current => {
           const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
           const next = { ...current, [targetId]: draftAttachments };
@@ -1114,9 +1108,6 @@ export function CodexAcpView({
           delete next[DRAFT_ATTACHMENT_KEY];
           return next;
         });
-      }
-      if (!targetInfo) {
-        throw new Error(codexCopy.sessionSyncing);
       }
       autoScrollRef.current = true;
       setShowScrollBottom(false);
@@ -1520,7 +1511,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={(activeId && !sessionInfo) || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !status || !status.installed || !status.authenticated}
+                  <button onClick={send} disabled={(!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !status || !status.installed || !status.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>

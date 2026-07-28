@@ -9,7 +9,7 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) codex_acp_supported: bool,
 }
 
-pub(crate) const fn current() -> DesktopCapabilities {
+pub(crate) fn current() -> DesktopCapabilities {
     DesktopCapabilities {
         os: std::env::consts::OS,
         show_megacube_site: cfg!(target_os = "linux"),
@@ -17,8 +17,12 @@ pub(crate) const fn current() -> DesktopCapabilities {
         uses_bundled_dependency_installer: cfg!(target_os = "windows"),
         task_completion_notifications_default: !cfg!(target_os = "linux"),
         local_vllm_supported: cfg!(target_os = "linux"),
-        codex_acp_supported: cfg!(target_os = "linux"),
+        codex_acp_supported: supports_codex_acp(std::env::consts::OS),
     }
+}
+
+pub(crate) fn supports_codex_acp(os: &str) -> bool {
+    matches!(os, "linux" | "windows")
 }
 
 pub(crate) const fn is_windows() -> bool {
@@ -47,5 +51,16 @@ mod tests {
             capabilities.task_completion_notifications_default,
             !is_linux()
         );
+        assert_eq!(
+            capabilities.codex_acp_supported,
+            supports_codex_acp(std::env::consts::OS)
+        );
+    }
+
+    #[test]
+    fn codex_acp_is_available_on_linux_and_windows() {
+        assert!(supports_codex_acp("linux"));
+        assert!(supports_codex_acp("windows"));
+        assert!(!supports_codex_acp("macos"));
     }
 }

@@ -2,6 +2,11 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
 const {
+  prepareLinuxCodexBridge,
+  prepareWindowsCodexBridge,
+  WINDOWS_BRIDGE_CONFIG_PATH,
+} = require("./codex-bridge.js");
+const {
   APP_ROOT,
   platformArchitectureConfigPath,
   platformConfigPath,
@@ -32,6 +37,7 @@ function prepareTauriArgs(
   {
     platform = process.platform,
     architecture = process.arch,
+    additionalConfigs = [],
   } = {},
 ) {
   const prepared = [...args];
@@ -41,6 +47,7 @@ function prepareTauriArgs(
   const automaticConfigs = [platformConfigPath(platform)];
   const architectureConfig = platformArchitectureConfigPath(platform, architecture);
   if (architectureConfig) automaticConfigs.push(architectureConfig);
+  automaticConfigs.push(...additionalConfigs);
   const injected = automaticConfigs.flatMap((configPath) => ["--config", configPath]);
   // Automatic overlays must precede explicit signing/staging overlays so the
   // caller can intentionally override or remove inherited resource mappings.
@@ -64,17 +71,15 @@ function prepareLinuxArm64Connectors({
   }
 }
 
-function prepareLinuxCodexBridge({ platform = process.platform, spawn = spawnSync } = {}) {
-  if (platform !== "linux") return;
-  const script = path.join(APP_ROOT, "scripts", "prepare-codex-bridge-runtime.sh");
-  const child = spawn(script, [], {
+function runTauri(preparedArgs, spawn = spawnSync) {
+  const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
+  const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
     cwd: APP_ROOT,
+    env: { ...process.env, [WRAPPER_ENV]: "1" },
     stdio: "inherit",
   });
   if (child.error) throw child.error;
-  if (child.status !== 0) {
-    throw new Error(`准备 Codex ACP Bridge 失败，退出码: ${child.status ?? "unknown"}`);
-  }
+  return child.status === null ? 1 : child.status;
 }
 
 function main() {
@@ -84,11 +89,25 @@ function main() {
 
   if (validateOnly) return;
 
-  const preparedArgs = prepareTauriArgs(args);
-  if (tauriCommandIndex(preparedArgs) >= 0) {
+  const isDev = args.includes("dev");
+  const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
+  const additionalConfigs = [];
+  if (isDev) {
+    prepareLinuxCodexBridge();
+    prepareWindowsCodexBridge();
+  }
+  if (hasTauriBuildCommand) {
     prepareLinuxArm64Connectors();
     prepareWebTemplate();
     prepareLinuxCodexBridge();
+    prepareWindowsCodexBridge();
+    if (process.platform === "win32") {
+      additionalConfigs.push(WINDOWS_BRIDGE_CONFIG_PATH);
+    }
+  }
+
+  const preparedArgs = prepareTauriArgs(args, { additionalConfigs });
+  if (hasTauriBuildCommand) {
     const artifacts = writeEffectiveArtifacts(configSpecs(preparedArgs));
     console.log(`[build] 有效 Tauri 配置: ${artifacts.effectiveConfigPath}`);
     console.log(
@@ -96,14 +115,7 @@ function main() {
     );
   }
 
-  const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
-  const child = spawnSync(process.execPath, [tauriCli, ...preparedArgs], {
-    cwd: APP_ROOT,
-    env: { ...process.env, [WRAPPER_ENV]: "1" },
-    stdio: "inherit",
-  });
-  if (child.error) throw child.error;
-  process.exitCode = child.status === null ? 1 : child.status;
+  process.exitCode = runTauri(preparedArgs);
 }
 
 if (require.main === module) {
@@ -120,6 +132,8 @@ module.exports = {
   main,
   prepareLinuxArm64Connectors,
   prepareLinuxCodexBridge,
+  prepareWindowsCodexBridge,
   prepareTauriArgs,
+  runTauri,
   tauriCommandIndex,
 };
