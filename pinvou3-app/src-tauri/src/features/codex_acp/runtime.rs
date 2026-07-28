@@ -14,7 +14,7 @@ use sha2::{Digest, Sha512};
 use tokio::io::AsyncWriteExt;
 use wait_timeout::ChildExt;
 
-use super::diagnostics;
+use super::{diagnostics, platform};
 
 pub const MANAGED_CODEX_VERSION: &str = "0.144.6";
 
@@ -45,44 +45,8 @@ pub struct ResolvedCodex {
     pub version: String,
 }
 
-struct ManagedCodexArtifact {
-    urls: &'static [&'static str],
-    integrity: &'static str,
-    vendor_triple: &'static str,
-}
-
-fn managed_artifact() -> Result<ManagedCodexArtifact> {
-    managed_artifact_for(std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn managed_artifact_for(os: &str, arch: &str) -> Result<ManagedCodexArtifact> {
-    match (os, arch) {
-        ("linux", "x86_64") => Ok(ManagedCodexArtifact {
-            urls: &[
-                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-linux-x64.tgz",
-                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-linux-x64.tgz",
-            ],
-            integrity: "sha512-4E7EnzCg0OnBxCyYnwJ+qnZwWHYe0YScr5ucKWbngE9u4+0XrpWELqq2Kn9jl5GZK8MDjU7PrJwFIwusHOHjuw==",
-            vendor_triple: "x86_64-unknown-linux-musl",
-        }),
-        ("linux", "aarch64") => Ok(ManagedCodexArtifact {
-            urls: &[
-                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-linux-arm64.tgz",
-                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-linux-arm64.tgz",
-            ],
-            integrity: "sha512-PGiLXMN+2IQRkf7tOLi64dMInjU1pRLbz0Rwfj/yt2Y97SZQqAjFQoi2wmswmqtqMDnfwCPTC1DRXVQkvU6T6Q==",
-            vendor_triple: "aarch64-unknown-linux-musl",
-        }),
-        ("windows", "x86_64") => Ok(ManagedCodexArtifact {
-            urls: &[
-                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-win32-x64.tgz",
-                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-win32-x64.tgz",
-            ],
-            integrity: "sha512-dN39VnjEthKz5io1RNWwZDtErdSn07nW3pGUgvlA6DMxgm/nuGaIAZO/sG/Hgxq/x5j9HteAENfrFgVkpZ0lFg==",
-            vendor_triple: "x86_64-pc-windows-msvc",
-        }),
-        _ => bail!("当前托管 Codex 下载不支持平台: {os}-{arch}"),
-    }
+fn managed_artifact() -> Result<platform::ManagedCodexArtifact> {
+    platform::managed_artifact(std::env::consts::ARCH)
 }
 
 fn runtime_root() -> PathBuf {
@@ -107,11 +71,7 @@ pub fn managed_codex_path() -> Option<PathBuf> {
         .join("vendor")
         .join(artifact.vendor_triple)
         .join("bin")
-        .join(if crate::platform::capabilities::is_windows() {
-            "codex.exe"
-        } else {
-            "codex"
-        });
+        .join(platform::managed_codex_executable_name());
     candidate.is_file().then_some(candidate)
 }
 
@@ -373,11 +333,7 @@ pub async fn install_managed_codex(
             .join("vendor")
             .join(artifact.vendor_triple)
             .join("bin")
-            .join(if crate::platform::capabilities::is_windows() {
-                "codex.exe"
-            } else {
-                "codex"
-            });
+            .join(platform::managed_codex_executable_name());
         if !codex.is_file() {
             bail!("托管 Codex 解压完成，但未找到可执行文件");
         }
@@ -442,7 +398,7 @@ async fn activate_runtime_with_retry(
     for attempt in 1..=MAX_ATTEMPTS {
         match tokio::fs::rename(extracted, target).await {
             Ok(()) => return Ok(()),
-            Err(error) if should_retry_windows_file_lock(&error) && attempt < MAX_ATTEMPTS => {
+            Err(error) if platform::should_retry_file_lock(&error) && attempt < MAX_ATTEMPTS => {
                 let delay_ms = u64::from(attempt.min(5)) * 500;
                 diagnostics::write(
                     operation_id,
@@ -467,7 +423,7 @@ async fn remove_existing_runtime_with_retry(target: &Path, operation_id: &str) -
         match tokio::fs::remove_dir_all(target).await {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) if should_retry_windows_file_lock(&error) && attempt < MAX_ATTEMPTS => {
+            Err(error) if platform::should_retry_file_lock(&error) && attempt < MAX_ATTEMPTS => {
                 let delay_ms = u64::from(attempt.min(5)) * 500;
                 diagnostics::write(
                     operation_id,
@@ -492,7 +448,7 @@ async fn remove_staging_with_retry(staging: &Path, operation_id: &str) -> io::Re
         match tokio::fs::remove_dir_all(staging).await {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(error),
-            Err(error) if should_retry_windows_file_lock(&error) && attempt < MAX_ATTEMPTS => {
+            Err(error) if platform::should_retry_file_lock(&error) && attempt < MAX_ATTEMPTS => {
                 let delay_ms = u64::from(attempt) * 300;
                 diagnostics::write(
                     operation_id,
@@ -507,16 +463,6 @@ async fn remove_staging_with_retry(staging: &Path, operation_id: &str) -> io::Re
         }
     }
     unreachable!("staging cleanup retry loop always returns")
-}
-
-fn should_retry_windows_file_lock(error: &io::Error) -> bool {
-    should_retry_file_lock_for_platform(error, crate::platform::capabilities::is_windows())
-}
-
-fn should_retry_file_lock_for_platform(error: &io::Error, is_windows: bool) -> bool {
-    is_windows
-        && (error.kind() == io::ErrorKind::PermissionDenied
-            || matches!(error.raw_os_error(), Some(5 | 32)))
 }
 
 fn verify_integrity(actual: &[u8], integrity: &str) -> Result<()> {
@@ -605,14 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn windows_x64_managed_artifact_is_available() {
-        let artifact = managed_artifact_for("windows", "x86_64").unwrap();
-        assert_eq!(artifact.vendor_triple, "x86_64-pc-windows-msvc");
-        assert!(artifact.urls[0].starts_with("https://"));
-        assert!(artifact.integrity.starts_with("sha512-"));
-    }
-
-    #[test]
     fn minimum_version_rejects_old_system_codex() {
         assert!(!version_meets_minimum("0.139.0"));
         assert!(version_meets_minimum("0.144.6"));
@@ -655,25 +593,5 @@ mod tests {
         .unwrap();
         assert_eq!(selected.source, CodexRuntimeSource::Managed);
         assert_eq!(selected.version, MANAGED_CODEX_VERSION);
-    }
-
-    #[test]
-    fn windows_file_lock_errors_are_retryable() {
-        assert!(should_retry_file_lock_for_platform(
-            &io::Error::from_raw_os_error(5),
-            true
-        ));
-        assert!(should_retry_file_lock_for_platform(
-            &io::Error::from_raw_os_error(32),
-            true
-        ));
-        assert!(!should_retry_file_lock_for_platform(
-            &io::Error::from_raw_os_error(2),
-            true
-        ));
-        assert!(!should_retry_file_lock_for_platform(
-            &io::Error::from_raw_os_error(5),
-            false
-        ));
     }
 }
