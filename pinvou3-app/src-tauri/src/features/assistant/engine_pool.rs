@@ -13,9 +13,9 @@
 //! 池本身是 Tauri State;`commands.rs` 里的 chat / cancel / submit_user_input 等都带
 //! `session_id` 路由到对应 engine。
 //!
-//! 并发说明:`entries` 用 `tokio::Mutex`,`get_or_spawn` 全程持锁(spawn 很快,只建
-//! channel + spawn task,无网络),从根上避免「同 session 并发 spawn 两个 engine」的
-//! TOCTOU。不同 session 的发送只在各自首次 spawn 的瞬间串行,spawn 完即各自并发跑。
+//! 并发说明:运行时模型准备可能访问外部凭据服务,不能占用全局 `entries` 锁。每个
+//! session 先通过独立 runtime lock 串行准备/比较/rebuild,再短暂持有 `entries` 完成
+//! 本地 spawn,从根上避免同 session 双引擎,也不让慢凭据服务阻塞其他 session。
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -42,6 +42,10 @@ use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
 };
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::runtime_model::{
+    ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
+    RuntimeModelProvider, RuntimeModelRequest,
+};
 use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -214,6 +218,8 @@ struct EngineEntry {
     engine: AppEngine,
     /// 该 engine 的 event forwarder,evict 时 abort,避免僵尸 task 继续 emit。
     forwarder: JoinHandle<()>,
+    /// 创建该 engine 时实际使用的运行时模型和非敏感凭据版本。
+    runtime_model: PreparedRuntimeModel,
 }
 
 pub type EngineToolFactory =
@@ -234,6 +240,7 @@ fn should_sync_session(_is_scheduled: bool, _has_messages: bool) -> bool {
 #[derive(Clone)]
 pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
+    runtime_model_locks: SessionTurnLocks,
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
@@ -241,6 +248,7 @@ pub struct EnginePool {
     store: SessionStore,
     tool_factory: EngineToolFactory,
     tool_policy: ToolPolicy,
+    runtime_model_provider: Arc<dyn RuntimeModelProvider>,
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
     /// commands 读 model / workspace 也走这里。
     pub bridge: Pinvou3Bridge,
@@ -264,9 +272,26 @@ impl EnginePool {
         tool_factory: EngineToolFactory,
         tool_policy: ToolPolicy,
     ) -> Result<Self> {
+        Self::new_with_runtime_model_provider(
+            app,
+            store,
+            tool_factory,
+            tool_policy,
+            Arc::new(PassthroughRuntimeModelProvider),
+        )
+    }
+
+    pub fn new_with_runtime_model_provider(
+        app: AppHandle,
+        store: SessionStore,
+        tool_factory: EngineToolFactory,
+        tool_policy: ToolPolicy,
+        runtime_model_provider: Arc<dyn RuntimeModelProvider>,
+    ) -> Result<Self> {
         let bridge = Pinvou3Bridge::boot()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
+            runtime_model_locks: SessionTurnLocks::default(),
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
@@ -274,8 +299,23 @@ impl EnginePool {
             store,
             tool_factory,
             tool_policy,
+            runtime_model_provider,
             bridge,
         })
+    }
+
+    pub(crate) fn credential_mode_for(
+        &self,
+        model: Option<&SavedModel>,
+        user_api_key_required: bool,
+    ) -> ModelCredentialMode {
+        match model {
+            Some(model) => self
+                .runtime_model_provider
+                .credential_mode(model, user_api_key_required),
+            None if user_api_key_required => ModelCredentialMode::UserManaged,
+            None => ModelCredentialMode::None,
+        }
     }
 
     pub fn compute_disallowed_tools(&self) -> Vec<String> {
@@ -288,12 +328,75 @@ impl EnginePool {
         tools
     }
 
-    /// 为 spawn 构造该 session 的 bridge:从 disk 读最新 prefs(模型列表/默认可能刚被
-    /// GUI 改过),再按该 session 的显式 model_id 注入 session_model(没绑定则回退全局
-    /// active)。绑定指向已删模型时 `model_by_id` 返回 None,自然回退 active。
-    /// 这是「热切换不重启」的落点:改模型只写 disk + evict,下次 spawn 经此读到新配置。
+    /// 为独立调用构造该 session 的 bridge。与 EnginePool lazy spawn 共用同一套
+    /// runtime provider，保证检阅等旁路入口也不会绕过运行时凭据准备。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
         self.fresh_bridge_for_policy(session_id, false).await
+    }
+
+    async fn prepare_runtime_model(
+        &self,
+        session_id: &str,
+        scheduled_unattended: bool,
+    ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
+        let mut bridge = self.bridge.clone();
+        bridge.prefs = UserPrefs::load();
+        let scheduled_profile = self.store.scheduled_profile(session_id);
+        let interactive_model_override = self.store.session_model_override(session_id);
+        let pins_scheduled_model = scheduled_profile.is_some()
+            && (scheduled_unattended || interactive_model_override.is_none());
+        bridge.session_model = resolve_spawn_model(
+            &bridge.prefs.advanced.saved_models,
+            scheduled_profile.as_ref(),
+            interactive_model_override.as_deref(),
+            scheduled_unattended,
+        )?;
+        let selected = bridge
+            .effective_model_owned()
+            .context("No effective model is available for runtime preparation")?;
+        let selected_id = selected.id.clone();
+        let prepared = self
+            .runtime_model_provider
+            .prepare(RuntimeModelRequest {
+                session_id: session_id.to_string(),
+                model: selected,
+                scheduled_unattended,
+            })
+            .await?;
+        if prepared.model.id != selected_id {
+            bail!(
+                "Runtime model provider changed model identity from '{}' to '{}'",
+                selected_id,
+                prepared.model.id
+            );
+        }
+        Ok((bridge, prepared, pins_scheduled_model))
+    }
+
+    async fn finalize_runtime_bridge(
+        &self,
+        mut bridge: Pinvou3Bridge,
+        prepared: &PreparedRuntimeModel,
+        pins_scheduled_model: bool,
+    ) -> Pinvou3Bridge {
+        bridge.session_model = Some(prepared.model.clone());
+        // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
+        // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
+        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
+        if bridge.provider() == "vllm" {
+            let (served, max_len) =
+                crate::features::monitor::probe_vllm_model_info(&bridge.base_url()).await;
+            if let Some(served) = served.filter(|_| !pins_scheduled_model) {
+                if let Some(mut model) = bridge.effective_model_owned() {
+                    if model.model != served {
+                        model.model = served;
+                        bridge.session_model = Some(model);
+                    }
+                }
+            }
+            bridge.probed_context_tokens = max_len;
+        }
+        bridge
     }
 
     async fn fresh_bridge_for_policy(
@@ -301,37 +404,12 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<Pinvou3Bridge> {
-        let mut b = self.bridge.clone();
-        b.prefs = UserPrefs::load();
-        let scheduled_profile = self.store.scheduled_profile(session_id);
-        let interactive_model_override = self.store.session_model_override(session_id);
-        let pins_scheduled_model = scheduled_profile.is_some()
-            && (scheduled_unattended || interactive_model_override.is_none());
-        b.session_model = resolve_spawn_model(
-            &b.prefs.advanced.saved_models,
-            scheduled_profile.as_ref(),
-            interactive_model_override.as_deref(),
-            scheduled_unattended,
-        )?;
-        // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
-        // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
-        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
-        if b.provider() == "vllm" {
-            let (served, max_len) =
-                crate::features::monitor::probe_vllm_model_info(&b.base_url()).await;
-            if let Some(served) = served.filter(|_| !pins_scheduled_model) {
-                if let Some(mut m) = b.effective_model_owned() {
-                    if m.model != served {
-                        m.model = served;
-                        b.session_model = Some(m);
-                    }
-                }
-            }
-            // 窗口探测:填给 bridge,build_engine_config 据此填 active_route_limits.context_tokens
-            // + 按真实窗口推导压缩阈值。探测失败保持 None → 名字 hint 老路。
-            b.probed_context_tokens = max_len;
-        }
-        Ok(b)
+        let (bridge, prepared, pins_scheduled_model) = self
+            .prepare_runtime_model(session_id, scheduled_unattended)
+            .await?;
+        Ok(self
+            .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
+            .await)
     }
 
     /// 取该 session 的 engine,没有就 spawn 一个。spawn 后若该 session 有磁盘历史
@@ -349,16 +427,29 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<AppEngine> {
-        let mut entries = self.entries.lock().await;
-        if let Some(entry) = entries.get(session_id) {
-            return Ok(entry.engine.clone());
+        let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
+        let _runtime = runtime_lock.lock().await;
+        let (bridge, prepared, pins_scheduled_model) = self
+            .prepare_runtime_model(session_id, scheduled_unattended)
+            .await?;
+
+        let stale = {
+            let mut entries = self.entries.lock().await;
+            if let Some(entry) = entries.get(session_id) {
+                if !prepared.requires_rebuild_from(&entry.runtime_model) {
+                    return Ok(entry.engine.clone());
+                }
+            }
+            entries.remove(session_id)
+        };
+        if let Some(entry) = stale {
+            self.reclaim_engine_entry(session_id, entry).await;
         }
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
-
         let bridge = self
-            .fresh_bridge_for_policy(session_id, scheduled_unattended)
-            .await?;
+            .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
+            .await;
         let shell_workspace = self
             .store
             .scheduled_profile(session_id)
@@ -410,11 +501,12 @@ impl EnginePool {
             }
         }
 
-        entries.insert(
+        self.entries.lock().await.insert(
             session_id.to_string(),
             EngineEntry {
                 engine: engine.clone(),
                 forwarder,
+                runtime_model: prepared,
             },
         );
         Ok(engine)
@@ -476,32 +568,40 @@ impl EnginePool {
         result
     }
 
+    async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {
+        // Stop the producer before admission fallback awaits disk I/O.
+        // An in-flight SessionUpdated save is serialized with the fallback
+        // by SessionStore's mutation gate; no later delta/tool event can
+        // overtake the authoritative transcript_committed + done pair.
+        let EngineEntry {
+            engine, forwarder, ..
+        } = entry;
+        let reclaimed = quiesce_engine_before_reclaim(
+            || engine.cancel_current(),
+            || async move {
+                forwarder.abort();
+                let _ = forwarder.await;
+            },
+            || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
+        )
+        .await;
+        if reclaimed {
+            log::warn!(
+                "[engine_pool] emitted interrupted terminal before reclaim sid={}",
+                session_id
+            );
+            crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
+        }
+        if let Err(e) = engine.handle.send(Op::Shutdown).await {
+            eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
+        }
+    }
+
     async fn evict_locked(&self, session_id: &str) {
+        let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
+        let _runtime = runtime_lock.lock().await;
         if let Some(entry) = self.entries.lock().await.remove(session_id) {
-            // Stop the producer before admission fallback awaits disk I/O.
-            // An in-flight SessionUpdated save is serialized with the fallback
-            // by SessionStore's mutation gate; no later delta/tool event can
-            // overtake the authoritative transcript_committed + done pair.
-            let EngineEntry { engine, forwarder } = entry;
-            let reclaimed = quiesce_engine_before_reclaim(
-                || engine.cancel_current(),
-                || async move {
-                    forwarder.abort();
-                    let _ = forwarder.await;
-                },
-                || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
-            )
-            .await;
-            if reclaimed {
-                log::warn!(
-                    "[engine_pool] emitted interrupted terminal before reclaim sid={}",
-                    session_id
-                );
-                crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
-            }
-            if let Err(e) = engine.handle.send(Op::Shutdown).await {
-                eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
-            }
+            self.reclaim_engine_entry(session_id, entry).await;
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             // A caller can reserve before lazy spawn. Reclaim that Reserved
             // phase without fabricating chat:done; the guard's eventual send

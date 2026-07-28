@@ -124,6 +124,8 @@ pub struct EffectiveModelConfig {
     pub provider_kind: Option<String>,
     pub vendor: Option<String>,
     pub endpoint_mode: Option<String>,
+    pub credential_mode: crate::features::assistant::runtime_model::ModelCredentialMode,
+    pub requires_user_api_key: bool,
     /// 被环境变量覆盖的字段名列表（如 `["model", "base_url"]`）。
     /// 空列表表示全部走 settings.json，用户修改会生效。
     pub env_overrides: Vec<String>,
@@ -171,6 +173,9 @@ pub async fn get_effective_model_config(
         .map(|model| model.preset)
         .unwrap_or_default()
         .as_str();
+    let credential_mode = pool.credential_mode_for(effective.as_ref(), bridge.api_key_required());
+    let requires_user_api_key = credential_mode
+        == crate::features::assistant::runtime_model::ModelCredentialMode::UserManaged;
     Ok(EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
@@ -196,6 +201,8 @@ pub async fn get_effective_model_config(
         endpoint_mode: effective
             .as_ref()
             .and_then(|model| model.endpoint_mode.clone()),
+        credential_mode,
+        requires_user_api_key,
         env_overrides,
     })
 }

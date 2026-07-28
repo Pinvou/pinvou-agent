@@ -52,6 +52,22 @@ assert.strictEqual(isLocalModel({ preset: 'openai_compatible', base_url: 'https:
 assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'chat', true), true);
 assert.strictEqual(shouldShowApiKeyGate(state('unavailable'), 'chat', true), true);
 assert.strictEqual(shouldShowApiKeyGate(state('configured'), 'chat', true), false);
+assert.strictEqual(
+  shouldShowApiKeyGate(state('missing', {
+    credential_mode: 'backend_managed',
+    requires_user_api_key: false,
+  }), 'chat', true),
+  false,
+  'runtime-managed credentials must not open the user API Key gate',
+);
+assert.strictEqual(
+  shouldShowApiKeyGate(state('unavailable', {
+    credential_mode: 'none',
+    requires_user_api_key: false,
+  }), 'chat', true),
+  false,
+  'no-auth models must not open the user API Key gate',
+);
 assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'settings', true), false);
 assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'chat', false), false);
 assert.strictEqual(
