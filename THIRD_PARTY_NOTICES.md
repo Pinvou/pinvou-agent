@@ -14,7 +14,7 @@ Their original licenses remain in effect.
 | agency-agents-zh | bundle schema `agency-1.0`, 201-role snapshot imported 2026-06-03 | Normalized Chinese persona data and retained upstream license | MIT | https://github.com/jnMetaCode/agency-agents-zh |
 | SenseVoice.cpp | Source pinned by setup script | Built on user setup; no executable stored in Git | MIT | https://github.com/lovemefan/SenseVoice.cpp |
 | marked | 13.0.3 | Vendored browser script | MIT | https://github.com/markedjs/marked |
-| DOMPurify | 3.4.2 | Vendored browser script | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
+| DOMPurify | 3.4.2 | Vendored browser script (`pinvou3-app/src/vendor/purify.min.js`, `remote-control-relay/web/purify.min.js`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
 
 Vendored script attribution:

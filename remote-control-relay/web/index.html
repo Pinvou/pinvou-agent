@@ -465,6 +465,7 @@
       </article>
     </section>
   </div>
+  <script src="../purify.min.js"></script>
   <script>
     function syncViewportMetrics() {
       const viewport = window.visualViewport;
@@ -1296,10 +1297,24 @@
       doc.innerHTML = renderMarkdown(text || '');
       node.replaceChildren(doc);
     }
+    // 桌面端 bridge 已用 DOMPurify 消毒 assistant html；此处用同一库做纵深防御，
+    // 防止 relay 链路上其它来源的 html 直接进入 innerHTML（CodeQL js/xss）。
+    // 注意：必须保持 `DOMPurify.sanitize(...)` 的裸全局调用形式，不要写成
+    // window.DOMPurify.sanitize —— CodeQL 只对前者建模为 sanitizer。
+    function sanitizeAssistantHtml(html) {
+      if (window.DOMPurify) {
+        return DOMPurify.sanitize(String(html || ''), {
+          FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'link', 'meta'],
+          FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+        });
+      }
+      // fail closed：purify.min.js 加载失败时退化为纯文本转义，绝不原样写 innerHTML。
+      return escapeHtml(String(html || ''));
+    }
     function addAssistantHtml(html) {
       const div = document.createElement('div');
       div.className = 'msg assistant';
-      div.innerHTML = html || '';
+      div.innerHTML = sanitizeAssistantHtml(html);
       return appendToMessages(div);
     }
     function addSystem(text) {
@@ -2010,7 +2025,9 @@
       el.previewToolbar.classList.add('hidden');
       previewFrameId = '';
       previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
-      if (preview.type === 'image' && preview.data_url) {
+      // data_url 由桌面端按图片 mime 白名单构造；此处再校验前缀，
+      // 防伪造 preview payload（CodeQL js/xss、js/client-side-unvalidated-url-redirection）。
+      if (preview.type === 'image' && /^data:image\//.test(preview.data_url || '')) {
         const img = document.createElement('img');
         img.alt = payload.basename || 'artifact preview';
         img.src = preview.data_url;
