@@ -121,16 +121,22 @@ echo "== 规则 C:codeql-overlay 去重 =="
 while IFS=$'\t' read -r id size key; do
   delete_cache "$id" "$key" "$size" "C_codeql"
 done < <(python3 -c "
-import json, os
+import json, os, re
 closed = set(os.environ.get('CLOSED_REFS','').split())
 entries = [c for c in json.load(open('/tmp/cache-janitor-list.json')) if c['key'].startswith('codeql-overlay-base-database-') and c['ref'] not in closed]
 groups = {}
 for c in entries:
     # key 形如 codeql-overlay-base-database-1-<sha>-<lang>-<version>-...
+    # lang 可能含连字符(如 javascript-typescript),取 sha 之后、版本号段
+    # (x.y.z)之前的全部片段,避免截断成 javascript 造成分组键语义错误。
     # 按 (语言, 作用域) 分组:缓存作用域互不可见,跨 ref 只留最新会把 main 的
     # 缓存换成 PR 作用域的(main 读不到),等于删掉 main 的可用缓存。
     parts = c['key'].split('-')
-    lang = parts[6] if len(parts) > 6 else c['key']
+    lang_parts = []
+    for p in parts[6:]:
+        if re.match(r'^\d+\.\d+', p): break
+        lang_parts.append(p)
+    lang = '-'.join(lang_parts) if lang_parts else c['key']
     groups.setdefault((lang, c['ref']), []).append(c)
 for group, items in groups.items():
     items.sort(key=lambda c: c['createdAt'], reverse=True)
