@@ -4,7 +4,7 @@ name: release-packages
 #
 # 触发条件:
 # - push main 且根目录 VERSION 文件被修改(paths 限定);
-# - 影响版本/打包链路的 PR:无条件构建,在合入前验证四类发布产物;
+# - 影响版本/打包链路的 PR:有私有凭据时构建四类产物,无凭据时运行 Windows 静态契约;
 # - push 事件按 github.event.before..github.sha 做精确版本号 diff;
 # - workflow_dispatch 手动触发:跳过 diff,无条件全量构建(用于补打/重打某版本)。
 #
@@ -20,7 +20,7 @@ name: release-packages
 #
 # 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
 # (signingIdentity="-",用户首次安装需 xattr -dr com.apple.quarantine)。
-# 零 secret 依赖,零外部副作用。
+# Windows 正式发布依赖只读 PINVOU3_WINDOWS_RUNTIME_TOKEN；PR 不向 fork 暴露该凭据。
 
 on:
   push:
@@ -326,7 +326,25 @@ jobs:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
         with:
-          submodules: recursive
+          # PR 无私有凭据时必须能够先完成静态契约验证；私有运行时由凭据
+          # gate 之后的初始化脚本按锁文件精确拉取。
+          submodules: false
+          token: ${{ secrets.PINVOU3_WINDOWS_RUNTIME_TOKEN || github.token }}
+
+      - name: 检查 Windows 私有运行时凭据
+        id: runtime-access
+        env:
+          WINDOWS_RUNTIME_TOKEN: ${{ secrets.PINVOU3_WINDOWS_RUNTIME_TOKEN }}
+        run: |
+          if [[ -n "$WINDOWS_RUNTIME_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR 未获得 PINVOU3_WINDOWS_RUNTIME_TOKEN；仅验证 Windows 打包契约。"
+          else
+            echo "::error::正式 Windows 发布缺少 PINVOU3_WINDOWS_RUNTIME_TOKEN，拒绝生成不完整发布。"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -350,10 +368,26 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
+      - name: 验证 Windows 私有运行时打包契约
+        if: steps.runtime-access.outputs.available != 'true'
+        working-directory: pinvou3-app
+        run: npm run test:windows-runtime
+
+      - name: 初始化 Windows 私有运行时
+        if: steps.runtime-access.outputs.available == 'true'
+        working-directory: pinvou3-app
+        run: npm run runtime:windows:init
+
+      - name: 初始化公共底座 submodule
+        if: steps.runtime-access.outputs.available == 'true'
+        run: git submodule update --init --recursive -- CodeWhale
+
       - name: 同步版本号
+        if: steps.runtime-access.outputs.available == 'true'
         run: node scripts/sync-version.mjs
 
       - name: bge-m3 占位 (防御性保留)
+        if: steps.runtime-access.outputs.available == 'true'
         run: |
           d=pinvou3-app/src-tauri/resources/bge-m3
           mkdir -p "$d"
@@ -362,11 +396,13 @@ jobs:
           done
 
       - name: 构建 nsis
+        if: steps.runtime-access.outputs.available == 'true'
         working-directory: pinvou3-app
         run: npm run build:nsis
 
       # tauri nsis 产物默认名 pinvou3_<version>_x64-setup.exe,与目标命名一致。
       - name: 校验产物 + sha256
+        if: steps.runtime-access.outputs.available == 'true'
         working-directory: pinvou3-app/src-tauri/target/release/bundle/nsis
         run: |
           set -euo pipefail
@@ -378,6 +414,7 @@ jobs:
           ls -lh "$EXE"
 
       - name: 上传 nsis artifact
+        if: steps.runtime-access.outputs.available == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: pinvou3-windows-${{ needs.check-version-bump.outputs.version }}-x64
