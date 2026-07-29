@@ -46,10 +46,11 @@
 - **内容**：
   - pinvou3 native 工具黑名单与 deferred activator 结果式 golden。
   - `write_file` / `append_file` 64KB 单次内容上限和缺字段修复提示。
+  - `append_file` 与 `write_file` 一样输出 inline unified diff(尾部 context + 追加行,字节摘要保留在末尾);已存文件超过 512KB(`APPEND_FILE_INLINE_DIFF_LIMIT_BYTES`)或非 UTF-8 时回退 `[diff omitted]` / 纯字节摘要。
   - `disallowed_tools` 支持 `*` 前缀规则。
   - Dangerous 命令在所有模式阻断；审批缓存、workflow plan 审批保持 fail-closed。
 - **为什么留 fork**：工具面是 pinvou3 产品定位；append_file 与大产物引导耦合。Shell 展示能力已经移到 app，不再作为本主题的 fork-distinct 代码维护。
-- **守护**：`forkguard_blocklist_golden`、`forkguard_yolo_no_deferred_activator_first_class`、文件上限测试和命令安全测试。
+- **守护**：`forkguard_blocklist_golden`、`forkguard_yolo_no_deferred_activator_first_class`、`forkguard_append_file_emits_inline_diff`、文件上限测试和命令安全测试。
 
 ### T3 `fork`：提示词密封与 context / skill 单一来源
 

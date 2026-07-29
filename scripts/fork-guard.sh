@@ -21,6 +21,7 @@ fingerprints=(
   "T1|宿主额外工具入口                   |CodeWhale/crates/tui/src/core/engine.rs|pub extra_tools: ExtraTools"
 
   "T2|写文件 64KB 上限                  |CodeWhale/crates/tui/src/tools/file.rs|WRITE_FILE_MAX_CONTENT_BYTES"
+  "T2|append_file 内联 diff              |CodeWhale/crates/tui/src/tools/file.rs|fn forkguard_append_file_emits_inline_diff"
   "T2|截断参数修复提示                   |CodeWhale/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
   "T2|工具黑名单结果 golden              |CodeWhale/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
   "T2|deferred 激活面 golden             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
