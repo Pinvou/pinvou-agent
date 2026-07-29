@@ -5,6 +5,18 @@ import {
   sessionTitlePresentation,
   splitAttachmentLine,
 } from '../src/features/attachments/attachment-message.js';
+import { _ARTIFACT_FMT } from '../src/shared/artifact-utils.js';
+
+assert.equal(
+  Object.keys(_ARTIFACT_FMT).length,
+  13,
+  'the shared attachment icon set must keep all 13 reviewed file categories',
+);
+assert.equal(
+  _ARTIFACT_FMT.data.viewBox,
+  '0 -960 960 960',
+  'the data icon uses negative Material coordinates and must remain inside its SVG viewBox',
+);
 
 // ── splitAttachmentLine: 与 bridge 侧 displayText 拼装约定一一对应 ──
 assert.deepEqual(
