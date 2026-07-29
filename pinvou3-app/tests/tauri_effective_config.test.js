@@ -197,7 +197,7 @@ const expectedMacosWindows = baseWindows.map((window) => (
         decorations: true,
         titleBarStyle: "Overlay",
         hiddenTitle: true,
-        trafficLightPosition: { x: 12, y: 12 },
+        trafficLightPosition: { x: 12, y: 20 },
       }
     : window
 ));
