@@ -186,10 +186,15 @@ function checkedSpawn(spawn, command, args, options, label) {
   return result;
 }
 
-// curl/tar 使用 Windows 内置 System32 副本的绝对路径，避免 PATH 劫持
+// curl/tar 使用 Windows 内置 System32 副本的绝对路径，避免 PATH 劫持。
+// SystemRoot 只接受“盘符:\Windows”标准形态，异常值一律回退 C:\Windows，
+// 防止被篡改的环境变量把命令路径引向任意目录
 // （CodeQL js/shell-command-injection-from-environment）。
 function windowsSystemTool(name) {
-  const systemRoot = process.env.SystemRoot || "C:\\Windows";
+  const envRoot = process.env.SystemRoot;
+  const systemRoot = envRoot && /^[a-z]:\\windows$/i.test(envRoot)
+    ? envRoot
+    : "C:\\Windows";
   return path.join(systemRoot, "System32", name);
 }
 
