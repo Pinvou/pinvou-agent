@@ -1609,7 +1609,8 @@ fn remote_attachment_source_survives_upload_temp_cleanup() {
     std::fs::remove_file(&image_source).unwrap();
     let image_prompt = build_message_with_attachments("看图".into(), vec![image], &workspace);
     assert!(image_prompt.contains("image_analyze"));
-    assert!(workspace.join("attachments/remote.png").exists());
+    assert!(staged_image.exists());
+    assert!(image_prompt.contains(".pinvou3/remote-attachments/remote.png"));
 
     let text_source = root.join("remote.txt");
     std::fs::write(&text_source, "远控大文本\n".repeat(20_000)).unwrap();
