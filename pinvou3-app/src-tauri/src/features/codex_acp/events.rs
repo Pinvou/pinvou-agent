@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
-    SessionNotification, SessionUpdate, ToolCall, ToolCallStatus, ToolCallUpdate,
+    ContentBlock, ContentChunk, SessionNotification, SessionUpdate, ToolCall, ToolCallStatus,
+    ToolCallUpdate,
 };
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -110,7 +111,12 @@ impl EventBridge {
         let meta = serde_json::to_value(notification.meta).unwrap_or(Value::Null);
         match notification.update {
             SessionUpdate::UserMessageChunk(chunk) => {
-                self.emit_protocol("user_message_chunk", chunk, meta)
+                // 设计 §13:timeline 不存图片/音频 Base64。agent 回显的这类块只会是
+                // 我们发送内容的副本(附件 metadata 已由 user_message 事件记录),
+                // 直接丢弃——不落盘也不推前端(前端对非文本块本就不渲染)。
+                if !chunk_contains_binary(&chunk) {
+                    self.emit_protocol("user_message_chunk", chunk, meta)
+                }
             }
             SessionUpdate::AgentMessageChunk(chunk) => {
                 self.emit_protocol("agent_message_chunk", chunk, meta)
@@ -257,6 +263,15 @@ fn is_terminal(status: ToolCallStatus) -> bool {
     matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed)
 }
 
+/// ContentChunk 是否携带 Base64 二进制负载(Image/Audio 的 `data` 字段)。
+/// 这类块进入 timeline 会违反「不持久化图片 Base64」约束(设计 §13)。
+fn chunk_contains_binary(chunk: &ContentChunk) -> bool {
+    matches!(
+        chunk.content,
+        ContentBlock::Image(_) | ContentBlock::Audio(_)
+    )
+}
+
 fn timeline_path(session_id: &str) -> Result<PathBuf> {
     session_file_path(session_id, TIMELINE_FILE)
 }
@@ -357,6 +372,7 @@ pub fn load_timeline(session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::{AudioContent, ImageContent, TextContent};
 
     #[test]
     fn timeline_rejects_path_traversal() {
@@ -382,5 +398,25 @@ mod tests {
         assert_eq!(value["version"], 1);
         assert_eq!(value["sessionId"], "session-1");
         assert_eq!(value["event"]["type"], "tool_call");
+    }
+
+    #[test]
+    fn user_chunk_filter_drops_binary_blocks_before_timeline() {
+        // 图片/音频块含 Base64 data,必须被拦截;文本与资源链接照常放行。
+        let image = ContentChunk::new(ContentBlock::Image(ImageContent::new(
+            "aGVsbG8td29ybGQ=".repeat(64),
+            "image/png",
+        )));
+        assert!(chunk_contains_binary(&image));
+        let audio = ContentChunk::new(ContentBlock::Audio(AudioContent::new(
+            "aGVsbG8td29ybGQ=",
+            "audio/wav",
+        )));
+        assert!(chunk_contains_binary(&audio));
+        let text = ContentChunk::new(ContentBlock::Text(TextContent::new("看图")));
+        assert!(!chunk_contains_binary(&text));
+        // 反向佐证:图片块序列化后确实带 data,不过滤就会写进 acp-timeline.jsonl。
+        let leaked = serde_json::to_string(&image).unwrap();
+        assert!(leaked.contains("aGVsbG8td29ybGQ="));
     }
 }

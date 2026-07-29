@@ -13,8 +13,12 @@
 //! ⚠️ 内置表宁可 Unknown 不可误判 Supported:只对明确多模态的模型名子串判中。
 //! 本地自定义模型(尤其 LocalVllm 的 `qwen36_35b_256k`,文本/多模态两种部署都存在,
 //! 见设计 §7.1/§7.2)一律 Unknown,交给用户显式确认。
+//!
+//! ACP 链路(设计 §6.4,阶段 F)复用同一份解析规则:Codex ACP session 的当前模型
+//! 由 ACP agent 自己管理(session config option "model"),与 pinvou3 SavedModel
+//! 无绑定;`acp_model_image_capability` 按 wire model 名承接用户 override 与内置表。
 
-use crate::platform::prefs::{ImageCapabilityOverride, SavedModel};
+use crate::platform::prefs::{ImageCapabilityOverride, SavedModel, UserPrefs};
 
 /// 一次解析后生效的图片输入能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +86,37 @@ pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapabilit
     }
     // ④ 判不出。
     EffectiveImageCapability::Unknown
+}
+
+/// ACP 会话当前模型的图片输入能力(设计 §6.4,阶段 F)。
+///
+/// ACP session 的模型由 ACP agent 管理,不是 pinvou3 SavedModel;解析规则与普通
+/// 会话保持一致:wire model 名命中用户 SavedModel 时走完整解析链(承接显式
+/// override),否则只查内置已验证表,判不出 → Unknown(不冒充支持,由 ACP 侧
+/// 提示用户在模型设置里确认)。`acp_model_id` 缺失(会话未上报模型)同样 Unknown。
+pub fn acp_model_image_capability(
+    prefs: &UserPrefs,
+    acp_model_id: Option<&str>,
+) -> EffectiveImageCapability {
+    let Some(model_id) = acp_model_id
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+    else {
+        return EffectiveImageCapability::Unknown;
+    };
+    if let Some(saved) = prefs
+        .advanced
+        .saved_models
+        .iter()
+        .find(|model| model.model.eq_ignore_ascii_case(model_id))
+    {
+        return effective_image_capability(saved);
+    }
+    if builtin_verified_supports_image(model_id) {
+        EffectiveImageCapability::Supported
+    } else {
+        EffectiveImageCapability::Unknown
+    }
 }
 
 /// 按设计 §6.3 路由表把能力 + 视觉模型可用性映射为图片输入模式。
@@ -224,5 +259,56 @@ mod tests {
         // Unknown:有视觉模型 → 工具兜底;无 → 拒绝(提示用户确认能力)。
         assert_eq!(image_input_mode(C::Unknown, true), M::VisionToolFallback);
         assert_eq!(image_input_mode(C::Unknown, false), M::Unsupported);
+    }
+
+    #[test]
+    fn acp_model_without_saved_model_uses_builtin_table() {
+        let prefs = UserPrefs::default();
+        // 会话未上报模型 / 空 id:Unknown,不冒充支持。
+        assert_eq!(
+            acp_model_image_capability(&prefs, None),
+            EffectiveImageCapability::Unknown
+        );
+        assert_eq!(
+            acp_model_image_capability(&prefs, Some("  ")),
+            EffectiveImageCapability::Unknown
+        );
+        // Codex ACP 当前模型(gpt-5 族)命中内置已验证表。
+        assert_eq!(
+            acp_model_image_capability(&prefs, Some("gpt-5.6-sol")),
+            EffectiveImageCapability::Supported
+        );
+        // 已知文本模型与自定义模型:Unknown,交给用户显式确认。
+        assert_eq!(
+            acp_model_image_capability(&prefs, Some("deepseek-v4-pro")),
+            EffectiveImageCapability::Unknown
+        );
+        assert_eq!(
+            acp_model_image_capability(&prefs, Some("my-finetune-7b")),
+            EffectiveImageCapability::Unknown
+        );
+    }
+
+    #[test]
+    fn acp_model_inherits_override_from_same_named_saved_model() {
+        let mut prefs = UserPrefs::default();
+        // override Enabled:内置表判不出的模型 → Supported(用户显式确认的出口)。
+        let mut enabled = saved_model(ModelPreset::OpenaiCompatible, "my-finetune-7b");
+        enabled.id = "enabled".to_string();
+        enabled.image_capability_override = ImageCapabilityOverride::Enabled;
+        // override Disabled:内置表命中的模型 → Unsupported(已知文本模型不再显示支持)。
+        let mut disabled = saved_model(ModelPreset::OpenaiCompatible, "GPT-5.6-SOL");
+        disabled.id = "disabled".to_string();
+        disabled.image_capability_override = ImageCapabilityOverride::Disabled;
+        prefs.advanced.saved_models = vec![enabled, disabled];
+        assert_eq!(
+            acp_model_image_capability(&prefs, Some("my-finetune-7b")),
+            EffectiveImageCapability::Supported
+        );
+        // wire model 名匹配大小写不敏感(ACP 上报 id 与 SavedModel 书写形式可能不同)。
+        assert_eq!(
+            acp_model_image_capability(&prefs, Some("gpt-5.6-sol")),
+            EffectiveImageCapability::Unsupported
+        );
     }
 }
