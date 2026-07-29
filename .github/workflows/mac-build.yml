@@ -41,7 +41,7 @@ jobs:
       # 不再需要 CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
       - name: Checkout (含 submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -82,7 +82,7 @@ jobs:
           fi
 
       - name: Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
