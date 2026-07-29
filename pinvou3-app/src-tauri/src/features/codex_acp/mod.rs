@@ -12,7 +12,7 @@ mod runtime;
 mod store;
 pub(crate) mod workspace;
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -60,9 +60,24 @@ pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
 pub const CLAUDE_ACP_VERSION: &str = "0.62.0";
 const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
+const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
+const KIMI_ACP_PACKAGE: &str = "kimi acp";
+const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 
-fn is_codex_session(backend: AgentBackend, model: &str) -> bool {
-    backend == AgentBackend::CodexAcp || model == CODEX_ACP_SESSION_MODEL
+fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
+    match model {
+        CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
+        CLAUDE_ACP_SESSION_MODEL => Some(AgentBackend::ClaudeAcp),
+        KIMI_ACP_SESSION_MODEL => Some(AgentBackend::KimiAcp),
+        _ => None,
+    }
+}
+
+fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
+    backend
+        .is_acp()
+        .then_some(backend)
+        .or_else(|| backend_for_session_model(model))
 }
 
 fn same_workspace(left: &Path, right: &Path) -> bool {
@@ -74,8 +89,45 @@ fn same_workspace(left: &Path, right: &Path) -> bool {
             .is_some_and(|(left, right)| left == right)
 }
 
-fn codex_recovery_record(
+fn backend_for_acp_state(state: &Value) -> Result<AgentBackend> {
+    let package_backend = match state["adapter"]["package"].as_str() {
+        Some(CODEX_ACP_PACKAGE) => Some(AgentBackend::CodexAcp),
+        Some(CLAUDE_ACP_PACKAGE) => Some(AgentBackend::ClaudeAcp),
+        Some(KIMI_ACP_PACKAGE) => Some(AgentBackend::KimiAcp),
+        Some(other) => bail!("acp-state.json 包含未知 ACP adapter package: {other}"),
+        None => None,
+    };
+    let agent_backend = state["adapter"]["agentId"]
+        .as_str()
+        .map(|agent_id| AgentBackend::parse(Some(agent_id)))
+        .transpose()?
+        .filter(|backend| backend.is_acp());
+    if let (Some(package), Some(agent)) = (package_backend, agent_backend) {
+        if package != agent {
+            bail!("acp-state.json 的 Agent 与 adapter package 不匹配");
+        }
+    }
+    agent_backend
+        .or(package_backend)
+        .context("acp-state.json 缺少可识别的 ACP Agent")
+}
+
+fn acp_mode_from_state(state: &Value) -> Option<String> {
+    state["session"]["modes"]["currentModeId"]
+        .as_str()
+        .or_else(|| {
+            state["session"]["config_options"]
+                .as_array()?
+                .iter()
+                .find(|option| option["id"].as_str() == Some("mode"))?["currentValue"]
+                .as_str()
+        })
+        .map(str::to_string)
+}
+
+fn acp_recovery_record(
     pinvou_session_id: &str,
+    expected_backend: AgentBackend,
     state: &Value,
     workspace_path: PathBuf,
     temporary_workspace: &Path,
@@ -83,8 +135,16 @@ fn codex_recovery_record(
     if state["pinvouSessionId"].as_str() != Some(pinvou_session_id) {
         bail!("acp-state.json 的 Pinvou 会话 ID 不匹配");
     }
-    if state["adapter"]["package"].as_str() != Some(CODEX_ACP_PACKAGE) {
-        bail!("acp-state.json 不是 Codex ACP 状态");
+    if !expected_backend.is_acp() {
+        bail!("会话元数据不是 ACP Agent");
+    }
+    let state_backend = backend_for_acp_state(state)?;
+    if state_backend != expected_backend {
+        bail!(
+            "acp-state.json 的 Agent {} 与会话元数据 {} 不匹配",
+            state_backend.display_name(),
+            expected_backend.display_name()
+        );
     }
     let acp_session_id = state["session"]["session_id"]
         .as_str()
@@ -92,7 +152,7 @@ fn codex_recovery_record(
         .context("acp-state.json 缺少原 ACP session id")?
         .to_string();
     if !workspace_path.is_absolute() {
-        bail!("Codex 工作目录记录不是绝对路径");
+        bail!("ACP 工作目录记录不是绝对路径");
     }
     let workspace_kind = match state["workspace"]["kind"].as_str() {
         Some("temporary") => {
@@ -109,21 +169,20 @@ fn codex_recovery_record(
         None => CodexWorkspaceKind::Project,
     };
     Ok(SessionAgentRecord {
-        backend: AgentBackend::CodexAcp,
+        backend: expected_backend,
         acp_session_id: Some(acp_session_id),
         acp_model_id: state["session"]["current_model_id"]
             .as_str()
             .map(str::to_string),
-        acp_mode_id: state["session"]["modes"]["currentModeId"]
-            .as_str()
-            .map(str::to_string),
+        acp_mode_id: acp_mode_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
     })
 }
 
-fn load_codex_recovery_record(
+fn load_acp_recovery_record(
     session_id: &str,
+    expected_backend: AgentBackend,
     session_store: &SessionStore,
 ) -> Result<SessionAgentRecord> {
     let temporary_workspace = session_store.execution_workspace(session_id)?;
@@ -152,7 +211,13 @@ fn load_codex_recovery_record(
             .map(PathBuf::from)
             .context("Codex 工作区基线缺少 workspace_path")?
     };
-    codex_recovery_record(session_id, &state, workspace_path, &temporary_workspace)
+    acp_recovery_record(
+        session_id,
+        expected_backend,
+        &state,
+        workspace_path,
+        &temporary_workspace,
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -439,7 +504,7 @@ pub struct AcpPool {
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
     agents: SessionAgentStore,
-    codex_metadata_ids: Arc<parking_lot::RwLock<HashSet<String>>>,
+    acp_metadata_backends: Arc<parking_lot::RwLock<HashMap<String, AgentBackend>>>,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
     login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
@@ -506,23 +571,27 @@ impl AcpPool {
             eprintln!("[pinvou3-app] preload Codex session metadata failed: {error:#}");
             Vec::new()
         });
-        let codex_metadata_ids = metadata
+        let acp_metadata_backends = metadata
             .iter()
-            .filter(|metadata| metadata.model == CODEX_ACP_SESSION_MODEL)
-            .map(|metadata| metadata.id.clone())
-            .collect::<HashSet<_>>();
-        for session_id in &codex_metadata_ids {
-            if agents.backend(session_id) == AgentBackend::CodexAcp {
+            .filter_map(|metadata| {
+                acp_session_backend(agents.backend(&metadata.id), &metadata.model)
+                    .map(|backend| (metadata.id.clone(), backend))
+            })
+            .collect::<HashMap<_, _>>();
+        for (session_id, backend) in &acp_metadata_backends {
+            if agents.backend(session_id).is_acp() {
                 continue;
             }
-            match load_codex_recovery_record(session_id, &session_store)
-                .and_then(|record| agents.restore_missing_codex_record(session_id, record))
+            match load_acp_recovery_record(session_id, *backend, &session_store)
+                .and_then(|record| agents.restore_missing_acp_record(session_id, record))
             {
-                Ok(()) => {
-                    eprintln!("[pinvou3-app] recovered Codex ACP session index for {session_id}")
-                }
+                Ok(()) => eprintln!(
+                    "[pinvou3-app] recovered {} ACP session index for {session_id}",
+                    backend.display_name()
+                ),
                 Err(error) => eprintln!(
-                    "[pinvou3-app] Codex ACP session {session_id} remains read-only until its index can be recovered: {error:#}"
+                    "[pinvou3-app] {} ACP session {session_id} remains read-only until its index can be recovered: {error:#}",
+                    backend.display_name()
                 ),
             }
         }
@@ -532,7 +601,7 @@ impl AcpPool {
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             pending_elicitations: Arc::new(Mutex::new(HashMap::new())),
             agents,
-            codex_metadata_ids: Arc::new(parking_lot::RwLock::new(codex_metadata_ids)),
+            acp_metadata_backends: Arc::new(parking_lot::RwLock::new(acp_metadata_backends)),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
             login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
@@ -552,33 +621,39 @@ impl AcpPool {
         &self.agents
     }
 
-    /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的 Codex 模型类型兜底。
+    /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的 Agent 模型类型兜底。
     ///
     /// `session-agents.json` 是可重建的辅助索引，缺失或损坏时不能让历史 Codex
-    /// 会话掉回普通聊天列表；创建会话时写入的 `Codex (ACP)` 元数据才是长期兼容
-    /// 依据。列表调用已经持有 metadata，应使用本方法避免重复读取 transcript。
+    /// / Claude / Kimi 会话掉回普通聊天列表；创建会话时写入的 `* (ACP)` 元数据
+    /// 是长期兼容依据。列表调用已经持有 metadata，应使用本方法避免重复读取 transcript。
     pub fn is_acp_metadata(&self, metadata: &SessionMetadata) -> bool {
         let backend = self.agents.backend(&metadata.id);
-        let is_codex = is_codex_session(backend, &metadata.model);
-        if is_codex {
-            self.codex_metadata_ids.write().insert(metadata.id.clone());
+        let Some(backend) = acp_session_backend(backend, &metadata.model) else {
+            return false;
+        };
+        if !self.acp_metadata_backends.read().contains_key(&metadata.id) {
+            self.acp_metadata_backends
+                .write()
+                .insert(metadata.id.clone(), backend);
         }
-        backend.is_acp() || is_codex
+        true
     }
 
     pub fn is_acp(&self, session_id: &str) -> bool {
         self.agents.backend(session_id).is_acp()
-            || self.codex_metadata_ids.read().contains(session_id)
+            || self.acp_metadata_backends.read().contains_key(session_id)
     }
 
     pub fn backend(&self, session_id: &str) -> AgentBackend {
         let backend = self.agents.backend(session_id);
         if backend.is_acp() {
             backend
-        } else if self.codex_metadata_ids.read().contains(session_id) {
-            AgentBackend::CodexAcp
         } else {
-            backend
+            self.acp_metadata_backends
+                .read()
+                .get(session_id)
+                .copied()
+                .unwrap_or(backend)
         }
     }
 
@@ -587,10 +662,11 @@ impl AcpPool {
         if record.backend.is_acp() {
             return Ok(record);
         }
-        if self.codex_metadata_ids.read().contains(session_id) {
+        if let Some(backend) = self.acp_metadata_backends.read().get(session_id).copied() {
             bail!(
-                "Codex 会话辅助索引缺失，且无法从 acp-state.json 与工作区基线完整恢复；\
-                 为避免在错误目录新建上下文，当前会话仅允许查看历史"
+                "{} 会话辅助索引缺失，且无法从 acp-state.json 与工作区基线完整恢复；\
+                 为避免在错误目录新建上下文，当前会话仅允许查看历史",
+                backend.display_name()
             );
         }
         bail!("会话不是 ACP 会话")
@@ -599,7 +675,7 @@ impl AcpPool {
     pub fn workspace_info(&self, session_id: &str) -> Result<CodexAcpWorkspaceInfo> {
         let record = self.agents.get(session_id);
         if !record.backend.is_acp() {
-            if self.codex_metadata_ids.read().contains(session_id) {
+            if self.acp_metadata_backends.read().contains_key(session_id) {
                 return Ok(CodexAcpWorkspaceInfo {
                     workspace_kind: CodexWorkspaceKind::Temporary,
                     workspace_path: "辅助索引缺失，无法安全恢复原工作目录".to_string(),
@@ -2982,44 +3058,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_session_classification_survives_missing_auxiliary_index() {
-        assert!(is_codex_session(
-            AgentBackend::Deepseek,
-            CODEX_ACP_SESSION_MODEL
-        ));
-        assert!(is_codex_session(
-            AgentBackend::CodexAcp,
-            "unexpected legacy model"
-        ));
-        assert!(!is_codex_session(AgentBackend::Deepseek, "deepseek-chat"));
+    fn acp_session_classification_survives_missing_auxiliary_index() {
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, CODEX_ACP_SESSION_MODEL),
+            Some(AgentBackend::CodexAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, CLAUDE_ACP_SESSION_MODEL),
+            Some(AgentBackend::ClaudeAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, KIMI_ACP_SESSION_MODEL),
+            Some(AgentBackend::KimiAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::ClaudeAcp, "unexpected legacy model"),
+            Some(AgentBackend::ClaudeAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, "deepseek-chat"),
+            None
+        );
     }
 
     #[test]
-    fn codex_recovery_preserves_original_acp_session_and_workspace() {
+    fn acp_recovery_preserves_original_agent_session_mode_and_workspace() {
         let state = json!({
             "pinvouSessionId": "pinvou-session",
-            "adapter": { "package": CODEX_ACP_PACKAGE },
+            "adapter": {
+                "agentId": "kimi",
+                "package": KIMI_ACP_PACKAGE,
+            },
             "session": {
                 "session_id": "acp-session",
-                "current_model_id": "gpt-test",
-                "modes": { "currentModeId": "agent" },
+                "current_model_id": "kimi-test",
+                "modes": null,
+                "config_options": [{
+                    "id": "mode",
+                    "currentValue": "auto",
+                }],
             },
         });
         let temporary = Path::new("/tmp/pinvou-session-workspace");
         let project = PathBuf::from("/tmp/pinvou-project");
-        let recovered =
-            codex_recovery_record("pinvou-session", &state, project.clone(), temporary).unwrap();
+        let recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            project.clone(),
+            temporary,
+        )
+        .unwrap();
 
-        assert_eq!(recovered.backend, AgentBackend::CodexAcp);
+        assert_eq!(recovered.backend, AgentBackend::KimiAcp);
         assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session"));
-        assert_eq!(recovered.acp_model_id.as_deref(), Some("gpt-test"));
-        assert_eq!(recovered.acp_mode_id.as_deref(), Some("agent"));
+        assert_eq!(recovered.acp_model_id.as_deref(), Some("kimi-test"));
+        assert_eq!(recovered.acp_mode_id.as_deref(), Some("auto"));
         assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(recovered.workspace_path, Some(project));
 
-        let temporary_recovered =
-            codex_recovery_record("pinvou-session", &state, temporary.to_path_buf(), temporary)
-                .unwrap();
+        let temporary_recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            temporary.to_path_buf(),
+            temporary,
+        )
+        .unwrap();
         assert_eq!(
             temporary_recovered.workspace_kind,
             CodexWorkspaceKind::Temporary
@@ -3028,15 +3133,35 @@ mod tests {
     }
 
     #[test]
-    fn codex_recovery_rejects_incomplete_state() {
+    fn acp_recovery_rejects_incomplete_or_mismatched_state() {
         let state = json!({
             "pinvouSessionId": "pinvou-session",
-            "adapter": { "package": CODEX_ACP_PACKAGE },
+            "adapter": {
+                "agentId": "claude",
+                "package": CLAUDE_ACP_PACKAGE,
+            },
             "session": {},
         });
-        assert!(codex_recovery_record(
+        assert!(acp_recovery_record(
             "pinvou-session",
+            AgentBackend::ClaudeAcp,
             &state,
+            PathBuf::from("/tmp/pinvou-project"),
+            Path::new("/tmp/pinvou-session-workspace"),
+        )
+        .is_err());
+        let mismatched = json!({
+            "pinvouSessionId": "pinvou-session",
+            "adapter": {
+                "agentId": "claude",
+                "package": CLAUDE_ACP_PACKAGE,
+            },
+            "session": { "session_id": "claude-session" },
+        });
+        assert!(acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &mismatched,
             PathBuf::from("/tmp/pinvou-project"),
             Path::new("/tmp/pinvou-session-workspace"),
         )
@@ -3211,6 +3336,8 @@ mod tests {
     #[test]
     fn status_serializes_install_contract_fields() {
         let status = CodexAcpStatus {
+            agent_id: "codex",
+            agent_name: "Codex",
             version: CODEX_ACP_VERSION,
             installed: false,
             bridge_ready: false,
@@ -3235,8 +3362,11 @@ mod tests {
             authenticated: false,
             login_in_progress: false,
             login_url: None,
+            login_code: None,
+            login_input_required: false,
             installing: false,
             error: None,
+            setup_hint: None,
         };
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
         assert_eq!(value["min_codex_version"], json!(MIN_CODEX_VERSION));

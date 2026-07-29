@@ -251,24 +251,24 @@ impl SessionAgentStore {
         self.persist()
     }
 
-    pub(super) fn restore_missing_codex_record(
+    pub(super) fn restore_missing_acp_record(
         &self,
         session_id: &str,
         recovered: SessionAgentRecord,
     ) -> Result<()> {
-        if recovered.backend != AgentBackend::CodexAcp
+        if !recovered.backend.is_acp()
             || recovered
                 .acp_session_id
                 .as_deref()
                 .is_none_or(str::is_empty)
         {
-            anyhow::bail!("恢复的 Codex 会话索引不完整");
+            anyhow::bail!("恢复的 ACP 会话索引不完整");
         }
         {
             let mut records = self.records.write();
             if records
                 .get(session_id)
-                .is_some_and(|record| record.backend == AgentBackend::CodexAcp)
+                .is_some_and(|record| record.backend.is_acp())
             {
                 return Ok(());
             }
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn recovered_codex_record_is_persisted_atomically() {
+    fn recovered_acp_record_is_persisted_atomically() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-codex-recovery-store-test-{}",
             std::process::id()
@@ -420,10 +420,10 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .restore_missing_codex_record(
+            .restore_missing_acp_record(
                 "session-1",
                 SessionAgentRecord {
-                    backend: AgentBackend::CodexAcp,
+                    backend: AgentBackend::ClaudeAcp,
                     acp_session_id: Some("acp-session-1".to_string()),
                     acp_model_id: Some("gpt-test".to_string()),
                     acp_mode_id: Some("agent".to_string()),
@@ -435,7 +435,7 @@ mod tests {
 
         let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         let recovered = persisted.sessions.get("session-1").unwrap();
-        assert_eq!(recovered.backend, AgentBackend::CodexAcp);
+        assert_eq!(recovered.backend, AgentBackend::ClaudeAcp);
         assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session-1"));
         assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(recovered.workspace_path.as_deref(), Some(root.as_path()));
