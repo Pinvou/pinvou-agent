@@ -1,4 +1,6 @@
 import React from 'react';
+import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
+import { AcFmtIcon } from '../tools/tool-common.jsx';
 
 export function AttachmentChips({
   attachments = [],
@@ -18,14 +20,18 @@ export function AttachmentChips({
         const friendlyError = attachment.status === 'error'
           ? formatError(attachment.error)
           : '';
+        const kind = _artifactKind(attachment.basename);
+        const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
         return (
           <div
             key={attachment.id}
-            className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] ${
+            className={`flex items-center gap-1.5 pl-1.5 pr-1.5 py-1 rounded-full text-[12px] ${
               dark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F] shadow-sm'
             }`}
           >
-            <span>📎</span>
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]" style={{ background: fmt.color }}>
+              <AcFmtIcon kind={kind} className="h-3 w-3 text-white" />
+            </span>
             <span className="max-w-[160px] truncate" title={attachment.basename}>
               {attachment.basename}
             </span>

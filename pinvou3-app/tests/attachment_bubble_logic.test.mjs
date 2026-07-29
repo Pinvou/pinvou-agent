@@ -62,4 +62,25 @@ assert.match(
   'attachment bubbles must reuse the shared file-type glyphs instead of a new icon dependency',
 );
 
+// ── 待发 chip 契约:输入框附件 chip 与消息气泡使用同一套类型图标 ──
+const chipsSource = await readFile(
+  new URL('../src/features/attachments/AttachmentChips.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(
+  chipsSource,
+  /_artifactKind\(attachment\.basename\)/,
+  'composer chips must map the file type from the shared table',
+);
+assert.match(
+  chipsSource,
+  /AcFmtIcon kind=\{kind\}/,
+  'composer chips must render the shared file-type glyph tile',
+);
+assert.doesNotMatch(
+  chipsSource,
+  /<span>📎<\/span>/,
+  'composer chips must not fall back to the emoji paperclip',
+);
+
 console.log('attachment bubble logic tests passed');
