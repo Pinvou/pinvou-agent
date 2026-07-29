@@ -409,7 +409,7 @@ function PermissionCard({ permission, pending, onRespond, responding }) {
             {options.map(option => (
               <button key={option.optionId} disabled={!actionable || responding}
                 onClick={() => onRespond(permission.toolCallId, option.optionId)}
-                className={`px-3 py-1.5 rounded-xl text-[12px] font-medium transition-colors ${
+                className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
                   String(option.kind || '').startsWith('allow')
                     ? 'bg-blue-600 text-white hover:bg-blue-700'
                     : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'

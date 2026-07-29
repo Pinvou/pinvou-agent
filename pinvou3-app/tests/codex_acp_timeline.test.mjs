@@ -286,6 +286,10 @@ try {
   const pinvouLogo = readFileSync(path.join(root, 'src', 'components', 'PinvouLogo.jsx'), 'utf8');
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
+  const boundedPermissionOptionClass = 'max-w-full min-w-0 whitespace-normal break-all';
+  assert.ok(codexView.includes(boundedPermissionOptionClass)
+    && conversationView.includes(boundedPermissionOptionClass),
+  'long ACP permission option labels must wrap inside both unified and legacy permission cards');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
