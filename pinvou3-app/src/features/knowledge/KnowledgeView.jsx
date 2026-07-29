@@ -10,7 +10,9 @@ import { can, isWeb } from '../../shared/platform.js';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
-    const KnowledgeView = ({ theme, t }) => {
+    const KnowledgeView = ({ theme, t, mode }) => {
+      // mode='outputs' 时作为一级「产出物」视图独立渲染:固定 output 段,隐藏段切换,显示自己的标题。
+      const outputsOnly = mode === 'outputs';
       const isDark = theme === 'dark';
       const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
       const inv = invokeTauri;
@@ -19,7 +21,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
       const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
 
-      const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
+      const [sub, setSub] = useState(outputsOnly ? 'output' : 'kb'); // 'output' | 'files' | 'kb'；本地知识默认落知识库
 
       // ---------- 共用 ----------
       const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
@@ -682,16 +684,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           <div className="w-full max-w-[1400px] mx-auto border-b border-slate-200/50 dark:border-white/10">
             <div className="flex flex-col gap-3 pb-6 lg:flex-row lg:items-center lg:justify-between">
               <div className="shrink-0">
-                <IosSegmentedControl
-                  value={sub}
-                  onChange={setSub}
-                  isDark={isDark}
-                  segments={[
-                    { key: 'output', label: t.kbSubOutput, count: outputs.length || null },
-                    { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
-                    { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
-                  ]}
-                />
+                {outputsOnly ? (
+                  <div>
+                    <h1 className={`text-[20px] font-bold tracking-tight ${ink}`}>{t.outputs}</h1>
+                    <p className={`text-[13px] mt-0.5 ${muted}`}>{t.kbOutSub}</p>
+                  </div>
+                ) : (
+                  <IosSegmentedControl
+                    value={sub}
+                    onChange={setSub}
+                    isDark={isDark}
+                    segments={[
+                      { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
+                      { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
+                    ]}
+                  />
+                )}
               </div>
               <div className="flex min-w-0 flex-col gap-3 overflow-hidden lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end">
                 {sub === 'output' ? (

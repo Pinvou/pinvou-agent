@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * 本地文件与知识库（KnowledgeView）e2e 渲染 probe — headless chromium + mock 全部 kb_* 命令。
- * 切到「本地知识」视图，逐项验证：文件管理 subtab(分类卡/文件行/加入知识库浮层)、
- * 知识库 subtab(banner/知识集卡片/聚焦知识集/添加文件)。重点抓运行时 ReferenceError。
+ * 先切到一级「产出物」视图验证产物预览，再切「本地知识」视图逐项验证：
+ * 文件管理 subtab(分类卡/文件行/加入知识库浮层)、知识库 subtab(banner/知识集卡片/聚焦知识集/添加文件)。
+ * 重点抓运行时 ReferenceError。
  * 用法: node pinvou3-app/tests/kb_smoke.js  (全 PASS→0 / FAIL→1 / 缺依赖→2)
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -117,10 +118,10 @@ async function clickContains(page, sel, text) {
     };
   });
 
-  // 切到「本地知识」视图
+  // 切到「产出物」一级视图
   await page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) b.click(); });
   await sleep(400);
-  const entered = await clickContains(page, 'button,div,span,a', '本地知识');
+  const entered = await clickContains(page, 'button,div,span,a', '产出物');
   await sleep(700);
   await page.waitForFunction(() => document.body.innerText.includes('跨会话报告.md'), { timeout: 5000 }).catch(() => {});
   await sleep(300);
@@ -136,6 +137,9 @@ async function clickContains(page, sel, text) {
   });
   rec('⓪ 产出物预览始终携带所属会话', outputPreviewSession.live && outputPreviewSession.modal, JSON.stringify(outputPreviewSession));
   await clickContains(page, 'button', '✕'); await sleep(200);
+  // 切到「本地知识」视图(产出物已独立为一级菜单)
+  await clickContains(page, 'button,div,span,a', '本地知识');
+  await sleep(700);
   await clickContains(page, 'button', '本地文件管理');
   await sleep(1500);
 
