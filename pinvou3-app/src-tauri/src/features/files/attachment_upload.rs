@@ -6,6 +6,96 @@ use super::file_ingest::{self, IngestResult, MAX_FILE_BYTES};
 
 pub const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
 const STALE_STAGING_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const CONVERSATION_ATTACHMENT_REFS_FILE: &str = "conversation-attachments.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ConversationAttachmentReference {
+    pub basename: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct ConversationAttachmentRecord {
+    message_index: usize,
+    display_text: String,
+    attachments: Vec<ConversationAttachmentReference>,
+}
+
+fn conversation_attachment_refs_path(workspace: &Path) -> PathBuf {
+    workspace
+        .join(".pinvou3")
+        .join(CONVERSATION_ATTACHMENT_REFS_FILE)
+}
+
+/// Persist display-only attachment references outside the LLM transcript.
+pub fn record_conversation_attachments(
+    workspace: &Path,
+    message_index: usize,
+    display_text: &str,
+    attachments: Vec<ConversationAttachmentReference>,
+) -> Result<(), String> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+    let refs_path = conversation_attachment_refs_path(workspace);
+    let mut records = match std::fs::read(&refs_path) {
+        Ok(bytes) => serde_json::from_slice::<Vec<ConversationAttachmentRecord>>(&bytes)
+            .map_err(|error| format!("读取附件引用失败：{error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("读取附件引用失败：{error}")),
+    };
+    let record = ConversationAttachmentRecord {
+        message_index,
+        display_text: display_text.to_string(),
+        attachments,
+    };
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|existing| existing.message_index == message_index)
+    {
+        *existing = record;
+    } else {
+        records.push(record);
+        records.sort_by_key(|entry| entry.message_index);
+    }
+    let parent = refs_path
+        .parent()
+        .ok_or_else(|| "附件引用目录无效".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| format!("创建附件引用目录失败：{error}"))?;
+    let payload = serde_json::to_vec_pretty(&records)
+        .map_err(|error| format!("序列化附件引用失败：{error}"))?;
+    deepseek_tui::utils::write_atomic(&refs_path, &payload)
+        .map_err(|error| format!("保存附件引用失败：{error:#}"))?;
+    Ok(())
+}
+
+pub fn resolve_conversation_attachment(
+    workspace: &Path,
+    message_index: usize,
+    attachment_index: usize,
+    expected_basename: &str,
+    expected_display_text: &str,
+) -> Result<PathBuf, String> {
+    validate_filename(expected_basename)?;
+    let refs_path = conversation_attachment_refs_path(workspace);
+    let payload =
+        std::fs::read(&refs_path).map_err(|_| "该附件没有可用的本地文件引用".to_string())?;
+    let records: Vec<ConversationAttachmentRecord> =
+        serde_json::from_slice(&payload).map_err(|error| format!("读取附件引用失败：{error}"))?;
+    let reference = records
+        .iter()
+        .find(|record| {
+            record.message_index == message_index && record.display_text == expected_display_text
+        })
+        .and_then(|record| record.attachments.get(attachment_index))
+        .filter(|reference| reference.basename == expected_basename)
+        .ok_or_else(|| "该附件引用已失效或与当前消息不匹配".to_string())?;
+    let path = file_ingest::validate_path(&reference.path)?;
+    if path.file_name().and_then(|name| name.to_str()) != Some(reference.basename.as_str()) {
+        return Err("附件文件名与引用不匹配".into());
+    }
+    Ok(path)
+}
 
 fn validate_upload_id(upload_id: &str) -> Result<&str, String> {
     if upload_id.len() < 8
@@ -236,8 +326,9 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        append_chunk, discard_attachment, validate_filename, validate_upload_id,
-        MAX_ATTACHMENT_CHUNK_BYTES,
+        append_chunk, discard_attachment, record_conversation_attachments,
+        resolve_conversation_attachment, validate_filename, validate_upload_id,
+        ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
     };
     use std::path::PathBuf;
 
@@ -319,5 +410,47 @@ mod tests {
         .await
         .is_err());
         assert!(!workspace.exists());
+    }
+
+    #[test]
+    fn conversation_attachment_references_are_indexed_and_replaceable() {
+        let workspace = test_workspace("conversation-reference");
+        let first = workspace.join("attachments").join("one.txt");
+        let second = workspace.join("attachments").join("two.txt");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+
+        record_conversation_attachments(
+            &workspace,
+            3,
+            "first",
+            vec![ConversationAttachmentReference {
+                basename: "one.txt".into(),
+                path: first.to_string_lossy().into_owned(),
+            }],
+        )
+        .unwrap();
+        record_conversation_attachments(
+            &workspace,
+            3,
+            "replacement",
+            vec![ConversationAttachmentReference {
+                basename: "two.txt".into(),
+                path: second.to_string_lossy().into_owned(),
+            }],
+        )
+        .unwrap();
+
+        assert!(resolve_conversation_attachment(&workspace, 3, 0, "one.txt", "first").is_err());
+        assert!(resolve_conversation_attachment(&workspace, 3, 0, "two.txt", "first").is_err());
+        assert_eq!(
+            resolve_conversation_attachment(&workspace, 3, 0, "two.txt", "replacement").unwrap(),
+            second
+        );
+        assert!(
+            resolve_conversation_attachment(&workspace, 4, 0, "two.txt", "replacement").is_err()
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 }

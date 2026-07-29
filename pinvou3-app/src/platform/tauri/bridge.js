@@ -1199,7 +1199,7 @@
         var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          var uitem2 = { type: "user", text: utext, time: "" };
+          var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
           else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
@@ -1599,6 +1599,9 @@
   var clearAttachments = artifactsFeature.clearAttachments;
   var pickAndAttach = artifactsFeature.pickAndAttach;
   var uploadDeviceFiles = artifactsFeature.uploadDeviceFiles;
+  var resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
+  var openConversationAttachment = artifactsFeature.openConversationAttachment;
+  var revealConversationAttachment = artifactsFeature.revealConversationAttachment;
   var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
   var loadPersonas = personasFeature.loadPersonas;
   var getPersonas = personasFeature.getPersonas;
@@ -1876,6 +1879,9 @@
       clearAttachments: clearAttachments,
       pickAndAttach: pickAndAttach,
       uploadDeviceFiles: uploadDeviceFiles,
+      resolveConversationAttachment: resolveConversationAttachment,
+      openConversationAttachment: openConversationAttachment,
+      revealConversationAttachment: revealConversationAttachment,
     },
     resolutions: { markResolved: markResolved },
     workflow: {

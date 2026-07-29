@@ -8,8 +8,7 @@ import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../pe
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
-import { AcFmtIcon, ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
-import { _artifactKind } from '../../shared/artifact-utils.js';
+import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
@@ -27,6 +26,7 @@ import {
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
+import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import {
@@ -1349,6 +1349,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     renderUser={(item) => (
                       <ChatBubble
                         item={item}
+                        sessionId={activeSessionId}
                         theme={theme}
                         t={t}
                         editable={!busy && item.id === lastUserId}
@@ -1364,6 +1365,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       return (
                         <ChatBubble
                           item={item.legacyItem}
+                          sessionId={activeSessionId}
                           theme={theme}
                           t={t}
                           onPrefill={(text) => setInputText(text)}
@@ -1387,6 +1389,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       <ChatBubble
                         key={item.id}
                         item={item}
+                        sessionId={activeSessionId}
                         theme={theme}
                         t={t}
                         onPrefill={(text) => setInputText(text)}
@@ -1436,7 +1439,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
@@ -2114,7 +2117,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       ), document.body);
     };
 
-    const UserBubble = ({ item, theme, editable, t, conversationVariant }) => {
+    const UserBubble = ({ item, sessionId, theme, editable, t, conversationVariant }) => {
       const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
@@ -2180,20 +2183,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {attachmentNames.length > 0 && (
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
                 {attachmentNames.map((name, index) => {
-                  const kind = _artifactKind(name);
                   return (
-                    <span
+                    <ConversationAttachmentBubble
                       key={`${name}-${index}`}
-                      title={name}
-                      className={`inline-flex max-w-[280px] items-center gap-2 rounded-[14px] border px-2 py-1.5 text-[12px] leading-4 shadow-sm ${
-                        isDark ? 'border-white/10 bg-[#2A2B2E] text-[#E3E3E3]' : 'border-black/[0.08] bg-white text-[#1F1F1F]'
-                      }`}
-                    >
-                      <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] ${isDark ? 'bg-white/[0.08]' : 'bg-black/[0.04]'}`}>
-                        <AcFmtIcon kind={kind} className="h-5 w-5" />
-                      </span>
-                      <span className="truncate font-medium">{name}</span>
-                    </span>
+                      name={name}
+                      displayText={item.text}
+                      messageIndex={item.messageIndex}
+                      attachmentIndex={index}
+                      sessionId={sessionId}
+                      isDark={isDark}
+                      copyText={copyClipboardText}
+                      labels={{
+                        open: t.attachmentOpen,
+                        download: t.attachmentDownload,
+                        copyAddress: t.attachmentCopyAddress,
+                        copyName: t.attachmentCopyName,
+                        reveal: t.attachmentReveal,
+                      }}
+                    />
                   );
                 })}
               </div>
@@ -2406,7 +2413,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
+    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const assistantSelectionHostRef = useRef(null);
@@ -2418,7 +2425,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+        return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }
 
       if (item.type === 'card_creator_intro') {

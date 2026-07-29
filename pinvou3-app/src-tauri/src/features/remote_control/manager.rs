@@ -3211,6 +3211,7 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "web_access_read_artifact_text"
         | "web_access_read_artifact_thumbnail"
         | "web_access_render_artifact_visual"
+        | "web_access_read_conversation_attachment_chunk"
         | "web_access_transcribe_voice_audio"
         | "web_access_write_artifact_text" => Required("sessionId"),
 
@@ -4140,7 +4141,29 @@ pub fn read_artifact_chunk(
         ));
     }
     let resolved = resolve_session_artifact_path(store, session_id, path)?;
-    let mut file = File::open(&resolved)
+    read_resolved_file_chunk_with_limit(&resolved, offset, limit)
+}
+
+pub(crate) fn read_resolved_file_chunk(
+    resolved: &Path,
+    offset: u64,
+    limit: Option<usize>,
+) -> Result<ArtifactChunk, String> {
+    let limit = limit.unwrap_or(MAX_ARTIFACT_CHUNK_BYTES);
+    if limit == 0 || limit > MAX_ARTIFACT_CHUNK_BYTES {
+        return Err(format!(
+            "artifact chunk limit must be between 1 and {MAX_ARTIFACT_CHUNK_BYTES}"
+        ));
+    }
+    read_resolved_file_chunk_with_limit(resolved, offset, limit)
+}
+
+fn read_resolved_file_chunk_with_limit(
+    resolved: &Path,
+    offset: u64,
+    limit: usize,
+) -> Result<ArtifactChunk, String> {
+    let mut file = File::open(resolved)
         .map_err(|error| format!("open artifact {}: {error}", resolved.display()))?;
     let size = file
         .metadata()
@@ -4760,6 +4783,7 @@ mod tests {
             "web_access_upload_attachment_chunk",
             "web_access_abort_attachment_upload",
             "web_access_discard_attachment",
+            "web_access_read_conversation_attachment_chunk",
             "web_access_load_session_chunk",
             "web_access_start_skill_session",
         ] {

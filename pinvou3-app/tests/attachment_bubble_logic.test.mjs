@@ -53,13 +53,68 @@ assert.match(
 );
 assert.match(
   chatViewSource,
+  /<ConversationAttachmentBubble/,
+  'user attachments must use the interactive conversation attachment component',
+);
+assert.match(
+  chatViewSource,
+  /displayText=\{item\.text\}/,
+  'attachment references must include the persisted display text to reject stale index collisions',
+);
+
+const bubbleSource = await readFile(
+  new URL('../src/features/attachments/ConversationAttachmentBubble.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(
+  bubbleSource,
   /_artifactKind\(name\)/,
   'attachment bubbles must reuse the shared file-type mapping',
 );
 assert.match(
-  chatViewSource,
+  bubbleSource,
   /AcFmtIcon kind=\{kind\}/,
   'attachment bubbles must reuse the shared file-type glyphs instead of a new icon dependency',
+);
+assert.match(
+  bubbleSource,
+  /onClick=\{openAttachment\}/,
+  'left click must open or download the conversation attachment',
+);
+assert.match(
+  bubbleSource,
+  /onContextMenu=\{openContextMenu\}/,
+  'right click must expose attachment actions',
+);
+assert.doesNotMatch(
+  bubbleSource,
+  /title=\{`\$\{name\}/,
+  'attachment bubbles must not show a native hover tooltip',
+);
+assert.match(
+  bubbleSource,
+  /data-conversation-attachment-menu/,
+  'the global outside-click handler must distinguish interactions inside the portal menu',
+);
+assert.match(
+  bubbleSource,
+  /resolveConversationAttachment/,
+  'desktop copy-address must resolve the persisted attachment reference',
+);
+assert.match(
+  bubbleSource,
+  /revealConversationAttachment/,
+  'desktop context menu must support revealing the file in its manager',
+);
+
+const webBridgeSource = await readFile(
+  new URL('../src/platform/web/bridge.js', import.meta.url),
+  'utf8',
+);
+assert.match(
+  webBridgeSource,
+  /web_access_read_conversation_attachment_chunk/,
+  'WebUI must download referenced attachments without exposing or requiring their host path',
 );
 
 // ── 待发 chip 契约:输入框附件 chip 与消息气泡使用同一套类型图标 ──

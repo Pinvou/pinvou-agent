@@ -85,6 +85,22 @@ pub(crate) async fn chat_with_reservation(
     let execution_workspace = store
         .execution_workspace(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+    let message_index = store
+        .load(&sid)
+        .map_err(|error| format!("load Session {sid} for attachment references: {error:#}"))?
+        .messages
+        .len();
+    let attachment_references = attachments
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|attachment| {
+            crate::features::files::attachment_upload::ConversationAttachmentReference {
+                basename: attachment.basename.clone(),
+                path: attachment.path.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
     let is_scheduled = store.scheduled_profile(&sid).is_some();
     if is_scheduled {
         for attachment in attachments.as_deref().unwrap_or_default() {
@@ -188,7 +204,7 @@ pub(crate) async fn chat_with_reservation(
         .send_reserved_user_message(
             &sid,
             full,
-            user_display_message(display_content),
+            user_display_message(display_content.clone()),
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
             reservation,
@@ -197,6 +213,20 @@ pub(crate) async fn chat_with_reservation(
     {
         Ok(()) => {
             pending_injections.commit();
+            if let Err(error) =
+                crate::features::files::attachment_upload::record_conversation_attachments(
+                    &execution_workspace,
+                    message_index,
+                    &display_content,
+                    attachment_references,
+                )
+            {
+                log::warn!(
+                    "[pinvou3][chat] persist attachment references failed sid={} error={}",
+                    sid,
+                    error
+                );
+            }
             if memory_enabled {
                 crate::features::memory::record_turn_user(&sid, &raw_message);
             }

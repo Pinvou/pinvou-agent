@@ -212,7 +212,12 @@
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      var uitem = { type: "user", text: displayText, time: timeStr() };
+      var uitem = {
+        type: "user",
+        text: displayText,
+        time: timeStr(),
+        messageIndex: state.messages.length,
+      };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
       submittedUserItemId = uitem.id;

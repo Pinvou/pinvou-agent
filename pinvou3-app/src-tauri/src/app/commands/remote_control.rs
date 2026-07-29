@@ -353,6 +353,30 @@ pub fn web_access_discard_attachment(
     manager.discard_web_attachment(&handle)
 }
 
+/// Read a bounded chunk from an attachment already referenced by a saved
+/// conversation message. The browser never receives or supplies a host path.
+#[tauri::command]
+pub async fn web_access_read_conversation_attachment_chunk(
+    session_id: String,
+    message_index: usize,
+    attachment_index: usize,
+    basename: String,
+    display_text: String,
+    offset: u64,
+    limit: Option<usize>,
+    store: State<'_, SessionStore>,
+) -> Result<manager::ArtifactChunk, String> {
+    let path = super::files::resolve_conversation_attachment_path(
+        &store,
+        &session_id,
+        message_index,
+        attachment_index,
+        &basename,
+        &display_text,
+    )?;
+    manager::read_resolved_file_chunk(&path, offset, limit)
+}
+
 /// Materialize a draft Web conversation and admit its first turn as one
 /// idempotent RPC. The Relay request ledger guarantees that reconnecting with
 /// the same client_request_id cannot create or submit the turn twice.

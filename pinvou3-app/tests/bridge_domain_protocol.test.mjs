@@ -79,7 +79,7 @@ const protocolSources = {
 
 const expectedProtocolHashes = {
   orchestration: '4a65b9c03674987bae1d7de970bbc764be7a28535a288761e8e03ada8a35dccb',
-  artifacts: 'c9446a98b2b4ac77093356e930cad33ccf4f4d59eb5b0f5e2247512f418ad7e4',
+  artifacts: '35eeb5ac596f039f62d3d1b97aef98306b2b8e8cd02fd13c1a172ca48d920048',
   chat: '46d4abf14c023e93845c27fb0048da69655769043935ec115221aaed1e00a3d0',
   dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
@@ -153,7 +153,7 @@ const expectedApi = {
   interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'], remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
-  attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'pickAndAttach', 'removeAttachment', 'uploadDeviceFiles'], resolutions: ['markResolved'],
+  attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'], resolutions: ['markResolved'],
   workflow: ['activateSkill', 'addMaterialsToSession', 'approveWorkflowGate', 'attachRun', 'closeDemo', 'closeWorkflowDrawer', 'deactivateSkill', 'getGateReport', 'getRoleLogs', 'getRoleOutputs', 'getRolePrompt', 'listWorkflows', 'loadSkills', 'openDemo', 'pickAndAddMaterials', 'rejectWorkflowGate', 'resetWorkflowRun', 'resumeWorkflowOnBoot', 'retryWorkflowRole', 'selectWorkflowRole', 'setCurrentPhase', 'startWorkflowTask', 'stopWorkflowTask', 'submitWorkflowUserInput'],
   files: ['pickFeedbackFiles', 'pickFiles'],
   personas: ['createPersona', 'deletePersona', 'equipPersona', 'getPersonas', 'loadPersonas', 'postCardCreatorIntro', 'readPersonaBody', 'unequipPersona', 'updatePersona'],

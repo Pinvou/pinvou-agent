@@ -88,6 +88,87 @@ pub async fn discard_dropped_attachment(
     crate::features::files::attachment_upload::discard_attachment(&workspace, &path).await
 }
 
+pub(super) fn resolve_conversation_attachment_path(
+    store: &SessionStore,
+    session_id: &str,
+    message_index: usize,
+    attachment_index: usize,
+    basename: &str,
+    display_text: &str,
+) -> Result<std::path::PathBuf, String> {
+    let workspace = dropped_attachment_workspace(store, session_id)?;
+    crate::features::files::attachment_upload::resolve_conversation_attachment(
+        &workspace,
+        message_index,
+        attachment_index,
+        basename,
+        display_text,
+    )
+}
+
+#[tauri::command]
+pub async fn resolve_conversation_attachment(
+    session_id: String,
+    message_index: usize,
+    attachment_index: usize,
+    basename: String,
+    display_text: String,
+    store: State<'_, SessionStore>,
+) -> Result<String, String> {
+    resolve_conversation_attachment_path(
+        &store,
+        &session_id,
+        message_index,
+        attachment_index,
+        &basename,
+        &display_text,
+    )
+    .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn open_conversation_attachment(
+    session_id: String,
+    message_index: usize,
+    attachment_index: usize,
+    basename: String,
+    display_text: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let path = resolve_conversation_attachment_path(
+        &store,
+        &session_id,
+        message_index,
+        attachment_index,
+        &basename,
+        &display_text,
+    )?;
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(&path),
+        "对话附件",
+    )
+}
+
+#[tauri::command]
+pub async fn reveal_conversation_attachment(
+    session_id: String,
+    message_index: usize,
+    attachment_index: usize,
+    basename: String,
+    display_text: String,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let path = resolve_conversation_attachment_path(
+        &store,
+        &session_id,
+        message_index,
+        attachment_index,
+        &basename,
+        &display_text,
+    )?;
+    crate::platform::os::reveal_target(&path)
+}
+
 /// 返回系统工具检测结果（pandoc / pdftotext 是否可用）。
 /// 前端启动时调一次，缺工具时给一次性 toast 引导 apt install。
 #[tauri::command]

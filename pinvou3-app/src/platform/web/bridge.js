@@ -2806,7 +2806,7 @@
         var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          var uitem2 = { type: "user", text: utext, time: "" };
+          var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
           else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
@@ -3363,7 +3363,12 @@
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      var uitem = { type: "user", text: displayText, time: timeStr() };
+      var uitem = {
+        type: "user",
+        text: displayText,
+        time: timeStr(),
+        messageIndex: state.messages.length,
+      };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
@@ -3575,6 +3580,7 @@
       type: "user",
       text: submission.displayText,
       time: submission.time,
+      messageIndex: 0,
       deliveryState: "accepted",
       clientMessageId: submission.clientMessageId,
     };
@@ -3689,6 +3695,7 @@
       type: "user",
       text: displayText,
       time: time,
+      messageIndex: 0,
       deliveryState: "sending",
       deliveryError: "",
       clientMessageId: clientMessageId,
@@ -6414,6 +6421,102 @@
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
+  function conversationAttachmentArgs(reference) {
+    reference = reference || {};
+    return {
+      sessionId: reference.sessionId || state.activeSessionId,
+      messageIndex: Number(reference.messageIndex),
+      attachmentIndex: Number(reference.attachmentIndex),
+      basename: String(reference.basename || ""),
+      displayText: String(reference.displayText || ""),
+    };
+  }
+  function resolveConversationAttachment(reference) {
+    if (!IS_WEB) {
+      return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
+    }
+    return Promise.reject(new Error("WebUI does not expose desktop attachment paths"));
+  }
+  async function downloadConversationAttachment(reference) {
+    if (!hasCapability("artifactDownload")) {
+      throw new Error("当前桌面端不支持远程附件下载，请更新桌面端后重试。");
+    }
+    var args = conversationAttachmentArgs(reference);
+    var expectedSize = null;
+    var offset = 0;
+    var chunks = [];
+    var filename = args.basename || "attachment";
+    while (true) {
+      var part = await invoke("web_access_read_conversation_attachment_chunk", Object.assign({
+        offset: offset,
+        limit: 262144,
+      }, args));
+      if (!part) throw new Error("Attachment download returned no data");
+      var partOffset = Number(part.offset);
+      var partSize = Number(part.size);
+      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
+          !Number.isSafeInteger(partSize) || partSize < 0) {
+        throw new Error("桌面端返回了无效的附件分块，已停止下载。");
+      }
+      if (expectedSize === null) {
+        expectedSize = partSize;
+        if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
+          throw webArtifactDownloadLimitError(expectedSize);
+        }
+      } else if (partSize !== expectedSize) {
+        throw new Error("附件在下载期间发生变化，请重试。");
+      }
+      filename = part.name || filename;
+      var encoded = String(part.data_base64 || part.dataBase64 || "");
+      var binary = atob(encoded);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (!bytes.length && !part.eof) throw new Error("Attachment download made no progress");
+      if (offset + bytes.length > expectedSize) {
+        throw new Error("桌面端返回的附件数据超过声明大小，已停止下载。");
+      }
+      chunks.push(bytes);
+      offset += bytes.length;
+      if (part.eof) {
+        if (offset !== expectedSize) throw new Error("附件下载不完整，请重试。");
+        break;
+      }
+    }
+    var blob = new Blob(chunks, { type: "application/octet-stream" });
+    var objectUrl = URL.createObjectURL(blob);
+    var anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
+    return true;
+  }
+  async function openConversationAttachment(reference) {
+    try {
+      if (!IS_WEB) {
+        await invoke("open_conversation_attachment", conversationAttachmentArgs(reference));
+        return true;
+      }
+      return await downloadConversationAttachment(reference);
+    } catch (e) {
+      addSystemItem(bt("openFailed") + e);
+      return false;
+    }
+  }
+  async function revealConversationAttachment(reference) {
+    if (IS_WEB) return false;
+    try {
+      await invoke("reveal_conversation_attachment", conversationAttachmentArgs(reference));
+      return true;
+    } catch (e) {
+      addSystemItem(bt("openFailed") + e);
+      return false;
+    }
+  }
+
   async function addAttachmentByPath(path) {
     var id = ++attachIdSeq;
     var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
@@ -7716,6 +7819,9 @@
     clearAttachments: clearAttachments,
     pickAndAttach: pickAndAttach,
     uploadDeviceFiles: uploadDeviceFiles,
+    resolveConversationAttachment: resolveConversationAttachment,
+    openConversationAttachment: openConversationAttachment,
+    revealConversationAttachment: revealConversationAttachment,
     markResolved: markResolved,
     // 工作流
     loadSkills: loadSkills,
@@ -7899,7 +8005,7 @@
       refreshRemoteControlStatus: "refreshWebAccessStatus"
     }),
     artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverables", "listDeliverableIndex", "openExternalUrl"]),
-    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles"]),
+    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles", "resolveConversationAttachment", "openConversationAttachment", "revealConversationAttachment"]),
     resolutions: domain(["markResolved"]),
     workflow: domain(["loadSkills", "activateSkill", "deactivateSkill", "openDemo", "closeDemo", "setCurrentPhase", "startWorkflowTask", "stopWorkflowTask", "listWorkflows", "resetWorkflowRun", "selectWorkflowRole", "closeWorkflowDrawer", "getRolePrompt", "getRoleOutputs", "getGateReport", "getRoleLogs", "submitWorkflowUserInput", "pickAndAddMaterials", "addMaterialsToSession", "attachRun", "resumeWorkflowOnBoot", "approveWorkflowGate", "rejectWorkflowGate", "retryWorkflowRole"]),
     files: domain(["pickFiles", "pickFeedbackFiles"]),

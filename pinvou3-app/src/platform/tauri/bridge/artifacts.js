@@ -194,6 +194,28 @@
     notify();
   }
 
+  function conversationAttachmentArgs(reference) {
+    reference = reference || {};
+    return {
+      sessionId: reference.sessionId || state.activeSessionId,
+      messageIndex: Number(reference.messageIndex),
+      attachmentIndex: Number(reference.attachmentIndex),
+      basename: String(reference.basename || ""),
+      displayText: String(reference.displayText || ""),
+    };
+  }
+  function resolveConversationAttachment(reference) {
+    return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
+  }
+  function openConversationAttachment(reference) {
+    return invoke("open_conversation_attachment", conversationAttachmentArgs(reference))
+      .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
+  }
+  function revealConversationAttachment(reference) {
+    return invoke("reveal_conversation_attachment", conversationAttachmentArgs(reference))
+      .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
+  }
+
   function initAttachmentDrop() {
     if (initAttachmentDrop.done) return;
     initAttachmentDrop.done = true;
@@ -276,7 +298,10 @@
       removeAttachment: removeAttachment,
       clearAttachments: clearAttachments,
       pickAndAttach: pickAndAttach,
-      uploadDeviceFiles: uploadDeviceFiles
+      uploadDeviceFiles: uploadDeviceFiles,
+      resolveConversationAttachment: resolveConversationAttachment,
+      openConversationAttachment: openConversationAttachment,
+      revealConversationAttachment: revealConversationAttachment
     };
   };
 })(window);
