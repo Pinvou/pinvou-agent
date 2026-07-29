@@ -561,24 +561,24 @@ impl Pinvou3Bridge {
         self.prefs.advanced.max_output_tokens.unwrap_or(24_576)
     }
 
-    /// 为一个具体 wire model 生成宿主已知的 route facts。正确性不依赖模型名：
-    /// SavedModel 显式能力与实时 probe 取更小值；本地 vLLM 无显式 context 时才
-    /// 使用模型 hint/128K 保守值。output 始终不超过 Pinvou 全局 24K 请求意图。
+    /// 为一个具体 wire model 生成宿主已知的 route facts：
+    /// SavedModel 显式能力与实时 probe 取更小值；两者都没有时复用运行状态页同一份
+    /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。output 始终不超过 Pinvou
+    /// 全局 24K 请求意图。
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
+        let inferred_context = crate::core::model_context::resolved_context_window(model);
+        let is_local_vllm = self.provider() == "vllm";
         let context_tokens = match (configured_context, self.probed_context_tokens) {
             (Some(configured), Some(probed)) => Some(configured.min(probed)),
             (Some(configured), None) => Some(configured),
             (None, Some(probed)) => Some(probed),
-            (None, None) if self.provider() == "vllm" => {
-                Some(deepseek_tui::models::context_window_for_model(model).unwrap_or(128_000))
-            }
-            (None, None) => None,
+            (None, None) => inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
         };
         let configured_output = saved.and_then(|saved| saved.max_output_tokens);
         let output_tokens = configured_output
-            .or_else(|| (self.provider() == "vllm").then(|| self.max_output_tokens()))
+            .or_else(|| is_local_vllm.then(|| self.max_output_tokens()))
             .map(|tokens| tokens.min(self.max_output_tokens()))
             .map(|tokens| {
                 context_tokens.map_or(tokens, |context| {
@@ -603,7 +603,7 @@ impl Pinvou3Bridge {
             .and_then(|limits| limits.context_tokens)
             .and_then(|tokens| u32::try_from(tokens).ok())
             .unwrap_or_else(|| {
-                deepseek_tui::models::context_window_for_model(model).unwrap_or(128_000)
+                crate::core::model_context::resolved_context_window(model).unwrap_or(128_000)
             })
     }
 
@@ -1398,6 +1398,52 @@ mod tests {
             credential_action: None,
         }];
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
+    }
+
+    #[test]
+    fn known_cloud_window_fills_route_limits_and_compaction_window() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Qwen,
+            "qwen3.7-plus",
+            ModelPreset::Qwen.default_base_url(),
+            "",
+        );
+
+        let saved = bridge.effective_model().expect("active cloud model");
+        assert_eq!(
+            saved.context_window_tokens, None,
+            "云端 catalog 模型默认不要求用户手填窗口"
+        );
+        let limits = bridge
+            .route_limits_for_model(&bridge.model())
+            .expect("已知云端模型必须生成 route limits");
+        assert_eq!(limits.context_tokens, Some(1_000_000));
+        assert_eq!(
+            bridge
+                .build_engine_config()
+                .active_route_limits
+                .and_then(|route| route.context_tokens),
+            Some(1_000_000),
+            "运行状态与底座 active_route_limits 必须使用同一窗口"
+        );
+        assert_eq!(bridge.effective_context_window(&bridge.model()), 1_000_000);
+    }
+
+    #[test]
+    fn unknown_cloud_model_does_not_gain_a_speculative_route_limit() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "unknown-cloud-model",
+            "https://example.com/v1",
+            "",
+        );
+
+        assert_eq!(bridge.route_limits_for_model(&bridge.model()), None);
+        assert_eq!(bridge.effective_context_window(&bridge.model()), 128_000);
     }
 
     #[test]

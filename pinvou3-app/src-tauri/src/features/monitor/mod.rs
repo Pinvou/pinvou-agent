@@ -893,75 +893,12 @@ pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     })
 }
 
-/// 精确匹配模型名，并容忍 `-` 分隔的日期/快照后缀（如 `qwen3.7-plus-20260602`）。
-fn model_name_matches(lower: &str, name: &str) -> bool {
-    lower == name
-        || lower
-            .strip_prefix(name)
-            .is_some_and(|rest| rest.starts_with('-'))
-}
-
-/// pinvou3 侧补充表：底座 `context_window_for_model` 刻意不定义（如 qwen3.7-plus，
-/// 底座策略"不编造上限"）或尚未覆盖（kimi-k3 / doubao 全系 / glm-4.7）的云端模型。
-/// 取值依据见各条目注释；均为官方文档/官方升级公告口径。
-fn pinvou_known_context_window(lower: &str) -> Option<u32> {
-    const PINVOU_KNOWN: &[(&str, u32)] = &[
-        // Kimi K3 官方标称 100 万 token（platform.kimi.com/docs/models）。
-        ("kimi-k3", 1_048_576),
-        // Coding Plan 裸 k3 同为 1M 窗口（高档位解锁全量，低档服务端限 256K，标称取 1M）。
-        ("k3", 1_048_576),
-        // kimi-for-coding 系属 K2.7 Code，官方 256K（底座只覆盖 kimi-for-coding 本体）。
-        ("kimi-for-coding-highspeed", 262_144),
-        ("kimi-k2.7-code-highspeed", 262_144),
-        // 阿里云官方文档对 qwen3.7-plus 配 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000；
-        // 底座对该模型刻意返回 None（不编造上限），pinvou3 按官方口径补 1M。
-        ("qwen3.7-plus", 1_000_000),
-        // 阿里云百炼官方模型列表：qwen3.7-max / qwen3.7-flash 同为 1M；
-        // 底座 catalog 无这两个裸名条目（qwen3.7-flash 为 qwen3.6-flash 的官方降本替代）。
-        ("qwen3.7-max", 1_000_000),
-        ("qwen3.7-flash", 1_000_000),
-        // 底座表只有带 `qwen/` 前缀的条目，裸名解析不到，这里补 1M（仓库 catalog 一致）。
-        ("qwen3.6-flash", 1_000_000),
-        // 2026-07 火山引擎官方升级公告：doubao-seed-evolving 升为 1M 上下文。
-        ("doubao-seed-evolving", 1_048_576),
-        // 智谱官方文档 glm-4.7 上下文 200K（无精确整数，取 200×1024，与显式后缀表一致）。
-        ("glm-4.7", 204_800),
-    ];
-    PINVOU_KNOWN
-        .iter()
-        .find(|(name, _)| model_name_matches(lower, name))
-        .map(|(_, window)| *window)
-}
-
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
-    let lower = model.unwrap_or("").to_ascii_lowercase();
-    let explicit = [
-        ("1m", 1_048_576),
-        ("1000k", 1_024_000),
-        ("512k", 524_288),
-        ("256k", 262_144),
-        ("200k", 204_800),
-        ("128k", 131_072),
-        ("64k", 65_536),
-        ("32k", 32_768),
-        ("16k", 16_384),
-        ("8k", 8_192),
-    ]
-    .into_iter()
-    .find_map(|(needle, value)| lower.contains(needle).then_some(value));
-    if explicit.is_some() {
-        return explicit;
-    }
-    // 1. pinvou3 补充表（底座不定义的模型）。
-    if let Some(window) = pinvou_known_context_window(&lower) {
+    // 模型名事实与 Engine route_limits 共用同一入口，避免页面显示 1M、实际仍按
+    // 128K 压缩。这里只保留底座与补充表都无法识别时的供应商预设兜底。
+    if let Some(window) = model.and_then(crate::core::model_context::resolved_context_window) {
         return Some(window);
     }
-    // 2. 底座 catalog + 厂商启发式：deepseek v4→1M、gpt-5.5/5.6→1.05M、
-    //    glm-5.x、MiniMax-M3/M2.x、mimo-v2.5、qwen3.6-flash、kimi-k2.x 等。
-    if let Some(window) = deepseek_tui::models::context_window_for_model(&lower) {
-        return Some(window);
-    }
-    // 3. 预设兜底：仅用于以上两层都不认识的自定义模型名，取该厂商在售家族的保守值。
     match preset {
         ModelPreset::LocalVllm => Some(262_144),
         ModelPreset::Deepseek => Some(131_072),
@@ -1409,7 +1346,7 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
                 "kimi-for-coding-highspeed",
                 262_144,
             ),
-            (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
+            (ModelPreset::OpenaiCompatible, "k3-256k", 256_000),
             (ModelPreset::OpenaiCompatible, "k3", 1_048_576),
             // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
@@ -1456,7 +1393,7 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         // 显式后缀优先于一切（含底座 catalog 里的同名模型）
         assert_eq!(
             infer_context_window(ModelPreset::Deepseek, Some("deepseek-v4-flash-128k")),
-            Some(131_072)
+            Some(128_000)
         );
         // 底座与补充表都不认识的自定义模型名 → 预设兜底
         assert_eq!(
