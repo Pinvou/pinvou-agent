@@ -513,6 +513,7 @@
   function hydratedChatItemKey(item) {
     if (!item || !item.type) return "";
     if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
+    if (item.type === "reasoning") return "reasoning:" + String(item.text || "");
     if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
     if (item.type === "artifact_card") return "artifact:" + basename(item.path);
     if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;

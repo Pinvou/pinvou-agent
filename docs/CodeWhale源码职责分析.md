@@ -80,7 +80,9 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 
 - 调 `spawn_engine(engine_config, &dt_config)` 创建 CodeWhale Engine。
 - 通过 `EngineHandle::send(...)` 注入 `Op::SendMessage`、`Op::SyncSession`、`Op::SpawnSubAgent`、`Op::CompactContext` 等操作。
-- 后台读取 `EngineHandle::rx_event`，把 CodeWhale `Event` 转为 Tauri 前端事件，例如 `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`、`workflow:agent_progress`、`chat:compaction`。
+- 后台读取 `EngineHandle::rx_event`，把 CodeWhale `Event` 转为 Tauri 前端事件，例如 `chat:delta`、`chat:reasoning_start`、`chat:reasoning_delta`、`chat:reasoning_done`、`chat:tool_start`、`chat:tool_end`、`chat:done`、`workflow:agent_progress`、`chat:compaction`。其中只有底座明确产生的 `ThinkingStarted` / `ThinkingDelta` / `ThinkingComplete` 才会形成独立思考生命周期，普通回答文本不会被推断为思考。
+
+模型 route 还必须区分“厂商身份”和“wire protocol”：GLM、MiniMax、MiMo、豆包、Kimi 即使都兼容 OpenAI Chat Completions，也要分别映射到底座已有的 `Zai`、`Minimax`、`XiaomiMimo`、`Volcengine`、`Moonshot` provider，才能保留各厂商的思考字段解析、回放和开关语义。字段解析与请求端开关也必须分开处理：Kimi Code 的 always-thinking 模型显式使用 `reasoning_effort = "high"`，由底座转换成 `thinking: {"type":"enabled"}`，避免工具调用前的计划落入普通 `content`；Qwen 与腾讯 Coding Plan 暂时沿用 OpenAI wire route，但显式声明 `reasoning_stream_style = "separate_field"`；未知自定义端点保持安全默认值，不注入厂商参数，也不按回答文字猜测思考内容。
 
 ### engine_pool：多 session 生命周期管理
 
@@ -115,7 +117,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 |---|---|---|---|---|
 | 应用启动 | `pinvou3-app/src-tauri/src/lib.rs` 初始化 Tauri state 和 commands | `SessionStore::boot()`、`EnginePool::new()`、`Pinvou3Bridge::boot()` | `SessionManager::new(...)`、`EngineConfig` 构造前置 | 建立 session 存储、全局 bridge、空 Engine 池 |
 | 首次发送消息 | 前端 invoke chat command | `commands.rs` 取 session/mode，`EnginePool::send_user_message()` lazy spawn | `spawn_engine(...)`、`Op::SendMessage`、`EngineHandle::send` | 模型 turn 开始，流式事件进入 `rx_event` |
-| 流式渲染首页/对话内容 | `EngineHandle::rx_event` | `engine.rs::spawn_event_forwarder` | `Event::MessageDelta`、`Event::ToolCallStarted`、`Event::ToolCallComplete`、`Event::TurnComplete` | Tauri emit `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done` |
+| 流式渲染首页/对话内容 | `EngineHandle::rx_event` | `engine.rs::spawn_event_forwarder` | `Event::MessageDelta`、`Event::ThinkingStarted`、`Event::ThinkingDelta`、`Event::ThinkingComplete`、`Event::ToolCallStarted`、`Event::ToolCallComplete`、`Event::TurnComplete` | Tauri emit `chat:delta`、`chat:reasoning_start`、`chat:reasoning_delta`、`chat:reasoning_done`、`chat:tool_start`、`chat:tool_end`、`chat:done` |
 | 切换或恢复 session | 前端加载历史 session | `SessionStore::load()`、`EnginePool::get_or_spawn()`、`AppEngine::sync_session()` | `SessionManager::load_session`、`Op::SyncSession` | 将磁盘 messages 和 workspace 注入该 session Engine |
 | 手动上下文压缩 | 前端 token/压缩入口 | `EnginePool::compact_now()`、`AppEngine::compact_now()` | `Op::CompactContext`、`CompactionConfig`、`Event::Compaction*` | 底座执行压缩，前端收到 `chat:compaction` |
 | skill 列表和启用 | 工作流/技能视图 | `commands.rs::list_skills_v2()`、`start_skill_session()` | `SkillRegistry::discover(...)` | 前端拿到 bundle skill 摘要；session 绑定 active skill |
@@ -196,7 +198,7 @@ cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml
 - release exe 启动后不立即退出。
 - 窗口有响应，不持续白屏。
 - 后端日志能看到 bridge/engine 启动、`spawn_engine`、事件 forwarder 等关键阶段。
-- 发送一条简单消息后能看到 `chat:delta` 和 `chat:done`。
+- 发送一条简单消息后能看到 `chat:delta` 和 `chat:done`；若远程模型返回独立思考流，还能在回答时间线中看到可折叠的思考内容。
 
 ## 按问题类型排查
 

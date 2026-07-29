@@ -39,6 +39,17 @@ function projectItem(item, index) {
       legacyItem: item,
     };
   }
+  if (item.type === 'reasoning') {
+    return {
+      id,
+      type: 'reasoning',
+      text: item.text || '',
+      status: item.streaming ? 'in_progress' : 'completed',
+      startedAt: item.startedAt,
+      completedAt: item.completedAt,
+      legacyItem: item,
+    };
+  }
   if (item.type === 'tool') {
     const status = toolStatus(item);
     return {

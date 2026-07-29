@@ -857,7 +857,7 @@
     if (sid) {
       var eventBuffer = getBuffer(sid);
       var eventName = String((e && e.event) || "");
-      var isTurnEvent = /chat:(user_message|turn_started|delta|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
+      var isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
       if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
         markRemoteTurn(sid, eventBuffer);
       }
@@ -2175,6 +2175,7 @@
   function hydratedChatItemKey(item) {
     if (!item || !item.type) return "";
     if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
+    if (item.type === "reasoning") return "reasoning:" + String(item.text || "");
     if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
     if (item.type === "artifact_card") return "artifact:" + basename(item.path);
     if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;
@@ -2839,6 +2840,18 @@
         var b = blocks[bi];
         if (b.type === "text") {
           textBuf += b.text;
+        } else if (b.type === "thinking") {
+          if (textBuf) {
+            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            textBuf = "";
+          }
+          var reasoningText = String(b.thinking || b.text || "");
+          if (reasoningText) {
+            addChatItem({
+              type: "reasoning", text: reasoningText, time: "", streaming: false,
+              startedAt: null, completedAt: null,
+            });
+          }
         } else if (b.type === "tool_use") {
           if (textBuf) {
             addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
@@ -4176,7 +4189,101 @@
     notify();
   }); });
 
+  function reasoningEventIndex(e) {
+    var value = e && e.payload && e.payload.index;
+    if (value === undefined || value === null || value === "") return null;
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : String(value);
+  }
+
+  function streamingReasoningItem(index) {
+    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      if (index === undefined || index === null || item.reasoningIndex === index) return item;
+    }
+    return null;
+  }
+
+  function finalizeStreamingReasoning(index) {
+    var completedAt = Date.now();
+    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
+      item.streaming = false;
+      item.completedAt = completedAt;
+    }
+  }
+
+  function finalizeAssistantStreamBeforeReasoning() {
+    flushPendingTextBlock();
+    var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+    if (item) {
+      if (item.html) item.streaming = false;
+      else state.chatItems = state.chatItems.filter(function (it) { return it !== item; });
+    }
+    currentStreamText = "";
+    currentStreamId = 0;
+  }
+
+  function startReasoningBlock(index) {
+    var existing = streamingReasoningItem(index);
+    if (existing) return existing;
+    finalizeStreamingReasoning();
+    finalizeAssistantStreamBeforeReasoning();
+    var item = {
+      type: "reasoning",
+      text: "",
+      time: timeStr(),
+      streaming: true,
+      startedAt: Date.now(),
+      completedAt: null,
+      reasoningIndex: index,
+    };
+    addChatItem(item);
+    pendingAssistantBlocks.push({ type: "thinking", thinking: "" });
+    return item;
+  }
+
+  function appendReasoningBlock(text) {
+    var last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
+    if (last && last.type === "thinking") last.thinking += text;
+    else pendingAssistantBlocks.push({ type: "thinking", thinking: text });
+  }
+
+  listen("chat:reasoning_start", function (e) { onSessionEvent(e, function () {
+    startReasoningBlock(reasoningEventIndex(e));
+    notify();
+  }); });
+
+  listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
+    var text = String(e.payload && e.payload.text || "");
+    if (!text) return;
+    var index = reasoningEventIndex(e);
+    var item = streamingReasoningItem(index);
+    if (!item) {
+      item = startReasoningBlock(index);
+    }
+    item.text += text;
+    appendReasoningBlock(text);
+    notify();
+  }); });
+
+  listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
+    var index = reasoningEventIndex(e);
+    var item = streamingReasoningItem(index);
+    finalizeStreamingReasoning(index);
+    if (item && !item.text) {
+      state.chatItems = state.chatItems.filter(function (candidate) { return candidate !== item; });
+      var last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
+      if (last && last.type === "thinking" && !last.thinking) pendingAssistantBlocks.pop();
+    }
+    notify();
+  }); });
+
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
+    finalizeStreamingReasoning();
     var text = e.payload && e.payload.text || "";
     pendingAssistantText += text;
     currentStreamText += text;
@@ -4261,6 +4368,7 @@
     if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     toolMeta[p.id] = { name: p.name, args: p.args };
+    finalizeStreamingReasoning();
     thinkingTool(p.name);
     flushPendingTextBlock();
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
@@ -4503,6 +4611,7 @@
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];
+      finalizeStreamingReasoning();
       // Finalize streaming bubble
       var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
       if (streamItem) streamItem.streaming = false;
