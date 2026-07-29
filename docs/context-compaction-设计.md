@@ -1,8 +1,7 @@
 # 上下文压缩设计（总纲 + 分期计划）
 
-> 立档 2026-07-02。**取代** `auto-compact-256K-tuning.md` 的方案部分——后者的 B1/B2
-> fork patch（`_Nk` 名字后缀派生窗口 + `context_input_budget` 按窗口分级）已被上游
-> v0.8.65 吸收进 `route_budget`/`RouteLimits`，不再需要 fork。旧文档保留作**推导史料**。
+> 立档 2026-07-02。本文已取代早期 256K 调参方案；旧方案对应的 fork patch 已被上游
+> v0.8.65 吸收进 `route_budget`/`RouteLimits`，不再需要 fork。历史推导可从 Git 记录追溯。
 
 ## 0. 设计目标（钉死，优先于一切参数）
 
@@ -12,8 +11,8 @@
 
 1. 一次 LLM 摘要请求（本地 vLLM 慢）；
 2. **压完后整个 prefix 变了** → 下一请求冷 prefill；历史上在 MTP 开启时曾伴随工具调用
-   漂移。2026-07-14 的 A/B 已确认优先关闭 MTP、保留 prefix caching，完整证据与置信边界见
-   [`Qwen3.6-vLLM-prefix-cache-MTP-工具调用漂移复盘.md`](Qwen3.6-vLLM-prefix-cache-MTP-工具调用漂移复盘.md)。
+   漂移。2026-07-14 的 A/B 已确认优先关闭 MTP、保留 prefix caching，原始实测记录可从
+   Git 历史追溯。
 
 云端大窗口用户不在乎这个；pinvou 在乎。**据此，评判任何压缩改动的唯一标准是：
 它让压缩次数变多还是变少。** T 在保证低于 E 的前提下尽量高；评估 seam 等重机制时
