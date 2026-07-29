@@ -109,8 +109,18 @@ function injectSource() {
           taskCompletionNotificationsDefault: true,
         });
         case 'get_settings': return Promise.resolve(settings);
-        case 'update_settings': settings = args.prefs; return Promise.resolve(null);
-        case 'save_settings_and_restart': settings = args.prefs; return Promise.resolve(null);
+        case 'update_settings':
+          settings = Object.assign({}, settings, args.patch || {});
+          return Promise.resolve(settings);
+        case 'save_settings_and_restart':
+          settings = Object.assign({}, settings, args.patch || {});
+          return Promise.resolve(null);
+        case 'update_search_settings':
+          settings = Object.assign({}, settings, { search: args.search });
+          return Promise.resolve(settings);
+        case 'save_search_settings_and_restart':
+          settings = Object.assign({}, settings, { search: args.search });
+          return Promise.resolve(null);
         case 'get_effective_model_config': return Promise.resolve({ model: 'qwen36_35b_256k', base_url: 'http://127.0.0.1:8000/v1', preset: 'local_vllm', api_key_set: false });
         case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
@@ -700,7 +710,8 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(150);
 
-  const savesBeforePick = await callCount(page, 'save_settings_and_restart');
+  const modelsBeforeSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort());
+  const savesBeforePick = await callCount(page, 'save_search_settings_and_restart');
   await clickExact(page, '添加搜索源');
   await sleep(250);
   const searchPickerWidth = await modalWidth(page, '添加搜索源');
@@ -711,7 +722,7 @@ async function modalWidth(page, headingText) {
     saveButtonDisabled: [...document.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '保存' && button.disabled),
     bochaInSavedSettings: (window.__SETTINGS_TEST__.settings().search.enabled_providers || []).includes('bocha'),
   }));
-  const savesAfterPick = await callCount(page, 'save_settings_and_restart');
+  const savesAfterPick = await callCount(page, 'save_search_settings_and_restart');
   rec('⑨ 选择搜索源但未点保存不会持久化', searchPickerWidth >= 430 && searchPickerWidth <= 455 && !pickWithoutSave.restartDialog && pickWithoutSave.saveButtonDisabled && !pickWithoutSave.bochaInSavedSettings && savesAfterPick === savesBeforePick, JSON.stringify({ searchPickerWidth, ...pickWithoutSave, savesBeforePick, savesAfterPick }));
 
   const searchKeyInput = await page.$('input[placeholder="输入 API Key"]');
@@ -722,13 +733,13 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '保存');
   await sleep(300);
   const restartPrompt = await page.evaluate(() => document.body.innerText.includes('重启以应用搜索配置？'));
-  const savesBeforeRestart = await callCount(page, 'save_settings_and_restart');
+  const savesBeforeRestart = await callCount(page, 'save_search_settings_and_restart');
   rec('⑪ 搜索源保存后先提示重启，未确认前不写盘重启', restartPrompt && savesBeforeRestart === savesBeforePick, String(savesBeforeRestart));
   await clickExact(page, '现在重启');
   await sleep(300);
   const searchSaved = await page.evaluate(() => {
-    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_settings_and_restart');
-    const search = call && call.args && call.args.prefs && call.args.prefs.search;
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_search_settings_and_restart');
+    const search = call && call.args && call.args.search;
     return search && {
       provider: search.provider,
       enabled: search.enabled_providers,
@@ -739,8 +750,10 @@ async function modalWidth(page, headingText) {
   rec('⑫ 确认重启后写入搜索源和凭据草稿', searchSaved && searchSaved.provider === 'bocha' && searchSaved.enabled.includes('bocha') && searchSaved.bochaAction === 'replace' && searchSaved.bochaKey === 'bocha-key', JSON.stringify(searchSaved));
 
   await clickSettingsSection(page, '搜索');
-  const savesBeforeDeleteLater = await callCount(page, 'update_settings');
-  const restartsBeforeDeleteLater = await callCount(page, 'save_settings_and_restart');
+  const modelsAfterSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort());
+  rec('新增模型后保存搜索配置不会清空模型', JSON.stringify(modelsAfterSearchSave) === JSON.stringify(modelsBeforeSearchSave), JSON.stringify({ modelsBeforeSearchSave, modelsAfterSearchSave }));
+  const savesBeforeDeleteLater = await callCount(page, 'update_search_settings');
+  const restartsBeforeDeleteLater = await callCount(page, 'save_search_settings_and_restart');
   await clickRowAction(page, '秘塔', '删除');
   await sleep(250);
   const searchDeleteWidth = await modalWidth(page, '删除搜索源？');
@@ -750,15 +763,15 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '稍后');
   await sleep(300);
   const deleteLaterSaved = await page.evaluate(() => {
-    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_settings');
-    const search = call && call.args && call.args.prefs && call.args.prefs.search;
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_search_settings');
+    const search = call && call.args && call.args.search;
     return search && {
       enabled: search.enabled_providers,
       metasoAction: search.credentials && search.credentials.metaso && search.credentials.metaso.credential_action,
     };
   });
-  const savesAfterDeleteLater = await callCount(page, 'update_settings');
-  const restartsAfterDeleteLater = await callCount(page, 'save_settings_and_restart');
+  const savesAfterDeleteLater = await callCount(page, 'update_search_settings');
+  const restartsAfterDeleteLater = await callCount(page, 'save_search_settings_and_restart');
   rec('⑬ 删除搜索源使用窄 iOS 确认框，选择稍后会写盘但不重启',
     searchDeleteDialog
       && searchDeleteWidth >= 260

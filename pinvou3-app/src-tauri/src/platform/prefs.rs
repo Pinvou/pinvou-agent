@@ -6,11 +6,24 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::platform::credential_store::{
     CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
     CredentialStore, SystemCredentialStore,
 };
+
+/// `settings.json` 的进程内统一读写锁。
+///
+/// Tauri 命令会在不同异步任务中并发执行；如果各自执行 `load -> 修改 -> save`，
+/// 后完成的旧快照会覆盖先完成的新值。所有偏好读写和字段级事务都必须经过此锁。
+static USER_PREFS_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_user_prefs() -> MutexGuard<'static, ()> {
+    USER_PREFS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -575,8 +588,7 @@ impl Default for NotificationPrefs {
 }
 
 /// 桌宠偏好。只存开关——窗口位置在 `~/.pinvou3/pet_window.json`(pet_window.rs 私有
-/// 管理)。位置刻意不进 settings.json:settings 由前端整份回写(update_settings),
-/// 旧副本会把拖动后的实时位置覆盖回去。
+/// 管理)。位置刻意不进 settings.json；开关由字段级事务写入，窗口状态不参与通用设置保存。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PetPrefs {
@@ -617,6 +629,11 @@ pub struct UserPrefs {
 impl UserPrefs {
     /// 从 `~/.pinvou3/settings.json` 读。文件不存在或 JSON 解析失败时返回默认。
     pub fn load() -> Self {
+        let _guard = lock_user_prefs();
+        Self::load_unlocked(true)
+    }
+
+    fn load_unlocked(persist_normalized: bool) -> Self {
         let path = super::paths::settings_path();
         let mut prefs = match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
@@ -641,8 +658,10 @@ impl UserPrefs {
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
-        if minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed {
-            if let Err(e) = prefs.save() {
+        if persist_normalized
+            && (minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed)
+        {
+            if let Err(e) = prefs.save_unlocked() {
                 eprintln!("[pinvou3-app] settings normalization save failed: {e:?}");
             }
         }
@@ -651,6 +670,11 @@ impl UserPrefs {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        let _guard = lock_user_prefs();
+        self.save_unlocked()
+    }
+
+    fn save_unlocked(&self) -> std::io::Result<()> {
         let path = super::paths::settings_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -665,6 +689,23 @@ impl UserPrefs {
         normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
+    }
+
+    /// 在同一临界区内读取磁盘最新偏好、修改指定字段并写回。
+    ///
+    /// 闭包必须只修改自己负责的设置域，避免把调用方持有的整份旧快照写回。
+    pub fn update_transaction<F>(mutate: F) -> Result<Self, String>
+    where
+        F: FnOnce(&mut Self) -> Result<(), String>,
+    {
+        let _guard = lock_user_prefs();
+        let mut prefs = Self::load_unlocked(false);
+        mutate(&mut prefs)?;
+        prefs
+            .save_unlocked()
+            .map_err(|error| format!("save settings failed: {error:?}"))?;
+        // 返回再次从磁盘解析的规范化结果，保证桥接层内存状态与实际持久化内容一致。
+        Ok(Self::load_unlocked(false))
     }
 
     pub fn normalize_saved_model_metadata(&mut self) {
@@ -1488,6 +1529,67 @@ mod tests {
         let parsed: UserPrefs = serde_json::from_str(&saved).expect("settings should parse");
         assert_eq!(parsed.search.provider, SearchProvider::Metaso);
         assert!(parsed.search.api_key.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
+    fn concurrent_model_and_search_transactions_preserve_both_changes() {
+        use std::sync::{Arc, Barrier};
+
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-concurrent-update-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut initial = UserPrefs::default();
+        initial.migrate_models();
+        initial.save().expect("initial settings should save");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let model_barrier = Arc::clone(&barrier);
+        let model_thread = std::thread::spawn(move || {
+            model_barrier.wait();
+            UserPrefs::update_transaction(|prefs| {
+                let mut model = prefs.advanced.saved_models[0].clone();
+                model.id = "concurrent-model".to_string();
+                model.name = "Concurrent model".to_string();
+                prefs.upsert_model(model);
+                Ok(())
+            })
+            .expect("model transaction should save");
+        });
+
+        let search_barrier = Arc::clone(&barrier);
+        let search_thread = std::thread::spawn(move || {
+            search_barrier.wait();
+            UserPrefs::update_transaction(|prefs| {
+                prefs.search.provider = SearchProvider::Tavily;
+                prefs.search.enabled_providers = vec![SearchProvider::Bing, SearchProvider::Tavily];
+                Ok(())
+            })
+            .expect("search transaction should save");
+        });
+
+        barrier.wait();
+        model_thread.join().expect("model thread should finish");
+        search_thread.join().expect("search thread should finish");
+
+        let saved = UserPrefs::load();
+        assert!(saved.model_by_id("concurrent-model").is_some());
+        assert_eq!(saved.search.provider, SearchProvider::Tavily);
+        assert!(saved
+            .search
+            .enabled_providers
+            .contains(&SearchProvider::Tavily));
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {

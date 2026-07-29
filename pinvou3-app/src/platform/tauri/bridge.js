@@ -1489,6 +1489,8 @@
   var loadEffectiveModelConfig = settingsFeature.loadEffectiveModelConfig;
   var saveSettings = settingsFeature.saveSettings;
   var saveSettingsAndRestart = settingsFeature.saveSettingsAndRestart;
+  var saveSearchSettings = settingsFeature.saveSearchSettings;
+  var saveSearchSettingsAndRestart = settingsFeature.saveSearchSettingsAndRestart;
   var submitFeedback = settingsFeature.submitFeedback;
   var discoverLocalVllm = settingsFeature.discoverLocalVllm;
   var detectLocalVllmSetup = settingsFeature.detectLocalVllmSetup;
@@ -1786,6 +1788,8 @@
       setSelectedPet: setSelectedPet,
       saveSettings: saveSettings,
       saveSettingsAndRestart: saveSettingsAndRestart,
+      saveSearchSettings: saveSearchSettings,
+      saveSearchSettingsAndRestart: saveSearchSettingsAndRestart,
       testSearchProvider: testSearchProvider,
     },
     feedback: { submitFeedback: submitFeedback },

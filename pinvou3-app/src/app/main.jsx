@@ -1381,37 +1381,6 @@ function workspaceDisplayName(path) {
         }
       }
 
-      // 构造完整 UserPrefs 对象写盘。spread bs.settings 保留 search/advanced 等
-      // 其他字段——之前漏 spread 会让后端 serde default 把它们重置(bug fix)。
-      function buildFullSettings(overrides) {
-        const base = (bs && bs.settings) ? bs.settings : {};
-        const advancedOverrides = (overrides && overrides.advanced) ? overrides.advanced : {};
-        const searchOverrides = (overrides && overrides.search) ? overrides.search : null;
-        const topOverrides = { ...(overrides || {}) };
-        delete topOverrides.advanced;
-        delete topOverrides.search;
-        delete topOverrides.notifications;
-        const baseSearch = base.search || { provider: 'bing', api_key: null, credentials: {} };
-        const nextLanguage = topOverrides.language !== undefined
-          ? topOverrides.language
-          : (isWeb ? (base.language || 'zh-Hans') : (LANG_TO_TAG[language] || 'zh-Hans'));
-        const memoryAvailable = nextLanguage === 'zh-Hans';
-        const nextMemoryEnabled = memoryAvailable
-          ? (topOverrides.memory_enabled !== undefined ? !!topOverrides.memory_enabled : !!base.memory_enabled)
-          : false;
-        const baseNotifications = base.notifications || { enabled: defaultTaskCompletedNotif, task_completed: defaultTaskCompletedNotif };
-        const notificationOverrides = (overrides && overrides.notifications) ? overrides.notifications : null;
-        return {
-          ...base,
-          ...topOverrides,
-          theme: topOverrides.theme !== undefined ? topOverrides.theme : (activeTheme === 'dark' ? 'genesis' : 'liquid-light'),
-          language: topOverrides.language !== undefined ? topOverrides.language : (LANG_TO_TAG[language] || 'zh-Hans'),
-          search: searchOverrides ? { ...baseSearch, ...searchOverrides } : baseSearch,
-          notifications: notificationOverrides ? { ...baseNotifications, ...notificationOverrides } : baseNotifications,
-          advanced: buildAdvancedOverrides(advancedOverrides),
-        };
-      }
-
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (isWeb) {
@@ -1419,7 +1388,7 @@ function workspaceDisplayName(path) {
           return;
         }
         if (bridge.available) {
-          bridge.settings.saveSettings(buildFullSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' }));
+          bridge.settings.saveSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' });
         }
       }
 
@@ -1460,19 +1429,20 @@ function workspaceDisplayName(path) {
         setSearchKeyActions(prev => ({ ...prev, [targetProvider]: k.trim() ? 'replace' : 'keep_existing' }));
       }
 
-      function handleConfirmSearchConfig() {
-        if (bridge.available) {
-          bridge.settings.saveSettingsAndRestart(buildFullSettings({
-            search: buildSearchSettingsPayload(),
-          }));
-        }
+      async function handleConfirmSearchConfig() {
+        if (!bridge.available) return;
+        const search = buildSearchSettingsPayload();
+        // 浏览器宿主没有重启桌面进程的权限；只保存，待桌面端下次重启后生效。
+        const saved = isWeb
+          ? await bridge.settings.saveSearchSettings(search)
+          : await bridge.settings.saveSearchSettingsAndRestart(search);
+        if (saved === false) setSettingsToast('搜索配置保存失败，请重试');
       }
 
       async function handleSaveSearchConfig() {
         if (!bridge.available) return true;
-        const saved = await bridge.settings.saveSettings(buildFullSettings({
-          search: buildSearchSettingsPayload(),
-        }));
+        const search = buildSearchSettingsPayload();
+        const saved = await bridge.settings.saveSearchSettings(search);
         if (saved === false) {
           setSettingsToast('搜索配置保存失败，请重试');
           return false;
@@ -1490,14 +1460,14 @@ function workspaceDisplayName(path) {
           tauriEvents.emit('ui:language_changed', { language: lang }).catch(() => {});
         }
         if (bridge.available) {
-          bridge.settings.saveSettings(buildFullSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' }));
+          bridge.settings.saveSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' });
         }
       }
 
       function handleSetMemoryEnabled(enabled) {
         if (bridge.available) {
           const memoryAvailable = (LANG_TO_TAG[language] || 'zh-Hans') === 'zh-Hans';
-          bridge.settings.saveSettings(buildFullSettings({ memory_enabled: memoryAvailable && !!enabled }));
+          bridge.settings.saveSettings({ memory_enabled: memoryAvailable && !!enabled });
         }
       }
 
@@ -1513,9 +1483,9 @@ function workspaceDisplayName(path) {
         const previousEnabled = taskCompletedNotif;
         setTaskCompletedNotif(nextEnabled);
         if (bridge.available) {
-          const saved = await bridge.settings.saveSettings(buildFullSettings({
+          const saved = await bridge.settings.saveSettings({
             notifications: { enabled: nextEnabled, task_completed: nextEnabled },
-          }));
+          });
           if (saved === false) {
             setTaskCompletedNotif(previousEnabled);
           }
@@ -1524,7 +1494,7 @@ function workspaceDisplayName(path) {
 
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
-        if (bridge.available) bridge.settings.saveSettings(buildFullSettings({ sidebar: { date_grouping: !!enabled } }));
+        if (bridge.available) bridge.settings.saveSettings({ sidebar: { date_grouping: !!enabled } });
       }
 
       function buildAdvancedOverrides(overrides) {
@@ -1580,14 +1550,14 @@ function workspaceDisplayName(path) {
       }
       function handleConfirmModelConfig() {
         if (bridge.available) {
-          bridge.settings.saveSettingsAndRestart(buildFullSettings({
-            advanced: {
+          bridge.settings.saveSettingsAndRestart({
+            advanced: buildAdvancedOverrides({
               model_preset: modelPreset,
               custom_model_name: customModelName || null,
               custom_base_url: customBaseUrl || null,
               custom_api_key: customApiKey || null,
-            },
-          }));
+            }),
+          });
         }
       }
 

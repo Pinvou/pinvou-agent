@@ -382,7 +382,9 @@ command_protocol!(
         "test_search_provider",
         "test_model_connection",
         "update_settings",
-        "save_settings_and_restart"
+        "update_search_settings",
+        "save_settings_and_restart",
+        "save_search_settings_and_restart"
     ]
 );
 command_protocol!(
