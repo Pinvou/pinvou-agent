@@ -3219,6 +3219,7 @@ mod scheduled_turn_tests {
         let config = Config::default();
         Op::SendMessage {
             content: "scheduled prompt".to_string(),
+            input: None,
             mode: AppMode::Yolo,
             route: Box::new(
                 deepseek_tui::route_runtime::resolve_runtime_route(

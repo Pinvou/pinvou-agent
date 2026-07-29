@@ -34,6 +34,9 @@ use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::features::assistant::image_capability::{
+    effective_image_capability, EffectiveImageCapability,
+};
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
@@ -503,6 +506,73 @@ impl Pinvou3Bridge {
         }
     }
 
+    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
+    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
+    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
+    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+    fn api_key_for_saved_model(model: &SavedModel) -> String {
+        if let Some(reference) = &model.credential_ref {
+            let store = SystemCredentialStore::new();
+            match store.get(reference) {
+                Ok(Some(key)) if !key.trim().is_empty() => return key,
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!(
+                        "[pinvou3-app] credential read failed for vision model {}: {}",
+                        model.id,
+                        err.user_message()
+                    );
+                }
+            }
+        }
+        if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
+            return LOCAL_VLLM_API_KEY.to_string();
+        }
+        model.api_key.clone()
+    }
+
+    /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。三条规则:
+    /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
+    ///    id 失效或凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。
+    /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
+    ///    图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
+    ///    `image_analyze`(不 enable `Feature::VisionModel`)。
+    fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
+        let effective = self.effective_model();
+        if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
+            let Some(vision) = self.prefs.model_by_id(vision_id) else {
+                eprintln!(
+                    "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
+                     image_analyze disabled"
+                );
+                return None;
+            };
+            let api_key = Self::api_key_for_saved_model(vision);
+            if api_key.trim().is_empty() {
+                eprintln!(
+                    "[pinvou3-app] vision model {} has no usable credential; \
+                     image_analyze disabled",
+                    vision.id
+                );
+                return None;
+            }
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: vision.model.clone(),
+                api_key: Some(api_key),
+                base_url: Some(vision.base_url.clone()),
+            });
+        }
+        if effective.map(effective_image_capability) == Some(EffectiveImageCapability::Supported) {
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: self.model(),
+                api_key: Some(self.api_key()),
+                base_url: Some(self.base_url()),
+            });
+        }
+        None
+    }
+
     /// Current search API key from env or encrypted credential store.
     pub fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;
@@ -776,6 +846,14 @@ impl Pinvou3Bridge {
         let hook_executor = self.build_hook_executor();
         runtime_services.hook_executor = Some(hook_executor.clone());
 
+        // 视觉工具(image_analyze)注册两道门(设计 §9.3,阶段 E):
+        //   vision_config 有值 + Feature::VisionModel 开启,缺一不可。
+        // 不再无条件复用主模型:只有「显式 vision_model_id 可解析」或
+        // 「主模型能力确认 Supported」才注册;否则文本模型也会拿到
+        // image_analyze,调用时才发现不支持图片(原 bridge 无条件复用 bug)。
+        let vision_config = self.resolve_vision_model_config();
+        let vision_tool_enabled = vision_config.is_some();
+
         EngineConfig {
             // pinvou3 覆盖
             model: self.model(),
@@ -801,23 +879,21 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // pinvou3 中文用户已经是中文语境，不走 /translate 路径
             translation_enabled: false,
-            // 视觉配置跟随主模型端点：本地 vLLM 复用同一端点；
-            // 第三方 provider 也复用（若不支持 vision，底座会优雅失败）。
-            vision_config: Some(deepseek_tui::config::VisionModelConfig {
-                model: self.model(),
-                api_key: Some(self.api_key()),
-                base_url: Some(self.base_url()),
-            }),
+            // 视觉配置由 resolve_vision_model_config 按 §9.3 三规则解析;
+            // None = 不注册 image_analyze(主模型不支持/未知且无可用视觉模型)。
+            vision_config,
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
             // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
             subagent_api_timeout: std::time::Duration::from_secs(300),
-            // 开启 VisionModel feature(默认 Experimental 关):配合上面的
-            // vision_config,tool_setup.rs 才会注册 image_analyze 工具给 LLM。
+            // 开启 VisionModel feature(默认 Experimental 关)仅当 vision_config
+            // 解析成功(见上):tool_setup.rs 才会注册 image_analyze 工具给 LLM。
             // 两道门缺一不可——只配 vision_config 不开 feature,工具不会注册。
             features: {
                 let mut f = features;
-                f.enable(deepseek_tui::features::Feature::VisionModel);
+                if vision_tool_enabled {
+                    f.enable(deepseek_tui::features::Feature::VisionModel);
+                }
                 f
             },
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
@@ -1193,6 +1269,9 @@ impl Pinvou3Bridge {
         let model = self.model();
         Ok(Op::SendMessage {
             content: full_content,
+            // 底座结构化图片输入(阶段 B);普通会话结构化图片块在阶段 D 接线,
+            // 当前仍走纯文本路径 → None。
+            input: None,
             mode,
             route: Box::new(self.resolve_runtime_route_for_model(&model)?),
             compaction: Box::new(self.compaction_config_for_model(&model)),
@@ -1391,6 +1470,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -1398,6 +1479,152 @@ mod tests {
             credential_action: None,
         }];
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
+    }
+
+    /// 追加一条视觉兜底模型(测试辅助):plaintext api_key 直给,绕过系统凭据库。
+    fn push_vision_model(bridge: &mut Pinvou3Bridge, id: &str, model: &str, api_key: &str) {
+        bridge.prefs.advanced.saved_models.push(SavedModel {
+            id: id.to_string(),
+            name: model.to_string(),
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: model.to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: api_key.to_string(),
+            credential_ref: None,
+            credential_state: crate::platform::credential_store::CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+    }
+
+    /// §9.3 规则 1:主模型显式设置 vision_model_id → 用该 SavedModel 的
+    /// endpoint + 凭据(不回落主模型,不读第二份明文)。
+    #[test]
+    fn vision_config_prefers_explicit_vision_model_id() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut bridge, "vision-1", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("explicit vision model must resolve");
+        assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.api_key.as_deref(), Some("sk-vision"));
+        assert_eq!(config.base_url.as_deref(), Some("https://api.openai.com/v1"));
+
+        let engine = bridge.build_engine_config();
+        assert!(engine.vision_config.is_some());
+        assert!(engine
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    /// §9.3 规则 2:未设置 vision_model_id、主模型能力 Supported →
+    /// 复用主模型作为 workspace 图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    #[test]
+    fn vision_config_reuses_main_model_only_when_supported() {
+        let (_lock, _env) = locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("DEEPSEEK_MODEL");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("supported main model must be reused as vision tool");
+        assert_eq!(config.model, "gpt-5.6-terra");
+        assert_eq!(config.api_key.as_deref(), Some("sk-main"));
+        assert_eq!(config.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert!(bridge
+            .build_engine_config()
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
+    /// 不注册 image_analyze(vision_config=None 且不 enable Feature::VisionModel)。
+    #[test]
+    fn vision_config_absent_for_unknown_or_disabled_main_model() {
+        // Unknown:deepseek-v4-pro 不在内置已验证能力表。
+        let mut unknown = fixture_bridge();
+        set_active_model(
+            &mut unknown,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert!(unknown.resolve_vision_model_config().is_none());
+        let engine = unknown.build_engine_config();
+        assert!(engine.vision_config.is_none());
+        assert!(!engine
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+
+        // override Disabled:即便主模型命中内置表也不得复用。
+        let mut disabled = fixture_bridge();
+        set_active_model(
+            &mut disabled,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        disabled.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Disabled;
+        assert!(disabled.resolve_vision_model_config().is_none());
+        assert!(disabled.build_engine_config().vision_config.is_none());
+    }
+
+    /// §9.3 规则 1 的优雅降级:vision_model_id 失效(指向不存在/已删除的模型)
+    /// 或目标模型凭据缺失 → 不注册并记 warning,不硬错、不回落主模型。
+    #[test]
+    fn vision_config_degrades_gracefully_on_missing_id_or_credential() {
+        // id 指向不存在的模型。
+        let mut ghost = fixture_bridge();
+        set_active_model(
+            &mut ghost,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        assert!(ghost.resolve_vision_model_config().is_none());
+
+        // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
+        let mut no_key = fixture_bridge();
+        set_active_model(
+            &mut no_key,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut no_key, "vision-no-key", "gpt-4o", "");
+        no_key.prefs.advanced.saved_models[0].vision_model_id = Some("vision-no-key".to_string());
+        assert!(no_key.resolve_vision_model_config().is_none());
     }
 
     #[test]

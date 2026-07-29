@@ -1475,6 +1475,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           provider_kind: providerKind || null,
           vendor: vendor || null,
           endpoint_mode: endpointMode || null,
+          // 阶段 C/E 新字段:设置页 UI 在阶段 G 才做,这里先透传已有值,
+          // 避免 GUI 编辑保存把手工配置的图片能力/视觉模型引用抹掉。
+          image_capability_override: initial.image_capability_override || 'auto',
+          vision_model_id: initial.vision_model_id || null,
         });
       }
       function makeModelId() {
