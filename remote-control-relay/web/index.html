@@ -562,6 +562,30 @@
     let thinkingFrame = 0;
     let previewFrameId = '';
     let previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
+    let previewImageUrl = '';
+    // 仅允许常见静态图片格式；排除 svg 等可携带标记的格式。
+    const PREVIEW_IMAGE_MIME = /^(?:png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
+    function imagePreviewObjectUrl(dataUrl) {
+      const match = /^data:image\/([a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl || '');
+      if (!match) return '';
+      const mime = match[1].toLowerCase();
+      if (!PREVIEW_IMAGE_MIME.test(mime)) return '';
+      let bytes;
+      try {
+        const binary = atob(match[2].replace(/\s+/g, ''));
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } catch {
+        return '';
+      }
+      return URL.createObjectURL(new Blob([bytes], { type: `image/${mime}` }));
+    }
+    function revokePreviewImageUrl() {
+      if (previewImageUrl) {
+        URL.revokeObjectURL(previewImageUrl);
+        previewImageUrl = '';
+      }
+    }
     let pinvouNode = null;
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     const state = {
@@ -2021,17 +2045,29 @@
       el.previewTitle.textContent = previewName;
       el.previewTitle.title = previewName;
       el.previewBody.innerHTML = '';
+      revokePreviewImageUrl();
       el.previewBody.classList.remove('html-preview', 'markdown-preview');
       el.previewToolbar.classList.add('hidden');
       previewFrameId = '';
       previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
-      // data_url 由桌面端按图片 mime 白名单构造；此处再校验前缀，
-      // 防伪造 preview payload（CodeQL js/xss、js/client-side-unvalidated-url-redirection）。
-      if (preview.type === 'image' && /^data:image\//.test(preview.data_url || '')) {
-        const img = document.createElement('img');
-        img.alt = payload.basename || 'artifact preview';
-        img.src = preview.data_url;
-        el.previewBody.appendChild(img);
+      // data_url 由桌面端按图片 mime 白名单构造；此处仍不信任 payload：
+      // 严格校验 mime/base64 后解码为 Blob，改用浏览器生成的 object URL，
+      // 使 <img> 不直接接收来自消息的数据（CodeQL js/xss、
+      // js/client-side-unvalidated-url-redirection）。
+      if (preview.type === 'image') {
+        const objectUrl = imagePreviewObjectUrl(preview.data_url);
+        if (objectUrl) {
+          previewImageUrl = objectUrl;
+          const img = document.createElement('img');
+          img.alt = payload.basename || 'artifact preview';
+          img.src = objectUrl;
+          el.previewBody.appendChild(img);
+        } else {
+          const invalid = document.createElement('div');
+          invalid.className = 'empty-panel';
+          invalid.textContent = '图片预览数据无效。';
+          el.previewBody.appendChild(invalid);
+        }
       } else if (preview.type === 'html') {
         el.previewBody.classList.add('html-preview');
         el.previewToolbar.classList.remove('hidden');
