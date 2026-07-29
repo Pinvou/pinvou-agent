@@ -26,7 +26,7 @@
       "resources/platforms/macos/codex-bridge/": "runtime/codex-bridge"
     },
     "macOS": {
-      "minimumSystemVersion": "14.0",
+      "minimumSystemVersion": "11.0",
       "signingIdentity": "-",
       "entitlements": "packaging/macos/entitlements.plist",
       "infoPlist": "packaging/macos/Info.plist"

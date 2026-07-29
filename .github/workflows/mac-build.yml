@@ -36,7 +36,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 50
     env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
       # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],
       # 不再需要 CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:

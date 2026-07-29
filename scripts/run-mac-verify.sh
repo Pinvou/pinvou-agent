@@ -25,7 +25,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SRC_TAURI="$REPO_ROOT/pinvou3-app/src-tauri"
 
 # Mac 编译需要正确的部署目标(同 release-macos.sh)
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
 if [ "$SKIP_TEST" -eq 0 ]; then
   # cargo check/test 用 host 原生 aarch64(macos-15 runner 即 arm64)。
@@ -85,17 +85,17 @@ else
     echo "  ❌ tauri.conf.json 缺少 app/dmg targets" >&2
     VERIFY_FAIL=1
 fi
-if jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' "$MAC_OVERLAY" >/dev/null; then
-    echo "  ✓ minimumSystemVersion=14.0"
+if jq -e '.bundle.macOS.minimumSystemVersion == "11.0"' "$MAC_OVERLAY" >/dev/null; then
+    echo "  ✓ minimumSystemVersion=11.0"
 else
-    echo "  ⚠ macOS.minimumSystemVersion 不是 14.0"
+    echo "  ⚠ macOS.minimumSystemVersion 不是 11.0"
 fi
 # Info.plist 的 LSMinimumSystemVersion 必须与 tauri.conf.json 一致(防二者漂移)。
 PLIST_MIN_SYS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP_SRC_TAURI/packaging/macos/Info.plist" 2>/dev/null || true)"
-if [ "$PLIST_MIN_SYS" = "14.0" ]; then
-    echo "  ✓ Info.plist LSMinimumSystemVersion=14.0"
+if [ "$PLIST_MIN_SYS" = "11.0" ]; then
+    echo "  ✓ Info.plist LSMinimumSystemVersion=11.0"
 else
-    echo "  ⚠ Info.plist LSMinimumSystemVersion=$PLIST_MIN_SYS(期望 14.0,与 tauri.conf.json 可能漂移)"
+    echo "  ⚠ Info.plist LSMinimumSystemVersion=$PLIST_MIN_SYS(期望 11.0,与 tauri.conf.json 可能漂移)"
 fi
 
 echo "=== 6. Info.plist / entitlements.plist 存在校验 ==="

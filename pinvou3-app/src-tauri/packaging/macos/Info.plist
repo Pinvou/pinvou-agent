@@ -7,7 +7,7 @@
     <key>CFBundleName</key>
     <string>pinvou3</string>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>11.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>pinvou3 需要访问麦克风以提供语音输入功能。</string>
     <key>NSSpeechRecognitionUsageDescription</key>

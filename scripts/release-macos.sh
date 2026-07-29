@@ -22,7 +22,7 @@ fi
 
 VERSION="$V_TAURI"
 TAG="${1:-v$VERSION}"
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
   rustup target list --installed | grep -q "^${target}$" || rustup target add "$target"

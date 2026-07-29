@@ -74,8 +74,8 @@ for (const [name, source] of [
 ]) {
   assert.match(
     source,
-    /MACOSX_DEPLOYMENT_TARGET:\s*"14\.0"/,
-    `${name} must match the declared macOS 14 minimum`,
+    /MACOSX_DEPLOYMENT_TARGET:\s*"11\.0"/,
+    `${name} must match the declared macOS 11 minimum`,
   );
 }
 

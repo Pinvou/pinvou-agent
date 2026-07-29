@@ -101,7 +101,7 @@ export DEEPSEEK_MODEL="qwen36_35b_256k"
 - [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
 - 一个可访问的 OpenAI-compatible 模型端点
 
-源码树支持 **Linux、Windows 和 macOS**；macOS 当前目标为 Apple Silicon (arm64) + macOS 14.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew 或各工具官网安装。
+源码树支持 **Linux、Windows 和 macOS**；macOS 当前目标为 Apple Silicon (arm64) + macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew 或各工具官网安装。
 
 ### 启动应用
 
