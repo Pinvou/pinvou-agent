@@ -656,6 +656,28 @@ pub async fn test_model_connection(
     }
 }
 
+/// 通用设置字段补丁。搜索、桌宠、模型列表和本地模型初始化状态由专用命令管理，
+/// 不进入这个协议，避免调用方携带旧的完整快照覆盖其他操作刚写入的值。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GeneralSettingsPatch {
+    pub theme: Option<Theme>,
+    pub color_scheme: Option<ColorScheme>,
+    pub language: Option<Language>,
+    pub memory_enabled: Option<bool>,
+    pub notifications: Option<NotificationPrefs>,
+    pub sidebar: Option<SidebarPrefs>,
+    pub advanced: Option<AdvancedPrefs>,
+}
+
+/// WebUI 仅能修改远程端可见且被授权的设置字段。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebSettingsPatch {
+    pub memory_enabled: Option<bool>,
+    pub search: Option<SearchPrefs>,
+}
+
 /// 持久化 UserPrefs 到 `~/.pinvou3/settings.json`。
 ///
 /// **当前 MVP 限制**：写盘后不重启 Engine。所以：
@@ -665,24 +687,42 @@ pub async fn test_model_connection(
 ///
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
-pub async fn update_settings(prefs: UserPrefs) -> Result<UserPrefs, String> {
-    persist_general_settings(prefs)
+pub async fn update_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
+    persist_general_settings(patch)
 }
 
-fn merge_general_settings(current: &mut UserPrefs, mut incoming: UserPrefs) {
-    // 这些字段有各自的专用写命令。通用设置请求即使携带旧快照，也无权覆盖它们。
-    incoming.search = current.search.clone();
-    incoming.pet = current.pet;
-    incoming.advanced.saved_models = current.advanced.saved_models.clone();
-    incoming.advanced.active_model_id = current.advanced.active_model_id.clone();
-    incoming.advanced.local_vllm_bootstrapped = current.advanced.local_vllm_bootstrapped;
-    incoming.advanced.local_vllm_setup_declined = current.advanced.local_vllm_setup_declined;
-    *current = incoming;
+fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsPatch) {
+    if let Some(theme) = patch.theme {
+        current.theme = theme;
+    }
+    if let Some(color_scheme) = patch.color_scheme {
+        current.color_scheme = color_scheme;
+    }
+    if let Some(language) = patch.language {
+        current.language = language;
+    }
+    if let Some(memory_enabled) = patch.memory_enabled {
+        current.memory_enabled = memory_enabled;
+    }
+    if let Some(notifications) = patch.notifications {
+        current.notifications = notifications;
+    }
+    if let Some(sidebar) = patch.sidebar {
+        current.sidebar = sidebar;
+    }
+    if let Some(mut advanced) = patch.advanced {
+        // 这些字段有各自的专用写命令。即使高级设置来自旧快照，也无权覆盖它们。
+        advanced.saved_models = current.advanced.saved_models.clone();
+        advanced.active_model_id = current.advanced.active_model_id.clone();
+        advanced.local_vllm_bootstrapped = current.advanced.local_vllm_bootstrapped;
+        advanced.local_vllm_setup_declined = current.advanced.local_vllm_setup_declined;
+        current.advanced = advanced;
+    }
 }
 
-fn persist_general_settings(incoming: UserPrefs) -> Result<UserPrefs, String> {
+fn persist_general_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
     UserPrefs::update_transaction(|current| {
-        merge_general_settings(current, incoming);
+        apply_general_settings_patch(current, patch);
         *current = prepare_prefs_for_save(current.clone())?;
         Ok(())
     })
@@ -699,13 +739,14 @@ fn persist_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
     .map_err(|e| sanitize_command_error("save search settings", e))
 }
 
-pub(crate) fn persist_web_settings(
-    memory_enabled: bool,
-    search: SearchPrefs,
-) -> Result<UserPrefs, String> {
+pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs, String> {
     UserPrefs::update_transaction(|prefs| {
-        prefs.memory_enabled = memory_enabled;
-        prefs.search = search;
+        if let Some(memory_enabled) = patch.memory_enabled {
+            prefs.memory_enabled = memory_enabled;
+        }
+        if let Some(search) = patch.search {
+            prefs.search = search;
+        }
         *prefs = prepare_prefs_for_save(prefs.clone())?;
         Ok(())
     })
@@ -722,10 +763,10 @@ pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, St
 /// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
 #[tauri::command]
 pub async fn save_settings_and_restart(
-    prefs: UserPrefs,
+    patch: GeneralSettingsPatch,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    persist_general_settings(prefs)?;
+    persist_general_settings(patch)?;
     eprintln!("[pinvou3-app] settings saved, restarting app...");
     app.restart();
 }
@@ -745,10 +786,10 @@ use super::prelude::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::prefs::Language;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
-    fn general_settings_merge_preserves_specialized_domains() {
+    fn general_settings_patch_preserves_unmentioned_and_specialized_domains() {
         let mut current = UserPrefs::default();
         current.migrate_models();
         current.search.provider = SearchProvider::Metaso;
@@ -756,14 +797,74 @@ mod tests {
         let saved_models = current.advanced.saved_models.clone();
         let active_model_id = current.advanced.active_model_id.clone();
 
-        let mut incoming = UserPrefs::default();
-        incoming.language = Language::En;
-        merge_general_settings(&mut current, incoming);
+        apply_general_settings_patch(
+            &mut current,
+            GeneralSettingsPatch {
+                language: Some(Language::En),
+                ..Default::default()
+            },
+        );
 
         assert_eq!(current.language, Language::En);
+        assert_eq!(current.theme, Theme::default());
         assert_eq!(current.search.provider, SearchProvider::Metaso);
         assert!(current.pet.enabled);
         assert_eq!(current.advanced.saved_models, saved_models);
         assert_eq!(current.advanced.active_model_id, active_model_id);
+    }
+
+    #[test]
+    fn concurrent_general_setting_patches_preserve_both_fields() {
+        use std::sync::{Arc, Barrier};
+
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-general-settings-patches-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut initial = UserPrefs::default();
+        initial.migrate_models();
+        initial.save().expect("initial settings should save");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let theme_barrier = Arc::clone(&barrier);
+        let theme_thread = std::thread::spawn(move || {
+            theme_barrier.wait();
+            persist_general_settings(GeneralSettingsPatch {
+                theme: Some(Theme::LiquidLight),
+                ..Default::default()
+            })
+            .expect("theme patch should save");
+        });
+
+        let language_barrier = Arc::clone(&barrier);
+        let language_thread = std::thread::spawn(move || {
+            language_barrier.wait();
+            persist_general_settings(GeneralSettingsPatch {
+                language: Some(Language::En),
+                ..Default::default()
+            })
+            .expect("language patch should save");
+        });
+
+        barrier.wait();
+        theme_thread.join().expect("theme thread should finish");
+        language_thread
+            .join()
+            .expect("language thread should finish");
+
+        let saved = UserPrefs::load();
+        assert_eq!(saved.theme, Theme::LiquidLight);
+        assert_eq!(saved.language, Language::En);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 }

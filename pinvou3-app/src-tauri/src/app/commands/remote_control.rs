@@ -652,8 +652,10 @@ pub fn web_access_read_artifact_chunk(
 /// desktop authority (shell, model bootstrap, pet, notifications, theme and
 /// language) always stays sourced from the current desktop preferences.
 #[tauri::command]
-pub async fn web_access_update_settings(prefs: UserPrefs) -> Result<UserPrefs, String> {
-    super::settings::persist_web_settings(prefs.memory_enabled, prefs.search)
+pub async fn web_access_update_settings(
+    patch: super::settings::WebSettingsPatch,
+) -> Result<UserPrefs, String> {
+    super::settings::persist_web_settings(patch)
 }
 
 fn scoped_artifact_path(

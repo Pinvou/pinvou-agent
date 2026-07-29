@@ -241,7 +241,7 @@ fn clamp_scale_to_character_work_area(
 }
 
 /// `~/.pinvou3/pet_window.json` —— 桌宠 client 原点(全局物理像素)+ 缩放 + 竖向靠边。
-/// 见 prefs::PetPrefs 注释:刻意不进 settings.json,避免前端整份回写覆盖。
+/// 见 prefs::PetPrefs 注释:刻意不进 settings.json,与其他设置域保持隔离。
 fn state_path() -> std::path::PathBuf {
     crate::platform::paths::pinvou3_home().join("pet_window.json")
 }
@@ -519,7 +519,7 @@ pub fn close_with_main(app: &AppHandle) {
 }
 
 /// 开关桌宠:持久化 settings.json + 窗口即时显隐 + 广播给主窗口同步其 settings
-/// 副本(否则主窗口下次整份保存会用旧值把开关翻回去)。
+/// 副本，让设置界面与专用命令写入的权威状态保持一致。
 /// 设置页开关和宠物右键"隐藏"都走这一个命令,单一路径。
 pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String> {
     let window_existed = app.get_webview_window(PET_LABEL).is_some();

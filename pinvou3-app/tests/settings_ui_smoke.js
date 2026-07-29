@@ -109,8 +109,12 @@ function injectSource() {
           taskCompletionNotificationsDefault: true,
         });
         case 'get_settings': return Promise.resolve(settings);
-        case 'update_settings': settings = args.prefs; return Promise.resolve(settings);
-        case 'save_settings_and_restart': settings = args.prefs; return Promise.resolve(null);
+        case 'update_settings':
+          settings = Object.assign({}, settings, args.patch || {});
+          return Promise.resolve(settings);
+        case 'save_settings_and_restart':
+          settings = Object.assign({}, settings, args.patch || {});
+          return Promise.resolve(null);
         case 'update_search_settings':
           settings = Object.assign({}, settings, { search: args.search });
           return Promise.resolve(settings);

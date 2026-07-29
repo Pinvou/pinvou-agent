@@ -659,9 +659,7 @@ impl UserPrefs {
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
         if persist_normalized
-            && (minimax_endpoint_changed
-                || migration.settings_sanitized
-                || memory_policy_changed)
+            && (minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed)
         {
             if let Err(e) = prefs.save_unlocked() {
                 eprintln!("[pinvou3-app] settings normalization save failed: {e:?}");

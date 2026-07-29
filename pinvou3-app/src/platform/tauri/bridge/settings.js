@@ -12,7 +12,7 @@
     var listen = context.listen;
   // ── Settings ─────────────────────────────────────────────────────
   // 桌宠开关由 Rust set_pet_enabled 直接写盘(设置页/宠物右键/快捷图标共用),
-  // 这里同步进内存副本——否则下次整份 saveSettings 会用旧值把开关翻回去。
+  // 这里同步进内存副本，保证设置界面立即反映专用命令返回的桌宠状态。
   listen("pet:enabled_changed", function (e) {
     if (state.settings) {
       state.settings.pet = Object.assign({}, state.settings.pet || {}, {
@@ -60,50 +60,59 @@
     }
     notify();
   }
-  async function saveSettings(prefs) {
-    const previous = state.settings;
-    try {
-      state.settings = await invoke("update_settings", { prefs: prefs });
-      await loadEffectiveModelConfig();
-      notify();
-      return true;
-    } catch (e) {
-      console.warn("save settings failed", e);
-      state.settings = previous;
-      notify();
-      return false;
-    }
+  var settingsWriteQueue = Promise.resolve();
+  function enqueueSettingsWrite(write) {
+    var pending = settingsWriteQueue.then(write, write);
+    settingsWriteQueue = pending.then(function () {}, function () {});
+    return pending;
   }
-  async function saveSettingsAndRestart(prefs) {
-    state.settings = prefs;
-    try {
-      await invoke("save_settings_and_restart", { prefs: prefs });
-    } catch (e) {
-      console.warn("save settings and restart failed", e);
-    }
+  async function saveSettings(patch) {
+    return enqueueSettingsWrite(async function () {
+      try {
+        state.settings = await invoke("update_settings", { patch: patch });
+        await loadEffectiveModelConfig();
+        notify();
+        return true;
+      } catch (e) {
+        console.warn("save settings failed", e);
+        return false;
+      }
+    });
+  }
+  async function saveSettingsAndRestart(patch) {
+    return enqueueSettingsWrite(async function () {
+      try {
+        await invoke("save_settings_and_restart", { patch: patch });
+        return true;
+      } catch (e) {
+        console.warn("save settings and restart failed", e);
+        return false;
+      }
+    });
   }
   async function saveSearchSettings(search) {
-    const previous = state.settings;
-    try {
-      state.settings = await invoke("update_search_settings", { search: search });
-      await loadEffectiveModelConfig();
-      notify();
-      return true;
-    } catch (e) {
-      console.warn("save search settings failed", e);
-      state.settings = previous;
-      notify();
-      return false;
-    }
+    return enqueueSettingsWrite(async function () {
+      try {
+        state.settings = await invoke("update_search_settings", { search: search });
+        await loadEffectiveModelConfig();
+        notify();
+        return true;
+      } catch (e) {
+        console.warn("save search settings failed", e);
+        return false;
+      }
+    });
   }
   async function saveSearchSettingsAndRestart(search) {
-    try {
-      await invoke("save_search_settings_and_restart", { search: search });
-      return true;
-    } catch (e) {
-      console.warn("save search settings and restart failed", e);
-      return false;
-    }
+    return enqueueSettingsWrite(async function () {
+      try {
+        await invoke("save_search_settings_and_restart", { search: search });
+        return true;
+      } catch (e) {
+        console.warn("save search settings and restart failed", e);
+        return false;
+      }
+    });
   }
 
   async function submitFeedback(request) {
