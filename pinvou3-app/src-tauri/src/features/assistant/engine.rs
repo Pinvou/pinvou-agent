@@ -4,7 +4,8 @@
 //!  1. 通过 [`bridge::Pinvou3Bridge`] 把 `~/.pinvou3/settings.json` 翻译成
 //!     [`EngineConfig`] / [`DtConfig`]，然后 `spawn_engine`，存到 Tauri State
 //!  2. 后台 task 持续读 `EngineHandle::rx_event`，转译成 Tauri 事件
-//!     （`chat:delta` / `chat:tool_start` / `chat:tool_end` / `chat:done`
+//!     （`chat:delta` / `chat:reasoning_start` / `chat:reasoning_delta` /
+//!     `chat:reasoning_done` / `chat:tool_start` / `chat:tool_end` / `chat:done`
 //!     / `chat:plan_ready`）
 //!  3. 暴露 `send_user_message()` 给 [`commands::chat`] 调用
 //!
@@ -1505,8 +1506,35 @@ fn spawn_event_forwarder(
                     let _ = app.emit("chat:delta", payload.clone());
                     crate::features::remote_control::forward_app_event(&app, "chat:delta", payload);
                 }
-                Event::ThinkingDelta { .. } => {
-                    // Qwen3 已用 reasoning_effort=off 关 thinking，丢这段
+                Event::ThinkingStarted { index } => {
+                    let payload = json!({ "session_id": session_id, "index": index });
+                    let _ = app.emit("chat:reasoning_start", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:reasoning_start",
+                        payload,
+                    );
+                }
+                Event::ThinkingDelta { index, content } => {
+                    // 只转发底座已经识别为 ThinkingDelta 的独立思考内容。普通
+                    // MessageDelta 不做启发式猜测，避免把最终回答误折叠成思考。
+                    let payload =
+                        json!({ "session_id": session_id, "index": index, "text": content });
+                    let _ = app.emit("chat:reasoning_delta", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:reasoning_delta",
+                        payload,
+                    );
+                }
+                Event::ThinkingComplete { index } => {
+                    let payload = json!({ "session_id": session_id, "index": index });
+                    let _ = app.emit("chat:reasoning_done", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:reasoning_done",
+                        payload,
+                    );
                 }
                 Event::ToolCallStarted { id, name, input } => {
                     if let Some(m) = &self_metrics {

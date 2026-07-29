@@ -23,7 +23,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use deepseek_tui::config::{
-    wire_model_for_provider, ApiProvider, Config as DtConfig, ProvidersConfig,
+    wire_model_for_provider, ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig,
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
@@ -55,6 +55,20 @@ const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
 // 用 loopback 免疫 DHCP 换 IP,别再写具体内网 IP。
 const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
+const SEPARATE_REASONING_FIELD: &str = "separate_field";
+
+fn configure_provider(
+    config: &mut ProviderConfig,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    reasoning_stream_style: Option<&str>,
+) {
+    config.base_url = Some(base_url.to_string());
+    config.api_key = Some(api_key.to_string());
+    config.model = Some(model.to_string());
+    config.reasoning_stream_style = reasoning_stream_style.map(str::to_string);
+}
 
 fn is_official_deepseek_base_url(base_url: &str) -> bool {
     let normalized = base_url
@@ -373,6 +387,32 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
+        // `OpenAI compatible` 只是 wire protocol，不代表真实 provider 就是
+        // OpenAI。reasoning_content 的解析、回放和思考开关都依赖底座里的
+        // provider 身份，因此优先使用模型目录已经保存的 vendor 元数据。
+        if let Some(vendor) = self
+            .effective_model()
+            .and_then(|model| model.vendor.as_deref())
+            .map(str::trim)
+            .filter(|vendor| !vendor.is_empty())
+        {
+            let provider = match vendor.to_ascii_lowercase().as_str() {
+                "deepseek" => Some("deepseek"),
+                "kimi" | "moonshot" => Some("moonshot"),
+                "glm" | "zai" | "zhipu" => Some("zai"),
+                "minimax" => Some("minimax"),
+                "mimo" | "xiaomi" | "xiaomi-mimo" => Some("xiaomi-mimo"),
+                "doubao" | "volcengine" => Some("volcengine"),
+                // DashScope 和腾讯 Coding Plan 暂无对应内建 provider，
+                // 保留 OpenAI Chat Completions wire route，另由下方显式
+                // reasoning_stream_style 保留独立思考字段。
+                "qwen" | "tencent" | "openai" => Some("openai"),
+                _ => None,
+            };
+            if let Some(provider) = provider {
+                return provider.to_string();
+            }
+        }
         // active model(列表化后的真实来源)优先;无 active model 时回退 legacy
         // model_preset 字段——与 model()/base_url()/api_key() 的三段式兜底保持一致,
         // 避免 provider 说 vllm 而 base_url/model 已按 legacy preset 走的分叉。
@@ -384,12 +424,75 @@ impl Pinvou3Bridge {
             ModelPreset::LocalVllm => "vllm".to_string(),
             ModelPreset::Deepseek => "deepseek".to_string(),
             ModelPreset::Kimi => "moonshot".to_string(),
-            ModelPreset::OpenaiCompatible
-            | ModelPreset::Qwen
-            | ModelPreset::Doubao
-            | ModelPreset::Minimax
-            | ModelPreset::Glm
-            | ModelPreset::Mimo => "openai".to_string(),
+            ModelPreset::Doubao => "volcengine".to_string(),
+            ModelPreset::Minimax => "minimax".to_string(),
+            ModelPreset::Glm => "zai".to_string(),
+            ModelPreset::Mimo => "xiaomi-mimo".to_string(),
+            ModelPreset::OpenaiCompatible | ModelPreset::Qwen => "openai".to_string(),
+        }
+    }
+
+    /// 当前 route 的流式思考协议。
+    ///
+    /// 已知厂商和官方兼容端点都把思考放在 `reasoning_content` /
+    /// `reasoning` 独立字段中。显式写入 provider config，避免新模型 ID、
+    /// Coding Plan 的动态别名或模型目录暂未收录时被降级成普通正文。
+    /// 真正的自定义 OpenAI 兼容接口保持 None，继续采用底座的安全默认值，
+    /// 不根据回答文本猜测思考内容。
+    fn reasoning_stream_style(&self, provider: &str) -> Option<&'static str> {
+        if matches!(
+            provider,
+            "deepseek" | "moonshot" | "zai" | "minimax" | "xiaomi-mimo" | "volcengine"
+        ) {
+            return Some(SEPARATE_REASONING_FIELD);
+        }
+        let vendor = self
+            .effective_model()
+            .and_then(|model| model.vendor.as_deref())
+            .map(str::trim);
+        if provider == "openai"
+            && vendor.is_some_and(|vendor| {
+                matches!(vendor.to_ascii_lowercase().as_str(), "qwen" | "tencent")
+            })
+        {
+            return Some(SEPARATE_REASONING_FIELD);
+        }
+        if provider == "openai"
+            && self
+                .effective_model()
+                .is_some_and(|model| model.preset == ModelPreset::Qwen)
+        {
+            return Some(SEPARATE_REASONING_FIELD);
+        }
+        None
+    }
+
+    /// 当前 route 发给模型的思考开关。
+    ///
+    /// 字段解析与请求开关是两件事：`reasoning_stream_style` 只决定收到
+    /// `reasoning_content` 后如何分类，不会让服务端开始输出 reasoning。
+    /// Kimi Code 的 `kimi-for-coding` 是 always-thinking 模型，官方接入方式
+    /// 要求 Thinking 保持开启；若省略该参数，工具调用前的计划可能落入普通
+    /// `content`，而 `reasoning_content` 为空。底座会把 `high` 翻译成
+    /// `thinking: {"type":"enabled"}`。未知 OpenAI 兼容端点继续不注入。
+    fn moonshot_model_requires_explicit_thinking(&self) -> bool {
+        matches!(
+            self.model().trim().to_ascii_lowercase().as_str(),
+            "k3" | "k3-256k"
+                | "kimi-k3"
+                | "kimi-k2.7-code"
+                | "kimi-k2.7-code-highspeed"
+                | "kimi-for-coding"
+                | "kimi-for-coding-highspeed"
+                | "kimi-k2.6"
+        )
+    }
+
+    fn request_reasoning_effort(&self) -> Option<&'static str> {
+        match self.provider().as_str() {
+            "vllm" => Some("off"),
+            "moonshot" if self.moonshot_model_requires_explicit_thinking() => Some("high"),
+            _ => None,
         }
     }
 
@@ -910,11 +1013,7 @@ impl Pinvou3Bridge {
             // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
             // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
             // 全开(6/12 taizi 思考失控实证)。在 engine 配置层钉死,不依赖对话。
-            reasoning_effort: if self.provider() == "vllm" {
-                Some("off".to_string())
-            } else {
-                None
-            },
+            reasoning_effort: self.request_reasoning_effort().map(str::to_string),
             // v0.8.49 上游新增,透传 default
             allowed_tools,
             tools,
@@ -1000,41 +1099,80 @@ impl Pinvou3Bridge {
         cfg.api_key = Some(api_key.clone());
         let base_url = self.base_url();
         let model = self.model();
+        let reasoning_stream_style = self.reasoning_stream_style(&provider);
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         // 按 provider 写对应 provider 配置的 base_url + api_key
         match provider.as_str() {
-            "vllm" => {
-                providers.vllm.base_url = Some(base_url);
-                providers.vllm.api_key = Some(api_key);
-                providers.vllm.model = Some(model.clone());
-            }
-            "openai" => {
-                providers.openai.base_url = Some(base_url);
-                providers.openai.api_key = Some(api_key);
-                providers.openai.model = Some(model.clone());
-            }
-            "deepseek" => {
-                providers.deepseek.base_url = Some(base_url);
-                providers.deepseek.api_key = Some(api_key);
-                providers.deepseek.model = Some(model.clone());
-            }
-            "moonshot" => {
-                providers.moonshot.base_url = Some(base_url);
-                providers.moonshot.api_key = Some(api_key);
-                providers.moonshot.model = Some(model.clone());
-            }
+            "vllm" => configure_provider(
+                &mut providers.vllm,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "openai" => configure_provider(
+                &mut providers.openai,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "deepseek" => configure_provider(
+                &mut providers.deepseek,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "moonshot" => configure_provider(
+                &mut providers.moonshot,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "volcengine" => configure_provider(
+                &mut providers.volcengine,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "zai" => configure_provider(
+                &mut providers.zai,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "minimax" => configure_provider(
+                &mut providers.minimax,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "xiaomi-mimo" => configure_provider(
+                &mut providers.xiaomi_mimo,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
             _ => {
-                providers.vllm.base_url = Some(base_url);
-                providers.vllm.api_key = Some(api_key);
-                providers.vllm.model = Some(model.clone());
+                configure_provider(
+                    &mut providers.vllm,
+                    &base_url,
+                    &api_key,
+                    &model,
+                    reasoning_stream_style,
+                );
             }
         }
         cfg.default_text_model = Some(model);
-        // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
-        // 云端 provider 保留底座默认（用户可在 settings.toml 中覆盖）。
-        if self.provider() == "vllm" {
-            cfg.reasoning_effort = Some("off".to_string());
-        }
+        // 本地 vLLM 必须关 thinking；Kimi Code 必须显式开启，其他远程
+        // provider 保留底座默认。
+        cfg.reasoning_effort = self.request_reasoning_effort().map(str::to_string);
         cfg
     }
 
@@ -1200,15 +1338,9 @@ impl Pinvou3Bridge {
             // v0.8.59 上游新增 /goal 目标管理;pinvou3 GUI 不用,取默认(无预算/Active)。
             goal_token_budget: None,
             goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
-            // 本地 vLLM (Qwen3.6) thinking 必须关，否则 SSE idle timeout；
-            // 云端 provider 保留底座默认（传 None 让底座自行决定）。
-            reasoning_effort: {
-                if self.provider() == "vllm" {
-                    Some("off".to_string())
-                } else {
-                    None
-                }
-            },
+            // 本地 vLLM 关 thinking；Kimi Code 显式开启；其他远程 provider
+            // 传 None 让底座沿用各自默认。
+            reasoning_effort: self.request_reasoning_effort().map(str::to_string),
             reasoning_effort_auto: false,
             auto_model: false,
             allow_shell,
@@ -2498,10 +2630,18 @@ mod tests {
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.base_url(), "https://api.openai.com/v1");
         assert_eq!(bridge.api_key(), "sk-xxx");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.providers
+                .as_ref()
+                .and_then(|providers| providers.openai.reasoning_stream_style.as_deref()),
+            None,
+            "generic OpenAI-compatible routes must not guess reasoning semantics"
+        );
     }
 
     #[test]
-    fn coding_plan_model_uses_openai_provider_with_canonical_base_url() {
+    fn glm_coding_plan_uses_zai_provider_with_canonical_base_url() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -2518,7 +2658,7 @@ mod tests {
         );
         bridge.prefs.normalize_saved_model_metadata();
 
-        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.provider(), "zai");
         assert_eq!(bridge.model(), "glm-5-turbo");
         assert_eq!(
             bridge.base_url(),
@@ -2526,11 +2666,183 @@ mod tests {
         );
         assert_eq!(bridge.api_key(), "sk-coding");
         let cfg = bridge.build_dt_config();
-        assert_eq!(
-            cfg.api_provider(),
-            deepseek_tui::config::ApiProvider::Openai
-        );
+        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Zai);
         assert_eq!(cfg.default_model(), "glm-5-turbo");
+        assert_eq!(
+            cfg.providers
+                .as_ref()
+                .and_then(|providers| providers.zai.reasoning_stream_style.as_deref()),
+            Some(SEPARATE_REASONING_FIELD)
+        );
+    }
+
+    #[test]
+    fn known_reasoning_routes_preserve_provider_identity_and_stream_shape() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let cases = [
+            (
+                ModelPreset::Kimi,
+                "kimi-k3",
+                "https://api.moonshot.cn/v1",
+                "moonshot",
+                ApiProvider::Moonshot,
+            ),
+            (
+                ModelPreset::Glm,
+                "glm-5.2",
+                "https://open.bigmodel.cn/api/paas/v4",
+                "zai",
+                ApiProvider::Zai,
+            ),
+            (
+                ModelPreset::Minimax,
+                "MiniMax-M3",
+                "https://api.minimax.chat/v1",
+                "minimax",
+                ApiProvider::Minimax,
+            ),
+            (
+                ModelPreset::Mimo,
+                "mimo-v2.5-pro",
+                "https://api.xiaomimimo.com/v1",
+                "xiaomi-mimo",
+                ApiProvider::XiaomiMimo,
+            ),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-evolving",
+                "https://ark.cn-beijing.volces.com/api/v3",
+                "volcengine",
+                ApiProvider::Volcengine,
+            ),
+        ];
+
+        for (preset, model, base_url, expected_provider, expected_api_provider) in cases {
+            let mut bridge = fixture_bridge();
+            set_active_model(&mut bridge, preset, model, base_url, "sk-test");
+
+            assert_eq!(bridge.provider(), expected_provider, "{model}");
+            let cfg = bridge.build_dt_config();
+            assert_eq!(cfg.api_provider(), expected_api_provider, "{model}");
+            assert_eq!(
+                cfg.reasoning_effort.as_deref(),
+                (expected_provider == "moonshot").then_some("high"),
+                "{model} must use the provider-specific request-side thinking policy"
+            );
+            bridge
+                .resolve_runtime_route_for_model(model)
+                .unwrap_or_else(|error| panic!("{model} route must resolve: {error}"));
+            let style =
+                match expected_api_provider {
+                    ApiProvider::Moonshot => cfg
+                        .providers
+                        .as_ref()
+                        .and_then(|providers| providers.moonshot.reasoning_stream_style.as_deref()),
+                    ApiProvider::Zai => cfg
+                        .providers
+                        .as_ref()
+                        .and_then(|providers| providers.zai.reasoning_stream_style.as_deref()),
+                    ApiProvider::Minimax => cfg
+                        .providers
+                        .as_ref()
+                        .and_then(|providers| providers.minimax.reasoning_stream_style.as_deref()),
+                    ApiProvider::XiaomiMimo => cfg.providers.as_ref().and_then(|providers| {
+                        providers.xiaomi_mimo.reasoning_stream_style.as_deref()
+                    }),
+                    ApiProvider::Volcengine => cfg.providers.as_ref().and_then(|providers| {
+                        providers.volcengine.reasoning_stream_style.as_deref()
+                    }),
+                    _ => None,
+                };
+            assert_eq!(style, Some(SEPARATE_REASONING_FIELD), "{model}");
+        }
+    }
+
+    #[test]
+    fn coding_plan_vendor_routes_reasoning_without_model_name_heuristics() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let cases = [
+            (
+                "kimi-for-coding",
+                "https://api.kimi.com/coding/v1/chat/completions",
+                "moonshot",
+                ApiProvider::Moonshot,
+            ),
+            (
+                "tc-code-latest",
+                "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions",
+                "openai",
+                ApiProvider::Openai,
+            ),
+        ];
+
+        for (model, base_url, expected_provider, expected_api_provider) in cases {
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                model,
+                base_url,
+                "sk-coding",
+            );
+            bridge.prefs.normalize_saved_model_metadata();
+
+            assert_eq!(bridge.provider(), expected_provider, "{model}");
+            let cfg = bridge.build_dt_config();
+            assert_eq!(cfg.api_provider(), expected_api_provider, "{model}");
+            assert_eq!(
+                cfg.reasoning_effort.as_deref(),
+                (expected_provider == "moonshot").then_some("high"),
+                "{model} must use only its own request-side thinking policy"
+            );
+            bridge
+                .resolve_runtime_route_for_model(model)
+                .unwrap_or_else(|error| panic!("{model} route must resolve: {error}"));
+            let style = match expected_api_provider {
+                ApiProvider::Moonshot => cfg
+                    .providers
+                    .as_ref()
+                    .and_then(|providers| providers.moonshot.reasoning_stream_style.as_deref()),
+                ApiProvider::Openai => cfg
+                    .providers
+                    .as_ref()
+                    .and_then(|providers| providers.openai.reasoning_stream_style.as_deref()),
+                _ => None,
+            };
+            assert_eq!(style, Some(SEPARATE_REASONING_FIELD), "{model}");
+        }
+    }
+
+    #[test]
+    fn unknown_moonshot_model_does_not_receive_vendor_specific_thinking_parameter() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Kimi,
+            "moonshot-v1-8k",
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+        );
+
+        assert_eq!(bridge.provider(), "moonshot");
+        assert_eq!(bridge.request_reasoning_effort(), None);
+        assert_eq!(bridge.build_dt_config().reasoning_effort, None);
     }
 
     /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
@@ -2734,6 +3046,13 @@ mod tests {
         assert_eq!(
             bridge.base_url(),
             "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.providers
+                .as_ref()
+                .and_then(|providers| providers.openai.reasoning_stream_style.as_deref()),
+            Some(SEPARATE_REASONING_FIELD)
         );
     }
 

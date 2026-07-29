@@ -69,6 +69,9 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "artifact:disk",
     "chat:compaction",
     "chat:delta",
+    "chat:reasoning_start",
+    "chat:reasoning_delta",
+    "chat:reasoning_done",
     "chat:done",
     "chat:plan_ready",
     "chat:plan_resolved",
@@ -4772,6 +4775,12 @@ mod tests {
             "frontend transcript writes must stay blocked"
         );
         assert!(policy.events.contains("chat:delta"));
+        assert!(policy.events.contains("chat:reasoning_start"));
+        assert!(policy.events.contains("chat:reasoning_delta"));
+        assert!(policy.events.contains("chat:reasoning_done"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_start"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_delta"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_done"));
         assert!(policy.events.contains("chat:user_message"));
         assert!(policy.events.contains("chat:plan_resolved"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:plan_resolved"));
