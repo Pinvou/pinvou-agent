@@ -1578,6 +1578,15 @@ fn image_input_unsupported_error_keeps_stable_code() {
     assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.contains("视觉模型"));
 }
 
+/// Unknown 与确认不支持共用稳定错误码前缀,但 Unknown 文案必须给出显式确认出口
+/// (设计 §6.3:Unknown 不冒充支持,允许用户手工开启)。
+#[test]
+fn image_input_unknown_error_offers_explicit_confirm_path() {
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.starts_with("image_input_unsupported"));
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("能力未知"));
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("支持图片"));
+}
+
 /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
 fn mk_attachment(
     kind: &str,

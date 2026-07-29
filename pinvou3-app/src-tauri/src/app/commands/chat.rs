@@ -6,13 +6,19 @@ use super::knowledge::build_kb_agentic_guide;
 use super::prelude::*;
 use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
-use crate::features::assistant::image_capability::ImageInputMode;
+use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
 
 /// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
 /// 码后为用户可操作指引。改码字符串必须同步前端匹配处
 /// (platform/tauri/bridge/chat.js、platform/web/bridge.js)。
 pub(crate) const IMAGE_INPUT_UNSUPPORTED_ERROR: &str = "image_input_unsupported: \
      当前模型不支持图片。请切换到支持图片的模型,或在模型设置中配置视觉模型。";
+
+/// 能力未知(Unknown)时的拒绝文案:与"确认不支持"区分,给出显式确认的出口
+/// (设计 §6.3:Unknown 不冒充支持,但允许用户手工开启)。错误码前缀相同。
+pub(crate) const IMAGE_INPUT_UNKNOWN_ERROR: &str = "image_input_unsupported: \
+     当前模型的图片输入能力未知。如果它支持图片,请在模型设置中将图片输入能力\
+     设为“支持图片”后重试;也可以切换到支持图片的模型,或配置视觉模型。";
 
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
@@ -121,23 +127,31 @@ pub(crate) async fn chat_with_reservation(
     // scheduled 会话不路由,保持 image_analyze 工具兜底现状(其模型由任务 profile
     // 固定,且无人值守场景无法在发送前向用户展示切换模型提示)。
     let has_images = attachments.iter().any(|a| a.kind == "image");
-    let image_mode = if has_images && !is_scheduled {
+    // capability 仅在路由时需要一并取出:Unsupported 拒绝时据此区分
+    // "确认不支持"与"能力未知",给不同用户指引(Unknown 提供显式确认出口)。
+    let (image_mode, capability) = if has_images && !is_scheduled {
         let bridge = pool
             .fresh_bridge_for(&sid)
             .await
             .map_err(|error| format!("resolve image input route for {sid}: {error:#}"))?;
-        bridge.image_input_mode()
+        (bridge.image_input_mode(), bridge.effective_image_capability())
     } else if has_images {
-        ImageInputMode::VisionToolFallback
+        (
+            ImageInputMode::VisionToolFallback,
+            EffectiveImageCapability::Unknown,
+        )
     } else {
-        ImageInputMode::Native
+        (ImageInputMode::Native, EffectiveImageCapability::Unknown)
     };
     if has_images && image_mode == ImageInputMode::Unsupported {
         // 不创建 Engine turn:early return 时 reservation 随 Drop 自动释放
         // (TurnReservation::drop → on_reservation_failed 归还 turn slot),
         // 稳定错误码经 invoke Err 回传前端匹配展示。
-        log::info!("[pinvou3][chat] image input rejected sid={} (model unsupported)", sid);
-        return Err(IMAGE_INPUT_UNSUPPORTED_ERROR.to_string());
+        log::info!("[pinvou3][chat] image input rejected sid={} (capability={capability:?})", sid);
+        return Err(match capability {
+            EffectiveImageCapability::Unknown => IMAGE_INPUT_UNKNOWN_ERROR.to_string(),
+            _ => IMAGE_INPUT_UNSUPPORTED_ERROR.to_string(),
+        });
     }
     let display_content = attachment_display_text(&message, &attachments);
     let raw_message = message.clone();

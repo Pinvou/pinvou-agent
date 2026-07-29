@@ -58,6 +58,9 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
     // 智谱 GLM-4V 视觉系列;glm-5.x 未经验证不收。
     "glm-4v",
+    // Kimi for Coding(Moonshot 编程计划模型):用户实测可原生识图(2026-07)。
+    // 其余 kimi 文本模型(kimi-k3 等)不收。
+    "kimi-for-coding",
 ];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
@@ -197,6 +200,8 @@ mod tests {
             (ModelPreset::Qwen, "qwen-vl-max"),
             (ModelPreset::Qwen, "Qwen2.5-VL-72B-Instruct"),
             (ModelPreset::Glm, "glm-4v-plus"),
+            // 用户实测可原生识图(2026-07),与 kimi-k3 等文本模型区分。
+            (ModelPreset::Kimi, "kimi-for-coding"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(

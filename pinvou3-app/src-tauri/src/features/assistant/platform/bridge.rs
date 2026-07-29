@@ -676,18 +676,22 @@ impl Pinvou3Bridge {
         None
     }
 
+    /// 当前有效模型的图片输入能力(设计 §6.3)。命令层在发送前拒绝时需要据此
+    /// 区分"确认不支持"与"能力未知",给出不同的用户指引。
+    pub fn effective_image_capability(&self) -> EffectiveImageCapability {
+        self.effective_model()
+            .map(effective_image_capability)
+            // 无有效模型(配置损坏)按 Unknown 处理:不冒充支持,交给路由兜底。
+            .unwrap_or(EffectiveImageCapability::Unknown)
+    }
+
     /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
     /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
     /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
     /// `vision_model_id` 命中的独立视觉模型。
     pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
-        let capability = self
-            .effective_model()
-            .map(effective_image_capability)
-            // 无有效模型(配置损坏)按 Unknown 处理:不冒充支持,交给路由兜底。
-            .unwrap_or(EffectiveImageCapability::Unknown);
         crate::features::assistant::image_capability::image_input_mode(
-            capability,
+            self.effective_image_capability(),
             self.resolve_vision_model_config().is_some(),
         )
     }
