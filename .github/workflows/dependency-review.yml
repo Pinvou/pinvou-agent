@@ -18,8 +18,3 @@ jobs:
           vulnerability-check: true
           license-check: true
           retry-on-snapshot-warnings: true
-          # GHSA-qwww-vcr4-c8h2 仅影响 RSC/framework mode（server action CSRF）；
-          # 本仓库唯一依赖 react-router 的 web-template 是纯客户端 HashRouter SPA，
-          # 无服务端/RSC/action 端点，该漏洞代码路径不可达。react-router 8.3.0+ 才有
-          # 修复版，但其要求 React >=19.2.7，升级须随 React 19 迁移单独进行。
-          allow-ghsas: 'GHSA-qwww-vcr4-c8h2'
