@@ -1,16 +1,24 @@
 use super::attachments::{
-    build_message_with_attachments_in_dir, validate_staged_attachment_basename,
+    attachment_display_text, build_message_with_attachments_in_dir,
+    prepare_native_user_message_in_dir, validate_staged_attachment_basename,
 };
 use super::knowledge::build_kb_agentic_guide;
 use super::prelude::*;
 use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
+use crate::features::assistant::image_capability::ImageInputMode;
+
+/// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
+/// 码后为用户可操作指引。改码字符串必须同步前端匹配处
+/// (platform/tauri/bridge/chat.js、platform/web/bridge.js)。
+pub(crate) const IMAGE_INPUT_UNSUPPORTED_ERROR: &str = "image_input_unsupported: \
+     当前模型不支持图片。请切换到支持图片的模型,或在模型设置中配置视觉模型。";
 
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///
 /// `attachments` 是前端已经过 `ingest_file` 处理后的 IngestResult 数组。
-/// 本函数把它们拼到 message 末尾，格式：
+/// 非图片附件拼到 message 末尾，格式：
 /// ```text
 /// ---
 /// 用户附上了以下文件：
@@ -19,6 +27,9 @@ use crate::features::assistant::engine_pool::user_display_message;
 /// {markdown 或 警告}
 /// ---
 /// ```
+/// 图片附件按当前模型能力路由(设计 §9.2):Native 走结构化 LocalImage 块,
+/// VisionToolFallback 维持上方文本拼接 + image_analyze 硬规则,
+/// Unsupported 发送前拒绝(稳定错误码 `image_input_unsupported`)。
 #[tauri::command]
 pub async fn chat(
     message: String,
@@ -104,15 +115,55 @@ pub(crate) async fn chat_with_reservation(
     } else {
         "attachments".to_string()
     };
-    let display_content =
-        display_chat_message(&message, attachments.as_deref().unwrap_or_default());
+    let attachments = attachments.unwrap_or_default();
+    // 普通会话图片输入路由(设计 §9.2,阶段 D):仅当消息含图片附件时按当前有效
+    // 模型算 Native/VisionToolFallback/Unsupported;纯文本与非图片附件行为零变化。
+    // scheduled 会话不路由,保持 image_analyze 工具兜底现状(其模型由任务 profile
+    // 固定,且无人值守场景无法在发送前向用户展示切换模型提示)。
+    let has_images = attachments.iter().any(|a| a.kind == "image");
+    let image_mode = if has_images && !is_scheduled {
+        let bridge = pool
+            .fresh_bridge_for(&sid)
+            .await
+            .map_err(|error| format!("resolve image input route for {sid}: {error:#}"))?;
+        bridge.image_input_mode()
+    } else if has_images {
+        ImageInputMode::VisionToolFallback
+    } else {
+        ImageInputMode::Native
+    };
+    if has_images && image_mode == ImageInputMode::Unsupported {
+        // 不创建 Engine turn:early return 时 reservation 随 Drop 自动释放
+        // (TurnReservation::drop → on_reservation_failed 归还 turn slot),
+        // 稳定错误码经 invoke Err 回传前端匹配展示。
+        log::info!("[pinvou3][chat] image input rejected sid={} (model unsupported)", sid);
+        return Err(IMAGE_INPUT_UNSUPPORTED_ERROR.to_string());
+    }
+    let display_content = attachment_display_text(&message, &attachments);
     let raw_message = message.clone();
-    let mut full = build_message_with_attachments_in_dir(
-        message,
-        attachments.unwrap_or_default(),
-        &execution_workspace,
-        &attachment_dir,
-    );
+    // Native: 图片成 LocalImage 引用块,不注入"看不到图"硬规则;其余路径维持
+    // 现有文本拼接(Fallback 含 image_analyze 硬规则提示)。两分支互斥,各自
+    // consume message/attachments。
+    let (prepared, mut full) = if has_images && image_mode == ImageInputMode::Native {
+        let prepared = prepare_native_user_message_in_dir(
+            message,
+            attachments,
+            &execution_workspace,
+            &attachment_dir,
+        )?;
+        let segment = prepared.text_segment().to_string();
+        (Some(prepared), segment)
+    } else {
+        (
+            None,
+            build_message_with_attachments_in_dir(
+                message,
+                attachments,
+                &execution_workspace,
+                &attachment_dir,
+            ),
+        )
+    };
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
     // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
     // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
@@ -176,6 +227,16 @@ pub(crate) async fn chat_with_reservation(
     }
     // 取该 session 的 mode。
     let mode = store.mode_state(&sid).mode;
+    // Native: skill/persona/知识库引导 prepend 全部完成后,用最终文本刷新
+    // Text block(图片块保持不动),组装结构化 input。bridge 之后还会把
+    // `<system-reminder>` 并进该 Text block 与 Op.content(两者保持一致,
+    // 供 transcript sanitize 匹配)。
+    let input = prepared.map(|mut prepared| {
+        prepared.replace_text_segment(full.clone());
+        deepseek_tui::core::ops::UserMessageInput {
+            blocks: prepared.input_blocks,
+        }
+    });
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
     log::info!(
@@ -192,6 +253,7 @@ pub(crate) async fn chat_with_reservation(
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
             reservation,
+            input,
         )
         .await
     {
@@ -223,24 +285,5 @@ pub(crate) async fn chat_with_reservation(
             );
             Err(format!("send_user_message failed: {e:?}"))
         }
-    }
-}
-
-fn display_chat_message(
-    message: &str,
-    attachments: &[crate::features::files::file_ingest::IngestResult],
-) -> String {
-    if attachments.is_empty() {
-        return message.to_string();
-    }
-    let names = attachments
-        .iter()
-        .map(|attachment| attachment.basename.as_str())
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if message.trim().is_empty() {
-        format!("📎 {names}")
-    } else {
-        format!("{message}\n\n📎 {names}")
     }
 }

@@ -474,7 +474,23 @@ impl TurnLifecycle {
             }) else {
                 continue;
             };
-            messages[index] = rule.display_message.clone();
+            // Native 图片输入(阶段 D):LocalImage 块是持久化的附件引用(设计 §10.1,
+            // 只存 workspace 相对路径,不含 Base64),不是引擎注入内容——必须随
+            // display message 保留,否则恢复/重建后图片上下文与重试物化丢失(§10.2)。
+            let mut sanitized = rule.display_message.clone();
+            sanitized.content.extend(
+                messages[index]
+                    .content
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            block,
+                            deepseek_tui::models::ContentBlock::LocalImage { .. }
+                        )
+                    })
+                    .cloned(),
+            );
+            messages[index] = sanitized;
             if active_reservation_id == Some(rule.reservation_id) {
                 active_rule_matched = true;
             }
@@ -938,7 +954,7 @@ impl AppEngine {
     ) -> Result<()> {
         let op =
             self.bridge
-                .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
+                .build_send_message_op(content, mode, persona_reminder, restrict_tools, None)?;
         self.send_turn_op(op).await
     }
 
@@ -949,10 +965,15 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         reservation: TurnReservation,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<()> {
-        let op =
-            self.bridge
-                .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
+        let op = self.bridge.build_send_message_op(
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            input,
+        )?;
         self.send_reserved_turn_op(op, reservation).await
     }
 
@@ -978,6 +999,8 @@ impl AppEngine {
             profile.execution_mode().to_app_mode(),
             Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
+            // 定时会话保持纯文本路径(图片走 image_analyze 工具兜底),不携结构化块。
+            None,
         )?;
         let route = self
             .bridge
@@ -3013,6 +3036,57 @@ mod turn_lifecycle_tests {
         assert!(!matched);
         assert_eq!(messages, vec![engine_user("private unsent prompt")]);
         drop(next);
+    }
+
+    /// Native 图片输入(阶段 D):sanitize 把引擎注入文本替换为 UI 展示文本时,
+    /// 必须保留 LocalImage 附件引用块(设计 §10.1/§10.2)——持久化只存引用,
+    /// 恢复/重建后靠它重新物化;turn_meta 等其余注入块照旧丢弃。
+    #[test]
+    fn sanitize_preserves_local_image_blocks() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "看看这张图\n\n📎 shot.png"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<system-reminder>r</system-reminder>\n\n看看这张图".to_string())
+            .expect("actual prompt");
+
+        let mut engine_message = engine_user("<system-reminder>r</system-reminder>\n\n看看这张图");
+        engine_message.content.insert(
+            1,
+            ContentBlock::LocalImage {
+                relative_path: std::path::PathBuf::from("attachments/shot.png"),
+                mime_type: "image/png".to_string(),
+                display_name: "shot.png".to_string(),
+                byte_size: 7,
+            },
+        );
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_message]);
+        assert!(matched, "raw prompt must match the registered rule");
+        assert_eq!(sanitized.len(), 1);
+        let content = &sanitized[0].content;
+        assert_eq!(
+            content.first(),
+            Some(&ContentBlock::Text {
+                text: "看看这张图\n\n📎 shot.png".to_string(),
+                cache_control: None,
+            }),
+            "display text replaces the injected prompt"
+        );
+        assert!(
+            matches!(
+                content.get(1),
+                Some(ContentBlock::LocalImage { relative_path, .. })
+                    if relative_path == &std::path::PathBuf::from("attachments/shot.png")
+            ),
+            "LocalImage reference must survive sanitization, got: {content:?}"
+        );
+        assert_eq!(content.len(), 2, "turn_meta block stays dropped");
+        drop(reservation);
     }
 
     #[test]

@@ -393,3 +393,186 @@ pub fn build_message_with_attachments(
 ) -> String {
     build_message_with_attachments_in_dir(text, attachments, workspace, "attachments")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 原生图片输入(设计 §9.1/§9.2,阶段 D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 单个附件的结构化记录(设计 §9.1)。图片的 `relative_path` 是暂存后的
+/// workspace 相对路径;`mime_type` 为扩展名推断的声明值,发送前由底座
+/// 按真实文件字节复核(魔数不符即拒绝,设计 §11.5)。
+#[derive(Debug, Clone)]
+pub struct AttachmentRecord {
+    pub name: String,
+    pub kind: String,
+    pub mime_type: Option<String>,
+    pub byte_size: u64,
+    pub relative_path: Option<String>,
+}
+
+/// 结构化附件准备结果(设计 §9.1):`display_text` 用于 UI/timeline,
+/// `input_blocks` 只用于 Engine 运行。
+#[derive(Debug, Clone)]
+pub struct PreparedUserMessage {
+    pub display_text: String,
+    pub input_blocks: Vec<deepseek_tui::core::ops::UserInputBlock>,
+    pub attachments: Vec<AttachmentRecord>,
+    pub image_mode: crate::features::assistant::image_capability::ImageInputMode,
+}
+
+impl PreparedUserMessage {
+    /// Text block 内容(命令层在此基础上继续拼 skill/persona/知识库引导)。
+    pub(super) fn text_segment(&self) -> &str {
+        match self.input_blocks.first() {
+            Some(deepseek_tui::core::ops::UserInputBlock::Text { text }) => text,
+            _ => "",
+        }
+    }
+
+    /// 引导文本 prepend 完成后用最终文本刷新 Text block(图片块保持不动)。
+    /// 无 Text block 时在头部插入,保证 reminder/引导文本仍能下发。
+    pub(super) fn replace_text_segment(&mut self, text: String) {
+        match self.input_blocks.first_mut() {
+            Some(deepseek_tui::core::ops::UserInputBlock::Text { text: slot }) => *slot = text,
+            _ => self
+                .input_blocks
+                .insert(0, deepseek_tui::core::ops::UserInputBlock::Text { text }),
+        }
+    }
+}
+
+/// UI/timeline 展示文本:附件名以 📎 拼接(图片/文件同式)。
+/// chat.rs 的 Fallback/无图路径与 Native 路径共用,保持两处不漂移。
+pub(super) fn attachment_display_text(
+    text: &str,
+    attachments: &[crate::features::files::file_ingest::IngestResult],
+) -> String {
+    if attachments.is_empty() {
+        return text.to_string();
+    }
+    let names = attachments
+        .iter()
+        .map(|attachment| attachment.basename.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if text.trim().is_empty() {
+        format!("📎 {names}")
+    } else {
+        format!("{text}\n\n📎 {names}")
+    }
+}
+
+/// Native 路径(设计 §9.2)消息构造:图片暂存后形成 LocalImage 引用块
+/// (保持用户选择顺序),**不注入**"看不到图"硬规则、不引导 image_analyze;
+/// 非图片附件沿用现有 token 预算分流文本段(与 build_message_with_attachments_in_dir
+/// 同规则)。图片段不带 workspace 外绝对路径(设计 §10.1:原始路径不进模型消息)。
+/// 任一图片暂存失败即 Err——不静默降级为纯文本(设计 §10.2)。
+pub(super) fn prepare_native_user_message_in_dir(
+    text: String,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+) -> Result<PreparedUserMessage, String> {
+    let display_text = attachment_display_text(&text, &attachments);
+    let mut records = Vec::with_capacity(attachments.len());
+    let mut image_blocks = Vec::new();
+    let mut inline_spent: u32 = 0;
+    let mut segment = String::new();
+    if !text.trim().is_empty() {
+        segment.push_str(&text);
+        if !attachments.is_empty() {
+            segment.push_str("\n\n");
+        }
+    }
+    if !attachments.is_empty() {
+        segment.push_str("---\n用户附上了以下文件:\n\n");
+    }
+    for a in &attachments {
+        if a.kind == "image" {
+            // 暂存复用现有校验链(basename 白名单/symlink 防逃逸/create_new 防覆盖);
+            // LocalImage 的 relative_path 只来自暂存结果,不接受前端直给路径(设计 §11)。
+            let relative = stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+                .ok_or_else(|| {
+                    format!(
+                        "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
+                        a.basename
+                    )
+                })?;
+            let ext = a.basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+            let mime_type = crate::features::files::file_ingest::image_mime(ext).to_string();
+            segment.push_str(&format!("### {} (image, {} bytes)\n", a.basename, a.byte_size));
+            segment.push_str("🖼 图片内容已随本消息原生提供,你可以直接看到。\n\n");
+            image_blocks.push(deepseek_tui::core::ops::UserInputBlock::LocalImage {
+                relative_path: std::path::PathBuf::from(&relative),
+                mime_type: mime_type.clone(),
+                display_name: a.basename.clone(),
+            });
+            records.push(AttachmentRecord {
+                name: a.basename.clone(),
+                kind: a.kind.clone(),
+                mime_type: Some(mime_type),
+                byte_size: a.byte_size,
+                relative_path: Some(relative),
+            });
+            continue;
+        }
+        segment.push_str(&format!(
+            "### {} ({}, {} bytes",
+            a.basename, a.kind, a.byte_size
+        ));
+        if a.token_estimate > 0 {
+            segment.push_str(&format!(", ~{} tokens", a.token_estimate));
+        }
+        segment.push_str(")\n");
+        // 真实路径 —— AI 如果一定要 read_file 也能找到对的位置(与文本路径同行为)
+        segment.push_str(&format!("原始路径: `{}`\n", a.path));
+        if let Some(md) = &a.markdown {
+            let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
+                && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
+            if fits {
+                inline_spent = inline_spent.saturating_add(a.token_estimate);
+                segment.push_str(
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 read_file / \
+                     file_search 重新读取。**如需保存修改版本,用 write_file 写到 \
+                     PINVOU3_WORKSPACE 下;大产物用 append_file 分块追加。\n",
+                );
+                segment.push_str("```\n");
+                segment.push_str(md);
+                if !md.ends_with('\n') {
+                    segment.push('\n');
+                }
+                segment.push_str("```\n");
+            } else {
+                push_large_attachment_section(
+                    &mut segment,
+                    a,
+                    md,
+                    workspace,
+                    attachment_dir,
+                    attachment_dir != "attachments",
+                );
+            }
+        } else if let Some(warning) = &a.warning {
+            segment.push_str(&format!("⚠️ {warning}\n"));
+        }
+        segment.push('\n');
+        records.push(AttachmentRecord {
+            name: a.basename.clone(),
+            kind: a.kind.clone(),
+            mime_type: None,
+            byte_size: a.byte_size,
+            relative_path: None,
+        });
+    }
+    if !attachments.is_empty() {
+        segment.push_str("---\n");
+    }
+    let mut input_blocks = vec![deepseek_tui::core::ops::UserInputBlock::Text { text: segment }];
+    input_blocks.extend(image_blocks);
+    Ok(PreparedUserMessage {
+        display_text,
+        input_blocks,
+        attachments: records,
+        image_mode: crate::features::assistant::image_capability::ImageInputMode::Native,
+    })
+}

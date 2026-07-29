@@ -573,8 +573,10 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// 图片扩展名 → MIME。用于 data URI 前缀。
-fn image_mime(ext: &str) -> &'static str {
+/// 图片扩展名 → MIME。用于 data URI 前缀与原生图片输入的声明 MIME
+/// (声明值仅作元数据,发送前由底座按真实文件字节魔数复核,见
+/// CodeWhale `vision::image_input::validate_local_image_reference`)。
+pub(crate) fn image_mime(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",

@@ -573,6 +573,22 @@ impl Pinvou3Bridge {
         None
     }
 
+    /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
+    /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
+    /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
+    /// `vision_model_id` 命中的独立视觉模型。
+    pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
+        let capability = self
+            .effective_model()
+            .map(effective_image_capability)
+            // 无有效模型(配置损坏)按 Unknown 处理:不冒充支持,交给路由兜底。
+            .unwrap_or(EffectiveImageCapability::Unknown);
+        crate::features::assistant::image_capability::image_input_mode(
+            capability,
+            self.resolve_vision_model_config().is_some(),
+        )
+    }
+
     /// Current search API key from env or encrypted credential store.
     pub fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;
@@ -1234,6 +1250,7 @@ impl Pinvou3Bridge {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1266,12 +1283,30 @@ impl Pinvou3Bridge {
         }
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
+        // Native 图片输入(阶段 D):`<system-reminder>` 并进结构化 Text block,
+        // 保证模型在结构化消息里同样收到 per-turn reminder。Text block 与
+        // Op.content 保持逐字节一致——下游 transcript sanitize 以 content 为
+        // 匹配键(engine.rs `send_reserved_turn_op`),不一致会导致持久化时
+        // 引擎注入内容无法替换为 UI 展示文本。
+        let input = input.map(|mut input| {
+            match input.blocks.first_mut() {
+                Some(deepseek_tui::core::ops::UserInputBlock::Text { text }) => {
+                    *text = full_content.clone();
+                }
+                _ => input.blocks.insert(
+                    0,
+                    deepseek_tui::core::ops::UserInputBlock::Text {
+                        text: full_content.clone(),
+                    },
+                ),
+            }
+            input
+        });
         let model = self.model();
         Ok(Op::SendMessage {
             content: full_content,
-            // 底座结构化图片输入(阶段 B);普通会话结构化图片块在阶段 D 接线,
-            // 当前仍走纯文本路径 → None。
-            input: None,
+            // Native 路径携结构化图片块(设计 §9.2);其余路径为 None,底座走纯文本。
+            input,
             mode,
             route: Box::new(self.resolve_runtime_route_for_model(&model)?),
             compaction: Box::new(self.compaction_config_for_model(&model)),
@@ -1627,6 +1662,135 @@ mod tests {
         assert!(no_key.resolve_vision_model_config().is_none());
     }
 
+    /// §9.2 路由(阶段 D):Supported → Native(无论有无视觉模型);
+    /// Unknown/Unsupported → 有可用视觉模型走 VisionToolFallback,否则 Unsupported。
+    #[test]
+    fn image_input_mode_routes_by_capability_and_vision_model() {
+        use crate::features::assistant::image_capability::ImageInputMode;
+
+        // Supported 主模型:无视觉模型也 Native。
+        let mut native = fixture_bridge();
+        set_active_model(
+            &mut native,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        assert_eq!(native.image_input_mode(), ImageInputMode::Native);
+
+        // Unknown 主模型、无视觉模型 → Unsupported(发送前拒绝)。
+        let mut unknown = fixture_bridge();
+        set_active_model(
+            &mut unknown,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert_eq!(unknown.image_input_mode(), ImageInputMode::Unsupported);
+
+        // Unknown 主模型 + vision_model_id 命中可用视觉模型 → VisionToolFallback。
+        let mut fallback = fixture_bridge();
+        set_active_model(
+            &mut fallback,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut fallback, "vision-1", "gpt-4o", "sk-vision");
+        fallback.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+        assert_eq!(fallback.image_input_mode(), ImageInputMode::VisionToolFallback);
+
+        // override Enabled 的未知本地模型 → Native。
+        let mut forced = fixture_bridge();
+        set_active_model(
+            &mut forced,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        forced.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Enabled;
+        assert_eq!(forced.image_input_mode(), ImageInputMode::Native);
+
+        // override Disabled 即便命中内置表也不 Native;有视觉模型 → Fallback。
+        let mut disabled = fixture_bridge();
+        set_active_model(
+            &mut disabled,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        disabled.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Disabled;
+        push_vision_model(&mut disabled, "vision-2", "gpt-4o", "sk-vision");
+        disabled.prefs.advanced.saved_models[0].vision_model_id = Some("vision-2".to_string());
+        assert_eq!(disabled.image_input_mode(), ImageInputMode::VisionToolFallback);
+    }
+
+    /// Native(阶段 D):`<system-reminder>` 必须并进结构化 Text block,
+    /// 且 Text block 与 Op.content 逐字节一致(transcript sanitize 的匹配键);
+    /// LocalImage 块原样透传。
+    #[test]
+    fn build_send_message_op_merges_reminder_into_structured_input() {
+        use deepseek_tui::core::ops::{UserInputBlock, UserMessageInput};
+
+        let bridge = fixture_bridge();
+        let image = UserInputBlock::LocalImage {
+            relative_path: std::path::PathBuf::from("attachments/shot.png"),
+            mime_type: "image/png".to_string(),
+            display_name: "shot.png".to_string(),
+        };
+        let op = bridge
+            .build_send_message_op(
+                "看看这张图".to_string(),
+                AppMode::Yolo,
+                None,
+                false,
+                Some(UserMessageInput {
+                    blocks: vec![
+                        UserInputBlock::Text {
+                            text: "看看这张图".to_string(),
+                        },
+                        image.clone(),
+                    ],
+                }),
+            )
+            .expect("resolve test route");
+        let Op::SendMessage { content, input, .. } = op else {
+            panic!("期望 SendMessage");
+        };
+        assert!(content.contains("<system-reminder>"));
+        assert!(content.ends_with("看看这张图"));
+        let input = input.expect("Native 路径必须携带结构化 input");
+        assert_eq!(input.blocks.len(), 2, "Text + 一张图");
+        match &input.blocks[0] {
+            UserInputBlock::Text { text } => assert_eq!(
+                text, &content,
+                "reminder 必须并进 Text block 且与 Op.content 一致"
+            ),
+            other => panic!("首块应为 Text,得到 {other:?}"),
+        }
+        assert_eq!(input.blocks[1], image, "LocalImage 块原样透传");
+    }
+
+    /// 无结构化 input(纯文本/Fallback 路径)时 Op.input 保持 None,行为零变化。
+    #[test]
+    fn build_send_message_op_without_input_stays_text_only() {
+        let bridge = fixture_bridge();
+        let op = bridge
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false, None)
+            .expect("resolve test route");
+        let Op::SendMessage { input, .. } = op else {
+            panic!("期望 SendMessage");
+        };
+        assert!(input.is_none());
+    }
+
     #[test]
     fn api_key_requirement_allows_only_vllm_or_loopback_without_key() {
         assert!(base_url_uses_loopback("http://localhost:8000/v1"));
@@ -1883,7 +2047,7 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of = |mode| match bridge
-            .build_send_message_op("用户消息".to_string(), mode, None, false)
+            .build_send_message_op("用户消息".to_string(), mode, None, false, None)
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -1913,6 +2077,7 @@ mod tests {
                 AppMode::Yolo,
                 Some(persona.clone()),
                 false,
+                None,
             )
             .expect("resolve test route");
         let content = match op {
@@ -1925,7 +2090,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none = bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false)
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false, None)
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -1939,7 +2104,7 @@ mod tests {
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
         let allowed = |restrict| match bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict)
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict, None)
             .expect("resolve test route")
         {
             Op::SendMessage { allowed_tools, .. } => allowed_tools,
@@ -2374,7 +2539,7 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("test".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("test".into(), AppMode::Yolo, None, false, None)
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -2484,7 +2649,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("hi".into(), AppMode::Yolo, None, false, None)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -2496,7 +2661,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("list dir".into(), AppMode::Plan, None, false)
+            .build_send_message_op("list dir".into(), AppMode::Plan, None, false, None)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
@@ -2517,7 +2682,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false)
+            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false, None)
             .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
