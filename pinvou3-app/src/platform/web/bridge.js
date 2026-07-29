@@ -917,6 +917,7 @@
             });
             var liveChatItems = rawLiveChatItems.filter(function (item) {
               if (!item || item.type === "user" || item.type === "assistant" || item.type === "tool") return false;
+              if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
               // Plan cards need semantic matching by their plan snapshot. Their
               // generic hydration key includes ticket/action state and would
               // append an active live duplicate after the durable frozen card.
@@ -3300,6 +3301,7 @@
       turnOwnerBuffer.remoteTerminalSeen = false;
     }
     runSyncOnSession(sid, function () {
+      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       var uitem = { type: "user", text: displayText, time: timeStr() };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
@@ -3350,7 +3352,9 @@
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err));
+            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            turnErrorNotice: true,
+          });
         });
         notify();
         if (surfaceFailure) throw err;
@@ -3761,6 +3765,7 @@
         var acceptedMode = payload.mode_state || payload.modeState;
         state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
       }
+      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn) {
         if (operation === "edit_last") {
           for (var index = state.chatItems.length - 1; index >= 0; index--) {
@@ -4175,10 +4180,23 @@
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
       recordTurnCompleted(e.payload || {});
-      if (error) addSystemItem("⚠️ " + error);
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
+      if (error) {
+        var finalNotice = "⚠️ " + error;
+        var finalNoticeItem = state.chatItems.find(function (item) {
+          return item && item.turnErrorNotice && item.text === finalNotice;
+        });
+        if (finalNoticeItem) {
+          finalNoticeItem.legacyConversationOnly = true;
+        } else {
+          addSystemItem(finalNotice, {
+            turnErrorNotice: true,
+            legacyConversationOnly: true,
+          });
+        }
+      }
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
@@ -4301,7 +4319,13 @@
   listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
-    if (error) addSystemItem("⚠️ " + error);
+    if (error) {
+      var notice = "⚠️ " + error;
+      var duplicate = state.chatItems.some(function (item) {
+        return item && item.turnErrorNotice && item.text === notice;
+      });
+      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+    }
     // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
     // 兜底启动检测被绕过/中途删 key 的场景。
     // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。

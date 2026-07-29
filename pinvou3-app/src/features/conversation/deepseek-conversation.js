@@ -12,6 +12,12 @@ const SHELL_TOOLS = new Set([
   'shell',
 ]);
 
+export function conversationItemsForMode(chatItems = [], unified = true) {
+  const items = Array.isArray(chatItems) ? chatItems : [];
+  if (!unified) return items;
+  return items.filter(item => !(item && item.legacyConversationOnly));
+}
+
 function stableItemId(item, index) {
   return `deepseek-${item && item.id != null ? item.id : index}`;
 }

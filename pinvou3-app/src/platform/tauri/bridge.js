@@ -762,6 +762,7 @@
             });
             var liveChatItems = rawLiveChatItems.filter(function (item) {
               if (!item || item.type === "user" || item.type === "assistant") return false;
+              if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
               // 后台 Shell 在 chat:done 后仍继续运行；持久化 transcript 只有工具结果文本，
               // 没有 taskId/background/liveOutput，权威重载时必须保留实时卡片并按 toolId 合并。
               if (item.type === "tool") return item.background === true && item.state === "running";

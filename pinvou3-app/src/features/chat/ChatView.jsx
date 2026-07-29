@@ -15,7 +15,10 @@ import {
   ConversationTimeline,
 } from '../conversation/ConversationTimeline.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
-import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import {
+  conversationItemsForMode,
+  projectDeepSeekConversation,
+} from '../conversation/deepseek-conversation.js';
 import {
   isFetchTool,
   isNearConversationBottom,
@@ -395,7 +398,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       });
       const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
       const conversationProjection = projectDeepSeekConversation({
-        chatItems: visibleChatItems,
+        chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
         busy,
         thinking: bs && bs.thinking,
         tokens: ctxTokens,
