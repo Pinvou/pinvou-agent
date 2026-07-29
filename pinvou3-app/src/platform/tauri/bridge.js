@@ -527,6 +527,7 @@
   var sendMessage = chatFeature.sendMessage;
   var getComposerDraft = chatFeature.getComposerDraft;
   var setComposerDraft = chatFeature.setComposerDraft;
+  var retryFirstTurn = chatFeature.retryFirstTurn;
   var prefillComposer = chatFeature.prefillComposer;
   var removeQueued = chatFeature.removeQueued;
   var summonPinvou = chatFeature.summonPinvou;
@@ -1571,6 +1572,7 @@
   var removeAttachment = artifactsFeature.removeAttachment;
   var clearAttachments = artifactsFeature.clearAttachments;
   var pickAndAttach = artifactsFeature.pickAndAttach;
+  var uploadDeviceFiles = artifactsFeature.uploadDeviceFiles;
   var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
   var loadPersonas = personasFeature.loadPersonas;
   var getPersonas = personasFeature.getPersonas;
@@ -1706,6 +1708,7 @@
       sendMessageToSession: sendMessageToSession,
       getComposerDraft: getComposerDraft,
       setComposerDraft: setComposerDraft,
+      retryFirstTurn: retryFirstTurn,
       prefillComposer: prefillComposer,
       removeQueued: removeQueued,
       cancelGeneration: cancelGeneration,
@@ -1844,6 +1847,7 @@
       removeAttachment: removeAttachment,
       clearAttachments: clearAttachments,
       pickAndAttach: pickAndAttach,
+      uploadDeviceFiles: uploadDeviceFiles,
     },
     resolutions: { markResolved: markResolved },
     workflow: {

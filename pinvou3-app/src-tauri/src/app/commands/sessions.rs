@@ -120,6 +120,22 @@ pub async fn list_archived_sessions(
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
+pub(super) fn create_session_record(
+    set_active: bool,
+    store: &SessionStore,
+    pool: &EnginePool,
+) -> Result<SessionMetadata, String> {
+    let (model, model_id) = pool.default_model_for_new_session();
+    let workspace = pool.bridge.workspace.clone();
+    let session = store
+        .create_new(model, model_id, workspace)
+        .map_err(|e| format!("create_session: {e:?}"))?;
+    if set_active {
+        store.set_active(Some(session.metadata.id.clone()));
+    }
+    Ok(session.metadata)
+}
+
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
@@ -127,23 +143,11 @@ pub async fn create_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
-    let (model, model_id) = pool.default_model_for_new_session();
-    let workspace = pool.bridge.workspace.clone();
-    let session = store
-        .create_new(model, model_id, workspace)
-        .map_err(|e| format!("create_session: {e:?}"))?;
-    if set_active.unwrap_or(true) {
-        store.set_active(Some(session.metadata.id.clone()));
-    }
-    emit_session_event(
-        &app,
-        "session:list_changed",
-        &session.metadata.id,
-        "created",
-    );
+    let metadata = create_session_record(set_active.unwrap_or(true), &store, &pool)?;
+    emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
-    Ok(session.metadata)
+    Ok(metadata)
 }
 
 /// 加载指定 session 的完整对话（含 messages）。

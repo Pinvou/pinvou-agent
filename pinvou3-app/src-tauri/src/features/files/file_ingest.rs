@@ -2185,6 +2185,17 @@ pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String>
     Ok(target)
 }
 
+/// 供远程上传落盘使用的文件名清洗：在 `sanitize_filename` 基础上兜底拒绝
+/// `.` / `..`，保证 join 后仍留在上传暂存目录内。
+pub(crate) fn sanitize_upload_filename(raw: &str) -> String {
+    let cleaned = sanitize_filename(raw);
+    if cleaned == "." || cleaned == ".." {
+        "file".into()
+    } else {
+        cleaned
+    }
+}
+
 /// 把文件名做 sanitize：去掉路径分隔符、控制字符；保留中英文 + 常见标点。
 fn sanitize_filename(raw: &str) -> String {
     let trimmed = raw.rsplit(['/', '\\']).next().unwrap_or("file");
@@ -2208,16 +2219,24 @@ fn sanitize_filename(raw: &str) -> String {
 /// 校验上传路径：必须绝对 + 指向普通文件 + 满足当前系统的上传位置策略 + 不在敏感目录。
 /// 跟 commands::validate_user_path 同语义，单独抽出供前端 ingest 入口调用。
 pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
+    let canon = validate_browsable_path(raw)?;
+    if !canon.is_file() {
+        return Err(format!("path {} is not a file", canon.display()));
+    }
+    Ok(canon)
+}
+
+/// 校验可由桌面端文件浏览器展示的现有路径。与 `validate_path` 共享相同的
+/// 位置和敏感目录限制，但允许普通文件和目录；真正摄入附件时仍由
+/// `validate_path` 强制要求普通文件。
+pub(crate) fn validate_browsable_path(raw: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(raw);
     if !p.is_absolute() {
         return Err(format!("path must be absolute: {raw}"));
     }
     let canon = normalize_validated_path(&std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone()));
-    let metadata = std::fs::metadata(&canon)
+    std::fs::metadata(&canon)
         .map_err(|e| format!("path {} is not readable: {e}", canon.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("path {} is not a file", canon.display()));
-    }
     crate::platform::os::validate_upload_location(&canon)?;
     for blocked in &[".ssh", ".gnupg", ".aws", ".docker", ".kube"] {
         if canon

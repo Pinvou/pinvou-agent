@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
 
-function bootClient() {
+function bootClient(policy) {
   const storage = new Map();
   const dispatched = [];
   const timers = [];
@@ -99,7 +99,7 @@ function bootClient() {
     fetch: async () => ({
       ok: true,
       async json() {
-        return { allowed_commands: [], allowed_events: ['chat:delta'] };
+        return policy || { allowed_commands: [], allowed_events: ['chat:delta'] };
       },
     }),
     WebSocket: MockWebSocket,
@@ -254,6 +254,176 @@ async function connectWithCapabilities(events, listener) {
   await client.eventDispatch;
   assert.equal(handled, 1);
   assert.equal(JSON.parse(storage.get('pinvou.web.cursor.endpoint_test')).after_seq, 1);
+}
+
+// 设备文件上传能力:未收到快照前 fail closed;旧桌面缺任一命令保持关闭,
+// 两条命令齐备才开放,与桌面附件双入口的显示/隐藏协商一致。
+{
+  const uploadCommands = [
+    'web_access_upload_attachment_chunk',
+    'web_access_abort_attachment_upload',
+    'web_access_discard_attachment',
+  ];
+  const negotiate = (snapshotCommands) => {
+    const harness = bootClient({ allowed_commands: uploadCommands, allowed_events: ['chat:delta'] });
+    const client = harness.window.PinvouWebClient;
+    return client.policyPromise.then(() => {
+      client.markFrontendReady();
+      return Promise.resolve().then(() => {
+        client.markStateReady();
+        assert.equal(harness.window.PinvouPlatform.can('deviceFileUpload'), false,
+          'device upload must fail closed before the desktop capability snapshot arrives');
+        const socket = harness.MockWebSocket.instances[0];
+        socket.open();
+        socket.message({
+          v: 2,
+          type: 'web_client_joined',
+          endpoint_id: 'endpoint_test',
+          lease_id: 'lease_test',
+          desktop_connected: true,
+        });
+        socket.message({
+          v: 2,
+          type: 'desktop_snapshot',
+          stream_epoch: 'epoch_test',
+          seq: 0,
+          snapshot: {
+            capabilities: { protocol_version: 2, commands: snapshotCommands, events: ['chat:delta'] },
+          },
+        });
+        return harness.window.PinvouPlatform.can('deviceFileUpload');
+      });
+    });
+  };
+  assert.equal(await negotiate(uploadCommands), true,
+    'a desktop advertising the complete upload lifecycle must enable the device upload entry');
+  assert.equal(await negotiate(uploadCommands.slice(0, 2)), false,
+    'a desktop missing attachment discard must keep the device upload entry hidden');
+  assert.equal(await negotiate(uploadCommands.slice(0, 1)), false,
+    'an older desktop missing the abort command must keep the device upload entry hidden');
+  assert.equal(await negotiate([]), false,
+    'an older desktop without upload support must keep the device upload entry hidden');
+}
+
+// 首条消息使用调用方提供的稳定请求 ID。WebSocket 重连后必须复用同一 ID，
+// 桌面端才能从持久 RPC ledger 返回原结果而不重复创建 Session 或发送消息。
+{
+  const command = 'web_access_create_session_and_chat';
+  const harness = bootClient({ allowed_commands: [command], allowed_events: [] });
+  const { window, MockWebSocket, timers } = harness;
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  client.markFrontendReady();
+  await new Promise(resolve => setImmediate(resolve));
+  client.markStateReady();
+
+  const firstSocket = MockWebSocket.instances[0];
+  firstSocket.open();
+  firstSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_one',
+    desktop_connected: true,
+  });
+  firstSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [command], events: [] } },
+  });
+
+  const stableId = 'first_turn_chat_00000000-0000-4000-8000-000000000000';
+  const resultPromise = window.__TAURI__.core.invokeWithRequestId(
+    command,
+    { message: 'hello', attachmentHandles: [], restrictTools: false },
+    stableId,
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  const firstRequest = firstSocket.sent.find(message => message.type === 'rpc_request');
+  assert.ok(firstRequest, JSON.stringify({
+    sent: firstSocket.sent,
+    frontendReady: client.frontendReady,
+    stateReady: client.stateReady,
+    desktopCapabilitiesReady: client.desktopCapabilitiesReady,
+    allowedCommands: Array.from(client.allowedCommands || []),
+  }));
+  assert.equal(firstRequest.id, stableId);
+  assert.equal(firstRequest.client_request_id, stableId);
+
+  firstSocket.close();
+  const reconnectTimer = timers.find(timer => timer.delay < 10_000);
+  assert.ok(reconnectTimer, 'disconnect must schedule a reconnect while the RPC remains pending');
+  reconnectTimer.callback();
+  const secondSocket = MockWebSocket.instances[1];
+  secondSocket.open();
+  secondSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_two',
+    desktop_connected: true,
+  });
+  secondSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [command], events: [] } },
+  });
+  const retriedRequest = secondSocket.sent.find(message => message.type === 'rpc_request');
+  assert.equal(retriedRequest.id, stableId, 'reconnect retry must preserve the idempotency key');
+  assert.deepEqual(retriedRequest.args, firstRequest.args, 'reconnect retry must preserve the command fingerprint');
+  secondSocket.message({
+    v: 2,
+    type: 'rpc_response',
+    id: stableId,
+    ok: true,
+    result: { id: 'session_created_once' },
+  });
+  assert.equal((await resultPromise).id, 'session_created_once');
+}
+
+// 结构化错误码必须传到 Bridge，才能区分可安全重试的超时和结果未知。
+{
+  const command = 'web_access_create_session_and_chat';
+  const harness = bootClient({ allowed_commands: [command], allowed_events: [] });
+  const client = harness.window.PinvouWebClient;
+  await client.policyPromise;
+  client.markFrontendReady();
+  await Promise.resolve();
+  client.markStateReady();
+  const socket = harness.MockWebSocket.instances[0];
+  socket.open();
+  socket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  socket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [command], events: [] } },
+  });
+  const requestId = 'first_turn_outcome_unknown';
+  const rejected = harness.window.__TAURI__.core.invokeWithRequestId(command, { message: 'hello' }, requestId);
+  await new Promise(resolve => setImmediate(resolve));
+  socket.message({
+    v: 2,
+    type: 'rpc_response',
+    id: requestId,
+    ok: false,
+    error: 'outcome cannot be replayed safely',
+    error_code: 'outcome_unknown',
+  });
+  await assert.rejects(rejected, error => (
+    error.code === 'outcome_unknown' && error.requestId === requestId
+  ));
 }
 
 console.log('web bootstrap transport tests passed');

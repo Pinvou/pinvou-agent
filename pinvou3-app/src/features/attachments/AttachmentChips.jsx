@@ -5,6 +5,7 @@ export function AttachmentChips({
   onRemove,
   dark = false,
   parsingLabel = '解析中',
+  uploadingLabel = pct => `上传中 ${pct}%`,
   failedLabel = '失败',
   removeLabel = name => `移除附件 ${name}`,
   formatError = () => '',
@@ -31,15 +32,17 @@ export function AttachmentChips({
             <span className={
               attachment.status === 'error'
                 ? 'text-[#F28B82]'
-                : attachment.status === 'parsing'
+                : attachment.status === 'parsing' || attachment.status === 'uploading'
                   ? 'opacity-60'
                   : 'text-[#93D5A6]'
             }>
-              {attachment.status === 'parsing'
-                ? parsingLabel
-                : attachment.status === 'error'
-                  ? failedLabel
-                  : '✓'}
+              {attachment.status === 'uploading'
+                ? uploadingLabel(attachment.progress || 0)
+                : attachment.status === 'parsing'
+                  ? parsingLabel
+                  : attachment.status === 'error'
+                    ? failedLabel
+                    : '✓'}
             </span>
             {friendlyError && (
               <span

@@ -195,7 +195,24 @@ Session 索引后再发送 `state_ready=true`，桌面才重放初始化窗口�
 
 ## 8. 文件、产物与语音
 
-- Web 附件选择浏览桌面主机允许范围内的文件，不上传浏览器本机文件；
+- Web 附件有两个入口：浏览桌面主机允许范围内的文件（`web_access_list_host_files` +
+  `web_access_ingest_file`），以及上传浏览器本机文件。附件按钮仅在桌面实例通过能力
+  快照同时声明 `web_access_upload_attachment_chunk`、`web_access_abort_attachment_upload`
+  与 `web_access_discard_attachment`
+  时才显示"从此设备上传"入口（`deviceFileUpload` 语义能力）；旧桌面实例自动回落为
+  原有的单入口远程文件浏览；
+- 浏览器本机上传走分块 RPC：单块 ≤ 256 KiB（对齐 `MAX_ARTIFACT_CHUNK_BYTES`，base64
+  后仍在 1 MiB RPC 请求上限内），单文件 ≤ `file_ingest::MAX_FILE_BYTES`（20 MiB，超限
+  在传输前拒绝），桌面内存缓冲最多 4 个、总量 64 MiB、闲置 10 分钟过期，取消命令幂等。
+  Relay 只转发分块帧，不保存任何内容。最后一块提交时字节落入
+  `~/.pinvou3/uploads/webup_<token>/` 暂存目录并复用共享 ingest 管线，返回与桌面文件
+  附件相同的一次性 opaque handle；
+- 上传附件只作为当前对话的临时附件：`web_access_chat` 消费 handle 前会把暂存文件复制
+  进该 Session workspace 并改写路径（图片二次暂存与超长文本 `read_file` 因而不依赖
+  暂存目录），随后暂存目录立即删除；用户移除附件 chip 时通过
+  `web_access_discard_attachment` 立即释放未使用的句柄和暂存目录，若句柄正被发送回合
+  预留则在回合收尾时安全清理；其余未消费暂存目录在附件淘汰、端点停止/轮换与进程
+  重启清扫时删除，不进入知识库；
 - 粘贴图片和浏览器拖放本机路径不作为 Web 附件入口；
 - 附件在桌面解析后只向浏览器返回有界元数据和一次性 opaque handle，解析后的正文不经过
   Relay；附件、Session 上传/下载缓存均有数量、总字节和过期边界；

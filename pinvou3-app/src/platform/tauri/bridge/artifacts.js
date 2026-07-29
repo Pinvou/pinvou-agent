@@ -214,6 +214,11 @@
       for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
+  // 浏览器上传通道是 WebUI 专属入口(deviceFileUpload 能力在桌面显式关闭),
+  // 桌面此桩仅维持 attachments 域协议一致;原生附件继续走 pickAndAttach。
+  async function uploadDeviceFiles() {
+    throw new Error("device file upload is a WebUI-only entry; use pickAndAttach on desktop");
+  }
   initAttachmentDrop();
 
 
@@ -237,7 +242,8 @@
       addPasteImage: addPasteImage,
       removeAttachment: removeAttachment,
       clearAttachments: clearAttachments,
-      pickAndAttach: pickAndAttach
+      pickAndAttach: pickAndAttach,
+      uploadDeviceFiles: uploadDeviceFiles
     };
   };
 })(window);
