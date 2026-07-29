@@ -249,43 +249,48 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
     );
     const getMonitorHistoryStore = () => {
       if (!window.__pinvou3MonitorHistoryStore) {
-        window.__pinvou3MonitorHistoryStore = { ctx: [], queue: [], ttft: [], tps: [], kv: [] };
+        window.__pinvou3MonitorHistoryStore = { ctx: [], queue: [], ttft: [], tps: [], kv: [], activity: [], activityGen: null };
       }
       return window.__pinvou3MonitorHistoryStore;
     };
-    const cloneMonitorHistory = () => ({
-      ctx: getMonitorHistoryStore().ctx.slice(),
-      queue: getMonitorHistoryStore().queue.slice(),
-      ttft: getMonitorHistoryStore().ttft.slice(),
-      tps: getMonitorHistoryStore().tps.slice(),
-      kv: getMonitorHistoryStore().kv.slice(),
-    });
-    const MonitorActivityBars = ({ color }) => {
-      const [tick, setTick] = useState(0);
-      useEffect(() => {
-        const id = setInterval(() => setTick((value) => value + 1), 220);
-        return () => clearInterval(id);
-      }, []);
-      const base = [32, 48, 44, 56, 36, 62, 39, 28, 52, 68, 55, 31, 64, 24, 42, 30, 51, 70];
-      const values = base.map((height, i) => {
-        const wave = Math.sin((tick + i) * 0.72) * 14 + Math.cos((tick * 0.48 + i) * 0.9) * 8;
-        return Math.max(18, Math.min(82, height + wave));
-      });
+    const cloneMonitorHistory = () => {
+      const store = getMonitorHistoryStore();
+      return {
+        ctx: store.ctx.slice(),
+        queue: store.queue.slice(),
+        ttft: store.ttft.slice(),
+        tps: store.tps.slice(),
+        kv: store.kv.slice(),
+        activity: (store.activity || []).slice(),
+        activityGen: typeof store.activityGen === 'number' ? store.activityGen : null,
+      };
+    };
+    // 运行活动柱状图:每个轮询周期(1s)实际生成的 token 数,右起最新。
+    // 无对话活动时全部为低位平条——不造假动画。
+    const ACTIVITY_BAR_COUNT = 18;
+    const MonitorActivityBars = ({ color, data }) => {
+      const samples = Array.isArray(data) ? data.slice(-ACTIVITY_BAR_COUNT) : [];
+      const pad = ACTIVITY_BAR_COUNT - samples.length;
+      const max = Math.max(0, ...samples.map((v) => Number(v) || 0));
       return (
         <div className="flex items-center justify-between h-12 gap-1.5 opacity-90 px-2">
-          {values.map((height, i) => (
-            <div key={i} className="w-full bg-black/5 dark:bg-white/5 rounded-full overflow-hidden h-full flex flex-col justify-end">
-              <div
-                className="w-full rounded-full transition-[height,opacity,box-shadow] duration-300 ease-out"
-                style={{
-                  height: `${height}%`,
-                  backgroundColor: color,
-                  opacity: 0.68 + (height / 100) * 0.32,
-                  boxShadow: `0 0 ${Math.round(height / 7)}px ${color}55`
-                }}
-              />
-            </div>
-          ))}
+          {Array.from({ length: ACTIVITY_BAR_COUNT }).map((_, i) => {
+            const v = i < pad ? null : Number(samples[i - pad]) || 0;
+            const height = v == null || max <= 0 ? 8 : Math.max(12, Math.round((v / max) * 82));
+            return (
+              <div key={i} className="w-full bg-black/5 dark:bg-white/5 rounded-full overflow-hidden h-full flex flex-col justify-end">
+                <div
+                  className="w-full rounded-full transition-[height,opacity,box-shadow] duration-300 ease-out"
+                  style={{
+                    height: `${height}%`,
+                    backgroundColor: color,
+                    opacity: v == null ? 0.22 : 0.68 + (height / 100) * 0.32,
+                    boxShadow: `0 0 ${Math.round(height / 7)}px ${color}55`
+                  }}
+                />
+              </div>
+            );
+          })}
         </div>
       );
     };
@@ -402,19 +407,31 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
           const m = String(value || '').match(/-?\d+(\.\d+)?/);
           return m ? Number(m[0]) : null;
         };
+        const genNow = fmt && fmt.vllmRaw && typeof fmt.vllmRaw.gen === 'number' ? fmt.vllmRaw.gen : null;
         setHistory(prev => {
           const push = (arr, value) => value == null ? arr : [...arr, value].slice(-20);
+          // 运行活动:本轮询周期实际生成的 token 增量(counter 倒退 = 清除统计/后端重启,按 0)。
+          // 清除动画期间(clearOverride)不采样,避免一帧一个 0 把历史冲掉。
+          let activity = prev.activity;
+          let activityGen = prev.activityGen;
+          if (genNow != null && !clearOverride) {
+            const delta = activityGen != null && genNow >= activityGen ? genNow - activityGen : 0;
+            activity = [...activity, delta].slice(-ACTIVITY_BAR_COUNT);
+            activityGen = genNow;
+          }
           const next = {
             ctx: push(prev.ctx, readNum(vllmMaxLen)),
             queue: push(prev.queue, readNum(vllmQueue)),
             ttft: push(prev.ttft, readNum(clearOverride ? clearOverride.ttft : vllmTtft)),
             tps: push(prev.tps, readNum(clearOverride ? clearOverride.tps : vllmTps)),
             kv: push(prev.kv, (clearOverride || (fmt && fmt.vllmKvHasData)) ? readNum(clearOverride ? clearOverride.kv : vllmKv) : null),
+            activity,
+            activityGen,
           };
           Object.assign(getMonitorHistoryStore(), next);
           return next;
         });
-      }, [vllmMaxLen, vllmQueue, vllmTtft, vllmTps, vllmKv, clearOverride]);
+      }, [vllmMaxLen, vllmQueue, vllmTtft, vllmTps, vllmKv, clearOverride, updatedAt]);
       useEffect(() => {
         const timer = setInterval(() => setClockNow(new Date()), 1000);
         return () => clearInterval(timer);
@@ -450,6 +467,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const computeAvailable = fmt ? !!fmt.computeAvailable : gpuAvailable;
       const processorUtilPct = fmt && fmt.processorUtilPct != null ? fmt.processorUtilPct : 0;
       const gpuSharedMemory = fmt && fmt.gpuSharedMemory ? fmt.gpuSharedMemory : loadingValue;
+      const gpuHasSharedMemory = !!(fmt && fmt.gpuSharedMemory && fmt.gpuSharedMemory !== '—');
       const isLocalProcessor = !gpuAvailable && cpuAvailable;
       const isUnifiedGpu = gpuAvailable && !gpuHasVram && !isLocalProcessor;
       const unifiedMemoryPct = isUnifiedGpu ? ramPct : gpuVramPct;
@@ -527,14 +545,24 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                       <MonitorRing label={isLocalProcessor ? t.graphicsLoad : (isUnifiedGpu ? t.unifiedMem : t.vram)} percent={isLocalProcessor ? gpuUtilPct : unifiedMemoryPct} color={monitorColors.orange} />
                     </div>
                     <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-3 text-[12px] font-semibold">
-                      <div className="flex justify-between items-center text-black/40 dark:text-white/40">
-                        <span>{isLocalProcessor ? t.sharedMemory : t.temp}</span>
-                        <span className="text-black dark:text-white">{isLocalProcessor ? gpuSharedMemory : (gpuTemp || '—')}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-black/40 dark:text-white/40">
-                        <span>{isLocalProcessor ? t.deviceTemp : t.power}</span>
-                        <span className="text-black dark:text-white">{isLocalProcessor ? (gpuTemp || '—') : (gpuPower || '—')}</span>
-                      </div>
+                      {(isLocalProcessor || gpuHasSharedMemory) && (
+                        <div className="flex justify-between items-center text-black/40 dark:text-white/40">
+                          <span>{t.sharedMemory}</span>
+                          <span className="text-black dark:text-white">{gpuSharedMemory}</span>
+                        </div>
+                      )}
+                      {(isLocalProcessor || gpuTemp) && (
+                        <div className="flex justify-between items-center text-black/40 dark:text-white/40">
+                          <span>{isLocalProcessor ? t.deviceTemp : t.temp}</span>
+                          <span className="text-black dark:text-white">{gpuTemp || '—'}</span>
+                        </div>
+                      )}
+                      {!isLocalProcessor && gpuPower && (
+                        <div className="flex justify-between items-center text-black/40 dark:text-white/40">
+                          <span>{t.power}</span>
+                          <span className="text-black dark:text-white">{gpuPower}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </MonitorCard>
@@ -560,7 +588,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
                     </div>
                     <div className="mt-auto bg-white/55 dark:bg-[#2C2C2E] rounded-3xl p-4 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:hover:!bg-[#3A3A3C]">
                       <span className="text-[10px] font-bold tracking-[0.04em] text-black/50 dark:text-white/50 block mb-3 px-2">{t.uiMonitor.activity}</span>
-                      <MonitorActivityBars color={monitorColors.blue} />
+                      <MonitorActivityBars color={monitorColors.blue} data={history.activity} />
                     </div>
                   </div>
                 </MonitorCard>
