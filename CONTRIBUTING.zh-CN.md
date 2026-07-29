@@ -1,94 +1,99 @@
-# 贡献指南
+# Pinvou Agent 贡献指南
 
-[English](CONTRIBUTING.md) | 简体中文
+[English](CONTRIBUTING.md) | [简体中文](CONTRIBUTING.zh-CN.md)
 
-> 面向 pinvou3 协作者。配套:`CLAUDE.md`(AI agent 规则 + 核心约束)、`docs/fork-policy.md`(fork 策略)、`docs/fork-modifications.md`(fork 现状清单)。
+感谢你帮助改进 Pinvou Agent。我们欢迎问题修复、文档、连接器、Skills、工作流、平台支持和边界清晰的产品改进。
 
-## DCO 签署
+本文只说明贡献流程；项目级实现与质量边界以 [AGENTS.md](AGENTS.md) 为准。
 
-本项目使用 [Developer Certificate of Origin 1.1](https://developercertificate.org/)。
-每个提交都必须包含与提交作者一致的 `Signed-off-by`：
+## 开始之前
+
+1. 先搜索现有 Issue 和 PR，避免重复建设。
+2. 大型功能、架构调整和破坏性变更应先通过 Issue 讨论。
+3. 按 [README.zh-CN.md](README.zh-CN.md) 准备开发环境。
+4. 从官方仓库最新 `main` 开始开发。
+
+维护者可从 `origin/main` 创建分支。外部贡献者应先配置一次官方仓库，并从 `upstream/main` 创建分支：
+
+```bash
+git remote add upstream https://github.com/Pinvou/pinvou-agent.git
+git fetch upstream
+git switch -c feat/short-description upstream/main
+git submodule update --init --recursive
+```
+
+创建 PR 前和准备合并前同步官方最新 `main`；评审期间不要仅因 `main` 日常更新而反复 rebase。
+
+## DCO
+
+每个人工提交都必须包含有效的 `Signed-off-by`：
 
 ```bash
 git commit -s
 ```
 
-详情见 [DCO.md](DCO.md)。PR 中任一提交缺少签署都会被 CI 拦截。
-由受信任的 `dependabot[bot]` 和 `github-actions[bot]` 服务账号自动生成的提交不适用人类 DCO 签署要求。
+修改或 rebase 已有提交时使用 `--signoff`。详情见 [DCO.md](DCO.md)。未签署的人工提交会被 CI 拦截；受信任的 Dependabot 和 GitHub Actions bot 提交除外。
 
-## 提 PR 前(自查,秒级)
+## 改动应放在哪里
 
-1. **跑一遍 fork 守卫**(不编译,几秒):
-   ```bash
-   ./scripts/fork-guard.sh --fast
-   ```
-   CI 的 `fast-gate` 跑的就是它——本地先跑,别等 CI 红。
-2. 确认创建 PR 时已基于最新 `main`，并解决全部冲突。
+Pinvou Agent 使用 [CodeWhale](https://github.com/Pinvou/CodeWhale) 作为 Agent 底座，不在桌面层重复实现底座能力。
 
-## main 受 CI 门控保护
+| 目标 | 位置 |
+|---|---|
+| 增加领域 Agent 或工具组合 | `SKILL.md` 包 |
+| 连接外部 API | 独立 MCP server 或 connector |
+| 调整模型行为引导 | bundle `instructions.md` |
+| 修改桌面 UI、Tauri 集成或运行时配置 | `pinvou3-app/` |
+| 修复可复用的底座问题 | CodeWhale，上游优先 |
 
-每个 PR 按改动范围自动运行以下检查（`.github/workflows/pr-check.yml`），红的合不了：
+CodeWhale 改动必须遵循 [AGENTS.md](AGENTS.md) 和 [`docs/fork-policy.md`](docs/fork-policy.md) 的 fork 边界，包括同 PR 配套的文档、指纹和测试要求。
 
-| 检查 | 在哪 | 红了怎么办 |
-|---|---|---|
-| **fork-guard 指纹** | fast-gate | sync/merge 静默丢了 fork patch → 对照 `docs/fork-policy.md` 找回 |
-| **fork 合规联动** | fast-gate | 改了 `CodeWhale` gitlink 没更新 `docs/fork-modifications.md` → 补登记 + 指纹(脚本报错有指引) |
-| **Session replay auditor 单测** | fast-gate | session 筛选、工具配对或产物识别回归 → 本地跑 `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` |
-| **Python MCP 测试** | fast-gate | `mcp-servers/*/test_*.py` 挂 → 看 test 输出 |
-| **内置 MCP 协议与产物契约** | fast-gate | 本地跑 `python3 scripts/mcp-server-contract-smoke.py`；检查 5 个本地 server 与 QCC 清单 |
-| **前端逻辑 + Mock GUI + 完整 WebUI smoke** | frontend-test（按前端/Relay 路径触发） | 本地跑 `./scripts/run-user-journey-tests.sh`；WebUI 相关改动另跑 `npm --prefix pinvou3-app run test:webui` |
-| **cargo test --lib** | rust-test | Rust 单测挂 → 本地 `cargo test --lib -- --test-threads=1` 复现(见下) |
+## Commit 信息
 
-> **新单测自动进 CI**:`cargo test --lib`(全跑 `src/` 下所有 `#[test]`)+ `mcp-servers/*/test_*.py`(glob)都是**通配**,新加的测试无需改 workflow 自动被跑。但有两条铁律,否则你的新测试会让 CI 红:
-> 1. **依赖外部资源**(网络/真 bge-m3/vLLM/真模型)的测试**必须标 `#[ignore]`** —— CI 的 bge-m3 是空占位、无网络。参照现有 `e2e_test` / `l1_harness`。
-> 2. 本地复现 CI 用 **`cargo test --lib -- --test-threads=1`** —— bridge 等测试读写全局 env,并行会竞争 flaky(CI 已锁单线程)。
-
-`main` 使用受保护 PR：必须通过全部 required checks 并解决全部对话。当前按单维护者模式运行，不强制第二个人审批；外部贡献仍须由维护者评审。评审和修复期间不要仅因 `main` 更新而反复 rebase，出现真实冲突时再处理。
-
-> 注:**fmt / clippy 暂未进 gate**(现有代码各 329/75 处不符合,要先清理才能加 `-D` gate),后续再说。
-
-## 改 fork(CodeWhale submodule)的铁律
-
-fork patch 指纹**随 patch 同 PR**——新增 / 改 fork patch 必须**同一个 PR**带上:
-- `docs/fork-modifications.md` 登记条目
-- `scripts/fork-guard.sh` 指纹(+ L2 回归测试,如适用)
-
-**不拆事后 catch-up PR**(出现 catch-up PR = 原始 PR 漏了指纹)。submodule gitlink
-必须固定到 `Pinvou/CodeWhale` 的不可变发布标签所对应的公开可达 commit，不得跟随
-`.gitmodules branch` 浮动，也不得指向临时 PR 分支。细节见 `AGENTS.md` 约束 2 +
-`docs/fork-policy.md`。
-
-## commit message（强制）
-
-本项目强制遵守 [`docs/Git Commit 信息规范文档.md`](docs/Git%20Commit%20信息规范文档.md)。任何方式发起的 commit 都必须使用规范格式：
+使用以下格式：
 
 ```text
-<type>[可选作用域]: <中文简短描述>
+<type>: <中文描述>
+<type>(<scope>)!: <中文描述>
 ```
 
-允许的 `type` 仅包括：`feat` / `fix` / `refactor` / `perf` / `docs` / `style` / `test` / `build` / `ci` / `chore` / `revert`。
+`scope` 和 `!` 可省略。允许的类型为 `feat`、`fix`、`refactor`、`perf`、`docs`、`style`、`test`、`build`、`ci`、`chore` 和 `revert`。描述必须包含中文、内容明确、不超过 50 字且结尾不加标点。
 
-本仓库提供 `.githooks/commit-msg` 强制校验本地提交，并由 CI 校验 PR/push 提交信息。首次克隆后执行一次：
+Issue 和 PR 可使用中文或英文。完整提交规则见 [`docs/Git Commit 信息规范文档.md`](docs/Git%20Commit%20信息规范文档.md)。
+
+## 本地检查
+
+按实际影响范围执行检查，常用基线为：
 
 ```bash
-git config core.hooksPath .githooks
+./scripts/fork-guard.sh --fast
+python3 scripts/architecture-guard.py
+npm --prefix pinvou3-app run lint:ui
+npm --prefix pinvou3-app run build:ui
+npm --prefix pinvou3-app test
+cargo fmt --manifest-path pinvou3-app/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 ```
 
-> 注：本地 `git commit --no-verify` 可绕过客户端 hook，但 PR/主分支 CI 仍会拦截不合规提交；需要绝对强制时，应配合远端分支保护把该 CI 设为 required check。
+涉及前端、Relay、Rust、CodeWhale 或特定平台时执行相应补充检查。[`.github/workflows/`](.github/workflows/) 是自动化门禁的单一真相源；无法在本地执行的检查必须如实说明。
 
-## 社区行为、安全与支持
+依赖真实模型、网络服务、凭据或大型模型资源的测试必须默认忽略，并提供显式启用命令。
 
-- 参与社区协作即表示同意遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-- 社区维护为 best-effort，不承诺响应时间或 SLA；渠道边界见 [SUPPORT.md](SUPPORT.md)。
-- 未修复的安全漏洞不得提交公开 Issue；请按 [SECURITY.md](SECURITY.md) 使用 GitHub 私密漏洞报告，或发送到 `security@pinvou.com`。
+## Pull Request
 
-## (可选)本地 pre-push hook
+提交前检查目标分支的实际差异，并完成 [AGENTS.md](AGENTS.md) 要求的质量自检。
 
-想让 push 前自动跑 fork-guard、根本不让红 PR 出门,自己装一个(git hook 不随仓库走,每人本地装一次):
-```bash
-cat > .git/hooks/pre-push <<'EOF'
-#!/usr/bin/env bash
-./scripts/fork-guard.sh --fast || { echo "fork-guard 失败,push 取消"; exit 1; }
-EOF
-chmod +x .git/hooks/pre-push
-```
+PR 应说明：
+
+- 改了什么以及为什么；
+- 受影响的功能、平台、兼容性和已知风险；
+- 实际执行的测试；
+- 未验证场景或环境限制。
+
+改动应保持聚焦，行为变化应同时更新文档和回归测试。合并前基于官方最新 `main` 解决冲突。本项目使用 CI 门控 PR，并默认 Squash Merge。
+
+参与社区协作即表示同意遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。支持范围见 [SUPPORT.md](SUPPORT.md)。
+
+## 安全
+
+禁止提交凭据、Token、密码、客户或私人数据及仅限内部使用的地址。未修复的安全漏洞应按 [SECURITY.md](SECURITY.md) 或通过 `security@pinvou.com` 私密报告。

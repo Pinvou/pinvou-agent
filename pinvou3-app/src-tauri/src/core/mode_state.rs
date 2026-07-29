@@ -3,8 +3,6 @@
 //! pinvou3 把底座 `AppMode::Plan / Yolo` 二态暴露给用户。Plan 流程的交接
 //! (出方案→accept→执行) 复用底座原生闭环,app 不再自建 phase 状态机。
 //!
-//! 决策来源：`docs/plan-yolo-回归底座式改造方案.md`。
-
 use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
 

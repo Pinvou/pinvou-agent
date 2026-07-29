@@ -2,6 +2,8 @@
 
 > 本文保留旧文件名，内容描述当前 WebUI v2。v2 直接替代旧的 Session 级手机
 > Remote 页面和协议，不提供兼容层。
+>
+> 相关概念与统一用语见[远程界面术语表](remote-control/glossary.md)。
 
 ## 1. 目标与边界
 

@@ -151,7 +151,7 @@ impl Pinvou3Bridge {
         // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
         // 编译期内嵌常量,不依赖 bundle 解包。dump_system_prompt bin 也经此 boot,故
-        // dump 同样生效。见 docs/base-prompt-override-阶段2.md。
+        // dump 同样生效。
         crate::platform::startup::mark("bridge_boot:prompt_overrides:start");
         bundle::install_prompt_overrides();
         crate::platform::startup::mark("bridge_boot:prompt_overrides:done");
