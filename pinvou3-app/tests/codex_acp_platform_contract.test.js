@@ -5,6 +5,7 @@ const path = require("node:path");
 const appRoot = path.resolve(__dirname, "..");
 const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), "utf8");
 const featureRoot = ["src-tauri", "src", "features", "codex_acp"];
+const feature = read(...featureRoot, "mod.rs");
 const runtime = read(...featureRoot, "runtime.rs");
 const platform = read(...featureRoot, "platform", "mod.rs");
 const windows = read(...featureRoot, "platform", "windows.rs");
@@ -40,5 +41,8 @@ assert.ok(!linux.includes('Command::new("cmd")'));
 
 assert.match(macos, /当前托管 Codex 下载不支持平台: macos-/);
 assert.match(macos, /should_retry_file_lock\(_error: &io::Error\) -> bool \{\s*false/);
+assert.match(feature, /run_brew\(&\["install", "--cask", "codex"\]\)/);
+assert.match(feature, /run_brew\(&\["upgrade", "--cask", "codex"\]\)/);
+assert.doesNotMatch(feature, /brew (?:install|upgrade) codex/);
 
 console.log("✓ Codex ACP compile-time platform contract passed");

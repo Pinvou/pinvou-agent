@@ -19,8 +19,7 @@ use super::{diagnostics, platform};
 pub const MANAGED_CODEX_VERSION: &str = "0.144.6";
 
 /// codex-acp 1.1.5 验证过的最低 Codex CLI 版本。
-/// 只对 System 来源（系统 PATH 中的 codex）强制；Override（PINVOU3_CODEX_PATH）、
-/// Managed 与 LegacyBundled 不强制，与统一契约保持一致。
+/// 所有运行时来源都必须满足，显式覆盖路径也不能绕过兼容性门禁。
 pub const MIN_CODEX_VERSION: &str = "0.144.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -85,21 +84,16 @@ pub fn resolve_codex_path(
     legacy_bundled: Option<PathBuf>,
 ) -> Option<ResolvedCodex> {
     if let Some(path) = std::env::var_os("PINVOU3_CODEX_PATH").map(PathBuf::from) {
-        // Override 是用户显式指定，不强制最低版本。
         if let Some(resolved) = probe_codex(path, CodexRuntimeSource::Override) {
-            return Some(resolved);
+            if runtime_version_is_compatible(&resolved.version) {
+                return Some(resolved);
+            }
         }
     }
 
-    // 仅 System 来源强制最低版本：低于 MIN_CODEX_VERSION 的视为不可用，
-    // 低版本信息由 status 通过 system_codex_incompatible 单独上报。
-    let system = system_codex
-        .and_then(|path| probe_codex(path, CodexRuntimeSource::System))
-        .filter(|resolved| version_at_least(&resolved.version, MIN_CODEX_VERSION));
-
     select_newest_eligible([
         legacy_bundled.and_then(|path| probe_codex(path, CodexRuntimeSource::LegacyBundled)),
-        system,
+        system_codex.and_then(|path| probe_codex(path, CodexRuntimeSource::System)),
         managed_codex_path().and_then(|path| probe_codex(path, CodexRuntimeSource::Managed)),
     ])
 }
@@ -116,16 +110,19 @@ fn probe_codex(path: PathBuf, source: CodexRuntimeSource) -> Option<ResolvedCode
     })
 }
 
-/// 在已探测成功（eligible）的候选中选版本最新者。
-/// System 来源的最低版本门禁在 resolve_codex_path 中先行过滤；
-/// Managed / LegacyBundled 按契约不强制最低版本。
+/// 在满足最低兼容版本的候选中选版本最新者。
 fn select_newest_eligible<const N: usize>(
     candidates: [Option<ResolvedCodex>; N],
 ) -> Option<ResolvedCodex> {
     candidates
         .into_iter()
         .flatten()
+        .filter(|candidate| runtime_version_is_compatible(&candidate.version))
         .max_by(|left, right| compare_versions(&left.version, &right.version))
+}
+
+fn runtime_version_is_compatible(version: &str) -> bool {
+    version_at_least(version, MIN_CODEX_VERSION)
 }
 
 pub fn version_meets_minimum(version: &str) -> bool {
@@ -142,7 +139,7 @@ pub fn version_at_least(version: &str, minimum: &str) -> bool {
 pub fn system_codex_incompatible(system_codex: Option<PathBuf>) -> bool {
     system_codex
         .and_then(|path| probe_codex(path, CodexRuntimeSource::System))
-        .is_some_and(|resolved| !version_at_least(&resolved.version, MIN_CODEX_VERSION))
+        .is_some_and(|resolved| !runtime_version_is_compatible(&resolved.version))
 }
 
 pub fn is_managed_newer_than(version: &str) -> bool {
@@ -586,13 +583,30 @@ mod tests {
 
     #[test]
     fn min_codex_version_enforced_by_semver_order() {
-        assert!(version_at_least("0.144.0", MIN_CODEX_VERSION));
-        assert!(version_at_least("0.144.6", MIN_CODEX_VERSION));
-        assert!(version_at_least("0.145.0", MIN_CODEX_VERSION));
-        assert!(version_at_least("1.0.0", MIN_CODEX_VERSION));
-        assert!(!version_at_least("0.143.9", MIN_CODEX_VERSION));
-        assert!(!version_at_least("0.100.0", MIN_CODEX_VERSION));
-        assert!(!version_at_least("unknown", MIN_CODEX_VERSION));
+        assert!(runtime_version_is_compatible("0.144.0"));
+        assert!(runtime_version_is_compatible("0.144.6"));
+        assert!(runtime_version_is_compatible("0.145.0"));
+        assert!(runtime_version_is_compatible("1.0.0"));
+        assert!(!runtime_version_is_compatible("0.143.9"));
+        assert!(!runtime_version_is_compatible("0.100.0"));
+        assert!(!runtime_version_is_compatible("unknown"));
+    }
+
+    #[test]
+    fn every_runtime_source_rejects_incompatible_versions() {
+        for source in [
+            CodexRuntimeSource::Override,
+            CodexRuntimeSource::System,
+            CodexRuntimeSource::Managed,
+            CodexRuntimeSource::LegacyBundled,
+        ] {
+            let selected = select_newest_eligible([Some(ResolvedCodex {
+                path: PathBuf::from(source.as_str()),
+                source,
+                version: "0.143.9".to_string(),
+            })]);
+            assert!(selected.is_none(), "{source:?} 不应绕过最低 Codex 版本门禁");
+        }
     }
 
     /// 写一个打印指定版本的假 codex 脚本，验证 System 来源的最低版本门禁。

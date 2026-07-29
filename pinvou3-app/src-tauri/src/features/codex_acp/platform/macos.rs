@@ -11,7 +11,7 @@ pub(super) const SYSTEM_CODEX_NAME: &str = "codex";
 pub(super) const MANAGED_ADAPTER_NAME: &str = "codex-acp";
 pub(super) const BUNDLED_ADAPTER_NAME: &str = "codex-acp";
 pub(super) const MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex";
-/// macOS 没有托管下载产物，系统 Codex 通过 Homebrew(formula: codex)安装。
+/// macOS 没有托管下载产物，系统 Codex 通过 Homebrew cask 安装。
 pub(super) const INSTALL_METHOD: &str = "homebrew";
 
 pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {

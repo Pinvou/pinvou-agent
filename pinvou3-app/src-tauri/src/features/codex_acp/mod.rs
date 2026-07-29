@@ -166,7 +166,7 @@ pub struct CodexAcpStatus {
     pub codex_version: Option<String>,
     pub runtime_source: Option<&'static str>,
     pub managed_codex_version: &'static str,
-    /// codex-acp 验证过的最低 Codex CLI 版本（仅对 System 来源强制）。
+    /// codex-acp 验证过的最低 Codex CLI 版本（所有运行时来源统一强制）。
     pub min_codex_version: &'static str,
     /// 当前平台的 Codex 安装方式：
     /// "managed_download"（linux/windows）/ "homebrew"（macOS）/ "manual"（其他）。
@@ -818,7 +818,7 @@ impl AcpPool {
                 );
                 bail!(
                     "macOS 暂不支持下载托管 Codex，请点击「使用 Homebrew 安装」自动安装，\
-                     或先安装 Homebrew（https://brew.sh）后手动执行 brew install codex"
+                     或先安装 Homebrew（https://brew.sh）后手动执行 brew install --cask codex"
                 );
             }
             _ => {
@@ -864,7 +864,7 @@ impl AcpPool {
         }
     }
 
-    /// macOS 上通过 Homebrew 安装系统 Codex（formula 名 codex）。
+    /// macOS 上通过 Homebrew 安装系统 Codex（cask 名 codex）。
     pub async fn install_via_homebrew(&self) -> Result<CodexAcpStatus> {
         let operation_id = diagnostics::operation_id("homebrew-install");
         if platform::install_method() != "homebrew" {
@@ -874,7 +874,7 @@ impl AcpPool {
             diagnostics::write(&operation_id, "homebrew:unavailable", "result=rejected");
             bail!(
                 "未检测到 Homebrew。请先从 https://brew.sh 安装 Homebrew，\
-                 再点击「使用 Homebrew 安装」安装 Codex，或手动执行 brew install codex"
+                 再点击「使用 Homebrew 安装」安装 Codex，或手动执行 brew install --cask codex"
             );
         }
         if self.installing.swap(true, Ordering::AcqRel) {
@@ -885,10 +885,10 @@ impl AcpPool {
             );
             bail!("Codex 正在通过 Homebrew 安装，请稍候");
         }
-        diagnostics::write(&operation_id, "homebrew:start", "formula=codex");
+        diagnostics::write(&operation_id, "homebrew:start", "cask=codex");
         // brew install 是阻塞式子进程，放到 spawn_blocking 避免卡住 async runtime。
         let result = tokio::task::spawn_blocking(|| {
-            let run_brew = |args: [&str; 2]| -> Result<std::process::Output> {
+            let run_brew = |args: &[&str]| -> Result<std::process::Output> {
                 std::process::Command::new(platform::brew_bin())
                     .args(args)
                     .output()
@@ -898,13 +898,13 @@ impl AcpPool {
                 String::from_utf8_lossy(&output.stdout).contains("already installed")
                     || String::from_utf8_lossy(&output.stderr).contains("already installed")
             };
-            let output = run_brew(["install", "codex"])?;
+            let output = run_brew(&["install", "--cask", "codex"])?;
             // 已通过 brew 安装的 codex 会提示 already installed；此时可能是版本过低，
             // 改用 brew upgrade 升级到最新（已是最新时 upgrade 同样提示 already installed）。
             let (command, output) = if output.status.success() {
                 return Ok(());
             } else if already_installed(&output) {
-                ("upgrade", run_brew(["upgrade", "codex"])?)
+                ("upgrade", run_brew(&["upgrade", "--cask", "codex"])?)
             } else {
                 ("install", output)
             };
@@ -914,7 +914,7 @@ impl AcpPool {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
             bail!(
-                "brew {command} codex 失败 (exit {}): {}",
+                "brew {command} --cask codex 失败 (exit {}): {}",
                 output.status.code().unwrap_or(-1),
                 tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
             );
