@@ -6,6 +6,7 @@
  *   ② 工具商店渲染出 Obsidian 与钉钉连接器卡。
  *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
  *   ④ 记忆候选事件渲染卡片，且确认/忽略/不再提示分别调用正确后端命令。
+ *   ⑤ session 内未发送的 composer 草稿在跳转其他页面后仍能恢复。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
  */
@@ -576,6 +577,81 @@ async function expand(page) {
     restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));
+
+  // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
+  // 必须恢复未发送内容，不得因组件重建清空。
+  const composerDraft = '这是尚未发送的 session 草稿';
+  const draftInputFound = await page.evaluate((value) => {
+    const textarea = document.querySelector('[data-testid="chat-composer-input"]');
+    if (!textarea) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }, composerDraft);
+  await sleep(100);
+  const draftEntered = await page.evaluate((value) =>
+    document.querySelector('[data-testid="chat-composer-input"]')?.value === value, composerDraft);
+  await page.evaluate(() => document.querySelector('[data-nav="toolstore"]')?.click());
+  await sleep(700);
+  const draftViewChanged = await page.evaluate(() =>
+    document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'toolStore');
+  await clickText(page, '第三季度财报分析');
+  await sleep(900);
+  const restoredDraft = await page.evaluate(() =>
+    document.querySelector('[data-testid="chat-composer-input"]')?.value || '');
+  await clickText(page, '新对话');
+  await sleep(300);
+  const newSessionDraft = await page.evaluate(() =>
+    document.querySelector('[data-testid="chat-composer-input"]')?.value || '');
+  await clickText(page, '第三季度财报分析');
+  await sleep(900);
+  const restoredSessionDraft = await page.evaluate(() =>
+    document.querySelector('[data-testid="chat-composer-input"]')?.value || '');
+  rec('③e session 未发送草稿跨页面恢复',
+    draftInputFound && draftEntered && draftViewChanged && restoredDraft === composerDraft &&
+    newSessionDraft === '' && restoredSessionDraft === composerDraft,
+    JSON.stringify({ draftInputFound, draftEntered, draftViewChanged, restoredDraft, newSessionDraft, restoredSessionDraft }));
+
+  // 尚未物化的新对话没有 session buffer。后台已有 session 收到事件时，
+  // 临时切换工作集再恢复，仍必须保住当前输入框草稿。
+  await clickText(page, '新对话');
+  await sleep(300);
+  const pendingDraft = '后台事件期间也不能丢失的新对话草稿';
+  const pendingDraftResult = await page.evaluate(async (value) => {
+    const textarea = document.querySelector('[data-testid="chat-composer-input"]');
+    if (!textarea) return { inputFound: false };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['chat:usage'] || [])) {
+      await handler({
+        event: 'chat:usage',
+        payload: { session_id: 's1', input_tokens: 42 },
+      });
+    }
+    return {
+      inputFound: true,
+      activeSessionId: window.TauriBridge.state.getMany(['sessions']).activeSessionId,
+      bridgeDraft: window.TauriBridge.chat.getComposerDraft(),
+      visibleDraft: textarea.value,
+    };
+  }, pendingDraft);
+  rec('③f 新对话草稿不被后台 session 事件清空',
+    pendingDraftResult.inputFound &&
+    pendingDraftResult.activeSessionId === null &&
+    pendingDraftResult.bridgeDraft === pendingDraft &&
+    pendingDraftResult.visibleDraft === pendingDraft,
+    JSON.stringify(pendingDraftResult));
+  await page.evaluate(() => {
+    const textarea = document.querySelector('[data-testid="chat-composer-input"]');
+    if (!textarea) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, '');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await clickText(page, '第三季度财报分析');
+  await sleep(900);
 
   // 实时事件也必须使用同一 producer 判定：validator 的 shell JSON 不能进产物面板，
   // 真 MCP producer 返回路径仍要被跟踪。

@@ -45,7 +45,7 @@
     var sessionSwitchRequestToken = 0;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -263,6 +263,7 @@
   function saveWorkingSetTo(buf) {
     if (!buf) return;
     buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
+    buf.composerDraft = state.composerDraft || "";
     buf.turnTimeline = state.turnTimeline;
     buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
@@ -282,6 +283,7 @@
   function loadWorkingSetFrom(buf) {
     if (!buf) return;
     state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
+    state.composerDraft = buf.composerDraft || "";
     state.turnTimeline = buf.turnTimeline || [];
     state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
@@ -401,7 +403,11 @@
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
-    if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) { notify(); return; }
+    if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
+      state.composerDraft = "";
+      notify();
+      return;
+    }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
@@ -417,7 +423,14 @@
     // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
     try {
       var meta = await invoke("create_session");
+      // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
+      // 不能把 await 前的已发送文本带入新 session。
+      var composerDraft = state.composerDraft || "";
       switchActiveTo(meta.id, { fresh: true });
+      // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
+      // 跟随迁移；这不是用户主动切换到另一个已有会话。
+      state.composerDraft = composerDraft;
+      sessionStates[meta.id].composerDraft = composerDraft;
       await refreshHistoryList();
       await syncModeState();
       await syncActivePersona();

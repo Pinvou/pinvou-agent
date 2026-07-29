@@ -113,6 +113,18 @@ assert.match(webBridge, /listen\("session:list_changed"/);
 assert.match(desktopSessionsBridge, /listen\("session:list_changed"/);
 assert.match(commands, /app\.emit\(event, payload\.clone\(\)\)/);
 assert.match(commands, /forward_app_event\(app, event, payload\)/);
+assert.match(webBridge, /composerDraft: ""/,
+  'WebUI must keep a per-session in-memory composer draft');
+assert.match(webBridge, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
+  'WebUI domain facade must expose the same composer draft API as desktop');
+assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
+  'WebUI session switching must save the active composer draft');
+assert.match(webBridge, /state\.composerDraft = buf\.composerDraft/,
+  'WebUI session switching must restore the destination composer draft');
+assert.match(webBridge, /var draftComposer = realId \? "" : \(state\.composerDraft \|\| ""\)/,
+  'WebUI background session events must snapshot an unmaterialized draft');
+assert.match(webBridge, /if \(!realId\) restoreBuffer\.composerDraft = draftComposer/,
+  'WebUI background session events must restore an unmaterialized draft');
 assert.match(workflowCommands, /start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?emit_session_event\(&app, "session:list_changed", &sid, "created"\)/);
 assert.match(remoteControlCommands, /web_access_start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?start_skill_session\(name, Some\(false\), app, store, pool\)/);
 for (const eventName of ['session:model_changed', 'session:persona_changed']) {

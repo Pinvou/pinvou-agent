@@ -160,6 +160,9 @@
     // 跨页面预填输入框请求。比如本地知识 → 产出物点击「续写/新项目」：
     // 只把草稿放进 composer，不自动发送给模型。
     composerPrefill: { id: 0, text: "" },
+    // 当前会话未发送的输入草稿。只存内存，随 session working set 切换；
+    // 不落盘，避免把敏感的未发送内容带到下次启动。
+    composerDraft: "",
     messages: [],      // Anthropic Messages schema
     chatItems: [],     // display items for React
     // DeepSeek Turn 生命周期(user_start / assistant_done)，来自 timing_events.jsonl；
@@ -522,6 +525,8 @@
   var flushQueued = chatFeature.flushQueued;
   var sendMessageToSession = chatFeature.sendMessageToSession;
   var sendMessage = chatFeature.sendMessage;
+  var getComposerDraft = chatFeature.getComposerDraft;
+  var setComposerDraft = chatFeature.setComposerDraft;
   var prefillComposer = chatFeature.prefillComposer;
   var removeQueued = chatFeature.removeQueued;
   var summonPinvou = chatFeature.summonPinvou;
@@ -623,6 +628,7 @@
     var bg = sessionStates[sid]; if (!bg) return;
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
+    var draftComposer = realId ? "" : (state.composerDraft || "");
     saveWorkingSetTo(getBuffer(realId));
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
@@ -634,8 +640,11 @@
       state.activeSessionId = realId;
       // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
       // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
-      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净的空工作集。
-      loadWorkingSetFrom(realId ? getBuffer(realId) : freshBuffer());
+      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净工作集，
+      // 但要保留用户正在输入的未发送文本。
+      var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+      if (!realId) restoreBuffer.composerDraft = draftComposer;
+      loadWorkingSetFrom(restoreBuffer);
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -840,7 +849,7 @@
   var STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
@@ -1695,6 +1704,8 @@
     chat: {
       sendMessage: sendMessage,
       sendMessageToSession: sendMessageToSession,
+      getComposerDraft: getComposerDraft,
+      setComposerDraft: setComposerDraft,
       prefillComposer: prefillComposer,
       removeQueued: removeQueued,
       cancelGeneration: cancelGeneration,
