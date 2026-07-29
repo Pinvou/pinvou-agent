@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const {
+  BASE_CONFIG_PATH,
   buildResourceManifest,
   composeEffectiveConfig,
   mergeConfig,
@@ -88,7 +89,17 @@ assert.deepEqual(configSpecs(windowsCodexArgs), [
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "linux" }),
   ["dev"],
-  "dev must not receive packaging overlays",
+  "Linux/Windows dev must not receive packaging overlays",
+);
+assert.deepEqual(
+  prepareTauriArgs(["dev"], { platform: "darwin" }),
+  ["dev", "--config", platformConfigPath("darwin")],
+  "macOS dev must receive the platform overlay (native titlebar) to match packaged output",
+);
+assert.deepEqual(
+  configSpecs(prepareTauriArgs(["dev", "-c", explicitOverlay], { platform: "darwin" })),
+  [platformConfigPath("darwin"), explicitOverlay],
+  "explicit macOS dev overlays must override the automatic platform overlay",
 );
 const buildSource = fs.readFileSync(
   path.join(__dirname, "..", "scripts", "tauri", "build.js"),
@@ -154,6 +165,28 @@ const macosManifest = buildResourceManifest(macos, { platform: "darwin" });
 assert.ok(
   !macosManifest.files.some((file) => file.destination.startsWith("runtime/asr/")),
   "macOS resource manifest must not contain a legacy ASR runtime",
+);
+
+// macOS 主窗口走系统原生红绿灯顶栏(titleBarStyle=Overlay),前端据此隐藏自绘三键。
+// --config overlay 按 JSON Merge Patch 合并,windows 数组整体替换,因此 overlay 必须
+// 携带完整窗口定义。按基础数组动态生成期望值,确保新增窗口或新增字段也会触发
+// 防漂移失败,而不是依赖容易漏项的固定字段清单。
+const baseWindows = JSON.parse(fs.readFileSync(BASE_CONFIG_PATH, "utf8")).app.windows;
+const expectedMacosWindows = baseWindows.map((window) => (
+  window.label === "main"
+    ? {
+        ...window,
+        decorations: true,
+        titleBarStyle: "Overlay",
+        hiddenTitle: true,
+        trafficLightPosition: { x: 12, y: 12 },
+      }
+    : window
+));
+assert.deepEqual(
+  macos.app.windows,
+  expectedMacosWindows,
+  "macOS overlay 必须完整同步基础窗口数组,且只覆盖主窗口的原生顶栏字段",
 );
 
 const nullRemoval = mergeConfig(

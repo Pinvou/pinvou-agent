@@ -1,7 +1,23 @@
 {
   "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
   "app": {
-    "macOSPrivateApi": true
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "url": "index.html?ui=vite-react-1",
+        "title": "PINVOU 智能助手",
+        "width": 1100,
+        "height": 760,
+        "resizable": true,
+        "fullscreen": false,
+        "maximized": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 12, "y": 12 }
+      }
+    ]
   },
   "bundle": {
     "targets": ["app", "dmg"],
