@@ -42,7 +42,15 @@ function prepareTauriArgs(
 ) {
   const prepared = [...args];
   const commandIndex = tauriCommandIndex(prepared);
-  if (commandIndex < 0) return prepared;
+  if (commandIndex < 0) {
+    // dev 默认不注入 packaging overlay;但 macOS 的原生红绿灯顶栏定义在平台
+    // overlay 里,dev 也必须带上,否则 npm run dev 与打包产物顶栏不一致
+    // (run-dev.sh 直连 tauri dev 时已显式带同一份 overlay,两条入口行为对齐)。
+    if (prepared.includes("dev") && platform === "darwin") {
+      prepared.push("--config", platformConfigPath(platform));
+    }
+    return prepared;
+  }
 
   const automaticConfigs = [platformConfigPath(platform)];
   const architectureConfig = platformArchitectureConfigPath(platform, architecture);

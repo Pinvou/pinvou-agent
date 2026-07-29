@@ -16,8 +16,9 @@ config/
 `app.windows` 是基础配置主窗口定义的完整拷贝，改动基础配置 `app.windows` 字段时必须同步此处。
 
 `scripts/tauri/build.js` 根据当前操作系统在 **build / bundle** 时加载 `platforms/<os>/tauri.conf.json`
-（dev 刻意不注入 packaging overlay，见 `tests/tauri_effective_config.test.js`）；macOS 的 dev 启动由
-`run-dev.sh` 显式以 `--config` 带上同一份 overlay，保证 dev 与打包产物顶栏一致。公共配置不得引用私有签名工具或私有运行时。
+（Linux/Windows 的 dev 刻意不注入 packaging overlay，见 `tests/tauri_effective_config.test.js`）；macOS
+例外：原生顶栏定义在 overlay 里，因此 dev（`npm run dev` 与 `run-dev.sh` 两条入口）都会以 `--config`
+带上同一份 overlay，保证 dev 与打包产物顶栏一致。公共配置不得引用私有签名工具或私有运行时。
 
 项目内所有 `build` / `bundle` 命令必须通过该包装器执行；`npm run tauri -- build`、
 `npm run build`、`npm run build:msi` 和 NSIS 脚本均遵循同一入口。包装器将自动 overlay

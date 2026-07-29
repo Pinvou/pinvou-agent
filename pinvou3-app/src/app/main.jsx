@@ -89,24 +89,28 @@ function workspaceDisplayName(path) {
       // 此时不再渲染 Windows 风格三键,并为红绿灯留出左侧空间。
       // Windows/Linux 窗口无边框(decorations=false),继续用自绘三键。
       // 以窗口实际 decorations 状态为准,不解析 UA / 平台字符串。
-      const [nativeControls, setNativeControls] = useState(false);
+      // 初始 null 表示探测未决:此时不渲染自绘三键,避免 macOS 原生顶栏下
+      // 三键先闪现一帧再被隐藏;探测失败回退为自绘三键(fail-safe)。
+      const [nativeControls, setNativeControls] = useState(null);
       useEffect(() => {
         let cancelled = false;
         if (appWindow && typeof appWindow.isDecorated === 'function') {
           appWindow.isDecorated()
             .then((decorated) => { if (!cancelled) setNativeControls(decorated === true); })
-            .catch(() => {});
+            .catch(() => { if (!cancelled) setNativeControls(false); });
+        } else {
+          setNativeControls(false);
         }
         return () => { cancelled = true; };
       }, []);
       return (
         <div data-tauri-drag-region
           className={`h-9 shrink-0 flex items-center justify-between select-none ${titleBarBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-          <div data-tauri-drag-region className={`flex items-center gap-2 ${nativeControls ? 'pl-[76px] pr-3' : 'px-3'} text-[13px] font-medium pointer-events-none`}>
+          <div data-tauri-drag-region className={`flex items-center gap-2 ${nativeControls === true ? 'pl-[76px] pr-3' : 'px-3'} text-[13px] font-medium pointer-events-none`}>
             <PinvouLogo className="h-[18px] w-[18px] select-none" />
             {t.appTitle}
           </div>
-          {!nativeControls && (
+          {nativeControls === false && (
           <div className="flex items-center h-full">
             <button onClick={() => appWindow && appWindow.minimize()} title={t.winMin}
               className={`h-full w-12 flex items-center justify-center transition-colors ${hoverBg}`}>

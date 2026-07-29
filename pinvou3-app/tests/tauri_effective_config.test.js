@@ -89,7 +89,12 @@ assert.deepEqual(configSpecs(windowsCodexArgs), [
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "linux" }),
   ["dev"],
-  "dev must not receive packaging overlays",
+  "Linux/Windows dev must not receive packaging overlays",
+);
+assert.deepEqual(
+  prepareTauriArgs(["dev"], { platform: "darwin" }),
+  ["dev", "--config", platformConfigPath("darwin")],
+  "macOS dev must receive the platform overlay (native titlebar) to match packaged output",
 );
 const buildSource = fs.readFileSync(
   path.join(__dirname, "..", "scripts", "tauri", "build.js"),
