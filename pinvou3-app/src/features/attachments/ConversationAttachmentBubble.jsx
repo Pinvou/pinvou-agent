@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { Copy, Download, ExternalLink, FolderOpen } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isWeb } from '../../shared/platform.js';
-import { _artifactKind } from '../../shared/artifact-utils.js';
-import { AcFmtIcon } from '../tools/tool-common.jsx';
 
 export function ConversationAttachmentBubble({
   name,
@@ -79,7 +78,6 @@ export function ConversationAttachmentBubble({
       y: Math.max(6, Math.min(event.clientY, window.innerHeight - height - 6)),
     });
   };
-  const kind = _artifactKind(name);
   const menuItemClass = `flex h-9 w-full items-center gap-2.5 px-3 text-left text-[13px] transition-colors ${
     isDark ? 'text-[#E3E3E3] hover:bg-white/10' : 'text-[#1F1F1F] hover:bg-black/[0.06]'
   }`;
@@ -99,7 +97,7 @@ export function ConversationAttachmentBubble({
         }`}
       >
         <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] ${isDark ? 'bg-white/[0.08]' : 'bg-black/[0.04]'}`}>
-          <AcFmtIcon kind={kind} className="h-5 w-5" />
+          <FileTypeIcon name={name} className="h-5 w-5" />
         </span>
         <span className="truncate font-medium">{name}</span>
       </button>

@@ -1,6 +1,5 @@
 import React from 'react';
-import { _artifactKind } from '../../shared/artifact-utils.js';
-import { AcFmtIcon } from '../tools/tool-common.jsx';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 
 export function AttachmentChips({
   attachments = [],
@@ -20,7 +19,6 @@ export function AttachmentChips({
         const friendlyError = attachment.status === 'error'
           ? formatError(attachment.error)
           : '';
-        const kind = _artifactKind(attachment.basename);
         return (
           <div
             key={attachment.id}
@@ -29,7 +27,7 @@ export function AttachmentChips({
             }`}
           >
             <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] ${dark ? 'bg-white/[0.08]' : 'bg-black/[0.04]'}`}>
-              <AcFmtIcon kind={kind} className="h-4 w-4" />
+              <FileTypeIcon name={attachment.basename} className="h-4 w-4" />
             </span>
             <span className="max-w-[160px] truncate" title={attachment.basename}>
               {attachment.basename}

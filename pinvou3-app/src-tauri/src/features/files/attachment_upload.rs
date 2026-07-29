@@ -27,6 +27,30 @@ fn conversation_attachment_refs_path(workspace: &Path) -> PathBuf {
         .join(CONVERSATION_ATTACHMENT_REFS_FILE)
 }
 
+pub fn conversation_attachment_names_for_display_prefix(
+    workspace: &Path,
+    display_prefix: &str,
+) -> Result<Vec<String>, String> {
+    let refs_path = conversation_attachment_refs_path(workspace);
+    let records = match std::fs::read(&refs_path) {
+        Ok(bytes) => serde_json::from_slice::<Vec<ConversationAttachmentRecord>>(&bytes)
+            .map_err(|error| format!("读取附件引用失败：{error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("读取附件引用失败：{error}")),
+    };
+    Ok(records
+        .iter()
+        .find(|record| record.display_text.starts_with(display_prefix))
+        .map(|record| {
+            record
+                .attachments
+                .iter()
+                .map(|attachment| attachment.basename.clone())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// Persist display-only attachment references outside the LLM transcript.
 pub fn record_conversation_attachments(
     workspace: &Path,
@@ -326,9 +350,9 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        append_chunk, discard_attachment, record_conversation_attachments,
-        resolve_conversation_attachment, validate_filename, validate_upload_id,
-        ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
+        append_chunk, conversation_attachment_names_for_display_prefix, discard_attachment,
+        record_conversation_attachments, resolve_conversation_attachment, validate_filename,
+        validate_upload_id, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
     };
     use std::path::PathBuf;
 
@@ -431,6 +455,10 @@ mod tests {
             }],
         )
         .unwrap();
+        assert_eq!(
+            conversation_attachment_names_for_display_prefix(&workspace, "first").unwrap(),
+            vec!["one.txt"]
+        );
         record_conversation_attachments(
             &workspace,
             3,

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { splitAttachmentLine } from '../src/features/attachments/attachment-message.js';
+import {
+  sessionTitlePlainText,
+  sessionTitlePresentation,
+  splitAttachmentLine,
+} from '../src/features/attachments/attachment-message.js';
 
 // ── splitAttachmentLine: 与 bridge 侧 displayText 拼装约定一一对应 ──
 assert.deepEqual(
@@ -36,6 +40,25 @@ assert.deepEqual(
 assert.deepEqual(splitAttachmentLine(''), { text: '', attachments: [] });
 assert.deepEqual(splitAttachmentLine(null), { text: '', attachments: [] });
 
+// ── 侧边栏标题:隐藏持久化协议标记,以完整附件名恢复类型图标 ──
+const historicalTitle = sessionTitlePresentation(
+  '看看这个\n\n📎 PINV',
+  ['PINVOU-M0-开源决策基线.md'],
+);
+assert.deepEqual(historicalTitle, {
+  text: '看看这个',
+  attachments: ['PINVOU-M0-开源决策基线.md'],
+});
+assert.equal(
+  sessionTitlePlainText(historicalTitle),
+  '看看这个 PINVOU-M0-开源决策基线.md',
+);
+assert.deepEqual(
+  sessionTitlePresentation('普通会话标题', ['不应显示.pdf']),
+  { text: '普通会话标题', attachments: [] },
+  'backend enrichment must not change manually named sessions without the reserved marker',
+);
+
 // ── UserBubble 结构契约:附件独立气泡 + 类型图标,正文为空时不渲染空气泡 ──
 const chatViewSource = await readFile(
   new URL('../src/features/chat/ChatView.jsx', import.meta.url),
@@ -68,13 +91,13 @@ const bubbleSource = await readFile(
 );
 assert.match(
   bubbleSource,
-  /_artifactKind\(name\)/,
-  'attachment bubbles must reuse the shared file-type mapping',
-);
-assert.match(
-  bubbleSource,
-  /AcFmtIcon kind=\{kind\}/,
+  /FileTypeIcon name=\{name\}/,
   'attachment bubbles must reuse the shared file-type glyphs instead of a new icon dependency',
+);
+assert.doesNotMatch(
+  bubbleSource,
+  /\.\.\/tools\/tool-common/,
+  'attachments must not depend on the tools feature for shared file icons',
 );
 assert.match(
   bubbleSource,
@@ -124,12 +147,7 @@ const chipsSource = await readFile(
 );
 assert.match(
   chipsSource,
-  /_artifactKind\(attachment\.basename\)/,
-  'composer chips must map the file type from the shared table',
-);
-assert.match(
-  chipsSource,
-  /AcFmtIcon kind=\{kind\}/,
+  /FileTypeIcon name=\{attachment\.basename\}/,
   'composer chips must render the shared file-type glyph tile',
 );
 assert.doesNotMatch(
@@ -137,5 +155,48 @@ assert.doesNotMatch(
   /<span>📎<\/span>/,
   'composer chips must not fall back to the emoji paperclip',
 );
+
+const mainSource = await readFile(
+  new URL('../src/app/main.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(mainSource, /sessionTitlePresentation\(s\.title, s\.title_attachment_names\)/);
+assert.match(mainSource, /<SessionAttachmentTitle presentation=\{titlePresentation\}/);
+assert.match(
+  mainSource,
+  /sessionTitlePresentation\(s\.title \|\| t\.newChat, s\.title_attachment_names\)/,
+  'archived session titles must use the same attachment presentation adapter',
+);
+
+const navigationSource = await readFile(
+  new URL('../src/components/layout/NavigationComponents.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(
+  navigationSource,
+  /\{chat\.titleContent \|\| chat\.title\}/,
+  'the generic navigation component must accept an app-composed rich title',
+);
+
+const timelineSource = await readFile(
+  new URL('../src/features/conversation/ConversationTimeline.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(timelineSource, /FileTypeIcon name=\{attachment\.name\}/);
+assert.doesNotMatch(timelineSource, /<span>📎<\/span>/);
+
+const codexSource = await readFile(
+  new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(codexSource, /FileTypeIcon name=\{attachment\.name\}/);
+assert.doesNotMatch(codexSource, /<span>📎<\/span>/);
+
+const sessionsSource = await readFile(
+  new URL('../src-tauri/src/app/commands/sessions.rs', import.meta.url),
+  'utf8',
+);
+assert.match(sessionsSource, /pub title_attachment_names: Vec<String>/);
+assert.match(sessionsSource, /session_title_attachment_names\(&store, &metadata\)/);
 
 console.log('attachment bubble logic tests passed');

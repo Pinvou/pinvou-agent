@@ -4,6 +4,8 @@ pub struct SessionListItem {
     pub metadata: SessionMetadata,
     pub pinned: bool,
     pub pinned_at: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub title_attachment_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +15,8 @@ pub struct HiddenSessionListItem {
     pub hidden_at: Option<String>,
     #[serde(rename = "archived_at")]
     pub archived_at: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub title_attachment_names: Vec<String>,
 }
 
 /// 仅普通 chat 会话可用的命令守卫（transcript/产物由前端覆盖持久化的路径）。
@@ -40,6 +44,60 @@ pub(super) fn emit_session_event(app: &AppHandle, event: &str, id: &str, action:
     });
     let _ = app.emit(event, payload.clone());
     crate::features::remote_control::forward_app_event(app, event, payload);
+}
+
+fn title_contains_attachment_marker(title: &str) -> bool {
+    title.starts_with("📎 ") || title.contains("\n\n📎 ")
+}
+
+fn attachment_names_from_display_message(text: &str) -> Vec<String> {
+    let names = if let Some(names) = text.strip_prefix("📎 ") {
+        (!names.contains('\n')).then_some(names)
+    } else {
+        text.rsplit_once("\n\n📎 ")
+            .and_then(|(_, names)| (!names.contains('\n')).then_some(names))
+    };
+    names
+        .into_iter()
+        .flat_map(|names| names.split(" · "))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetadata) -> Vec<String> {
+    if !title_contains_attachment_marker(&metadata.title) {
+        return Vec::new();
+    }
+    let indexed_names = store
+        .execution_workspace(&metadata.id)
+        .ok()
+        .and_then(|workspace| {
+            crate::features::files::attachment_upload::conversation_attachment_names_for_display_prefix(
+                &workspace,
+                &metadata.title,
+            ).ok()
+        })
+        .unwrap_or_default();
+    if !indexed_names.is_empty() {
+        return indexed_names;
+    }
+    let Ok(session) = store.load(&metadata.id) else {
+        return Vec::new();
+    };
+    session
+        .messages
+        .iter()
+        .find(|message| message.role == "user")
+        .and_then(|message| {
+            message.content.iter().find_map(|block| match block {
+                deepseek_tui::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+        })
+        .map(attachment_names_from_display_message)
+        .unwrap_or_default()
 }
 
 /// 清当前会话历史。
@@ -77,12 +135,41 @@ pub async fn list_sessions(
     });
     Ok(metas
         .into_iter()
-        .map(|metadata| SessionListItem {
-            pinned: store.is_pinned(&metadata.id),
-            pinned_at: store.pinned_at(&metadata.id),
-            metadata,
+        .map(|metadata| {
+            let title_attachment_names = session_title_attachment_names(&store, &metadata);
+            SessionListItem {
+                pinned: store.is_pinned(&metadata.id),
+                pinned_at: store.pinned_at(&metadata.id),
+                title_attachment_names,
+                metadata,
+            }
         })
         .collect())
+}
+
+#[cfg(test)]
+mod session_title_attachment_tests {
+    use super::{attachment_names_from_display_message, title_contains_attachment_marker};
+
+    #[test]
+    fn parses_attachment_names_from_supported_display_messages() {
+        assert_eq!(
+            attachment_names_from_display_message("看一下\n\n📎 决策基线.md · 数据.xlsx"),
+            vec!["决策基线.md", "数据.xlsx"]
+        );
+        assert_eq!(
+            attachment_names_from_display_message("📎 报告.pdf"),
+            vec!["报告.pdf"]
+        );
+    }
+
+    #[test]
+    fn ignores_inline_or_non_terminal_paperclip_text() {
+        assert!(attachment_names_from_display_message("正文提到 📎 符号").is_empty());
+        assert!(attachment_names_from_display_message("正文\n\n📎 文件.md\n尾部").is_empty());
+        assert!(!title_contains_attachment_marker("正文提到 📎 符号"));
+        assert!(title_contains_attachment_marker("正文\n\n📎 文件"));
+    }
 }
 
 /// 列出已从左侧任务列表收起的 session（含收起的定时运行会话）。前端设置页渲染用。
@@ -109,9 +196,11 @@ pub async fn list_archived_sessions(
         .into_iter()
         .map(|metadata| {
             let hidden_at = store.hidden_at(&metadata.id);
+            let title_attachment_names = session_title_attachment_names(&store, &metadata);
             HiddenSessionListItem {
                 archived_at: hidden_at.clone(),
                 hidden_at,
+                title_attachment_names,
                 metadata,
             }
         })

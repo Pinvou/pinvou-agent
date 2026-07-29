@@ -15,6 +15,26 @@ export function splitAttachmentLine(text) {
   return { text: raw, attachments: [] };
 }
 
+export function sessionTitlePresentation(title, attachmentNames = []) {
+  const parsed = splitAttachmentLine(title);
+  if (!parsed.attachments.length) {
+    return { text: String(title == null ? '' : title), attachments: [] };
+  }
+  const completeNames = attachmentNames
+    .map(name => String(name || '').trim())
+    .filter(Boolean);
+  return {
+    text: parsed.text.trim(),
+    attachments: completeNames.length ? completeNames : parsed.attachments,
+  };
+}
+
+export function sessionTitlePlainText(presentation) {
+  const text = String(presentation?.text || '').trim();
+  const attachments = presentation?.attachments || [];
+  return [text, ...attachments].filter(Boolean).join(' ');
+}
+
 function parseNames(line) {
   return line
     .split(' · ')

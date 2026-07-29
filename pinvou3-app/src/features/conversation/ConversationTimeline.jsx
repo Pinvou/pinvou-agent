@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -698,9 +699,8 @@ export function ConversationTurn({
                     <span
                       key={`${attachment.name || 'attachment'}-${index}`}
                       className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4"
-                      title={attachment.name}
                     >
-                      <span>📎</span>
+                      <FileTypeIcon name={attachment.name} className="h-4 w-4 shrink-0" />
                       <span className="truncate">{attachment.name || c.attachment}</span>
                     </span>
                   ))}

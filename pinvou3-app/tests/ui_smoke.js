@@ -52,6 +52,7 @@ function injectSource() {
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
     let SESSIONS=[
       {id:'s-pinned-old',title:'置顶旧会话',created_at:'2026-06-01T08:00:00Z',updated_at:'2026-06-01T08:00:00Z',pinned:true,pinned_at:'2026-07-20T08:00:00Z'},
+      {id:'s-attachment',title:'看看这个\\n\\n📎 PINV',title_attachment_names:['PINVOU-M0-开源决策基线.md'],created_at:Date.now()-2000,updated_at:Date.now()-2000},
       {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
     ];
     let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
@@ -260,6 +261,22 @@ async function expand(page) {
   rec('①a-1 默认置顶会话跨日期分组上浮且不重复',
     pinnedSidebarState.count === 1 && pinnedSidebarState.beforeToday && pinnedSidebarState.pinVisible,
     JSON.stringify(pinnedSidebarState));
+  const attachmentSidebarState = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('[data-testid="regular-sidebar-item"]')]
+      .find(node => (node.textContent || '').includes('PINVOU-M0-开源决策基线.md'));
+    return {
+      exists: !!row,
+      text: row ? row.textContent || '' : '',
+      hasMarkdownIcon: !!(row && row.querySelector('svg path[fill="#42a5f5"]')),
+    };
+  });
+  rec(
+    '①a-2 附件会话标题隐藏协议符号并显示对应文件图标',
+    attachmentSidebarState.exists
+      && !attachmentSidebarState.text.includes('📎')
+      && attachmentSidebarState.hasMarkdownIcon,
+    JSON.stringify(attachmentSidebarState),
+  );
   await page.click('[data-testid="sidebar-task-filter"]'); await sleep(200);
   const sidebarTaskFilterMenu = await page.evaluate(() => {
     const menu = document.querySelector('[data-testid="sidebar-task-filter-menu"]');
@@ -275,7 +292,7 @@ async function expand(page) {
       hasRegularChat: text.includes('普通会话'),
     };
   });
-  rec('①a-2 任务筛选弹层只保留有效筛选与排序项',
+  rec('①a-3 任务筛选弹层只保留有效筛选与排序项',
     sidebarTaskFilterMenu.exists && sidebarTaskFilterMenu.hasAll && sidebarTaskFilterMenu.hasPinned &&
     sidebarTaskFilterMenu.hasScheduled && sidebarTaskFilterMenu.hasPinnedFirst && sidebarTaskFilterMenu.hasRecent &&
     !sidebarTaskFilterMenu.hasCurrentChat && !sidebarTaskFilterMenu.hasRegularChat,

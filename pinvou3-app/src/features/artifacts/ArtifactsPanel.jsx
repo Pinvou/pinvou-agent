@@ -1,20 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { Download, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
-import { _artifactKind } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
-import { AcFmtIcon } from '../tools/tool-common.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
 import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
 import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
-      const kind = _artifactKind(name);
       return (
         <span className={`shrink-0 inline-flex items-center justify-center bg-black/[0.04] dark:bg-white/[0.08] ${tileCls}`}>
-          <AcFmtIcon kind={kind} className={glyphCls} />
+          <FileTypeIcon name={name} className={glyphCls} />
         </span>
       );
     };
@@ -650,7 +648,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         // 统一兜底卡(unsupported / 转换失败 / binary)
         return (
           <div className={`flex flex-col items-center justify-center text-center gap-3 py-10 ${muted}`}>
-            {sel ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" /> : <span className="text-[44px]">📎</span>}
+            {sel
+              ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" />
+              : <FileTypeIcon kind="other" className="h-11 w-11" />}
             <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
