@@ -888,22 +888,33 @@ impl AcpPool {
         diagnostics::write(&operation_id, "homebrew:start", "formula=codex");
         // brew install 是阻塞式子进程，放到 spawn_blocking 避免卡住 async runtime。
         let result = tokio::task::spawn_blocking(|| {
-            let output = std::process::Command::new(platform::brew_bin())
-                .args(["install", "codex"])
-                .output()
-                .context("启动 Homebrew 失败")?;
-            if output.status.success() {
+            let run_brew = |args: [&str; 2]| -> Result<std::process::Output> {
+                std::process::Command::new(platform::brew_bin())
+                    .args(args)
+                    .output()
+                    .context("启动 Homebrew 失败")
+            };
+            let already_installed = |output: &std::process::Output| {
+                String::from_utf8_lossy(&output.stdout).contains("already installed")
+                    || String::from_utf8_lossy(&output.stderr).contains("already installed")
+            };
+            let output = run_brew(["install", "codex"])?;
+            // 已通过 brew 安装的 codex 会提示 already installed；此时可能是版本过低，
+            // 改用 brew upgrade 升级到最新（已是最新时 upgrade 同样提示 already installed）。
+            let (command, output) = if output.status.success() {
+                return Ok(());
+            } else if already_installed(&output) {
+                ("upgrade", run_brew(["upgrade", "codex"])?)
+            } else {
+                ("install", output)
+            };
+            if output.status.success() || already_installed(&output) {
                 return Ok(());
             }
-            let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // codex 已安装时 brew 会提示 already installed，视为成功。
-            if stdout.contains("already installed") || stderr.contains("already installed") {
-                return Ok(());
-            }
             let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
             bail!(
-                "brew install codex 失败 (exit {}): {}",
+                "brew {command} codex 失败 (exit {}): {}",
                 output.status.code().unwrap_or(-1),
                 tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
             );
