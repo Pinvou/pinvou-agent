@@ -894,23 +894,10 @@ pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
-    let lower = model.unwrap_or("").to_ascii_lowercase();
-    let explicit = [
-        ("1m", 1_048_576),
-        ("1000k", 1_024_000),
-        ("512k", 524_288),
-        ("256k", 262_144),
-        ("200k", 204_800),
-        ("128k", 131_072),
-        ("64k", 65_536),
-        ("32k", 32_768),
-        ("16k", 16_384),
-        ("8k", 8_192),
-    ]
-    .into_iter()
-    .find_map(|(needle, value)| lower.contains(needle).then_some(value));
-    if explicit.is_some() {
-        return explicit;
+    // 模型名事实与 Engine route_limits 共用同一入口，避免页面显示 1M、实际仍按
+    // 128K 压缩。这里只保留底座与补充表都无法识别时的供应商预设兜底。
+    if let Some(window) = model.and_then(crate::core::model_context::resolved_context_window) {
+        return Some(window);
     }
     match preset {
         ModelPreset::LocalVllm => Some(262_144),
@@ -919,9 +906,9 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
         ModelPreset::OpenaiCompatible => Some(131_072),
         ModelPreset::Qwen => Some(131_072),
         ModelPreset::Doubao => Some(262_144),
-        ModelPreset::Minimax => Some(245_760),
+        ModelPreset::Minimax => Some(204_800),
         ModelPreset::Glm => Some(131_072),
-        ModelPreset::Mimo => Some(128_000),
+        ModelPreset::Mimo => Some(1_000_000),
     }
 }
 
@@ -1337,5 +1324,91 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         assert!(m.tpot_count.is_none());
         assert!(m.generation_tokens_total.is_none());
         assert!(m.prompt_tokens_total.is_none());
+    }
+
+    /// 运行状态上下文长度推断：覆盖设置页全部云端模型（2026-07 逐厂商核实，
+    /// 依据为仓库 catalog + 底座启发式 + 各厂商官方文档，见 pinvou_known_context_window 注释）。
+    #[test]
+    fn infer_context_window_cloud_models() {
+        let cases: &[(ModelPreset, &str, u32)] = &[
+            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）
+            (ModelPreset::Deepseek, "deepseek-v4-pro", 1_000_000),
+            (ModelPreset::Deepseek, "deepseek-v4-flash", 1_000_000),
+            // Kimi：k3 是 1M，k2.x / for-coding 系 256K
+            (ModelPreset::Kimi, "kimi-k3", 1_048_576),
+            (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
+            (ModelPreset::Kimi, "kimi-k2.7-code-highspeed", 262_144),
+            (ModelPreset::Kimi, "kimi-k2.6", 262_144),
+            // Kimi Coding Plan 走 openai_compatible 预设
+            (ModelPreset::OpenaiCompatible, "kimi-for-coding", 262_144),
+            (
+                ModelPreset::OpenaiCompatible,
+                "kimi-for-coding-highspeed",
+                262_144,
+            ),
+            (ModelPreset::OpenaiCompatible, "k3-256k", 256_000),
+            (ModelPreset::OpenaiCompatible, "k3", 1_048_576),
+            // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
+            (ModelPreset::Glm, "glm-5.2", 1_000_000),
+            (ModelPreset::Glm, "glm-5.1", 202_752),
+            (ModelPreset::Glm, "glm-5-turbo", 202_752),
+            (ModelPreset::Glm, "glm-4.7", 204_800),
+            // MiniMax：M3 是 1M，M2.x 全系 204,800
+            (ModelPreset::Minimax, "MiniMax-M3", 1_000_000),
+            (ModelPreset::Minimax, "MiniMax-M2.7", 204_800),
+            (ModelPreset::Minimax, "MiniMax-M2.7-highspeed", 204_800),
+            (ModelPreset::Minimax, "MiniMax-M2.5", 204_800),
+            (ModelPreset::Minimax, "MiniMax-M2.5-highspeed", 204_800),
+            // MiMo：v2.5 全系 1M
+            (ModelPreset::Mimo, "mimo-v2.5-pro", 1_000_000),
+            (ModelPreset::Mimo, "mimo-v2.5", 1_000_000),
+            // Qwen：3.7 全系 / 3.6-flash 均 1M
+            (ModelPreset::Qwen, "qwen3.7-plus", 1_000_000),
+            (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
+            (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
+            (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
+            // 豆包：evolving 已升 1M，2.x 全系 256K
+            (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
+            (ModelPreset::Doubao, "doubao-seed-2.1-pro", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2.1-turbo", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2.0-pro", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2.0-lite", 262_144),
+            // OpenAI 兼容示例：gpt-5.6 全系 1.05M
+            (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
+            (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
+            (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
+        ];
+        for (preset, model, expected) in cases {
+            assert_eq!(
+                infer_context_window(*preset, Some(model)),
+                Some(*expected),
+                "{model} 上下文窗口推断错误"
+            );
+        }
+    }
+
+    /// 推断优先级：显式 Nk 后缀 > pinvou 补充表/底座 > 预设兜底。
+    #[test]
+    fn infer_context_window_fallback_order() {
+        // 显式后缀优先于一切（含底座 catalog 里的同名模型）
+        assert_eq!(
+            infer_context_window(ModelPreset::Deepseek, Some("deepseek-v4-flash-128k")),
+            Some(128_000)
+        );
+        // 底座与补充表都不认识的自定义模型名 → 预设兜底
+        assert_eq!(
+            infer_context_window(ModelPreset::Deepseek, Some("my-custom-finetune")),
+            Some(131_072)
+        );
+        assert_eq!(
+            infer_context_window(ModelPreset::Minimax, Some("minimax-future-x")),
+            Some(204_800)
+        );
+        assert_eq!(
+            infer_context_window(ModelPreset::Mimo, Some("mimo-future-x")),
+            Some(1_000_000)
+        );
+        // 无模型名 → 预设兜底
+        assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
     }
 }

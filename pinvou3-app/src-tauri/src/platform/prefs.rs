@@ -145,6 +145,22 @@ fn strip_chat_completions_suffix(value: &str) -> String {
     }
 }
 
+fn migrated_minimax_base_url(value: &str) -> Option<String> {
+    const LEGACY_ORIGIN: &str = "https://api.minimax.chat";
+    const CURRENT_ORIGIN: &str = "https://api.minimaxi.com";
+
+    let trimmed = value.trim().trim_end_matches('/');
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == LEGACY_ORIGIN {
+        return Some(CURRENT_ORIGIN.to_string());
+    }
+    lower.strip_prefix(LEGACY_ORIGIN).and_then(|suffix| {
+        suffix
+            .starts_with('/')
+            .then(|| format!("{CURRENT_ORIGIN}{}", &trimmed[LEGACY_ORIGIN.len()..]))
+    })
+}
+
 fn identify_coding_plan_endpoint(base_url: &str) -> Option<(&'static str, &'static str)> {
     let base = strip_chat_completions_suffix(base_url);
     let normalized = base.to_ascii_lowercase();
@@ -202,7 +218,7 @@ impl ModelPreset {
             ModelPreset::OpenaiCompatible => "https://api.openai.com/v1",
             ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3",
-            ModelPreset::Minimax => "https://api.minimax.chat/v1",
+            ModelPreset::Minimax => "https://api.minimaxi.com/v1",
             ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4",
             ModelPreset::Mimo => "https://api.xiaomimimo.com/v1",
         }
@@ -429,6 +445,11 @@ impl SavedModel {
 
     fn normalize_provider_metadata(&mut self) {
         self.base_url = strip_chat_completions_suffix(&self.base_url);
+        // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
+        // 存量配置在 load 时一次性改写,避免继续打已下线域名。
+        if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
+            self.base_url = migrated;
+        }
         if let Some((vendor, canonical_base_url)) = identify_coding_plan_endpoint(&self.base_url) {
             self.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.to_string());
             self.vendor = Some(vendor.to_string());
@@ -604,11 +625,23 @@ impl UserPrefs {
             }),
             Err(_) => Self::default(),
         };
+        // 必须在 migrate_models/normalize 改写前记录；否则只能修正本次运行的内存值，
+        // save gate 看不到变化，旧域名会永久留在 settings.json 中、每次启动重复迁移。
+        let minimax_endpoint_changed = prefs
+            .advanced
+            .saved_models
+            .iter()
+            .any(|model| migrated_minimax_base_url(&model.base_url).is_some())
+            || prefs
+                .advanced
+                .custom_base_url
+                .as_deref()
+                .is_some_and(|url| migrated_minimax_base_url(url).is_some());
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
-        if migration.settings_sanitized || memory_policy_changed {
+        if minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed {
             if let Err(e) = prefs.save() {
                 eprintln!("[pinvou3-app] settings normalization save failed: {e:?}");
             }
@@ -1066,6 +1099,95 @@ mod tests {
             Some(MODEL_PROVIDER_KIND_OFFICIAL_API)
         );
         assert!(model.vendor.is_none());
+    }
+
+    #[test]
+    fn legacy_minimax_chat_domain_is_rewritten() {
+        assert_eq!(
+            migrated_minimax_base_url("https://api.minimax.chat").as_deref(),
+            Some("https://api.minimaxi.com")
+        );
+        assert_eq!(
+            migrated_minimax_base_url("https://API.MINIMAX.CHAT/v1").as_deref(),
+            Some("https://api.minimaxi.com/v1")
+        );
+
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.upsert_model(SavedModel {
+            id: "minimax-api".into(),
+            name: "MiniMax".into(),
+            preset: ModelPreset::Minimax,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "MiniMax-M3".into(),
+            base_url: "https://api.minimax.chat/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+
+        let model = prefs.model_by_id("minimax-api").expect("minimax model");
+        assert_eq!(model.base_url, "https://api.minimaxi.com/v1");
+    }
+
+    #[test]
+    fn load_persists_legacy_minimax_domain_migration() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-minimax-domain-migration-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create temporary prefs home");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "minimax-api".into(),
+            name: "MiniMax".into(),
+            preset: ModelPreset::Minimax,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "MiniMax-M3".into(),
+            base_url: "https://api.minimax.chat".into(),
+            provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
+            vendor: None,
+            endpoint_mode: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("minimax-api".into());
+        let path = super::super::paths::settings_path();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+        )
+        .expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        assert_eq!(
+            loaded.active_model().map(|model| model.base_url.as_str()),
+            Some("https://api.minimaxi.com")
+        );
+        let persisted = std::fs::read_to_string(&path).expect("read migrated prefs");
+        assert!(!persisted.contains("api.minimax.chat"));
+        assert!(persisted.contains("api.minimaxi.com"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 
     #[test]
