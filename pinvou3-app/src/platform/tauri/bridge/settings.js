@@ -63,8 +63,7 @@
   async function saveSettings(prefs) {
     const previous = state.settings;
     try {
-      await invoke("update_settings", { prefs: prefs });
-      state.settings = prefs;
+      state.settings = await invoke("update_settings", { prefs: prefs });
       await loadEffectiveModelConfig();
       notify();
       return true;
@@ -81,6 +80,29 @@
       await invoke("save_settings_and_restart", { prefs: prefs });
     } catch (e) {
       console.warn("save settings and restart failed", e);
+    }
+  }
+  async function saveSearchSettings(search) {
+    const previous = state.settings;
+    try {
+      state.settings = await invoke("update_search_settings", { search: search });
+      await loadEffectiveModelConfig();
+      notify();
+      return true;
+    } catch (e) {
+      console.warn("save search settings failed", e);
+      state.settings = previous;
+      notify();
+      return false;
+    }
+  }
+  async function saveSearchSettingsAndRestart(search) {
+    try {
+      await invoke("save_search_settings_and_restart", { search: search });
+      return true;
+    } catch (e) {
+      console.warn("save search settings and restart failed", e);
+      return false;
     }
   }
 
@@ -184,6 +206,7 @@
  async function saveModel(model) {
    await invoke("save_model", { model: model });
    await loadModels();
+   await loadSettings();
    await loadEffectiveModelConfig();
  }
  async function revealModelApiKey(id) {
@@ -192,11 +215,13 @@
  async function deleteModel(id) {
    await invoke("delete_model", { id: id });
    await loadModels();
+   await loadSettings();
    await loadEffectiveModelConfig();
   }
   async function setActiveModel(id) {
     await invoke("set_active_model", { id: id });
     await loadModels();
+    await loadSettings();
     await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
@@ -236,6 +261,8 @@
       loadEffectiveModelConfig: loadEffectiveModelConfig,
       saveSettings: saveSettings,
       saveSettingsAndRestart: saveSettingsAndRestart,
+      saveSearchSettings: saveSearchSettings,
+      saveSearchSettingsAndRestart: saveSearchSettingsAndRestart,
       submitFeedback: submitFeedback,
       discoverLocalVllm: discoverLocalVllm,
       detectLocalVllmSetup: detectLocalVllmSetup,

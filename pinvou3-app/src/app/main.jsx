@@ -1460,19 +1460,20 @@ function workspaceDisplayName(path) {
         setSearchKeyActions(prev => ({ ...prev, [targetProvider]: k.trim() ? 'replace' : 'keep_existing' }));
       }
 
-      function handleConfirmSearchConfig() {
-        if (bridge.available) {
-          bridge.settings.saveSettingsAndRestart(buildFullSettings({
-            search: buildSearchSettingsPayload(),
-          }));
-        }
+      async function handleConfirmSearchConfig() {
+        if (!bridge.available) return;
+        const search = buildSearchSettingsPayload();
+        // 浏览器宿主没有重启桌面进程的权限；只保存，待桌面端下次重启后生效。
+        const saved = isWeb
+          ? await bridge.settings.saveSearchSettings(search)
+          : await bridge.settings.saveSearchSettingsAndRestart(search);
+        if (saved === false) setSettingsToast('搜索配置保存失败，请重试');
       }
 
       async function handleSaveSearchConfig() {
         if (!bridge.available) return true;
-        const saved = await bridge.settings.saveSettings(buildFullSettings({
-          search: buildSearchSettingsPayload(),
-        }));
+        const search = buildSearchSettingsPayload();
+        const saved = await bridge.settings.saveSearchSettings(search);
         if (saved === false) {
           setSettingsToast('搜索配置保存失败，请重试');
           return false;

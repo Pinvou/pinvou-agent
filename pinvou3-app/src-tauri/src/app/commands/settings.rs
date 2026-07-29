@@ -273,12 +273,14 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
 #[tauri::command]
 pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
     let model_id = model.id.clone();
-    let mut prefs = UserPrefs::load();
-    let old = prefs.model_by_id(&model.id).cloned();
-    let model = apply_model_credential(model, old.as_ref())
-        .map_err(|e| sanitize_command_error("save_model", e))?;
-    prefs.upsert_model(model);
-    prefs.save().map_err(|e| format!("save_model: {e:?}"))?;
+    UserPrefs::update_transaction(|prefs| {
+        let old = prefs.model_by_id(&model.id).cloned();
+        let model = apply_model_credential(model, old.as_ref())
+            .map_err(|e| sanitize_command_error("save_model", e))?;
+        prefs.upsert_model(model);
+        Ok(())
+    })
+    .map_err(|e| sanitize_command_error("save_model", e))?;
     pool.mark_model_updated(&model_id);
     Ok(())
 }
@@ -286,32 +288,38 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
-    let mut prefs = UserPrefs::load();
-    if prefs.advanced.saved_models.len() <= 1 {
-        return Err("至少保留一个模型".to_string());
-    }
-    if let Some(reference) = prefs
-        .model_by_id(&id)
-        .and_then(|m| m.credential_ref.clone())
-    {
-        SystemCredentialStore::new()
-            .delete(&reference)
-            .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
-    }
-    prefs.remove_model(&id);
-    prefs.save().map_err(|e| format!("delete_model: {e:?}"))
+    UserPrefs::update_transaction(|prefs| {
+        if prefs.advanced.saved_models.len() <= 1 {
+            return Err("至少保留一个模型".to_string());
+        }
+        if let Some(reference) = prefs
+            .model_by_id(&id)
+            .and_then(|m| m.credential_ref.clone())
+        {
+            SystemCredentialStore::new()
+                .delete(&reference)
+                .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
+        }
+        prefs.remove_model(&id);
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(|e| sanitize_command_error("delete_model", e))
 }
 
 /// 设全局默认模型(新建会话继承它)。不打断已在用的会话——它们各自保持 spawn
 /// 时的模型,想换在该会话的 chip 里切。
 #[tauri::command]
 pub async fn set_active_model(id: String) -> Result<(), String> {
-    let mut prefs = UserPrefs::load();
-    if prefs.model_by_id(&id).is_none() {
-        return Err(format!("model not found: {id}"));
-    }
-    prefs.advanced.active_model_id = Some(id);
-    prefs.save().map_err(|e| format!("set_active_model: {e:?}"))
+    UserPrefs::update_transaction(|prefs| {
+        if prefs.model_by_id(&id).is_none() {
+            return Err(format!("model not found: {id}"));
+        }
+        prefs.advanced.active_model_id = Some(id);
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(|e| sanitize_command_error("set_active_model", e))
 }
 
 /// 切某会话当前模型(聊天 chip 热切):写 per-session 绑定 + evict 该会话 engine,
@@ -657,10 +665,58 @@ pub async fn test_model_connection(
 ///
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
-pub async fn update_settings(prefs: UserPrefs) -> Result<(), String> {
-    prepare_prefs_for_save(prefs)?
-        .save()
-        .map_err(|e| format!("save settings failed: {e:?}"))
+pub async fn update_settings(prefs: UserPrefs) -> Result<UserPrefs, String> {
+    persist_general_settings(prefs)
+}
+
+fn merge_general_settings(current: &mut UserPrefs, mut incoming: UserPrefs) {
+    // 这些字段有各自的专用写命令。通用设置请求即使携带旧快照，也无权覆盖它们。
+    incoming.search = current.search.clone();
+    incoming.pet = current.pet;
+    incoming.advanced.saved_models = current.advanced.saved_models.clone();
+    incoming.advanced.active_model_id = current.advanced.active_model_id.clone();
+    incoming.advanced.local_vllm_bootstrapped = current.advanced.local_vllm_bootstrapped;
+    incoming.advanced.local_vllm_setup_declined = current.advanced.local_vllm_setup_declined;
+    *current = incoming;
+}
+
+fn persist_general_settings(incoming: UserPrefs) -> Result<UserPrefs, String> {
+    UserPrefs::update_transaction(|current| {
+        merge_general_settings(current, incoming);
+        *current = prepare_prefs_for_save(current.clone())?;
+        Ok(())
+    })
+    .map(refresh_safe_prefs)
+}
+
+fn persist_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
+    UserPrefs::update_transaction(|prefs| {
+        prefs.search = search;
+        *prefs = prepare_prefs_for_save(prefs.clone())?;
+        Ok(())
+    })
+    .map(refresh_safe_prefs)
+    .map_err(|e| sanitize_command_error("save search settings", e))
+}
+
+pub(crate) fn persist_web_settings(
+    memory_enabled: bool,
+    search: SearchPrefs,
+) -> Result<UserPrefs, String> {
+    UserPrefs::update_transaction(|prefs| {
+        prefs.memory_enabled = memory_enabled;
+        prefs.search = search;
+        *prefs = prepare_prefs_for_save(prefs.clone())?;
+        Ok(())
+    })
+    .map(refresh_safe_prefs)
+    .map_err(|e| sanitize_command_error("save web settings", e))
+}
+
+/// 仅更新搜索配置。模型等其他偏好始终以磁盘最新值为准，避免前端旧快照整份回写。
+#[tauri::command]
+pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
+    persist_search_settings(search)
 }
 
 /// 保存设置后立即重启应用（模型/后端切换后需要重启才能生效）。
@@ -669,10 +725,45 @@ pub async fn save_settings_and_restart(
     prefs: UserPrefs,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    prepare_prefs_for_save(prefs)?
-        .save()
-        .map_err(|e| format!("save settings failed: {e:?}"))?;
+    persist_general_settings(prefs)?;
     eprintln!("[pinvou3-app] settings saved, restarting app...");
     app.restart();
 }
+
+/// 仅保存搜索配置后重启，避免搜索设置覆盖同时发生变化的模型列表。
+#[tauri::command]
+pub async fn save_search_settings_and_restart(
+    search: SearchPrefs,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    persist_search_settings(search)?;
+    eprintln!("[pinvou3-app] search settings saved, restarting app...");
+    app.restart();
+}
 use super::prelude::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::prefs::Language;
+
+    #[test]
+    fn general_settings_merge_preserves_specialized_domains() {
+        let mut current = UserPrefs::default();
+        current.migrate_models();
+        current.search.provider = SearchProvider::Metaso;
+        current.pet.enabled = true;
+        let saved_models = current.advanced.saved_models.clone();
+        let active_model_id = current.advanced.active_model_id.clone();
+
+        let mut incoming = UserPrefs::default();
+        incoming.language = Language::En;
+        merge_general_settings(&mut current, incoming);
+
+        assert_eq!(current.language, Language::En);
+        assert_eq!(current.search.provider, SearchProvider::Metaso);
+        assert!(current.pet.enabled);
+        assert_eq!(current.advanced.saved_models, saved_models);
+        assert_eq!(current.advanced.active_model_id, active_model_id);
+    }
+}

@@ -526,10 +526,12 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
     if enabled {
         create_or_show(&app)?;
     }
-    let mut prefs = crate::platform::prefs::UserPrefs::load();
-    let was_enabled = prefs.pet.enabled;
-    prefs.pet.enabled = enabled;
-    if let Err(error) = prefs.save() {
+    let mut was_enabled = false;
+    if let Err(error) = crate::platform::prefs::UserPrefs::update_transaction(|prefs| {
+        was_enabled = prefs.pet.enabled;
+        prefs.pet.enabled = enabled;
+        Ok(())
+    }) {
         if enabled && !was_enabled {
             if let Some(win) = app.get_webview_window(PET_LABEL) {
                 if window_existed {

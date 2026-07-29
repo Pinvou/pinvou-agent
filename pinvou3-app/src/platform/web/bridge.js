@@ -5382,8 +5382,7 @@
   async function saveSettings(prefs) {
     const previous = state.settings;
     try {
-      await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { prefs: prefs });
-      state.settings = prefs;
+      state.settings = await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { prefs: prefs });
       notify();
       return true;
     } catch (e) {
@@ -5394,11 +5393,46 @@
     }
   }
   async function saveSettingsAndRestart(prefs) {
+    if (IS_WEB) {
+      console.warn("saveSettingsAndRestart is unsupported by the Web host");
+      return false;
+    }
     state.settings = prefs;
     try {
       await invoke("save_settings_and_restart", { prefs: prefs });
     } catch (e) {
       console.warn("save settings and restart failed", e);
+    }
+  }
+  async function saveSearchSettings(search) {
+    const previous = state.settings;
+    try {
+      if (IS_WEB) {
+        const prefs = Object.assign({}, state.settings || {}, { search: search });
+        state.settings = await invoke("web_access_update_settings", { prefs: prefs });
+      } else {
+        state.settings = await invoke("update_search_settings", { search: search });
+      }
+      notify();
+      return true;
+    } catch (e) {
+      console.warn("save search settings failed", e);
+      state.settings = previous;
+      notify();
+      return false;
+    }
+  }
+  async function saveSearchSettingsAndRestart(search) {
+    if (IS_WEB) {
+      console.warn("saveSearchSettingsAndRestart is unsupported by the Web host");
+      return false;
+    }
+    try {
+      await invoke("save_search_settings_and_restart", { search: search });
+      return true;
+    } catch (e) {
+      console.warn("save search settings and restart failed", e);
+      return false;
     }
   }
   async function submitFeedback(request) {
@@ -7648,6 +7682,8 @@
     setSelectedPet: setSelectedPet,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
+    saveSearchSettings: saveSearchSettings,
+    saveSearchSettingsAndRestart: saveSearchSettingsAndRestart,
     submitFeedback: submitFeedback,
     discoverLocalVllm: discoverLocalVllm,
     detectLocalVllmSetup: detectLocalVllmSetup,
@@ -7883,7 +7919,7 @@
     scheduled: domain(["loadScheduledTasks", "readScheduledTask", "loadScheduledTaskRuns", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "clearScheduledTaskSelection", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "toggleScheduledTaskPinned", "deleteScheduledTask", "runScheduledTaskNow", "pickFolder", "startScheduledTaskChat", "confirmScheduledTaskDraft", "clearScheduledTaskDraft", "openScheduledRunChat", "exitScheduledRunChat"]),
     sessions: domain(["createNewSession", "switchToSession", "deleteSession", "renameSession", "toggleSessionPinned", "archiveSession", "restoreArchivedSession"]),
     monitor: domain(["startMonitorPolling", "stopMonitorPolling", "clearMonitorStats"]),
-    settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "testSearchProvider"]),
+    settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "saveSearchSettings", "saveSearchSettingsAndRestart", "testSearchProvider"]),
     feedback: domain(["submitFeedback"]),
     vllm: domain(["discoverLocalVllm", "detectLocalVllmSetup", "bootstrapLocalVllm", "dismissVllmSetup", "declineVllmSetup"]),
     models: domain(["getEffectiveModelConfig", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection"]),

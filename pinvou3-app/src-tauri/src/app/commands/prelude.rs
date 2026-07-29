@@ -12,7 +12,7 @@ pub(super) use crate::features::sessions::{SessionKind, SessionStore};
 pub(super) use crate::platform::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };
-pub(super) use crate::platform::prefs::{SavedModel, SearchProvider, UserPrefs};
+pub(super) use crate::platform::prefs::{SavedModel, SearchPrefs, SearchProvider, UserPrefs};
 
 /// Keep the Tauri transport boundary in `app::commands` while domain modules
 /// retain the implementation. The generated function deliberately keeps the
