@@ -121,6 +121,10 @@ assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');
 assert.match(webBridge, /state\.composerDraft = buf\.composerDraft/,
   'WebUI session switching must restore the destination composer draft');
+assert.match(webBridge, /var draftComposer = realId \? "" : \(state\.composerDraft \|\| ""\)/,
+  'WebUI background session events must snapshot an unmaterialized draft');
+assert.match(webBridge, /if \(!realId\) restoreBuffer\.composerDraft = draftComposer/,
+  'WebUI background session events must restore an unmaterialized draft');
 assert.match(workflowCommands, /start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?emit_session_event\(&app, "session:list_changed", &sid, "created"\)/);
 assert.match(remoteControlCommands, /web_access_start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?start_skill_session\(name, Some\(false\), app, store, pool\)/);
 for (const eventName of ['session:model_changed', 'session:persona_changed']) {

@@ -612,6 +612,37 @@ async function expand(page) {
     draftInputFound && draftEntered && draftViewChanged && restoredDraft === composerDraft &&
     newSessionDraft === '' && restoredSessionDraft === composerDraft,
     JSON.stringify({ draftInputFound, draftEntered, draftViewChanged, restoredDraft, newSessionDraft, restoredSessionDraft }));
+
+  // 尚未物化的新对话没有 session buffer。后台已有 session 收到事件时，
+  // 临时切换工作集再恢复，仍必须保住当前输入框草稿。
+  await clickText(page, '新对话');
+  await sleep(300);
+  const pendingDraft = '后台事件期间也不能丢失的新对话草稿';
+  const pendingDraftResult = await page.evaluate(async (value) => {
+    const textarea = document.querySelector('[data-testid="chat-composer-input"]');
+    if (!textarea) return { inputFound: false };
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['chat:usage'] || [])) {
+      await handler({
+        event: 'chat:usage',
+        payload: { session_id: 's1', input_tokens: 42 },
+      });
+    }
+    return {
+      inputFound: true,
+      activeSessionId: window.TauriBridge.state.getMany(['sessions']).activeSessionId,
+      bridgeDraft: window.TauriBridge.chat.getComposerDraft(),
+      visibleDraft: textarea.value,
+    };
+  }, pendingDraft);
+  rec('③f 新对话草稿不被后台 session 事件清空',
+    pendingDraftResult.inputFound &&
+    pendingDraftResult.activeSessionId === null &&
+    pendingDraftResult.bridgeDraft === pendingDraft &&
+    pendingDraftResult.visibleDraft === pendingDraft,
+    JSON.stringify(pendingDraftResult));
   await page.evaluate(() => {
     const textarea = document.querySelector('[data-testid="chat-composer-input"]');
     if (!textarea) return;
@@ -619,6 +650,8 @@ async function expand(page) {
     setter.call(textarea, '');
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  await clickText(page, '第三季度财报分析');
+  await sleep(900);
 
   // 实时事件也必须使用同一 producer 判定：validator 的 shell JSON 不能进产物面板，
   // 真 MCP producer 返回路径仍要被跟踪。
