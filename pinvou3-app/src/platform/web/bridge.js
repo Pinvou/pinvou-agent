@@ -917,7 +917,7 @@
             });
             var liveChatItems = rawLiveChatItems.filter(function (item) {
               if (!item || item.type === "user" || item.type === "assistant" || item.type === "tool") return false;
-              if (item.turnErrorNotice) return false;
+              if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
               // Plan cards need semantic matching by their plan snapshot. Their
               // generic hydration key includes ticket/action state and would
               // append an active live duplicate after the durable frozen card.
@@ -4183,6 +4183,20 @@
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
+      if (error) {
+        var finalNotice = "⚠️ " + error;
+        var finalNoticeItem = state.chatItems.find(function (item) {
+          return item && item.turnErrorNotice && item.text === finalNotice;
+        });
+        if (finalNoticeItem) {
+          finalNoticeItem.legacyConversationOnly = true;
+        } else {
+          addSystemItem(finalNotice, {
+            turnErrorNotice: true,
+            legacyConversationOnly: true,
+          });
+        }
+      }
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。

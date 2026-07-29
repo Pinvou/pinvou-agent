@@ -518,6 +518,20 @@
       var error = e.payload && e.payload.error;
       recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
+      if (error) {
+        var finalNotice = "⚠️ " + error;
+        var finalNoticeItem = state.chatItems.find(function (item) {
+          return item && item.turnErrorNotice && item.text === finalNotice;
+        });
+        if (finalNoticeItem) {
+          finalNoticeItem.legacyConversationOnly = true;
+        } else {
+          addSystemItem(finalNotice, {
+            turnErrorNotice: true,
+            legacyConversationOnly: true,
+          });
+        }
+      }
       flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。

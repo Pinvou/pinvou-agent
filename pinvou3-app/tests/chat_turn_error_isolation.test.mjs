@@ -12,6 +12,10 @@ const chatSource = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
 const chatEventsSource = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
 const desktopBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 const webBridgeSource = read('src', 'platform', 'web', 'bridge.js');
+const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
+const { conversationItemsForMode } = await import(
+  '../src/features/conversation/deepseek-conversation.js'
+);
 
 const sandbox = { window: {} };
 vm.runInNewContext(chatSource, sandbox, { filename: 'chat.js' });
@@ -87,28 +91,48 @@ assert.equal(
 );
 assert.ok(state.chatItems.some(item => item.type === 'user' && item.text === '重试'));
 
+const legacyFinalError = {
+  id: 3,
+  type: 'system',
+  text: '⚠️ 最终模型错误',
+  turnErrorNotice: true,
+  legacyConversationOnly: true,
+};
+assert.deepEqual(
+  conversationItemsForMode([legacyFinalError], false),
+  [legacyFinalError],
+  '旧版会话界面必须继续显示最终错误',
+);
+assert.deepEqual(
+  conversationItemsForMode([legacyFinalError], true),
+  [],
+  '新版时间线已呈现最终错误，不应重复投影兼容气泡',
+);
+
 const doneSection = chatEventsSource.slice(
   chatEventsSource.indexOf('listen("chat:done"'),
   chatEventsSource.indexOf('listen("chat:usage"'),
 );
-assert.doesNotMatch(
-  doneSection,
-  /if \(error\) addSystemItem/,
-  '失败终态应由时间线承载，不得再生成重复系统气泡',
-);
+assert.match(doneSection, /legacyConversationOnly: true/);
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
 assert.match(chatEventsSource, /addSystemItem\(notice, \{ turnErrorNotice: true \}\)/);
-assert.match(desktopBridgeSource, /if \(item\.turnErrorNotice\) return false/);
+assert.match(
+  desktopBridgeSource,
+  /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
+);
+assert.match(chatViewSource, /conversationItemsForMode\(visibleChatItems, useUnifiedConversationUi\)/);
 
 assert.match(webBridgeSource, /turnErrorNotice && item\.text === notice/);
-assert.match(webBridgeSource, /if \(item\.turnErrorNotice\) return false/);
-assert.doesNotMatch(
+assert.match(
+  webBridgeSource,
+  /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
+);
+assert.match(
   webBridgeSource.slice(
     webBridgeSource.indexOf('listen("chat:done"'),
     webBridgeSource.indexOf('listen("chat:usage"'),
   ),
-  /if \(error\) addSystemItem/,
-  'WebUI 也不得重复渲染失败终态',
+  /legacyConversationOnly: true/,
 );
 
 console.log('chat turn error isolation: ok');
