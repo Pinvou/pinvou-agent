@@ -39,7 +39,7 @@
     "test:session-management": "node tests/session_management_logic.test.mjs",
     "test:chat-input-limit": "node tests/chat_input_limit_logic.test.js",
     "test:chat-error-isolation": "node tests/chat_turn_error_isolation.test.mjs",
-    "test:attachment-drop": "node tests/attachment_drop_logic.test.mjs && node tests/attachment_drop_bridge.test.mjs",
+    "test:attachment-drop": "node tests/attachment_drop_logic.test.mjs && node tests/attachment_drop_bridge.test.mjs && node tests/attachment_bubble_logic.test.mjs",
     "test:voice-input": "node tests/voice_input_error_logic.test.js",
     "test:voice-asr-cancel": "node tests/voice_asr_cancel_logic.test.js",
     "test:bridge-protocol": "node tests/bridge_domain_protocol.test.mjs",

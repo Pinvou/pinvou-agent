@@ -8,7 +8,8 @@ import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../pe
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
-import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
+import { AcFmtIcon, ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
+import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
@@ -26,6 +27,7 @@ import {
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
+import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import {
   createPinvouModeScopeKey,
@@ -2170,14 +2172,38 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const actBtn = isDark
         ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
         : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
+      // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
+      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(item.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
-            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
+            {attachmentNames.length > 0 && (
+              <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
+                {attachmentNames.map((name, index) => {
+                  const kind = _artifactKind(name);
+                  const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
+                  return (
+                    <span
+                      key={`${name}-${index}`}
+                      title={name}
+                      className={`inline-flex max-w-[280px] items-center gap-2 rounded-[14px] border px-2 py-1.5 text-[12px] leading-4 shadow-sm ${
+                        isDark ? 'border-white/10 bg-[#2A2B2E] text-[#E3E3E3]' : 'border-black/[0.08] bg-white text-[#1F1F1F]'
+                      }`}
+                    >
+                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px]" style={{ background: fmt.color }}>
+                        <AcFmtIcon kind={kind} className="h-3.5 w-3.5 text-white" />
+                      </span>
+                      <span className="truncate font-medium">{name}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            {bodyText && <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
               unified
                 ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
                 : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
-            }`}>{item.text}</div>
+            }`}>{bodyText}</div>}
             {deliveryState && (
               <div data-testid={`message-delivery-${deliveryState}`} title={item.deliveryError || undefined} className={`mt-1 flex items-center gap-1.5 pr-1 text-[11px] ${
                 deliveryState === 'failed' || deliveryState === 'unknown'

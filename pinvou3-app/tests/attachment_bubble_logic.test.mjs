@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { splitAttachmentLine } from '../src/features/attachments/attachment-message.js';
+
+// ── splitAttachmentLine: 与 bridge 侧 displayText 拼装约定一一对应 ──
+assert.deepEqual(
+  splitAttachmentLine('看一下这个\n\n📎 PINVOU-M0-开源决策基线.md'),
+  { text: '看一下这个', attachments: ['PINVOU-M0-开源决策基线.md'] },
+  'text plus attachment line must split into body and names',
+);
+assert.deepEqual(
+  splitAttachmentLine('📎 报告.pdf · 数据.xlsx'),
+  { text: '', attachments: ['报告.pdf', '数据.xlsx'] },
+  'attachment-only messages must keep an empty body',
+);
+assert.deepEqual(
+  splitAttachmentLine('多行正文\n第二行\n\n📎 截图.png'),
+  { text: '多行正文\n第二行', attachments: ['截图.png'] },
+  'only the trailing attachment line may be split away',
+);
+assert.deepEqual(
+  splitAttachmentLine('正文提到 📎 这个符号但没有附件'),
+  { text: '正文提到 📎 这个符号但没有附件', attachments: [] },
+  'inline paperclip text must stay in the body',
+);
+assert.deepEqual(
+  splitAttachmentLine('正文\n📎 不是附件行'),
+  { text: '正文\n📎 不是附件行', attachments: [] },
+  'without the blank-line separator the line belongs to the body',
+);
+assert.deepEqual(
+  splitAttachmentLine('正文\n\n📎 名字.md\n还有别的'),
+  { text: '正文\n\n📎 名字.md\n还有别的', attachments: [] },
+  'an attachment line must be the final line of the message',
+);
+assert.deepEqual(splitAttachmentLine(''), { text: '', attachments: [] });
+assert.deepEqual(splitAttachmentLine(null), { text: '', attachments: [] });
+
+// ── UserBubble 结构契约:附件独立气泡 + 类型图标,正文为空时不渲染空气泡 ──
+const chatViewSource = await readFile(
+  new URL('../src/features/chat/ChatView.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(
+  chatViewSource,
+  /splitAttachmentLine\(item\.text\)/,
+  'UserBubble must derive body text and attachments from the shared parser',
+);
+assert.match(
+  chatViewSource,
+  /\{bodyText && <div className=\{`min-w-0 max-w-full break-words/,
+  'attachment-only messages must not render an empty text bubble',
+);
+assert.match(
+  chatViewSource,
+  /_artifactKind\(name\)/,
+  'attachment bubbles must reuse the shared file-type mapping',
+);
+assert.match(
+  chatViewSource,
+  /AcFmtIcon kind=\{kind\}/,
+  'attachment bubbles must reuse the shared file-type glyphs instead of a new icon dependency',
+);
+
+console.log('attachment bubble logic tests passed');
