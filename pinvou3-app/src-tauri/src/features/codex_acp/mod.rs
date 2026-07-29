@@ -1481,6 +1481,10 @@ impl AcpPool {
         if runtime.busy.swap(true, Ordering::AcqRel) {
             bail!("ACP 会话仍在生成");
         }
+        if let Err(error) = self.session_store.touch_activity(session_id) {
+            runtime.busy.store(false, Ordering::Release);
+            return Err(error).context("更新 ACP 会话最近活跃时间失败");
+        }
         let pool = self.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {

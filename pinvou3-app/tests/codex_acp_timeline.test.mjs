@@ -214,6 +214,11 @@ try {
     'global sessions must visually identify Codex records');
   assert.ok(main.includes("useState('pinned_first')"),
     'pinned sessions float first by default; unpinned work and code sessions still mix by recent update time');
+  assert.match(
+    main,
+    /if \(type === 'turn_started'\) \{[\s\S]*?refreshCodexSessions\(\)\.catch\(\(\) => \{\}\);[\s\S]*?\} else if \(type === 'turn_completed'\)/,
+    'an accepted ACP turn must refresh the shared recent-session list while it is still running',
+  );
   assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode || '代码' }")
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
@@ -254,6 +259,8 @@ try {
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
+  assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
+    'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('Codex 会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');

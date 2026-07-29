@@ -266,6 +266,7 @@ function workspaceDisplayName(path) {
           if (!sessionId || !type) return;
           if (type === 'turn_started') {
             setCodexBusyBySession(current => ({ ...current, [sessionId]: true }));
+            refreshCodexSessions().catch(() => {});
           } else if (type === 'turn_completed') {
             setCodexBusyBySession(current => ({ ...current, [sessionId]: false }));
             refreshCodexSessions().catch(() => {});
