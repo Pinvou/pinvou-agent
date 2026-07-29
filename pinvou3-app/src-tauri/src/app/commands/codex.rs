@@ -54,6 +54,16 @@ pub async fn prepare_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpS
 }
 
 #[tauri::command]
+pub async fn install_codex_homebrew(
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpStatus, String> {
+    acp_pool
+        .install_via_homebrew()
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
 pub async fn login_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpStatus, String> {
     acp_pool
         .login()

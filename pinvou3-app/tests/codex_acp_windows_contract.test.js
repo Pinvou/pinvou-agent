@@ -65,8 +65,8 @@ const {
 
 assert.match(
   capabilities,
-  /matches!\(os,\s*"linux"\s*\|\s*"windows"\)/,
-  "Windows and Linux must advertise Codex ACP capability",
+  /matches!\(os,\s*"linux"\s*\|\s*"windows"\s*\|\s*"macos"\)/,
+  "Windows、Linux 和 macOS must advertise Codex ACP capability",
 );
 assert.match(
   codexAcpWindows,

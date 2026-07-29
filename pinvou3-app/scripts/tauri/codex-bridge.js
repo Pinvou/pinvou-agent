@@ -364,11 +364,11 @@ function prepareWindowsCodexBridge({
   }
 }
 
-function prepareLinuxCodexBridge({
+function prepareCodexBridge({
   platform = process.platform,
   spawn = spawnSync,
 } = {}) {
-  if (platform !== "linux") return false;
+  if (platform !== "linux" && platform !== "darwin") return false;
   const script = path.join(APP_ROOT, "scripts", "prepare-codex-bridge-runtime.sh");
   const result = spawn(script, [], {
     cwd: APP_ROOT,
@@ -383,8 +383,8 @@ function prepareLinuxCodexBridge({
 
 function preparePlatformCodexBridge(options = {}) {
   const platform = options.platform ?? process.platform;
-  if (platform === "linux") {
-    return prepareLinuxCodexBridge({ ...options, platform });
+  if (platform === "linux" || platform === "darwin") {
+    return prepareCodexBridge({ ...options, platform });
   }
   if (platform === "win32") {
     return prepareWindowsCodexBridge({ ...options, platform });
@@ -421,7 +421,7 @@ module.exports = {
   hideWindowsChildProcesses,
   isPrepared,
   main,
-  prepareLinuxCodexBridge,
+  prepareCodexBridge,
   preparePlatformCodexBridge,
   prepareWindowsCodexBridge,
   windowsBridgeOverlay,

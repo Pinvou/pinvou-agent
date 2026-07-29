@@ -22,7 +22,7 @@ pub(crate) fn current() -> DesktopCapabilities {
 }
 
 pub(crate) fn supports_codex_acp(os: &str) -> bool {
-    matches!(os, "linux" | "windows")
+    matches!(os, "linux" | "windows" | "macos")
 }
 
 pub(crate) const fn is_windows() -> bool {
@@ -62,9 +62,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_acp_is_available_on_linux_and_windows() {
+    fn codex_acp_is_available_on_desktop_platforms() {
         assert!(supports_codex_acp("linux"));
         assert!(supports_codex_acp("windows"));
-        assert!(!supports_codex_acp("macos"));
+        assert!(supports_codex_acp("macos"));
+        assert!(!supports_codex_acp("android"));
     }
 }

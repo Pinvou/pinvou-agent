@@ -18,6 +18,10 @@ use super::{diagnostics, platform};
 
 pub const MANAGED_CODEX_VERSION: &str = "0.144.6";
 
+/// codex-acp 1.1.5 验证过的最低 Codex CLI 版本。
+/// 所有运行时来源都必须满足，显式覆盖路径也不能绕过兼容性门禁。
+pub const MIN_CODEX_VERSION: &str = "0.144.0";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexRuntimeSource {
@@ -81,7 +85,7 @@ pub fn resolve_codex_path(
 ) -> Option<ResolvedCodex> {
     if let Some(path) = std::env::var_os("PINVOU3_CODEX_PATH").map(PathBuf::from) {
         if let Some(resolved) = probe_codex(path, CodexRuntimeSource::Override) {
-            if version_meets_minimum(&resolved.version) {
+            if runtime_version_is_compatible(&resolved.version) {
                 return Some(resolved);
             }
         }
@@ -106,18 +110,36 @@ fn probe_codex(path: PathBuf, source: CodexRuntimeSource) -> Option<ResolvedCode
     })
 }
 
+/// 在满足最低兼容版本的候选中选版本最新者。
 fn select_newest_eligible<const N: usize>(
     candidates: [Option<ResolvedCodex>; N],
 ) -> Option<ResolvedCodex> {
     candidates
         .into_iter()
         .flatten()
-        .filter(|candidate| version_meets_minimum(&candidate.version))
+        .filter(|candidate| runtime_version_is_compatible(&candidate.version))
         .max_by(|left, right| compare_versions(&left.version, &right.version))
 }
 
+fn runtime_version_is_compatible(version: &str) -> bool {
+    version_at_least(version, MIN_CODEX_VERSION)
+}
+
 pub fn version_meets_minimum(version: &str) -> bool {
-    compare_versions(version, MANAGED_CODEX_VERSION).is_ge()
+    version_at_least(version, MANAGED_CODEX_VERSION)
+}
+
+/// 版本字符串是否不低于指定最低版本。
+pub fn version_at_least(version: &str, minimum: &str) -> bool {
+    compare_versions(version, minimum).is_ge()
+}
+
+/// 探测系统 PATH 中的 codex 存在但版本低于 MIN_CODEX_VERSION 的情况，
+/// 供 status 上报 system_codex_incompatible（区分「未安装」与「版本过低」）。
+pub fn system_codex_incompatible(system_codex: Option<PathBuf>) -> bool {
+    system_codex
+        .and_then(|path| probe_codex(path, CodexRuntimeSource::System))
+        .is_some_and(|resolved| !runtime_version_is_compatible(&resolved.version))
 }
 
 pub fn is_managed_newer_than(version: &str) -> bool {
@@ -557,6 +579,82 @@ mod tests {
         assert!(!version_meets_minimum("0.139.0"));
         assert!(version_meets_minimum("0.144.6"));
         assert!(version_meets_minimum("0.145.0"));
+    }
+
+    #[test]
+    fn min_codex_version_enforced_by_semver_order() {
+        assert!(runtime_version_is_compatible("0.144.0"));
+        assert!(runtime_version_is_compatible("0.144.6"));
+        assert!(runtime_version_is_compatible("0.145.0"));
+        assert!(runtime_version_is_compatible("1.0.0"));
+        assert!(!runtime_version_is_compatible("0.143.9"));
+        assert!(!runtime_version_is_compatible("0.100.0"));
+        assert!(!runtime_version_is_compatible("unknown"));
+    }
+
+    #[test]
+    fn every_runtime_source_rejects_incompatible_versions() {
+        for source in [
+            CodexRuntimeSource::Override,
+            CodexRuntimeSource::System,
+            CodexRuntimeSource::Managed,
+            CodexRuntimeSource::LegacyBundled,
+        ] {
+            let selected = select_newest_eligible([Some(ResolvedCodex {
+                path: PathBuf::from(source.as_str()),
+                source,
+                version: "0.143.9".to_string(),
+            })]);
+            assert!(selected.is_none(), "{source:?} 不应绕过最低 Codex 版本门禁");
+        }
+    }
+
+    /// 写一个打印指定版本的假 codex 脚本，验证 System 来源的最低版本门禁。
+    /// 依赖可执行位，仅在类 Unix 平台运行（由调用方通过 platform::unix_like() 门控）。
+    fn fake_codex(version: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-version-test-{}-{version}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create fake codex directory");
+        let path = root.join("codex");
+        std::fs::write(&path, format!("#!/bin/sh\necho \"codex {version}\"\n"))
+            .expect("write fake codex");
+        platform::make_executable(&path).expect("chmod fake codex");
+        path
+    }
+
+    #[test]
+    fn system_codex_below_min_version_is_rejected() {
+        if !platform::unix_like() {
+            return;
+        }
+        let outdated = fake_codex("0.100.0");
+        let resolved = resolve_codex_path(Some(outdated.clone()), None);
+        assert!(
+            resolved
+                .as_ref()
+                .is_none_or(|resolved| resolved.source != CodexRuntimeSource::System),
+            "低版本系统 codex 不应作为 System 来源入选"
+        );
+        assert!(system_codex_incompatible(Some(outdated.clone())));
+        let _ = std::fs::remove_dir_all(outdated.parent().expect("fake codex parent"));
+    }
+
+    #[test]
+    fn system_codex_at_min_version_is_accepted() {
+        if !platform::unix_like() {
+            return;
+        }
+        let current = fake_codex(MIN_CODEX_VERSION);
+        let resolved = resolve_codex_path(Some(current.clone()), None);
+        assert_eq!(
+            resolved.map(|resolved| resolved.source),
+            Some(CodexRuntimeSource::System)
+        );
+        assert!(!system_codex_incompatible(Some(current.clone())));
+        let _ = std::fs::remove_dir_all(current.parent().expect("fake codex parent"));
     }
 
     #[test]

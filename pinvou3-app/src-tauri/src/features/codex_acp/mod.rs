@@ -45,8 +45,8 @@ use deepseek_tui::session_manager::SessionMetadata;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use runtime::{
-    install_managed_codex, is_managed_newer_than, resolve_codex_path, ResolvedCodex,
-    MANAGED_CODEX_VERSION,
+    install_managed_codex, is_managed_newer_than, resolve_codex_path, system_codex_incompatible,
+    ResolvedCodex, MANAGED_CODEX_VERSION, MIN_CODEX_VERSION,
 };
 use store::SessionAgentRecord;
 pub use store::{
@@ -166,6 +166,16 @@ pub struct CodexAcpStatus {
     pub codex_version: Option<String>,
     pub runtime_source: Option<&'static str>,
     pub managed_codex_version: &'static str,
+    /// codex-acp 验证过的最低 Codex CLI 版本（所有运行时来源统一强制）。
+    pub min_codex_version: &'static str,
+    /// 当前平台的 Codex 安装方式：
+    /// "managed_download"（linux/windows）/ "homebrew"（macOS）/ "manual"（其他）。
+    pub install_method: &'static str,
+    /// 仅 macOS 探测 Homebrew；其他平台恒 false。
+    pub brew_available: bool,
+    /// 系统 PATH 里找到了 codex 但版本低于 min_codex_version，
+    /// 用于 UI 区分「版本过低」与「未安装」。
+    pub system_codex_incompatible: bool,
     pub download_required: bool,
     pub downloaded_bytes: u64,
     pub download_total_bytes: u64,
@@ -403,6 +413,8 @@ struct RuntimeProbeCache {
     initialized: bool,
     node_version: Option<String>,
     codex: Option<ResolvedCodex>,
+    brew_available: bool,
+    system_codex_incompatible: bool,
 }
 
 impl AcpPool {
@@ -655,6 +667,10 @@ impl AcpPool {
             codex_version,
             runtime_source: codex.as_ref().map(|resolved| resolved.source.as_str()),
             managed_codex_version: MANAGED_CODEX_VERSION,
+            min_codex_version: MIN_CODEX_VERSION,
+            install_method: platform::install_method(),
+            brew_available: probe.brew_available,
+            system_codex_incompatible: probe.system_codex_incompatible,
             download_required: bridge_ready && !codex_available,
             downloaded_bytes,
             download_total_bytes,
@@ -706,7 +722,9 @@ impl AcpPool {
         let detected = tokio::task::spawn_blocking(move || RuntimeProbeCache {
             initialized: true,
             node_version: node.as_deref().and_then(installed_node_version),
-            codex: resolve_codex_path(system_codex, legacy_codex),
+            codex: resolve_codex_path(system_codex.clone(), legacy_codex),
+            brew_available: platform::brew_available(),
+            system_codex_incompatible: system_codex_incompatible(system_codex),
         })
         .await;
 
@@ -789,6 +807,29 @@ impl AcpPool {
             diagnostics::write(&operation_id, "prepare:already_available", "result=success");
             return Ok(status);
         }
+        match platform::install_method() {
+            "managed_download" => {}
+            "homebrew" => {
+                // macOS 不提供托管下载产物，引导用户走 Homebrew 安装系统 Codex。
+                diagnostics::write(
+                    &operation_id,
+                    "prepare:managed_download_unsupported",
+                    "install_method=homebrew",
+                );
+                bail!(
+                    "macOS 暂不支持下载托管 Codex，请点击「使用 Homebrew 安装」自动安装，\
+                     或先安装 Homebrew（https://brew.sh）后手动执行 brew install --cask codex"
+                );
+            }
+            _ => {
+                diagnostics::write(
+                    &operation_id,
+                    "prepare:managed_download_unsupported",
+                    format!("install_method={}", platform::install_method()),
+                );
+                bail!("当前平台不支持下载托管 Codex，请手动安装 Codex CLI 后重试");
+            }
+        }
         if self.installing.swap(true, Ordering::AcqRel) {
             diagnostics::write(
                 &operation_id,
@@ -814,6 +855,82 @@ impl AcpPool {
             Err(error) => {
                 let detail = format!("{error:#}");
                 diagnostics::write(&operation_id, "prepare:failed", &detail);
+                *self.last_error.write() = Some(format!(
+                    "{detail}（诊断编号：{operation_id}；日志：{}）",
+                    diagnostics::log_path().display()
+                ));
+                Err(error)
+            }
+        }
+    }
+
+    /// macOS 上通过 Homebrew 安装系统 Codex（cask 名 codex）。
+    pub async fn install_via_homebrew(&self) -> Result<CodexAcpStatus> {
+        let operation_id = diagnostics::operation_id("homebrew-install");
+        if platform::install_method() != "homebrew" {
+            bail!("Homebrew 安装仅支持 macOS");
+        }
+        if !platform::brew_available() {
+            diagnostics::write(&operation_id, "homebrew:unavailable", "result=rejected");
+            bail!(
+                "未检测到 Homebrew。请先从 https://brew.sh 安装 Homebrew，\
+                 再点击「使用 Homebrew 安装」安装 Codex，或手动执行 brew install --cask codex"
+            );
+        }
+        if self.installing.swap(true, Ordering::AcqRel) {
+            diagnostics::write(
+                &operation_id,
+                "homebrew:already_installing",
+                "result=rejected",
+            );
+            bail!("Codex 正在通过 Homebrew 安装，请稍候");
+        }
+        diagnostics::write(&operation_id, "homebrew:start", "cask=codex");
+        // brew install 是阻塞式子进程，放到 spawn_blocking 避免卡住 async runtime。
+        let result = tokio::task::spawn_blocking(|| {
+            let run_brew = |args: &[&str]| -> Result<std::process::Output> {
+                std::process::Command::new(platform::brew_bin())
+                    .args(args)
+                    .output()
+                    .context("启动 Homebrew 失败")
+            };
+            let already_installed = |output: &std::process::Output| {
+                String::from_utf8_lossy(&output.stdout).contains("already installed")
+                    || String::from_utf8_lossy(&output.stderr).contains("already installed")
+            };
+            let output = run_brew(&["install", "--cask", "codex"])?;
+            // 已通过 brew 安装的 codex 会提示 already installed；此时可能是版本过低，
+            // 改用 brew upgrade 升级到最新（已是最新时 upgrade 同样提示 already installed）。
+            let (command, output) = if output.status.success() {
+                return Ok(());
+            } else if already_installed(&output) {
+                ("upgrade", run_brew(&["upgrade", "--cask", "codex"])?)
+            } else {
+                ("install", output)
+            };
+            if output.status.success() || already_installed(&output) {
+                return Ok(());
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+            bail!(
+                "brew {command} --cask codex 失败 (exit {}): {}",
+                output.status.code().unwrap_or(-1),
+                tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
+            );
+        })
+        .await;
+        self.installing.store(false, Ordering::Release);
+        match result.context("等待 Homebrew 安装任务失败")? {
+            Ok(()) => {
+                self.refresh_runtime_probe(true).await;
+                *self.last_error.write() = None;
+                diagnostics::write(&operation_id, "homebrew:complete", "result=success");
+                Ok(self.status())
+            }
+            Err(error) => {
+                let detail = format!("{error:#}");
+                diagnostics::write(&operation_id, "homebrew:failed", &detail);
                 *self.last_error.write() = Some(format!(
                     "{detail}（诊断编号：{operation_id}；日志：{}）",
                     diagnostics::log_path().display()
@@ -2195,5 +2312,52 @@ mod tests {
             "The 'gpt-5.6-sol' model requires a newer version of Codex."
         ));
         assert!(!codex_upgrade_required("Codex ACP connection closed"));
+    }
+
+    #[test]
+    fn status_serializes_install_contract_fields() {
+        let status = CodexAcpStatus {
+            version: CODEX_ACP_VERSION,
+            installed: false,
+            bridge_ready: false,
+            adapter_path: None,
+            node_available: false,
+            node_version: None,
+            node_supported: false,
+            npm_available: false,
+            codex_available: false,
+            codex_path: None,
+            codex_version: None,
+            runtime_source: None,
+            managed_codex_version: MANAGED_CODEX_VERSION,
+            min_codex_version: MIN_CODEX_VERSION,
+            install_method: platform::install_method(),
+            brew_available: false,
+            system_codex_incompatible: true,
+            download_required: false,
+            downloaded_bytes: 0,
+            download_total_bytes: 0,
+            download_progress: None,
+            authenticated: false,
+            login_in_progress: false,
+            login_url: None,
+            installing: false,
+            error: None,
+        };
+        let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
+        assert_eq!(value["min_codex_version"], json!(MIN_CODEX_VERSION));
+        assert_eq!(value["install_method"], json!(platform::install_method()));
+        assert_eq!(value["brew_available"], json!(false));
+        assert_eq!(value["system_codex_incompatible"], json!(true));
+    }
+
+    #[test]
+    fn install_method_matches_platform_contract() {
+        // 具体取值由各平台适配实现保证（platform/ 下的 INSTALL_METHOD），
+        // 这里只校验契约允许值，避免在适配层之外出现平台 cfg。
+        assert!(matches!(
+            platform::install_method(),
+            "homebrew" | "managed_download" | "manual"
+        ));
     }
 }
