@@ -2,7 +2,8 @@
 //!
 //! 数据流：**按需采样**——前端在监控页面 mount 时启 1s interval 调
 //! `get_monitor_snapshot`，离开页面就停。后端每次 command 直接跑一次
-//! `sample_all`。设计目的：用户不在监控页面时**完全不跑 nvidia-smi**。
+//! `sample_all`。设计目的：用户不在监控页面时**完全不跑 GPU 探测**
+//! (nvidia-smi / Windows 性能计数器 / macOS ioreg)。
 //! GPU util 峰值靠前端 5 个值滑窗 max（A+B）补足瞬时采样易错过推理峰的问题。
 //!
 //! 设计原则：**任何采样失败都 graceful degrade**——返回 None / OFFLINE，
@@ -385,7 +386,8 @@ async fn sample_all_with_cpu(
     }
 }
 
-/// Return GPU telemetry when the current platform provides NVIDIA probe candidates.
+/// Return GPU telemetry: NVIDIA probe (nvidia-smi) first, then the platform
+/// sampler (Windows performance counters / macOS ioreg IOAccelerator).
 fn gpu_snapshot() -> Option<GpuSnapshot> {
     static GPU_CACHE: OnceLock<Mutex<GpuSnapshotCache>> = OnceLock::new();
     let cache = GPU_CACHE.get_or_init(|| Mutex::new(GpuSnapshotCache::default()));
