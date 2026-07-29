@@ -9,7 +9,7 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { AcFmtIcon, ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
-import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
+import { _artifactKind } from '../../shared/artifact-utils.js';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
@@ -2181,7 +2181,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
                 {attachmentNames.map((name, index) => {
                   const kind = _artifactKind(name);
-                  const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
                   return (
                     <span
                       key={`${name}-${index}`}
@@ -2190,8 +2189,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         isDark ? 'border-white/10 bg-[#2A2B2E] text-[#E3E3E3]' : 'border-black/[0.08] bg-white text-[#1F1F1F]'
                       }`}
                     >
-                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px]" style={{ background: fmt.color }}>
-                        <AcFmtIcon kind={kind} className="h-3.5 w-3.5 text-white" />
+                      <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] ${isDark ? 'bg-white/[0.08]' : 'bg-black/[0.04]'}`}>
+                        <AcFmtIcon kind={kind} className="h-5 w-5" />
                       </span>
                       <span className="truncate font-medium">{name}</span>
                     </span>

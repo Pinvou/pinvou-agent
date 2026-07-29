@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Download, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
-import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
+import { _artifactKind } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { AcFmtIcon } from '../tools/tool-common.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
@@ -12,10 +12,9 @@ import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
       const kind = _artifactKind(name);
-      const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
       return (
-        <span className={`shrink-0 inline-flex items-center justify-center ${tileCls}`} style={{ background: fmt.color }}>
-          <AcFmtIcon kind={kind} className={`${glyphCls} text-white`} />
+        <span className={`shrink-0 inline-flex items-center justify-center bg-black/[0.04] dark:bg-white/[0.08] ${tileCls}`}>
+          <AcFmtIcon kind={kind} className={glyphCls} />
         </span>
       );
     };
