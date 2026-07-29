@@ -5,8 +5,9 @@
 #   A. 已关闭/已合并 PR(refs/pull/N/merge)作用域的全部缓存
 #      (PR 作用域缓存互不可见,PR 关闭后即死重;历史上 node-cache、sccache、
 #       release 打包缓存都在 PR 作用域产生过 GB 级残留;PR 状态查询失败一律保留)
-#   B. 创建超过 N 天的 sccache 对象(默认 7 天;内容寻址,陈旧条目命中前
-#      早已被新编译产物替代,暖源由 main 持续重写,不依赖陈旧条目)
+#   B. 最后访问超过 N 天的 sccache 对象(默认 7 天;稳定依赖的编译对象可能
+#      创建很早但持续命中,必须按 lastAccessedAt 判断热度,否则会每周误删
+#      仍在使用的主线暖缓存;内容寻址,真陈旧的条目命中前早已被新产物替代)
 #   C. codeql-overlay 每种语言每个作用域只保留最新 1 份(CodeQL 只消费最新 base)
 #   D. node-cache 每个平台每个作用域只保留最新 1 份(同平台旧 lockfile 哈希
 #      仅有 restore-keys 前缀回退价值,留最新即可)
@@ -41,6 +42,16 @@ DELETED_BYTES=0
 
 delete_cache() { # $1=id $2=key $3=size_bytes $4=rule
   local id="$1" key="$2" size="$3" rule="$4"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[dry-run][$rule] 将删除 #$id ($(( size / 1048576 ))MB) $key"
+  else
+    echo "[$rule] 删除 #$id ($(( size / 1048576 ))MB) $key"
+    if ! gh cache delete "$id"; then
+      echo "::warning::删除失败 #$id $key(可能已被并发驱逐)"
+      return 0
+    fi
+  fi
+  # 仅在删除成功后计数(dry-run 为预估),避免删除失败仍计入"已释放"导致审计虚高
   case "$rule" in
     A_closed_pr)     STAT_A_CLOSED_PR=$(( STAT_A_CLOSED_PR + 1 )) ;;
     B_sccache_stale) STAT_B_SCCACHE_STALE=$(( STAT_B_SCCACHE_STALE + 1 )) ;;
@@ -48,19 +59,13 @@ delete_cache() { # $1=id $2=key $3=size_bytes $4=rule
     D_node)          STAT_D_NODE=$(( STAT_D_NODE + 1 )) ;;
   esac
   DELETED_BYTES=$(( DELETED_BYTES + size ))
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run][$rule] 将删除 #$id ($(( size / 1048576 ))MB) $key"
-  else
-    echo "[$rule] 删除 #$id ($(( size / 1048576 ))MB) $key"
-    gh cache delete "$id" || echo "::warning::删除失败 #$id $key(可能已被并发驱逐)"
-  fi
 }
 
 NOW_EPOCH=$(date -u +%s)
 SCCACHE_CUTOFF=$(( NOW_EPOCH - SCCACHE_DAYS * 86400 ))
 
 echo "== 枚举缓存(dry-run=$DRY_RUN, sccache-days=$SCCACHE_DAYS) =="
-gh cache list --limit 5000 --json id,key,ref,createdAt,sizeInBytes > /tmp/cache-janitor-list.json
+gh cache list --limit 5000 --json id,key,ref,createdAt,lastAccessedAt,sizeInBytes > /tmp/cache-janitor-list.json
 TOTAL=$(python3 -c "import json; d=json.load(open('/tmp/cache-janitor-list.json')); print(len(d))")
 echo "共 $TOTAL 个缓存条目"
 
@@ -93,18 +98,22 @@ done
 export CLOSED_REFS
 
 # ---------- 规则 B:陈旧 sccache 对象 ----------
-echo "== 规则 B:sccache 条目(创建超过 ${SCCACHE_DAYS} 天) =="
+echo "== 规则 B:sccache 条目(最后访问超过 ${SCCACHE_DAYS} 天) =="
 while IFS=$'\t' read -r id size key; do
   delete_cache "$id" "$key" "$size" "B_sccache_stale"
 done < <(python3 -c "
 import json, datetime, os
 closed = set(os.environ.get('CLOSED_REFS','').split())
 cutoff = $SCCACHE_CUTOFF
+def ts(c):
+    # 按最后访问时间判断热度:稳定依赖的对象创建很早但持续命中;
+    # lastAccessedAt 缺失时回退 createdAt
+    raw = c.get('lastAccessedAt') or c['createdAt']
+    return datetime.datetime.fromisoformat(raw.replace('Z','+00:00')).timestamp()
 for c in json.load(open('/tmp/cache-janitor-list.json')):
     if not c['key'].startswith('sccache/'): continue
     if c['ref'] in closed: continue
-    created = datetime.datetime.fromisoformat(c['createdAt'].replace('Z','+00:00')).timestamp()
-    if created < cutoff: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
+    if ts(c) < cutoff: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
 ")
 
 # ---------- 规则 C:codeql-overlay 每语言留最新 1 份 ----------

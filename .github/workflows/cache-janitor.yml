@@ -2,7 +2,7 @@ name: cache-janitor
 
 # Actions 缓存定期清理(10GB 配额保护),规则实现见 scripts/cache-janitor.sh:
 # - 已关闭/合并 PR 作用域的全部缓存(PR 缓存互不可见,关闭后即死重);
-# - 创建超过 7 天的 sccache 对象(内容寻址,暖源由 main 持续重写);
+# - 最后访问超过 7 天的 sccache 对象(按 lastAccessedAt 判热度,持续命中的保留);
 # - codeql-overlay 每语言每作用域只留最新 1 份;node-cache 每平台每作用域只留最新 1 份
 #   (按作用域分组:跨 ref 只留最新会把 main 的可用缓存误换成 PR 作用域的)。
 # 保护:main 作用域的 v0-rust-* 系列(rust-test/rust-lint/windows-rust-test/
