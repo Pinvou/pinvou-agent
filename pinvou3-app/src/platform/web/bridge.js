@@ -810,13 +810,13 @@
     var bg = sessionStates[sid]; if (!bg) return;
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
+    var draftComposer = realId ? "" : (state.composerDraft || "");
     // A null active id no longer guarantees an empty draft: WebUI can already
     // be showing an optimistic first message while its Session is being
-    // materialized, and #70 also keeps unsent composer text there. Snapshot
-    // the complete draft just like a regular Session before routing a late
-    // event from another Session in the background.
-    var returnBuffer = realId ? getBuffer(realId) : freshBuffer();
-    saveWorkingSetTo(returnBuffer);
+    // materialized. Snapshot the complete draft just like a regular Session
+    // before routing a late event from another Session in the background.
+    var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+    saveWorkingSetTo(restoreBuffer);
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
     var prev = suppressNotify; suppressNotify = true;
@@ -828,7 +828,8 @@
       // Restore the exact draft/Session working set that was visible before
       // the background event; replacing a draft with freshBuffer() would erase
       // its optimistic first message or unsent composer text.
-      loadWorkingSetFrom(returnBuffer);
+      if (!realId) restoreBuffer.composerDraft = draftComposer;
+      loadWorkingSetFrom(restoreBuffer);
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
