@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
 const webBridge = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const attachmentDropController = fs.readFileSync(
+  path.join(root, 'src', 'features', 'attachments', 'attachment-drop-controller.js'),
+  'utf8',
+);
 const desktopRemoteControlBridge = fs.readFileSync(
   path.join(bridgeRoot, 'bridge', 'remote-control.js'),
   'utf8',
@@ -107,6 +111,15 @@ assert.match(bootstrap, /SEMANTIC_COMMAND_REQUIREMENTS/);
 assert.match(bootstrap, /supportsCapability\(capability\)/);
 assert.match(bootstrap, /if \(!this\.desktopCapabilitiesReady\) return false/);
 assert.match(bridge, /if \(IS_WEB && typeof PLATFORM\.can === "function"\) return PLATFORM\.can\(name\) === true/);
+// HTML5 拖放复用 deviceFileUpload 分块通道:同一能力门控、同一上传/取消/丢弃语义。
+assert.match(webBridge, /canAccept: function \(\) \{ return hasCapability\("deviceFileUpload"\); \}/,
+  'browser drop must gate on the negotiated device upload capability');
+assert.match(webBridge, /onFiles: function \(files\) \{ return uploadDeviceFiles\(files\); \}/,
+  'browser drop must reuse the device upload pipeline instead of a parallel channel');
+assert.match(webBridge, /PinvouAttachmentDropController\.install/);
+assert.match(attachmentDropController, /dataTransfer\.dropEffect = "copy"/);
+assert.match(attachmentDropController, /setActive\(true\)/);
+assert.match(attachmentDropController, /setActive\(false\)/);
 assert.match(bootstrap, /sendReady\(false\)/);
 assert.match(bootstrap, /state_ready: stateReady/);
 assert.match(bootstrap, /markStateReady\(\)/);

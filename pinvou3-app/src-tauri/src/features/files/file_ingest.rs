@@ -2163,7 +2163,7 @@ fn estimate_tokens(text: &str) -> u32 {
 
 /// 把剪贴板粘贴的图片 bytes 写到 `~/.pinvou3/pastes/<timestamp>-<sanitized_name>`。
 /// 只用于「Ctrl+V 粘贴图片」——磁盘上没有原 path 的场景。
-/// 选文件 / 拖拽都走 Tauri native 拿原 path，不调用这个。
+/// 文件选择器直接拿原 path；HTML5 拖拽使用独立的有界分块摄入，不调用这个。
 pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(format!(

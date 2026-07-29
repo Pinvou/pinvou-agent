@@ -22,6 +22,7 @@
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var markRemoteTurn = context.markRemoteTurn;
     var clearAttachments = context.clearAttachments;
+    var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
     var extractArtifactPath = context.extractArtifactPath;
@@ -473,6 +474,10 @@
   }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
+    var removed = state.queued.find(function (q) { return q.id === id; });
+    if (removed && removed.attachments) {
+      removed.attachments.forEach(discardManagedAttachment);
+    }
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     notify();
   }

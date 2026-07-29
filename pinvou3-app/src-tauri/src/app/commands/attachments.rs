@@ -147,6 +147,32 @@ pub(super) fn stage_image_in_workspace(
     Some(format!("{attachment_dir}/{candidate}"))
 }
 
+/// Reuse a session-owned attachment that is already inside the execution
+/// workspace. HTML5 desktop drops are committed there directly, so copying an
+/// image again would create an unnecessary second application-owned copy.
+pub(super) fn existing_workspace_relative_file(
+    src: &str,
+    workspace: &std::path::Path,
+) -> Option<String> {
+    let canonical_workspace = std::fs::canonicalize(workspace).ok()?;
+    let canonical_source = std::fs::canonicalize(src).ok()?;
+    if !canonical_source.is_file() || !canonical_source.starts_with(&canonical_workspace) {
+        return None;
+    }
+    let relative = canonical_source.strip_prefix(canonical_workspace).ok()?;
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().filter(|value| !value.is_empty()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
 /// Copy a remote-control upload into the session workspace before the
 /// temporary upload directory is removed.
 #[allow(dead_code)]
@@ -329,7 +355,9 @@ pub(super) fn build_message_with_attachments_in_dir(
             // (实测同一张图,不调工具时编造内容,调工具才得真相)。改成"你现在
             // 一无所知,调用前绝不描述",把模糊建议变成具体硬规则(Qwen3.6 对具体
             // 硬规则遵循好、对抽象意图无效)。
-            match stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir) {
+            match existing_workspace_relative_file(&a.path, workspace).or_else(|| {
+                stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+            }) {
                 Some(rel) => {
                     out.push_str(&format!(
                         "🖼 用户附了一张图片,存在 workspace 的 `{rel}`。\n\

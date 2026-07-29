@@ -124,6 +124,9 @@ command_protocol!(
     "files.rs",
     [
         "ingest_file",
+        "ingest_dropped_file_chunk",
+        "cancel_dropped_file_upload",
+        "discard_dropped_attachment",
         "detect_system_tools",
         "save_paste_image",
         "verify_upload"

@@ -25,6 +25,7 @@ import {
   isSearchTool,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
+import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import {
   createPinvouModeScopeKey,
@@ -589,6 +590,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
+      const attachmentDragActive = !!(bs && bs.attachmentDragActive);
       const formatAttachmentError = (error) => {
         const raw = String(error || '');
         if (/under sensitive system dir|crosses sensitive (dir|component)/i.test(raw)) {
@@ -1256,17 +1258,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function blockWebLocalFileDrop(e) {
-        if (!isWeb) return;
-        const types = Array.from((e.dataTransfer && e.dataTransfer.types) || []);
-        if (!types.includes('Files')) return;
-        e.preventDefault();
-        e.stopPropagation();
-      }
-
       return (
         <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
+            <AttachmentDropOverlay
+              active={attachmentDragActive}
+              dark={isDark}
+              variant={isWeb ? 'web' : 'desktop'}
+              releaseLabel={t.uiAttachments.dropRelease}
+              webTitle={t.uiAttachments.dropWebTitle}
+              webHint={t.uiAttachments.dropWebHint}
+            />
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">

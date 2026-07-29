@@ -159,6 +159,7 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
+    attachmentDragActive: false,
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
@@ -6423,76 +6424,26 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  var recentDroppedPaths = {};
-  var DROP_DEDUP_MS = 1500;
-  function dropPathKey(path) {
-    return String(path || "").toLowerCase();
+  function updateAttachmentDragState(active) {
+    active = !!active;
+    if (!!state.attachmentDragActive === active) return;
+    state.attachmentDragActive = active;
+    notify();
   }
-  function droppedFilePaths(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload.filter(Boolean);
-    if (payload.payload) return droppedFilePaths(payload.payload);
-    if (payload.type && payload.type !== "drop") return [];
-    if (Array.isArray(payload.paths)) return payload.paths.filter(Boolean);
-    if (Array.isArray(payload.files)) return payload.files.filter(Boolean);
-    if (typeof payload.path === "string") return [payload.path];
-    if (typeof payload === "string") return [payload];
-    return [];
-  }
-  async function addDroppedAttachments(paths) {
-    var now = Date.now();
-    var seen = {};
-    var list = (paths || []).filter(function (p) {
-      var key = dropPathKey(p);
-      if (!p || seen[key]) return false;
-      seen[key] = true;
-      if (recentDroppedPaths[key] && now - recentDroppedPaths[key] < DROP_DEDUP_MS) return false;
-      recentDroppedPaths[key] = now;
-      return true;
-    });
-    Object.keys(recentDroppedPaths).forEach(function (key) {
-      if (now - recentDroppedPaths[key] > DROP_DEDUP_MS * 4) delete recentDroppedPaths[key];
-    });
-    for (var i = 0; i < list.length; i++) {
-      await addAttachmentByPath(list[i]);
-    }
-  }
+  // HTML5 拖放与「从此设备上传」共用 deviceFileUpload 分块通道:能力同开同关,
+  // 上传/取消/丢弃语义完全一致,拖放只是多一个入口。
   function initAttachmentDrop() {
     if (initAttachmentDrop.done) return;
     initAttachmentDrop.done = true;
-
-    var currentWindow = TAURI.window && TAURI.window.getCurrentWindow ? TAURI.window.getCurrentWindow() : null;
-    if (currentWindow && typeof currentWindow.onDragDropEvent === "function") {
-      currentWindow.onDragDropEvent(function (event) {
-        var paths = droppedFilePaths(event);
-        if (paths.length) addDroppedAttachments(paths);
-      }).catch(function (e) { console.warn("[attachment] drag-drop listener failed", e); });
+    if (!window.PinvouAttachmentDropController) {
+      console.warn("[attachment] drop controller is unavailable");
+      return;
     }
-
-    listen("tauri://file-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-    listen("tauri://drag-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-
-    document.addEventListener("dragover", function (e) {
-      if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }
-    });
-    document.addEventListener("drop", function (e) {
-      var files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      e.preventDefault();
-      var paths = [];
-      for (var i = 0; i < files.length; i++) {
-        if (files[i] && files[i].path) paths.push(files[i].path);
-      }
-      if (paths.length) addDroppedAttachments(paths);
+    window.PinvouAttachmentDropController.install({
+      document: document,
+      canAccept: function () { return hasCapability("deviceFileUpload"); },
+      onActiveChange: updateAttachmentDragState,
+      onFiles: function (files) { return uploadDeviceFiles(files); }
     });
   }
   async function addPasteImage(filename, bytes) {
@@ -6603,7 +6554,7 @@
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
-  if (!IS_WEB) initAttachmentDrop();
+  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
@@ -7871,7 +7822,7 @@
   var fields = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
