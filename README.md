@@ -103,7 +103,7 @@ Endpoints, model names, and API keys can also be managed directly in the applica
 - The [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform
 - An accessible OpenAI-compatible model endpoint
 
-The source tree supports **Linux, Windows, and macOS**. The initial macOS target is Apple Silicon on macOS 14 or later.
+The source tree supports **Linux, Windows, and macOS**. The initial macOS target is Apple Silicon on macOS 11 or later.
 
 ### Run from source
 
