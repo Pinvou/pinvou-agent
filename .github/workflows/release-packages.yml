@@ -213,6 +213,13 @@ jobs:
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # GitHub 原生 ARM runner 会在约 40 分钟后被托管服务回收；该 artifact
+      # 用于 PR 发布链路验证，保留 release 的 opt-level/strip/panic 设置，
+      # 但关闭 fat-LTO 并提高代码生成并行度。正式 Linux 发布仍由
+      # scripts/release-deb.sh 使用 Cargo.toml 中的完整 release profile。
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -238,7 +245,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake
+            build-essential pkg-config cmake lld
 
       - name: Node.js
         uses: actions/setup-node@v7
