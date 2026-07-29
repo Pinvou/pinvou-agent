@@ -5,25 +5,22 @@ use tauri::State;
 
 use crate::features::sessions::{SessionKind, SessionStore};
 
-fn dropped_attachment_workspace(
+fn conversation_attachment_context(
     store: &SessionStore,
     session_id: &str,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<(std::path::PathBuf, SessionKind), String> {
     crate::features::sessions::validate_session_id(session_id)
         .map_err(|_| "会话 ID 无效".to_string())?;
     store
         .load(session_id)
         .map_err(|error| format!("会话不存在：{error:#}"))?;
-    if store
+    let kind = store
         .session_kind(session_id)
-        .map_err(|error| format!("解析会话类型失败：{error:#}"))?
-        != SessionKind::Chat
-    {
-        return Err("定时运行会话不支持桌面拖入附件".into());
-    }
-    store
+        .map_err(|error| format!("解析会话类型失败：{error:#}"))?;
+    let workspace = store
         .execution_workspace(session_id)
-        .map_err(|error| format!("解析会话附件工作区失败：{error:#}"))
+        .map_err(|error| format!("解析会话附件工作区失败：{error:#}"))?;
+    Ok((workspace, kind))
 }
 
 /// 把一个用户上传的文件转成 markdown（或标记不支持），返回 IngestResult。
@@ -50,7 +47,7 @@ pub async fn ingest_dropped_file_chunk(
     commit: bool,
     store: State<'_, SessionStore>,
 ) -> Result<Option<crate::features::files::file_ingest::IngestResult>, String> {
-    let workspace = dropped_attachment_workspace(&store, &session_id)?;
+    let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
     let result = async {
         let data = base64::engine::general_purpose::STANDARD
             .decode(data_base64)
@@ -74,7 +71,7 @@ pub async fn cancel_dropped_file_upload(
     upload_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let workspace = dropped_attachment_workspace(&store, &session_id)?;
+    let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
     crate::features::files::attachment_upload::cancel_upload(&workspace, &upload_id).await
 }
 
@@ -84,7 +81,7 @@ pub async fn discard_dropped_attachment(
     path: String,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let workspace = dropped_attachment_workspace(&store, &session_id)?;
+    let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
     crate::features::files::attachment_upload::discard_attachment(&workspace, &path).await
 }
 
@@ -96,9 +93,11 @@ pub(super) fn resolve_conversation_attachment_path(
     basename: &str,
     display_text: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let workspace = dropped_attachment_workspace(store, session_id)?;
+    let (workspace, kind) = conversation_attachment_context(store, session_id)?;
     crate::features::files::attachment_upload::resolve_conversation_attachment(
         &workspace,
+        session_id,
+        kind == SessionKind::Chat,
         message_index,
         attachment_index,
         basename,

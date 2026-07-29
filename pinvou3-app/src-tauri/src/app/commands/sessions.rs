@@ -70,13 +70,19 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
     if !title_contains_attachment_marker(&metadata.title) {
         return Vec::new();
     }
+    let allow_legacy_unscoped = matches!(
+        store.session_kind(&metadata.id),
+        Ok(crate::features::sessions::SessionKind::Chat)
+    );
     let indexed_names = store
         .execution_workspace(&metadata.id)
         .ok()
         .and_then(|workspace| {
             crate::features::files::attachment_upload::conversation_attachment_names_for_display_prefix(
                 &workspace,
+                &metadata.id,
                 &metadata.title,
+                allow_legacy_unscoped,
             ).ok()
         })
         .unwrap_or_default();

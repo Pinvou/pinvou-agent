@@ -7,6 +7,7 @@ use super::file_ingest::{self, IngestResult, MAX_FILE_BYTES};
 pub const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
 const STALE_STAGING_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 const CONVERSATION_ATTACHMENT_REFS_FILE: &str = "conversation-attachments.json";
+static CONVERSATION_ATTACHMENT_REFS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ConversationAttachmentReference {
@@ -16,6 +17,8 @@ pub struct ConversationAttachmentReference {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 struct ConversationAttachmentRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
     message_index: usize,
     display_text: String,
     attachments: Vec<ConversationAttachmentReference>,
@@ -29,7 +32,9 @@ fn conversation_attachment_refs_path(workspace: &Path) -> PathBuf {
 
 pub fn conversation_attachment_names_for_display_prefix(
     workspace: &Path,
+    session_id: &str,
     display_prefix: &str,
+    allow_legacy_unscoped: bool,
 ) -> Result<Vec<String>, String> {
     let refs_path = conversation_attachment_refs_path(workspace);
     let records = match std::fs::read(&refs_path) {
@@ -40,7 +45,10 @@ pub fn conversation_attachment_names_for_display_prefix(
     };
     Ok(records
         .iter()
-        .find(|record| record.display_text.starts_with(display_prefix))
+        .find(|record| {
+            record_matches_session(record, session_id, allow_legacy_unscoped)
+                && record.display_text.starts_with(display_prefix)
+        })
         .map(|record| {
             record
                 .attachments
@@ -54,6 +62,7 @@ pub fn conversation_attachment_names_for_display_prefix(
 /// Persist display-only attachment references outside the LLM transcript.
 pub fn record_conversation_attachments(
     workspace: &Path,
+    session_id: &str,
     message_index: usize,
     display_text: &str,
     attachments: Vec<ConversationAttachmentReference>,
@@ -61,6 +70,9 @@ pub fn record_conversation_attachments(
     if attachments.is_empty() {
         return Ok(());
     }
+    let _write_guard = CONVERSATION_ATTACHMENT_REFS_LOCK
+        .lock()
+        .map_err(|_| "附件引用写入锁不可用".to_string())?;
     let refs_path = conversation_attachment_refs_path(workspace);
     let mut records = match std::fs::read(&refs_path) {
         Ok(bytes) => serde_json::from_slice::<Vec<ConversationAttachmentRecord>>(&bytes)
@@ -69,14 +81,15 @@ pub fn record_conversation_attachments(
         Err(error) => return Err(format!("读取附件引用失败：{error}")),
     };
     let record = ConversationAttachmentRecord {
+        session_id: Some(session_id.to_string()),
         message_index,
         display_text: display_text.to_string(),
         attachments,
     };
-    if let Some(existing) = records
-        .iter_mut()
-        .find(|existing| existing.message_index == message_index)
-    {
+    if let Some(existing) = records.iter_mut().find(|existing| {
+        existing.session_id.as_deref() == Some(session_id)
+            && existing.message_index == message_index
+    }) {
         *existing = record;
     } else {
         records.push(record);
@@ -95,6 +108,8 @@ pub fn record_conversation_attachments(
 
 pub fn resolve_conversation_attachment(
     workspace: &Path,
+    session_id: &str,
+    allow_legacy_unscoped: bool,
     message_index: usize,
     attachment_index: usize,
     expected_basename: &str,
@@ -109,7 +124,15 @@ pub fn resolve_conversation_attachment(
     let reference = records
         .iter()
         .find(|record| {
-            record.message_index == message_index && record.display_text == expected_display_text
+            // New records use stable session/message identity. Display text is
+            // presentation-only and may differ when the frontend hides an
+            // injected guide. Legacy chat workspaces remain text-bound because
+            // their records predate session scoping.
+            record.message_index == message_index
+                && (record.session_id.as_deref() == Some(session_id)
+                    || (allow_legacy_unscoped
+                        && record.session_id.is_none()
+                        && record.display_text == expected_display_text))
         })
         .and_then(|record| record.attachments.get(attachment_index))
         .filter(|reference| reference.basename == expected_basename)
@@ -119,6 +142,15 @@ pub fn resolve_conversation_attachment(
         return Err("附件文件名与引用不匹配".into());
     }
     Ok(path)
+}
+
+fn record_matches_session(
+    record: &ConversationAttachmentRecord,
+    session_id: &str,
+    allow_legacy_unscoped: bool,
+) -> bool {
+    record.session_id.as_deref() == Some(session_id)
+        || (allow_legacy_unscoped && record.session_id.is_none())
 }
 
 fn validate_upload_id(upload_id: &str) -> Result<&str, String> {
@@ -350,9 +382,10 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        append_chunk, conversation_attachment_names_for_display_prefix, discard_attachment,
-        record_conversation_attachments, resolve_conversation_attachment, validate_filename,
-        validate_upload_id, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
+        append_chunk, conversation_attachment_names_for_display_prefix,
+        conversation_attachment_refs_path, discard_attachment, record_conversation_attachments,
+        resolve_conversation_attachment, validate_filename, validate_upload_id,
+        ConversationAttachmentRecord, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
     };
     use std::path::PathBuf;
 
@@ -437,16 +470,19 @@ mod tests {
     }
 
     #[test]
-    fn conversation_attachment_references_are_indexed_and_replaceable() {
+    fn conversation_attachment_references_are_scoped_by_session_and_replaceable() {
         let workspace = test_workspace("conversation-reference");
         let first = workspace.join("attachments").join("one.txt");
         let second = workspace.join("attachments").join("two.txt");
+        let replacement = workspace.join("attachments").join("replacement.txt");
         std::fs::create_dir_all(first.parent().unwrap()).unwrap();
         std::fs::write(&first, b"one").unwrap();
         std::fs::write(&second, b"two").unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
 
         record_conversation_attachments(
             &workspace,
+            "session-a",
             3,
             "first",
             vec![ConversationAttachmentReference {
@@ -456,13 +492,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            conversation_attachment_names_for_display_prefix(&workspace, "first").unwrap(),
+            conversation_attachment_names_for_display_prefix(
+                &workspace,
+                "session-a",
+                "first",
+                false,
+            )
+            .unwrap(),
             vec!["one.txt"]
         );
         record_conversation_attachments(
             &workspace,
+            "session-b",
             3,
-            "replacement",
+            "second",
             vec![ConversationAttachmentReference {
                 basename: "two.txt".into(),
                 path: second.to_string_lossy().into_owned(),
@@ -470,15 +513,205 @@ mod tests {
         )
         .unwrap();
 
-        assert!(resolve_conversation_attachment(&workspace, 3, 0, "one.txt", "first").is_err());
-        assert!(resolve_conversation_attachment(&workspace, 3, 0, "two.txt", "first").is_err());
         assert_eq!(
-            resolve_conversation_attachment(&workspace, 3, 0, "two.txt", "replacement").unwrap(),
+            resolve_conversation_attachment(
+                &workspace,
+                "session-a",
+                false,
+                3,
+                0,
+                "one.txt",
+                "frontend display text may differ",
+            )
+            .unwrap(),
+            first
+        );
+        assert_eq!(
+            resolve_conversation_attachment(
+                &workspace,
+                "session-b",
+                false,
+                3,
+                0,
+                "two.txt",
+                "second",
+            )
+            .unwrap(),
             second
         );
-        assert!(
-            resolve_conversation_attachment(&workspace, 4, 0, "two.txt", "replacement").is_err()
+        record_conversation_attachments(
+            &workspace,
+            "session-a",
+            3,
+            "replacement",
+            vec![ConversationAttachmentReference {
+                basename: "replacement.txt".into(),
+                path: replacement.to_string_lossy().into_owned(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_conversation_attachment(
+                &workspace,
+                "session-a",
+                false,
+                3,
+                0,
+                "replacement.txt",
+                "another frontend display",
+            )
+            .unwrap(),
+            replacement
         );
+        assert!(resolve_conversation_attachment(
+            &workspace,
+            "session-a",
+            false,
+            3,
+            0,
+            "one.txt",
+            "first",
+        )
+        .is_err());
+        assert_eq!(
+            resolve_conversation_attachment(
+                &workspace,
+                "session-b",
+                false,
+                3,
+                0,
+                "two.txt",
+                "second",
+            )
+            .unwrap(),
+            second
+        );
+        assert!(resolve_conversation_attachment(
+            &workspace,
+            "session-a",
+            false,
+            3,
+            0,
+            "two.txt",
+            "first",
+        )
+        .is_err());
+        assert!(resolve_conversation_attachment(
+            &workspace,
+            "session-b",
+            false,
+            4,
+            0,
+            "two.txt",
+            "second",
+        )
+        .is_err());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn legacy_unscoped_references_are_only_available_to_isolated_chat_workspaces() {
+        let workspace = test_workspace("legacy-conversation-reference");
+        let file = workspace.join("attachments").join("legacy.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"legacy").unwrap();
+        let refs_path = conversation_attachment_refs_path(&workspace);
+        std::fs::create_dir_all(refs_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &refs_path,
+            serde_json::to_vec(&vec![ConversationAttachmentRecord {
+                session_id: None,
+                message_index: 0,
+                display_text: "legacy display".into(),
+                attachments: vec![ConversationAttachmentReference {
+                    basename: "legacy.txt".into(),
+                    path: file.to_string_lossy().into_owned(),
+                }],
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            conversation_attachment_names_for_display_prefix(
+                &workspace,
+                "chat-session",
+                "legacy",
+                true,
+            )
+            .unwrap(),
+            vec!["legacy.txt"]
+        );
+        assert_eq!(
+            resolve_conversation_attachment(
+                &workspace,
+                "chat-session",
+                true,
+                0,
+                0,
+                "legacy.txt",
+                "legacy display",
+            )
+            .unwrap(),
+            file
+        );
+        assert!(resolve_conversation_attachment(
+            &workspace,
+            "scheduled-session",
+            false,
+            0,
+            0,
+            "legacy.txt",
+            "legacy display",
+        )
+        .is_err());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn concurrent_sessions_do_not_lose_records_in_a_shared_workspace() {
+        let workspace = test_workspace("concurrent-conversation-reference");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let handles = ["session-a", "session-b"].map(|session_id| {
+            let workspace = workspace.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let file = workspace
+                    .join("attachments")
+                    .join(format!("{session_id}.txt"));
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(&file, session_id.as_bytes()).unwrap();
+                barrier.wait();
+                record_conversation_attachments(
+                    &workspace,
+                    session_id,
+                    0,
+                    session_id,
+                    vec![ConversationAttachmentReference {
+                        basename: format!("{session_id}.txt"),
+                        path: file.to_string_lossy().into_owned(),
+                    }],
+                )
+                .unwrap();
+            })
+        });
+        barrier.wait();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        for session_id in ["session-a", "session-b"] {
+            assert!(resolve_conversation_attachment(
+                &workspace,
+                session_id,
+                false,
+                0,
+                0,
+                &format!("{session_id}.txt"),
+                "display text is not an identity",
+            )
+            .is_ok());
+        }
         std::fs::remove_dir_all(workspace).unwrap();
     }
 }
