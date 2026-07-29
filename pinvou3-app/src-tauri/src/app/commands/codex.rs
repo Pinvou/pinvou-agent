@@ -109,6 +109,17 @@ pub async fn login_acp_agent(
 }
 
 #[tauri::command]
+pub async fn switch_acp_agent_account(
+    agent_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpStatus, String> {
+    acp_pool
+        .switch_agent_account(&agent_id)
+        .await
+        .map_err(|error| format!("切换 ACP Agent 账号失败: {error:#}"))
+}
+
+#[tauri::command]
 pub fn open_codex_login_url(acp_pool: State<'_, AcpPool>) -> Result<(), String> {
     acp_pool
         .open_login_url()

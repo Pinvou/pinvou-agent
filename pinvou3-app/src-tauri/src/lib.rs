@@ -615,6 +615,7 @@ pub fn run() {
             commands::codex::install_codex_homebrew,
             commands::codex::login_codex_acp,
             commands::codex::login_acp_agent,
+            commands::codex::switch_acp_agent_account,
             commands::codex::open_codex_login_url,
             commands::codex::open_acp_agent_login_url,
             commands::codex::submit_acp_agent_login_code,

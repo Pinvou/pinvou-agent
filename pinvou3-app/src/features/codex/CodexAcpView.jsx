@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
-  Sparkles, StopCircle, Terminal, Wrench,
+  RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
@@ -74,6 +74,27 @@ function isAcpAuthenticationFailure(envelope) {
   if (envelope?.event?.type !== 'turn_completed') return false;
   const error = String(envelope.event?.data?.error || '');
   return /authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(error);
+}
+
+function classifyAcpServiceFailure(envelope) {
+  if (envelope?.event?.type !== 'turn_completed') return null;
+  const detail = String(envelope.event?.data?.error || '').trim();
+  if (!detail) return null;
+  let kind = 'service';
+  if (/HTTP\s*402|会员.{0,12}(权益|额度|到期|失效)|订阅.{0,12}(到期|失效)|payment required/i.test(detail)) {
+    kind = 'entitlement';
+  } else if (/HTTP\s*429|rate.?limit|quota|额度.{0,12}(不足|用尽)|用量.{0,12}(超出|耗尽)/i.test(detail)) {
+    kind = 'quota';
+  } else if (/HTTP\s*401|authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(detail)) {
+    kind = 'authentication';
+  } else if (/network|connection|timeout|timed out|网络|连接.{0,8}(失败|超时)/i.test(detail)) {
+    kind = 'network';
+  }
+  return {
+    kind,
+    detail,
+    key: `${envelope.seq || ''}:${envelope.timestamp || ''}:${detail}`,
+  };
 }
 
 function configChoices(option) {
@@ -762,6 +783,63 @@ function runtimeSourceLabel(status, copy) {
   return copy?.runtimeSources?.[status.runtime_source] || '';
 }
 
+function AgentServiceFailureNotice({
+  failure,
+  agentName,
+  working,
+  onSwitchAccount,
+  onDismiss,
+  copy,
+}) {
+  if (!failure) return null;
+  const recoverWithAccount = ['entitlement', 'quota', 'authentication'].includes(failure.kind);
+  const title = failure.kind === 'entitlement'
+    ? copy.entitlementUnavailable(agentName)
+    : failure.kind === 'quota'
+      ? copy.quotaUnavailable(agentName)
+      : failure.kind === 'authentication'
+        ? copy.authorizationExpired(agentName)
+        : copy.serviceUnavailable(agentName);
+  const description = recoverWithAccount
+    ? copy.accountRecoveryHint
+    : copy.serviceRecoveryHint;
+  return (
+    <div data-testid="acp-service-failure" className="rounded-2xl border border-red-500/20 bg-red-500/[0.055] p-4">
+      <div className="flex items-start gap-3">
+        <AlertTriangle size={19} className="mt-0.5 shrink-0 text-red-500" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold text-red-700 dark:text-red-300">{title}</div>
+          <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] text-gray-400">{copy.errorDetails}</summary>
+            <div className="mt-1 break-words text-[11px] text-red-500">{failure.detail}</div>
+          </details>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {recoverWithAccount && (
+            <button
+              type="button"
+              onClick={onSwitchAccount}
+              disabled={working}
+              className="rounded-xl bg-red-500 px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
+            >
+              {copy.switchAccount}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDismiss}
+            disabled={working}
+            className="rounded-xl border border-red-500/20 px-3 py-1.5 text-[12px] font-medium text-red-600 disabled:opacity-50 dark:text-red-300"
+          >
+            {copy.dismissNotice}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CodexAcpView({
   theme,
   t,
@@ -799,6 +877,8 @@ export function CodexAcpView({
   const [responding, setResponding] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -843,6 +923,15 @@ export function CodexAcpView({
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
+  const serviceFailure = useMemo(() => {
+    const latestCompleted = [...events]
+      .reverse()
+      .find(envelope => envelope?.event?.type === 'turn_completed');
+    return classifyAcpServiceFailure(latestCompleted);
+  }, [events]);
+  const visibleServiceFailure = serviceFailure?.key === dismissedFailureKey
+    ? null
+    : serviceFailure;
   const workspaceUnavailable = Boolean(
     activeSession
       && activeSession.workspace_kind === 'project'
@@ -1270,6 +1359,21 @@ export function CodexAcpView({
     finally { setWorking(false); }
   }
 
+  async function switchAccount() {
+    setAccountMenuOpen(false);
+    if (serviceFailure?.key) setDismissedFailureKey(serviceFailure.key);
+    setWorking(true);
+    setError('');
+    try {
+      const next = await invoke('switch_acp_agent_account', { agentId: activeAgentId });
+      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+    } catch (err) {
+      showError(err);
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function openLogin() {
     setError('');
     try { await invoke('open_acp_agent_login_url', { agentId: activeAgentId }); }
@@ -1321,7 +1425,6 @@ export function CodexAcpView({
           return next;
         });
       }
-      if (!targetInfo) return;
       autoScrollRef.current = true;
       setShowScrollBottom(false);
       setDraft('');
@@ -1458,18 +1561,30 @@ export function CodexAcpView({
                 </button>
               </div>
             ) : (
-              <RuntimeNotice
-                status={activeStatus}
-                working={working}
-                error={error}
-                onPrepare={prepare}
-                onBrewInstall={brewInstall}
-                onLogin={login}
-                onOpenLogin={openLogin}
-                onSubmitLoginCode={submitLoginCode}
-                onRefresh={() => refreshStatus(activeAgentId)}
-                copy={codexCopy}
-              />
+              <>
+                <RuntimeNotice
+                  status={activeStatus}
+                  working={working}
+                  error={error}
+                  onPrepare={prepare}
+                  onBrewInstall={brewInstall}
+                  onLogin={login}
+                  onOpenLogin={openLogin}
+                  onSubmitLoginCode={submitLoginCode}
+                  onRefresh={() => refreshStatus(activeAgentId)}
+                  copy={codexCopy}
+                />
+                {activeStatus?.authenticated && (
+                  <AgentServiceFailureNotice
+                    failure={visibleServiceFailure}
+                    agentName={activeAgentName}
+                    working={working}
+                    onSwitchAccount={switchAccount}
+                    onDismiss={() => setDismissedFailureKey(serviceFailure?.key || '')}
+                    copy={codexCopy}
+                  />
+                )}
+              </>
             )}
             {!projection.turns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
@@ -1741,12 +1856,85 @@ export function CodexAcpView({
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
                     title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
-                  <span className={`w-1.5 h-1.5 rounded-full ${activeStatus && activeStatus.installed && activeStatus.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-                  <span className="hidden min-w-0 truncate sm:inline">
-                    {activeStatus && activeStatus.installed && activeStatus.authenticated
-                      ? `${activeAgentName} ${codexCopy.connected.replace('Codex', '').trim()}${runtimeSourceLabel(activeStatus, codexCopy) ? ` · ${runtimeSourceLabel(activeStatus, codexCopy)}` : ''}${activeStatus.codex_version ? ` ${activeStatus.codex_version}` : ''}`
-                      : `${activeAgentName} ${codexCopy.notReady.replace('Codex', '').trim()}`}
-                  </span>
+                  <div className="relative min-w-0">
+                    <button
+                      type="button"
+                      data-testid="acp-account-menu-trigger"
+                      onClick={() => setAccountMenuOpen(value => !value)}
+                      className="inline-flex h-7 min-w-0 max-w-[260px] items-center gap-1.5 rounded-lg px-2 text-[10px] text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                      title={codexCopy.accountAndService}
+                    >
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                        visibleServiceFailure
+                          ? 'bg-red-500'
+                          : activeStatus?.installed && activeStatus?.authenticated
+                            ? 'bg-emerald-500'
+                            : 'bg-gray-400'
+                      }`} />
+                      <span className="hidden min-w-0 truncate sm:inline">
+                        {activeStatus?.installed && activeStatus?.authenticated
+                          ? `${activeAgentName} ${visibleServiceFailure ? codexCopy.serviceAbnormal : codexCopy.connected.replace('Codex', '').trim()}`
+                          : `${activeAgentName} ${codexCopy.notReady.replace('Codex', '').trim()}`}
+                      </span>
+                      <ChevronDown size={11} className="shrink-0" />
+                    </button>
+                    {accountMenuOpen && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={codexCopy.closeAccountMenu}
+                          className="fixed inset-0 z-30 cursor-default"
+                          onClick={() => setAccountMenuOpen(false)}
+                        />
+                        <div
+                          data-testid="acp-account-menu"
+                          className="absolute bottom-9 left-0 z-40 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95"
+                        >
+                          <div className="flex items-center gap-3 px-3 py-2.5">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/[0.04] dark:bg-white/[0.07]">
+                              <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[12px] font-semibold">{activeAgentName}</div>
+                              <div className={`mt-0.5 text-[10px] ${visibleServiceFailure ? 'text-red-500' : 'text-gray-400'}`}>
+                                {visibleServiceFailure
+                                  ? codexCopy.serviceAbnormal
+                                  : activeStatus?.authenticated
+                                    ? codexCopy.accountAuthorized
+                                    : codexCopy.accountNotAuthorized}
+                                {runtimeSourceLabel(activeStatus, codexCopy) ? ` · ${runtimeSourceLabel(activeStatus, codexCopy)}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-1 border-t border-black/[0.05] pt-1 dark:border-white/[0.06]">
+                            <button
+                              type="button"
+                              onClick={switchAccount}
+                              disabled={working || activeStatus?.login_in_progress}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
+                            >
+                              <User size={15} className="text-blue-500" />
+                              <span className="min-w-0">
+                                <span className="block">{codexCopy.switchAccount}</span>
+                                <span className="mt-0.5 block text-[10px] font-normal text-gray-400">{codexCopy.switchAccountAffectsSessions}</span>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAccountMenuOpen(false);
+                                refreshStatus(activeAgentId).catch(showError);
+                              }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                            >
+                              <RefreshCw size={15} className="text-gray-400" />
+                              {codexCopy.recheck}
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>

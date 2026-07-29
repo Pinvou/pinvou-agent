@@ -374,6 +374,15 @@ try {
     'running operation details must not interrupt the conversation by auto-expanding');
   assert.ok(!codexView.includes('if (running) setOpen(true)'),
     'running operation groups must remain compact by default');
+  assert.ok(codexView.includes("HTTP\\s*402")
+    && codexView.includes("kind = 'entitlement'")
+    && codexView.includes('data-testid="acp-service-failure"'),
+  'membership HTTP 402 failures must become a recoverable service card instead of a bare error');
+  assert.ok(codexView.includes("invoke('switch_acp_agent_account'")
+    && codexView.includes('data-testid="acp-account-menu-trigger"')
+    && codexView.includes('data-testid="acp-account-menu"')
+    && codexView.includes('switchAccountAffectsSessions'),
+  'every ACP Agent must expose an account menu and a force account-switch action');
   assert.ok(codexView.includes('const movingUp = element.scrollTop < lastScrollTopRef.current - 1')
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
@@ -387,6 +396,7 @@ try {
   'Codex prompts must keep external attachments and workspace references as separate inputs');
   assert.ok(!codexView.includes('if (activeId && !sessionInfo)')
     && !codexView.includes('throw new Error(codexCopy.sessionSyncing)')
+    && !codexView.includes('targetInfo')
     && !codexView.includes('(activeId && !sessionInfo) ||'),
   'Codex prompts must let the backend initialize or restore the ACP session instead of blocking forever on stale UI state');
   assert.ok(codexView.includes('<CodexWorkspacePanel')

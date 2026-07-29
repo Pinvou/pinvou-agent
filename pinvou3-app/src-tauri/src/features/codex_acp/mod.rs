@@ -337,7 +337,7 @@ impl AcpSession {
                         Some(&error),
                     );
                     self.bridge.finish_turn(&turn_id, "Failed", Some(&error));
-                    return;
+                    return false;
                 }
                 let status = match response.stop_reason {
                     StopReason::EndTurn => "Completed",
@@ -1128,6 +1128,18 @@ impl AcpPool {
     }
 
     pub async fn login_agent(&self, agent_id: &str) -> Result<CodexAcpStatus> {
+        self.start_agent_login(agent_id, false).await
+    }
+
+    /// 无论当前凭证是否仍然有效，都重新进入 Agent 的官方登录流程。
+    ///
+    /// 登录成功后关闭该 Agent 的现有运行时；会话与时间线仍保留，下一次发送消息时
+    /// 会用新账号重新拉起进程，避免旧进程继续持有切换前的凭证。
+    pub async fn switch_agent_account(&self, agent_id: &str) -> Result<CodexAcpStatus> {
+        self.start_agent_login(agent_id, true).await
+    }
+
+    async fn start_agent_login(&self, agent_id: &str, force: bool) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent_id))?;
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent_id}");
@@ -1138,7 +1150,7 @@ impl AcpPool {
         let executable = self
             .login_executable(backend)
             .with_context(|| format!("未检测到可用的 {} CLI", backend.display_name()))?;
-        if self.agent_authenticated(backend, &executable) {
+        if !force && self.agent_authenticated(backend, &executable) {
             return Ok(self.status_for(backend));
         }
         let already_in_progress = {
@@ -1165,26 +1177,50 @@ impl AcpPool {
         tokio::spawn(async move {
             let result = pool.run_agent_login(backend, executable).await;
             pool.login_inputs.lock().await.remove(&backend);
-            let mut states = pool.login_states.write();
-            let state = states.entry(backend).or_default();
-            state.in_progress = false;
-            state.input_required = false;
-            match result {
-                Ok(()) => {
-                    *state = AgentLoginState::default();
-                    if backend == AgentBackend::CodexAcp {
-                        *pool.last_error.write() = None;
+            let login_succeeded = {
+                let mut states = pool.login_states.write();
+                let state = states.entry(backend).or_default();
+                state.in_progress = false;
+                state.input_required = false;
+                match result {
+                    Ok(()) => {
+                        *state = AgentLoginState::default();
+                        if backend == AgentBackend::CodexAcp {
+                            *pool.last_error.write() = None;
+                        }
+                    }
+                    Err(error) => {
+                        state.error = Some(format!(
+                            "{} 授权登录失败: {error:#}",
+                            backend.display_name()
+                        ));
                     }
                 }
-                Err(error) => {
-                    state.error = Some(format!(
-                        "{} 授权登录失败: {error:#}",
-                        backend.display_name()
-                    ));
-                }
+                state.error.is_none()
+            };
+            if login_succeeded {
+                pool.restart_agent_sessions(backend).await;
             }
         });
         Ok(self.status_for(backend))
+    }
+
+    async fn restart_agent_sessions(&self, backend: AgentBackend) {
+        let runtimes = {
+            let mut sessions = self.sessions.lock().await;
+            let session_ids = sessions
+                .keys()
+                .filter(|session_id| self.agents.backend(session_id) == backend)
+                .cloned()
+                .collect::<Vec<_>>();
+            session_ids
+                .into_iter()
+                .filter_map(|session_id| sessions.remove(&session_id))
+                .collect::<Vec<_>>()
+        };
+        for runtime in runtimes {
+            runtime.shutdown().await;
+        }
     }
 
     pub fn open_agent_login_url(&self, agent_id: &str) -> Result<()> {
@@ -2438,10 +2474,7 @@ fn agent_login_command(backend: AgentBackend, executable: &Path) -> Command {
         && executable.extension().and_then(|value| value.to_str()) == Some("cmd")
     {
         let mut command = crate::platform::process::HiddenTokioCommand::new("cmd");
-        command
-            .args(["/D", "/S", "/C"])
-            .arg(executable)
-            .args(args);
+        command.args(["/D", "/S", "/C"]).arg(executable).args(args);
         command
     } else {
         let mut command = crate::platform::process::HiddenTokioCommand::new(executable);
