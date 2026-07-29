@@ -99,7 +99,7 @@
     // 复位 effect 挂它 → 即便 activeSessionId 没变(draft→draft)也能重新求值,否则残留的工具欢迎卡
     // 会一直顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时整块空白)。
     draftEpoch: 0,
-    // 跨页面预填输入框请求。比如本地知识 → 产出物点击「续写/新项目」：
+    // 跨页面预填输入框请求。比如侧边栏「产出物」一级入口点击「续写/新项目」：
     // 只把草稿放进 composer，不自动发送给模型。
     composerPrefill: { id: 0, text: "" },
     // 当前会话未发送的输入草稿。只存内存，随 session working set 切换；
@@ -6268,7 +6268,7 @@
     return rows;
   }
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
-  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「本地知识 → 产出物」。
+  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
   async function listDeliverableIndex() {
     var disk = await invoke("list_deliverable_index").catch(function () { return []; });
     var byPath = {};
