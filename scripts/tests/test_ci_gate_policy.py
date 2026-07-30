@@ -6,6 +6,12 @@ ROOT = Path(__file__).resolve().parents[2]
 PR_WORKFLOW = ROOT / ".github/workflows/pr-check.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release-packages.yml"
 MAC_WORKFLOW = ROOT / ".github/workflows/mac-build.yml"
+REQUIRED_WORKFLOWS = (
+    ROOT / ".github/workflows/dco.yml",
+    ROOT / ".github/workflows/secret-scan.yml",
+    ROOT / ".github/workflows/dependency-review.yml",
+    PR_WORKFLOW,
+)
 
 
 def _extract_quoted_paths(block):
@@ -88,6 +94,24 @@ class CiGatePolicyTests(unittest.TestCase):
             "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
             concurrency,
         )
+
+    def test_all_required_workflows_report_on_merge_group(self):
+        for workflow_path in REQUIRED_WORKFLOWS:
+            workflow = workflow_path.read_text(encoding="utf-8")
+            trigger = workflow.split("\non:", maxsplit=1)[1].split(
+                "\npermissions:", maxsplit=1
+            )[0]
+            self.assertIn(
+                "merge_group:",
+                trigger,
+                f"{workflow_path.name} 缺少 Merge Queue 触发",
+            )
+
+        dependency_review = (
+            ROOT / ".github/workflows/dependency-review.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("github.event.merge_group.base_sha", dependency_review)
+        self.assertIn("github.event.merge_group.head_sha", dependency_review)
 
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。

@@ -2,6 +2,8 @@ name: dependency-review
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -14,6 +16,9 @@ jobs:
       - name: Review dependency changes
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
+          # dependency-review-action 对非 pull_request 事件需要显式 base/head。
+          base-ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+          head-ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
           fail-on-severity: high
           vulnerability-check: true
           license-check: true
