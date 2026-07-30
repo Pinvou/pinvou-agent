@@ -225,6 +225,101 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
+  const markdownHighlight = await page.evaluate(() => {
+    const render = window.PinvouMarkdownRenderer && window.PinvouMarkdownRenderer.renderMarkdown;
+    if (typeof render !== 'function') return { found: false };
+
+    const fixture = document.createElement('section');
+    fixture.style.cssText = 'position:fixed;left:-10000px;top:0;width:720px;visibility:hidden;';
+    document.body.appendChild(fixture);
+    const markdown = [
+      '```json',
+      '{"enabled": true, "message": "hello"}',
+      '```',
+      '',
+      '```diff',
+      '-oldValue',
+      '+newValue',
+      '```',
+    ].join('\n');
+
+    function addSample(mode, structure) {
+      const wrapper = document.createElement('div');
+      let content;
+      if (structure === 'nested') {
+        wrapper.className = `${mode}-code`;
+        content = document.createElement('div');
+        content.className = 'msg-md';
+        wrapper.appendChild(content);
+      } else if (structure === 'persona') {
+        content = wrapper;
+        content.className = `persona-body ${mode}-code`;
+      } else {
+        content = wrapper;
+        content.className = `msg-md ${mode}-code`;
+      }
+      content.innerHTML = render(markdown);
+      fixture.appendChild(wrapper);
+      const pre = content.querySelector('pre[data-language-id="json"]');
+      const stringToken = pre && pre.querySelector('.hljs-string');
+      const attrToken = pre && pre.querySelector('.hljs-attr');
+      const addition = content.querySelector('.language-diff .hljs-addition');
+      return {
+        languageId: pre && pre.dataset.languageId,
+        stringColor: stringToken && getComputedStyle(stringToken).color,
+        attrColor: attrToken && getComputedStyle(attrToken).color,
+        preBackground: pre && getComputedStyle(pre).backgroundColor,
+        label: pre && getComputedStyle(pre, '::before').content,
+        diffBackground: addition && getComputedStyle(addition).backgroundColor,
+      };
+    }
+
+    const lightNested = addSample('light', 'nested');
+    const lightSame = addSample('light', 'same');
+    const darkNested = addSample('dark', 'nested');
+    const darkSame = addSample('dark', 'same');
+    const darkPersona = addSample('dark', 'persona');
+
+    const sanitized = document.createElement('div');
+    sanitized.innerHTML = render([
+      '<img src="x" onerror="window.__MARKDOWN_XSS__=true">',
+      '<script>window.__MARKDOWN_XSS__=true</script>',
+      '',
+      '```json',
+      '{"safe": true}',
+      '```',
+    ].join('\n'));
+    const sanitizedPre = sanitized.querySelector('pre[data-language-id="json"]');
+    const security = {
+      noScriptElement: !sanitized.querySelector('script'),
+      noEventAttribute: !sanitized.querySelector('img')?.hasAttribute('onerror'),
+      noExecution: window.__MARKDOWN_XSS__ !== true,
+      dataAttributePreserved: sanitizedPre?.dataset.languageId === 'json',
+      highlightMarkupPreserved: !!sanitizedPre?.querySelector('.hljs-attr'),
+    };
+    fixture.remove();
+    return { found: true, lightNested, lightSame, darkNested, darkSame, darkPersona, security };
+  });
+  const transparent = value => !value || value === 'rgba(0, 0, 0, 0)' || value === 'transparent';
+  rec(
+    'Markdown highlighting uses sanitized DOM and consistent computed themes',
+    markdownHighlight.found
+      && Object.values(markdownHighlight.security || {}).every(Boolean)
+      && markdownHighlight.lightNested.languageId === 'json'
+      && markdownHighlight.lightNested.stringColor === markdownHighlight.lightSame.stringColor
+      && markdownHighlight.lightNested.attrColor === markdownHighlight.lightSame.attrColor
+      && markdownHighlight.darkNested.stringColor === markdownHighlight.darkSame.stringColor
+      && markdownHighlight.darkNested.attrColor === markdownHighlight.darkSame.attrColor
+      && markdownHighlight.darkSame.stringColor === markdownHighlight.darkPersona.stringColor
+      && markdownHighlight.darkSame.attrColor === markdownHighlight.darkPersona.attrColor
+      && markdownHighlight.darkSame.stringColor !== markdownHighlight.lightSame.stringColor
+      && markdownHighlight.darkSame.preBackground === markdownHighlight.darkPersona.preBackground
+      && !transparent(markdownHighlight.darkSame.diffBackground)
+      && !transparent(markdownHighlight.lightSame.diffBackground)
+      && String(markdownHighlight.darkPersona.label).includes('JSON'),
+    JSON.stringify(markdownHighlight),
+  );
+
   // ① 启动落草稿页(僵尸 run 不劫持)
   const st = await page.evaluate(() => {
     const s = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']);

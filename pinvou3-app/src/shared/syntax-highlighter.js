@@ -74,6 +74,48 @@ import x86asm from 'highlight.js/lib/languages/x86asm';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 
+function genericLog(hljsApi) {
+  const httpMethod = {
+    scope: 'keyword',
+    begin: /\b(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|CONNECT|TRACE)\b/u,
+  };
+  const requestPath = {
+    scope: 'string',
+    begin: /\/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*/u,
+  };
+  const errorStatus = { scope: 'deletion', begin: /\b[45]\d{2}\b/u };
+  const normalStatus = { scope: 'literal', begin: /\b[123]\d{2}\b/u };
+
+  return {
+    name: 'Log',
+    aliases: ['logs'],
+    case_insensitive: true,
+    contains: [
+      {
+        scope: 'meta',
+        begin: /\b\d{4}-\d{2}-\d{2}(?:[T ][0-2]\d:[0-5]\d:[0-5]\d(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?/u,
+      },
+      { scope: 'meta', begin: /\[[^\]\r\n]*(?:\d{2}:){2}\d{2}[^\]\r\n]*\]/u },
+      { scope: 'deletion', begin: /\b(?:FATAL|CRITICAL|ERROR|ERR)\b/u },
+      { scope: 'warning', begin: /\b(?:WARN|WARNING)\b/u },
+      { scope: 'built_in', begin: /\b(?:TRACE|DEBUG|INFO|NOTICE)\b/u },
+      errorStatus,
+      normalStatus,
+      httpMethod,
+      { scope: 'attr', begin: /\b[A-Za-z_][\w.-]*(?==)/u },
+      requestPath,
+      {
+        scope: 'string',
+        begin: /"/u,
+        end: /"/u,
+        contains: [httpMethod, requestPath, errorStatus, normalStatus],
+      },
+      hljsApi.APOS_STRING_MODE,
+      hljsApi.NUMBER_MODE,
+    ],
+  };
+}
+
 const LANGUAGE_DEFINITIONS = [
   ['accesslog', accesslog], ['apache', apache], ['awk', awk], ['bash', bash],
   ['c', c], ['clojure', clojure], ['cmake', cmake], ['coffeescript', coffeescript],
@@ -94,6 +136,7 @@ const LANGUAGE_DEFINITIONS = [
   ['shell', shell], ['sql', sql], ['stata', stata], ['swift', swift], ['tcl', tcl],
   ['typescript', typescript], ['vbnet', vbnet], ['wasm', wasm],
   ['x86asm', x86asm], ['xml', xml], ['yaml', yaml],
+  ['log', genericLog],
 ];
 
 for (const [name, definition] of LANGUAGE_DEFINITIONS) {
@@ -141,6 +184,7 @@ const DISPLAY_NAMES = {
   reasonml: 'ReasonML', ruby: 'Ruby', rust: 'Rust', scss: 'SCSS', sql: 'SQL',
   typescript: 'TypeScript', vbnet: 'VB.NET', wasm: 'WebAssembly',
   x86asm: 'x86 Assembly', xml: 'HTML / XML', yaml: 'YAML',
+  log: 'Log',
 };
 
 const AUTO_DETECT_LANGUAGES = [
@@ -149,6 +193,9 @@ const AUTO_DETECT_LANGUAGES = [
 ];
 
 export const MAX_HIGHLIGHT_SOURCE_BYTES = 128 * 1024;
+const MAX_CACHED_SOURCE_BYTES = 64 * 1024;
+const MAX_HIGHLIGHT_CACHE_ENTRIES = 24;
+const highlightCache = new Map();
 
 export const supportedSyntaxLanguages = Object.freeze(
   LANGUAGE_DEFINITIONS.map(([name]) => name),
@@ -163,6 +210,36 @@ export function escapeCodeHtml(value) {
 function utf8ByteLength(value) {
   if (value.length > MAX_HIGHLIGHT_SOURCE_BYTES) return value.length;
   return new TextEncoder().encode(value).byteLength;
+}
+
+function plainTextResult(source, originalHint, explicitLanguage, extra = {}) {
+  return {
+    html: escapeCodeHtml(source),
+    language: 'plaintext',
+    languageId: 'plaintext',
+    label: explicitLanguage
+      ? displayName(explicitLanguage, originalHint)
+      : (originalHint ? originalHint.toUpperCase() : 'Text'),
+    highlighted: false,
+    ...extra,
+  };
+}
+
+function cachedHighlight(key) {
+  const value = highlightCache.get(key);
+  if (!value) return null;
+  highlightCache.delete(key);
+  highlightCache.set(key, value);
+  return value;
+}
+
+function rememberHighlight(key, value, sourceBytes) {
+  if (sourceBytes > MAX_CACHED_SOURCE_BYTES) return value;
+  highlightCache.set(key, value);
+  while (highlightCache.size > MAX_HIGHLIGHT_CACHE_ENTRIES) {
+    highlightCache.delete(highlightCache.keys().next().value);
+  }
+  return value;
 }
 
 function languageToken(languageHint) {
@@ -200,54 +277,50 @@ export function highlightCode(code, languageHint, options = {}) {
   const originalHint = languageToken(languageHint);
   const normalized = normalizeSyntaxLanguage(originalHint);
   const explicitLanguage = originalHint && hljs.getLanguage(originalHint) ? normalized : '';
+  const sourceBytes = utf8ByteLength(source);
 
-  if (utf8ByteLength(source) > MAX_HIGHLIGHT_SOURCE_BYTES) {
-    return {
-      html: escapeCodeHtml(source),
-      language: 'plaintext',
-      languageId: 'plaintext',
-      label: explicitLanguage
-        ? displayName(explicitLanguage, originalHint)
-        : (originalHint ? originalHint.toUpperCase() : 'Text'),
-      highlighted: false,
-      oversized: true,
-    };
+  if (sourceBytes > MAX_HIGHLIGHT_SOURCE_BYTES) {
+    return plainTextResult(source, originalHint, explicitLanguage, { oversized: true });
+  }
+
+  if (options.allowHighlight === false) {
+    return plainTextResult(source, originalHint, explicitLanguage, { deferred: true });
   }
 
   try {
     if (explicitLanguage) {
+      const cacheKey = `explicit\u0000${explicitLanguage}\u0000${source}`;
+      const cached = cachedHighlight(cacheKey);
+      if (cached) return cached;
       const result = hljs.highlight(source, { language: explicitLanguage, ignoreIllegals: true });
-      return {
+      return rememberHighlight(cacheKey, {
         html: result.value,
         language: explicitLanguage,
         languageId: originalHint || explicitLanguage,
         label: displayName(explicitLanguage, originalHint),
         highlighted: true,
-      };
+      }, sourceBytes);
     }
 
     const allowAutoDetect = options.allowAutoDetect !== false;
     if (!originalHint && allowAutoDetect && source.length >= 20 && source.length <= 50_000) {
+      const cacheKey = `auto\u0000${source}`;
+      const cached = cachedHighlight(cacheKey);
+      if (cached) return cached;
       const result = hljs.highlightAuto(source, AUTO_DETECT_LANGUAGES);
       if (result.language && result.relevance >= 3) {
-        return {
+        return rememberHighlight(cacheKey, {
           html: result.value,
           language: result.language,
           languageId: result.language,
           label: displayName(result.language, ''),
           highlighted: true,
-        };
+        }, sourceBytes);
       }
     }
   } catch (_) {
     // Invalid or partially streamed code must remain readable as plain text.
   }
 
-  return {
-    html: escapeCodeHtml(source),
-    language: 'plaintext',
-    languageId: 'plaintext',
-    label: originalHint ? originalHint.toUpperCase() : 'Text',
-    highlighted: false,
-  };
+  return plainTextResult(source, originalHint, explicitLanguage);
 }

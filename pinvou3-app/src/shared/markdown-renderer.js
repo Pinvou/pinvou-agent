@@ -43,8 +43,10 @@ markdown.use({
   useNewRenderer: true,
   renderer: {
     code(token) {
+      const fenceClosed = fencedCodeIsClosed(token);
       const result = highlightCode(token.text, token.lang, {
-        allowAutoDetect: fencedCodeIsClosed(token),
+        allowHighlight: fenceClosed,
+        allowAutoDetect: fenceClosed,
       });
       const language = escapeCodeHtml(result.language);
       const languageId = escapeCodeHtml(result.languageId);

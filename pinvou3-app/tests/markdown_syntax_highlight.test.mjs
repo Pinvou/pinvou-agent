@@ -16,7 +16,7 @@ const appRoot = path.resolve(testRoot, '..');
 const readApp = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8');
 
 assert.ok(
-  supportedSyntaxLanguages.length >= 70,
+  supportedSyntaxLanguages.length >= 75,
   `expected broad syntax coverage, found ${supportedSyntaxLanguages.length} languages`,
 );
 for (const language of [
@@ -24,6 +24,7 @@ for (const language of [
   'kotlin', 'swift', 'dart', 'php', 'ruby', 'bash', 'powershell', 'sql', 'json',
   'yaml', 'ini', 'dockerfile', 'cmake', 'nginx', 'haskell', 'elixir', 'r', 'julia',
   'x86asm', 'wasm', 'xml', 'css', 'markdown', 'diff',
+  'log',
 ]) {
   assert.ok(supportedSyntaxLanguages.includes(language), `missing syntax language: ${language}`);
 }
@@ -31,7 +32,7 @@ for (const language of [
 for (const [alias, canonical] of [
   ['js', 'javascript'], ['jsx', 'javascript'], ['tsx', 'typescript'], ['py', 'python'],
   ['cs', 'csharp'], ['c++', 'cpp'], ['ps1', 'powershell'], ['yml', 'yaml'],
-  ['toml', 'ini'], ['vue', 'xml'], ['svelte', 'xml'], ['html', 'xml'],
+  ['toml', 'ini'], ['vue', 'xml'], ['svelte', 'xml'], ['html', 'xml'], ['logs', 'log'],
 ]) {
   assert.equal(normalizeSyntaxLanguage(alias), canonical, `${alias} alias must resolve to ${canonical}`);
 }
@@ -85,6 +86,28 @@ const incompleteStream = renderMarkdownMarkup('```\ndef greet(name):\n    return
 assert.match(incompleteStream, /data-language="Text"/u);
 assert.doesNotMatch(incompleteStream, /hljs-keyword/u);
 
+const incompleteExplicitStream = renderMarkdownMarkup('```python\ndef greet(name):\n    return name');
+assert.match(incompleteExplicitStream, /data-language="Python"/u);
+assert.match(incompleteExplicitStream, /data-language-id="plaintext"/u);
+assert.match(incompleteExplicitStream, /class="hljs language-plaintext"/u);
+assert.doesNotMatch(incompleteExplicitStream, /hljs-keyword/u);
+
+const genericLog = renderMarkdownMarkup([
+  '```log',
+  '2026-07-30T10:00:00+08:00 INFO GET /api/users status=200',
+  '2026-07-30T10:00:01+08:00 WARN retry status=429',
+  '2026-07-30T10:00:02+08:00 ERROR request failed status=500',
+  '```',
+].join('\n'));
+assert.match(genericLog, /data-language="Log"/u);
+assert.match(genericLog, /class="hljs language-log"/u);
+assert.match(genericLog, /hljs-built_in">INFO</u);
+assert.match(genericLog, /hljs-warning">WARN</u);
+assert.match(genericLog, /hljs-deletion">ERROR</u);
+assert.match(genericLog, /hljs-keyword">GET</u);
+assert.match(genericLog, /hljs-string">\/api\/users</u);
+assert.match(genericLog, /hljs-attr">status</u);
+
 const unsupported = renderMarkdownMarkup('```unknown-lang\n<script>alert("x")</script>\n```');
 assert.match(unsupported, /class="hljs language-plaintext"/u);
 assert.match(unsupported, /&lt;script&gt;/u);
@@ -108,6 +131,16 @@ const oversizedUtf8 = highlightCode(
 assert.equal(oversizedUtf8.language, 'plaintext');
 assert.equal(oversizedUtf8.oversized, true);
 
+const cachedSource = 'const cacheProbe = () => 42;';
+const cachedFirst = highlightCode(cachedSource, 'javascript');
+const cachedSecond = highlightCode(cachedSource, 'javascript');
+assert.strictEqual(cachedSecond, cachedFirst, 'completed code highlight should use the bounded cache');
+for (let index = 1; index <= 24; index += 1) {
+  highlightCode(`const boundedCacheProbe${index} = ${index};`, 'javascript');
+}
+const cachedAfterEviction = highlightCode(cachedSource, 'javascript');
+assert.notStrictEqual(cachedAfterEviction, cachedFirst, 'highlight cache must evict its least-recently-used entry');
+
 const dangerousRawHtml = renderMarkdownMarkup('before <script>alert("x")</script> after');
 assert.match(dangerousRawHtml, /&lt;script&gt;/u);
 assert.doesNotMatch(dangerousRawHtml, /<script>/u);
@@ -115,9 +148,12 @@ assert.doesNotMatch(dangerousRawHtml, /<script>/u);
 const css = readApp('src', 'styles', 'base.css');
 assert.match(css, /\.dark-code \.msg-md :not\(pre\) > code/u);
 assert.match(css, /\.light-code \.msg-md :not\(pre\) > code/u);
-assert.match(css, /\.dark-code \.msg-md pre > code \{ background:transparent; color:inherit; \}/u);
+assert.match(css, /\.msg-md\.dark-code pre > code/u);
+assert.match(css, /\.msg-md\.light-code pre > code/u);
+assert.match(css, /\.persona-body\.dark-code/u);
+assert.match(css, /\.persona-body\.light-code/u);
 assert.match(css, /\.msg-md pre\.pinvou-code-block::before/u);
-assert.match(css, /\.hljs-keyword/u);
+assert.match(css, /\.pinvou-code-block \.hljs-keyword/u);
 for (const selector of [
   'code.language-diff .hljs-addition',
   'code.language-json .hljs-punctuation',
@@ -133,7 +169,8 @@ for (const selector of [
   'code:is(.language-go,.language-rust) .hljs-type',
   'code.language-markdown .hljs-quote',
   'code.language-dockerfile > .hljs-keyword',
-  'code.language-accesslog .hljs-number',
+  'code:is(.language-accesslog,.language-log) .hljs-number',
+  'code.language-log .hljs-warning',
 ]) {
   assert.ok(css.includes(selector), `missing language-specific style: ${selector}`);
 }
@@ -151,5 +188,9 @@ for (const bridgePath of [
 assert.match(
   readApp('src', 'features', 'conversation', 'ConversationTimeline.jsx'),
   /import \{ renderMarkdown \} from '\.\.\/\.\.\/shared\/markdown-renderer\.js'/u,
+);
+assert.match(
+  readApp('src', 'features', 'personas', 'Personas.jsx'),
+  /isDark \? 'dark-code' : 'light-code'/u,
 );
 console.log('Markdown syntax highlighting contract: ok');
