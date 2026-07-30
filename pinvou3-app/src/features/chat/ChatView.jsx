@@ -1149,6 +1149,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
         : '';
+      // 云上传隐私提示(§11.8/§11.9):native 直发云端时告知图片字节去向;本机 loopback
+      // 不显示任何云上传字样;查询失败或旧后端无 is_local_endpoint 字段时 fail-open 不显示。
+      const imagePrivacyHint = imageInputInfo && imageInputInfo.image_mode === 'native'
+        && imageInputInfo.is_local_endpoint === false
+        ? t.uiAttachments.imageCloudUpload : '';
 
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
@@ -1569,6 +1574,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 className="flex items-center gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle size={14} className="shrink-0 text-amber-500" />
                 <span className="min-w-0">{imageInputWarning}</span>
+              </div>
+            )}
+            {imagePrivacyHint && (
+              <div data-testid="image-privacy-hint"
+                className="mb-2 px-3 text-[11px] leading-4 text-black/45 dark:text-white/45">
+                {imagePrivacyHint}
               </div>
             )}
             {voiceNotice && (

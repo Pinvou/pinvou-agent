@@ -702,9 +702,11 @@ async function modalWidth(page, headingText) {
       hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('自动判断'),
       hasVisionRow: !!visionToggle && (visionToggle.textContent || '').includes('无'),
       hasHelpText: text.includes('当前模型不能看图时，用该模型分析图片'),
+      // §11.8/§11.9 静态隐私说明:云端外发/本地不离机。
+      hasPrivacyText: text.includes('使用云端模型时，图片会发送给你选择的模型服务商') && text.includes('本地模型图片不离开本机'),
     };
   });
-  rec('⑦.img.1 编辑模型展示图片输入能力与视觉模型控件且默认自动/无', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
+  rec('⑦.img.1 编辑模型展示图片输入能力/视觉模型控件、默认自动/无及静态隐私说明', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
   await page.click('[data-testid="image-capability-option-enabled"]');

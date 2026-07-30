@@ -703,6 +703,21 @@ impl Pinvou3Bridge {
         self.resolve_vision_model_config().is_some()
     }
 
+    /// 当前有效模型 endpoint 是否指向本机(设计 §11.8/§11.9):前端据此决定是否在
+    /// 附件区提示"图片将发送给模型服务商"——本机 loopback 场景图片字节不离开本机,
+    /// 不得显示云上传字样。判定与 `api_key_for_saved_model` 同一口径:preset 为
+    /// local_vllm,或有效 base_url host 为 loopback(127.0.0.1/localhost/[::1])。
+    pub fn is_local_endpoint(&self) -> bool {
+        let preset_is_local = match self.effective_model() {
+            Some(model) => model.preset == ModelPreset::LocalVllm,
+            // 无有效模型(配置损坏):按全局 preset 判定。
+            None => {
+                self.prefs.advanced.model_preset.unwrap_or_default() == ModelPreset::LocalVllm
+            }
+        };
+        preset_is_local || base_url_uses_loopback(&self.base_url())
+    }
+
     /// Current search API key from env or encrypted credential store.
     pub fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;
@@ -2009,6 +2024,66 @@ mod tests {
             "",
         );
         assert!(cloud_compatible.api_key_required());
+    }
+
+    /// §11.8/§11.9:is_local_endpoint 与发送路径同一解析口径——local_vllm preset
+    /// 或有效 base_url host 为 loopback 即本机;云端/局域网地址不得误判为本机。
+    #[test]
+    fn is_local_endpoint_detects_loopback_and_local_vllm_preset() {
+        // local_vllm preset 默认部署(127.0.0.1:8000):本机。
+        let mut local_preset = fixture_bridge();
+        set_active_model(
+            &mut local_preset,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        assert!(local_preset.is_local_endpoint());
+
+        // local_vllm preset 即按本地对待,即使 base_url 被改成非 loopback 地址(规格口径)。
+        let mut local_preset_remote = fixture_bridge();
+        set_active_model(
+            &mut local_preset_remote,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(local_preset_remote.is_local_endpoint());
+
+        // 非 local preset 但 base_url 指向 loopback(自定义本机服务):本机。
+        let mut loopback_compatible = fixture_bridge();
+        set_active_model(
+            &mut loopback_compatible,
+            ModelPreset::OpenaiCompatible,
+            "custom-local-model",
+            "http://[::1]:9000/v1",
+            "",
+        );
+        assert!(loopback_compatible.is_local_endpoint());
+
+        // 云端地址:非本机,前端应提示图片发送给服务商。
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        assert!(!cloud.is_local_endpoint());
+
+        // 局域网地址不是 loopback(见 api_key_requirement 测试同口径):非本机。
+        let mut lan = fixture_bridge();
+        set_active_model(
+            &mut lan,
+            ModelPreset::OpenaiCompatible,
+            "custom-lan-model",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(!lan.is_local_endpoint());
     }
 
     /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:

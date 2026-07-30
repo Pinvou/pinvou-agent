@@ -1595,6 +1595,7 @@ fn image_input_capability_info_serializes_stable_fields() {
         capability: "unknown".to_string(),
         image_mode: "vision_tool_fallback".to_string(),
         has_vision_model: true,
+        is_local_endpoint: false,
     };
     let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
     assert_eq!(
@@ -1603,6 +1604,7 @@ fn image_input_capability_info_serializes_stable_fields() {
             "capability": "unknown",
             "image_mode": "vision_tool_fallback",
             "has_vision_model": true,
+            "is_local_endpoint": false,
         })
     );
 }

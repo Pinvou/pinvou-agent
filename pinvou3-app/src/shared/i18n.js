@@ -1149,6 +1149,7 @@ const dict = {
       providerCatalog:{},
       imageCapability:'图片输入能力', imageCapabilityAuto:'自动判断', imageCapabilityEnabled:'支持图片', imageCapabilityDisabled:'不支持图片',
       visionModel:'视觉模型', visionModelNone:'无', visionModelDesc:'当前模型不能看图时，用该模型分析图片',
+      imagePrivacyDesc:'使用云端模型时，图片会发送给你选择的模型服务商；本地模型图片不离开本机。',
       imageCapabilityTest:'测试图片能力', imageCapabilityTestHint:'发送一张纯色测试图，验证当前模型能否识图',
       imageCapabilityTestSupported:'支持图片', imageCapabilityTestUnsupported:'不支持图片输入',
       imageCapabilityTestError:'测试失败，请先确认连接与 API Key 可用',
@@ -1158,6 +1159,7 @@ const dict = {
     Object.assign(dict.zh.uiAttachments, {
       imageUnsupported:'当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。',
       imageUnknown:'当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”；也可以配置视觉模型。',
+      imageCloudUpload:'图片将随消息发送给你选择的模型服务商。',
     });
     Object.assign(dict.en.uiSettingsDetail, {
       saving:'Saving', localDetectionTargets:'Detect vLLM, Ollama, and LM Studio',
@@ -1183,6 +1185,7 @@ const dict = {
       },
       imageCapability:'Image input', imageCapabilityAuto:'Auto', imageCapabilityEnabled:'Supports images', imageCapabilityDisabled:'No image support',
       visionModel:'Vision model', visionModelNone:'None', visionModelDesc:'Used to analyze images when the current model cannot see them',
+      imagePrivacyDesc:'With cloud models, images are sent to the model provider you selected; with local models, images never leave this device.',
       imageCapabilityTest:'Test image input', imageCapabilityTestHint:'Send a solid-color test image to check whether the model can see images',
       imageCapabilityTestSupported:'Supports images', imageCapabilityTestUnsupported:'No image support',
       imageCapabilityTestError:'Test failed. Check the connection and API Key first',
@@ -1192,6 +1195,7 @@ const dict = {
     Object.assign(dict.en.uiAttachments, {
       imageUnsupported:'The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.',
       imageUnknown:'Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.',
+      imageCloudUpload:'Images will be sent to the model provider you selected along with your message.',
     });
     Object.assign(dict.ja.uiSettingsDetail, {
       saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio を検出',
@@ -1217,6 +1221,7 @@ const dict = {
       },
       imageCapability:'画像入力', imageCapabilityAuto:'自動判定', imageCapabilityEnabled:'画像対応', imageCapabilityDisabled:'画像非対応',
       visionModel:'ビジョンモデル', visionModelNone:'なし', visionModelDesc:'現在のモデルが画像を扱えない場合、このモデルで画像を解析します',
+      imagePrivacyDesc:'クラウドモデルを使用する場合、画像は選択したモデルプロバイダーに送信されます。ローカルモデルの画像はこの端末から出ません。',
       imageCapabilityTest:'画像テスト', imageCapabilityTestHint:'単色のテスト画像を送信して、モデルが画像を認識できるか確認します',
       imageCapabilityTestSupported:'画像対応', imageCapabilityTestUnsupported:'画像非対応',
       imageCapabilityTestError:'テストに失敗しました。接続と API Key を先に確認してください',
@@ -1226,6 +1231,7 @@ const dict = {
     Object.assign(dict.ja.uiAttachments, {
       imageUnsupported:'現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。',
       imageUnknown:'現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。',
+      imageCloudUpload:'画像はメッセージとともに、選択したモデルプロバイダーに送信されます。',
     });
     Object.assign(dict.en.uiSettingsDetail.modelDescriptions, {
       '旗舰编码模型':'Flagship coding model', '高性能编码模型':'High-performance coding model',

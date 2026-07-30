@@ -364,6 +364,10 @@ pub struct ImageInputCapabilityInfo {
     pub image_mode: String,
     /// 是否有可用的视觉模型兜底(含 Supported 主模型自复用)。
     pub has_vision_model: bool,
+    /// 当前有效模型 endpoint 是否本机 loopback(设计 §11.8/§11.9):
+    /// false 且走 native 直发时前端提示"图片将发送给模型服务商";
+    /// true 时图片字节不离开本机,前端不得显示云上传字样。
+    pub is_local_endpoint: bool,
 }
 
 #[tauri::command]
@@ -391,6 +395,7 @@ pub async fn get_image_input_capability(
         capability: bridge.effective_image_capability().as_str().to_string(),
         image_mode: bridge.image_input_mode().as_str().to_string(),
         has_vision_model: bridge.has_vision_model(),
+        is_local_endpoint: bridge.is_local_endpoint(),
     })
 }
 
