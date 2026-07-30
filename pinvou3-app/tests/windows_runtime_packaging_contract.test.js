@@ -136,6 +136,11 @@ assert.doesNotMatch(runtimeScript, /Stage-NsisBootstrapper/u);
 assert.match(initScript, /git lfs pull/);
 assert.match(initScript, /--include=/);
 assert.match(initScript, /pinvou3-windows-runtime-\$expectedCommit/);
+assert.match(initScript, /\$previousErrorActionPreference = \$ErrorActionPreference/);
+assert.match(initScript, /\$ErrorActionPreference = "Continue"/);
+assert.match(initScript, /\$exitCode = \$LASTEXITCODE/);
+assert.match(initScript, /\$ErrorActionPreference = \$previousErrorActionPreference/);
+assert.match(initScript, /if \(\$exitCode -ne 0\)/);
 
 assert.match(runtimeWrapper, /runtime-descriptor\.json/);
 assert.match(runtimeWrapper, /cleanupLegacyWindowsNodeStaging/);
