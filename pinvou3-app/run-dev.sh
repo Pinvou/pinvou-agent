@@ -6,19 +6,9 @@ cd "$(dirname "$0")"
 OS_NAME="$(uname -s)"
 
 # Linux/macOS 开发环境自动准备与正式包一致的应用隔离 Node + 精简 ACP Bridge。生成物被
-# gitignore；已有完整 Bridge 时不重复下载和安装。
+# gitignore；完整性判断统一交给准备脚本，避免新增 Agent 后开发入口仍把旧 Runtime 误判为可用。
 if [ "$OS_NAME" = "Linux" ] || [ "$OS_NAME" = "Darwin" ]; then
-  if [ "$OS_NAME" = "Linux" ]; then
-    BRIDGE_PLATFORM_DIR="linux"
-  else
-    BRIDGE_PLATFORM_DIR="macos"
-  fi
-  BRIDGE_NODE="src-tauri/resources/platforms/$BRIDGE_PLATFORM_DIR/codex-bridge/node/bin/node"
-  BRIDGE_ENTRY="src-tauri/resources/platforms/$BRIDGE_PLATFORM_DIR/codex-bridge/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
-  if [ ! -x "$BRIDGE_NODE" ] || [ ! -f "$BRIDGE_ENTRY" ]; then
-    echo "正在准备 Codex ACP Bridge(dev)..."
-    ./scripts/prepare-codex-bridge-runtime.sh
-  fi
+  ./scripts/prepare-codex-bridge-runtime.sh
 fi
 
 # 注:源 workflows/ → bundle 嵌入快照的同步已移入 build.rs(任何 cargo build/打包都同步,

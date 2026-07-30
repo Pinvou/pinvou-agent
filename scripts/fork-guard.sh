@@ -21,6 +21,7 @@ fingerprints=(
   "T1|宿主额外工具入口                   |CodeWhale/crates/tui/src/core/engine.rs|pub extra_tools: ExtraTools"
 
   "T2|写文件 64KB 上限                  |CodeWhale/crates/tui/src/tools/file.rs|WRITE_FILE_MAX_CONTENT_BYTES"
+  "T2|append_file 内联 diff              |CodeWhale/crates/tui/src/tools/file.rs|fn forkguard_append_file_emits_inline_diff"
   "T2|截断参数修复提示                   |CodeWhale/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
   "T2|工具黑名单结果 golden              |CodeWhale/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
   "T2|deferred 激活面 golden             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
@@ -69,7 +70,7 @@ fingerprints=(
   "T6|automation reconcile shared API    |CodeWhale/crates/tui/src/automation_manager.rs|pub async fn reconcile_run_statuses_shared("
 
   "CI|公开 fork 全目标编译门禁           |CodeWhale/.github/workflows/pinvou-fork-ci.yml|cargo check --workspace --all-targets --locked"
-  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r1\""
+  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r2\""
 
   "APP|消息携带 resolved route            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|resolve_runtime_route_for_model"
   "APP|部署级 route profile               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn route_limits_for_model("

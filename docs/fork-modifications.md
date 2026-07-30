@@ -4,15 +4,15 @@
 > 基线、主题边界、守护指纹和每次 sync 结论都以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-07-29 · v0.9.0）
+## 0. 当前状态（2026-07-30 · v0.9.0）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| 公开固定基线 | tag `pinvou-v0.9.0-r1`，commit `070f4413eeb0e0c4e6f2634f1ada13c60fd2e86e` |
-| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `070f4413eeb0`；本地 `feat/native-image-input` 另有未推送维护提交 `4671b579b`（见 T5） |
-| 组织方式 | **6 个长期主题 commit + 3 个维护/修复 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
-| drift | 对 `v0.9.0`：**+5246 / -659，74 文件**（含本地未推送的结构化图片输入 patch） |
+| 公开固定基线 | tag `pinvou-v0.9.0-r2`，commit `cb93e0f4466d60e306252ed08bbbe214f2def752` |
+| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `cb93e0f4466d`；本地 `feat/structured-image-input` 另有未推送维护提交 `d4a05585e`（见 T5） |
+| 组织方式 | **6 个长期主题 commit + 4 个行为补充/维护 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
+| drift | 对 `v0.9.0`：**+5436 / -661，74 文件**（含本地未推送的结构化图片输入 patch） |
 | 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译；macOS 适配保留在父仓平台抽象中，不增加 fork drift |
 
@@ -42,15 +42,16 @@
 
 ### T2 `fork`：工具面、文件写入与执行安全
 
-- **commit**：`092e3c885 feat(fork): 收敛工具面、文件写入与执行安全`。
+- **commit**：`092e3c885 feat(fork): 收敛工具面、文件写入与执行安全`；`cb93e0f44 feat(fork): append_file 输出 inline unified diff`。
 - **核心文件**：`tools/pinvou3_blocklist.rs`、`core/engine/tool_catalog.rs`、`tools/file.rs`、`core/engine/dispatch.rs`、`tools/shell.rs`、`core/engine/turn_loop.rs`、`command_safety.rs`、审批策略相关文件。
 - **内容**：
   - pinvou3 native 工具黑名单与 deferred activator 结果式 golden。
   - `write_file` / `append_file` 64KB 单次内容上限和缺字段修复提示。
+  - `append_file` 与 `write_file` 一样输出 inline unified diff(尾部 context + 追加行,字节摘要保留在末尾);已存文件超过 512KB(`APPEND_FILE_INLINE_DIFF_LIMIT_BYTES`)或非 UTF-8 时回退 `[diff omitted]` / 纯字节摘要。
   - `disallowed_tools` 支持 `*` 前缀规则。
   - Dangerous 命令在所有模式阻断；审批缓存、workflow plan 审批保持 fail-closed。
 - **为什么留 fork**：工具面是 pinvou3 产品定位；append_file 与大产物引导耦合。Shell 展示能力已经移到 app，不再作为本主题的 fork-distinct 代码维护。
-- **守护**：`forkguard_blocklist_golden`、`forkguard_yolo_no_deferred_activator_first_class`、文件上限测试和命令安全测试。
+- **守护**：`forkguard_blocklist_golden`、`forkguard_yolo_no_deferred_activator_first_class`、`forkguard_append_file_emits_inline_diff`、文件上限测试和命令安全测试。
 
 ### T3 `fork`：提示词密封与 context / skill 单一来源
 
@@ -86,7 +87,7 @@
   - `b6991463b fix: 修复宿主工具仅在 Plan 模式注册`
   - `c7dbe0353 fix(workflow): 修复工作流子代理写入权限丢失 (#19)`
   - `b2e3a83bf chore(ci): 补齐 Pinvou fork 公开分支门禁`
-  - `4671b579b feat: 支持结构化图片消息输入`（本地未推送）
+  - `d4a05585e feat: 支持结构化图片消息输入`（本地未推送；2026-07-30 由 `4671b579b` rebase 到 `cb93e0f44` 之上，内容不变）
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/engine/tests.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`、`models.rs`、`vision/image_input.rs`、`core/engine/turn_loop.rs`、`client/anthropic.rs`、`vision/tools.rs`、`session_manager.rs`。
 - **内容**：
   - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools；宿主注入工具在 Plan / Agent / Yolo 三种 turn registry 中统一注册，避免非 Plan 分支提前返回时丢失 `kb_search`。
@@ -118,7 +119,7 @@
 - `23d4c9b5 docs(fork): 记录 Pinvou 公开基线`
 - `070f4413 chore(fork): 清理内部项目注释`
 
-这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。父仓只固定到稳定标签 `pinvou-v0.9.0-r1`，不跟随维护分支漂移。
+这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。`cb93e0f44` 是 T2 的行为补充，不新增长期主题。父仓只固定到稳定标签 `pinvou-v0.9.0-r2`，不跟随维护分支漂移。
 
 ### T7 macOS 平台目标支持 (2026-07)
 
@@ -199,6 +200,12 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 本地 `/tmp` 空间不足时，显式把 `TMPDIR` 和 `CARGO_TARGET_DIR` 指到项目盘；不要用清理用户目录解决构建问题。
 
 ## 5. Sync 历史
+
+### v0.9.0 r2 append_file inline diff（2026-07-30）
+
+- `Pinvou/CodeWhale#2` 以 squash commit `cb93e0f4466d60e306252ed08bbbe214f2def752` 合入 `pinvou3-clean`，并发布不可变标签 `pinvou-v0.9.0-r2`。
+- `append_file` 输出 inline unified diff 和尾部字节摘要；旧文件超过 512KB 或非 UTF-8 时安全回退。
+- CodeWhale CI 已通过全 workspace/all-targets 编译、77 项 `tools::file` 定向测试、`forkguard_` 回归、格式、DCO、Gitleaks 与贡献门禁。
 
 ### v0.9.0 公开固定基线（2026-07-24）
 

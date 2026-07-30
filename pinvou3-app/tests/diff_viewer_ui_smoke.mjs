@@ -87,6 +87,12 @@ try {
       writeHeader: document.querySelector('[data-testid="write-output"] [data-testid="diff-file-header"]')?.innerText || '',
       writeAddCount: document.querySelectorAll('[data-testid="write-output"] [data-diff-kind="add"]').length,
       writeBackground: getComputedStyle(document.querySelector('[data-testid="write-output"] [data-testid="diff-view"]')).backgroundColor,
+      appendHasDiff: !!document.querySelector('[data-testid="append-output"] [data-testid="diff-view"]'),
+      appendHeader: document.querySelector('[data-testid="append-output"] [data-testid="diff-file-header"]')?.innerText || '',
+      appendAddCount: document.querySelectorAll('[data-testid="append-output"] [data-diff-kind="add"]').length,
+      appendSummary: document.querySelector('[data-testid="append-output"] [data-testid="diff-summary"]')?.innerText || '',
+      appendLegacyText: document.querySelector('[data-testid="append-legacy-output"]')?.innerText || '',
+      appendOmittedText: document.querySelector('[data-testid="append-omitted-output"]')?.innerText || '',
     };
   });
 
@@ -101,6 +107,11 @@ try {
   assert(!initial.fallbackHasDiff && initial.fallbackText.includes('Replaced 0 occurrences'), '非 diff 文本没有降级到普通输出', initial);
   assert(initial.writeHeader.includes('b/notes/new file.md') && initial.writeHeader.includes('+2'), 'write_file 没有路由到深色 diff 视图', initial);
   assert(initial.writeAddCount === 2 && initial.writeBackground !== 'rgba(0, 0, 0, 0)', 'write_file 深色 diff 渲染错误', initial);
+  assert(initial.appendHasDiff && initial.appendHeader.includes('b/notes/deck.html') && initial.appendHeader.includes('+1'), 'append_file 没有路由到 diff 视图', initial);
+  assert(initial.appendAddCount === 1, 'append_file diff 新增行渲染数量错误', initial);
+  assert(initial.appendSummary.includes('Appended 8 bytes'), 'append_file 字节摘要未随 diff 渲染', initial);
+  assert(initial.appendLegacyText.includes('追加 8 字节'), '旧格式 append_file 字节摘要兜底失效', initial);
+  assert(initial.appendOmittedText.includes('[diff omitted]') && initial.appendOmittedText.includes('Appended 8 bytes'), 'append_file [diff omitted] 输出未完整展示原文', initial);
 
   await page.click('[data-testid="edit-output"] [aria-label="展开完整 diff"]');
   await page.waitForFunction(() => document.querySelector('[data-testid="edit-output"] [data-testid="diff-view"]')?.clientHeight > 200);
