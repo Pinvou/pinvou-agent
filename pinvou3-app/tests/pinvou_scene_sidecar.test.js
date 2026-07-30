@@ -136,7 +136,7 @@ function rec(name, pass, detail = '') {
     const user = state.chatItems.find(item => item.type === 'user');
     rec('queued 多条同一 scene 合并后保留只读标签',
       user &&
-        user.text === '第一条\n第二条' &&
+        user.text === 'payload 1\n\npayload 2' &&
         user.pinvouScene === 'design:poster' &&
         sceneEvents.length === 1 &&
         sceneEvents[0].scene === 'design:poster',
@@ -154,7 +154,7 @@ function rec(name, pass, detail = '') {
     const user = state.chatItems.find(item => item.type === 'user');
     rec('queued 多条不同 scene 合并后不误标标签',
       user &&
-        user.text === '第一条\n第二条' &&
+        user.text === 'payload 1\n\npayload 2' &&
         !user.pinvouScene &&
         sceneEvents.length === 0,
       JSON.stringify({ user, sceneEvents }));
