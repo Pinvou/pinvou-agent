@@ -164,13 +164,13 @@
       // Format values for display
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      var metricNotApplicableText = "不适用";
-      var metricUnavailableText = "未提供";
+      var metricNotApplicableText = bt("metricNotApplicable");
+      var metricUnavailableText = bt("metricUnavailable");
       var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
       var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
         ? vllm.metric_diagnostics[0] : null;
       var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
+      var targetKindLabel = targetKind === "remote" ? bt("targetKindRemote") : (targetKind === "local" ? bt("targetKindLocal") : bt("targetKindInvalid"));
       var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
       var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
       var appQueue = appQueueSnapshot();
@@ -253,7 +253,7 @@
           gen: sadj.gen != null ? sadj.gen : null,
           prompt: sadj.prompt != null ? sadj.prompt : null,
         } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaVersionSuffix") : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",

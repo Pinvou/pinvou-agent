@@ -275,9 +275,9 @@ export function projectDeepSeekConversation({
     activeTurn.completedAt = null;
     activeTurn.error = null;
     activeTurn.lifecycleKnown = true;
-    activeTurn.activityLabel = thinking && thinking.phase === 'tool' && thinking.toolName
-      ? `正在调用 ${thinking.toolName}`
-      : '正在处理';
+    activeTurn.activityToolName = thinking && thinking.phase === 'tool' && thinking.toolName
+      ? thinking.toolName
+      : null;
   }
   if (activeTurn && busy && tokens && tokens.max > 0) {
     activeTurn.usage = {

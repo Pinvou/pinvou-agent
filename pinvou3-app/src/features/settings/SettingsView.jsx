@@ -91,7 +91,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       </div>
     );
 
-    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange }) => {
+    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange, t }) => {
+      const copy = t.uiSettingsView;
+      const detailCopy = t.uiSettingsDetail;
       const memory = (bs && bs.memory) || {};
       const profile = memory.profile || {};
       const identity = profile.identity || {};
@@ -124,8 +126,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         : 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0]';
       const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
       const profileSummary = [
-        identity.call_name ? `称呼：${identity.call_name}` : '',
-        identity.assistant_alias ? `助手昵称：${identity.assistant_alias}` : '',
+        identity.call_name ? copy.profileCallName(identity.call_name) : '',
+        identity.assistant_alias ? copy.profileAssistantAlias(identity.assistant_alias) : '',
       ].filter(Boolean).join(' · ');
       const total = preferences.length + workContext.length + currentFocus.length + recentActivity.length;
       const longTermItems = [
@@ -139,14 +141,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const longTermCount = profileCount + longTermItems.length;
       const recentCount = recentItems.length;
       const tabs = [
-        { key: 'long_term', label: '长期记忆', count: longTermCount, icon: Database },
-        { key: 'recent', label: '近期记忆', count: recentCount, icon: RefreshCw },
+        { key: 'long_term', label: detailCopy.longMemory, count: longTermCount, icon: Database },
+        { key: 'recent', label: copy.memoryTabRecent, count: recentCount, icon: RefreshCw },
       ];
       const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
-      const memoryTypeLabel = kind => kind === 'current_focus' ? '当前关注'
-        : kind === 'recent_activity' ? '近期动态'
-        : kind === 'work_context' ? '工作背景'
-        : '长期偏好';
+      const memoryTypeLabel = kind => kind === 'current_focus' ? detailCopy.memoryTypes.current_focus
+        : kind === 'recent_activity' ? detailCopy.memoryTypes.recent_activity
+        : kind === 'work_context' ? detailCopy.memoryTypes.work_context
+        : detailCopy.memoryTypes.preference;
       const memoryTypeIcon = kind => kind === 'current_focus' ? Lightbulb
         : kind === 'recent_activity' ? RefreshCw
         : kind === 'work_context' ? Briefcase
@@ -211,7 +213,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const deleteItem = async item => {
         setMenuFor(null);
         if (!item || !bridge.memory.deleteMemoryItem) return;
-        if (!window.confirm('删除后这条记忆不会再被使用，确定删除吗？')) return;
+        if (!window.confirm(copy.memoryDeleteConfirm)) return;
         await bridge.memory.deleteMemoryItem(item.kind, item.id);
       };
       const archiveItem = async item => {
@@ -224,21 +226,21 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       const formatMemoryTime = item => {
         const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
-        if (!raw) return '已记住';
+        if (!raw) return copy.memoryTimeSaved;
         const date = new Date(raw);
-        if (Number.isNaN(date.getTime())) return '已记住';
+        if (Number.isNaN(date.getTime())) return copy.memoryTimeSaved;
         const diff = Date.now() - date.getTime();
         const day = 24 * 60 * 60 * 1000;
-        if (diff >= 0 && diff < day) return '今天更新';
-        if (diff >= day && diff < 7 * day) return `${Math.floor(diff / day)} 天前更新`;
-        return `${date.getMonth() + 1}月${date.getDate()}日更新`;
+        if (diff >= 0 && diff < day) return copy.memoryTimeToday;
+        if (diff >= day && diff < 7 * day) return copy.memoryTimeDaysAgo(Math.floor(diff / day));
+        return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
       };
       const confidenceText = item => {
         const n = Number(item.confidence);
-        if (!Number.isFinite(n)) return '自动整理';
-        if (n >= 0.85) return '置信度高';
-        if (n >= 0.65) return '置信度中';
-        return '置信度低';
+        if (!Number.isFinite(n)) return copy.memoryConfidenceAuto;
+        if (n >= 0.85) return copy.memoryConfidenceHigh;
+        if (n >= 0.65) return copy.memoryConfidenceMid;
+        return copy.memoryConfidenceLow;
       };
 
       const MemoryRow = ({ item }) => {
@@ -255,11 +257,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </div>
                 <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
                 <div className={`mt-3 text-[12px] ${faintText}`}>
-                  来源：对话识别 · {confidenceText(item)}
+                  {copy.memorySource} · {confidenceText(item)}
                 </div>
               </div>
               <button
-                title="更多操作"
+                title={copy.memoryMoreActions}
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuFor(menuFor === rowKey ? null : rowKey);
@@ -271,11 +273,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </div>
             {menuFor === rowKey && (
               <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} ${isDark ? 'bg-[#24262B] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'} shadow-2xl overflow-hidden`}>
-                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />编辑</button>
+                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />{detailCopy.edit}</button>
                 {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
-                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />归档</button>
+                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />{copy.memoryArchive}</button>
                 )}
-                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />删除</button>
+                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />{detailCopy.delete}</button>
               </div>
             )}
           </div>
@@ -284,16 +286,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       return (
         <>
-          <SCard isDark={isDark} title="记忆">
+          <SCard isDark={isDark} title={copy.memoryCardTitle}>
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
-                  {memoryEnabled ? '已启用' : '已关闭'}
+                  {memoryEnabled ? copy.memoryEnabled : copy.memoryDisabled}
                 </div>
                 <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
                   {memoryEnabled
-                    ? (memory.loading ? '正在读取记忆' : (profileSummary ? `${profileSummary} · ${total} 条有效记忆。` : `PINVOU 会记住你的偏好、工作背景和近期事项，让后续对话更容易接上上下文。已记录 ${total} 条有效记忆。`))
-                    : '开启后，PINVOU 可以记住你的称呼、稳定偏好、工作背景和近期事项，减少重复说明。'}
+                    ? (memory.loading ? copy.memoryLoading : (profileSummary ? copy.memorySummaryWithProfile(profileSummary, total) : copy.memorySummary(total)))
+                    : copy.memoryOffDesc}
                 </div>
                 {memory.error && <div className="mt-2 text-[13px] text-[#EA4335]">{memory.error}</div>}
               </div>
@@ -302,14 +304,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   onClick={() => onMemoryEnabledChange && onMemoryEnabledChange(!memoryEnabled)}
                   role="switch"
                   aria-checked={!!memoryEnabled}
-                  title={memoryEnabled ? '关闭记忆' : '开启记忆'}
+                  title={memoryEnabled ? copy.memoryTurnOff : copy.memoryTurnOn}
                   className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
                 >
                   <span className="block w-5 h-5 rounded-full bg-white shadow" />
                 </button>
                 {memoryEnabled && (
                   <button onClick={() => { setOpen(true); reload(); }} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${primaryBtn}`}>
-                    查看和管理
+                    {copy.memoryViewManage}
                   </button>
                 )}
               </div>
@@ -322,11 +324,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
                 <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
                   <div>
-                    <div className="text-[19px] font-semibold">记忆中心</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>记忆由 AI 自动整理，非必要无需手动管理。</div>
+                    <div className="text-[19px] font-semibold">{copy.memoryCenterTitle}</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryCenterDesc}</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? '同步中' : '同步记忆'}</button>
+                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? copy.memorySyncing : copy.memorySync}</button>
                     <button onClick={() => setOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
                   </div>
                 </div>
@@ -349,45 +351,45 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
                     {!memoryEnabled && (
                       <div className={`mb-4 rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.04] border-white/[0.08]' : 'bg-white border-[#DDE3EA]'}`}>
-                        <div className={`text-[13px] leading-relaxed ${subText}`}>开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。</div>
+                        <div className={`text-[13px] leading-relaxed ${subText}`}>{copy.memoryOffNotice}</div>
                       </div>
                     )}
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
                       <div>
                         <div className="text-[16px] font-semibold">{tabMeta.label}</div>
-                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? '称呼、长期偏好与工作背景' : '当前关注与近期动态'} · {tabMeta.count} 条</div>
+                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? copy.memoryLongTermTabDesc : copy.memoryRecentTabDesc} · {copy.memoryItemCount(tabMeta.count)}</div>
                       </div>
                       <div className={`h-10 min-w-0 md:w-[260px] flex items-center gap-2 rounded-full border px-3 ${inputBg}`}>
                         <Search size={15} className={faintText} />
-                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder="搜索记忆" className="w-full bg-transparent outline-none text-[13px]" />
+                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder={copy.memorySearchPlaceholder} className="w-full bg-transparent outline-none text-[13px]" />
                       </div>
                     </div>
 
                     {tab === 'long_term' ? (
                       <div className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <SField isDark={isDark} label="助手称呼我" value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder="例如：欣哥" />
-                          <SField isDark={isDark} label="我称呼助手" value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder="例如：小猪" />
+                          <SField isDark={isDark} label={copy.memoryCallNameLabel} value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder={copy.memoryCallNamePlaceholder} />
+                          <SField isDark={isDark} label={copy.memoryAssistantAliasLabel} value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder={copy.memoryAssistantAliasPlaceholder} />
                         </div>
                         <div className="flex justify-end">
-                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
                         </div>
                         {filteredList.length === 0 ? (
-                          <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的长期记忆。' : '暂无长期偏好或工作背景。'}</div>
+                          <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchLongTerm : copy.memoryEmptyLongTerm}</div>
                         ) : (
                           <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
                         )}
                         <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>长期记忆会长期保留，用来理解你的稳定偏好、工作背景和称呼习惯。它不会自动过期，你可以随时编辑或删除。</div>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryLongTermHint}</div>
                         </div>
                       </div>
                     ) : filteredList.length === 0 ? (
-                      <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的近期记忆。' : '暂无当前关注或近期动态。'}</div>
+                      <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchRecent : copy.memoryEmptyRecent}</div>
                     ) : (
                       <div className="space-y-3">
                         {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
                         <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>近期记忆会记录最近正在推进和刚完成的事情，用来帮助 PINVOU 接上上下文。它会随时间自动淡出，你也可以手动归档或删除。</div>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryRecentHint}</div>
                         </div>
                       </div>
                     )}
@@ -403,20 +405,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div>
-                    <div className="text-[16px] font-semibold">编辑{memoryTypeLabel(editing.kind)}</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>修改后会立即影响后续记忆注入。</div>
+                    <div className="text-[16px] font-semibold">{detailCopy.editTitle(memoryTypeLabel(editing.kind))}</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryEditDesc}</div>
                   </div>
                   <button onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
                 </div>
                 <div className="space-y-3">
                   <label className="block">
-                    <span className={`block text-[12px] mb-1.5 ${subText}`}>内容</span>
+                    <span className={`block text-[12px] mb-1.5 ${subText}`}>{detailCopy.content}</span>
                     <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: e.target.value })} rows={5} className={`w-full rounded-xl border px-3 py-2 text-[14px] outline-none resize-none ${inputBg}`} />
                   </label>
                 </div>
                 <div className="mt-5 flex justify-end gap-2">
-                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>取消</button>
-                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>{detailCopy.cancel}</button>
+                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
                 </div>
               </div>
             </div>
@@ -722,7 +724,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     }
     function providerLabelForModel(model, t) {
       const provider = findCloudProviderForModel(model);
-      if (provider) return provider.title;
+      if (provider) {
+        const overrides = (t && t.uiSettingsDetail && t.uiSettingsDetail.providerCatalog) || {};
+        const override = overrides[provider.key];
+        return (override && override.title) || provider.title;
+      }
       return presetProviderLabel(model && model.preset, t);
     }
     function isCodingPlanModel(model) {
@@ -1152,7 +1158,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     const ComposerModeMenu = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const SKILLS = [
-        { id: 'visual-design', name: '视觉设计', desc: '设计系统直出网页/banner/海报/简历…', kind: 'auto' },
+        { id: 'visual-design', name: t.uiSettingsView.visualDesignSkillName, desc: t.uiSettingsView.visualDesignSkillDesc, kind: 'auto' },
       ];
       const activeId = bs && bs.activeSkill;
       const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
@@ -1266,13 +1272,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         disabledIds: Array.from(disabled),
         activeSkill,
         serviceStates: [
-          { id: 'feishu', title: '飞书（Lark）', connected: feishuOn, enabled: feishuEnabled },
-          { id: 'wecom', title: '企业微信', connected: wecomOn, enabled: wecomEnabled },
-          { id: 'dingtalk', title: '钉钉', connected: dingtalkOn, enabled: dingtalkEnabled },
-          { id: 'tmeet', title: '腾讯会议', connected: tmeetOn, enabled: tmeetEnabled },
+          { id: 'feishu', title: t.uiSettingsView.serviceFeishu, connected: feishuOn, enabled: feishuEnabled },
+          { id: 'wecom', title: t.uiSettingsView.serviceWecom, connected: wecomOn, enabled: wecomEnabled },
+          { id: 'dingtalk', title: t.uiSettingsView.serviceDingtalk, connected: dingtalkOn, enabled: dingtalkEnabled },
+          { id: 'tmeet', title: t.uiSettingsView.serviceTmeet, connected: tmeetOn, enabled: tmeetEnabled },
         ],
       });
       const { connectedServices, toolRows, skillRows, enabledCount } = menuState;
+      // 内置技能名称/描述由 composer-tool-menu-logic.js 数据提供，在 UI 边界按当前语言覆盖
+      const localizedSkillRows = skillRows.map(row => (row.kind === 'builtin-skill' && row.skillId === 'visual-design')
+        ? { ...row, title: t.uiSettingsView.visualDesignSkillName, description: t.uiSettingsView.visualDesignSkillDesc }
+        : row);
       const statusBadge = (label, tone = 'green') => {
         const cls = tone === 'blue'
           ? 'text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15'
@@ -1314,9 +1324,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
                 {toolRows.map(switchRow)}
-                {skillRows.length === 0 ? (
+                {localizedSkillRows.length === 0 ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>
-                ) : skillRows.map(row => row.switchable
+                ) : localizedSkillRows.map(row => row.switchable
                   ? switchRow(row)
                   : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
@@ -1583,7 +1593,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function buildLocalModelPayload(row) {
         return {
           id: makeModelId(),
-          name: `本地 ${row.model}`,
+          name: settingsCopy.localModelName(row.model),
           preset: 'local_vllm',
           context_window_tokens: row.max_model_len || null,
           max_output_tokens: null,
@@ -1604,7 +1614,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           });
           setLocalDetectResult({ candidates: (result && result.candidates) || [] });
         } catch (error) {
-          setLocalDetectResult({ error: String(error || '检测失败') });
+          setLocalDetectResult({ error: String(error || t.uiSettingsView.detectFailed) });
         } finally {
           setLocalDetecting(false);
         }
@@ -1614,7 +1624,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setPreset('local_vllm');
         setModel('');
         setBaseUrl(defs.baseUrl);
-        setName('本地模型');
+        setName(settingsCopy.localModelName(''));
         setContextWindow('');
         setMaxOutput('');
         setApiKey('');
@@ -1632,7 +1642,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const items = activeProvider ? activeProvider.items : [];
         const known = items.some(item => !item.custom && item.model === model);
         const selectedItem = known ? items.find(item => !item.custom && item.model === model) : null;
-        const selectedLabel = customModel || !known ? '自定义模型 ID' : ((selectedItem && selectedItem.title) || model);
+        const selectedLabel = customModel || !known ? `${settingsCopy.customModel} ID` : ((selectedItem && selectedItem.title) || model);
         const chooseModel = (item) => {
           if (!item || item.custom) {
             setCustomModel(true);
@@ -1652,7 +1662,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               onClick={() => setProviderModelPickerOpen(open => !open)}
               className={`w-full min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${formDivider}`}
             >
-              <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>模型</span>
+              <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{t.uiSettingsView.modelLabel}</span>
               <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{selectedLabel}</span>
               <ChevronDown
                 size={16}
@@ -1671,8 +1681,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'}`}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{item.title || item.model || '自定义模型 ID'}</span>
-                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>}
+                        <span className={`block text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{item.custom ? settingsCopy.customModelTitle(selectedProvider) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
+                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{item.custom
+                          ? (activeProvider.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (activeProvider.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))
+                          : (settingsCopy.modelDescriptions[item.desc] || item.desc)}</span>}
                       </span>
                       {active && <Check size={17} strokeWidth={2.4} className={isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]'} />}
                     </button>
@@ -1681,10 +1693,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
             )}
             {(customModel || !known) && renderInlineField({
-              label: '模型 ID',
+              label: settingsCopy.modelId,
               value: model,
               onChange: e => setModel(e.target.value),
-              placeholder: isCodingPlan ? '例如 glm-5' : '输入模型 ID',
+              placeholder: isCodingPlan ? t.uiSettingsView.codingPlanModelIdPlaceholder : settingsCopy.modelIdPlaceholder,
             })}
           </>
         );
@@ -2268,9 +2280,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const userModels = visibleSortedModels(savedModels || []);
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
-        { key: 'metaso', label: '秘塔', desc: settingsCopy.searchDescriptions.metaso },
-        { key: 'bocha', label: '博查', desc: settingsCopy.searchDescriptions.bocha },
-        { key: 'baidu', label: '百度', desc: settingsCopy.searchDescriptions.baidu },
+        { key: 'metaso', label: t.uiSettingsView.searchProviderMetaso, desc: settingsCopy.searchDescriptions.metaso },
+        { key: 'bocha', label: t.uiSettingsView.searchProviderBocha, desc: settingsCopy.searchDescriptions.bocha },
+        { key: 'baidu', label: t.uiSettingsView.searchProviderBaidu, desc: settingsCopy.searchDescriptions.baidu },
         { key: 'tavily', label: 'Tavily', desc: settingsCopy.searchDescriptions.tavily },
       ];
       const enabledSearchSet = new Set(['bing', ...(enabledSearchProviders || [])]);

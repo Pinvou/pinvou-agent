@@ -7,6 +7,7 @@
     var invoke = context.invoke;
     var listen = context.listen;
     var notify = context.notify;
+    var bt = context.bt;
     var refreshHistoryList = context.refreshHistoryList;
 
   // ── 卡片流工作流：运行态 helper ──────────────────────────────────
@@ -36,7 +37,7 @@
     var p = payload || {};
     var run = state.workflow.run;
     run.status = "blocked";
-    var text = "⚙️ 工作流卡住：" + (p.message || p.blocked_reason || p.reason || "未知原因");
+    var text = bt("workflowBlockedPrefix") + (p.message || p.blocked_reason || p.reason || bt("workflowBlockedUnknown"));
     var existing = (run.cards || []).find(function (card) { return card.workflowBlocked; });
     if (existing) {
       existing.text = text;
@@ -167,7 +168,7 @@
     state.workflow.run.status = "complete";
     // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
     if (p.artifact) {
-      pushRunCard({ kind: "artifact", path: p.artifact, text: "🎉 工作流完成，成品已生成", resolved: false });
+      pushRunCard({ kind: "artifact", path: p.artifact, text: bt("workflowCompleteArtifact"), resolved: false });
     }
     notify();
   });

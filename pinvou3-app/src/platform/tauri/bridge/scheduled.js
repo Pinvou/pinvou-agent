@@ -6,6 +6,7 @@
     var state = context.state;
     var notify = context.notify;
     var invoke = context.invoke;
+    var bt = context.bt;
     var runSyncOnSession = context.runSyncOnSession;
     var addSystemItem = context.addSystemItem;
     var rememberScheduledRunOwner = context.rememberScheduledRunOwner;
@@ -333,7 +334,7 @@
       modelId: lockedModelId,
     }));
     if (!draft) {
-      var invalidDraftError = new Error("定时任务草稿缺少名称、任务说明或时间规则");
+      var invalidDraftError = new Error(bt("scheduledDraftInvalid"));
       setScheduledTaskError(invalidDraftError, "action");
       notify();
       throw invalidDraftError;
@@ -388,7 +389,7 @@
         // createScheduledTask 通常已记录错误；忙锁在进入 action 前抛出时在这里补记，且不产生未处理 Promise。
         if (!state.scheduledTaskError) setScheduledTaskError(error, "action");
         runSyncOnSession(creationSessionId, function () {
-          addSystemItem("定时任务创建失败：" + scheduledTaskErrorText(error), {
+          addSystemItem(bt("scheduledCreateFailed") + scheduledTaskErrorText(error), {
             scheduledTaskCreationError: true,
           });
         });
@@ -459,7 +460,7 @@
       rememberScheduledRunOwner(run);
       var merged = Object.assign({}, run, {
         automationId: run.automationId || task.id,
-        taskName: task.name || "定时任务",
+        taskName: task.name || bt("scheduledTaskFallbackName"),
         taskModel: task.model || null,
       });
       var index = rows.findIndex(function (row) { return row && row.id === merged.id; });
@@ -526,7 +527,7 @@
         var task = tasksById[automationId] || null;
         return Object.assign({}, run, {
           automationId: automationId,
-          taskName: task && task.name || "定时任务",
+          taskName: task && task.name || bt("scheduledTaskFallbackName"),
           taskModel: task && task.model || null,
         });
       }).filter(function (run) {
@@ -610,7 +611,7 @@
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
         var task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
-        }) || { id: automationId, name: "定时任务" };
+        }) || { id: automationId, name: bt("scheduledTaskFallbackName") };
         mergeScheduledTaskRecentRuns(task, runs);
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
@@ -648,7 +649,7 @@
 
   async function runScheduledTaskAction(action, operation) {
     if (state.scheduledTaskBusyAction) {
-      throw new Error("另一个定时任务操作仍在进行中");
+      throw new Error(bt("scheduledActionBusy"));
     }
     state.scheduledTaskBusyAction = action;
     setScheduledTaskError(null);
@@ -684,7 +685,7 @@
       var backendInput = scheduledTaskBackendInput(input);
       var created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
-        throw new Error("创建定时任务失败：后端未返回任务 ID");
+        throw new Error(bt("scheduledCreateNoId"));
       }
       if (templateId) rememberScheduledTaskTemplateSource(created.id, templateId);
       attachScheduledTaskTemplateSource(created);
@@ -795,7 +796,7 @@
       state.scheduledTaskAutoOpenId = null;
       await createNewSession();
       state.scheduledTaskPendingGuide = prompt;
-      prefillComposer("我想创建一个定时任务：");
+      prefillComposer(bt("scheduledChatPrefill"));
       notify();
       return prompt;
     });

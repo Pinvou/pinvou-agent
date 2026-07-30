@@ -59,8 +59,23 @@ function errorText(payload) {
   return '';
 }
 
+// 活动卡正文与标题兜底默认中文；UI 边界(PetWindow)按当前语言从 i18n 的
+// uiPet 命名空间注入同形 copy，键名与词条一一对应。
+const DEFAULT_ACTIVITY_COPY = Object.freeze({
+  activityThinking: '正在思考…',
+  activityProcessing: '正在处理…',
+  activityUsingTool: (tool) => `正在使用 ${tool}`,
+  activityCallingTool: '正在调用工具…',
+  activityContinuing: '继续处理…',
+  activityInputNeeded: '需要你的输入',
+  activityTaskFailed: '任务遇到问题',
+  activityTaskDone: '任务已完成',
+  activityStartFailed: '任务未能启动',
+  activityTitleFallback: '当前任务',
+});
+
 /** Apply a broadcast chat/pet event to the lightweight per-session activity model. */
-export function applyEvent(state, name, payload, now = Date.now()) {
+export function applyEvent(state, name, payload, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
   const sid = sessionId(payload);
   if (!sid) return false;
 
@@ -68,7 +83,7 @@ export function applyEvent(state, name, payload, now = Date.now()) {
     case 'pet:turn_start': {
       if (state.viewedSessions) state.viewedSessions.delete(sid);
       return updateActivity(state, sid, 'running', now, {
-        body: '正在思考…',
+        body: copy.activityThinking,
         latestReply: '',
         currentTurnText: '',
         tool: '',
@@ -83,7 +98,7 @@ export function applyEvent(state, name, payload, now = Date.now()) {
       return updateActivity(state, sid, 'running', now, {
         currentTurnText,
         latestReply,
-        body: latestReply || '正在处理…',
+        body: latestReply || copy.activityProcessing,
       });
     }
 
@@ -91,14 +106,14 @@ export function applyEvent(state, name, payload, now = Date.now()) {
       const tool = String((payload && (payload.name || payload.tool_name)) || '').trim();
       return updateActivity(state, sid, 'running', now, {
         tool,
-        body: tool ? `正在使用 ${tool}` : '正在调用工具…',
+        body: tool ? copy.activityUsingTool(tool) : copy.activityCallingTool,
       });
     }
 
     case 'chat:tool_end': {
       return updateActivity(state, sid, 'running', now, {
         tool: '',
-        body: '继续处理…',
+        body: copy.activityContinuing,
       });
     }
 
@@ -106,7 +121,7 @@ export function applyEvent(state, name, payload, now = Date.now()) {
       const prompt = payload && (payload.prompt || payload.message || payload.text);
       const latestReply = normalizeConversationText(prompt);
       return updateActivity(state, sid, 'waiting', now, {
-        body: latestReply || '需要你的输入',
+        body: latestReply || copy.activityInputNeeded,
         latestReply,
         currentTurnText: '',
         tool: '',
@@ -126,7 +141,7 @@ export function applyEvent(state, name, payload, now = Date.now()) {
       }
       const error = normalizeConversationText(errorText(payload));
       const failed = Boolean(error) || /fail|error/i.test(status);
-      const body = error || previous.latestReply || (failed ? '任务遇到问题' : '任务已完成');
+      const body = error || previous.latestReply || (failed ? copy.activityTaskFailed : copy.activityTaskDone);
       return updateActivity(state, sid, failed ? 'failed' : 'review', now, {
         body,
         latestReply: error || previous.latestReply || '',
@@ -139,8 +154,8 @@ export function applyEvent(state, name, payload, now = Date.now()) {
       // tauri-bridge emits this only from invoke(...).catch(), so there will be
       // no chat:done to replace the optimistic Running activity.
       return updateActivity(state, sid, 'failed', now, {
-        body: '任务未能启动',
-        latestReply: '任务未能启动',
+        body: copy.activityStartFailed,
+        latestReply: copy.activityStartFailed,
         currentTurnText: '',
         tool: '',
       });
@@ -182,12 +197,12 @@ function pruneExpired(state, now) {
   }
 }
 
-export function deriveActivities(state, now = Date.now()) {
+export function deriveActivities(state, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
   pruneExpired(state, now);
   return [...state.sessions.values()]
     .map((activity) => ({
       ...activity,
-      title: state.titles.get(activity.sessionId) || '当前任务',
+      title: state.titles.get(activity.sessionId) || copy.activityTitleFallback,
     }))
     .sort((a, b) => (
       (ACTIVITY_PRIORITY[a.status] - ACTIVITY_PRIORITY[b.status])
@@ -219,7 +234,7 @@ export function markSessionViewed(state, sid, { completed = false } = {}) {
  * 对齐一次带序号的权威活动快照(调用方需已滤掉定时任务会话)。
  * 旧快照直接丢弃；working:false 立即清除 running，不依赖宽限期或第二次快照。
  */
-export function applyActivitySnapshot(state, sessions, sequence, now = Date.now()) {
+export function applyActivitySnapshot(state, sessions, sequence, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
   if (!Array.isArray(sessions)) return false;
   const snapshotSequence = Number(sequence);
   if (Number.isFinite(snapshotSequence) && snapshotSequence > 0) {
@@ -237,7 +252,7 @@ export function applyActivitySnapshot(state, sessions, sequence, now = Date.now(
     const working = !!session.working;
     if (working) {
       if (!card && !(state.viewedSessions && state.viewedSessions.has(key))) {
-        changed = applyEvent(state, 'pet:turn_start', { session_id: key }, now) || changed;
+        changed = applyEvent(state, 'pet:turn_start', { session_id: key }, now, copy) || changed;
       }
     } else if (card && card.status === 'running') {
       changed = state.sessions.delete(key) || changed;

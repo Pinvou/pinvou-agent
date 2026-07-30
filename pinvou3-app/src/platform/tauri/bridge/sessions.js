@@ -561,7 +561,7 @@
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("runHasNoSession")), errorScope);
       return false;
     }
     if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
@@ -596,7 +596,7 @@
     }
     if (requestToken !== sessionSwitchRequestToken) return false;
     if (!saved || !saved.metadata || !saved.metadata.id) {
-      reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("sessionDataInvalid")), errorScope);
       return false;
     }
 
@@ -671,7 +671,7 @@
   async function openScheduledRunChatOnce(run, task) {
     var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), "scheduled");
+      reportSessionSwitchFailure(new Error(bt("runHasNoSession")), "scheduled");
       return false;
     }
     rememberScheduledRunOwner(run);

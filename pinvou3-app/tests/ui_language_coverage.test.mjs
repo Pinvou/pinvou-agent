@@ -16,6 +16,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiScheduled',
     'uiChat',
     'uiChatExtra',
+    'uiChatScenes',
     'uiAccount',
     'uiWorkflow',
     'uiToolStore',
@@ -25,7 +26,9 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiHomeMode',
     'uiAttachments',
     'uiCodex',
+    'uiCodexView',
     'uiCodexWorkspace',
+    'uiArtifacts',
     'uiToolDetails',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);

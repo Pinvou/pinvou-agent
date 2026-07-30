@@ -112,7 +112,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
     const ScheduledSelect = ({
       value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
-      multiple = false, minSelected = 0, onClose, emptyLabel = '—',
+      multiple = false, minSelected = 0, onClose, emptyLabel = '—', separator = '、',
     }) => {
       const [open, setOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
@@ -125,7 +125,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const selected = multiple ? null : ((options || []).find(option => option.value === value) || (options || [])[0]);
       const displayLabel = multiple
         ? (options || []).filter(option => selectedValues.includes(option.value))
-          .map(option => option.shortLabel || option.label).join('、')
+          .map(option => option.shortLabel || option.label).join(separator)
         : (selected ? selected.label : emptyLabel);
       const serializedValue = multiple ? selectedValues.join(',') : (value || '');
       const closeMenu = () => {
@@ -285,7 +285,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     };
 
     // 时/分选择器:触发区是只读输入框(显示 HH:MM),点开 iOS 风双滚轮。
-    const ScheduledTimeWheel = ({ value, onChange, theme, testId, ariaLabel, placeholder = '' }) => {
+    const ScheduledTimeWheel = ({ value, onChange, theme, testId, ariaLabel, placeholder = '', hourAriaLabel, minuteAriaLabel }) => {
       const [open, setOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
       const rootRef = useRef(null);
@@ -347,10 +347,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-1 bottom-1 z-10 h-11 rounded-b-[12px]"
             style={{ background: `linear-gradient(transparent, ${surface})` }} />
           <WheelColumn values={hours} value={hour} onChange={next => onChange(`${next}:${minute}`)}
-            ariaLabel="选择小时" testId={`${testId}-hour`} isDark={isDark} />
+            ariaLabel={hourAriaLabel} testId={`${testId}-hour`} isDark={isDark} />
           <span className={`self-center text-[15px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>:</span>
           <WheelColumn values={minutes} value={minute} onChange={next => onChange(`${hour}:${next}`)}
-            ariaLabel="选择分钟" testId={`${testId}-minute`} isDark={isDark} />
+            ariaLabel={minuteAriaLabel} testId={`${testId}-minute`} isDark={isDark} />
         </div>,
         document.body
       ) : null;
@@ -1073,7 +1073,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   <ScheduledSelect value={selectedDays} options={weekdayOptions}
                     onChange={values => onEdit('days', values)} multiple minSelected={1}
                     onClose={onCloseWeekly}
-                    testId={`${prefix}-day`} ariaLabel={scheduledCopy.chooseDate} theme={theme} minWidth={190} emptyLabel={scheduledCopy.choose} />
+                    testId={`${prefix}-day`} ariaLabel={scheduledCopy.chooseDate} theme={theme} minWidth={190} emptyLabel={scheduledCopy.choose} separator={scheduledCopy.daySeparator} />
                   <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
                 </div>
               </div>
@@ -1085,6 +1085,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               <ScheduledTimeWheel value={editor.time}
                 onChange={value => onEdit('time', value)}
                 theme={theme} testId={`${prefix}-time`} ariaLabel={editor.repeat === 'hourly' ? scheduledCopy.chooseStartTime : scheduledCopy.chooseRunTime}
+                hourAriaLabel={scheduledCopy.chooseHour} minuteAriaLabel={scheduledCopy.chooseMinute}
                 placeholder={editor.repeat === 'hourly' && !editor.hasTimeAnchor ? scheduledCopy.setStart : ''} />
             </div>
           </div>
@@ -1479,7 +1480,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     data-testid="scheduled-create-from-chat"
                     className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors ${isDark ? 'bg-[#2C2C2E] text-white hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD]'}`}>
                     <MessageCircle size={14} className="mr-2 opacity-70" />
-                    AI 聊天创建
+                    {scheduledCopy.createFromChat}
                   </button>
                   <button type="button"
                     onClick={startBlankTask}

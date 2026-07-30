@@ -137,7 +137,7 @@
       state.mountedCollection = collectionId;
       notify();
       return collectionId;
-    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
+    } catch (e) { addSystemItem(bt("mountCollectionFailed") + e); return null; }
   }
   // 摘下当前对话的知识集挂载。
   async function unmountCollection() {

@@ -254,7 +254,7 @@
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("记忆写入失败：" + e);
+      addSystemItem(bt("memoryWriteFailed") + e);
     }
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
@@ -266,7 +266,7 @@
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("忽略记忆失败：" + e);
+      addSystemItem(bt("memoryIgnoreFailed") + e);
     }
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
@@ -278,7 +278,7 @@
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("设置不再提示失败：" + e);
+      addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
     return {

@@ -8,6 +8,28 @@
 
   var activePicker = null;
 
+  // 文案单一来源是 shared/i18n.js 的 uiPlatformMisc.hostFilePicker,由 React 入口
+  // 按当前语言挂到 window.PinvouHostFilePickerStrings;此处保留中文兜底(纯脚本无法 import ES module)。
+  var FALLBACK_LABELS = {
+    pickFolderTitle: "选择桌面端文件夹", pickFileTitle: "选择桌面端文件",
+    close: "关闭", goUp: "上一级", loadingPath: "正在读取桌面端目录…", loading: "正在读取…",
+    cancel: "取消", chooseThisFolder: "选择此文件夹", choose: "选择",
+    currentFolder: function (path) { return "当前文件夹：" + path; },
+    selectedCount: function (n) { return "已选择 " + n + " 项"; },
+    thisComputer: "此电脑", emptyFolder: "此目录中没有可选内容",
+    loadFailed: function (err) { return "读取失败：" + err; },
+    alreadyOpen: "已有文件选择器正在打开",
+  };
+
+  function pickerLabels() {
+    var custom = window.PinvouHostFilePickerStrings || {};
+    var merged = {};
+    for (var key in FALLBACK_LABELS) {
+      merged[key] = custom[key] !== undefined ? custom[key] : FALLBACK_LABELS[key];
+    }
+    return merged;
+  }
+
   function element(tag, className, text) {
     var node = document.createElement(tag);
     if (className) node.className = className;
@@ -44,7 +66,8 @@
 
   function openRemoteHostPicker(options) {
     options = options || {};
-    if (activePicker) return Promise.reject(new Error("已有文件选择器正在打开"));
+    var labels = pickerLabels();
+    if (activePicker) return Promise.reject(new Error(labels.alreadyOpen));
 
     return new Promise(function (resolve, reject) {
       var directoryMode = options.directory === true;
@@ -58,30 +81,30 @@
       var overlay = element("div", "pinvou-host-picker-overlay");
       var panel = element("div", "pinvou-host-picker-panel");
       var header = element("div", "pinvou-host-picker-header");
-      var heading = element("div", "pinvou-host-picker-heading", options.title || (directoryMode ? "选择桌面端文件夹" : "选择桌面端文件"));
+      var heading = element("div", "pinvou-host-picker-heading", options.title || (directoryMode ? labels.pickFolderTitle : labels.pickFileTitle));
       var close = element("button", "pinvou-host-picker-icon", "×");
       close.type = "button";
-      close.setAttribute("aria-label", "关闭");
+      close.setAttribute("aria-label", labels.close);
       header.appendChild(heading);
       header.appendChild(close);
 
       var toolbar = element("div", "pinvou-host-picker-toolbar");
       var up = element("button", "pinvou-host-picker-icon", "←");
       up.type = "button";
-      up.title = "上一级";
-      var pathLabel = element("div", "pinvou-host-picker-path", "正在读取桌面端目录…");
+      up.title = labels.goUp;
+      var pathLabel = element("div", "pinvou-host-picker-path", labels.loadingPath);
       toolbar.appendChild(up);
       toolbar.appendChild(pathLabel);
 
       var body = element("div", "pinvou-host-picker-body");
-      var status = element("div", "pinvou-host-picker-status", "正在读取…");
+      var status = element("div", "pinvou-host-picker-status", labels.loading);
       body.appendChild(status);
 
       var footer = element("div", "pinvou-host-picker-footer");
       var selectionLabel = element("div", "pinvou-host-picker-selection", "");
       var actions = element("div", "pinvou-host-picker-actions");
-      var cancel = element("button", "pinvou-host-picker-button", "取消");
-      var confirm = element("button", "pinvou-host-picker-button pinvou-host-picker-primary", directoryMode ? "选择此文件夹" : "选择");
+      var cancel = element("button", "pinvou-host-picker-button", labels.cancel);
+      var confirm = element("button", "pinvou-host-picker-button pinvou-host-picker-primary", directoryMode ? labels.chooseThisFolder : labels.choose);
       cancel.type = confirm.type = "button";
       confirm.disabled = !directoryMode;
       actions.appendChild(cancel);
@@ -110,8 +133,8 @@
       function updateSelection() {
         var count = selected.size;
         selectionLabel.textContent = directoryMode
-          ? (currentPath ? "当前文件夹：" + currentPath : "")
-          : (count ? "已选择 " + count + " 项" : "");
+          ? (currentPath ? labels.currentFolder(currentPath) : "")
+          : (count ? labels.selectedCount(count) : "");
         confirm.disabled = directoryMode ? !currentPath : count === 0;
       }
 
@@ -139,7 +162,7 @@
       function renderListing(listing) {
         currentPath = listing && (listing.path || listing.current_path || listing.currentPath) || null;
         parentPath = listing && (listing.parent || listing.parent_path || listing.parentPath) || null;
-        pathLabel.textContent = currentPath || "此电脑";
+        pathLabel.textContent = currentPath || labels.thisComputer;
         up.disabled = !parentPath;
         body.replaceChildren();
 
@@ -158,7 +181,7 @@
         });
 
         if (!entries.length) {
-          body.appendChild(element("div", "pinvou-host-picker-empty", "此目录中没有可选内容"));
+          body.appendChild(element("div", "pinvou-host-picker-empty", labels.emptyFolder));
         }
         entries.forEach(function (entry) {
           var row = element("button", "pinvou-host-picker-row");
@@ -185,13 +208,13 @@
         var generation = ++loadGeneration;
         up.disabled = true;
         confirm.disabled = true;
-        body.replaceChildren(element("div", "pinvou-host-picker-status", "正在读取桌面端目录…"));
+        body.replaceChildren(element("div", "pinvou-host-picker-status", labels.loadingPath));
         client.invoke("web_access_list_host_files", { path: path || null }).then(function (listing) {
           if (disposed || generation !== loadGeneration) return;
           renderListing(listing);
         }).catch(function (error) {
           if (disposed || generation !== loadGeneration) return;
-          body.replaceChildren(element("div", "pinvou-host-picker-error", "读取失败：" + String(error && error.message ? error.message : error)));
+          body.replaceChildren(element("div", "pinvou-host-picker-error", labels.loadFailed(String(error && error.message ? error.message : error))));
         });
       }
 

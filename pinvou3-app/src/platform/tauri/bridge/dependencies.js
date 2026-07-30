@@ -9,6 +9,7 @@
     var state = context.state;
     var notify = context.notify;
     var invoke = context.invoke;
+    var bt = context.bt;
   // ── 依赖体检 ─────────────────────────────────────────────────────
   // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
   // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
@@ -36,7 +37,7 @@
       });
     });
     if (!pkgs.length) {
-      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
+      state.depsInstallError = bt("depsInstallManual");
       notify();
       return;
     }

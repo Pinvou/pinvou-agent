@@ -55,13 +55,13 @@ function unifiedConversationUiEnabled() {
 }
 
 const WORK_MODE_SUBTABS = [
-  { key: 'document-writing', label: '公文写作', Icon: FileText },
+  { key: 'document-writing', Icon: FileText },
 ];
 
 const DESIGN_MODE_SUBTABS = [
-  { key: 'poster', label: '海报', Icon: ImageIcon },
-  { key: 'data-visualization', label: '数据可视化', Icon: BarChart2 },
-  { key: 'ppt', label: 'PPT设计', Icon: Presentation, disabled: true, disabledReason: 'PPT 生成能力修复中' },
+  { key: 'poster', Icon: ImageIcon },
+  { key: 'data-visualization', Icon: BarChart2 },
+  { key: 'ppt', Icon: Presentation, disabled: true },
 ];
 
 const openChatExternalUrl = (url) => {
@@ -322,7 +322,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker' }) => {
+    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker', comingSoonLabel = '' }) => {
       const trackRef = useRef(null);
       const buttonRefs = useRef({});
       const [indicator, setIndicator] = useState({ left: 0, width: 20, ready: false });
@@ -373,7 +373,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   key={item.key}
                   type="button"
                   data-testid={`${testId}-option-${item.key}`}
-                  title={disabled ? (item.disabledReason || '即将上线') : item.label}
+                  title={disabled ? (item.disabledReason || comingSoonLabel) : item.label}
                   aria-disabled={disabled ? 'true' : undefined}
                   disabled={disabled}
                   onClick={() => {
@@ -433,6 +433,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
+      const chatViewCopy = t.uiChatView;
+      const workModeSubtabs = WORK_MODE_SUBTABS.map((item) => ({ ...item, label: chatViewCopy.subtabs[item.key] }));
+      const designModeSubtabs = DESIGN_MODE_SUBTABS.map((item) => ({
+        ...item,
+        label: chatViewCopy.subtabs[item.key],
+        disabledReason: item.disabled ? (chatViewCopy.disabledReasons[item.key] || chatViewCopy.comingSoon) : undefined,
+      }));
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const initialInput = constrainChatInput(
         bridge.available && bridge.chat && bridge.chat.getComposerDraft
@@ -741,7 +748,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const changes = Array.isArray(payload && payload.changes) ? payload.changes : [];
         if (!element || !changes.length) return;
         const groupId = `design-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const groupLabel = payload.groupLabel || 'Edit';
+        const groupLabel = payload.groupLabel || chatViewCopy.designEditGroup;
         changes.forEach((item) => {
           if (!item || String(item.oldValue == null ? '' : item.oldValue) === String(item.newValue == null ? '' : item.newValue)) return;
           const change = createDesignChange({
@@ -758,7 +765,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         });
         setSelectedDesignElement(element);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: element.id });
-      }, [reduceCurrentDesignChanges, updatePinvouModeState]);
+      }, [reduceCurrentDesignChanges, updatePinvouModeState, chatViewCopy]);
       const handleClearDesignChanges = useCallback(() => {
         setDesignCommand({ seq: Date.now(), kind: 'clear' });
         reduceCurrentDesignChanges({ type: 'clear' });
@@ -768,21 +775,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const documentWritingSceneActive = shouldUseDocumentWritingScene(pinvouMode, workSubtab);
       const dataVisualizationSceneActive = shouldUseDataVisualizationScene(pinvouMode, designSubtab);
       const activeScene = pinvouMode === 'work'
-        ? WORK_MODE_SUBTABS.find(item => item.key === workSubtab)
+        ? workModeSubtabs.find(item => item.key === workSubtab)
         : pinvouMode === 'design'
-          ? DESIGN_MODE_SUBTABS.find(item => item.key === designSubtab)
+          ? designModeSubtabs.find(item => item.key === designSubtab)
           : null;
       const composerPlaceholder = pinvouMode === 'design'
         ? selectedDesignElement
-          ? '描述你想怎么调整选中的元素'
+          ? chatViewCopy.placeholderDesignAdjust
           : dataVisualizationSceneActive
-            ? '粘贴数据或描述指标，生成可视化看板'
+            ? chatViewCopy.placeholderDesignDataViz
           : visualPosterSceneActive
-            ? '描述你想生成或调整的视觉海报'
-            : '描述你想怎么调整选中的元素'
+            ? chatViewCopy.placeholderDesignPoster
+            : chatViewCopy.placeholderDesignAdjust
         : pinvouMode === 'work'
           ? documentWritingSceneActive
-            ? '描述公文主题、文种、收发单位和关键要求'
+            ? chatViewCopy.placeholderWorkDocument
             : t.placeholder
         : t.placeholder;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
@@ -980,15 +987,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
+          const sceneCopy = t.uiChatScenes[requirements.key];
           if (!canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
             setSceneCapabilityStatus(null);
           } else {
-            setSceneCapabilityStatus({ kind: 'preparing', text: requirements.preparingText });
+            setSceneCapabilityStatus({ kind: 'preparing', text: sceneCopy.preparing });
             try {
               const prepared = await prepareSceneCapabilities(meta, invokeTauri);
-              if (!prepared.ok) throw new Error(prepared.error || requirements.failureText);
+              if (!prepared.ok) {
+                const missing = prepared.missing && prepared.missing.length
+                  ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
+                  : '';
+                throw new Error(missing || sceneCopy.failure);
+              }
               if (prepared.installed) {
-                setSceneCapabilityStatus({ kind: 'ready', text: requirements.readyText });
+                setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
                 window.setTimeout(() => setSceneCapabilityStatus((current) => (
                   current && current.kind === 'ready' ? null : current
                 )), 1800);
@@ -999,7 +1012,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               const message = error && error.message ? error.message : String(error || '');
               setSceneCapabilityStatus({
                 kind: 'error',
-                text: message ? `${requirements.failureText} ${message}` : requirements.failureText,
+                text: message ? `${sceneCopy.failure} ${message}` : sceneCopy.failure,
               });
               return false;
             }
@@ -1020,7 +1033,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           throw error;
         }
         return true;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, t, visualPosterSceneActive]);
       const handleDesignAiSubmit = useCallback((text) => {
         const raw = String(text || '').trim();
         if (!raw) return;
@@ -1336,10 +1349,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     turns={conversationProjection.turns}
                     now={conversationNow}
                     copy={t.uiConversation}
-                    agentLabel="品悟"
+                    agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(
                       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
-                        <PinvouLogo className="h-5 w-5" title="品悟" />
+                        <PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName} />
                       </div>
                     )}
                     renderUser={(item) => (
@@ -1499,8 +1512,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   isDark={isDark}
                   value={workSubtab}
                   onChange={handleWorkSubtabChange}
-                  items={WORK_MODE_SUBTABS}
+                  items={workModeSubtabs}
                   testId="work-subtab-picker"
+                  comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
               {pinvouMode === 'design' && !conversationStarted && (
@@ -1508,8 +1522,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   isDark={isDark}
                   value={designSubtab}
                   onChange={handleDesignSubtabChange}
-                  items={DESIGN_MODE_SUBTABS}
+                  items={designModeSubtabs}
                   testId="design-subtab-picker"
+                  comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
               {!scheduledRunContext && conversationStarted && (
@@ -2098,13 +2113,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
           <button type="button" className={menuItemCls(false)} onClick={selectAll}>
-            <span className="w-4 text-center text-[12px]">A</span><span>{t.selectAllMsg || 'Select all'}</span>
+            <span className="w-4 text-center text-[12px]">A</span><span>{t.selectAllMsg}</span>
           </button>
           <button type="button" disabled={!menu.canCopy} className={menuItemCls(!menu.canCopy)} onClick={copySelected}>
             <Copy size={14} /><span>{t.copyMsg}</span>
           </button>
           <button type="button" className={menuItemCls(false)} onClick={pasteText}>
-            <ClipboardList size={14} /><span>{t.pasteMsg || 'Paste'}</span>
+            <ClipboardList size={14} /><span>{t.pasteMsg}</span>
           </button>
         </div>
       ), document.body);
@@ -2382,6 +2397,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
+      const chatViewCopy = t.uiChatView;
+      // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
+      const memoryStatusLabels = {
+        '已忽略': chatCopy.ignoreOnce,
+        '不再提示': chatCopy.neverAsk,
+        '已记住': chatViewCopy.memStatusRemembered,
+        '已归档': chatViewCopy.memStatusArchived,
+        '已删除': chatViewCopy.memStatusDeleted,
+        '记忆已更新': chatCopy.memoryUpdated,
+        '记忆已归档': chatViewCopy.memStatusArchivedNotice,
+        '记忆已删除': chatViewCopy.memStatusDeletedNotice,
+      };
+      const localizedMemoryStatus = (label) => memoryStatusLabels[label] || label;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
 
@@ -2540,7 +2568,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </span>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-[13px] font-semibold leading-tight">{item.statusLabel || chatCopy.memoryUpdated}</span>
+                    <span className="text-[13px] font-semibold leading-tight">{localizedMemoryStatus(item.statusLabel) || chatCopy.memoryUpdated}</span>
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
                   </div>
                   <div className="mt-1 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.notice}</div>
@@ -2561,9 +2589,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const text = item.text || '';
         const memoryKind = item.kind === 'recent_work' ? 'recent_activity' : item.kind;
         const meta = chatCopy.memoryMeta[memoryKind] || chatCopy.memoryMeta.preference;
-        const localizedStatus = item.statusLabel === '已忽略' ? chatCopy.ignoreOnce
-          : item.statusLabel === '不再提示' ? chatCopy.neverAsk
-          : item.statusLabel;
+        const localizedStatus = localizedMemoryStatus(item.statusLabel);
         return (
           <div className="flex justify-end">
             <div
