@@ -13,9 +13,9 @@ use crate::features::codex_acp::workspace::{
     self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
 };
 use crate::features::codex_acp::{
-    validate_codex_project_workspace, AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation,
-    CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
-    CodexWorkspaceKind, CODEX_ACP_SESSION_MODEL,
+    validate_codex_project_workspace, AcpEventEnvelope, AcpPool, AgentBackend,
+    CodexAcpPendingElicitation, CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus,
+    CodexAcpWorkspaceInfo, CodexWorkspaceKind,
 };
 use crate::features::sessions::{SessionKind, SessionStore};
 
@@ -27,6 +27,8 @@ pub struct CodexAcpSessionListItem {
     pub pinned_at: Option<String>,
     #[serde(flatten)]
     pub workspace: CodexAcpWorkspaceInfo,
+    pub agent_id: String,
+    pub agent_name: String,
 }
 
 fn ensure_codex_workspace_root(
@@ -43,6 +45,30 @@ fn ensure_codex_workspace_root(
 #[tauri::command]
 pub async fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpStatus, String> {
     Ok(acp_pool.refresh_status().await)
+}
+
+#[tauri::command]
+pub async fn list_acp_agents(acp_pool: State<'_, AcpPool>) -> Result<Vec<CodexAcpStatus>, String> {
+    acp_pool.refresh_status().await;
+    let pool = acp_pool.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || pool.agent_statuses())
+        .await
+        .map_err(|error| format!("读取 ACP Agent 列表失败: {error}"))
+}
+
+#[tauri::command]
+pub async fn get_acp_agent_status(
+    agent_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpStatus, String> {
+    if agent_id == "codex" {
+        return Ok(acp_pool.refresh_status().await);
+    }
+    let pool = acp_pool.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || pool.status_for_agent(&agent_id))
+        .await
+        .map_err(|error| format!("读取 ACP Agent 状态任务失败: {error}"))?
+        .map_err(|error| format!("读取 ACP Agent 状态失败: {error:#}"))
 }
 
 #[tauri::command]
@@ -72,10 +98,54 @@ pub async fn login_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpSta
 }
 
 #[tauri::command]
+pub async fn login_acp_agent(
+    agent_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpStatus, String> {
+    acp_pool
+        .login_agent(&agent_id)
+        .await
+        .map_err(|error| format!("登录 ACP Agent 失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn switch_acp_agent_account(
+    agent_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpStatus, String> {
+    acp_pool
+        .switch_agent_account(&agent_id)
+        .await
+        .map_err(|error| format!("切换 ACP Agent 账号失败: {error:#}"))
+}
+
+#[tauri::command]
 pub fn open_codex_login_url(acp_pool: State<'_, AcpPool>) -> Result<(), String> {
     acp_pool
         .open_login_url()
         .map_err(|error| format!("打开 Codex 授权页面失败: {error:#}"))
+}
+
+#[tauri::command]
+pub fn open_acp_agent_login_url(
+    agent_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    acp_pool
+        .open_agent_login_url(&agent_id)
+        .map_err(|error| format!("打开 ACP Agent 授权页面失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn submit_acp_agent_login_code(
+    agent_id: String,
+    code: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    acp_pool
+        .submit_agent_login_code(&agent_id, &code)
+        .await
+        .map_err(|error| format!("提交 ACP Agent 授权码失败: {error:#}"))
 }
 
 #[tauri::command]
@@ -117,12 +187,12 @@ pub async fn codex_acp_prompt(
     if message.is_empty() && attachments.is_empty() && workspace_references.is_empty() {
         return Err("empty message".to_string());
     }
-    if !acp_pool.is_codex(&session_id) {
-        return Err("当前会话不是 Codex ACP 会话".to_string());
+    if !acp_pool.is_acp(&session_id) {
+        return Err("当前会话不是 ACP 会话".to_string());
     }
     let session = store
         .load(&session_id)
-        .map_err(|error| format!("读取 Codex 会话失败: {error:#}"))?;
+        .map_err(|error| format!("读取 ACP 会话失败: {error:#}"))?;
     if session.metadata.title == "新对话" {
         let title_source = if message.is_empty() {
             attachments
@@ -136,7 +206,7 @@ pub async fn codex_acp_prompt(
         let title = title_source.chars().take(28).collect::<String>();
         store
             .set_title(&session_id, title)
-            .map_err(|error| format!("更新 Codex 会话标题失败: {error:#}"))?;
+            .map_err(|error| format!("更新 ACP 会话标题失败: {error:#}"))?;
     }
     crate::features::assistant::timing::start_turn(&session_id);
     acp_pool
@@ -148,7 +218,7 @@ pub async fn codex_acp_prompt(
                 "send_error",
                 Some(&format!("{error:?}")),
             );
-            format!("Codex ACP send failed: {error:#}")
+            format!("ACP Agent send failed: {error:#}")
         })
 }
 
@@ -156,8 +226,8 @@ fn codex_workspace_root(
     session_id: &str,
     acp_pool: &AcpPool,
 ) -> Result<std::path::PathBuf, String> {
-    if !acp_pool.is_codex(session_id) {
-        return Err("当前会话不是 Codex ACP 会话".to_string());
+    if !acp_pool.is_acp(session_id) {
+        return Err("当前会话不是 ACP 会话".to_string());
     }
     let info = acp_pool
         .workspace_info(session_id)
@@ -305,7 +375,7 @@ pub async fn cancel_codex_acp(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
-    if !acp_pool.is_codex(&session_id) {
+    if !acp_pool.is_acp(&session_id) {
         return Err("当前会话不是 Codex ACP 会话".to_string());
     }
     acp_pool.cancel(&session_id).await;
@@ -327,7 +397,7 @@ pub async fn get_codex_acp_pending_permissions(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<CodexAcpPendingPermission>, String> {
-    if !acp_pool.is_codex(&session_id) {
+    if !acp_pool.is_acp(&session_id) {
         return Err("当前会话不是 Codex ACP 会话".to_string());
     }
     Ok(acp_pool.pending_permissions_for(&session_id).await)
@@ -351,7 +421,7 @@ pub async fn get_codex_acp_pending_elicitations(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<CodexAcpPendingElicitation>, String> {
-    if !acp_pool.is_codex(&session_id) {
+    if !acp_pool.is_acp(&session_id) {
         return Err("当前会话不是 Codex ACP 会话".to_string());
     }
     Ok(acp_pool.pending_elicitations_for(&session_id).await)
@@ -382,20 +452,23 @@ pub async fn list_codex_acp_sessions(
         .map_err(|error| format!("list_codex_acp_sessions: {error:?}"))?;
     metas.retain(|metadata| {
         matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
-            && acp_pool.is_codex_metadata(metadata)
+            && acp_pool.is_acp_metadata(metadata)
             && !store.is_hidden(&metadata.id)
     });
     metas
         .into_iter()
         .map(|metadata| {
+            let backend = acp_pool.backend(&metadata.id);
             let workspace = acp_pool.workspace_info(&metadata.id).map_err(|error| {
-                format!("读取 Codex 会话 {} 工作目录失败: {error:#}", metadata.id)
+                format!("读取 ACP 会话 {} 工作目录失败: {error:#}", metadata.id)
             })?;
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
+                agent_id: backend.agent_id().unwrap_or("codex").to_string(),
+                agent_name: backend.display_name().to_string(),
             })
         })
         .collect()
@@ -404,10 +477,16 @@ pub async fn list_codex_acp_sessions(
 #[tauri::command]
 pub async fn create_codex_acp_session(
     workspace_path: Option<String>,
+    agent_id: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<SessionMetadata, String> {
+    let backend = AgentBackend::parse(agent_id.as_deref().or(Some("codex")))
+        .map_err(|error| format!("{error:#}"))?;
+    if !backend.is_acp() {
+        return Err("代码会话必须选择 ACP Agent".to_string());
+    }
     let project_workspace = workspace_path
         .as_deref()
         .map(|path| validate_codex_project_workspace(std::path::Path::new(path)))
@@ -418,7 +497,7 @@ pub async fn create_codex_acp_session(
         .unwrap_or_else(|| pool.bridge.workspace.clone());
     let session = store
         .create_new(
-            CODEX_ACP_SESSION_MODEL.to_string(),
+            format!("{} (ACP)", backend.display_name()),
             None,
             metadata_workspace,
         )
@@ -440,7 +519,7 @@ pub async fn create_codex_acp_session(
     if let Err(error) =
         acp_pool
             .agents()
-            .set_codex_workspace(&session.metadata.id, kind, project_workspace)
+            .set_acp_workspace(&session.metadata.id, backend, kind, project_workspace)
     {
         let _ = store.delete(&session.metadata.id);
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));

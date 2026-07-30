@@ -52,8 +52,8 @@ async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
 tokio = { version = "1.49", features = ["full"] }
 tokio-util = { version = "0.7.16", features = ["compat"] }
 
-# Codex ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
-# @agentclientprotocol/codex-acp 提供，pinvou3 不复制其会话/工具循环。
+# 外部 Agent ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
+# Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
 agent-client-protocol = { version = "1.0.0", features = [
     "unstable_elicitation",
     "unstable_session_fork",

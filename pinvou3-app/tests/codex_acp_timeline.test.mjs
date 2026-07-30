@@ -214,6 +214,11 @@ try {
     'global sessions must visually identify Codex records');
   assert.ok(main.includes("useState('pinned_first')"),
     'pinned sessions float first by default; unpinned work and code sessions still mix by recent update time');
+  assert.match(
+    main,
+    /if \(type === 'turn_started'\) \{[\s\S]*?refreshCodexSessions\(\)\.catch\(\(\) => \{\}\);[\s\S]*?\} else if \(type === 'turn_completed'\)/,
+    'an accepted ACP turn must refresh the shared recent-session list while it is still running',
+  );
   assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode || '代码' }")
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
@@ -221,7 +226,7 @@ try {
     && i18n.includes("sidebarTaskFilterCode: 'コード'"),
   'the task-list Code filter must show only Codex sessions in every supported locale');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
-    && main.includes('<CodexLogo className="h-[18px] w-[18px]"')
+    && main.includes('<AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),
   'work, Codex, and scheduled sessions must expose equally sized type icons');
   assert.ok(navigationComponents.includes('group flex h-11 items-center')
@@ -237,23 +242,58 @@ try {
 
   const chatCommands = readFileSync(path.join(root, 'src-tauri', 'src', 'app', 'commands', 'chat.rs'), 'utf8');
   const codexCommands = readFileSync(path.join(root, 'src-tauri', 'src', 'app', 'commands', 'codex.rs'), 'utf8');
-  assert.ok(chatCommands.includes('Codex ACP 会话必须通过独立 Codex 页面发送'));
+  assert.ok(chatCommands.includes('ACP 代码会话必须通过独立代码页面发送'));
   assert.ok(codexCommands.includes('pub async fn codex_acp_prompt'));
   assert.ok(codexCommands.includes('pub async fn set_codex_acp_mode'));
   assert.ok(codexCommands.includes('pub async fn get_codex_acp_pending_elicitations'));
   assert.ok(codexCommands.includes('pub async fn respond_codex_acp_elicitation'));
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
+  assert.ok(codexCommands.includes('agent_id: Option<String>')
+    && codexCommands.includes('set_acp_workspace(&session.metadata.id, backend'),
+  'code-session creation must bind the selected ACP Agent for the lifetime of the session');
+  assert.ok(codexCommands.includes('pub async fn login_acp_agent')
+    && codexCommands.includes('pub fn open_acp_agent_login_url')
+    && codexCommands.includes('pub async fn submit_acp_agent_login_code'),
+  'all ACP Agents must expose the hosted login flow, including Claude authorization-code input');
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
+  assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
+    'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
-  assert.ok(runtime.includes('Codex 会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
+  assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
+  assert.ok(runtime.includes('cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))')
+    && runtime.includes('"outcome": "cancelled"'),
+  'account switching must persist permission cancellation through the removed runtime bridge');
+  assert.ok(runtime.includes('cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))'),
+  'account switching must persist elicitation cancellation through the removed runtime bridge');
+  assert.ok(runtime.includes('AgentBackend::ClaudeAcp')
+    && runtime.includes('AgentBackend::KimiAcp')
+    && runtime.includes('command.arg("acp")')
+    && runtime.includes('CLAUDE_ACP_PACKAGE'),
+  'the shared ACP runtime must launch Claude through its adapter and Kimi through kimi acp');
+  assert.ok(runtime.includes('cli_status_success(claude, &["auth", "status"])')
+    && runtime.includes('kimi_authenticated')
+    && runtime.includes('run_agent_login')
+    && runtime.includes('capture_agent_login_output')
+    && runtime.includes('submit_agent_login_code'),
+  'ACP auth status and hosted login must be driven by the real Agent CLIs instead of credential-file existence alone');
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  assert.ok(codexView.includes('copy.permissionRequest(agentName)')
+    && codexView.includes('tool.title || copy.protectedOperation')
+    && codexView.includes('label={copy.command}')
+    && codexView.includes('copy.operationArguments')
+    && codexView.includes('copy.allowOnce')
+    && codexView.includes('copy.allowSession')
+    && codexView.includes('copy.reject')
+    && codexView.includes('copy.handled')
+    && codexView.includes('copy.expired'),
+  'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
@@ -261,8 +301,25 @@ try {
   const pinvouLogo = readFileSync(path.join(root, 'src', 'components', 'PinvouLogo.jsx'), 'utf8');
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
+  const boundedPermissionOptionClass = 'max-w-full min-w-0 whitespace-normal break-all';
+  assert.ok(codexView.includes(boundedPermissionOptionClass)
+    && conversationView.includes(boundedPermissionOptionClass),
+  'long ACP permission option labels must wrap inside both unified and legacy permission cards');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
+  assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
+    && codexView.includes('onCodeAgentChange={selectDraftAgent}')
+    && codexView.includes('agentId: draftAgentId')
+    && codexView.includes("invoke('list_acp_agents')"),
+  'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
+  assert.ok(codexView.includes("invoke('login_acp_agent'")
+    && codexView.includes("invoke('open_acp_agent_login_url'")
+    && codexView.includes("invoke('submit_acp_agent_login_code'")
+    && codexView.includes('status.login_code')
+    && codexView.includes('status.login_input_required')
+    && codexView.includes('if (!activeStatus?.authenticated)')
+    && codexView.includes('isAcpAuthenticationFailure(latest)'),
+  'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
     && codexView.includes('const created = await createSession(draftWorkspacePath)'),
@@ -302,12 +359,13 @@ try {
   assert.ok(homeModeSwitcher.includes("key: 'design'")
     && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = false'),
   'Design must remain in the home mode configuration but stay hidden');
-  assert.ok(homeModeSwitcher.includes("key: 'claude-code'")
-    && homeModeSwitcher.includes("key: 'kimi-code'")
+  assert.ok(homeModeSwitcher.includes("key: 'claude'")
+    && homeModeSwitcher.includes("key: 'kimi'")
     && homeModeSwitcher.includes("key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true")
-    && homeModeSwitcher.includes("label: 'Claude Code', enabled: false")
-    && homeModeSwitcher.includes("label: 'Kimi Code', enabled: false"),
-  'only Codex must be visible while the other code agents remain disabled in configuration');
+    && homeModeSwitcher.includes("label: 'Claude Code', enabled: true")
+    && homeModeSwitcher.includes("label: 'Kimi', enabled: true")
+    && homeModeSwitcher.includes('onCodeAgentChange'),
+  'the code home must expose Codex, Claude, and Kimi through one ACP Agent selector');
   assert.ok(homeModeSwitcher.includes('prominent')
     && iosControls.includes('compact && prominent')
     && iosControls.includes('transition-transform duration-200 ease-out'),
@@ -317,15 +375,21 @@ try {
     && main.includes('setCodexDraftEpoch(value => value + 1)')
     && main.includes("setCurrentView('codex')"),
   'selecting Codex must continue to enter the existing Codex draft page');
+  const acpAgentLogo = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpAgentLogo.jsx'), 'utf8');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
-    && main.includes('<CodexLogo')
-    && codexView.includes('<CodexLogo'),
-  'Codex identity must reuse the project OpenAI mark in the home, sidebar, and conversation');
+    && acpAgentLogo.includes('<CodexLogo')
+    && acpAgentLogo.includes("brand-icons/claude.png")
+    && acpAgentLogo.includes("alt={title || 'Claude Code'}")
+    && acpAgentLogo.includes("brand-icons/kimi-code.png")
+    && acpAgentLogo.includes("alt={title || 'Kimi'}")
+    && main.includes('<AcpAgentLogo')
+    && codexView.includes('<AcpAgentLogo'),
+  'ACP sessions must keep the Codex mark and expose distinct Claude/Kimi identities');
   assert.ok(pinvouLogo.includes("resolveAppAssetUrl('assets/brand/brand-blue.png')")
     && chatView.includes('assistantAvatar={(')
     && chatView.includes('<PinvouLogo className="h-5 w-5" title="品悟"')
-    && codexView.includes('<CodexLogo className="h-5 w-5" title="Codex"'),
-  'assistant avatars must use the Pinvou and Codex identity marks instead of generic symbols');
+    && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
+  'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
   assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');
   assert.ok(conversationView.includes('执行步骤'), 'tool items must use a compact presentation group');
   assert.ok(!codexView.includes("useState(state === 'failed')"),
@@ -336,6 +400,15 @@ try {
     'running operation details must not interrupt the conversation by auto-expanding');
   assert.ok(!codexView.includes('if (running) setOpen(true)'),
     'running operation groups must remain compact by default');
+  assert.ok(codexView.includes("HTTP\\s*402")
+    && codexView.includes("kind = 'entitlement'")
+    && codexView.includes('data-testid="acp-service-failure"'),
+  'membership HTTP 402 failures must become a recoverable service card instead of a bare error');
+  assert.ok(codexView.includes("invoke('switch_acp_agent_account'")
+    && codexView.includes('data-testid="acp-account-menu-trigger"')
+    && codexView.includes('data-testid="acp-account-menu"')
+    && codexView.includes('switchAccountAffectsSessions'),
+  'every ACP Agent must expose an account menu and a force account-switch action');
   assert.ok(codexView.includes('const movingUp = element.scrollTop < lastScrollTopRef.current - 1')
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
@@ -349,6 +422,7 @@ try {
   'Codex prompts must keep external attachments and workspace references as separate inputs');
   assert.ok(!codexView.includes('if (activeId && !sessionInfo)')
     && !codexView.includes('throw new Error(codexCopy.sessionSyncing)')
+    && !codexView.includes('targetInfo')
     && !codexView.includes('(activeId && !sessionInfo) ||'),
   'Codex prompts must let the backend initialize or restore the ACP session instead of blocking forever on stale UI state');
   assert.ok(codexView.includes('<CodexWorkspacePanel')
@@ -382,6 +456,18 @@ try {
     && codexView.includes('turn={activeConversationTurn}')
     && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
   'Codex must show the shared composer timer only while the active turn is running');
+  assert.ok(codexView.includes('data-testid="acp-session-loading"')
+    && codexView.includes('const [sessionLoading, setSessionLoading] = useState(false)')
+    && codexView.includes('disabled={!sessionReady')
+    && codexView.includes('if (activeId && !sessionReady) return;')
+    && !codexView.includes('setError(codexCopy.sessionSyncing)')
+    && !codexView.includes('throw new Error(codexCopy.sessionSyncing)'),
+  'ACP session restoration must show a loading state and suppress sending without reporting a red error');
+  assert.ok(codexView.includes('const activeStatus = status?.agent_id === activeAgentId ? status : null')
+    && codexView.includes('status={activeStatus}')
+    && codexView.includes('next?.agent_id === activeAgentIdRef.current')
+    && codexView.includes('[activeAgentId, activeStatus?.login_in_progress]'),
+  'switching ACP sessions must never render or keep polling the previous Agent status');
   assert.ok(codexView.includes('<ConversationMarkdown')
     && codexView.includes("invoke('open_external_url', { url })"),
   'both unified and fallback Codex messages must route links through the host opener');

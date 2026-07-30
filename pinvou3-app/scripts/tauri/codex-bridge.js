@@ -35,6 +35,28 @@ const BRIDGE_PACKAGE_JSON = path.join(
   "codex-acp",
   "package.json",
 );
+const CLAUDE_BRIDGE_ENTRYPOINT = path.join(
+  "acp",
+  "node_modules",
+  "@agentclientprotocol",
+  "claude-agent-acp",
+  "dist",
+  "index.js",
+);
+const CLAUDE_BRIDGE_PACKAGE_JSON = path.join(
+  "acp",
+  "node_modules",
+  "@agentclientprotocol",
+  "claude-agent-acp",
+  "package.json",
+);
+const WINDOWS_CLAUDE_EXECUTABLE = path.join(
+  "acp",
+  "node_modules",
+  "@anthropic-ai",
+  "claude-agent-sdk-win32-x64",
+  "claude.exe",
+);
 const MARKER_NAME = "manifest.json";
 const PREPARE_FORMAT_VERSION = 4;
 const MINIMUM_NODE_MAJOR = 20;
@@ -52,7 +74,9 @@ const WINDOWS_NPM_CI_ARGS = [
   "--no-audit",
   "--no-fund",
   "--omit=dev",
-  "--omit=optional",
+  "--include=optional",
+  "--os=win32",
+  "--cpu=x64",
 ];
 
 function fileSha256(filePath) {
@@ -62,6 +86,11 @@ function fileSha256(filePath) {
 function expectedCodexAcpVersion() {
   const packageJson = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8"));
   return packageJson.dependencies["@agentclientprotocol/codex-acp"];
+}
+
+function expectedClaudeAcpVersion() {
+  const packageJson = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8"));
+  return packageJson.dependencies["@agentclientprotocol/claude-agent-acp"];
 }
 
 function expectedMarker({ architecture = process.arch } = {}) {
@@ -114,6 +143,53 @@ function nonemptyFile(filePath) {
   }
 }
 
+function packageDirectories(root, scope, prefix) {
+  const scopeRoot = path.join(root, "acp", "node_modules", scope);
+  try {
+    return fs
+      .readdirSync(scopeRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+      .map((entry) => path.join(scopeRoot, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+function pruneWindowsPlatformPackages(root) {
+  for (const packageRoot of packageDirectories(root, "@openai", "codex-")) {
+    fs.rmSync(packageRoot, { recursive: true, force: true });
+  }
+  const expectedClaudePackage = path.dirname(
+    path.join(root, WINDOWS_CLAUDE_EXECUTABLE),
+  );
+  for (const packageRoot of packageDirectories(
+    root,
+    "@anthropic-ai",
+    "claude-agent-sdk-",
+  )) {
+    if (packageRoot !== expectedClaudePackage) {
+      fs.rmSync(packageRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+function platformPackagesValid(root) {
+  const codexPackages = packageDirectories(root, "@openai", "codex-");
+  const claudePackages = packageDirectories(
+    root,
+    "@anthropic-ai",
+    "claude-agent-sdk-",
+  );
+  const expectedClaudePackage = path.dirname(
+    path.join(root, WINDOWS_CLAUDE_EXECUTABLE),
+  );
+  return (
+    codexPackages.length === 0 &&
+    claudePackages.length === 1 &&
+    claudePackages[0] === expectedClaudePackage
+  );
+}
+
 function windowsBridgeOverlay() {
   return {
     bundle: {
@@ -140,10 +216,17 @@ function isPrepared(expected = expectedMarker(), outputRoot = WINDOWS_BRIDGE_ROO
     const packageJson = JSON.parse(
       fs.readFileSync(path.join(outputRoot, BRIDGE_PACKAGE_JSON), "utf8"),
     );
+    const claudePackageJson = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, CLAUDE_BRIDGE_PACKAGE_JSON), "utf8"),
+    );
     return (
       JSON.stringify(actual) === JSON.stringify(expected) &&
       packageJson.version === expectedCodexAcpVersion() &&
+      claudePackageJson.version === expectedClaudeAcpVersion() &&
       nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
+      nonemptyFile(path.join(outputRoot, CLAUDE_BRIDGE_ENTRYPOINT)) &&
+      nonemptyFile(path.join(outputRoot, WINDOWS_CLAUDE_EXECUTABLE)) &&
+      platformPackagesValid(outputRoot) &&
       windowsChildProcessesHidden(path.join(outputRoot, BRIDGE_ENTRYPOINT))
     );
   } catch {
@@ -245,6 +328,7 @@ function prepareWindowsCodexBridge({
       "安装 Windows ACP Bridge",
     );
 
+    pruneWindowsPlatformPackages(bridgeRoot);
     hideWindowsChildProcesses(path.join(bridgeRoot, BRIDGE_ENTRYPOINT));
     fs.rmSync(path.join(acpRoot, "package.json"), { force: true });
     fs.rmSync(path.join(acpRoot, "package-lock.json"), { force: true });
@@ -312,10 +396,12 @@ if (require.main === module) {
 module.exports = {
   BRIDGE_ENTRYPOINT,
   BRIDGE_PACKAGE_ROOT,
+  CLAUDE_BRIDGE_ENTRYPOINT,
   LOCKFILE_PATH,
   MINIMUM_NODE_MAJOR,
   WINDOWS_BRIDGE_ROOT,
   WINDOWS_BRIDGE_CONFIG_PATH,
+  WINDOWS_CLAUDE_EXECUTABLE,
   WINDOWS_NPM_CI_ARGS,
   expectedMarker,
   hideWindowsChildProcesses,

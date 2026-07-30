@@ -22,6 +22,17 @@ pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
         .join("codex-bridge")
 }
 
+pub(super) fn bridge_node_relative_path() -> PathBuf {
+    let target = match std::env::consts::ARCH {
+        "aarch64" => "darwin-arm64",
+        _ => "darwin-x64",
+    };
+    PathBuf::from("node")
+        .join(target)
+        .join("bin")
+        .join(NODE_EXECUTABLE_NAME)
+}
+
 pub(super) fn adapter_needs_node(adapter: &Path) -> bool {
     adapter.extension().and_then(|value| value.to_str()) == Some("js")
 }

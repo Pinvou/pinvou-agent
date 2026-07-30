@@ -106,6 +106,7 @@ jobs:
       pet: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.pet }}
       frontend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.frontend }}
       relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
+      acp_runtime: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.acp_runtime }}
       windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v7
@@ -181,6 +182,18 @@ jobs:
               - '.github/workflows/pr-check.yml'
             relay:
               - 'remote-control-relay/**'
+              - '.github/workflows/pr-check.yml'
+            acp_runtime:
+              - 'pinvou3-app/scripts/codex-bridge-runtime/**'
+              - 'pinvou3-app/scripts/prepare-codex-bridge-runtime.sh'
+              - 'pinvou3-app/scripts/tauri/build.js'
+              - 'pinvou3-app/scripts/tauri/codex-bridge.js'
+              - 'pinvou3-app/scripts/tauri/effective-config.js'
+              - 'pinvou3-app/src-tauri/src/features/codex_acp/**'
+              - 'pinvou3-app/src-tauri/src/platform/capabilities.rs'
+              - 'pinvou3-app/tests/codex_acp_*'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
               - '.github/workflows/pr-check.yml'
             windows_codex:
               - '.gitmodules'
@@ -604,7 +617,7 @@ jobs:
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
     needs: changes
-    if: ${{ needs.changes.outputs.windows_codex == 'true' }}
+    if: ${{ needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -626,6 +639,27 @@ jobs:
           npm --prefix pinvou3-app run test:windows-runtime
           npm --prefix pinvou3-app run test:codex-acp-windows-runtime
 
+  macos-codex-runtime-test:
+    name: macos-codex-runtime-test
+    needs: changes
+    if: ${{ needs.changes.outputs.acp_runtime == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: 准备 macOS universal ACP Bridge
+        run: ./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh
+
+      - name: macOS Codex 与 Claude Runtime 原生打包冒烟
+        run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
+
   required-gate:
     name: required-gate
     needs:
@@ -637,6 +671,7 @@ jobs:
       - relay-test
       - rust-lint
       - rust-test
+      - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
@@ -652,6 +687,7 @@ jobs:
           RELAY_RESULT: ${{ needs.relay-test.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
           if [[ "$COMMIT_MESSAGE_RESULT" != success || "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
@@ -665,6 +701,7 @@ jobs:
             "relay-test:$RELAY_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
+            "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"

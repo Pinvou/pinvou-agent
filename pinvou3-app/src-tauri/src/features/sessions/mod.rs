@@ -1055,6 +1055,28 @@ impl SessionStore {
         Ok(())
     }
 
+    /// 更新会话最近活跃时间，不改动 transcript 或其他元数据。
+    ///
+    /// ACP 对话把时间线持久化在独立 sidecar 中，不会经过普通聊天的
+    /// `persist_chat_engine_state`，因此接受新回合时需要显式触碰主会话元数据，
+    /// 让统一侧边栏仍能按 `updated_at` 正确排序。
+    pub fn touch_activity(&self, id: &str) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        validate_session_id(id)?;
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for activity update"))?;
+        session.metadata.updated_at = Utc::now();
+        self.save_session_atomic(&session)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!(
+                "[sessions] retention reconciliation failed after activity update: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
     /// 新建空 session（无 messages）。返回 SavedSession 让调用方
     /// 立刻 `Op::SyncSession` 同步给 engine，并 set_active(id)。
     /// 上游空消息时 title 默认 "New Session"，pinvou3 覆写成中文。
@@ -3087,6 +3109,25 @@ mod tests {
             .expect("rename");
         let loaded = store.load(&s.metadata.id).expect("load");
         assert_eq!(loaded.metadata.title, "改个名字");
+    }
+
+    #[test]
+    fn touch_activity_updates_timestamp_without_mutating_conversation() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        store
+            .touch_activity(&s.metadata.id)
+            .expect("touch activity");
+
+        let loaded = store.load(&s.metadata.id).expect("load");
+        assert!(loaded.metadata.updated_at > s.metadata.updated_at);
+        assert_eq!(loaded.metadata.title, s.metadata.title);
+        assert_eq!(loaded.metadata.message_count, s.metadata.message_count);
+        assert_eq!(loaded.messages, s.messages);
     }
 
     #[test]
