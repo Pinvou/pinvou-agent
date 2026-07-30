@@ -147,6 +147,7 @@
     }
     var id = ++attachIdSeq;
     var att = { id: id, basename: file.name || "attachment", status: "parsing", result: null, error: null, cancelled: false, uploadId: null };
+    var commitAcknowledged = false;
     state.attachments.push(att);
     notify();
     try {
@@ -170,6 +171,7 @@
           dataBase64: encodeBase64Bytes(new Uint8Array(bytes)),
           commit: end === file.size
         });
+        if (end === file.size) commitAcknowledged = true;
         offset = end;
       }
       if (att.cancelled) throw new Error("附件添加已取消");
@@ -182,7 +184,10 @@
       att.status = "ready";
       att.result = result;
     } catch (e) {
-      if (att.uploadId) {
+      // The command already removes staging on backend errors. Only the user's
+      // explicit cancellation, or an acknowledged commit with an invalid
+      // response, may delete the completed directory.
+      if (att.uploadId && (att.cancelled || commitAcknowledged)) {
         await invoke("cancel_dropped_file_upload", {
           sessionId: sessionId,
           uploadId: att.uploadId,

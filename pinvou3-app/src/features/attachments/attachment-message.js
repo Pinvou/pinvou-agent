@@ -1,6 +1,15 @@
-// 用户消息的展示文本由 bridge 统一拼装:text + "\n\n" + "📎 " + names.join(" · ")
-// (纯附件消息则整条就是一行 "📎 …")。历史消息也持久化为该格式,因此渲染层按
-// 同一约定拆回,附件才能脱离正文以独立气泡展示,新旧消息表现一致。
+// 用户消息的展示文本由 bridge 统一拼装为 `正文\n\n📎 <JSON 文件名数组>`。
+// JSON 数组能无损表达合法文件名中的分隔符与空格；旧版 `name · name` 记录仍兼容。
+export function formatAttachmentDisplayText(text, attachmentNames = []) {
+  const body = String(text == null ? '' : text);
+  const names = attachmentNames
+    .map(name => String(name == null ? '' : name))
+    .filter(Boolean);
+  if (!names.length) return body;
+  const attachmentLine = `📎 ${JSON.stringify(names)}`;
+  return body.trim() ? `${body}\n\n${attachmentLine}` : attachmentLine;
+}
+
 export function splitAttachmentLine(text) {
   const raw = String(text == null ? '' : text);
   if (raw.startsWith('📎 ') && raw.indexOf('\n') < 0) {
@@ -16,13 +25,21 @@ export function splitAttachmentLine(text) {
 }
 
 export function sessionTitlePresentation(title, attachmentNames = []) {
+  const raw = String(title == null ? '' : title);
   const parsed = splitAttachmentLine(title);
-  if (!parsed.attachments.length) {
-    return { text: String(title == null ? '' : title), attachments: [] };
-  }
   const completeNames = attachmentNames
-    .map(name => String(name || '').trim())
+    .map(name => String(name == null ? '' : name))
     .filter(Boolean);
+  if (!parsed.attachments.length) {
+    const markerAt = raw.startsWith('📎 ') ? 0 : raw.lastIndexOf('\n\n📎 ');
+    if (completeNames.length && markerAt >= 0) {
+      return {
+        text: markerAt === 0 ? '' : raw.slice(0, markerAt).trim(),
+        attachments: completeNames,
+      };
+    }
+    return { text: raw, attachments: [] };
+  }
   return {
     text: parsed.text.trim(),
     attachments: completeNames.length ? completeNames : parsed.attachments,
@@ -36,6 +53,15 @@ export function sessionTitlePlainText(presentation) {
 }
 
 function parseNames(line) {
+  if (line.trimStart().startsWith('[')) {
+    try {
+      const names = JSON.parse(line);
+      if (Array.isArray(names) && names.every(name => typeof name === 'string')) {
+        return names.filter(Boolean);
+      }
+    } catch (_) {}
+  }
+  // Compatibility for transcripts written before JSON attachment markers.
   return line
     .split(' · ')
     .map(function (name) { return name.trim(); })

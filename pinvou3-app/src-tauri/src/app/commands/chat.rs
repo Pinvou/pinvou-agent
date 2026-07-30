@@ -286,8 +286,10 @@ fn display_chat_message(
     let names = attachments
         .iter()
         .map(|attachment| attachment.basename.as_str())
-        .collect::<Vec<_>>()
-        .join(" · ");
+        .collect::<Vec<_>>();
+    // Persist a JSON array after the human-readable marker. Unlike the legacy
+    // `name · name` format, this preserves every legal filename exactly.
+    let names = serde_json::to_string(&names).expect("attachment filenames serialize");
     if message.trim().is_empty() {
         format!("📎 {names}")
     } else {
@@ -297,7 +299,8 @@ fn display_chat_message(
 
 #[cfg(test)]
 mod attachment_record_tests {
-    use super::prepare_conversation_attachment_record;
+    use super::{display_chat_message, prepare_conversation_attachment_record};
+    use crate::features::files::file_ingest::IngestResult;
 
     #[test]
     fn messages_without_attachments_do_not_load_the_session_index() {
@@ -306,5 +309,22 @@ mod attachment_record_tests {
         })
         .unwrap();
         assert!(record.is_none());
+    }
+
+    #[test]
+    fn attachment_display_protocol_preserves_delimiter_inside_filename() {
+        let attachments = vec![IngestResult {
+            kind: "xlsx".into(),
+            basename: "预算 · 最终.xlsx".into(),
+            path: "/tmp/预算 · 最终.xlsx".into(),
+            markdown: None,
+            token_estimate: 0,
+            byte_size: 1,
+            warning: None,
+        }];
+        assert_eq!(
+            display_chat_message("请分析", &attachments),
+            "请分析\n\n📎 [\"预算 · 最终.xlsx\"]"
+        );
     }
 }

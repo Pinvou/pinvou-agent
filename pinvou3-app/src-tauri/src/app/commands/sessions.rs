@@ -51,15 +51,23 @@ fn title_contains_attachment_marker(title: &str) -> bool {
 }
 
 fn attachment_names_from_display_message(text: &str) -> Vec<String> {
-    let names = if let Some(names) = text.strip_prefix("📎 ") {
+    let payload = if let Some(names) = text.strip_prefix("📎 ") {
         (!names.contains('\n')).then_some(names)
     } else {
         text.rsplit_once("\n\n📎 ")
             .and_then(|(_, names)| (!names.contains('\n')).then_some(names))
     };
-    names
-        .into_iter()
-        .flat_map(|names| names.split(" · "))
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
+    if payload.trim_start().starts_with('[') {
+        if let Ok(names) = serde_json::from_str::<Vec<String>>(payload) {
+            return names.into_iter().filter(|name| !name.is_empty()).collect();
+        }
+    }
+    // Compatibility for transcripts written before the JSON attachment marker.
+    payload
+        .split(" · ")
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(str::to_owned)
@@ -160,12 +168,24 @@ mod session_title_attachment_tests {
     #[test]
     fn parses_attachment_names_from_supported_display_messages() {
         assert_eq!(
-            attachment_names_from_display_message("看一下\n\n📎 决策基线.md · 数据.xlsx"),
+            attachment_names_from_display_message("看一下\n\n📎 [\"决策基线.md\",\"数据.xlsx\"]"),
             vec!["决策基线.md", "数据.xlsx"]
         );
         assert_eq!(
-            attachment_names_from_display_message("📎 报告.pdf"),
+            attachment_names_from_display_message("📎 [\"报告.pdf\"]"),
             vec!["报告.pdf"]
+        );
+        assert_eq!(
+            attachment_names_from_display_message("📎 [\"预算 · 最终.xlsx\"]"),
+            vec!["预算 · 最终.xlsx"]
+        );
+        assert_eq!(
+            attachment_names_from_display_message("📎 旧报告.pdf · 旧数据.xlsx"),
+            vec!["旧报告.pdf", "旧数据.xlsx"]
+        );
+        assert_eq!(
+            attachment_names_from_display_message("📎 [草稿].md"),
+            vec!["[草稿].md"]
         );
     }
 

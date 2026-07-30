@@ -3336,6 +3336,16 @@
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
+  function formatAttachmentDisplayText(text, attachments) {
+    var names = (attachments || []).map(function (attachment) {
+      return typeof attachment === "string" ? attachment : attachment && attachment.basename;
+    }).filter(Boolean).map(String);
+    if (!names.length) return String(text || "");
+    var attachmentLine = "📎 " + JSON.stringify(names);
+    return String(text || "").trim()
+      ? String(text) + "\n\n" + attachmentLine
+      : attachmentLine;
+  }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
   // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
@@ -3443,9 +3453,9 @@
     var items = q.splice(0, q.length);
     // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
     var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
-    var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
     var attachments = [];
     items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
+    var displayText = formatAttachmentDisplayText(text, attachments);
     var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
@@ -3749,9 +3759,7 @@
       return;
     }
 
-    var displayText = readyAttachments.length > 0
-      ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
-      : text;
+    var displayText = formatAttachmentDisplayText(text, readyAttachments);
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
     if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {

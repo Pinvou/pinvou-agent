@@ -317,8 +317,14 @@ pub async fn append_chunk(
         .await
         .map_err(|error| format!("提交会话附件失败：{error}"))?;
     let completed_path = completed_dir.join(filename);
-    let validated_path = file_ingest::validate_path(completed_path.to_string_lossy().as_ref())?;
-    Ok(Some(file_ingest::ingest(&validated_path)))
+    Ok(Some(file_ingest::ingest(&completed_path)))
+}
+
+/// Clean up bytes from a failed append without touching a previously completed
+/// attachment that happens to use the same client-provided upload ID.
+pub async fn abort_staging_upload(workspace: &Path, upload_id: &str) -> Result<(), String> {
+    let upload_id = validate_upload_id(upload_id)?;
+    remove_dir_if_present(&upload_staging_dir(workspace, upload_id)).await
 }
 
 /// Cancel an incomplete upload. The completed directory is also removed to
@@ -382,9 +388,9 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        append_chunk, conversation_attachment_names_for_display_prefix,
+        abort_staging_upload, append_chunk, conversation_attachment_names_for_display_prefix,
         conversation_attachment_refs_path, discard_attachment, record_conversation_attachments,
-        resolve_conversation_attachment, validate_filename, validate_upload_id,
+        resolve_conversation_attachment, upload_staging_dir, validate_filename, validate_upload_id,
         ConversationAttachmentRecord, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
     };
     use std::path::PathBuf;
@@ -467,6 +473,41 @@ mod tests {
         .await
         .is_err());
         assert!(!workspace.exists());
+    }
+
+    #[tokio::test]
+    async fn failed_duplicate_upload_cleanup_preserves_completed_attachment() {
+        let workspace = test_workspace("duplicate-id");
+        let upload_id = "desktop_attach_duplicate";
+        let original = append_chunk(
+            &workspace,
+            upload_id,
+            "original.txt",
+            0,
+            8,
+            b"original",
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(append_chunk(
+            &workspace,
+            upload_id,
+            "replacement.txt",
+            0,
+            11,
+            b"replacement",
+            true,
+        )
+        .await
+        .is_err());
+        abort_staging_upload(&workspace, upload_id).await.unwrap();
+
+        assert_eq!(std::fs::read(&original.path).unwrap(), b"original");
+        assert!(!upload_staging_dir(&workspace, upload_id).exists());
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

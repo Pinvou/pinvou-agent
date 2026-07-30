@@ -24,6 +24,11 @@ const bridgeSource = await readFile(
   new URL('../src/platform/tauri/bridge/artifacts.js', import.meta.url),
   'utf8',
 );
+assert.match(
+  bridgeSource,
+  /if \(att\.uploadId && \(att\.cancelled \|\| commitAcknowledged\)\)/,
+  'a backend upload error must not cancel and delete a prior completed upload with the same ID',
+);
 vm.runInThisContext(controllerSource, { filename: 'attachment-drop-controller.js' });
 vm.runInThisContext(bridgeSource, { filename: 'artifacts.js' });
 

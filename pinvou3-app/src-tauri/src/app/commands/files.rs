@@ -60,7 +60,8 @@ pub async fn ingest_dropped_file_chunk(
     .await;
     if result.is_err() {
         let _ =
-            crate::features::files::attachment_upload::cancel_upload(&workspace, &upload_id).await;
+            crate::features::files::attachment_upload::abort_staging_upload(&workspace, &upload_id)
+                .await;
     }
     result
 }

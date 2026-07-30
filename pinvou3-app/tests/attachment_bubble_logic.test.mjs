@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  formatAttachmentDisplayText,
   sessionTitlePlainText,
   sessionTitlePresentation,
   splitAttachmentLine,
@@ -18,16 +19,30 @@ assert.equal(
   'the data icon uses negative Material coordinates and must remain inside its SVG viewBox',
 );
 
-// ── splitAttachmentLine: 与 bridge 侧 displayText 拼装约定一一对应 ──
+// ── splitAttachmentLine: JSON 协议无损保存文件名，旧分隔格式继续可读 ──
+assert.equal(
+  formatAttachmentDisplayText('看一下这个', ['预算 · 最终.xlsx', ' leading.txt']),
+  '看一下这个\n\n📎 ["预算 · 最终.xlsx"," leading.txt"]',
+);
+assert.equal(
+  formatAttachmentDisplayText('第一条\n\n第二条', ['一.pdf', '二.xlsx']),
+  '第一条\n\n第二条\n\n📎 ["一.pdf","二.xlsx"]',
+  'a merged queue must emit one attachment marker containing every attachment',
+);
 assert.deepEqual(
-  splitAttachmentLine('看一下这个\n\n📎 PINVOU-M0-开源决策基线.md'),
-  { text: '看一下这个', attachments: ['PINVOU-M0-开源决策基线.md'] },
-  'text plus attachment line must split into body and names',
+  splitAttachmentLine('看一下这个\n\n📎 ["预算 · 最终.xlsx"," leading.txt"]'),
+  { text: '看一下这个', attachments: ['预算 · 最终.xlsx', ' leading.txt'] },
+  'JSON attachment markers must preserve legal filename characters exactly',
 );
 assert.deepEqual(
   splitAttachmentLine('📎 报告.pdf · 数据.xlsx'),
   { text: '', attachments: ['报告.pdf', '数据.xlsx'] },
-  'attachment-only messages must keep an empty body',
+  'legacy attachment-only messages must remain readable',
+);
+assert.deepEqual(
+  splitAttachmentLine('📎 [草稿].md'),
+  { text: '', attachments: ['[草稿].md'] },
+  'a legacy filename beginning with [ must not be mistaken for malformed JSON',
 );
 assert.deepEqual(
   splitAttachmentLine('多行正文\n第二行\n\n📎 截图.png'),
@@ -81,6 +96,23 @@ assert.match(
   /splitAttachmentLine\(item\.text\)/,
   'UserBubble must derive body text and attachments from the shared parser',
 );
+
+for (const relativePath of [
+  '../src/platform/tauri/bridge/chat.js',
+  '../src/platform/web/bridge.js',
+]) {
+  const bridgeSource = await readFile(new URL(relativePath, import.meta.url), 'utf8');
+  assert.match(
+    bridgeSource,
+    /var displayText = formatAttachmentDisplayText\(text, attachments\)/,
+    `${relativePath} must rebuild merged queue display text from the combined attachment list`,
+  );
+  assert.doesNotMatch(
+    bridgeSource,
+    /items\.map\(function \(i\) \{ return i\.displayText; \}\)/,
+    `${relativePath} must not concatenate already-decorated queued messages`,
+  );
+}
 assert.match(
   chatViewSource,
   /\{bodyText && <div className=\{`min-w-0 max-w-full break-words/,
