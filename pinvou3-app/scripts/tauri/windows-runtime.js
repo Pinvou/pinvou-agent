@@ -132,7 +132,7 @@ function stageWindowsRuntime({
   if (child.error) throw child.error;
   if (child.status !== 0) {
     throw new Error(
-      `Windows 私有运行时 staging 失败（退出码 ${child.status ?? "unknown"}）`,
+      `Windows 独立运行时 staging 失败（退出码 ${child.status ?? "unknown"}）`,
     );
   }
   const runtime = describeWindowsRuntime();
