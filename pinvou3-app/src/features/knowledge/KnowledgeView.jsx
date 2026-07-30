@@ -10,7 +10,9 @@ import { can, isWeb } from '../../shared/platform.js';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
-    const KnowledgeView = ({ theme, t }) => {
+    const KnowledgeView = ({ theme, t, mode }) => {
+      // mode='outputs' 时作为一级「产出物」视图独立渲染:固定 output 段,隐藏段切换,显示自己的标题。
+      const outputsOnly = mode === 'outputs';
       const isDark = theme === 'dark';
       const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
       const inv = invokeTauri;
@@ -19,7 +21,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
       const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
 
-      const [sub, setSub] = useState('output'); // 'output' | 'files' | 'kb'
+      const [sub, setSub] = useState(outputsOnly ? 'output' : 'kb'); // 'output' | 'files' | 'kb'；本地知识默认落知识库
 
       // ---------- 共用 ----------
       const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
@@ -524,14 +526,16 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         kbCache.loaded = true;
         setLoaded(true);
       }, []);
-      useEffect(() => { refreshL0(); }, []);
       useEffect(() => {
-        if (!scan || !scan.running) return;
+        if (!outputsOnly) refreshL0();
+      }, [outputsOnly, refreshL0]);
+      useEffect(() => {
+        if (outputsOnly || !scan || !scan.running) return;
         // 扫描中:既刷统计(类型卡数字增长),也增量重查文件表——文件随扫描逐渐冒出来,
         // 不再"顶部扫描中却下面说没有文件"。cat/query 进依赖,让闭包取当前筛选/搜索值。
         const id = setInterval(() => { refreshL0(); runSearch(cat, query); }, 1500);
         return () => clearInterval(id);
-      }, [scan ? scan.running : false, cat, query]);
+      }, [outputsOnly, scan ? scan.running : false, cat, query]);
 
       const runSearch = async (catKey, text) => {
         const c = CATS.find((x) => x.key === catKey) || CATS[0];
@@ -545,8 +549,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
       const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch (e) {} };
       useEffect(() => {
-        if (scan && !scan.running && scan.phase === 'done') { refreshL0(); runSearch(cat, query); }
-      }, [scan ? scan.running : false]);
+        if (!outputsOnly && scan && !scan.running && scan.phase === 'done') { refreshL0(); runSearch(cat, query); }
+      }, [outputsOnly, scan ? scan.running : false]);
 
       const scanning = !!(scan && scan.running);
       const total = stats ? stats.totalFiles : 0;
@@ -584,8 +588,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch (e) {}
         try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
       }, []);
-      useEffect(() => { loadColls(); }, []); // 挂载即加载,文件管理「加入知识库」浮层也要用
-      useEffect(() => { if (sub === 'kb') loadColls(); }, [sub]);
+      // 本地知识的两个 subtab 都依赖知识集数据；随 sub 切换刷新一次。
+      // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
+      useEffect(() => {
+        if (!outputsOnly && (sub === 'files' || sub === 'kb')) loadColls();
+      }, [outputsOnly, sub, loadColls]);
 
       // ── embedding 模型 gate(未装则知识库页显下载引导,装好热加载免重启)──
       const modelInstalled = kbModel == null ? true : !!kbModel.installed; // 未知时不闪 gate(mock/旧后端)
@@ -617,8 +624,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       // 用户恰好在首帧后台加载期间进入知识库时，模型就绪后刷新语义状态徽标。
       useEffect(() => {
-        if (kbm.startupReady) loadColls();
-      }, [kbm.startupReady, loadColls]);
+        if (!outputsOnly && kbm.startupReady) loadColls();
+      }, [outputsOnly, kbm.startupReady, loadColls]);
 
       const indexing = !!(idx && idx.running);
       useEffect(() => {
@@ -682,16 +689,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           <div className="w-full max-w-[1400px] mx-auto border-b border-slate-200/50 dark:border-white/10">
             <div className="flex flex-col gap-3 pb-6 lg:flex-row lg:items-center lg:justify-between">
               <div className="shrink-0">
-                <IosSegmentedControl
-                  value={sub}
-                  onChange={setSub}
-                  isDark={isDark}
-                  segments={[
-                    { key: 'output', label: t.kbSubOutput, count: outputs.length || null },
-                    { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
-                    { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
-                  ]}
-                />
+                {outputsOnly ? (
+                  <div>
+                    <h1 className={`text-[20px] font-bold tracking-tight ${ink}`}>{t.outputs}</h1>
+                    <p className={`text-[13px] mt-0.5 ${muted}`}>{t.kbOutSub}</p>
+                  </div>
+                ) : (
+                  <IosSegmentedControl
+                    value={sub}
+                    onChange={setSub}
+                    isDark={isDark}
+                    segments={[
+                      { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
+                      { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
+                    ]}
+                  />
+                )}
               </div>
               <div className="flex min-w-0 flex-col gap-3 overflow-hidden lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end">
                 {sub === 'output' ? (

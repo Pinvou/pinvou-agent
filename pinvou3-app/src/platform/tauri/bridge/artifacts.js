@@ -62,7 +62,7 @@
     return rows;
   }
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
-  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「本地知识 → 产出物」。
+  // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
   async function listDeliverableIndex() {
     var disk = await invoke("list_deliverable_index").catch(function () { return []; });
     var byPath = {};

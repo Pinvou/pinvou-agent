@@ -172,6 +172,7 @@ pub fn view_title(kind: &str) -> &'static str {
         "toolstore" => "工具商店",
         "cardpool" => "专家卡牌池",
         "localenv" => "本地环境",
+        "outputs" => "产出物",
         _ => "PINVOU",
     }
 }
@@ -371,6 +372,7 @@ mod tests {
     #[test]
     fn view_title_known_and_fallback() {
         assert_eq!(view_title("workflow"), "工作流");
+        assert_eq!(view_title("outputs"), "产出物");
         assert_eq!(view_title("???"), "PINVOU");
     }
 
