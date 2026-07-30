@@ -238,7 +238,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake
+            build-essential pkg-config cmake lld
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -264,7 +264,22 @@ jobs:
 
       # arm64 原生构建:build.js 检测到 linux/arm64 会自动跑
       # scripts/fetch-linux-arm64-connectors.sh 下载连接器二进制(gitignored)。
-      - name: 构建 deb
+      # GitHub 原生 ARM runner 会在约 40 分钟后被托管服务回收。PR 只验证发布
+      # 链路，因此保留 release 的 opt-level/strip/panic，同时关闭 fat-LTO、
+      # 提高代码生成并行度并使用 lld。
+      - name: 构建 deb（PR 快速验证）
+        if: github.event_name == 'pull_request'
+        working-directory: pinvou3-app
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+        run: node scripts/tauri/build.js build --bundles deb
+
+      # main 的 VERSION bump 和 workflow_dispatch 都产出正式发布 artifact，
+      # 必须完整使用 Cargo.toml 的 release profile，不注入 PR 加速参数。
+      - name: 构建 deb（正式发布配置）
+        if: github.event_name != 'pull_request'
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
@@ -381,7 +396,7 @@ jobs:
     # 首次双 target + fat LTO 实跑约 48 分钟，50 分钟几乎无 runner 抖动余量。
     timeout-minutes: 90
     env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
     steps:
       - name: Checkout (含 submodule)

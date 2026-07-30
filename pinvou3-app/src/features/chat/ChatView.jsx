@@ -905,6 +905,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       />
                     )}
                     renderItem={(item) => {
+                      // reasoning 由 ConversationTimeline 的 ReasoningItem 负责，
+                      // 不能交给旧 ChatBubble；后者不认识该类型，会返回 null，
+                      // 导致后端已收到的实时 thinking 被静默吞掉。
+                      if (item.type === 'reasoning') return undefined;
                       if (!item.legacyItem) return undefined;
                       return (
                         <ChatBubble

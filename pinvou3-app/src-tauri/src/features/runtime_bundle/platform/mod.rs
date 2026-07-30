@@ -112,7 +112,7 @@ const VISUAL_DESIGN_SKILL_MD: &str =
 /// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
 /// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
 /// `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,CodeWhale submodule 的
-/// base.md 回退上游原文(fork drift 归零)。见 docs/base-prompt-override-阶段2.md。
+/// base.md 回退上游原文（fork drift 归零）。
 pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。

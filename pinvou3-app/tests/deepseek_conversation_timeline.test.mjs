@@ -41,6 +41,14 @@ try {
   const chatItems = [
     { id: 1, type: 'system', text: '会话已恢复' },
     { id: 2, type: 'user', text: '检查仓库' },
+    {
+      id: 10,
+      type: 'reasoning',
+      text: '先确认仓库状态。',
+      streaming: false,
+      startedAt: 1100,
+      completedAt: 1400,
+    },
     { id: 3, type: 'assistant', html: '<p>先看状态。</p>', streaming: false },
     {
       id: 4,
@@ -94,14 +102,16 @@ try {
   assert.equal(projected.turns[1].userText, '检查仓库');
   assert.deepEqual(
     projected.turns[1].items.map(item => item.type),
-    ['agent_message', 'command_execution', 'tool', 'artifact'],
+    ['reasoning', 'agent_message', 'command_execution', 'tool', 'artifact'],
   );
   assert.deepEqual(
     projected.turns[1].presentation.map(item => item.type),
-    ['agent_message', 'tool_group', 'artifact'],
+    ['reasoning', 'agent_message', 'tool_group', 'artifact'],
     'consecutive operations must only be grouped in the presentation projection',
   );
-  assert.equal(projected.turns[1].presentation[1].items.length, 2);
+  assert.equal(projected.turns[1].items[0].text, '先确认仓库状态。');
+  assert.equal(projected.turns[1].items[0].status, 'completed');
+  assert.equal(projected.turns[1].presentation[2].items.length, 2);
   assert.equal(projected.turns[1].operationCount, 2);
   assert.equal(projected.turns[1].failedOperationCount, 1);
   assert.equal(projected.turns[1].status, 'Completed');
@@ -114,8 +124,8 @@ try {
     cacheWriteTokens: 0,
     reasoningTokens: 0,
   });
-  assert.equal(projected.turns[1].items[1].legacyItem, chatItems[3], 'tool cards must retain the original item for provider rendering');
-  assert.equal(projected.turns[1].items[2].tool.name, 'read_file', 'shared presentation must retain the provider tool name');
+  assert.equal(projected.turns[1].items[2].legacyItem, chatItems[4], 'tool cards must retain the original item for provider rendering');
+  assert.equal(projected.turns[1].items[3].tool.name, 'read_file', 'shared presentation must retain the provider tool name');
   assert.equal(projected.turns[2].status, 'running');
   assert.equal(projected.turns[2].startedAt, 123456);
   assert.equal(projected.turns[2].waitingPermission, false);

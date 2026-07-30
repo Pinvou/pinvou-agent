@@ -103,7 +103,7 @@ Endpoints, model names, and API keys can also be managed directly in the applica
 - The [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform
 - An accessible OpenAI-compatible model endpoint
 
-The source tree supports **Linux, Windows, and macOS**. The initial macOS target is Apple Silicon on macOS 14 or later.
+The source tree supports **Linux, Windows, and macOS**. The initial macOS target is Apple Silicon on macOS 11 or later.
 
 ### Run from source
 
@@ -192,7 +192,13 @@ Licensing, third-party attribution, SBOM, and brand-use boundaries are documente
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Pinvou/pinvou-agent&type=Date)](https://star-history.com/#Pinvou/pinvou-agent&Date)
+<a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+ </picture>
+</a>
 
 ---
 

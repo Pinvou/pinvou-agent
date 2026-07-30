@@ -252,7 +252,104 @@
     notify();
   }); });
 
+  function reasoningEventIndex(e) {
+    var value = e && e.payload && e.payload.index;
+    if (value === undefined || value === null || value === "") return null;
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : String(value);
+  }
+
+  function streamingReasoningItem(index) {
+    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      if (index === undefined || index === null || item.reasoningIndex === index) return item;
+    }
+    return null;
+  }
+
+  function finalizeStreamingReasoning(index) {
+    var completedAt = Date.now();
+    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
+      item.streaming = false;
+      item.completedAt = completedAt;
+    }
+  }
+
+  function finalizeAssistantStreamBeforeReasoning() {
+    flushPendingTextBlock();
+    var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    if (item) {
+      if (item.html) item.streaming = false;
+      else state.chatItems = state.chatItems.filter(function (it) { return it !== item; });
+    }
+    context.currentStreamText = "";
+    context.currentStreamId = 0;
+  }
+
+  function startReasoningBlock(index) {
+    var existing = streamingReasoningItem(index);
+    if (existing) return existing;
+    finalizeStreamingReasoning();
+    finalizeAssistantStreamBeforeReasoning();
+    var item = {
+      type: "reasoning",
+      text: "",
+      time: timeStr(),
+      streaming: true,
+      startedAt: Date.now(),
+      completedAt: null,
+      reasoningIndex: index,
+    };
+    addChatItem(item);
+    // 用空 thinking block 记录明确的 Started 边界，使两个相邻的
+    // thinking content block 不会在持久化时被误合并。
+    context.pendingAssistantBlocks.push({ type: "thinking", thinking: "" });
+    return item;
+  }
+
+  function appendReasoningBlock(text) {
+    var blocks = context.pendingAssistantBlocks;
+    var last = blocks[blocks.length - 1];
+    if (last && last.type === "thinking") last.thinking += text;
+    else blocks.push({ type: "thinking", thinking: text });
+  }
+
+  listen("chat:reasoning_start", function (e) { onSessionEvent(e, function () {
+    startReasoningBlock(reasoningEventIndex(e));
+    notify();
+  }); });
+
+  listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
+    var text = String(e.payload && e.payload.text || "");
+    if (!text) return;
+    var index = reasoningEventIndex(e);
+    var item = streamingReasoningItem(index);
+    if (!item) {
+      item = startReasoningBlock(index);
+    }
+    item.text += text;
+    appendReasoningBlock(text);
+    notify();
+  }); });
+
+  listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
+    var index = reasoningEventIndex(e);
+    var item = streamingReasoningItem(index);
+    finalizeStreamingReasoning(index);
+    if (item && !item.text) {
+      state.chatItems = state.chatItems.filter(function (candidate) { return candidate !== item; });
+      var last = context.pendingAssistantBlocks[context.pendingAssistantBlocks.length - 1];
+      if (last && last.type === "thinking" && !last.thinking) context.pendingAssistantBlocks.pop();
+    }
+    notify();
+  }); });
+
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
+    finalizeStreamingReasoning();
     var text = e.payload && e.payload.text || "";
     context.pendingAssistantText += text;
     context.currentStreamText += text;
@@ -291,6 +388,7 @@
     if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     context.toolMeta[p.id] = { name: p.name, args: p.args };
+    finalizeStreamingReasoning();
     thinkingTool(p.name);
     flushPendingTextBlock();
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
@@ -551,6 +649,7 @@
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];
+      finalizeStreamingReasoning();
       // Finalize streaming bubble
       var streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
       if (streamItem) streamItem.streaming = false;

@@ -64,7 +64,7 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    // 项目最低支持 macOS 14，系统 Speech framework 是平台能力，不是需要安装的
+    // 项目最低支持 macOS 11，系统 Speech framework 是平台能力，不是需要安装的
     // 应用依赖。`SFSpeechRecognizer::isAvailable` 表示指定 locale 的瞬时服务状态，
     // 不能拿系统默认 locale 的结果充当录音前置门禁；否则默认语言不可用时会误拦截
     // 另一个仍可用的 UI 语言。授权、locale 与在线服务状态在实际识别时检查。

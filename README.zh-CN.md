@@ -101,7 +101,7 @@ export DEEPSEEK_MODEL="qwen36_35b_256k"
 - [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
 - 一个可访问的 OpenAI-compatible 模型端点
 
-源码树支持 **Linux、Windows 和 macOS**；macOS 当前目标为 Apple Silicon (arm64) + macOS 14.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew 或各工具官网安装。
+源码树支持 **Linux、Windows 和 macOS**；macOS 当前目标为 Apple Silicon (arm64) + macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew 或各工具官网安装。
 
 ### 启动应用
 
@@ -197,7 +197,13 @@ docs/                 架构设计、验证报告与维护文档
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Pinvou/pinvou-agent&type=Date)](https://star-history.com/#Pinvou/pinvou-agent&Date)
+<a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+ </picture>
+</a>
 
 ---
 

@@ -6,11 +6,24 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::platform::credential_store::{
     CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
     CredentialStore, SystemCredentialStore,
 };
+
+/// `settings.json` 的进程内统一读写锁。
+///
+/// Tauri 命令会在不同异步任务中并发执行；如果各自执行 `load -> 修改 -> save`，
+/// 后完成的旧快照会覆盖先完成的新值。所有偏好读写和字段级事务都必须经过此锁。
+static USER_PREFS_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_user_prefs() -> MutexGuard<'static, ()> {
+    USER_PREFS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -145,6 +158,22 @@ fn strip_chat_completions_suffix(value: &str) -> String {
     }
 }
 
+fn migrated_minimax_base_url(value: &str) -> Option<String> {
+    const LEGACY_ORIGIN: &str = "https://api.minimax.chat";
+    const CURRENT_ORIGIN: &str = "https://api.minimaxi.com";
+
+    let trimmed = value.trim().trim_end_matches('/');
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == LEGACY_ORIGIN {
+        return Some(CURRENT_ORIGIN.to_string());
+    }
+    lower.strip_prefix(LEGACY_ORIGIN).and_then(|suffix| {
+        suffix
+            .starts_with('/')
+            .then(|| format!("{CURRENT_ORIGIN}{}", &trimmed[LEGACY_ORIGIN.len()..]))
+    })
+}
+
 fn identify_coding_plan_endpoint(base_url: &str) -> Option<(&'static str, &'static str)> {
     let base = strip_chat_completions_suffix(base_url);
     let normalized = base.to_ascii_lowercase();
@@ -217,7 +246,7 @@ impl ModelPreset {
             ModelPreset::OpenaiCompatible => "https://api.openai.com/v1",
             ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3",
-            ModelPreset::Minimax => "https://api.minimax.chat/v1",
+            ModelPreset::Minimax => "https://api.minimaxi.com/v1",
             ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4",
             ModelPreset::Mimo => "https://api.xiaomimimo.com/v1",
         }
@@ -451,6 +480,11 @@ impl SavedModel {
 
     fn normalize_provider_metadata(&mut self) {
         self.base_url = strip_chat_completions_suffix(&self.base_url);
+        // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
+        // 存量配置在 load 时一次性改写,避免继续打已下线域名。
+        if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
+            self.base_url = migrated;
+        }
         if let Some((vendor, canonical_base_url)) = identify_coding_plan_endpoint(&self.base_url) {
             self.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.to_string());
             self.vendor = Some(vendor.to_string());
@@ -576,8 +610,7 @@ impl Default for NotificationPrefs {
 }
 
 /// 桌宠偏好。只存开关——窗口位置在 `~/.pinvou3/pet_window.json`(pet_window.rs 私有
-/// 管理)。位置刻意不进 settings.json:settings 由前端整份回写(update_settings),
-/// 旧副本会把拖动后的实时位置覆盖回去。
+/// 管理)。位置刻意不进 settings.json；开关由字段级事务写入，窗口状态不参与通用设置保存。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PetPrefs {
@@ -618,6 +651,11 @@ pub struct UserPrefs {
 impl UserPrefs {
     /// 从 `~/.pinvou3/settings.json` 读。文件不存在或 JSON 解析失败时返回默认。
     pub fn load() -> Self {
+        let _guard = lock_user_prefs();
+        Self::load_unlocked(true)
+    }
+
+    fn load_unlocked(persist_normalized: bool) -> Self {
         let path = super::paths::settings_path();
         let mut prefs = match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
@@ -626,12 +664,26 @@ impl UserPrefs {
             }),
             Err(_) => Self::default(),
         };
+        // 必须在 migrate_models/normalize 改写前记录；否则只能修正本次运行的内存值，
+        // save gate 看不到变化，旧域名会永久留在 settings.json 中、每次启动重复迁移。
+        let minimax_endpoint_changed = prefs
+            .advanced
+            .saved_models
+            .iter()
+            .any(|model| migrated_minimax_base_url(&model.base_url).is_some())
+            || prefs
+                .advanced
+                .custom_base_url
+                .as_deref()
+                .is_some_and(|url| migrated_minimax_base_url(url).is_some());
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
-        if migration.settings_sanitized || memory_policy_changed {
-            if let Err(e) = prefs.save() {
+        if persist_normalized
+            && (minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed)
+        {
+            if let Err(e) = prefs.save_unlocked() {
                 eprintln!("[pinvou3-app] settings normalization save failed: {e:?}");
             }
         }
@@ -640,6 +692,11 @@ impl UserPrefs {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        let _guard = lock_user_prefs();
+        self.save_unlocked()
+    }
+
+    fn save_unlocked(&self) -> std::io::Result<()> {
         let path = super::paths::settings_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -654,6 +711,23 @@ impl UserPrefs {
         normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
         std::fs::write(path, s)
+    }
+
+    /// 在同一临界区内读取磁盘最新偏好、修改指定字段并写回。
+    ///
+    /// 闭包必须只修改自己负责的设置域，避免把调用方持有的整份旧快照写回。
+    pub fn update_transaction<F>(mutate: F) -> Result<Self, String>
+    where
+        F: FnOnce(&mut Self) -> Result<(), String>,
+    {
+        let _guard = lock_user_prefs();
+        let mut prefs = Self::load_unlocked(false);
+        mutate(&mut prefs)?;
+        prefs
+            .save_unlocked()
+            .map_err(|error| format!("save settings failed: {error:?}"))?;
+        // 返回再次从磁盘解析的规范化结果，保证桥接层内存状态与实际持久化内容一致。
+        Ok(Self::load_unlocked(false))
     }
 
     pub fn normalize_saved_model_metadata(&mut self) {
@@ -1097,6 +1171,99 @@ mod tests {
     }
 
     #[test]
+    fn legacy_minimax_chat_domain_is_rewritten() {
+        assert_eq!(
+            migrated_minimax_base_url("https://api.minimax.chat").as_deref(),
+            Some("https://api.minimaxi.com")
+        );
+        assert_eq!(
+            migrated_minimax_base_url("https://API.MINIMAX.CHAT/v1").as_deref(),
+            Some("https://api.minimaxi.com/v1")
+        );
+
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.upsert_model(SavedModel {
+            id: "minimax-api".into(),
+            name: "MiniMax".into(),
+            preset: ModelPreset::Minimax,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "MiniMax-M3".into(),
+            base_url: "https://api.minimax.chat/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+
+        let model = prefs.model_by_id("minimax-api").expect("minimax model");
+        assert_eq!(model.base_url, "https://api.minimaxi.com/v1");
+    }
+
+    #[test]
+    fn load_persists_legacy_minimax_domain_migration() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-minimax-domain-migration-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create temporary prefs home");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "minimax-api".into(),
+            name: "MiniMax".into(),
+            preset: ModelPreset::Minimax,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: "MiniMax-M3".into(),
+            base_url: "https://api.minimax.chat".into(),
+            provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("minimax-api".into());
+        let path = super::super::paths::settings_path();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+        )
+        .expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        assert_eq!(
+            loaded.active_model().map(|model| model.base_url.as_str()),
+            Some("https://api.minimaxi.com")
+        );
+        let persisted = std::fs::read_to_string(&path).expect("read migrated prefs");
+        assert!(!persisted.contains("api.minimax.chat"));
+        assert!(persisted.contains("api.minimaxi.com"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
     fn remove_active_model_falls_back_to_first() {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
@@ -1427,6 +1594,67 @@ mod tests {
         let parsed: UserPrefs = serde_json::from_str(&saved).expect("settings should parse");
         assert_eq!(parsed.search.provider, SearchProvider::Metaso);
         assert!(parsed.search.api_key.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
+    fn concurrent_model_and_search_transactions_preserve_both_changes() {
+        use std::sync::{Arc, Barrier};
+
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-concurrent-update-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut initial = UserPrefs::default();
+        initial.migrate_models();
+        initial.save().expect("initial settings should save");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let model_barrier = Arc::clone(&barrier);
+        let model_thread = std::thread::spawn(move || {
+            model_barrier.wait();
+            UserPrefs::update_transaction(|prefs| {
+                let mut model = prefs.advanced.saved_models[0].clone();
+                model.id = "concurrent-model".to_string();
+                model.name = "Concurrent model".to_string();
+                prefs.upsert_model(model);
+                Ok(())
+            })
+            .expect("model transaction should save");
+        });
+
+        let search_barrier = Arc::clone(&barrier);
+        let search_thread = std::thread::spawn(move || {
+            search_barrier.wait();
+            UserPrefs::update_transaction(|prefs| {
+                prefs.search.provider = SearchProvider::Tavily;
+                prefs.search.enabled_providers = vec![SearchProvider::Bing, SearchProvider::Tavily];
+                Ok(())
+            })
+            .expect("search transaction should save");
+        });
+
+        barrier.wait();
+        model_thread.join().expect("model thread should finish");
+        search_thread.join().expect("search thread should finish");
+
+        let saved = UserPrefs::load();
+        assert!(saved.model_by_id("concurrent-model").is_some());
+        assert_eq!(saved.search.provider, SearchProvider::Tavily);
+        assert!(saved
+            .search
+            .enabled_providers
+            .contains(&SearchProvider::Tavily));
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {

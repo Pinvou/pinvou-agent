@@ -562,6 +562,43 @@
     let thinkingFrame = 0;
     let previewFrameId = '';
     let previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
+    let previewImageUrl = '';
+    // 仅允许常见静态图片格式；排除 svg 等可携带标记的格式。
+    const PREVIEW_IMAGE_MIME = /^(?:png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
+    function imagePreviewObjectUrl(dataUrl) {
+      const match = /^data:image\/([a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl || '');
+      if (!match) return '';
+      const mime = match[1].toLowerCase();
+      if (!PREVIEW_IMAGE_MIME.test(mime)) return '';
+      let bytes;
+      try {
+        const binary = atob(match[2].replace(/\s+/g, ''));
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } catch {
+        return '';
+      }
+      return URL.createObjectURL(new Blob([bytes], { type: `image/${mime}` }));
+    }
+    function revokePreviewImageUrl() {
+      if (previewImageUrl) {
+        URL.revokeObjectURL(previewImageUrl);
+        previewImageUrl = '';
+      }
+    }
+    function resetPreviewContent() {
+      el.previewBody.innerHTML = '';
+      revokePreviewImageUrl();
+      el.previewBody.classList.remove('html-preview', 'markdown-preview');
+      el.previewToolbar.classList.add('hidden');
+      previewFrameId = '';
+      previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
+    }
+    function closePreview() {
+      el.previewOverlay.classList.add('hidden');
+      resetPreviewContent();
+      state.previewArtifact = null;
+    }
     let pinvouNode = null;
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     const state = {
@@ -636,7 +673,7 @@
       setStatus('已被占用');
       setControlsDisabled(true);
       el.sheetOverlay.classList.add('hidden');
-      el.previewOverlay.classList.add('hidden');
+      closePreview();
       state.sheet = '';
       el.takeoverWarn.innerHTML = '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
       el.takeoverEyebrow.textContent = '远程会话被占用';
@@ -671,7 +708,7 @@
       setControlsDisabled(true);
       state.sheet = '';
       el.sheetOverlay.classList.add('hidden');
-      el.previewOverlay.classList.add('hidden');
+      closePreview();
       detachCurrentSocket();
       el.takeoverEyebrow.textContent = status;
       el.takeoverTitle.textContent = title;
@@ -2020,18 +2057,25 @@
       const markdownByName = /\.(md|markdown)$/i.test(previewName);
       el.previewTitle.textContent = previewName;
       el.previewTitle.title = previewName;
-      el.previewBody.innerHTML = '';
-      el.previewBody.classList.remove('html-preview', 'markdown-preview');
-      el.previewToolbar.classList.add('hidden');
-      previewFrameId = '';
-      previewZoom = { ready: false, fit: 1, current: 1, overflow: false };
-      // data_url 由桌面端按图片 mime 白名单构造；此处再校验前缀，
-      // 防伪造 preview payload（CodeQL js/xss、js/client-side-unvalidated-url-redirection）。
-      if (preview.type === 'image' && /^data:image\//.test(preview.data_url || '')) {
-        const img = document.createElement('img');
-        img.alt = payload.basename || 'artifact preview';
-        img.src = preview.data_url;
-        el.previewBody.appendChild(img);
+      resetPreviewContent();
+      // data_url 由桌面端按图片 mime 白名单构造；此处仍不信任 payload：
+      // 严格校验 mime/base64 后解码为 Blob，改用浏览器生成的 object URL，
+      // 使 <img> 不直接接收来自消息的数据（CodeQL js/xss、
+      // js/client-side-unvalidated-url-redirection）。
+      if (preview.type === 'image') {
+        const objectUrl = imagePreviewObjectUrl(preview.data_url);
+        if (objectUrl) {
+          previewImageUrl = objectUrl;
+          const img = document.createElement('img');
+          img.alt = payload.basename || 'artifact preview';
+          img.src = objectUrl;
+          el.previewBody.appendChild(img);
+        } else {
+          const invalid = document.createElement('div');
+          invalid.className = 'empty-panel';
+          invalid.textContent = '图片预览数据无效。';
+          el.previewBody.appendChild(invalid);
+        }
       } else if (preview.type === 'html') {
         el.previewBody.classList.add('html-preview');
         el.previewToolbar.classList.remove('hidden');
@@ -3507,7 +3551,7 @@
     };
     el.sheetClose.onclick = closeSheet;
     el.sheetOverlay.onclick = e => { if (e.target === el.sheetOverlay) closeSheet(); };
-    el.previewClose.onclick = () => el.previewOverlay.classList.add('hidden');
+    el.previewClose.onclick = closePreview;
     el.previewDownload.onclick = () => {
       if (state.downloadBusy) {
         addSystem('下载进行中，请等待当前下载完成。');
@@ -3519,7 +3563,7 @@
       }
       setDownloadBusy(true);
     };
-    el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) el.previewOverlay.classList.add('hidden'); };
+    el.previewOverlay.onclick = e => { if (e.target === el.previewOverlay) closePreview(); };
     el.previewZoomOut.onclick = () => setPreviewZoom(previewZoom.current - 0.1);
     el.previewZoomFit.onclick = () => setPreviewZoom(previewZoom.fit, true);
     el.previewZoomIn.onclick = () => setPreviewZoom(previewZoom.current + 0.1);

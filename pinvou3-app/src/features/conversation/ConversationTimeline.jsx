@@ -522,13 +522,16 @@ function ReasoningItem({ item, now, copy }) {
   const c = conversationCopy(copy);
   const running = item.status === 'in_progress';
   const [open, setOpen] = useState(false);
-  const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const duration = item.startedAt == null
+    ? ''
+    : c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const statusText = running ? c.thinking : c.thoughtCompleted;
   return (
     <div>
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
-        <span>{running ? c.thinking : c.thoughtCompleted} · {duration}</span>
+        <span>{statusText}{duration ? ` · ${duration}` : ''}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && item.text && (

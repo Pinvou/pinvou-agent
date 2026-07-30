@@ -857,7 +857,7 @@
     if (sid) {
       var eventBuffer = getBuffer(sid);
       var eventName = String((e && e.event) || "");
-      var isTurnEvent = /chat:(user_message|turn_started|delta|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
+      var isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
       if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
         markRemoteTurn(sid, eventBuffer);
       }
@@ -2175,6 +2175,7 @@
   function hydratedChatItemKey(item) {
     if (!item || !item.type) return "";
     if (item.type === "assistant") return "assistant:" + String(item.html || item.text || "");
+    if (item.type === "reasoning") return "reasoning:" + String(item.text || "");
     if (item.type === "tool" && item.toolId) return "tool:" + item.toolId;
     if (item.type === "artifact_card") return "artifact:" + basename(item.path);
     if (item.type === "user_input" && item.toolCallId) return "user_input:" + item.toolCallId;
@@ -2839,6 +2840,18 @@
         var b = blocks[bi];
         if (b.type === "text") {
           textBuf += b.text;
+        } else if (b.type === "thinking") {
+          if (textBuf) {
+            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            textBuf = "";
+          }
+          var reasoningText = String(b.thinking || b.text || "");
+          if (reasoningText) {
+            addChatItem({
+              type: "reasoning", text: reasoningText, time: "", streaming: false,
+              startedAt: null, completedAt: null,
+            });
+          }
         } else if (b.type === "tool_use") {
           if (textBuf) {
             addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
@@ -4184,7 +4197,101 @@
     notify();
   }); });
 
+  function reasoningEventIndex(e) {
+    var value = e && e.payload && e.payload.index;
+    if (value === undefined || value === null || value === "") return null;
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : String(value);
+  }
+
+  function streamingReasoningItem(index) {
+    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      if (index === undefined || index === null || item.reasoningIndex === index) return item;
+    }
+    return null;
+  }
+
+  function finalizeStreamingReasoning(index) {
+    var completedAt = Date.now();
+    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
+      item.streaming = false;
+      item.completedAt = completedAt;
+    }
+  }
+
+  function finalizeAssistantStreamBeforeReasoning() {
+    flushPendingTextBlock();
+    var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+    if (item) {
+      if (item.html) item.streaming = false;
+      else state.chatItems = state.chatItems.filter(function (it) { return it !== item; });
+    }
+    currentStreamText = "";
+    currentStreamId = 0;
+  }
+
+  function startReasoningBlock(index) {
+    var existing = streamingReasoningItem(index);
+    if (existing) return existing;
+    finalizeStreamingReasoning();
+    finalizeAssistantStreamBeforeReasoning();
+    var item = {
+      type: "reasoning",
+      text: "",
+      time: timeStr(),
+      streaming: true,
+      startedAt: Date.now(),
+      completedAt: null,
+      reasoningIndex: index,
+    };
+    addChatItem(item);
+    pendingAssistantBlocks.push({ type: "thinking", thinking: "" });
+    return item;
+  }
+
+  function appendReasoningBlock(text) {
+    var last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
+    if (last && last.type === "thinking") last.thinking += text;
+    else pendingAssistantBlocks.push({ type: "thinking", thinking: text });
+  }
+
+  listen("chat:reasoning_start", function (e) { onSessionEvent(e, function () {
+    startReasoningBlock(reasoningEventIndex(e));
+    notify();
+  }); });
+
+  listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
+    var text = String(e.payload && e.payload.text || "");
+    if (!text) return;
+    var index = reasoningEventIndex(e);
+    var item = streamingReasoningItem(index);
+    if (!item) {
+      item = startReasoningBlock(index);
+    }
+    item.text += text;
+    appendReasoningBlock(text);
+    notify();
+  }); });
+
+  listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
+    var index = reasoningEventIndex(e);
+    var item = streamingReasoningItem(index);
+    finalizeStreamingReasoning(index);
+    if (item && !item.text) {
+      state.chatItems = state.chatItems.filter(function (candidate) { return candidate !== item; });
+      var last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
+      if (last && last.type === "thinking" && !last.thinking) pendingAssistantBlocks.pop();
+    }
+    notify();
+  }); });
+
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
+    finalizeStreamingReasoning();
     var text = e.payload && e.payload.text || "";
     pendingAssistantText += text;
     currentStreamText += text;
@@ -4269,6 +4376,7 @@
     if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     toolMeta[p.id] = { name: p.name, args: p.args };
+    finalizeStreamingReasoning();
     thinkingTool(p.name);
     flushPendingTextBlock();
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
@@ -4511,6 +4619,7 @@
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];
+      finalizeStreamingReasoning();
       // Finalize streaming bubble
       var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
       if (streamItem) streamItem.streaming = false;
@@ -5228,7 +5337,7 @@
 
   // ── Settings ─────────────────────────────────────────────────────
   // 桌宠开关由 Rust set_pet_enabled 直接写盘(设置页/宠物右键/快捷图标共用),
-  // 这里同步进内存副本——否则下次整份 saveSettings 会用旧值把开关翻回去。
+  // 这里同步进内存副本，保证设置界面立即反映专用命令返回的桌宠状态。
   listen("pet:enabled_changed", function (e) {
     if (state.settings) {
       state.settings.pet = Object.assign({}, state.settings.pet || {}, {
@@ -5278,27 +5387,69 @@
     }
     notify();
   }
-  async function saveSettings(prefs) {
-    const previous = state.settings;
-    try {
-      await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { prefs: prefs });
-      state.settings = prefs;
-      notify();
-      return true;
-    } catch (e) {
-      console.warn("save settings failed", e);
-      state.settings = previous;
-      notify();
+  var settingsWriteQueue = Promise.resolve();
+  function enqueueSettingsWrite(write) {
+    var pending = settingsWriteQueue.then(write, write);
+    settingsWriteQueue = pending.then(function () {}, function () {});
+    return pending;
+  }
+  async function saveSettings(patch) {
+    return enqueueSettingsWrite(async function () {
+      try {
+        state.settings = await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { patch: patch });
+        notify();
+        return true;
+      } catch (e) {
+        console.warn("save settings failed", e);
+        return false;
+      }
+    });
+  }
+  async function saveSettingsAndRestart(patch) {
+    if (IS_WEB) {
+      console.warn("saveSettingsAndRestart is unsupported by the Web host");
       return false;
     }
+    return enqueueSettingsWrite(async function () {
+      try {
+        await invoke("save_settings_and_restart", { patch: patch });
+        return true;
+      } catch (e) {
+        console.warn("save settings and restart failed", e);
+        return false;
+      }
+    });
   }
-  async function saveSettingsAndRestart(prefs) {
-    state.settings = prefs;
-    try {
-      await invoke("save_settings_and_restart", { prefs: prefs });
-    } catch (e) {
-      console.warn("save settings and restart failed", e);
+  async function saveSearchSettings(search) {
+    return enqueueSettingsWrite(async function () {
+      try {
+        if (IS_WEB) {
+          state.settings = await invoke("web_access_update_settings", { patch: { search: search } });
+        } else {
+          state.settings = await invoke("update_search_settings", { search: search });
+        }
+        notify();
+        return true;
+      } catch (e) {
+        console.warn("save search settings failed", e);
+        return false;
+      }
+    });
+  }
+  async function saveSearchSettingsAndRestart(search) {
+    if (IS_WEB) {
+      console.warn("saveSearchSettingsAndRestart is unsupported by the Web host");
+      return false;
     }
+    return enqueueSettingsWrite(async function () {
+      try {
+        await invoke("save_search_settings_and_restart", { search: search });
+        return true;
+      } catch (e) {
+        console.warn("save search settings and restart failed", e);
+        return false;
+      }
+    });
   }
   async function submitFeedback(request) {
     return await invoke("submit_feedback", { request: request });
@@ -7547,6 +7698,8 @@
     setSelectedPet: setSelectedPet,
     saveSettings: saveSettings,
     saveSettingsAndRestart: saveSettingsAndRestart,
+    saveSearchSettings: saveSearchSettings,
+    saveSearchSettingsAndRestart: saveSearchSettingsAndRestart,
     submitFeedback: submitFeedback,
     discoverLocalVllm: discoverLocalVllm,
     detectLocalVllmSetup: detectLocalVllmSetup,
@@ -7782,7 +7935,7 @@
     scheduled: domain(["loadScheduledTasks", "readScheduledTask", "loadScheduledTaskRuns", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "clearScheduledTaskSelection", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "toggleScheduledTaskPinned", "deleteScheduledTask", "runScheduledTaskNow", "pickFolder", "startScheduledTaskChat", "confirmScheduledTaskDraft", "clearScheduledTaskDraft", "openScheduledRunChat", "exitScheduledRunChat"]),
     sessions: domain(["createNewSession", "switchToSession", "deleteSession", "renameSession", "toggleSessionPinned", "archiveSession", "restoreArchivedSession"]),
     monitor: domain(["startMonitorPolling", "stopMonitorPolling", "clearMonitorStats"]),
-    settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "testSearchProvider"]),
+    settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "saveSearchSettings", "saveSearchSettingsAndRestart", "testSearchProvider"]),
     feedback: domain(["submitFeedback"]),
     vllm: domain(["discoverLocalVllm", "detectLocalVllmSetup", "bootstrapLocalVllm", "dismissVllmSetup", "declineVllmSetup"]),
     models: domain(["getEffectiveModelConfig", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection"]),

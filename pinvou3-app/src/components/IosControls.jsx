@@ -54,9 +54,11 @@ function IosSegmentedControl({
   const activeIndex = Math.max(0, segments.findIndex(segment => segment.key === value));
 
   if (compact && prominent) {
+    // isolate 让容器自成层叠上下文：内部按钮的 z-10 只用于压在滑块之上，
+    // 不会逸出到外层（否则会盖住 composer 弹层，如「工具」菜单）。
     return (
       <div
-        className={`relative inline-grid h-10 shrink-0 items-center rounded-[16px] p-1 ${className}`}
+        className={`relative isolate inline-grid h-10 shrink-0 items-center rounded-[16px] p-1 ${className}`}
         style={{
           gridTemplateColumns: `repeat(${segments.length}, minmax(82px, 1fr))`,
           background: controlFill(isDark),
