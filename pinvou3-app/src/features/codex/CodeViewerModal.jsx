@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Check, Copy, ExternalLink, FileText, FolderOpen, RefreshCw, X,
+  Check, Copy, ExternalLink, FolderOpen, RefreshCw, X,
 } from '../../components/icons.jsx';
+import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { highlightCode } from '../../shared/syntax-highlighter.js';
 
 const VIEWER_SIZE_KEY = 'pinvou_code_viewer_size';
@@ -176,7 +177,7 @@ export function CodeViewerModal({
         className="relative flex flex-col overflow-hidden rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#1E1E20] shadow-2xl"
       >
         <div className="h-12 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
-          <FileText size={15} className="shrink-0 text-gray-400" />
+          <FileColoredIcon name={fileName} size={15} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="truncate text-[13px] font-medium" title={fileName}>{fileName}</span>

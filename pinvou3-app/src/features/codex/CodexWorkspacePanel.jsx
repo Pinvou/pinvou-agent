@@ -4,6 +4,7 @@ import {
   FolderOpen, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { CodeViewerModal } from './CodeViewerModal.jsx';
 
 const invoke = invokeTauri;
@@ -94,9 +95,7 @@ function WorkspaceTree({
                   : open ? <ChevronDown size={12} /> : <ChevronRight size={12} />
                 : null}
             </span>
-            {isDirectory
-              ? <FolderOpen size={14} className="shrink-0 text-blue-500" />
-              : <FileText size={14} className="shrink-0 text-gray-400" />}
+            <FileColoredIcon name={entry.name} isDir={isDirectory} isOpen={open} size={14} />
             <span className="truncate text-[12px]">{entry.name}</span>
           </button>
           {!isDirectory && (
