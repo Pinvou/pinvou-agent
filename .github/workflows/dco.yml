@@ -3,6 +3,8 @@ name: DCO
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -13,7 +15,14 @@ jobs:
     name: Signed-off commits
     runs-on: ubuntu-latest
     steps:
+      # 进入 Merge Queue 前，每个 PR 已通过本 required check。merge_group 中只包含
+      # GitHub 生成的组合提交，此处复用同名 check 上报成功，避免队列等待缺失上下文。
+      - name: 确认队列中的 PR 已通过 DCO
+        if: github.event_name == 'merge_group'
+        run: echo "DCO 已在各 PR 入队前验证"
+
       - name: Verify DCO sign-offs
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@v9
         with:
           script: |
