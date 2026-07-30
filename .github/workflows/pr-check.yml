@@ -183,15 +183,22 @@ jobs:
               - 'remote-control-relay/**'
               - '.github/workflows/pr-check.yml'
             windows_codex:
+              - '.gitmodules'
+              - 'private-runtimes/windows'
               - 'pinvou3-app/scripts/codex-bridge-runtime/**'
               - 'pinvou3-app/scripts/tauri/build.js'
               - 'pinvou3-app/scripts/tauri/codex-bridge.js'
               - 'pinvou3-app/scripts/tauri/effective-config.js'
+              - 'pinvou3-app/scripts/tauri/windows-runtime.js'
+              - 'pinvou3-app/src-tauri/config/platforms/windows/runtime/**'
+              - 'pinvou3-app/src-tauri/packaging/windows/runtime/**'
               - 'pinvou3-app/src-tauri/src/features/codex_acp/**'
               - 'pinvou3-app/src-tauri/src/platform/capabilities.rs'
               - 'pinvou3-app/tests/codex_acp_*'
+              - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
+              - '.github/workflows/release-packages.yml'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -615,7 +622,9 @@ jobs:
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       - name: Windows Codex Runtime 原生打包冒烟
-        run: npm --prefix pinvou3-app run test:codex-acp-windows-runtime
+        run: |
+          npm --prefix pinvou3-app run test:windows-runtime
+          npm --prefix pinvou3-app run test:codex-acp-windows-runtime
 
   required-gate:
     name: required-gate
