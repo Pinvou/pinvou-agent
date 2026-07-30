@@ -16,6 +16,7 @@ Their original licenses remain in effect.
 | marked | 13.0.3 | Vendored browser script | MIT | https://github.com/markedjs/marked |
 | DOMPurify | 3.4.2 | Vendored browser script (`pinvou3-app/src/vendor/purify.min.js`, `remote-control-relay/web/purify.min.js`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
+| Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 
 Vendored script attribution:
 
@@ -24,6 +25,10 @@ Vendored script attribution:
   John Gruber attribution and BSD-style terms.
 - DOMPurify: Copyright 2025–2026 Dr.-Ing. Mario Heiderich, Cure53.
 - Tailwind CSS: Copyright (c) Tailwind Labs, Inc.
+- Material Icon Theme: Copyright (c) 2025 Material Extensions. The glyphs
+  were exported from the
+  [Iconify Material Icon Theme collection](https://icon-sets.iconify.design/material-icon-theme/);
+  Iconify is used only as the export source and is not a runtime dependency.
 
 Detailed license texts and upstream notices for bundled connectors are kept
 next to their resources under `pinvou3-app/src-tauri/resources/`.
@@ -40,11 +45,36 @@ metadata.
 
 ## Assets and trademarks
 
-The application images, screenshots, pet sprites, and Pinvou visual assets in
-this repository were created for Pinvou and are not imported third-party asset
-packs. Service icons and product names may reproduce third-party marks only to
-identify compatible integrations.
+Except for components and icon glyphs identified above, the application
+images, screenshots, pet sprites, and Pinvou visual assets in this repository
+were created for Pinvou and are not imported third-party asset packs. Service
+icons and product names may reproduce third-party marks only to identify
+compatible integrations.
 
 Product names and trademarks belong to their respective owners. Inclusion
 does not imply endorsement or grant trademark rights. See
 [`TRADEMARKS.md`](TRADEMARKS.md).
+
+## Material Icon Theme license
+
+The MIT License (MIT)
+
+Copyright (c) 2025 Material Extensions
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
