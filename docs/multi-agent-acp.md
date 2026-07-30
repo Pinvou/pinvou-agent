@@ -8,9 +8,9 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 
 | Agent | 启动方式 | 运行时来源 | 登录 |
 |---|---|---|---|
-| Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 可使用系统安装或 Pinvou 托管版本 | Pinvou 内完成 Codex OAuth |
-| Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge，版本固定为 `0.62.0` | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY` |
-| Kimi | `kimi acp` | 自动检测系统 `PATH` 中的官方 Kimi Code CLI | 在 Pinvou 点击“授权登录”，按提示完成设备码授权 |
+| Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 可使用系统安装或 Pinvou 托管版本（托管下载仅 Linux/Windows，macOS 引导通过 Homebrew 安装） | Pinvou 内完成 Codex OAuth；也支持 `OPENAI_API_KEY` |
+| Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge，版本固定为 `0.62.0` | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
+| Kimi | `kimi acp` | 自动检测系统 `PATH` 中的官方 Kimi Code CLI | 在 Pinvou 点击“授权登录”，按提示完成设备码授权；也支持 `KIMI_API_KEY` |
 
 开发时可以用以下环境变量覆盖可执行文件：
 
