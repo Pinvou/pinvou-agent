@@ -713,7 +713,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return CLOUD_MODEL_PROVIDERS.find(provider => {
         if (providerKind && provider.providerKind !== providerKind) return false;
         if (vendor && provider.vendor !== vendor) return false;
-        const urls = [provider.baseUrl, ...(provider.endpointAliases || [])]
+        const urls = [providerBaseUrl(provider), ...(provider.endpointAliases || [])]
           .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
         const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
         if (compareBase && urls.includes(compareBase)) return true;

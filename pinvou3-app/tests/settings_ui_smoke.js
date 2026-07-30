@@ -80,6 +80,9 @@ function injectSource() {
         preset: 'deepseek',
         model: 'deepseek-v4-flash',
         base_url: 'https://api.deepseek.com',
+        // doSave 会把 provider_kind 写回 settings;官方 API 组未显式声明 baseUrl,
+        // 曾导致 findCloudProviderForModel 失配、编辑弹窗隐藏配置区与测试连接。
+        provider_kind: 'official_api',
         has_secret: true,
         credential_state: 'configured',
       },
@@ -425,6 +428,8 @@ async function modalWidth(page, headingText) {
       revealCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'reveal_model_api_key' && call.args.id === 'cloud-deepseek'),
       keyRevealed: !!input,
       sameProviderOnlyClosed: !text.includes('kimi-k3') && !text.includes('glm-5.2'),
+      // 带 provider_kind 的官方模型必须仍能找到目录组,配置区与测试连接不被隐藏。
+      testConnectionVisible: text.includes('测试连接'),
     };
   });
   await clickExact(page, '更换');
