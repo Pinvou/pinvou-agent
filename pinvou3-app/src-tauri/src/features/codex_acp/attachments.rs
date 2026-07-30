@@ -10,6 +10,7 @@ use base64::Engine;
 use serde::Serialize;
 
 use super::workspace::WorkspacePromptReference;
+use crate::features::assistant::image_capability::EffectiveImageCapability;
 use crate::features::files::file_ingest::{self, IngestResult};
 
 const EMBED_FILE_MAX_TOKENS: u32 = 8_000;
@@ -28,11 +29,17 @@ pub(super) struct PreparedCodexPrompt {
     pub display_attachments: Vec<CodexDisplayAttachment>,
 }
 
+/// 组装 Codex ACP prompt。图片走 ACP 原生 `ContentBlock::Image`,发送前做设计
+/// §6.4 的双层 gating:adapter 声明的 `capabilities.image` 只说明 Pinvou 可以把
+/// 图片交给 ACP agent,底层当前模型能否识图由 `model_capability`
+/// (`image_capability::acp_model_image_capability`)判定——文本模型与能力未知的
+/// 模型都不能静默发送。
 pub(super) fn prepare_codex_prompt(
     message: &str,
     attachments: &[IngestResult],
     workspace_references: &[WorkspacePromptReference],
     capabilities: &PromptCapabilities,
+    model_capability: EffectiveImageCapability,
 ) -> Result<PreparedCodexPrompt> {
     let mut blocks = Vec::with_capacity(attachments.len() + workspace_references.len() + 1);
     if !message.trim().is_empty() {
@@ -60,6 +67,17 @@ pub(super) fn prepare_codex_prompt(
                     "当前 Codex ACP Agent 未声明图片输入能力: {}",
                     attachment.basename
                 );
+            }
+            match model_capability {
+                EffectiveImageCapability::Unsupported => bail!(
+                    "当前模型不支持图片输入，请切换到支持图片的模型: {}",
+                    attachment.basename
+                ),
+                EffectiveImageCapability::Unknown => bail!(
+                    "当前模型的图片输入能力未知，请在模型设置中将图片输入能力设为“支持图片”后重试，或切换到支持图片的模型: {}",
+                    attachment.basename
+                ),
+                EffectiveImageCapability::Supported => {}
             }
             let data =
                 fs::read(&path).with_context(|| format!("读取图片附件失败: {}", path.display()))?;
@@ -242,6 +260,7 @@ mod tests {
             &[attachment(&path, "image", None, 0)],
             &[],
             &capabilities,
+            EffectiveImageCapability::Supported,
         )
         .unwrap();
         assert!(matches!(prepared.blocks[0], ContentBlock::Text(_)));
@@ -263,6 +282,7 @@ mod tests {
             .write_all(b"large")
             .unwrap();
         let capabilities = PromptCapabilities::new().embedded_context(true);
+        // 文本附件不受模型图片能力影响:Unknown 模型照常 embed/link。
         let prepared = prepare_codex_prompt(
             "",
             &[
@@ -271,6 +291,7 @@ mod tests {
             ],
             &[],
             &capabilities,
+            EffectiveImageCapability::Unknown,
         )
         .unwrap();
         assert!(matches!(prepared.blocks[0], ContentBlock::Resource(_)));
@@ -282,14 +303,55 @@ mod tests {
         let dir = TestDir::new("capability");
         let path = dir.path().join("image.png");
         fs::write(&path, b"png").unwrap();
+        // adapter 不支持图片:无论模型能力如何都维持原拒绝文案。
         let error = prepare_codex_prompt(
             "",
             &[attachment(&path, "image", None, 0)],
             &[],
             &PromptCapabilities::default(),
+            EffectiveImageCapability::Supported,
         )
         .err()
         .expect("image capability must be enforced");
         assert!(error.to_string().contains("未声明图片输入能力"));
+    }
+
+    #[test]
+    fn image_rejected_when_model_is_text_only() {
+        let dir = TestDir::new("text-model");
+        let path = dir.path().join("image.png");
+        fs::write(&path, b"png").unwrap();
+        let capabilities = PromptCapabilities::new().image(true);
+        let error = prepare_codex_prompt(
+            "",
+            &[attachment(&path, "image", None, 0)],
+            &[],
+            &capabilities,
+            EffectiveImageCapability::Unsupported,
+        )
+        .err()
+        .expect("text-only model must not receive images");
+        assert!(error.to_string().contains("当前模型不支持图片输入"));
+    }
+
+    #[test]
+    fn image_rejected_when_model_capability_unknown() {
+        let dir = TestDir::new("unknown-model");
+        let path = dir.path().join("image.png");
+        fs::write(&path, b"png").unwrap();
+        let capabilities = PromptCapabilities::new().image(true);
+        let error = prepare_codex_prompt(
+            "",
+            &[attachment(&path, "image", None, 0)],
+            &[],
+            &capabilities,
+            EffectiveImageCapability::Unknown,
+        )
+        .err()
+        .expect("unknown model capability must not silently send images");
+        let message = error.to_string();
+        assert!(message.contains("图片输入能力未知"));
+        // 提示必须给出 override Enabled 这一用户显式确认出口。
+        assert!(message.contains("支持图片"));
     }
 }

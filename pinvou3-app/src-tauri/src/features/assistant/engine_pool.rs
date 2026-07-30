@@ -748,12 +748,15 @@ impl EnginePool {
             mode,
             restrict_tools_for_turn,
             reservation,
+            None,
         )
         .await
     }
 
     /// Submit a previously admitted append operation. This is the entry point
     /// used by chat commands that must reserve before resolving attachments.
+    ///
+    /// `input`: Native 图片输入的结构化块(设计 §9.2);`None` 走纯文本路径。
     pub(crate) async fn send_reserved_user_message(
         &self,
         session_id: &str,
@@ -762,6 +765,7 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
         mut reservation: TurnReservation,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<()> {
         let baseline_revision = reservation
             .base_transcript_revision()
@@ -809,6 +813,7 @@ impl EnginePool {
                 persona_reminder,
                 restrict_tools,
                 reservation,
+                input,
             )
             .await
     }
@@ -1189,7 +1194,7 @@ mod scheduled_model_tests {
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
-    use crate::platform::prefs::{ModelPreset, SavedModel};
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1206,6 +1211,8 @@ mod scheduled_model_tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,

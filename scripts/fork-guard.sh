@@ -55,6 +55,13 @@ fingerprints=(
   "T5|宿主取消全部后台 agent             |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T5|批量取消行为回归                   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
   "T5|OAuth 登录可取消                   |CodeWhale/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
+  "T5|结构化用户图片输入                 |CodeWhale/crates/tui/src/core/ops.rs|pub struct UserMessageInput"
+  "T5|本地图片引用持久化                 |CodeWhale/crates/tui/src/models.rs|#[serde(rename = \"local_image\")]"
+  "T5|请求前物化本地图片                 |CodeWhale/crates/tui/src/vision/image_input.rs|pub async fn materialize_messages_local_images("
+  "T5|turn loop 物化本地图片             |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|crate::vision::image_input::materialize_messages_local_images("
+  "T5|结构化图片输入端到端回归           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_image_input_persists_reference_and_materializes_request"
+  "T5|会话落盘无 Base64 回归             |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_saved_session_with_local_image_persists_reference_without_base64"
+  "T5|视觉请求不携带 temperature        |CodeWhale/crates/tui/src/vision/tools.rs|fn forkguard_vision_payload_omits_temperature"
 
   "T6|opaque runtime route 对宿主公开    |CodeWhale/crates/tui/src/route_runtime.rs|pub struct ResolvedRuntimeRoute"
   "T6|宿主路由解析入口                   |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route("
@@ -85,6 +92,9 @@ fingerprints=(
   "APP|Shell 后台终态持续观察回归          |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn reports_detached_completion_after_the_engine_tool_has_returned"
   "APP|turn 权威终态抢占门                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|pub(crate) fn claim_terminal"
   "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|finish_reclaimed_lifecycle_turn"
+  "APP|图片输入不支持稳定错误码           |pinvou3-app/src-tauri/src/app/commands/chat.rs|const IMAGE_INPUT_UNSUPPORTED_ERROR"
+  "APP|模型图片能力判定                   |pinvou3-app/src-tauri/src/features/assistant/image_capability.rs|pub fn effective_image_capability"
+  "APP|ACP 附件按模型能力 gate            |pinvou3-app/src-tauri/src/features/codex_acp/mod.rs|image_capability::acp_model_image_capability("
 )
 
 for fp in "${fingerprints[@]}"; do

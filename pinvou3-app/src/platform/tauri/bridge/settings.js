@@ -198,6 +198,12 @@
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
+  // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
+  async function getImageInputCapability(sessionId) {
+    return await invoke("get_image_input_capability", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
+  }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   async function loadModels() {
@@ -211,7 +217,7 @@
     notify();
   }
   // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
    await invoke("save_model", { model: model });
    await loadModels();
@@ -259,6 +265,11 @@
   async function testModelConnection(baseUrl, apiKey, modelId) {
     return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
+  // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
+  // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
+  async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
+    return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+  }
   async function testSearchProvider(provider, apiKey) {
     return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
   }
@@ -279,6 +290,7 @@
       dismissVllmSetup: dismissVllmSetup,
       declineVllmSetup: declineVllmSetup,
       getEffectiveModelConfig: getEffectiveModelConfig,
+      getImageInputCapability: getImageInputCapability,
       loadModels: loadModels,
       saveModel: saveModel,
       revealModelApiKey: revealModelApiKey,
@@ -287,6 +299,7 @@
       loadSessionModel: loadSessionModel,
       switchModel: switchModel,
       testModelConnection: testModelConnection,
+      testImageInputCapability: testImageInputCapability,
       testSearchProvider: testSearchProvider
     };
   };

@@ -354,6 +354,55 @@ pub async fn get_session_model_id(
     Ok(store.session_model_id(&session_id))
 }
 
+/// 当前有效模型的图片输入能力(设计 §6.3/§9.2,阶段 G)。前端选图即时警告据此
+/// 提示;发送时 chat 命令仍按同一条解析路径(fresh bridge + 会话模型绑定)复核。
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageInputCapabilityInfo {
+    /// `supported` / `unsupported` / `unknown`(EffectiveImageCapability::as_str)。
+    pub capability: String,
+    /// `native` / `vision_tool_fallback` / `unsupported`(ImageInputMode::as_str)。
+    pub image_mode: String,
+    /// 是否有可用的视觉模型兜底(含 Supported 主模型自复用)。
+    pub has_vision_model: bool,
+    /// 当前有效模型 endpoint 是否本机 loopback(设计 §11.8/§11.9):
+    /// false 且走 native 直发时前端提示"图片将发送给模型服务商";
+    /// true 时图片字节不离开本机,前端不得显示云上传字样。
+    pub is_local_endpoint: bool,
+    /// 兜底视觉模型 endpoint 是否本机(§11.8/§11.9):None 表示未配置可用视觉模型。
+    /// fallback 路径的图片字节发给视觉模型,云端视觉模型时前端同样必须提示。
+    pub vision_is_local_endpoint: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn get_image_input_capability(
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<ImageInputCapabilityInfo, String> {
+    // 与 chat 命令的图片路由同一套解析:fresh bridge 按 session 绑定模型(含本地
+    // vLLM served name 探测与运行时凭据准备)。尚无会话(全新草稿)时退化为
+    // get_effective_model_config 同款 prefs 直读,按全局默认模型解析。
+    let bridge = match session_id.or_else(|| store.active_id()) {
+        Some(sid) => pool
+            .fresh_bridge_for(&sid)
+            .await
+            .map_err(|error| format!("resolve image input capability for {sid}: {error:#}"))?,
+        None => {
+            let mut bridge = pool.bridge.clone();
+            bridge.prefs = refresh_safe_prefs(UserPrefs::load());
+            bridge.session_model = None;
+            bridge
+        }
+    };
+    Ok(ImageInputCapabilityInfo {
+        capability: bridge.effective_image_capability().as_str().to_string(),
+        image_mode: bridge.image_input_mode().as_str().to_string(),
+        has_vision_model: bridge.has_vision_model(),
+        is_local_endpoint: bridge.is_local_endpoint(),
+        vision_is_local_endpoint: bridge.vision_uses_local_endpoint(),
+    })
+}
+
 fn parse_search_provider(raw: &str) -> Result<SearchProvider, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "bing" => Ok(SearchProvider::Bing),
@@ -656,6 +705,253 @@ pub async fn test_model_connection(
     }
 }
 
+/// 测试图片输入能力的结果(设计 §7.3)。`status` 稳定三值,前端据此分态展示:
+/// - `supported`: API 接受了图片且给出非空回复;`verified=true` 表示回复提到测试图
+///   主体颜色(红/red),是强确认。没提到也算 supported,防止模型表达差异误杀。
+/// - `unsupported`: 400/422 等明确参数拒绝,provider 错误摘要在 `summary`。
+/// - `error`: 网络/鉴权/超时/空回复等其他失败,与「不支持」严格区分,
+///   前端提示用户先确认连接与密钥。
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageCapabilityTestResult {
+    pub status: String,
+    pub verified: bool,
+    pub summary: String,
+    pub http_status: Option<u16>,
+}
+
+/// 内置 64×64 纯红 PNG(base64,133 字节)。离线生成的字节常量:不读磁盘、不引新依赖。
+/// 字节必须保持合法 PNG(IHDR/IDAT/IEND 块 CRC 与 zlib 数据均有效),由
+/// `image_capability_test_png_is_valid_png` 锚定——损坏的测试图会被 provider
+/// 以"failed to decode image"400 拒绝,误报为模型不支持图片。
+const IMAGE_CAPABILITY_TEST_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAATElEQVR42u3PQQkAAAgAsetfWiP4FgYrsKZeS0BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDgCiyp3PDiJWLS3AAAAABJRU5ErkJggg==";
+/// 视觉探针提示词:让模型用一个词说出主体颜色,回复短、可校验。
+const IMAGE_CAPABILITY_TEST_PROMPT: &str = "这张图片的主体颜色是什么？用一个词回答。";
+const IMAGE_CAPABILITY_TEST_MAX_TOKENS: u32 = 64;
+
+fn image_capability_result(
+    status: &str,
+    verified: bool,
+    summary: String,
+    http_status: Option<u16>,
+) -> ImageCapabilityTestResult {
+    ImageCapabilityTestResult {
+        status: status.to_string(),
+        verified,
+        summary,
+        http_status,
+    }
+}
+
+/// 折叠空白并按字符截断,避免 provider 大段错误/回复撑爆设置页。
+fn summarize_image_probe_text(text: &str, max_chars: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = collapsed.chars();
+    let taken: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{taken}…")
+    } else {
+        taken
+    }
+}
+
+fn image_capability_test_payload(model: &str) -> serde_json::Value {
+    // 注意:不得携带 temperature——kimi-for-coding 等模型只接受默认值,显式传会 400。
+    serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": IMAGE_CAPABILITY_TEST_PROMPT },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:image/png;base64,{IMAGE_CAPABILITY_TEST_PNG_BASE64}"),
+                    },
+                },
+            ],
+        }],
+        "max_tokens": IMAGE_CAPABILITY_TEST_MAX_TOKENS,
+        "stream": false,
+    })
+}
+
+fn extract_chat_reply_summary(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let content = value
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .get("content")?;
+    match content {
+        serde_json::Value::String(text) => Some(text.trim().to_string()),
+        // 部分 provider 把 content 拆成 parts 数组。
+        serde_json::Value::Array(parts) => Some(
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn extract_provider_error_summary(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let message = value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(|message| message.as_str())
+        .or_else(|| value.get("message").and_then(|message| message.as_str()))?;
+    Some(summarize_image_probe_text(message, 200))
+}
+
+fn image_capability_response_summary(body: &str, status_code: u16) -> String {
+    extract_provider_error_summary(body)
+        .or_else(|| {
+            let raw = summarize_image_probe_text(body, 200);
+            if raw.is_empty() {
+                None
+            } else {
+                Some(raw)
+            }
+        })
+        .unwrap_or_else(|| format!("HTTP {status_code}"))
+}
+
+fn classify_image_capability_http(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> ImageCapabilityTestResult {
+    let status_code = status.as_u16();
+    if status.is_success() {
+        return match extract_chat_reply_summary(body) {
+            Some(reply) if !reply.is_empty() => {
+                let verified = reply.to_lowercase().contains("red") || reply.contains('红');
+                image_capability_result(
+                    "supported",
+                    verified,
+                    summarize_image_probe_text(&reply, 120),
+                    Some(status_code),
+                )
+            }
+            _ => image_capability_result(
+                "error",
+                false,
+                "服务接受了请求但返回了空回复，无法确认识图结果".to_string(),
+                Some(status_code),
+            ),
+        };
+    }
+    let summary = image_capability_response_summary(body, status_code);
+    match status_code {
+        // 400/422 是对该探针请求的明确参数拒绝(invalid image / does not support image 等)。
+        400 | 422 => image_capability_result("unsupported", false, summary, Some(status_code)),
+        _ => image_capability_result("error", false, summary, Some(status_code)),
+    }
+}
+
+fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTestResult {
+    let raw = crate::platform::credential_store::redact_secret(&err.to_string());
+    let raw_lower = raw.to_lowercase();
+    let summary = if err.is_timeout() {
+        format!("连接超时，请检查网络或服务是否启动: {raw}")
+    } else if raw_lower.contains("certificate") || raw_lower.contains("tls") || raw_lower.contains("ssl")
+    {
+        format!("安全证书校验失败，请检查代理或网络环境: {raw}")
+    } else if raw_lower.contains("dns")
+        || raw_lower.contains("lookup")
+        || raw_lower.contains("name or service not known")
+    {
+        format!("无法解析服务地址，请检查网络: {raw}")
+    } else if raw_lower.contains("connection refused")
+        || raw_lower.contains("os error 10061")
+        || raw_lower.contains("actively refused")
+    {
+        format!("无法连接到服务，请确认服务已启动: {raw}")
+    } else {
+        format!("网络连接失败，请检查网络后重试: {raw}")
+    };
+    image_capability_result("error", false, summary, None)
+}
+
+/// 测试图片输入能力(设计 §7.3):POST {base_url}/chat/completions 携带内置纯色 PNG,
+/// 验证当前编辑中的模型能否识图。仅由设置页主动点击触发,无任何启动/定时自动测试。
+/// 入参与凭据解析和 test_model_connection 一致:表单新填 key 优先,否则读已保存凭据。
+#[tauri::command]
+pub async fn test_image_input_capability(
+    model: String,
+    base_url: String,
+    api_key: String,
+    model_id: Option<String>,
+) -> Result<ImageCapabilityTestResult, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Ok(image_capability_result(
+            "error",
+            false,
+            "模型 ID 为空，请先填写模型".to_string(),
+            None,
+        ));
+    }
+    let url = format!("{}/chat/completions", base_url.trim().trim_end_matches('/'));
+    if let Err(e) = reqwest::Url::parse(&url) {
+        return Ok(image_capability_result(
+            "error",
+            false,
+            format!("服务地址格式不正确: {e}"),
+            None,
+        ));
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return Ok(image_capability_result(
+                "error",
+                false,
+                format!("测试初始化失败: {e}"),
+                None,
+            ));
+        }
+    };
+    let provided_key = api_key.trim().to_string();
+    let key = if provided_key.is_empty() {
+        match resolve_saved_model_key(model_id.as_deref()) {
+            Ok(key) => key.unwrap_or_default(),
+            Err(e) => {
+                return Ok(image_capability_result(
+                    "error",
+                    false,
+                    format!("无法读取已保存的 API Key，请重新填写: {e}"),
+                    None,
+                ));
+            }
+        }
+    } else {
+        provided_key
+    };
+    let mut req = client
+        .post(url)
+        .json(&image_capability_test_payload(&model));
+    if !key.trim().is_empty() {
+        req = req.bearer_auth(key.trim());
+    }
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Ok(classify_image_capability_http(status, &body))
+        }
+        Err(e) => Ok(image_capability_transport_error(&e)),
+    }
+}
+
 /// 通用设置字段补丁。搜索、桌宠、模型列表和本地模型初始化状态由专用命令管理，
 /// 不进入这个协议，避免调用方携带旧的完整快照覆盖其他操作刚写入的值。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -787,6 +1083,180 @@ use super::prelude::*;
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    #[test]
+    fn image_capability_payload_omits_temperature_and_embeds_data_url() {
+        let payload = image_capability_test_payload("kimi-for-coding");
+        assert_eq!(payload.get("model").and_then(|m| m.as_str()), Some("kimi-for-coding"));
+        // kimi-for-coding 等模型只接受默认 temperature,显式传会 400。
+        assert!(payload.get("temperature").is_none());
+        assert_eq!(
+            payload.get("max_tokens").and_then(|v| v.as_u64()),
+            Some(IMAGE_CAPABILITY_TEST_MAX_TOKENS as u64)
+        );
+        assert_eq!(payload.get("stream").and_then(|v| v.as_bool()), Some(false));
+        let content = payload["messages"][0]["content"]
+            .as_array()
+            .expect("content must be multimodal parts");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        assert_eq!(
+            content[0]["text"].as_str(),
+            Some(IMAGE_CAPABILITY_TEST_PROMPT)
+        );
+        assert_eq!(content[1]["type"].as_str(), Some("image_url"));
+        let url = content[1]["image_url"]["url"]
+            .as_str()
+            .expect("image part must carry a data url");
+        assert!(url.starts_with("data:image/png;base64,"));
+        assert!(url.len() > "data:image/png;base64,".len() + 100);
+    }
+
+    /// 锚定内置测试图是合法 PNG:块 CRC 与 zlib 数据全部有效、64×64 RGB 纯红。
+    /// 损坏的测试图会被 provider 以"failed to decode image"400 拒绝,
+    /// 把"测试图坏了"误报成"模型不支持图片"。
+    #[test]
+    fn image_capability_test_png_is_valid_png() {
+        use base64::Engine;
+
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(IMAGE_CAPABILITY_TEST_PNG_BASE64)
+            .expect("base64 must decode");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+
+        let mut idat = Vec::new();
+        let mut pos = 8;
+        let mut seen_ihdr = false;
+        while pos < png.len() {
+            let len = u32::from_be_bytes(png[pos..pos + 4].try_into().unwrap()) as usize;
+            let kind = &png[pos + 4..pos + 8];
+            let data = &png[pos + 8..pos + 8 + len];
+            let crc_stored = u32::from_be_bytes(
+                png[pos + 8 + len..pos + 12 + len].try_into().unwrap(),
+            );
+            let mut crc = flate2::Crc::new();
+            crc.update(&png[pos + 4..pos + 8 + len]);
+            assert_eq!(
+                crc_stored,
+                crc.sum(),
+                "CRC mismatch in chunk {}",
+                String::from_utf8_lossy(kind)
+            );
+            match kind {
+                b"IHDR" => {
+                    seen_ihdr = true;
+                    assert_eq!(&data[..4], &64u32.to_be_bytes(), "width");
+                    assert_eq!(&data[4..8], &64u32.to_be_bytes(), "height");
+                    assert_eq!(data[8], 8, "bit depth");
+                    assert_eq!(data[9], 2, "color type RGB");
+                }
+                b"IDAT" => idat.extend_from_slice(data),
+                b"IEND" => break,
+                other => panic!("unexpected chunk {}", String::from_utf8_lossy(other)),
+            }
+            pos += 12 + len;
+        }
+        assert!(seen_ihdr && !idat.is_empty());
+
+        use std::io::Read as _;
+        let mut raw = Vec::new();
+        flate2::read::ZlibDecoder::new(&idat[..])
+            .read_to_end(&mut raw)
+            .expect("IDAT must inflate");
+        let stride = 64 * 3 + 1;
+        assert_eq!(raw.len(), stride * 64, "inflated size");
+        for row in raw.chunks(stride) {
+            assert_eq!(row[0], 0, "filter byte");
+            assert!(row[1..].chunks_exact(3).all(|p| p == [255, 0, 0]), "solid red");
+        }
+    }
+
+    #[test]
+    fn image_capability_supported_verified_when_reply_mentions_color() {
+        let body = r#"{"choices":[{"message":{"content":"红色"}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
+        assert_eq!(result.status, "supported");
+        assert!(result.verified);
+        assert_eq!(result.summary, "红色");
+        assert_eq!(result.http_status, Some(200));
+
+        let body = r#"{"choices":[{"message":{"content":"The dominant color is red."}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
+        assert_eq!(result.status, "supported");
+        assert!(result.verified);
+    }
+
+    #[test]
+    fn image_capability_supported_unverified_when_reply_omits_color() {
+        // API 接受图片但回复没提颜色也算 supported,防止模型表达差异误杀。
+        let body = r#"{"choices":[{"message":{"content":"I see a small square picture."}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
+        assert_eq!(result.status, "supported");
+        assert!(!result.verified);
+        assert!(result.summary.contains("square"));
+    }
+
+    #[test]
+    fn image_capability_empty_reply_is_error_not_unsupported() {
+        let body = r#"{"choices":[{"message":{"content":"  "}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
+        assert_eq!(result.status, "error");
+        assert!(!result.verified);
+        assert!(result.summary.contains("空回复"));
+    }
+
+    #[test]
+    fn image_capability_400_is_unsupported_with_provider_summary() {
+        let body = r#"{"error":{"message":"this model does not support image input","type":"invalid_request_error"}}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::BAD_REQUEST, body);
+        assert_eq!(result.status, "unsupported");
+        assert!(!result.verified);
+        assert_eq!(result.summary, "this model does not support image input");
+        assert_eq!(result.http_status, Some(400));
+    }
+
+    #[test]
+    fn image_capability_422_falls_back_to_raw_body_summary() {
+        let result = classify_image_capability_http(
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid image payload",
+        );
+        assert_eq!(result.status, "unsupported");
+        assert_eq!(result.summary, "invalid image payload");
+    }
+
+    #[test]
+    fn image_capability_auth_and_server_failures_are_errors() {
+        let unauthorized = classify_image_capability_http(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error":{"message":"Incorrect API key provided"}}"#,
+        );
+        assert_eq!(unauthorized.status, "error");
+        assert_eq!(unauthorized.summary, "Incorrect API key provided");
+
+        let server = classify_image_capability_http(reqwest::StatusCode::BAD_GATEWAY, "");
+        assert_eq!(server.status, "error");
+        assert_eq!(server.summary, "HTTP 502");
+    }
+
+    #[test]
+    fn image_capability_reply_parts_array_is_joined() {
+        let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"red"},{"type":"text","text":"square"}]}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
+        assert_eq!(result.status, "supported");
+        assert!(result.verified);
+        assert_eq!(result.summary, "red square");
+    }
+
+    #[test]
+    fn image_capability_summary_truncates_long_text() {
+        let long = "a".repeat(300);
+        let summary = summarize_image_probe_text(&long, 120);
+        assert_eq!(summary.chars().count(), 121);
+        assert!(summary.ends_with('…'));
+        let whitespace = summarize_image_probe_text("  red\n\tcolor  ", 120);
+        assert_eq!(whitespace, "red color");
+    }
 
     #[test]
     fn general_settings_patch_preserves_unmentioned_and_specialized_domains() {

@@ -280,7 +280,7 @@ mod tests {
     use crate::features::assistant::engine_pool::ScheduledTurnCompletion;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
-    use crate::platform::prefs::{ModelPreset, SavedModel};
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
 
     #[derive(Debug)]
     enum Script {
@@ -519,6 +519,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,

@@ -78,6 +78,8 @@ function injectSource() {
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
+        case 'get_image_input_capability': return Promise.resolve(window.__IMAGE_CAPABILITY__ || null);
+        case 'ingest_file': return Promise.resolve({kind:'image',basename:'shot.png',path:(args&&args.path)||'shot.png',markdown:null,token_estimate:10,byte_size:100,warning:null});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
@@ -1006,6 +1008,94 @@ async function expand(page) {
     archiveMenuOpened && archiveToastBefore.opened && archiveToastBefore.noWrap && archiveToastBefore.text &&
     archiveToastGoto.currentView === 'search' && archiveToastGoto.archivedTabVisible && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
     JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
+
+  // ⑪ 普通会话选图即时警告:当前模型图片路由 unsupported 时在附件区提示(不拦截),
+  // 移除附件或能力恢复后消失;Unknown 与确认不支持文案口径不同(与后端错误码一致)。
+  // ⑪c-e 云上传隐私提示(§11.8/§11.9):native 直发云端时提示图片字节去向;
+  // 本机 loopback 不显示云上传字样;旧后端缺 is_local_endpoint 字段时 fail-open。
+  await clickText(page, '新对话');
+  await sleep(400);
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'unsupported', has_vision_model: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot.png'));
+  await sleep(600);
+  const imageWarnUnsupported = await page.evaluate(() => {
+    const node = document.querySelector('[data-testid="image-capability-warning"]');
+    return { shown: !!node, text: node ? node.textContent : '' };
+  });
+  rec('⑪a 当前模型不支持图片时附件区显示即时警告',
+    imageWarnUnsupported.shown && imageWarnUnsupported.text.includes('当前模型不支持图片') && imageWarnUnsupported.text.includes('视觉模型'),
+    JSON.stringify(imageWarnUnsupported));
+  await page.evaluate(() => {
+    const list = (window.TauriBridge.state.get('chat').attachments) || [];
+    if (list.length) window.TauriBridge.attachments.removeAttachment(list[0].id);
+  });
+  await sleep(300);
+  const imageWarnCleared = await page.evaluate(() => !document.querySelector('[data-testid="image-capability-warning"]'));
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unknown', image_mode: 'unsupported', has_vision_model: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot2.png'));
+  await sleep(600);
+  const imageWarnUnknown = await page.evaluate(() => {
+    const node = document.querySelector('[data-testid="image-capability-warning"]');
+    return { shown: !!node, text: node ? node.textContent : '' };
+  });
+  rec('⑪b 移除附件后警告消失,能力未知时改显未知口径',
+    imageWarnCleared && imageWarnUnknown.shown && imageWarnUnknown.text.includes('图片输入能力未知'),
+    JSON.stringify({ imageWarnCleared, ...imageWarnUnknown }));
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'supported', image_mode: 'native', has_vision_model: false, is_local_endpoint: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot3.png'));
+  await sleep(600);
+  const imageNativeCloud = await page.evaluate(() => {
+    const warn = document.querySelector('[data-testid="image-capability-warning"]');
+    const hint = document.querySelector('[data-testid="image-privacy-hint"]');
+    return { noWarning: !warn, hintShown: !!hint, hintText: hint ? hint.textContent : '' };
+  });
+  rec('⑪c 模型原生支持图片时不显示警告,native 云端显示云上传隐私提示',
+    imageNativeCloud.noWarning && imageNativeCloud.hintShown && imageNativeCloud.hintText.includes('发送给你选择的模型服务商'),
+    JSON.stringify(imageNativeCloud));
+  // §11.9:本机 loopback endpoint 不得显示任何云上传字样。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'supported', image_mode: 'native', has_vision_model: false, is_local_endpoint: true }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot4.png'));
+  await sleep(600);
+  const imageNativeLocal = await page.evaluate(() => ({
+    noHint: !document.querySelector('[data-testid="image-privacy-hint"]'),
+    noCloudText: !document.body.innerText.includes('图片将随消息发送'),
+  }));
+  rec('⑪d native 本地 loopback 模型不显示云上传提示',
+    imageNativeLocal.noHint && imageNativeLocal.noCloudText, JSON.stringify(imageNativeLocal));
+  // fail-open:旧后端无 is_local_endpoint 字段时不显示提示。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'supported', image_mode: 'native', has_vision_model: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot5.png'));
+  await sleep(600);
+  const imageNativeLegacy = await page.evaluate(() => !document.querySelector('[data-testid="image-privacy-hint"]'));
+  rec('⑪e 旧后端缺少 is_local_endpoint 字段时不显示提示(fail-open)', imageNativeLegacy);
+  // §11.8 fallback:文本主模型+云端视觉模型时,图片实际发给视觉模型服务商,同样必须提示。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'vision_tool_fallback', has_vision_model: true, is_local_endpoint: true, vision_is_local_endpoint: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot6.png'));
+  await sleep(600);
+  const imageFallbackCloud = await page.evaluate(() => {
+    const hint = document.querySelector('[data-testid="image-privacy-hint"]');
+    return { hintShown: !!hint, hintText: hint ? hint.textContent : '' };
+  });
+  rec('⑪f fallback 云端视觉模型显示云上传提示(按视觉模型端点判定)',
+    imageFallbackCloud.hintShown && imageFallbackCloud.hintText.includes('视觉模型服务商'),
+    JSON.stringify(imageFallbackCloud));
+  // §11.9 fallback:视觉模型为本机时不显示任何云上传字样。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'vision_tool_fallback', has_vision_model: true, is_local_endpoint: true, vision_is_local_endpoint: true }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot7.png'));
+  await sleep(600);
+  const imageFallbackLocal = await page.evaluate(() => ({
+    noHint: !document.querySelector('[data-testid="image-privacy-hint"]'),
+    noCloudText: !document.body.innerText.includes('视觉模型服务商'),
+  }));
+  rec('⑪g fallback 本地视觉模型不显示云上传提示',
+    imageFallbackLocal.noHint && imageFallbackLocal.noCloudText, JSON.stringify(imageFallbackLocal));
+  await page.evaluate(() => { window.TauriBridge.attachments.clearAttachments(); window.__IMAGE_CAPABILITY__ = null; });
+  await sleep(200);
 
   // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });

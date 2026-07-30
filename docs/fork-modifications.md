@@ -10,9 +10,9 @@
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
 | 公开固定基线 | tag `pinvou-v0.9.0-r2`，commit `cb93e0f4466d60e306252ed08bbbe214f2def752` |
-| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `cb93e0f4466d` |
+| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `cb93e0f4466d`；本地 `feat/structured-image-input` 另有未推送维护提交 `d4a05585e`（见 T5） |
 | 组织方式 | **6 个长期主题 commit + 4 个行为补充/维护 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
-| drift | 对 `v0.9.0`：**+4045 / -550，57 文件** |
+| drift | 对 `v0.9.0`：**+5436 / -661，74 文件**（含本地未推送的结构化图片输入 patch） |
 | 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译；macOS 适配保留在父仓平台抽象中，不增加 fork drift |
 
@@ -24,6 +24,7 @@
 - 约 665 行是宿主编排与结构化/文件产出完成闸，属于子 agent 生命周期的原子语义，放在 app 无法可靠判断真实完成。
 - 约 633 行是 prompt/context/skill 来源密封；这是 pinvou3 单一 bundle 来源和静态前缀稳定性的产品边界。
 - 约 965 行是工具面、写入上限和命令安全，其中包含结果式 golden 测试，不能只留字符串指纹。
+- 新增约 1368 行（含约 450 行测试）是结构化图片消息输入：本地引用持久化、turn loop 请求前物化、Anthropic base64 转换与 image_analyze 加固必须在 engine 消息生命周期内原子完成，无法放 app/skill/MCP；后续随上游接受度 harvest。
 - Shell 实时输出不再形成 fork drift：app 复用 v0.9.0 已公开的 session 级 `ShellManager`，以非破坏性完整快照计算前台/后台增量，并由主仓测试守护 UTF-8 边界和拥塞合并。
 - 已移除 v0.8.65 时代被 v0.9.0 harvest 的 MCP env、Windows 子进程、旧 request_user_input 路由、旧 subagent 自建 mailbox/温度/工具面等补丁；没有机械照搬整包旧 fork。
 
@@ -79,14 +80,15 @@
 - **为什么留 fork**：pinvou3 的 hidden scheduled session 依赖稳定会话身份和历史级联语义；只放 app 会与 TaskManager 持久化竞态。
 - **守护**：automation 回归、`worker_receives_persisted_conversation_key`、运行链接、保留、终态删除、小时锚点、漏跑跳过和同任务不重叠测试。
 
-### T5 `fork`：宿主编排、工作流完成闸与可取消登录
+### T5 `fork`：宿主编排、工作流完成闸、可取消登录与结构化图片输入
 
 - **commit**：`5e5513151 feat(fork): 适配宿主编排与工作流完成闸`
 - **维护提交**：
   - `b6991463b fix: 修复宿主工具仅在 Plan 模式注册`
   - `c7dbe0353 fix(workflow): 修复工作流子代理写入权限丢失 (#19)`
   - `b2e3a83bf chore(ci): 补齐 Pinvou fork 公开分支门禁`
-- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/engine/tests.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`。
+  - `d4a05585e feat: 支持结构化图片消息输入`（本地未推送；2026-07-30 由 `4671b579b` rebase 到 `cb93e0f44` 之上，内容不变）
+- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/engine/tests.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`、`models.rs`、`vision/image_input.rs`、`core/engine/turn_loop.rs`、`client/anthropic.rs`、`vision/tools.rs`、`session_manager.rs`。
 - **内容**：
   - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools；宿主注入工具在 Plan / Agent / Yolo 三种 turn registry 中统一注册，避免非 Plan 分支提前返回时丢失 `kb_search`。
   - `SpawnSubAgent` 接受 role、allowed tools、max steps、output schema、expects-file-output。
@@ -96,8 +98,9 @@
   - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
   - standalone exec 路径显式补齐 `tool_whitelist`、`reasoning_effort`、`extra_tools`，保证 fork 作为独立项目时全目标可编译。
+  - 结构化用户图片消息输入：`Op::SendMessage` 新增可选 `UserMessageInput`（Text/LocalImage），`ContentBlock::LocalImage` 会话持久化只存 workspace 相对路径与元数据（Base64 不落地）；turn loop 构建 provider 请求前克隆物化（路径校验、20MB 上限、魔数 MIME 嗅探），Anthropic 遇 data: URL 转原生 base64 source；image_analyze 同步加固上限与真实文件头检测，且请求不再携带 `temperature`（kimi-for-coding 等模型只接受默认值，显式 temperature 会被 400 拒绝）。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
-- **守护**：宿主额外工具全模式注册、结构化 schema/安全路径、Custom 显式写工具真实落盘、文件产出失败保留并脱敏最后工具错误、父子权限不可越权、批量取消、OAuth drop-before-return 回归。
+- **守护**：宿主额外工具全模式注册、结构化 schema/安全路径、Custom 显式写工具真实落盘、文件产出失败保留并脱敏最后工具错误、父子权限不可越权、批量取消、OAuth drop-before-return 回归、`forkguard_structured_image_input_persists_reference_and_materializes_request`、`forkguard_saved_session_with_local_image_persists_reference_without_base64`、`forkguard_vision_payload_omits_temperature`。
 
 ### T6 `embed`：宿主路由、预算与 shared automation 接口
 

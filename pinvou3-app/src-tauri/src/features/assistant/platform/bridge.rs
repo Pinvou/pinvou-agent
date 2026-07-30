@@ -34,6 +34,9 @@ use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::features::assistant::image_capability::{
+    effective_image_capability, EffectiveImageCapability,
+};
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
@@ -606,6 +609,126 @@ impl Pinvou3Bridge {
         }
     }
 
+    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
+    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
+    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
+    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+    fn api_key_for_saved_model(model: &SavedModel) -> String {
+        if let Some(reference) = &model.credential_ref {
+            let store = SystemCredentialStore::new();
+            match store.get(reference) {
+                Ok(Some(key)) if !key.trim().is_empty() => return key,
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!(
+                        "[pinvou3-app] credential read failed for vision model {}: {}",
+                        model.id,
+                        err.user_message()
+                    );
+                }
+            }
+        }
+        if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
+            return LOCAL_VLLM_API_KEY.to_string();
+        }
+        model.api_key.clone()
+    }
+
+    /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。三条规则:
+    /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
+    ///    id 失效或凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。
+    /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
+    ///    图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
+    ///    `image_analyze`(不 enable `Feature::VisionModel`)。
+    fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
+        let effective = self.effective_model();
+        if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
+            let Some(vision) = self.prefs.model_by_id(vision_id) else {
+                eprintln!(
+                    "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
+                     image_analyze disabled"
+                );
+                return None;
+            };
+            let api_key = Self::api_key_for_saved_model(vision);
+            if api_key.trim().is_empty() {
+                eprintln!(
+                    "[pinvou3-app] vision model {} has no usable credential; \
+                     image_analyze disabled",
+                    vision.id
+                );
+                return None;
+            }
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: vision.model.clone(),
+                api_key: Some(api_key),
+                base_url: Some(vision.base_url.clone()),
+            });
+        }
+        if effective.map(effective_image_capability) == Some(EffectiveImageCapability::Supported) {
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: self.model(),
+                api_key: Some(self.api_key()),
+                base_url: Some(self.base_url()),
+            });
+        }
+        None
+    }
+
+    /// 当前有效模型的图片输入能力(设计 §6.3)。命令层在发送前拒绝时需要据此
+    /// 区分"确认不支持"与"能力未知",给出不同的用户指引。
+    pub fn effective_image_capability(&self) -> EffectiveImageCapability {
+        self.effective_model()
+            .map(effective_image_capability)
+            // 无有效模型(配置损坏)按 Unknown 处理:不冒充支持,交给路由兜底。
+            .unwrap_or(EffectiveImageCapability::Unknown)
+    }
+
+    /// 兜底视觉模型端点是否本地(§11.8/§11.9):None 表示未配置可用视觉模型。
+    /// fallback 路径的图片字节发给视觉模型而非主模型,隐私提示必须按此口径。
+    pub fn vision_uses_local_endpoint(&self) -> Option<bool> {
+        self.resolve_vision_model_config().map(|config| {
+            config
+                .base_url
+                .as_deref()
+                .is_some_and(base_url_uses_loopback)
+        })
+    }
+
+    /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
+    /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
+    /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
+    /// `vision_model_id` 命中的独立视觉模型。
+    pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
+        crate::features::assistant::image_capability::image_input_mode(
+            self.effective_image_capability(),
+            self.resolve_vision_model_config().is_some(),
+        )
+    }
+
+    /// 是否配置了**可用**的独立视觉模型(或 Supported 主模型可自复用)。
+    /// 与 `image_input_mode` 内部的 `has_vision_model` 同一口径
+    /// (`resolve_vision_model_config`),供能力查询命令回传前端展示。
+    pub fn has_vision_model(&self) -> bool {
+        self.resolve_vision_model_config().is_some()
+    }
+
+    /// 当前有效模型 endpoint 是否指向本机(设计 §11.8/§11.9):前端据此决定是否在
+    /// 附件区提示"图片将发送给模型服务商"——本机 loopback 场景图片字节不离开本机,
+    /// 不得显示云上传字样。判定与 `api_key_for_saved_model` 同一口径:preset 为
+    /// local_vllm,或有效 base_url host 为 loopback(127.0.0.1/localhost/[::1])。
+    pub fn is_local_endpoint(&self) -> bool {
+        let preset_is_local = match self.effective_model() {
+            Some(model) => model.preset == ModelPreset::LocalVllm,
+            // 无有效模型(配置损坏):按全局 preset 判定。
+            None => {
+                self.prefs.advanced.model_preset.unwrap_or_default() == ModelPreset::LocalVllm
+            }
+        };
+        preset_is_local || base_url_uses_loopback(&self.base_url())
+    }
+
     /// Current search API key from env or encrypted credential store.
     pub fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;
@@ -879,6 +1002,14 @@ impl Pinvou3Bridge {
         let hook_executor = self.build_hook_executor();
         runtime_services.hook_executor = Some(hook_executor.clone());
 
+        // 视觉工具(image_analyze)注册两道门(设计 §9.3,阶段 E):
+        //   vision_config 有值 + Feature::VisionModel 开启,缺一不可。
+        // 不再无条件复用主模型:只有「显式 vision_model_id 可解析」或
+        // 「主模型能力确认 Supported」才注册;否则文本模型也会拿到
+        // image_analyze,调用时才发现不支持图片(原 bridge 无条件复用 bug)。
+        let vision_config = self.resolve_vision_model_config();
+        let vision_tool_enabled = vision_config.is_some();
+
         EngineConfig {
             // pinvou3 覆盖
             model: self.model(),
@@ -904,23 +1035,21 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // pinvou3 中文用户已经是中文语境，不走 /translate 路径
             translation_enabled: false,
-            // 视觉配置跟随主模型端点：本地 vLLM 复用同一端点；
-            // 第三方 provider 也复用（若不支持 vision，底座会优雅失败）。
-            vision_config: Some(deepseek_tui::config::VisionModelConfig {
-                model: self.model(),
-                api_key: Some(self.api_key()),
-                base_url: Some(self.base_url()),
-            }),
+            // 视觉配置由 resolve_vision_model_config 按 §9.3 三规则解析;
+            // None = 不注册 image_analyze(主模型不支持/未知且无可用视觉模型)。
+            vision_config,
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
             // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
             subagent_api_timeout: std::time::Duration::from_secs(300),
-            // 开启 VisionModel feature(默认 Experimental 关):配合上面的
-            // vision_config,tool_setup.rs 才会注册 image_analyze 工具给 LLM。
+            // 开启 VisionModel feature(默认 Experimental 关)仅当 vision_config
+            // 解析成功(见上):tool_setup.rs 才会注册 image_analyze 工具给 LLM。
             // 两道门缺一不可——只配 vision_config 不开 feature,工具不会注册。
             features: {
                 let mut f = features;
-                f.enable(deepseek_tui::features::Feature::VisionModel);
+                if vision_tool_enabled {
+                    f.enable(deepseek_tui::features::Feature::VisionModel);
+                }
                 f
             },
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
@@ -1296,6 +1425,7 @@ impl Pinvou3Bridge {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1328,9 +1458,30 @@ impl Pinvou3Bridge {
         }
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
+        // Native 图片输入(阶段 D):`<system-reminder>` 并进结构化 Text block,
+        // 保证模型在结构化消息里同样收到 per-turn reminder。Text block 与
+        // Op.content 保持逐字节一致——下游 transcript sanitize 以 content 为
+        // 匹配键(engine.rs `send_reserved_turn_op`),不一致会导致持久化时
+        // 引擎注入内容无法替换为 UI 展示文本。
+        let input = input.map(|mut input| {
+            match input.blocks.first_mut() {
+                Some(deepseek_tui::core::ops::UserInputBlock::Text { text }) => {
+                    *text = full_content.clone();
+                }
+                _ => input.blocks.insert(
+                    0,
+                    deepseek_tui::core::ops::UserInputBlock::Text {
+                        text: full_content.clone(),
+                    },
+                ),
+            }
+            input
+        });
         let model = self.model();
         Ok(Op::SendMessage {
             content: full_content,
+            // Native 路径携结构化图片块(设计 §9.2);其余路径为 None,底座走纯文本。
+            input,
             mode,
             route: Box::new(self.resolve_runtime_route_for_model(&model)?),
             compaction: Box::new(self.compaction_config_for_model(&model)),
@@ -1523,6 +1674,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -1530,6 +1683,302 @@ mod tests {
             credential_action: None,
         }];
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
+    }
+
+    /// 追加一条视觉兜底模型(测试辅助):plaintext api_key 直给,绕过系统凭据库。
+    fn push_vision_model(bridge: &mut Pinvou3Bridge, id: &str, model: &str, api_key: &str) {
+        bridge.prefs.advanced.saved_models.push(SavedModel {
+            id: id.to_string(),
+            name: model.to_string(),
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: model.to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: api_key.to_string(),
+            credential_ref: None,
+            credential_state: crate::platform::credential_store::CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+    }
+
+    /// §9.3 规则 1:主模型显式设置 vision_model_id → 用该 SavedModel 的
+    /// endpoint + 凭据(不回落主模型,不读第二份明文)。
+    #[test]
+    fn vision_config_prefers_explicit_vision_model_id() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut bridge, "vision-1", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("explicit vision model must resolve");
+        assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.api_key.as_deref(), Some("sk-vision"));
+        assert_eq!(config.base_url.as_deref(), Some("https://api.openai.com/v1"));
+
+        let engine = bridge.build_engine_config();
+        assert!(engine.vision_config.is_some());
+        assert!(engine
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    #[test]
+    fn vision_endpoint_locality_reflects_vision_model_base_url() {
+        // 未配置视觉模型 → None;云端视觉模型 → Some(false);loopback 视觉模型 → Some(true)。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert_eq!(bridge.vision_uses_local_endpoint(), None);
+
+        push_vision_model(&mut bridge, "vision-cloud", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-cloud".to_string());
+        assert_eq!(bridge.vision_uses_local_endpoint(), Some(false));
+
+        bridge.prefs.advanced.saved_models[1].base_url = "http://127.0.0.1:8000/v1".to_string();
+        assert_eq!(bridge.vision_uses_local_endpoint(), Some(true));
+    }
+
+    /// §9.3 规则 2:未设置 vision_model_id、主模型能力 Supported →
+    /// 复用主模型作为 workspace 图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    #[test]
+    fn vision_config_reuses_main_model_only_when_supported() {
+        let (_lock, _env) = locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("DEEPSEEK_MODEL");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("supported main model must be reused as vision tool");
+        assert_eq!(config.model, "gpt-5.6-terra");
+        assert_eq!(config.api_key.as_deref(), Some("sk-main"));
+        assert_eq!(config.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert!(bridge
+            .build_engine_config()
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
+    /// 不注册 image_analyze(vision_config=None 且不 enable Feature::VisionModel)。
+    #[test]
+    fn vision_config_absent_for_unknown_or_disabled_main_model() {
+        // Unknown:deepseek-v4-pro 不在内置已验证能力表。
+        let mut unknown = fixture_bridge();
+        set_active_model(
+            &mut unknown,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert!(unknown.resolve_vision_model_config().is_none());
+        let engine = unknown.build_engine_config();
+        assert!(engine.vision_config.is_none());
+        assert!(!engine
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+
+        // override Disabled:即便主模型命中内置表也不得复用。
+        let mut disabled = fixture_bridge();
+        set_active_model(
+            &mut disabled,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        disabled.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Disabled;
+        assert!(disabled.resolve_vision_model_config().is_none());
+        assert!(disabled.build_engine_config().vision_config.is_none());
+    }
+
+    /// §9.3 规则 1 的优雅降级:vision_model_id 失效(指向不存在/已删除的模型)
+    /// 或目标模型凭据缺失 → 不注册并记 warning,不硬错、不回落主模型。
+    #[test]
+    fn vision_config_degrades_gracefully_on_missing_id_or_credential() {
+        // id 指向不存在的模型。
+        let mut ghost = fixture_bridge();
+        set_active_model(
+            &mut ghost,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        assert!(ghost.resolve_vision_model_config().is_none());
+
+        // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
+        let mut no_key = fixture_bridge();
+        set_active_model(
+            &mut no_key,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut no_key, "vision-no-key", "gpt-4o", "");
+        no_key.prefs.advanced.saved_models[0].vision_model_id = Some("vision-no-key".to_string());
+        assert!(no_key.resolve_vision_model_config().is_none());
+    }
+
+    /// §9.2 路由(阶段 D):Supported → Native(无论有无视觉模型);
+    /// Unknown/Unsupported → 有可用视觉模型走 VisionToolFallback,否则 Unsupported。
+    #[test]
+    fn image_input_mode_routes_by_capability_and_vision_model() {
+        use crate::features::assistant::image_capability::ImageInputMode;
+
+        // Supported 主模型:无视觉模型也 Native。
+        let mut native = fixture_bridge();
+        set_active_model(
+            &mut native,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        assert_eq!(native.image_input_mode(), ImageInputMode::Native);
+
+        // Unknown 主模型、无视觉模型 → Unsupported(发送前拒绝)。
+        let mut unknown = fixture_bridge();
+        set_active_model(
+            &mut unknown,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert_eq!(unknown.image_input_mode(), ImageInputMode::Unsupported);
+
+        // Unknown 主模型 + vision_model_id 命中可用视觉模型 → VisionToolFallback。
+        let mut fallback = fixture_bridge();
+        set_active_model(
+            &mut fallback,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut fallback, "vision-1", "gpt-4o", "sk-vision");
+        fallback.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+        assert_eq!(fallback.image_input_mode(), ImageInputMode::VisionToolFallback);
+
+        // override Enabled 的未知本地模型 → Native。
+        let mut forced = fixture_bridge();
+        set_active_model(
+            &mut forced,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        forced.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Enabled;
+        assert_eq!(forced.image_input_mode(), ImageInputMode::Native);
+
+        // override Disabled 即便命中内置表也不 Native;有视觉模型 → Fallback。
+        let mut disabled = fixture_bridge();
+        set_active_model(
+            &mut disabled,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        disabled.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Disabled;
+        push_vision_model(&mut disabled, "vision-2", "gpt-4o", "sk-vision");
+        disabled.prefs.advanced.saved_models[0].vision_model_id = Some("vision-2".to_string());
+        assert_eq!(disabled.image_input_mode(), ImageInputMode::VisionToolFallback);
+    }
+
+    /// Native(阶段 D):`<system-reminder>` 必须并进结构化 Text block,
+    /// 且 Text block 与 Op.content 逐字节一致(transcript sanitize 的匹配键);
+    /// LocalImage 块原样透传。
+    #[test]
+    fn build_send_message_op_merges_reminder_into_structured_input() {
+        use deepseek_tui::core::ops::{UserInputBlock, UserMessageInput};
+
+        let bridge = fixture_bridge();
+        let image = UserInputBlock::LocalImage {
+            relative_path: std::path::PathBuf::from("attachments/shot.png"),
+            mime_type: "image/png".to_string(),
+            display_name: "shot.png".to_string(),
+        };
+        let op = bridge
+            .build_send_message_op(
+                "看看这张图".to_string(),
+                AppMode::Yolo,
+                None,
+                false,
+                Some(UserMessageInput {
+                    blocks: vec![
+                        UserInputBlock::Text {
+                            text: "看看这张图".to_string(),
+                        },
+                        image.clone(),
+                    ],
+                }),
+            )
+            .expect("resolve test route");
+        let Op::SendMessage { content, input, .. } = op else {
+            panic!("期望 SendMessage");
+        };
+        assert!(content.contains("<system-reminder>"));
+        assert!(content.ends_with("看看这张图"));
+        let input = input.expect("Native 路径必须携带结构化 input");
+        assert_eq!(input.blocks.len(), 2, "Text + 一张图");
+        match &input.blocks[0] {
+            UserInputBlock::Text { text } => assert_eq!(
+                text, &content,
+                "reminder 必须并进 Text block 且与 Op.content 一致"
+            ),
+            other => panic!("首块应为 Text,得到 {other:?}"),
+        }
+        assert_eq!(input.blocks[1], image, "LocalImage 块原样透传");
+    }
+
+    /// 无结构化 input(纯文本/Fallback 路径)时 Op.input 保持 None,行为零变化。
+    #[test]
+    fn build_send_message_op_without_input_stays_text_only() {
+        let bridge = fixture_bridge();
+        let op = bridge
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false, None)
+            .expect("resolve test route");
+        let Op::SendMessage { input, .. } = op else {
+            panic!("期望 SendMessage");
+        };
+        assert!(input.is_none());
     }
 
     #[test]
@@ -1607,6 +2056,66 @@ mod tests {
             "",
         );
         assert!(cloud_compatible.api_key_required());
+    }
+
+    /// §11.8/§11.9:is_local_endpoint 与发送路径同一解析口径——local_vllm preset
+    /// 或有效 base_url host 为 loopback 即本机;云端/局域网地址不得误判为本机。
+    #[test]
+    fn is_local_endpoint_detects_loopback_and_local_vllm_preset() {
+        // local_vllm preset 默认部署(127.0.0.1:8000):本机。
+        let mut local_preset = fixture_bridge();
+        set_active_model(
+            &mut local_preset,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        assert!(local_preset.is_local_endpoint());
+
+        // local_vllm preset 即按本地对待,即使 base_url 被改成非 loopback 地址(规格口径)。
+        let mut local_preset_remote = fixture_bridge();
+        set_active_model(
+            &mut local_preset_remote,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(local_preset_remote.is_local_endpoint());
+
+        // 非 local preset 但 base_url 指向 loopback(自定义本机服务):本机。
+        let mut loopback_compatible = fixture_bridge();
+        set_active_model(
+            &mut loopback_compatible,
+            ModelPreset::OpenaiCompatible,
+            "custom-local-model",
+            "http://[::1]:9000/v1",
+            "",
+        );
+        assert!(loopback_compatible.is_local_endpoint());
+
+        // 云端地址:非本机,前端应提示图片发送给服务商。
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        assert!(!cloud.is_local_endpoint());
+
+        // 局域网地址不是 loopback(见 api_key_requirement 测试同口径):非本机。
+        let mut lan = fixture_bridge();
+        set_active_model(
+            &mut lan,
+            ModelPreset::OpenaiCompatible,
+            "custom-lan-model",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(!lan.is_local_endpoint());
     }
 
     /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:
@@ -1834,7 +2343,7 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of = |mode| match bridge
-            .build_send_message_op("用户消息".to_string(), mode, None, false)
+            .build_send_message_op("用户消息".to_string(), mode, None, false, None)
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -1864,6 +2373,7 @@ mod tests {
                 AppMode::Yolo,
                 Some(persona.clone()),
                 false,
+                None,
             )
             .expect("resolve test route");
         let content = match op {
@@ -1876,7 +2386,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none = bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false)
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false, None)
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -1890,7 +2400,7 @@ mod tests {
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
         let allowed = |restrict| match bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict)
+            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict, None)
             .expect("resolve test route")
         {
             Op::SendMessage { allowed_tools, .. } => allowed_tools,
@@ -2325,7 +2835,7 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("test".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("test".into(), AppMode::Yolo, None, false, None)
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -2435,7 +2945,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("hi".into(), AppMode::Yolo, None, false, None)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -2447,7 +2957,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("list dir".into(), AppMode::Plan, None, false)
+            .build_send_message_op("list dir".into(), AppMode::Plan, None, false, None)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
@@ -2468,7 +2978,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false)
+            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false, None)
             .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(

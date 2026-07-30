@@ -3344,6 +3344,14 @@
     } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
 
+  // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
+  // src-tauri chat.rs IMAGE_INPUT_UNSUPPORTED_ERROR 对应)剥掉码前缀,
+  // 只给用户看可操作的中文指引;码本身仍可被 indexOf 匹配。
+  function displayTurnError(err) {
+    var text = String(err && err.toString ? err.toString() : err || "");
+    return text.replace(/^image_input_unsupported[:：]?\s*/, "");
+  }
+
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
@@ -3412,7 +3420,7 @@
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            : "⚠️ " + displayTurnError(err), {
             turnErrorNotice: true,
           });
         });
@@ -5534,6 +5542,12 @@
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
+  // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
+  async function getImageInputCapability(sessionId) {
+    return await invoke("get_image_input_capability", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
+  }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   async function loadModels() {
@@ -5547,7 +5561,7 @@
     notify();
   }
   // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
    await invoke("save_model", { model: model });
    await loadModels();
@@ -5601,6 +5615,11 @@
   }
   async function testModelConnection(baseUrl, apiKey, modelId) {
     return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+  }
+  // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
+  // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
+  async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
+    return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
   async function testSearchProvider(provider, apiKey) {
     return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
@@ -7938,7 +7957,7 @@
     settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "saveSearchSettings", "saveSearchSettingsAndRestart", "testSearchProvider"]),
     feedback: domain(["submitFeedback"]),
     vllm: domain(["discoverLocalVllm", "detectLocalVllmSetup", "bootstrapLocalVllm", "dismissVllmSetup", "declineVllmSetup"]),
-    models: domain(["getEffectiveModelConfig", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection"]),
+    models: domain(["getEffectiveModelConfig", "getImageInputCapability", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection", "testImageInputCapability"]),
     interaction: domain(["toggleSuperPerm", "acceptPlan", "discardPlan", "exitPlanToYolo", "setPlanModeNext", "planStuckReplan", "planStuckGo", "submitUserInput", "cancelUserInput", "summonPinvou", "inspectPinvou", "resolvePinvouReview", "dismissPinvouReview", "editLastTurn", "compactNow"]),
     rendering: domain(["renderMarkdown"]),
     remoteControl: domain(["getWebRelaySettings", "setWebRelayAddress", "resetWebRelayAddress"], {

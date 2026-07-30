@@ -1498,6 +1498,7 @@
   var dismissVllmSetup = settingsFeature.dismissVllmSetup;
   var declineVllmSetup = settingsFeature.declineVllmSetup;
   var getEffectiveModelConfig = settingsFeature.getEffectiveModelConfig;
+  var getImageInputCapability = settingsFeature.getImageInputCapability;
   var loadModels = settingsFeature.loadModels;
   var saveModel = settingsFeature.saveModel;
   var revealModelApiKey = settingsFeature.revealModelApiKey;
@@ -1506,6 +1507,7 @@
   var loadSessionModel = settingsFeature.loadSessionModel;
   var switchModel = settingsFeature.switchModel;
   var testModelConnection = settingsFeature.testModelConnection;
+  var testImageInputCapability = settingsFeature.testImageInputCapability;
   var testSearchProvider = settingsFeature.testSearchProvider;
 
   var interactionFeature = installBridgeFeature("interaction", {
@@ -1802,6 +1804,7 @@
     },
     models: {
       getEffectiveModelConfig: getEffectiveModelConfig,
+      getImageInputCapability: getImageInputCapability,
       loadModels: loadModels,
       saveModel: saveModel,
       revealModelApiKey: revealModelApiKey,
@@ -1810,6 +1813,7 @@
       loadSessionModel: loadSessionModel,
       switchModel: switchModel,
       testModelConnection: testModelConnection,
+      testImageInputCapability: testImageInputCapability,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
       // Plan/YOLO

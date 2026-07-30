@@ -188,6 +188,14 @@
     } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
 
+  // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
+  // src-tauri chat.rs IMAGE_INPUT_UNSUPPORTED_ERROR 对应)剥掉码前缀,
+  // 只给用户看可操作的中文指引;码本身仍可被 indexOf 匹配。
+  function displayTurnError(err) {
+    var text = String(err && err.toString ? err.toString() : err || "");
+    return text.replace(/^image_input_unsupported[:：]?\s*/, "");
+  }
+
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
@@ -254,7 +262,7 @@
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            : "⚠️ " + displayTurnError(err), {
             turnErrorNotice: true,
           });
         });

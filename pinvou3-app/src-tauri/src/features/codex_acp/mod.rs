@@ -1509,11 +1509,26 @@ impl AcpPool {
         if runtime.configuring.load(Ordering::Acquire) {
             bail!("ACP 会话配置仍在同步，请稍候再发送");
         }
+        // 设计 §6.4 双层 gating:adapter 声明的 image 能力之外,还要按 ACP session
+        // 当前模型(ACP agent 侧 config option "model",非 pinvou3 SavedModel)的
+        // 生效图片能力判定。无图片附件时无需读取 prefs,占位值不会被消费。
+        let model_capability = if attachments
+            .iter()
+            .any(|attachment| attachment.kind == "image")
+        {
+            crate::features::assistant::image_capability::acp_model_image_capability(
+                &crate::platform::prefs::UserPrefs::load(),
+                runtime.current_model.read().as_deref(),
+            )
+        } else {
+            crate::features::assistant::image_capability::EffectiveImageCapability::Unknown
+        };
         let prepared = prepare_codex_prompt(
             &content,
             &attachments,
             &workspace_references,
             &runtime.prompt_capabilities,
+            model_capability,
         )?;
         if runtime.busy.swap(true, Ordering::AcqRel) {
             bail!("ACP 会话仍在生成");
