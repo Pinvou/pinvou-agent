@@ -545,23 +545,15 @@ impl AcpPool {
         });
         let bundled_node = resource_root.as_ref().and_then(|root| {
             let node_name = platform::node_executable_name();
+            let bridge_node = platform::bridge_node_relative_path();
             [
                 root.join("runtime").join("node").join(node_name),
-                root.join("runtime")
-                    .join("codex-bridge")
-                    .join("node")
-                    .join("bin")
-                    .join(node_name),
-                root.join("codex-bridge")
-                    .join("node")
-                    .join("bin")
-                    .join(node_name),
+                root.join("runtime").join("codex-bridge").join(&bridge_node),
+                root.join("codex-bridge").join(&bridge_node),
                 root.join("resources")
                     .join("codex-bridge")
-                    .join("node")
-                    .join("bin")
-                    .join(node_name),
-                development_bridge.join("node").join("bin").join(node_name),
+                    .join(&bridge_node),
+                development_bridge.join(&bridge_node),
             ]
             .into_iter()
             .find(|candidate| candidate.is_file())
@@ -2721,26 +2713,11 @@ fn resolve_claude_cli_from_adapter(adapter: &Path) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let platform = match std::env::consts::OS {
-        "windows" => "win32",
-        "macos" => "darwin",
-        _ => "linux",
-    };
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        _ => "x64",
-    };
-    let libc = if crate::platform::capabilities::is_musl() {
-        "-musl"
-    } else {
-        ""
-    };
-    let package = format!("claude-agent-sdk-{platform}-{arch}{libc}");
-    let binary = if crate::platform::capabilities::is_windows() {
-        "claude.exe"
-    } else {
-        "claude"
-    };
+    let (package, binary) = claude_native_runtime(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        crate::platform::capabilities::is_musl(),
+    )?;
     if let Some(path) = adapter.ancestors().find_map(|ancestor| {
         (ancestor.file_name().and_then(|value| value.to_str()) == Some("node_modules"))
             .then(|| ancestor.join("@anthropic-ai").join(&package).join(binary))
@@ -2749,6 +2726,27 @@ fn resolve_claude_cli_from_adapter(adapter: &Path) -> Option<PathBuf> {
         return Some(path);
     }
     find_in_path(binary)
+}
+
+fn claude_native_runtime(os: &str, arch: &str, musl: bool) -> Option<(String, &'static str)> {
+    let platform = match os {
+        "windows" => "win32",
+        "macos" => "darwin",
+        "linux" => "linux",
+        _ => return None,
+    };
+    let arch = match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        _ => return None,
+    };
+    let libc = if os == "linux" && musl { "-musl" } else { "" };
+    let binary = if os == "windows" {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    Some((format!("claude-agent-sdk-{platform}-{arch}{libc}"), binary))
 }
 
 fn resolve_kimi_path() -> Option<PathBuf> {
@@ -2772,10 +2770,12 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn command_version(command: &Path) -> Option<String> {
-    let output = std::process::Command::new(command)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(command),
+    )
+    .arg("--version")
+    .output()
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -3032,11 +3032,16 @@ fn cli_status_success(executable: &Path, args: &[&str]) -> bool {
     let mut command = if crate::platform::capabilities::is_windows()
         && executable.extension().and_then(|value| value.to_str()) == Some("cmd")
     {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/D", "/S", "/C"]).arg(executable).args(args);
+        let mut command = crate::platform::process::HiddenCommand::new("cmd");
+        command
+            .args(["/D", "/S", "/C"])
+            .arg(crate::platform::os::external_application_path(executable))
+            .args(args);
         command
     } else {
-        let mut command = std::process::Command::new(executable);
+        let mut command = crate::platform::process::HiddenCommand::new(
+            crate::platform::os::external_application_path(executable),
+        );
         command.args(args);
         command
     };
@@ -3184,6 +3189,28 @@ mod tests {
         assert_eq!(node_major_version("20.18.1"), Some(20));
         assert_eq!(node_major_version("v20.18.1"), None);
         assert_eq!(node_major_version("unknown"), None);
+    }
+
+    #[test]
+    fn claude_native_runtime_is_explicit_for_supported_platforms() {
+        assert_eq!(
+            claude_native_runtime("macos", "aarch64", false),
+            Some(("claude-agent-sdk-darwin-arm64".to_string(), "claude"))
+        );
+        assert_eq!(
+            claude_native_runtime("macos", "x86_64", false),
+            Some(("claude-agent-sdk-darwin-x64".to_string(), "claude"))
+        );
+        assert_eq!(
+            claude_native_runtime("windows", "x86_64", false),
+            Some(("claude-agent-sdk-win32-x64".to_string(), "claude.exe"))
+        );
+        assert_eq!(
+            claude_native_runtime("linux", "aarch64", true),
+            Some(("claude-agent-sdk-linux-arm64-musl".to_string(), "claude"))
+        );
+        assert_eq!(claude_native_runtime("freebsd", "x86_64", false), None);
+        assert_eq!(claude_native_runtime("windows", "riscv64", false), None);
     }
 
     #[test]

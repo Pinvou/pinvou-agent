@@ -1,13 +1,15 @@
 const assert = require("node:assert/strict");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
 
 const {
   BRIDGE_ENTRYPOINT,
+  CLAUDE_BRIDGE_ENTRYPOINT,
   expectedMarker,
   prepareWindowsCodexBridge,
   WINDOWS_BRIDGE_CONFIG_PATH,
   WINDOWS_BRIDGE_ROOT,
+  WINDOWS_CLAUDE_EXECUTABLE,
   WINDOWS_NODE_EXECUTABLE,
   WINDOWS_NODE_VERSION,
 } = require("../scripts/tauri/codex-bridge.js");
@@ -45,6 +47,15 @@ assert.equal(
   `@agentclientprotocol/codex-acp ${marker.codex_acp_version}`,
 );
 
+const claudeExecutable = path.join(WINDOWS_BRIDGE_ROOT, WINDOWS_CLAUDE_EXECUTABLE);
+const claudeVersion = spawnSync(claudeExecutable, ["--version"], {
+  encoding: "utf8",
+  timeout: 10_000,
+});
+assert.equal(claudeVersion.error, undefined);
+assert.equal(claudeVersion.status, 0, claudeVersion.stderr);
+assert.notEqual(`${claudeVersion.stdout}${claudeVersion.stderr}`.trim(), "");
+
 const { effectiveConfig } = composeEffectiveConfig([
   platformConfigPath("win32"),
   WINDOWS_BRIDGE_CONFIG_PATH,
@@ -60,4 +71,88 @@ assert.ok(
 );
 assert.ok(destinations.has("runtime/codex-bridge/manifest.json"));
 
-console.log("Windows Codex ACP Bridge + Node installer runtime: ok");
+function initializeClaudeBridge() {
+  return new Promise((resolve, reject) => {
+    const entrypoint = path.join(WINDOWS_BRIDGE_ROOT, CLAUDE_BRIDGE_ENTRYPOINT);
+    const child = spawn(WINDOWS_NODE_EXECUTABLE, [entrypoint], {
+      cwd: WINDOWS_BRIDGE_ROOT,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      finish(new Error(`Claude ACP initialize 超时: ${stderr.trim()}`));
+    }, 15_000);
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      if (error) reject(error);
+      else resolve();
+    }
+
+    child.on("error", finish);
+    child.on("exit", (code) => {
+      if (!settled) {
+        finish(new Error(`Claude ACP initialize 前退出: code=${code} stderr=${stderr.trim()}`));
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const lines = stdout.split(/\r?\n/);
+      stdout = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let response;
+        try {
+          response = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (response.id !== 1) continue;
+        if (response.error) {
+          finish(new Error(`Claude ACP initialize 失败: ${JSON.stringify(response.error)}`));
+          return;
+        }
+        try {
+          assert.equal(response.result.protocolVersion, 1);
+          assert.equal(typeof response.result.agentInfo?.name, "string");
+        } catch (error) {
+          finish(error);
+          return;
+        }
+        finish();
+        return;
+      }
+    });
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: 1,
+          clientCapabilities: {},
+          clientInfo: { name: "pinvou3-windows-smoke", version: "1.0.0" },
+        },
+      })}\n`,
+    );
+  });
+}
+
+initializeClaudeBridge()
+  .then(() => {
+    console.log("Windows Codex + Claude ACP Bridge + Node installer runtime: ok");
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

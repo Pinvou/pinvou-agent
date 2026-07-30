@@ -57,6 +57,10 @@ python3 scripts/architecture-guard.py
 ./scripts/fork-guard.sh --fast
 ```
 
+Windows 与 macOS 还会在各自原生 CI runner 上生成实际安装包 Runtime，并启动
+Claude ACP 完成 `initialize`。macOS Runtime 同时包含 arm64/x64 Node 与 Claude
+原生程序，供 universal app 在两种架构上选择。
+
 Pinvou 对三种 Agent 复用同一套登录状态机：启动官方 CLI 登录子进程、只接收授权
 URL/设备码等非敏感状态，并在登录完成后重新调用各 CLI 的状态检查。Claude 的
 `claude auth status` 是权威状态，不能以凭证文件存在代替；Kimi 的设备码仍由官方

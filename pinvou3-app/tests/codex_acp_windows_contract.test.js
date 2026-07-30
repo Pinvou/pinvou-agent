@@ -56,9 +56,11 @@ const buildScript = read("scripts", "tauri", "build.js");
 const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
 const {
   BRIDGE_ENTRYPOINT,
+  CLAUDE_BRIDGE_ENTRYPOINT,
   expectedMarker,
   hideWindowsChildProcesses,
   isPrepared,
+  WINDOWS_CLAUDE_EXECUTABLE,
   WINDOWS_NODE_VERSION,
   windowsBridgeOverlay,
 } = require("../scripts/tauri/codex-bridge.js");
@@ -114,6 +116,16 @@ assert.match(
   "Bridge stderr and exit status must remain available in persistent ACP diagnostics",
 );
 assert.match(
+  codexAcp,
+  /fn command_version[\s\S]*?HiddenCommand::new/,
+  "Windows Claude version probes must not open a console window",
+);
+assert.match(
+  codexAcp,
+  /fn cli_status_success[\s\S]*?HiddenCommand::new\("cmd"\)/,
+  "Windows authentication probes must not open a console window",
+);
+assert.match(
   bridgeBuildScript,
   /windowsHide: true[\s\S]*?hideWindowsChildProcesses/,
   "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
@@ -162,8 +174,23 @@ try {
     "codex-acp",
     "package.json",
   );
+  const claudePackageJsonPath = path.join(
+    bridgeRoot,
+    "acp",
+    "node_modules",
+    "@agentclientprotocol",
+    "claude-agent-acp",
+    "package.json",
+  );
   fs.mkdirSync(path.dirname(packageJsonPath), { recursive: true });
+  fs.mkdirSync(path.dirname(claudePackageJsonPath), { recursive: true });
   fs.mkdirSync(path.dirname(path.join(bridgeRoot, BRIDGE_ENTRYPOINT)), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.dirname(path.join(bridgeRoot, CLAUDE_BRIDGE_ENTRYPOINT)), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.dirname(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE)), {
     recursive: true,
   });
   fs.mkdirSync(nodeRoot, { recursive: true });
@@ -171,6 +198,10 @@ try {
   fs.writeFileSync(
     packageJsonPath,
     JSON.stringify({ version: expected.codex_acp_version }),
+  );
+  fs.writeFileSync(
+    claudePackageJsonPath,
+    JSON.stringify({ version: expected.claude_acp_version }),
   );
   const bridgeEntrypoint = path.join(bridgeRoot, BRIDGE_ENTRYPOINT);
   fs.writeFileSync(
@@ -181,10 +212,42 @@ try {
     ].join("\n"),
   );
   hideWindowsChildProcesses(bridgeEntrypoint);
+  fs.writeFileSync(
+    path.join(bridgeRoot, CLAUDE_BRIDGE_ENTRYPOINT),
+    "console.log('claude-agent-acp');",
+  );
+  fs.writeFileSync(
+    path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE),
+    "native-claude-runtime",
+  );
   fs.writeFileSync(nodeExecutable, fakeNode);
 
   assert.equal(expected.node_version, WINDOWS_NODE_VERSION);
   assert.equal(isPrepared(expected, bridgeRoot, nodeRoot), true);
+  const redundantCodexPackage = path.join(
+    bridgeRoot,
+    "acp",
+    "node_modules",
+    "@openai",
+    "codex-win32-x64",
+  );
+  fs.mkdirSync(redundantCodexPackage, { recursive: true });
+  assert.equal(
+    isPrepared(expected, bridgeRoot, nodeRoot),
+    false,
+    "prepared runtime must reject a redundant bundled Codex platform package",
+  );
+  fs.rmSync(redundantCodexPackage, { recursive: true });
+  fs.rmSync(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE));
+  assert.equal(
+    isPrepared(expected, bridgeRoot, nodeRoot),
+    false,
+    "prepared runtime must be rejected when claude.exe is absent",
+  );
+  fs.writeFileSync(
+    path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE),
+    "native-claude-runtime",
+  );
   fs.rmSync(nodeExecutable);
   assert.equal(
     isPrepared(expected, bridgeRoot, nodeRoot),

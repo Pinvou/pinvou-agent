@@ -11,6 +11,7 @@ const platform = read(...featureRoot, "platform", "mod.rs");
 const windows = read(...featureRoot, "platform", "windows.rs");
 const linux = read(...featureRoot, "platform", "linux.rs");
 const macos = read(...featureRoot, "platform", "macos.rs");
+const prepareBridge = read("scripts", "prepare-codex-bridge-runtime.sh");
 
 for (const os of ["windows", "linux", "macos"]) {
   assert.match(
@@ -33,6 +34,11 @@ assert.match(windows, /MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex\.exe"/);
 assert.match(windows, /external_application_path\(adapter\)/);
 assert.match(windows, /HiddenTokioCommand::new\("cmd"\)/);
 assert.match(windows, /x86_64-pc-windows-msvc/);
+assert.match(feature, /fn command_version[\s\S]*?HiddenCommand::new/);
+assert.match(feature, /fn cli_status_success[\s\S]*?HiddenCommand::new\("cmd"\)/);
+assert.match(feature, /"windows" => "win32"/);
+assert.match(feature, /format!\("claude-agent-sdk-\{platform\}-\{arch\}\{libc\}"\)/);
+assert.match(feature, /binary = if os == "windows"[\s\S]*?"claude\.exe"/);
 
 assert.match(linux, /SYSTEM_CODEX_NAME: &str = "codex"/);
 assert.match(linux, /x86_64-unknown-linux-musl/);
@@ -41,6 +47,14 @@ assert.ok(!linux.includes('Command::new("cmd")'));
 
 assert.match(macos, /当前托管 Codex 下载不支持平台: macos-/);
 assert.match(macos, /should_retry_file_lock\(_error: &io::Error\) -> bool \{\s*false/);
+assert.match(macos, /"aarch64" => "darwin-arm64"/);
+assert.match(macos, /join\("darwin-x64"\)|_ => "darwin-x64"/);
+assert.doesNotMatch(prepareBridge, /--os=linux/);
+assert.match(prepareBridge, /NODE_TARGETS=\("darwin-arm64" "darwin-x64"\)/);
+assert.match(prepareBridge, /npm_ci_for_target "\$ACP_ROOT" darwin arm64/);
+assert.match(prepareBridge, /npm_ci_for_target "\$ACP_X64_ROOT" darwin x64/);
+assert.match(prepareBridge, /claude-agent-sdk-darwin-arm64/);
+assert.match(prepareBridge, /claude-agent-sdk-darwin-x64/);
 assert.match(feature, /run_brew\(&\["install", "--cask", "codex"\]\)/);
 assert.match(feature, /run_brew\(&\["upgrade", "--cask", "codex"\]\)/);
 assert.doesNotMatch(feature, /brew (?:install|upgrade) codex/);

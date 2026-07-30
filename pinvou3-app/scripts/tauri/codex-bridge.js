@@ -39,8 +39,30 @@ const BRIDGE_PACKAGE_JSON = path.join(
   "codex-acp",
   "package.json",
 );
+const CLAUDE_BRIDGE_ENTRYPOINT = path.join(
+  "acp",
+  "node_modules",
+  "@agentclientprotocol",
+  "claude-agent-acp",
+  "dist",
+  "index.js",
+);
+const CLAUDE_BRIDGE_PACKAGE_JSON = path.join(
+  "acp",
+  "node_modules",
+  "@agentclientprotocol",
+  "claude-agent-acp",
+  "package.json",
+);
+const WINDOWS_CLAUDE_EXECUTABLE = path.join(
+  "acp",
+  "node_modules",
+  "@anthropic-ai",
+  "claude-agent-sdk-win32-x64",
+  "claude.exe",
+);
 const MARKER_NAME = "manifest.json";
-const PREPARE_FORMAT_VERSION = 3;
+const PREPARE_FORMAT_VERSION = 4;
 const CODEX_PATH_SPAWN =
   'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })';
 const HIDDEN_CODEX_PATH_SPAWN =
@@ -65,7 +87,9 @@ const WINDOWS_NPM_CI_ARGS = [
   "--no-audit",
   "--no-fund",
   "--omit=dev",
-  "--omit=optional",
+  "--include=optional",
+  "--os=win32",
+  "--cpu=x64",
 ];
 
 function expectedMarker({ architecture = process.arch } = {}) {
@@ -78,12 +102,16 @@ function expectedMarker({ architecture = process.arch } = {}) {
     platform: "win32",
     arch: architecture,
     codex_acp_version: packageJson.dependencies["@agentclientprotocol/codex-acp"],
+    claude_acp_version:
+      packageJson.dependencies["@agentclientprotocol/claude-agent-acp"],
     lockfile_sha256: crypto.createHash("sha256").update(lockfile).digest("hex"),
     node_version: WINDOWS_NODE_VERSION,
     node_archive_sha256: WINDOWS_NODE_ARCHIVE_SHA256,
     node_executable_sha256: WINDOWS_NODE_EXECUTABLE_SHA256,
     node: "../node/node.exe",
     entrypoint: BRIDGE_ENTRYPOINT.replaceAll(path.sep, "/"),
+    claude_entrypoint: CLAUDE_BRIDGE_ENTRYPOINT.replaceAll(path.sep, "/"),
+    claude: WINDOWS_CLAUDE_EXECUTABLE.replaceAll(path.sep, "/"),
     requires_managed_codex: true,
     windows_child_processes_hidden: true,
   };
@@ -128,6 +156,53 @@ function nonemptyFile(filePath) {
   }
 }
 
+function packageDirectories(root, scope, prefix) {
+  const scopeRoot = path.join(root, "acp", "node_modules", scope);
+  try {
+    return fs
+      .readdirSync(scopeRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+      .map((entry) => path.join(scopeRoot, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+function pruneWindowsPlatformPackages(root) {
+  for (const packageRoot of packageDirectories(root, "@openai", "codex-")) {
+    fs.rmSync(packageRoot, { recursive: true, force: true });
+  }
+  const expectedClaudePackage = path.dirname(
+    path.join(root, WINDOWS_CLAUDE_EXECUTABLE),
+  );
+  for (const packageRoot of packageDirectories(
+    root,
+    "@anthropic-ai",
+    "claude-agent-sdk-",
+  )) {
+    if (packageRoot !== expectedClaudePackage) {
+      fs.rmSync(packageRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+function platformPackagesValid(root) {
+  const codexPackages = packageDirectories(root, "@openai", "codex-");
+  const claudePackages = packageDirectories(
+    root,
+    "@anthropic-ai",
+    "claude-agent-sdk-",
+  );
+  const expectedClaudePackage = path.dirname(
+    path.join(root, WINDOWS_CLAUDE_EXECUTABLE),
+  );
+  return (
+    codexPackages.length === 0
+    && claudePackages.length === 1
+    && claudePackages[0] === expectedClaudePackage
+  );
+}
+
 function fileSha256(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
@@ -163,10 +238,17 @@ function isPrepared(
     const packageJson = JSON.parse(
       fs.readFileSync(path.join(outputRoot, BRIDGE_PACKAGE_JSON), "utf8"),
     );
+    const claudePackageJson = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, CLAUDE_BRIDGE_PACKAGE_JSON), "utf8"),
+    );
     return (
       JSON.stringify(actual) === JSON.stringify(expected) &&
       packageJson.version === expected.codex_acp_version &&
+      claudePackageJson.version === expected.claude_acp_version &&
       nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
+      nonemptyFile(path.join(outputRoot, CLAUDE_BRIDGE_ENTRYPOINT)) &&
+      nonemptyFile(path.join(outputRoot, WINDOWS_CLAUDE_EXECUTABLE)) &&
+      platformPackagesValid(outputRoot) &&
       windowsChildProcessesHidden(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
       nonemptyFile(path.join(nodeRoot, "node.exe")) &&
       fileSha256(path.join(nodeRoot, "node.exe")) ===
@@ -343,6 +425,7 @@ function prepareWindowsCodexBridge({
       "安装 Windows ACP Bridge",
     );
 
+    pruneWindowsPlatformPackages(bridgeRoot);
     hideWindowsChildProcesses(path.join(bridgeRoot, BRIDGE_ENTRYPOINT));
 
     fs.rmSync(path.join(acpRoot, "package.json"), { force: true });
@@ -413,8 +496,10 @@ if (require.main === module) {
 module.exports = {
   BRIDGE_ENTRYPOINT,
   BRIDGE_PACKAGE_ROOT,
+  CLAUDE_BRIDGE_ENTRYPOINT,
   LOCKFILE_PATH,
   WINDOWS_BRIDGE_ROOT,
+  WINDOWS_CLAUDE_EXECUTABLE,
   WINDOWS_BRIDGE_CONFIG_PATH,
   WINDOWS_NODE_ARCHIVE_SHA256,
   WINDOWS_NODE_EXECUTABLE,
