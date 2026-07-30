@@ -117,6 +117,7 @@ async function clickContains(page, sel, text) {
       return { exists: true, kind: 'md', size: 1200 };
     };
   });
+  const callsBeforeOutputs = await page.evaluate(() => window.__KB_CALLS__.length);
 
   // 切到「产出物」一级视图
   await page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) b.click(); });
@@ -136,10 +137,24 @@ async function clickContains(page, sel, text) {
     };
   });
   rec('⓪ 产出物预览始终携带所属会话', outputPreviewSession.live && outputPreviewSession.modal, JSON.stringify(outputPreviewSession));
+  const outputKbCalls = await page.evaluate((start) => window.__KB_CALLS__.slice(start)
+    .filter(c => String(c.cmd).startsWith('kb_')).map(c => c.cmd), callsBeforeOutputs);
+  rec('⓪a 产出物视图不触发知识库查询', outputKbCalls.length === 0, JSON.stringify(outputKbCalls));
   await clickContains(page, 'button', '✕'); await sleep(200);
   // 切到「本地知识」视图(产出物已独立为一级菜单)
+  const callsBeforeKnowledge = await page.evaluate(() => window.__KB_CALLS__.length);
   await clickContains(page, 'button,div,span,a', '本地知识');
   await sleep(700);
+  const initialKnowledgeCalls = await page.evaluate((start) => {
+    const counts = {};
+    window.__KB_CALLS__.slice(start).forEach(({ cmd }) => { counts[cmd] = (counts[cmd] || 0) + 1; });
+    return counts;
+  }, callsBeforeKnowledge);
+  const initialCommands = [
+    'kb_scan_status', 'kb_stats', 'kb_type_counts',
+    'kb_collection_list', 'kb_documents', 'kb_embed_info', 'kb_model_status',
+  ];
+  rec('⓪b 本地知识首次加载不重复请求', initialCommands.every(cmd => initialKnowledgeCalls[cmd] === 1), JSON.stringify(initialKnowledgeCalls));
   await clickContains(page, 'button', '本地文件管理');
   await sleep(1500);
 
