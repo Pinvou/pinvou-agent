@@ -127,7 +127,25 @@ mod tests {
     fn gpu_snapshot_real_host() {
         // 集成测试(本机 darwin):ioreg 在真实 macOS 上应解析出带名称的 GPU 快照。
         // mirror macos_memory::ram_snapshot_cache_serves_repeat_calls 的本机集成测试模式。
-        let snap = gpu_snapshot().expect("gpu_snapshot 在 macOS host 上应返回 Some");
+        // CI 的 macOS runner 是虚拟化环境,IOAccelerator 字典没有 "model" 属性,
+        // gpu_snapshot 按设计返回 None(前端显示「状态不可用」),不能强制 Some。
+        // 因此先探原始 ioreg 输出:仅当环境确实暴露 GPU model 时才要求解析成功。
+        let Ok(out) = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-r", "-c", "IOAccelerator", "-d", "1"])
+            .output()
+        else {
+            eprintln!("ioreg 不可用,跳过主机断言");
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        if parse_quoted_property(&text, "model").is_none() {
+            assert!(
+                gpu_snapshot().is_none(),
+                "ioreg 输出无 GPU model 时 gpu_snapshot 必须返回 None"
+            );
+            return;
+        }
+        let snap = gpu_snapshot().expect("ioreg 输出含 GPU model 时 gpu_snapshot 必须返回 Some");
         assert!(!snap.name.is_empty());
         assert!(snap.utilization_pct <= 100);
     }
