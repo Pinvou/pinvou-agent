@@ -8,11 +8,11 @@
 | Item | Value |
 |---|---|
 | Upstream | `Hmbown/CodeWhale` tag `v0.9.0`, commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| Public release | `Pinvou/CodeWhale` tag `pinvou-v0.9.0-r1` |
-| Pinned commit | `070f4413eeb0e0c4e6f2634f1ada13c60fd2e86e` |
+| Public release | `Pinvou/CodeWhale` tag `pinvou-v0.9.0-r2` |
+| Pinned commit | `cb93e0f4466d60e306252ed08bbbe214f2def752` |
 | Maintenance branch | `pinvou3-clean` |
-| Organization | 6 long-lived product themes, 3 maintenance/fix commits, and 3 public baseline/security commits |
-| Diff from upstream tag | 3,878 insertions, 550 deletions, 57 files |
+| Organization | 6 long-lived product themes, 4 follow-up behavior/maintenance commits, and 3 public baseline/security commits |
+| Diff from upstream tag | 4,045 insertions, 550 deletions, 57 files |
 
 The delta exceeds the 1,500-line soft limit and has therefore received a mandatory boundary review. The retained code owns behavior that cannot be reconstructed safely in the desktop wrapper: task persistence, workflow completion, prompt-source sealing, and engine-level safety. Shell rendering and platform-specific desktop behavior remain in the parent repository and do not add fork drift.
 
@@ -24,7 +24,7 @@ Exposes the upstream bin-first crate as a library for the desktop host. It expor
 
 ### T2 — Tool surface and execution safety
 
-Defines the Pinvou tool surface, write-size limits, truncated-argument guidance, wildcard tool restrictions, and fail-closed handling for dangerous commands and required approvals. Result-oriented golden and safety tests protect the behavior.
+Defines the Pinvou tool surface, write-size limits, truncated-argument guidance, wildcard tool restrictions, and fail-closed handling for dangerous commands and required approvals. `append_file` emits a bounded inline unified diff with byte-summary, oversized-file, and non-UTF-8 fallbacks. Result-oriented golden and safety tests protect the behavior.
 
 ### T3 — Sealed prompts and one context source
 
@@ -44,13 +44,13 @@ Exposes an opaque runtime route receipt, explicit route limits, and shared recon
 
 ## Public baseline maintenance
 
-The three commits above the product baseline add:
+The three public baseline/security commits add:
 
 - a full-history Gitleaks workflow and two exact allowlist entries for public upstream test fixtures;
 - `PINVOU_FORK.md` and the README fork notice;
 - removal of one internal project-name comment without changing behavior.
 
-They do not introduce a seventh product theme.
+They do not introduce a seventh product theme. The `cb93e0f44` follow-up extends T2 with `append_file` inline diffs.
 
 ## Verification
 
@@ -66,6 +66,6 @@ The parent repository additionally verifies that:
 - `.gitmodules` uses `https://github.com/Pinvou/CodeWhale.git`;
 - no floating submodule branch is configured;
 - the gitlink commit is publicly reachable;
-- `pinvou-v0.9.0-r1^{}` equals the pinned gitlink.
+- `pinvou-v0.9.0-r2^{}` equals the pinned gitlink.
 
 For any future gitlink or fork-behavior change, update this inventory, the Chinese source-of-truth inventory, fingerprints, and result-oriented tests in the same PR.

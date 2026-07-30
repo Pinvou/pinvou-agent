@@ -63,7 +63,7 @@ fingerprints=(
   "T6|automation reconcile shared API    |CodeWhale/crates/tui/src/automation_manager.rs|pub async fn reconcile_run_statuses_shared("
 
   "CI|公开 fork 全目标编译门禁           |CodeWhale/.github/workflows/pinvou-fork-ci.yml|cargo check --workspace --all-targets --locked"
-  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r1\""
+  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r2\""
 
   "APP|消息携带 resolved route            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|resolve_runtime_route_for_model"
   "APP|部署级 route profile               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn route_limits_for_model("
