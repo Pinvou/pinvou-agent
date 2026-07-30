@@ -538,6 +538,45 @@
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
     var availableByKey = Object.create(null);
+    function interruptedDisplayRange(item) {
+      if (!item || item.interruptedDisplayOnly !== true) return null;
+      var anchorIndex = -1;
+      var nextUserIndex = -1;
+      var afterMessageIndex = Number(item.afterMessageIndex);
+      if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
+        for (var index = 0; index < state.chatItems.length; index++) {
+          var candidate = state.chatItems[index];
+          if (!candidate || candidate.type !== "user") continue;
+          var candidateMessageIndex = Number(candidate.messageIndex);
+          if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
+          else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
+            nextUserIndex = index;
+            break;
+          }
+        }
+      }
+      var afterUserOrdinal = Number(item.afterUserOrdinal);
+      if (anchorIndex < 0 && Number.isInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
+        var userOrdinal = -1;
+        for (var fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
+          var fallback = state.chatItems[fallbackIndex];
+          if (!fallback || fallback.type !== "user") continue;
+          userOrdinal += 1;
+          if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
+          else if (userOrdinal > afterUserOrdinal) {
+            nextUserIndex = fallbackIndex;
+            break;
+          }
+        }
+      }
+      if (anchorIndex < 0) {
+        return { start: state.chatItems.length, end: state.chatItems.length };
+      }
+      return {
+        start: anchorIndex + 1,
+        end: nextUserIndex >= 0 ? nextUserIndex : state.chatItems.length,
+      };
+    }
     state.chatItems.forEach(function (item, index) {
       var key = hydratedChatItemKey(item);
       if (!key) return;
@@ -546,8 +585,21 @@
     });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var matches = key && availableByKey[key];
-      var existingIndex = matches && matches.length ? matches.shift() : -1;
+      var range = interruptedDisplayRange(item);
+      var existingIndex = -1;
+      if (range) {
+        for (var rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
+          var rangeItem = state.chatItems[rangeIndex];
+          if (rangeItem && rangeItem.interruptedDisplayOnly !== true &&
+              hydratedChatItemKey(rangeItem) === key) {
+            existingIndex = rangeIndex;
+            break;
+          }
+        }
+      } else {
+        var matches = key && availableByKey[key];
+        existingIndex = matches && matches.length ? matches.shift() : -1;
+      }
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
@@ -558,7 +610,14 @@
       }
       var clone = Object.assign({}, item, { id: ++context.itemIdSeq });
       if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
-      state.chatItems.push(clone);
+      if (range && range.end < state.chatItems.length) {
+        state.chatItems.splice(range.end, 0, clone);
+        Object.keys(availableByKey).forEach(function (availableKey) {
+          availableByKey[availableKey] = availableByKey[availableKey].map(function (index) {
+            return index >= range.end ? index + 1 : index;
+          });
+        });
+      } else state.chatItems.push(clone);
     });
     return remappedCurrentStreamId;
   }

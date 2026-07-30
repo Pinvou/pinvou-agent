@@ -114,6 +114,31 @@
       }]);
       state.activeTurnTimelineId = null;
     }
+
+    function preserveInterruptedAssistantPresentation() {
+      var userItemIndex = -1;
+      var afterMessageIndex = -1;
+      var afterUserOrdinal = -1;
+      for (var index = 0; index < state.chatItems.length; index++) {
+        var candidate = state.chatItems[index];
+        if (!candidate || candidate.type !== "user") continue;
+        afterUserOrdinal += 1;
+        userItemIndex = index;
+        afterMessageIndex = -1;
+        if (Number.isFinite(Number(candidate.messageIndex))) {
+          afterMessageIndex = Number(candidate.messageIndex);
+        }
+      }
+      for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+        var item = state.chatItems[itemIndex];
+        if (!item || item.type !== "assistant" || !item.html) continue;
+        item.interruptedDisplayOnly = true;
+        item.afterMessageIndex = afterMessageIndex;
+        item.afterUserOrdinal = afterUserOrdinal;
+      }
+      context.pendingAssistantText = "";
+      context.pendingAssistantBlocks = [];
+    }
     var markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     var trackArtifact = context.trackArtifact;
     var untrackArtifact = context.untrackArtifact;
@@ -631,7 +656,11 @@
           });
         }
       }
-      flushAssistantMessageToHistory();
+      var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
+      var interrupted = terminalStatus === "interrupted" ||
+        terminalStatus === "cancelled" || terminalStatus === "canceled";
+      if (interrupted) preserveInterruptedAssistantPresentation();
+      else flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。

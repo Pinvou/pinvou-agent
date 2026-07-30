@@ -1304,7 +1304,8 @@
               resolvedPlanTickets[key].push(String(item.planId));
             });
             var liveChatItems = rawLiveChatItems.filter(function (item) {
-              if (!item || item.type === "user" || item.type === "assistant" || item.type === "tool") return false;
+              if (!item || item.type === "user" || item.type === "tool") return false;
+              if (item.type === "assistant") return item.interruptedDisplayOnly === true;
               if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
               // Plan cards need semantic matching by their plan snapshot. Their
               // generic hydration key includes ticket/action state and would
@@ -2545,6 +2546,45 @@
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
     var availableByKey = Object.create(null);
+    function interruptedDisplayRange(item) {
+      if (!item || item.interruptedDisplayOnly !== true) return null;
+      var anchorIndex = -1;
+      var nextUserIndex = -1;
+      var afterMessageIndex = Number(item.afterMessageIndex);
+      if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
+        for (var index = 0; index < state.chatItems.length; index++) {
+          var candidate = state.chatItems[index];
+          if (!candidate || candidate.type !== "user") continue;
+          var candidateMessageIndex = Number(candidate.messageIndex);
+          if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
+          else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
+            nextUserIndex = index;
+            break;
+          }
+        }
+      }
+      var afterUserOrdinal = Number(item.afterUserOrdinal);
+      if (anchorIndex < 0 && Number.isInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
+        var userOrdinal = -1;
+        for (var fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
+          var fallback = state.chatItems[fallbackIndex];
+          if (!fallback || fallback.type !== "user") continue;
+          userOrdinal += 1;
+          if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
+          else if (userOrdinal > afterUserOrdinal) {
+            nextUserIndex = fallbackIndex;
+            break;
+          }
+        }
+      }
+      if (anchorIndex < 0) {
+        return { start: state.chatItems.length, end: state.chatItems.length };
+      }
+      return {
+        start: anchorIndex + 1,
+        end: nextUserIndex >= 0 ? nextUserIndex : state.chatItems.length,
+      };
+    }
     state.chatItems.forEach(function (item, index) {
       var key = hydratedChatItemKey(item);
       if (!key) return;
@@ -2553,8 +2593,21 @@
     });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var matches = key && availableByKey[key];
-      var existingIndex = matches && matches.length ? matches.shift() : -1;
+      var range = interruptedDisplayRange(item);
+      var existingIndex = -1;
+      if (range) {
+        for (var rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
+          var rangeItem = state.chatItems[rangeIndex];
+          if (rangeItem && rangeItem.interruptedDisplayOnly !== true &&
+              hydratedChatItemKey(rangeItem) === key) {
+            existingIndex = rangeIndex;
+            break;
+          }
+        }
+      } else {
+        var matches = key && availableByKey[key];
+        existingIndex = matches && matches.length ? matches.shift() : -1;
+      }
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
@@ -2565,7 +2618,14 @@
       }
       var clone = Object.assign({}, item, { id: ++itemIdSeq });
       if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
-      state.chatItems.push(clone);
+      if (range && range.end < state.chatItems.length) {
+        state.chatItems.splice(range.end, 0, clone);
+        Object.keys(availableByKey).forEach(function (availableKey) {
+          availableByKey[availableKey] = availableByKey[availableKey].map(function (index) {
+            return index >= range.end ? index + 1 : index;
+          });
+        });
+      } else state.chatItems.push(clone);
     });
     return remappedCurrentStreamId;
   }
@@ -4584,6 +4644,31 @@
     state.activeTurnTimelineId = null;
   }
 
+  function preserveInterruptedAssistantPresentation() {
+    var userItemIndex = -1;
+    var afterMessageIndex = -1;
+    var afterUserOrdinal = -1;
+    for (var index = 0; index < state.chatItems.length; index++) {
+      var candidate = state.chatItems[index];
+      if (!candidate || candidate.type !== "user") continue;
+      afterUserOrdinal += 1;
+      userItemIndex = index;
+      afterMessageIndex = -1;
+      if (Number.isFinite(Number(candidate.messageIndex))) {
+        afterMessageIndex = Number(candidate.messageIndex);
+      }
+    }
+    for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "assistant" || !item.html) continue;
+      item.interruptedDisplayOnly = true;
+      item.afterMessageIndex = afterMessageIndex;
+      item.afterUserOrdinal = afterUserOrdinal;
+    }
+    pendingAssistantText = "";
+    pendingAssistantBlocks = [];
+  }
+
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
     state.busy = true;
     if (!state.thinking.active) startThinking();
@@ -4995,7 +5080,11 @@
           });
         }
       }
-      flushAssistantMessageToHistory();
+      var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
+      var interrupted = terminalStatus === "interrupted" ||
+        terminalStatus === "cancelled" || terminalStatus === "canceled";
+      if (interrupted) preserveInterruptedAssistantPresentation();
+      else flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
