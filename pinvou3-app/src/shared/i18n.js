@@ -1159,7 +1159,8 @@ const dict = {
     Object.assign(dict.zh.uiAttachments, {
       imageUnsupported:'当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。',
       imageUnknown:'当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”；也可以配置视觉模型。',
-      imageCloudUpload:'图片将随消息发送给你选择的模型服务商。',
+      imageCloudUpload:'图片将随消息发送给你选择的模型服务商',
+      imageCloudUploadVision:'图片将发送给你配置的视觉模型服务商进行分析',
     });
     Object.assign(dict.en.uiSettingsDetail, {
       saving:'Saving', localDetectionTargets:'Detect vLLM, Ollama, and LM Studio',
@@ -1196,6 +1197,7 @@ const dict = {
       imageUnsupported:'The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.',
       imageUnknown:'Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.',
       imageCloudUpload:'Images will be sent to the model provider you selected along with your message.',
+      imageCloudUploadVision:'Images will be sent to the vision model provider you configured for analysis.',
     });
     Object.assign(dict.ja.uiSettingsDetail, {
       saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio を検出',
@@ -1232,6 +1234,7 @@ const dict = {
       imageUnsupported:'現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。',
       imageUnknown:'現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。',
       imageCloudUpload:'画像はメッセージとともに、選択したモデルプロバイダーに送信されます。',
+      imageCloudUploadVision:'画像は、構成したビジョンモデルのプロバイダーに分析のため送信されます。',
     });
     Object.assign(dict.en.uiSettingsDetail.modelDescriptions, {
       '旗舰编码模型':'Flagship coding model', '高性能编码模型':'High-performance coding model',

@@ -685,6 +685,17 @@ impl Pinvou3Bridge {
             .unwrap_or(EffectiveImageCapability::Unknown)
     }
 
+    /// 兜底视觉模型端点是否本地(§11.8/§11.9):None 表示未配置可用视觉模型。
+    /// fallback 路径的图片字节发给视觉模型而非主模型,隐私提示必须按此口径。
+    pub fn vision_uses_local_endpoint(&self) -> Option<bool> {
+        self.resolve_vision_model_config().map(|config| {
+            config
+                .base_url
+                .as_deref()
+                .is_some_and(base_url_uses_loopback)
+        })
+    }
+
     /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
     /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
     /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
@@ -1724,6 +1735,27 @@ mod tests {
         assert!(engine
             .features
             .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    #[test]
+    fn vision_endpoint_locality_reflects_vision_model_base_url() {
+        // 未配置视觉模型 → None;云端视觉模型 → Some(false);loopback 视觉模型 → Some(true)。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert_eq!(bridge.vision_uses_local_endpoint(), None);
+
+        push_vision_model(&mut bridge, "vision-cloud", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-cloud".to_string());
+        assert_eq!(bridge.vision_uses_local_endpoint(), Some(false));
+
+        bridge.prefs.advanced.saved_models[1].base_url = "http://127.0.0.1:8000/v1".to_string();
+        assert_eq!(bridge.vision_uses_local_endpoint(), Some(true));
     }
 
     /// §9.3 规则 2:未设置 vision_model_id、主模型能力 Supported →

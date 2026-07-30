@@ -1071,6 +1071,29 @@ async function expand(page) {
   await sleep(600);
   const imageNativeLegacy = await page.evaluate(() => !document.querySelector('[data-testid="image-privacy-hint"]'));
   rec('⑪e 旧后端缺少 is_local_endpoint 字段时不显示提示(fail-open)', imageNativeLegacy);
+  // §11.8 fallback:文本主模型+云端视觉模型时,图片实际发给视觉模型服务商,同样必须提示。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'vision_tool_fallback', has_vision_model: true, is_local_endpoint: true, vision_is_local_endpoint: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot6.png'));
+  await sleep(600);
+  const imageFallbackCloud = await page.evaluate(() => {
+    const hint = document.querySelector('[data-testid="image-privacy-hint"]');
+    return { hintShown: !!hint, hintText: hint ? hint.textContent : '' };
+  });
+  rec('⑪f fallback 云端视觉模型显示云上传提示(按视觉模型端点判定)',
+    imageFallbackCloud.hintShown && imageFallbackCloud.hintText.includes('视觉模型服务商'),
+    JSON.stringify(imageFallbackCloud));
+  // §11.9 fallback:视觉模型为本机时不显示任何云上传字样。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'vision_tool_fallback', has_vision_model: true, is_local_endpoint: true, vision_is_local_endpoint: true }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot7.png'));
+  await sleep(600);
+  const imageFallbackLocal = await page.evaluate(() => ({
+    noHint: !document.querySelector('[data-testid="image-privacy-hint"]'),
+    noCloudText: !document.body.innerText.includes('视觉模型服务商'),
+  }));
+  rec('⑪g fallback 本地视觉模型不显示云上传提示',
+    imageFallbackLocal.noHint && imageFallbackLocal.noCloudText, JSON.stringify(imageFallbackLocal));
   await page.evaluate(() => { window.TauriBridge.attachments.clearAttachments(); window.__IMAGE_CAPABILITY__ = null; });
   await sleep(200);
 

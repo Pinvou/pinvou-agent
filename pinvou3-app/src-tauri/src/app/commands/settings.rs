@@ -368,6 +368,9 @@ pub struct ImageInputCapabilityInfo {
     /// false 且走 native 直发时前端提示"图片将发送给模型服务商";
     /// true 时图片字节不离开本机,前端不得显示云上传字样。
     pub is_local_endpoint: bool,
+    /// 兜底视觉模型 endpoint 是否本机(§11.8/§11.9):None 表示未配置可用视觉模型。
+    /// fallback 路径的图片字节发给视觉模型,云端视觉模型时前端同样必须提示。
+    pub vision_is_local_endpoint: Option<bool>,
 }
 
 #[tauri::command]
@@ -396,6 +399,7 @@ pub async fn get_image_input_capability(
         image_mode: bridge.image_input_mode().as_str().to_string(),
         has_vision_model: bridge.has_vision_model(),
         is_local_endpoint: bridge.is_local_endpoint(),
+        vision_is_local_endpoint: bridge.vision_uses_local_endpoint(),
     })
 }
 

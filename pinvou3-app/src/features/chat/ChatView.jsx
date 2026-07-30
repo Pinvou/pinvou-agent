@@ -1149,11 +1149,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
         : '';
-      // 云上传隐私提示(§11.8/§11.9):native 直发云端时告知图片字节去向;本机 loopback
-      // 不显示任何云上传字样;查询失败或旧后端无 is_local_endpoint 字段时 fail-open 不显示。
-      const imagePrivacyHint = imageInputInfo && imageInputInfo.image_mode === 'native'
-        && imageInputInfo.is_local_endpoint === false
-        ? t.uiAttachments.imageCloudUpload : '';
+      // 云上传隐私提示(§11.8/§11.9):图片字节离开本机时告知去向——native 直发看主模型
+      // 端点,fallback 看兜底视觉模型端点(图片实际发给视觉模型);本机 loopback 不显示
+      // 任何云上传字样;查询失败或旧后端无对应字段时 fail-open 不显示。
+      const imagePrivacyHint = imageInputInfo && (
+        (imageInputInfo.image_mode === 'native' && imageInputInfo.is_local_endpoint === false)
+        || (imageInputInfo.image_mode === 'vision_tool_fallback' && imageInputInfo.vision_is_local_endpoint === false)
+      )
+        ? (imageInputInfo.image_mode === 'vision_tool_fallback'
+          ? t.uiAttachments.imageCloudUploadVision
+          : t.uiAttachments.imageCloudUpload)
+        : '';
 
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。

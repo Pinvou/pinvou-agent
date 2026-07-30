@@ -1596,6 +1596,7 @@ fn image_input_capability_info_serializes_stable_fields() {
         image_mode: "vision_tool_fallback".to_string(),
         has_vision_model: true,
         is_local_endpoint: false,
+        vision_is_local_endpoint: Some(false),
     };
     let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
     assert_eq!(
@@ -1605,8 +1606,19 @@ fn image_input_capability_info_serializes_stable_fields() {
             "image_mode": "vision_tool_fallback",
             "has_vision_model": true,
             "is_local_endpoint": false,
+            "vision_is_local_endpoint": false,
         })
     );
+    // 未配置视觉模型时字段仍稳定出现(为 null),前端按 fail-open 处理。
+    let no_vision = super::settings::ImageInputCapabilityInfo {
+        capability: "unsupported".to_string(),
+        image_mode: "unsupported".to_string(),
+        has_vision_model: false,
+        is_local_endpoint: true,
+        vision_is_local_endpoint: None,
+    };
+    let value = serde_json::to_value(&no_vision).expect("serialize without vision model");
+    assert_eq!(value["vision_is_local_endpoint"], serde_json::Value::Null);
 }
 
 /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
