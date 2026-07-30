@@ -13,6 +13,7 @@ mod store;
 pub(crate) mod workspace;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,7 +36,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -258,6 +259,8 @@ pub struct CodexAcpStatus {
     pub login_input_required: bool,
     pub installing: bool,
     pub error: Option<String>,
+    /// 稳定的英文提示代码，前端映射 i18n 文案：
+    /// "kimi_cli_missing" / "kimi_auth_required" / "claude_auth_required"。
     pub setup_hint: Option<&'static str>,
 }
 
@@ -704,12 +707,13 @@ impl AcpPool {
                 .execution_workspace(session_id)
                 .with_context(|| format!("解析会话 {session_id} 临时工作目录失败")),
             CodexWorkspaceKind::Project => {
-                let path = record
-                    .workspace_path
-                    .context("Codex 项目会话缺少工作目录记录")?;
+                let path = record.workspace_path.with_context(|| {
+                    format!("{} 项目会话缺少工作目录记录", record.backend.display_name())
+                })?;
                 validate_codex_project_workspace(&path).with_context(|| {
                     format!(
-                        "Codex 会话绑定的项目目录已不可用: {}。请恢复该目录，或新建会话选择其他项目",
+                        "{} 会话绑定的项目目录已不可用: {}。请恢复该目录，或新建会话选择其他项目",
+                        record.backend.display_name(),
                         path.display()
                     )
                 })
@@ -719,6 +723,27 @@ impl AcpPool {
 
     pub fn status(&self) -> CodexAcpStatus {
         self.status_for(AgentBackend::CodexAcp)
+    }
+
+    /// status_for 会同步 spawn 子进程探测 CLI（--version / auth status），
+    /// async 上下文必须经 spawn_blocking，避免阻塞 tokio worker。
+    async fn status_for_async(&self, backend: AgentBackend) -> CodexAcpStatus {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || pool.status_for(backend))
+            .await
+            .expect("ACP 状态探测任务异常退出")
+    }
+
+    async fn status_async(&self) -> CodexAcpStatus {
+        self.status_for_async(AgentBackend::CodexAcp).await
+    }
+
+    async fn agent_authenticated_async(&self, backend: AgentBackend, executable: &Path) -> bool {
+        let pool = self.clone();
+        let executable = executable.to_path_buf();
+        tokio::task::spawn_blocking(move || pool.agent_authenticated(backend, &executable))
+            .await
+            .unwrap_or(false)
     }
 
     pub fn status_for_agent(&self, agent_id: &str) -> Result<CodexAcpStatus> {
@@ -788,9 +813,9 @@ impl AcpPool {
                 installing: false,
                 error: (!authenticated).then_some(login.error).flatten(),
                 setup_hint: if kimi.is_none() {
-                    Some("请先安装 Kimi Code CLI")
+                    Some("kimi_cli_missing")
                 } else if !authenticated {
-                    Some("使用 Kimi 账号完成设备码授权")
+                    Some("kimi_auth_required")
                 } else {
                     None
                 },
@@ -842,6 +867,7 @@ impl AcpPool {
         });
         let bridge_ready = adapter.is_some() && node_supported;
         let codex_available = provider_available;
+        let installed = bridge_ready && codex_available;
         // 登录命令运行期间不要再启动同一 CLI 的 auth status。部分 CLI 会让两条
         // 命令争用凭证锁，原来的 750ms 状态轮询因此可能拖住 Tauri 的 IPC/UI。
         let authenticated = !login.in_progress
@@ -856,7 +882,7 @@ impl AcpPool {
             agent_id,
             agent_name,
             version,
-            installed: bridge_ready && codex_available,
+            installed,
             bridge_ready,
             adapter_path: adapter
                 .as_ref()
@@ -879,7 +905,14 @@ impl AcpPool {
             runtime_source: if backend == AgentBackend::CodexAcp {
                 codex.as_ref().map(|resolved| resolved.source.as_str())
             } else {
-                adapter.as_ref().map(|_| "bundled")
+                // Claude adapter 可能来自内置资源或 PATH，按实际来源上报。
+                adapter.as_deref().map(|path| {
+                    if self.bundled_claude_adapter.as_deref() == Some(path) {
+                        "bundled"
+                    } else {
+                        "system"
+                    }
+                })
             },
             managed_codex_version: if backend == AgentBackend::CodexAcp {
                 MANAGED_CODEX_VERSION
@@ -922,8 +955,9 @@ impl AcpPool {
                         .flatten()
                 })
             },
-            setup_hint: if backend == AgentBackend::ClaudeAcp && !authenticated {
-                Some("使用 Claude 账号完成浏览器授权，或设置 ANTHROPIC_API_KEY")
+            // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示。
+            setup_hint: if backend == AgentBackend::ClaudeAcp && installed && !authenticated {
+                Some("claude_auth_required")
             } else {
                 None
             },
@@ -932,7 +966,7 @@ impl AcpPool {
 
     pub async fn refresh_status(&self) -> CodexAcpStatus {
         self.refresh_runtime_probe(false).await;
-        self.status()
+        self.status_async().await
     }
 
     async fn refresh_runtime_probe(&self, force: bool) {
@@ -1023,7 +1057,7 @@ impl AcpPool {
     pub async fn ensure_installed(&self) -> Result<CodexAcpStatus> {
         let operation_id = diagnostics::operation_id("prepare");
         self.refresh_runtime_probe(false).await;
-        let status = self.status();
+        let status = self.status_async().await;
         diagnostics::write(
             &operation_id,
             "prepare:start",
@@ -1097,7 +1131,7 @@ impl AcpPool {
                 self.refresh_runtime_probe(true).await;
                 *self.last_error.write() = None;
                 diagnostics::write(&operation_id, "prepare:complete", "result=success");
-                Ok(self.status())
+                Ok(self.status_async().await)
             }
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -1173,7 +1207,7 @@ impl AcpPool {
                 self.refresh_runtime_probe(true).await;
                 *self.last_error.write() = None;
                 diagnostics::write(&operation_id, "homebrew:complete", "result=success");
-                Ok(self.status())
+                Ok(self.status_async().await)
             }
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -1218,8 +1252,8 @@ impl AcpPool {
         let executable = self
             .login_executable(backend)
             .with_context(|| format!("未检测到可用的 {} CLI", backend.display_name()))?;
-        if !force && self.agent_authenticated(backend, &executable) {
-            return Ok(self.status_for(backend));
+        if !force && self.agent_authenticated_async(backend, &executable).await {
+            return Ok(self.status_for_async(backend).await);
         }
         let already_in_progress = {
             let mut states = self.login_states.write();
@@ -1236,7 +1270,7 @@ impl AcpPool {
             }
         };
         if already_in_progress {
-            return Ok(self.status_for(backend));
+            return Ok(self.status_for_async(backend).await);
         }
         if backend == AgentBackend::CodexAcp {
             *self.last_error.write() = None;
@@ -1270,22 +1304,28 @@ impl AcpPool {
                 pool.restart_agent_sessions(backend).await;
             }
         });
-        Ok(self.status_for(backend))
+        Ok(self.status_for_async(backend).await)
     }
 
     async fn restart_agent_sessions(&self, backend: AgentBackend) {
-        let runtimes = {
+        let (session_ids, runtimes) = {
             let mut sessions = self.sessions.lock().await;
             let session_ids = sessions
                 .keys()
                 .filter(|session_id| self.agents.backend(session_id) == backend)
                 .cloned()
                 .collect::<Vec<_>>();
-            session_ids
-                .into_iter()
-                .filter_map(|session_id| sessions.remove(&session_id))
-                .collect::<Vec<_>>()
+            let runtimes = session_ids
+                .iter()
+                .filter_map(|session_id| sessions.remove(session_id))
+                .collect::<Vec<_>>();
+            (session_ids, runtimes)
         };
+        // 与 evict() 一致先取消挂起的权限/输入请求，避免 pending map 残留泄漏。
+        for session_id in &session_ids {
+            self.cancel_pending_permissions(session_id).await;
+            self.cancel_pending_elicitations(session_id).await;
+        }
         for runtime in runtimes {
             runtime.shutdown().await;
         }
@@ -1441,7 +1481,7 @@ impl AcpPool {
         if !status.success() {
             bail!("{} 登录进程退出: {status}", backend.display_name());
         }
-        if !self.agent_authenticated(backend, &executable) {
+        if !self.agent_authenticated_async(backend, &executable).await {
             bail!(
                 "{} 登录进程已结束，但未检测到有效授权信息",
                 backend.display_name()
@@ -1699,7 +1739,7 @@ impl AcpPool {
 
     pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         if !self.is_acp(session_id) {
-            bail!("当前会话不是 Codex ACP 会话");
+            bail!("当前会话不是 ACP 会话");
         }
         load_timeline(session_id)
     }
@@ -1872,16 +1912,18 @@ impl AcpPool {
             );
             return Ok(runtime.clone());
         }
-        let backend = self.agents.backend(session_id);
+        // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
+        // acp_record 处得到明确报错，而不是误导性的「当前会话不是 ACP 会话」。
+        let backend = self.backend(session_id);
         let readiness = match backend {
             AgentBackend::CodexAcp => self.ensure_installed().await.map(|_| ()),
             AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
-                let status = self.status_for(backend);
+                let status = self.status_for_async(backend).await;
                 if !status.installed {
                     Err(anyhow::anyhow!(
                         "{} ACP 尚未就绪。{}",
                         backend.display_name(),
-                        status.setup_hint.unwrap_or("请检查 Agent 安装和 PATH")
+                        setup_hint_message(status.setup_hint)
                     ))
                 } else {
                     Ok(())
@@ -2531,6 +2573,16 @@ fn managed_adapter_path() -> PathBuf {
         .join(platform::managed_adapter_name())
 }
 
+/// readiness 报错面向用户展示中文，把结构化 setup_hint 代码映射回中文文案。
+fn setup_hint_message(hint: Option<&str>) -> &'static str {
+    match hint {
+        Some("kimi_cli_missing") => "请先安装 Kimi Code CLI",
+        Some("kimi_auth_required") => "使用 Kimi 账号完成设备码授权",
+        Some("claude_auth_required") => "使用 Claude 账号完成浏览器授权，或设置 ANTHROPIC_API_KEY",
+        _ => "请检查 Agent 安装和 PATH",
+    }
+}
+
 fn agent_login_command(backend: AgentBackend, executable: &Path) -> Command {
     if backend == AgentBackend::CodexAcp {
         return platform::codex_login_command(executable);
@@ -2616,6 +2668,7 @@ fn agent_login_url_allowed(backend: AgentBackend, url: &str) -> bool {
         }
         AgentBackend::ClaudeAcp => {
             url.starts_with("https://claude.com/")
+                || url.starts_with("https://claude.ai/")
                 || url.starts_with("https://platform.claude.com/")
         }
         AgentBackend::KimiAcp => {
@@ -2769,19 +2822,34 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| nonempty_file(candidate))
 }
 
-fn command_version(command: &Path) -> Option<String> {
-    let output = crate::platform::process::HiddenCommand::new(
-        crate::platform::os::external_application_path(command),
+/// `--version` 探测与 cli_status_success 一致限制 3 秒，避免卡住的 CLI 拖住状态轮询。
+fn command_version_output(executable: &Path) -> Option<String> {
+    let mut child = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(executable),
     )
     .arg("--version")
-    .output()
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
     .ok()?;
-    if !output.status.success() {
-        return None;
+    match child.wait_timeout(Duration::from_secs(3)) {
+        Ok(Some(status)) if status.success() => {}
+        Ok(Some(_)) => return None,
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
     }
-    let version = String::from_utf8(output.stdout).ok()?;
-    let version = version.trim();
-    (!version.is_empty()).then(|| version.to_string())
+    let mut version = String::new();
+    child.stdout.take()?.read_to_string(&mut version).ok()?;
+    Some(version.trim().to_string())
+}
+
+fn command_version(command: &Path) -> Option<String> {
+    let version = command_version_output(command)?;
+    (!version.is_empty()).then_some(version)
 }
 
 fn nonempty_file(path: &Path) -> bool {
@@ -2796,17 +2864,7 @@ fn codex_upgrade_required(message: &str) -> bool {
 }
 
 fn installed_node_version(node: &Path) -> Option<String> {
-    let output = crate::platform::process::HiddenCommand::new(
-        crate::platform::os::external_application_path(node),
-    )
-    .arg("--version")
-    .output()
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let version = String::from_utf8(output.stdout).ok()?;
-    Some(version.trim().trim_start_matches('v').to_string())
+    command_version_output(node).map(|version| version.trim_start_matches('v').to_string())
 }
 
 fn node_major_version(version: &str) -> Option<u32> {
@@ -2908,17 +2966,23 @@ async fn kimi_failure_after(cursor: &KimiDiagnosticCursor) -> Option<String> {
                 None => continue,
             },
         };
-        let Ok(raw) = tokio::fs::read(&log_path).await else {
-            continue;
-        };
-        let start = if cursor.log_path.as_ref() == Some(&log_path) {
-            usize::try_from(cursor.offset)
-                .unwrap_or(usize::MAX)
-                .min(raw.len())
+        // 按 offset seek 只增量读取本回合新增内容，不再每回合整读日志文件。
+        let offset = if cursor.log_path.as_ref() == Some(&log_path) {
+            cursor.offset
         } else {
             0
         };
-        if let Some(error) = parse_kimi_acp_failure(&String::from_utf8_lossy(&raw[start..])) {
+        let Ok(mut file) = tokio::fs::File::open(&log_path).await else {
+            continue;
+        };
+        if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+            continue;
+        }
+        let mut raw = Vec::new();
+        if file.read_to_end(&mut raw).await.is_err() {
+            continue;
+        }
+        if let Some(error) = parse_kimi_acp_failure(&String::from_utf8_lossy(&raw)) {
             return Some(error);
         }
     }
@@ -2991,7 +3055,7 @@ fn format_kimi_provider_error(code: &str, message: &str) -> String {
     }
     if code.contains("auth") || normalized.contains("authentication") || normalized.contains("401")
     {
-        return "Kimi Code 登录已失效，请重新登录".to_string();
+        return "Kimi Code 登录已失效（HTTP 401），请重新登录".to_string();
     }
     if normalized.contains("429")
         || normalized.contains("rate limit")
@@ -3017,6 +3081,9 @@ fn kimi_credentials_valid(raw: &str) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|token| !token.trim().is_empty())
     });
+    // Kimi 的 access_token 约 15 分钟即过期，Kimi CLI 运行时会用 refresh_token 自动续期，
+    // 因此 expires_at（Unix 秒）过期不判未认证，否则登录 15 分钟后状态就会误报。
+    // 这里仅要求 expires_at 是合法的正数时间戳，用于识别损坏的凭证文件。
     let expiry_valid = value
         .get("expires_at")
         .and_then(serde_json::Value::as_i64)
@@ -3301,6 +3368,10 @@ mod tests {
         assert!(kimi_credentials_valid(
             r#"{"access_token":"access","refresh_token":"refresh","expires_at":1}"#
         ));
+        // access_token 过期但 refresh_token 仍在时不判未认证（Kimi CLI 会自动续期）。
+        assert!(kimi_credentials_valid(
+            r#"{"access_token":"access","refresh_token":"refresh","expires_at":1700000000}"#
+        ));
         assert!(!kimi_credentials_valid(
             r#"{"access_token":"access","refresh_token":"refresh","expires_at":0}"#
         ));
@@ -3329,7 +3400,7 @@ mod tests {
     fn maps_kimi_auth_and_quota_failures_to_actionable_messages() {
         assert_eq!(
             format_kimi_provider_error("provider.auth_failed", "401 unauthorized"),
-            "Kimi Code 登录已失效，请重新登录"
+            "Kimi Code 登录已失效（HTTP 401），请重新登录"
         );
         assert_eq!(
             format_kimi_provider_error("provider.api_error", "429 quota exceeded"),

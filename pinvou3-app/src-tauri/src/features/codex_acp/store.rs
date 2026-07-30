@@ -132,8 +132,9 @@ impl SessionAgentStore {
 
     /// 外部 Agent ACP 是可选能力，它的辅助索引损坏时不能阻断 Pinvou 主程序启动。
     ///
-    /// 这里保留原始文件供排障，不主动覆盖；只有用户后续实际创建或更新 ACP
-    /// 会话时，`persist` 才会用新的有效内容替换它。
+    /// 加载失败时不主动覆盖原始文件；但随后任何一次 `persist`（包括启动时
+    /// `AcpPool::new` 恢复缺失的 ACP 记录、或用户创建/更新会话）都会用新内容
+    /// 替换它，损坏的内容不会长期保留。
     pub fn load_or_empty() -> Self {
         match Self::load() {
             Ok(store) => store,
@@ -185,8 +186,8 @@ impl SessionAgentStore {
         self.persist()
     }
 
-    ///
-    /// ACP session 一旦建立就不允许换目录，避免同一个 Agent 上下文跨项目漂移。
+    /// ACP session 一旦建立就不允许换 Agent 或目录，避免同一个 Agent 上下文跨
+    /// 后端或跨项目漂移。
     pub fn set_acp_workspace(
         &self,
         session_id: &str,
@@ -207,9 +208,11 @@ impl SessionAgentStore {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
             if record.acp_session_id.is_some()
-                && (record.workspace_kind != kind || record.workspace_path != workspace_path)
+                && (record.backend != backend
+                    || record.workspace_kind != kind
+                    || record.workspace_path != workspace_path)
             {
-                anyhow::bail!("ACP 会话已开始，不能更换工作目录；请新建会话");
+                anyhow::bail!("ACP 会话已开始，不能更换 Agent 或工作目录；请新建会话");
             }
             record.backend = backend;
             record.workspace_kind = kind;
@@ -299,7 +302,7 @@ impl SessionAgentStore {
 
 pub fn validate_codex_project_workspace(path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
-        anyhow::bail!("请选择 Codex 项目目录");
+        anyhow::bail!("请选择项目目录");
     }
     let canonical = path
         .canonicalize()
@@ -399,6 +402,15 @@ mod tests {
                 None,
             )
             .is_err());
+        assert!(store
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::ClaudeAcp,
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+            )
+            .is_err());
+        assert_eq!(store.get("session-1").backend, AgentBackend::CodexAcp);
         assert_eq!(
             store.get("session-1").workspace_path.as_deref(),
             Some(root.as_path())
