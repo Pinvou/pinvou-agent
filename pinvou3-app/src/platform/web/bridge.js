@@ -216,6 +216,24 @@
       last_error: null,
       starting: false,
     },
+    collaboration: {
+      enabled: false,
+      connected: false,
+      reason: null,
+      config: {},
+      configState: {
+        identityRegistered: false,
+        projectConfigured: false,
+        identity: null,
+        project: null,
+      },
+      configLoaded: false,
+      peers: [],
+      incomingTasks: [],
+      outgoingTasks: [],
+      localTasks: [],
+      lastError: null,
+    },
     updateChecking: false,
     updateCheckError: null,   // 手动检查的错误/「已是最新」提示文案
     updateDownloading: false,
@@ -791,6 +809,32 @@
       if (events[i].pos === pos) return events[i].scene;
     }
     return "";
+  }
+  var collaborationMockSessionIds = Object.create(null);
+  var COLLABORATION_TASK_SESSION_STORAGE_KEY = "pinvou:collaboration-task-sessions:v1";
+  function loadCollaborationTaskSessionIds() {
+    var result = Object.create(null);
+    try {
+      var parsed = JSON.parse(window.localStorage.getItem(COLLABORATION_TASK_SESSION_STORAGE_KEY) || "{}");
+      Object.keys(parsed || {}).forEach(function (key) {
+        if (typeof parsed[key] === "string" && parsed[key].trim()) result[key] = parsed[key].trim();
+      });
+    } catch (e) {}
+    return result;
+  }
+  var collaborationTaskSessionIds = loadCollaborationTaskSessionIds();
+  function saveCollaborationTaskSessionIds() {
+    try { window.localStorage.setItem(COLLABORATION_TASK_SESSION_STORAGE_KEY, JSON.stringify(collaborationTaskSessionIds)); } catch (e) {}
+  }
+  function rememberCollaborationTaskSession(key, sessionId) {
+    if (!key || !sessionId) return;
+    collaborationTaskSessionIds[key] = sessionId;
+    saveCollaborationTaskSessionIds();
+  }
+  function forgetCollaborationTaskSession(key) {
+    if (!key || !Object.prototype.hasOwnProperty.call(collaborationTaskSessionIds, key)) return;
+    delete collaborationTaskSessionIds[key];
+    saveCollaborationTaskSessionIds();
   }
   function freshBuffer() {
     return {
@@ -2440,6 +2484,193 @@
   }
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
   async function createNewSession() { enterDraft(); }
+
+  function normalizeCollaborationMockTurns(payload) {
+    var turns = payload && Array.isArray(payload.turns) ? payload.turns : [];
+    var normalized = turns.map(function (turn) {
+      var role = turn && turn.role === "user" ? "user" : "assistant";
+      var text = String((turn && (turn.text || turn.content)) || "").trim();
+      return text ? { role: role, text: text } : null;
+    }).filter(Boolean);
+    if (normalized.length) return normalized;
+    var title = String((payload && payload.title) || "协作任务").trim();
+    return [
+      { role: "user", text: "帮我查看「" + title + "」的协作状态。" },
+      { role: "assistant", text: "已定位到这条工作台任务。你可以在这个原对话里继续追问、补充或处理。" },
+    ];
+  }
+
+  function collaborationMessagesFromTurns(turns) {
+    return turns.map(function (turn) {
+      return {
+        role: turn.role,
+        content: [{ type: "text", text: turn.text }],
+      };
+    });
+  }
+
+  function renderCollaborationMockSession(messages) {
+    resetPendingAssistant();
+    state.chatItems = [];
+    state.messages = Array.isArray(messages) ? messages : [];
+    state.personaEvents = [];
+    state.pinvouReviews = [];
+    state.artifacts = [];
+    state.busy = false;
+    state.queued = [];
+    state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 };
+    state.planSnapshot = { plan: null, todos: null };
+    rerenderFromMessages();
+  }
+
+  async function openCollaborationMockSession(payload) {
+    var key = String((payload && (payload.mockKey || payload.id || payload.title)) || "").trim();
+    if (!key) key = "collaboration-" + Date.now();
+    var existing = collaborationMockSessionIds[key];
+    if (existing) {
+      var switched = await switchToSession(existing);
+      if (switched) return { sessionId: existing, reused: true };
+      delete collaborationMockSessionIds[key];
+    }
+
+    var title = String((payload && payload.title) || "协作任务").trim() || "协作任务";
+    var turns = normalizeCollaborationMockTurns(payload);
+    var messages = collaborationMessagesFromTurns(turns);
+    var meta = await invoke("create_session");
+    var sid = meta && meta.id;
+    if (!sid) throw new Error("创建样例会话失败");
+
+    await invoke("rename_session", { id: sid, title: title });
+    await invoke("save_session_messages", { id: sid, messages: messages });
+    collaborationMockSessionIds[key] = sid;
+
+    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    state.scheduledRunContext = null;
+    state.scheduledTaskPendingGuide = null;
+    state.activeSessionId = sid;
+    sessionStates[sid] = freshBuffer();
+    renderCollaborationMockSession(messages);
+    sessionStates[sid].loadedFromDisk = true;
+    saveWorkingSetTo(sessionStates[sid]);
+    await refreshHistoryList();
+    await syncModeState();
+    await syncActivePersona();
+    await syncMountedCollection();
+    notify();
+    return { sessionId: sid, reused: false };
+  }
+
+  function taskContextMessages(task, context) {
+    var sourceMessages = Array.isArray(context && context.messages) ? context.messages : [];
+    var artifactLines = Array.isArray(context && context.artifacts)
+      ? context.artifacts.map(function (artifact) {
+          return "- " + (artifact.basename || "未命名产物") + " (" + (artifact.inline_status || "metadata") + ")";
+        })
+      : [];
+    var header = [
+      "收到协作任务：" + (task.title || "协作任务"),
+      "来自：" + (task.fromDisplayName || task.fromPeerId || "协同方"),
+      "任务要求：" + (task.instruction || ""),
+      "",
+      "以下是发起方随任务共享的完整会话上下文和产物索引。",
+    ].join("\n");
+    var messages = [{ role: "user", content: [{ type: "text", text: header }] }];
+    sourceMessages.forEach(function (message) {
+      if (message && typeof message.role === "string" && Array.isArray(message.content)) {
+        messages.push(message);
+      }
+    });
+    if (artifactLines.length) {
+      messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "随任务共享的产物：\n" + artifactLines.join("\n") }],
+      });
+    }
+    messages.push({
+      role: "user",
+      content: [{ type: "text", text: "请基于以上上下文处理这个协作任务：" + (task.instruction || task.title || "协作任务") }],
+    });
+    return messages;
+  }
+
+  function currentCollaborationPeerId() {
+    var collaboration = state.collaboration || {};
+    var config = collaboration.config || {};
+    var configState = collaboration.configState || {};
+    var identity = configState.identity || {};
+    return String(config.peerId || config.peer_id || identity.peerId || identity.peer_id || "").trim();
+  }
+
+  function taskWasStartedLocally(task) {
+    var fromPeerId = String((task && (task.fromPeerId || task.from_peer_id)) || "").trim();
+    var toPeerId = String((task && (task.toPeerId || task.to_peer_id)) || "").trim();
+    var selfPeerId = currentCollaborationPeerId();
+    if (fromPeerId && toPeerId && fromPeerId === toPeerId) return true;
+    return !!(selfPeerId && fromPeerId && fromPeerId === selfPeerId);
+  }
+
+  function hasLocalCollaborationSession(sessionId) {
+    var sid = String(sessionId || "").trim();
+    if (!sid) return false;
+    if (state.activeSessionId === sid) return true;
+    return Array.isArray(state.sessions) && state.sessions.some(function (session) {
+      return session && (session.id === sid || session.sessionId === sid || session.session_id === sid);
+    });
+  }
+
+  async function openKnownCollaborationSession(sessionId) {
+    var sid = String(sessionId || "").trim();
+    if (!sid) return null;
+    if (!hasLocalCollaborationSession(sid)) {
+      await refreshHistoryList().catch(function () {});
+      if (!hasLocalCollaborationSession(sid)) return null;
+    }
+    var switched = await switchToSession(sid);
+    return switched ? sid : null;
+  }
+
+  async function openCollaborationTaskSession(task) {
+    if (!task || !task.taskId) throw new Error("缺少任务");
+    var key = "task:" + task.taskId;
+    var source_sid = task.source_session_id;
+    if (taskWasStartedLocally(task)) {
+      var opened_source_sid = await openKnownCollaborationSession(source_sid);
+      if (opened_source_sid) return { sessionId: opened_source_sid, reused: true, source: true };
+    }
+    var existing = collaborationTaskSessionIds[key] || collaborationMockSessionIds[key];
+    if (existing) {
+      var switchedSid = await openKnownCollaborationSession(existing);
+      if (switchedSid) {
+        rememberCollaborationTaskSession(key, switchedSid);
+        return { sessionId: switchedSid, reused: true };
+      }
+      delete collaborationMockSessionIds[key];
+      forgetCollaborationTaskSession(key);
+    }
+    var context = await collaborationGetTaskContext(task.taskId);
+    var messages = taskContextMessages(task, context || {});
+    var meta = await invoke("create_session");
+    var sid = meta && meta.id;
+    if (!sid) throw new Error("创建协作任务会话失败");
+    await invoke("rename_session", { id: sid, title: "协作任务：" + (task.title || task.taskId) });
+    await invoke("save_session_messages", { id: sid, messages: messages });
+    collaborationMockSessionIds[key] = sid;
+    rememberCollaborationTaskSession(key, sid);
+    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    state.scheduledRunContext = null;
+    state.scheduledTaskPendingGuide = null;
+    state.activeSessionId = sid;
+    sessionStates[sid] = freshBuffer();
+    renderCollaborationMockSession(messages);
+    sessionStates[sid].loadedFromDisk = true;
+    saveWorkingSetTo(sessionStates[sid]);
+    await refreshHistoryList();
+    await syncModeState();
+    await syncActivePersona();
+    await syncMountedCollection();
+    notify();
+    return { sessionId: sid, reused: false };
+  }
 
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
@@ -7478,6 +7709,304 @@
     }
   }
 
+  function defaultCollaborationConfigState() {
+    return {
+      identityRegistered: false,
+      projectConfigured: false,
+      identity: null,
+      project: null,
+    };
+  }
+
+  function normalizeCollaborationConfigState(value) {
+    var next = value && typeof value === "object" ? value : {};
+    var project = next.project && typeof next.project === "object" ? next.project : null;
+    var identity = next.identity && typeof next.identity === "object" ? next.identity : null;
+    return {
+      identityRegistered: !!next.identityRegistered,
+      projectConfigured: !!next.projectConfigured,
+      identity: identity ? {
+        peerId: identity.peerId || identity.peer_id || "",
+        name: identity.name || "",
+        capabilities: Array.isArray(identity.capabilities) ? identity.capabilities : [],
+        description: identity.description || "",
+        createdAt: identity.createdAt || identity.created_at || "",
+      } : null,
+      project: project ? {
+        projectId: project.projectId || project.project_id || "",
+        projectName: project.projectName || project.project_name || "",
+        relayWsUrl: project.relayWsUrl || project.relay_ws_url || "",
+        publicUrl: project.publicUrl || project.public_url || "",
+        members: Array.isArray(project.members) ? project.members.map(function (member) {
+          member = member || {};
+          return {
+            memberId: member.memberId || member.member_id || "",
+            name: member.name || "",
+            capabilities: Array.isArray(member.capabilities) ? member.capabilities : [],
+            description: member.description || "",
+            role: member.role || "member",
+            status: member.status || "pending",
+          };
+        }) : [],
+      } : null,
+    };
+  }
+
+  function normalizeCollaborationStatus(status) {
+    var current = state.collaboration || {};
+    var next = status && typeof status === "object" ? status : {};
+    var configState = next.configState || next.config_state || current.configState || defaultCollaborationConfigState();
+    return {
+      enabled: !!next.enabled,
+      connected: !!next.connected,
+      reason: next.reason || null,
+      config: next.config || {},
+      configState: normalizeCollaborationConfigState(configState),
+      configLoaded: !!(next.configState || next.config_state || current.configLoaded),
+      peers: Array.isArray(next.peers) ? next.peers : [],
+      incomingTasks: Array.isArray(next.incomingTasks) ? next.incomingTasks : [],
+      outgoingTasks: Array.isArray(next.outgoingTasks) ? next.outgoingTasks : [],
+      localTasks: Array.isArray(next.localTasks || next.local_tasks) ? (next.localTasks || next.local_tasks) : [],
+      lastError: next.lastError || current.lastError || null,
+    };
+  }
+
+  function collaborationStatusText(status) {
+    switch (status) {
+      case "waiting_delivery": return "等待送达";
+      case "delivered": return "已送达，等待对方确认";
+      case "accepted": return "对方已接受";
+      case "rejected": return "对方已拒绝";
+      case "delivery_failed": return "发送失败：对方不在线";
+      case "needs_me": return "待你处理";
+      case "todo": return "待处理";
+      case "completed": return "已完成";
+      default: return status || "状态未知";
+    }
+  }
+
+  async function refreshCollaborationStatus() {
+    try {
+      var status = await invoke("collaboration_status");
+      state.collaboration = normalizeCollaborationStatus(status);
+    } catch (e) {
+      state.collaboration = Object.assign({}, state.collaboration, { lastError: String(e) });
+    }
+    notify();
+    return state.collaboration;
+  }
+
+  async function refreshCollaborationConfig() {
+    try {
+      var configState = await invoke("collaboration_get_config");
+      state.collaboration = Object.assign({}, state.collaboration, {
+        configState: normalizeCollaborationConfigState(configState),
+        configLoaded: true,
+      });
+    } catch (e) {
+      state.collaboration = Object.assign({}, state.collaboration, { lastError: String(e) });
+    }
+    notify();
+    return state.collaboration.configState;
+  }
+
+  function mergeCollaborationConfigState(configState) {
+    state.collaboration = Object.assign({}, state.collaboration, {
+      configState: normalizeCollaborationConfigState(configState),
+      configLoaded: true,
+    });
+    notify();
+    return state.collaboration.configState;
+  }
+
+  async function collaborationStart(request) {
+    var name = String((request && request.name) || "").trim();
+    if (!name) throw new Error("名字不能为空");
+    var configState = await invoke("collaboration_start", {
+      request: {
+        name: name,
+        collaborationCode: request && request.collaborationCode ? String(request.collaborationCode) : null,
+        relayWsUrl: request && request.relayWsUrl ? String(request.relayWsUrl) : null,
+        publicUrl: request && request.publicUrl ? String(request.publicUrl) : null,
+        capabilities: Array.isArray(request && request.capabilities) ? request.capabilities : [],
+        description: request && request.description ? String(request.description) : null,
+      },
+    });
+    mergeCollaborationConfigState(configState);
+    await refreshCollaborationStatus();
+    return state.collaboration.configState;
+  }
+
+  async function collaborationRegisterIdentity(request) {
+    var name = String((request && request.name) || "").trim();
+    if (!name) throw new Error("名字不能为空");
+    var configState = await invoke("collaboration_register_identity", {
+      request: {
+        name: name,
+        capabilities: Array.isArray(request && request.capabilities) ? request.capabilities : [],
+        description: request && request.description ? String(request.description) : null,
+      },
+    });
+    mergeCollaborationConfigState(configState);
+    await refreshCollaborationStatus();
+    return state.collaboration.configState;
+  }
+
+  async function collaborationCreateProject(request) {
+    var projectName = String((request && request.projectName) || "").trim();
+    if (!projectName) throw new Error("项目组名称不能为空");
+    var members = Array.isArray(request && request.members) ? request.members : [];
+    var configState = await invoke("collaboration_create_project", {
+      request: {
+        projectName: projectName,
+        relayWsUrl: request && request.relayWsUrl ? String(request.relayWsUrl) : null,
+        publicUrl: request && request.publicUrl ? String(request.publicUrl) : null,
+        members: members.map(function (member) {
+          member = member || {};
+          return {
+            name: String(member.name || "").trim(),
+            capabilities: Array.isArray(member.capabilities) ? member.capabilities : [],
+            description: member.description ? String(member.description) : null,
+            role: member.role ? String(member.role) : "member",
+          };
+        }),
+      },
+    });
+    mergeCollaborationConfigState(configState);
+    await refreshCollaborationStatus();
+    return state.collaboration.configState;
+  }
+
+  async function collaborationJoinProject(inviteJson) {
+    var text = String(inviteJson || "").trim();
+    if (!text) throw new Error("请粘贴加入信息");
+    var configState = await invoke("collaboration_join_project", {
+      request: { inviteJson: text },
+    });
+    mergeCollaborationConfigState(configState);
+    await refreshCollaborationStatus();
+    return state.collaboration.configState;
+  }
+
+  async function collaborationExportMemberInvite(memberId) {
+    if (!memberId) throw new Error("缺少成员 ID");
+    return invoke("collaboration_export_member_invite", { memberId: String(memberId) });
+  }
+
+  async function collaborationCreateTask(request) {
+    var text = String((request && request.instruction) || "").trim();
+    var toDisplayName = String((request && request.toDisplayName) || "").trim();
+    if (!text) throw new Error("任务内容不能为空");
+    if (!toDisplayName && !(request && request.toPeerId)) throw new Error("缺少接收方");
+    var configState = state.collaboration && state.collaboration.configState;
+    if (!configState || !configState.identityRegistered) throw new Error("请先创建你的 Pinvou 身份");
+    if (!configState.projectConfigured) throw new Error("请先创建或加入项目组");
+
+    var sid = await ensureSession();
+    if (!sid) throw new Error("创建会话失败");
+    await persistMessagesFor(sid);
+    addChatItem({ type: "user", text: "@" + (toDisplayName || request.toPeerId) + " " + text, time: timeStr() });
+    notify();
+
+    try {
+      var task = await invoke("collaboration_create_task", {
+        request: {
+          toPeerId: request && request.toPeerId ? String(request.toPeerId) : null,
+          toDisplayName: toDisplayName || null,
+          title: request && request.title ? String(request.title) : null,
+          instruction: text,
+          source_session_id: sid,
+          contextSummary: request && request.contextSummary ? String(request.contextSummary) : null,
+        },
+      });
+      addSystemItem("已发送给 " + (task.toDisplayName || toDisplayName || task.toPeerId) + " 的 Pinvou，" + collaborationStatusText(task.status) + "。", {
+        collaborationTaskId: task.taskId,
+      });
+      refreshCollaborationStatus().catch(function () {});
+      return task;
+    } catch (e) {
+      addSystemItem("发送协作任务失败：" + e);
+      throw e;
+    }
+  }
+
+  async function collaborationGetTaskContext(taskId) {
+    var id = String(taskId || "").trim();
+    if (!id) throw new Error("缺少任务 ID");
+    return invoke("collaboration_get_task_context", { taskId: id });
+  }
+
+  async function collaborationCreateLocalTask(request) {
+    var text = String((request && request.instruction) || "").trim();
+    if (!text) throw new Error("任务内容不能为空");
+
+    var sid = await ensureSession();
+    if (!sid) throw new Error("创建会话失败");
+
+    try {
+      var task = await invoke("collaboration_create_local_task", {
+        request: {
+          title: request && request.title ? String(request.title) : null,
+          instruction: text,
+          source_session_id: sid,
+          contextSummary: request && request.contextSummary ? String(request.contextSummary) : null,
+        },
+      });
+      doSendFor(sid, text, "@我 " + text, [], {
+        collaborationLocalTaskId: task.taskId,
+      }, false, true).catch(function () {});
+      addChatItem({
+        type: "collaboration_task_card",
+        taskId: task.taskId,
+        title: task.title || text,
+        instruction: task.instruction || text,
+        status: task.status || "todo",
+        statusLabel: collaborationStatusText(task.status || "todo"),
+        assignee: task.toDisplayName || "我",
+        time: timeStr(),
+      });
+      refreshCollaborationStatus().catch(function () {});
+      notify();
+      return task;
+    } catch (e) {
+      addSystemItem("创建本地任务失败：" + e);
+      throw e;
+    }
+  }
+
+  async function collaborationListLocalTasks() {
+    var tasks = await invoke("collaboration_list_local_tasks");
+    state.collaboration = Object.assign({}, state.collaboration, {
+      localTasks: Array.isArray(tasks) ? tasks : [],
+    });
+    notify();
+    return state.collaboration.localTasks;
+  }
+
+  async function collaborationUpdateLocalTask(request) {
+    var task = await invoke("collaboration_update_local_task", { request: request || {} });
+    await refreshCollaborationStatus();
+    return task;
+  }
+
+  async function collaborationCompleteLocalTask(taskId) {
+    var task = await invoke("collaboration_complete_local_task", { taskId: taskId });
+    await refreshCollaborationStatus();
+    return task;
+  }
+
+  async function collaborationAcceptTask(taskId) {
+    var task = await invoke("collaboration_accept_task", { taskId: taskId });
+    await refreshCollaborationStatus();
+    return task;
+  }
+
+  async function collaborationRejectTask(taskId) {
+    var task = await invoke("collaboration_reject_task", { taskId: taskId });
+    await refreshCollaborationStatus();
+    return task;
+  }
+
   // ── 应用内升级 ───────────────────────────────────────────────────
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
@@ -7489,6 +8018,33 @@
   listen("web_access:status", function (e) {
     state.webAccess = Object.assign({}, state.webAccess, e.payload || {});
     notify();
+  });
+  listen("collaboration:status", function (e) {
+    state.collaboration = normalizeCollaborationStatus(e.payload || {});
+    notify();
+  });
+  listen("collaboration:config", function (e) {
+    mergeCollaborationConfigState(e.payload || {});
+  });
+  listen("collaboration:incoming_task", function (e) {
+    var task = e && e.payload;
+    if (!task || !task.taskId) return;
+    addSystemItem("收到 " + (task.fromDisplayName || task.fromPeerId || "同事") + " 发来的协作任务：「" + (task.title || "协作任务") + "」。请到工作台处理。", {
+      collaborationTaskId: task.taskId,
+    });
+    refreshCollaborationStatus().catch(function () {});
+  });
+  listen("collaboration:task_updated", function (e) {
+    var task = e && e.payload;
+    if (!task || !task.taskId) return;
+    if (task.fromPeerId && task.toPeerId && task.fromPeerId === task.toPeerId) {
+      refreshCollaborationStatus().catch(function () {});
+      return;
+    }
+    addSystemItem("协作任务「" + (task.title || task.taskId) + "」更新：" + collaborationStatusText(task.status) + "。", {
+      collaborationTaskId: task.taskId,
+    });
+    refreshCollaborationStatus().catch(function () {});
   });
   async function loadAppVersion() {
     try {
@@ -8379,6 +8935,8 @@
       checkForUpdateSilently();
     }
     if (hasCapability("webAccessAdmin")) refreshWebAccessStatus();
+    refreshCollaborationConfig().catch(function () {});
+    refreshCollaborationStatus(); // fire-and-forget
     await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
     })();
@@ -8446,6 +9004,23 @@
     cancelGeneration: cancelGeneration,
     cancelShellTask: cancelShellTask,
     createNewSession: createNewSession,
+    openCollaborationMockSession: openCollaborationMockSession,
+    openCollaborationTaskSession: openCollaborationTaskSession,
+    refreshCollaborationConfig: refreshCollaborationConfig,
+    refreshCollaborationStatus: refreshCollaborationStatus,
+    collaborationStart: collaborationStart,
+    collaborationRegisterIdentity: collaborationRegisterIdentity,
+    collaborationCreateProject: collaborationCreateProject,
+    collaborationJoinProject: collaborationJoinProject,
+    collaborationExportMemberInvite: collaborationExportMemberInvite,
+    collaborationCreateTask: collaborationCreateTask,
+    collaborationGetTaskContext: collaborationGetTaskContext,
+    collaborationCreateLocalTask: collaborationCreateLocalTask,
+    collaborationListLocalTasks: collaborationListLocalTasks,
+    collaborationUpdateLocalTask: collaborationUpdateLocalTask,
+    collaborationCompleteLocalTask: collaborationCompleteLocalTask,
+    collaborationAcceptTask: collaborationAcceptTask,
+    collaborationRejectTask: collaborationRejectTask,
     switchToSession: switchToSession,
     openScheduledRunChat: openScheduledRunChat,
     exitScheduledRunChat: exitScheduledRunChat,

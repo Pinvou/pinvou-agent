@@ -23,6 +23,7 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
+import { CollaborationView } from '../features/collaboration/CollaborationView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
@@ -68,7 +69,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'collaboration',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -96,6 +97,47 @@ function defaultModelPresetForCapabilities(capabilities) {
 function workspaceDisplayName(path) {
   const parts = String(path || '').split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || String(path || '');
+}
+
+function parsePinvouCapabilities(value) {
+  return String(value || '')
+    .split(/[,，、\n]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+const DEFAULT_PINVOU_CAPABILITIES = [
+  '写代码',
+  '设计 UI',
+  '整理文档',
+  '查资料',
+  '数据分析',
+  '测试验收',
+  '项目推进',
+  '客户沟通',
+];
+
+function buildPinvouEmployeeDescription(name, capabilities) {
+  const displayName = String(name || '').trim() || '我';
+  const unique = (Array.isArray(capabilities) ? capabilities : [])
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .filter((item, index, all) => all.indexOf(item) === index)
+    .slice(0, 6);
+  if (!unique.length) {
+    return `${displayName} 适合处理需要本人确认、补充背景信息或推进落地的协作任务。`;
+  }
+  const joined = unique.join('、');
+  return `${displayName} 适合处理${joined}相关任务；当任务需要${joined}时，可以优先委托给 ${displayName}。`;
+}
+
+function hasPendingCollaborationTasks(bs) {
+  const collaboration = bs && bs.collaboration;
+  if (!collaboration) return false;
+  const incoming = Array.isArray(collaboration.incomingTasks) ? collaboration.incomingTasks : [];
+  const local = Array.isArray(collaboration.localTasks) ? collaboration.localTasks : [];
+  return incoming.length > 0 || local.some(task => task && task.status !== 'completed');
 }
 
     const App = () => {
@@ -437,6 +479,7 @@ function workspaceDisplayName(path) {
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
+      const [pinvouRegistrationOpen, setPinvouRegistrationOpen] = useState(false);
       const [webAccessOpen, setWebAccessOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
       const [settingsInitialSection, setSettingsInitialSection] = useState('general');
@@ -1004,6 +1047,8 @@ function workspaceDisplayName(path) {
           savePinvouModeState({ mode: 'work' });
           if (bridge.available) bridge.sessions.createNewSession();
           setCurrentView('chat');
+        } else if (mode === 'collaboration') {
+          setCurrentView('collaboration');
         }
         closeMobileSidebar();
       }
@@ -1029,6 +1074,52 @@ function workspaceDisplayName(path) {
       async function handleSearchSelect(id) {
         await handleSwitchSession(id);
         setSearchOverlayOpen(false);
+      }
+
+      async function handleOpenCollaborationSession(payload) {
+        const navigated = await navigateFromScheduledRun('chat');
+        if (!navigated || !payload) return;
+        const collaborationBridge = bridge.collaboration || {};
+        if (bridge.available && collaborationBridge.openCollaborationMockSession) {
+          try {
+            const opened = await collaborationBridge.openCollaborationMockSession(payload);
+            const sid = opened && (opened.sessionId || opened.session_id);
+            if (sid) setActiveChat(sid);
+          } catch (error) {
+            console.warn('[collaboration mock session] open failed', error);
+          }
+        }
+      }
+
+      async function handleOpenCollaborationTask(task) {
+        const navigated = await navigateFromScheduledRun('chat');
+        if (!navigated || !task) return;
+        const collaborationBridge = bridge.collaboration || {};
+        if (bridge.available && collaborationBridge.openCollaborationTaskSession) {
+          try {
+            const opened = await collaborationBridge.openCollaborationTaskSession(task);
+            const sid = opened && (opened.sessionId || opened.session_id);
+            if (sid) setActiveChat(sid);
+          } catch (error) {
+            console.warn('[collaboration task session] open failed', error);
+          }
+        }
+      }
+
+      async function handleCreateCollaborationTaskGuide() {
+        const navigated = await navigateFromScheduledRun('chat');
+        if (!navigated) return;
+        if (bridge.available && bridge.sessions && bridge.sessions.createNewSession) {
+          try {
+            await bridge.sessions.createNewSession();
+          } catch (error) {
+            console.warn('[collaboration] create guide session failed', error);
+          }
+        }
+        setCurrentView('chat');
+        setChatPrefill('@');
+        setPetFocusComposerTick(value => value + 1);
+        closeMobileSidebar();
       }
 
       function handleSwitchCodexSession(id) {
@@ -1576,12 +1667,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, collaboration: '工作台（Beta）', monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'collaboration', 'toolStore', 'settings'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1632,6 +1723,12 @@ function workspaceDisplayName(path) {
           } : undefined}>
 
           <WebConnectionStatus theme={activeTheme} t={t} />
+          <PinvouRegistrationGate
+            theme={activeTheme}
+            collaboration={bs?.collaboration}
+            open={pinvouRegistrationOpen}
+            onClose={() => setPinvouRegistrationOpen(false)}
+          />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
           {dragAvatar && (
@@ -1823,6 +1920,14 @@ function workspaceDisplayName(path) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
+              />
+              <NavItem
+                icon={<Briefcase size={18} />} label="工作台（Beta）"
+                active={currentView === 'collaboration'}
+                unread={hasPendingCollaborationTasks(bs)}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('collaboration')}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -2086,6 +2191,17 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
+            {currentView === 'collaboration' && (
+              <CollaborationView
+                theme={activeTheme}
+                bs={bs}
+                onOpenChat={handleOpenCollaborationSession}
+                onOpenTask={handleOpenCollaborationTask}
+                onCreateTaskGuide={handleCreateCollaborationTaskGuide}
+                onStartCollaboration={() => setPinvouRegistrationOpen(true)}
+                onOpenAbilityPool={() => navigateFromScheduledRun('toolStore')}
+              />
+            )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
@@ -2307,13 +2423,17 @@ function workspaceDisplayName(path) {
             <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
               { key: 'search', label: t.searchChats, icon: <Search size={18} />,
                 active: currentView === 'search', onClick: () => mobileNavigate('search') },
-              ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
-                active: currentView === 'scheduled', dot: scheduledUnread,
-                onClick: () => mobileNavigate('scheduled') }] : []),
-              { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
-                active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
+                ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
+                  active: currentView === 'scheduled', dot: scheduledUnread,
+                  onClick: () => mobileNavigate('scheduled') }] : []),
+                { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
+                  active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
               { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
                 active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
+              { key: 'collaboration', label: '工作台（Beta）', icon: <Briefcase size={18} />,
+                active: currentView === 'collaboration',
+                dot: hasPendingCollaborationTasks(bs),
+                onClick: () => mobileNavigate('collaboration') },
               { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
                 active: currentView === 'toolStore', onClick: () => mobileNavigate('toolStore') },
               { key: 'settings', label: t.settings, icon: <Settings size={18} />,
