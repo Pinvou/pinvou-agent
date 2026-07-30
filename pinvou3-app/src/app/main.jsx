@@ -14,6 +14,7 @@ import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch, sessionRoute } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
+import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
@@ -50,6 +51,7 @@ import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
 
+installGlobalMarkdownRenderer(window);
 window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
 
 let appFirstRenderMarked = false;

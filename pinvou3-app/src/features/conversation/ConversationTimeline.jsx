@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
+import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -108,10 +107,7 @@ function localizedSemanticLabel(value, copy) {
 }
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(String(text || '')), {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
-  }), [text]);
+  const html = useMemo(() => renderMarkdown(text), [text]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
