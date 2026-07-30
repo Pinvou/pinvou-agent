@@ -492,7 +492,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       local: [
         {
           key: 'local',
-          title: '本地 vLLM',
+          title: '本地模型',
           preset: 'local_vllm',
           items: [
             { model: 'qwen36_35b_256k', title: 'qwen36_35b_256k', desc: '本地服务默认模型' },
@@ -1574,8 +1574,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             key: `${candidate.base_url || 'local'}:${modelId}`,
             model: modelId,
             base_url: candidate.base_url || '',
-            provider: candidate.provider || 'vllm',
-            label: candidate.label || 'vLLM',
+            provider: candidate.provider || 'local',
+            label: candidate.label || settingsCopy.localModel,
             max_model_len: index === 0 ? candidate.max_model_len : null,
           })).filter(row => row.model && row.base_url);
         });
