@@ -36,6 +36,17 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiSettingsDetail.deleteModelTitle, `${language}.uiSettingsDetail.deleteModelTitle must exist`);
   assert.ok(dict[language].uiChat.asrDownloadTitle, `${language}.uiChat.asrDownloadTitle must exist`);
   assert.ok(dict[language].uiChat.memoryMeta.preference, `${language}.uiChat.memoryMeta.preference must exist`);
+  assert.ok(dict[language].uiChat.sceneModes.documentWriting, `${language}.uiChat.sceneModes.documentWriting must exist`);
+  assert.ok(dict[language].uiChat.sceneModes.poster, `${language}.uiChat.sceneModes.poster must exist`);
+  assert.ok(dict[language].uiChat.sceneModes.dataVisualization, `${language}.uiChat.sceneModes.dataVisualization must exist`);
+  assert.ok(dict[language].uiChat.sceneModes.pptDesign, `${language}.uiChat.sceneModes.pptDesign must exist`);
+  assert.ok(dict[language].uiChat.sceneModes.pptUnavailable, `${language}.uiChat.sceneModes.pptUnavailable must exist`);
+  assert.ok(dict[language].uiChat.sceneModes.designGeneralPlaceholder, `${language}.uiChat.sceneModes.designGeneralPlaceholder must exist`);
+  assert.equal(
+    typeof dict[language].uiChat.sceneModes.clear,
+    'function',
+    `${language}.uiChat.sceneModes.clear must be a function`,
+  );
   assert.ok(dict[language].uiChatExtra.draftingScheduled, `${language}.uiChatExtra.draftingScheduled must exist`);
   assert.ok(dict[language].uiAccount.availableQuota, `${language}.uiAccount.availableQuota must exist`);
   assert.ok(dict[language].uiAccount.settingsLoadFailed, `${language}.uiAccount.settingsLoadFailed must exist`);
@@ -74,6 +85,12 @@ const chat = source('features/chat/ChatView.jsx');
 assert.match(chat, /const chatCopy = t\.uiChat/);
 assert.match(chat, /chatCopy\.asrDownloadTitle/);
 assert.match(chat, /chatCopy\.memoryMeta/);
+assert.match(chat, /chatCopy\.sceneModes/);
+assert.match(chat, /sceneCopy\.designGeneralPlaceholder/);
+assert.doesNotMatch(chat, /label:\s*'公文写作'/);
+assert.doesNotMatch(chat, /label:\s*'数据可视化'/);
+assert.doesNotMatch(chat, /`取消\$\{scene\.label\}`/);
+assert.doesNotMatch(chat, /:\s*'描述你想生成或调整的内容'/);
 assert.doesNotMatch(chat, />下载语音识别模型</);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');

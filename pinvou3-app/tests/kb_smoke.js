@@ -18,8 +18,18 @@ function loadPuppeteer() {
   console.error('SKIP: 找不到 puppeteer-core'); process.exit(2);
 }
 const puppeteer = loadPuppeteer();
-const CHROME = process.env.CHROME || ['/snap/bin/chromium','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
-if (!CHROME) { console.error('SKIP: 未找到 chromium'); process.exit(2); }
+const CHROME = process.env.CHROME || [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  '/snap/bin/chromium',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+].find(p => fs.existsSync(p));
+if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-kb-'));
 
 function injectSource() {

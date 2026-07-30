@@ -19,6 +19,7 @@
     var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     var ensureSession = context.ensureSession;
     var getBuffer = context.getBuffer;
+    var recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var markRemoteTurn = context.markRemoteTurn;
     var clearAttachments = context.clearAttachments;
@@ -210,6 +211,7 @@
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
+    var submittedMessagePos = -1;
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
@@ -229,9 +231,11 @@
         messageIndex: state.messages.length,
       };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
+      if (meta && meta.pinvouScene) uitem.pinvouScene = meta.pinvouScene; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
       submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
+      submittedMessagePos = state.messages.length;
       state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
@@ -246,6 +250,11 @@
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        if (meta && meta.pinvouScene) {
+          runSyncOnSession(sid, function () {
+            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+          });
+        }
         return true;
       })
       .catch(function (err) {
@@ -306,7 +315,7 @@
     var attachments = [];
     items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
     var displayText = formatAttachmentDisplayText(text, attachments);
-    var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
+    var meta = items.length === 1 ? items[0].meta : mergedQueuedMeta(items); // 多条同一专业场景时保留展示标签
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
     doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
@@ -318,6 +327,15 @@
         Array.prototype.unshift.apply(retryQueue, items);
         notify();
       });
+  }
+  function mergedQueuedMeta(items) {
+    var first = items && items[0] && items[0].meta;
+    var scene = first && first.pinvouScene;
+    if (!scene) return null;
+    for (var i = 1; i < items.length; i++) {
+      if (!items[i] || !items[i].meta || items[i].meta.pinvouScene !== scene) return null;
+    }
+    return { pinvouScene: scene };
   }
 
   async function sendMessageToSession(sessionId, text, meta) {

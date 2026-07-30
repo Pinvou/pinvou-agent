@@ -23,7 +23,9 @@ this.createPinvouModeScopeKey = createPinvouModeScopeKey;
 this.createPinvouModeState = createPinvouModeState;
 this.hasPinvouModeState = hasPinvouModeState;
 this.loadPinvouModeState = loadPinvouModeState;
+this.normalizeDesignSubtab = normalizeDesignSubtab;
 this.normalizePinvouMode = normalizePinvouMode;
+this.normalizeWorkSubtab = normalizeWorkSubtab;
 this.reducePinvouModeState = reducePinvouModeState;
 this.savePinvouModeState = savePinvouModeState;
 ${workSceneCode}
@@ -39,7 +41,9 @@ const {
   createPinvouModeState,
   hasPinvouModeState,
   loadPinvouModeState,
+  normalizeDesignSubtab,
   normalizePinvouMode,
+  normalizeWorkSubtab,
   reducePinvouModeState,
   savePinvouModeState,
   shouldUseDocumentWritingScene,
@@ -55,11 +59,17 @@ assert.strictEqual(PINVOU_MODE_LABELS.code, '代码');
 assert.strictEqual(normalizePinvouMode('design'), 'design');
 assert.strictEqual(normalizePinvouMode('code'), 'work');
 assert.strictEqual(normalizePinvouMode('invalid'), 'work');
+assert.strictEqual(normalizeWorkSubtab('invalid'), 'general');
+assert.strictEqual(normalizeDesignSubtab('invalid'), 'general');
 
 let state = createPinvouModeState();
 assert.strictEqual(state.mode, 'work');
-assert.strictEqual(state.workSubtab, 'document-writing');
-assert.strictEqual(state.designSubtab, 'poster');
+assert.strictEqual(state.workSubtab, 'general');
+assert.strictEqual(state.designSubtab, 'general');
+assert.strictEqual(
+  shouldUseDocumentWritingScene(state.mode, state.workSubtab),
+  false,
+);
 assert.strictEqual(state.selectedDesignElementId, undefined);
 assert.strictEqual(state.designRuntimeStatus, 'idle');
 
@@ -86,7 +96,7 @@ const memoryStorage = {
 savePinvouModeState(state, memoryStorage);
 assert.deepStrictEqual(JSON.parse(memoryStorage.values[PINVOU_MODE_STORAGE_KEY]).draft, {
   mode: 'work',
-  workSubtab: 'document-writing',
+  workSubtab: 'general',
   designSubtab: 'data-visualization',
 });
 state = loadPinvouModeState(memoryStorage);
@@ -114,6 +124,26 @@ assert.strictEqual(
   shouldUseDocumentWritingScene(state.mode, 'document-writing'),
   true,
 );
+
+const previousStorage = {
+  values: {
+    pinvou_mode_state_v2: JSON.stringify({
+      draft: { mode: 'work', workSubtab: 'document-writing', designSubtab: 'poster' },
+      sessions: {
+        'session-document': { mode: 'work', workSubtab: 'document-writing', designSubtab: 'poster' },
+        'session-poster': { mode: 'design', workSubtab: 'document-writing', designSubtab: 'poster' },
+      },
+      sessionOrder: ['session-document', 'session-poster'],
+    }),
+  },
+  getItem(key) { return this.values[key] || null; },
+  setItem(key, value) { this.values[key] = value; },
+};
+const migratedDraft = loadPinvouModeState(previousStorage);
+assert.strictEqual(migratedDraft.workSubtab, 'general');
+assert.strictEqual(migratedDraft.designSubtab, 'general');
+assert.strictEqual(loadPinvouModeState(previousStorage, 'session-document').workSubtab, 'document-writing');
+assert.strictEqual(loadPinvouModeState(previousStorage, 'session-poster').designSubtab, 'poster');
 
 memoryStorage.values[PINVOU_MODE_STORAGE_KEY] = '{bad json';
 assert.strictEqual(loadPinvouModeState(memoryStorage).mode, 'work');
