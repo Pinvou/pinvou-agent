@@ -764,8 +764,12 @@ async function main() {
 
   const firstTurnCommand = 'web_access_create_session_and_chat';
   const optimisticText = '首条消息立即显示测试';
+  const firstTurnPayload = `${optimisticText}\n\n---\nPinvou 场景路由测试`;
   const deferredFirstTurn = desktop.deferNextRpc(firstTurnCommand);
-  await mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), optimisticText);
+  await mobilePage.evaluate(
+    ({ text, payload }) => window.TauriBridge.chat.sendMessage(text, { pinvouPayloadText: payload }),
+    { text: optimisticText, payload: firstTurnPayload },
+  );
   const firstTurnRequest = await deferredFirstTurn.seen;
   await mobilePage.waitForFunction(text => (
     document.body.innerText.includes(text)
@@ -774,7 +778,8 @@ async function main() {
   ), { timeout: 5_000 }, optimisticText);
   record('WebUI 新对话首条消息不等待桌面 RPC 即刻显示',
     firstTurnRequest.command === firstTurnCommand
-      && /^first_turn_/.test(firstTurnRequest.client_request_id || ''));
+      && /^first_turn_/.test(firstTurnRequest.client_request_id || '')
+      && firstTurnRequest.args?.message === firstTurnPayload);
 
   const optimisticSessionId = 'session-optimistic-smoke';
   deferredFirstTurn.respond({

@@ -56,6 +56,7 @@ function buildComposerToolMenuState({
         title: skill.title || skill.name || skill.id,
         description: skill.description || skill.subtitle || '',
         enabled: !disabled.has(rowId),
+        active: activeSkill === skill.id || activeSkill === rowId,
         switchable: true,
       };
     });
