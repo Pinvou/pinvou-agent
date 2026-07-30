@@ -1308,25 +1308,30 @@ impl AcpPool {
     }
 
     async fn restart_agent_sessions(&self, backend: AgentBackend) {
-        let (session_ids, runtimes) = {
+        let runtimes = {
             let mut sessions = self.sessions.lock().await;
             let session_ids = sessions
                 .keys()
                 .filter(|session_id| self.agents.backend(session_id) == backend)
                 .cloned()
                 .collect::<Vec<_>>();
-            let runtimes = session_ids
+            session_ids
                 .iter()
-                .filter_map(|session_id| sessions.remove(session_id))
-                .collect::<Vec<_>>();
-            (session_ids, runtimes)
+                .filter_map(|session_id| {
+                    sessions
+                        .remove(session_id)
+                        .map(|runtime| (session_id.clone(), runtime))
+                })
+                .collect::<Vec<_>>()
         };
-        // 与 evict() 一致先取消挂起的权限/输入请求，避免 pending map 残留泄漏。
-        for session_id in &session_ids {
-            self.cancel_pending_permissions(session_id).await;
-            self.cancel_pending_elicitations(session_id).await;
-        }
-        for runtime in runtimes {
+        for (session_id, runtime) in runtimes {
+            // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
+            // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
+            // 状态同时收口。
+            self.cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))
+                .await;
+            self.cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))
+                .await;
             runtime.shutdown().await;
         }
     }
@@ -1851,22 +1856,66 @@ impl AcpPool {
     }
 
     async fn cancel_pending_permissions(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|runtime| runtime.bridge.clone());
+        self.cancel_pending_permissions_with_bridge(session_id, bridge.as_ref())
+            .await;
+    }
+
+    async fn cancel_pending_permissions_with_bridge(
+        &self,
+        session_id: &str,
+        bridge: Option<&EventBridge>,
+    ) {
         let mut pending = self.pending_permissions.lock().await;
         let keys = pending
             .iter()
             .filter(|(_, request)| request.view.session_id == session_id)
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
+        let mut cancelled = Vec::new();
         for key in keys {
             if let Some(request) = pending.remove(&key) {
+                cancelled.push(request.view.tool_call_id.clone());
                 let _ = request.response_tx.send(RequestPermissionResponse::new(
                     RequestPermissionOutcome::Cancelled,
                 ));
             }
         }
+        drop(pending);
+        if let Some(bridge) = bridge {
+            for tool_call_id in cancelled {
+                bridge.emit(
+                    "permission_resolved",
+                    json!({
+                        "toolCallId": tool_call_id,
+                        "outcome": "cancelled",
+                    }),
+                );
+            }
+        }
     }
 
     async fn cancel_pending_elicitations(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|runtime| runtime.bridge.clone());
+        self.cancel_pending_elicitations_with_bridge(session_id, bridge.as_ref())
+            .await;
+    }
+
+    async fn cancel_pending_elicitations_with_bridge(
+        &self,
+        session_id: &str,
+        bridge: Option<&EventBridge>,
+    ) {
         let mut pending = self.pending_elicitations.lock().await;
         let keys = pending
             .iter()
@@ -1883,9 +1932,9 @@ impl AcpPool {
             }
         }
         drop(pending);
-        if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
+        if let Some(bridge) = bridge {
             for elicitation_id in cancelled {
-                runtime.bridge.emit(
+                bridge.emit(
                     "elicitation_resolved",
                     json!({
                         "elicitationId": elicitation_id,
@@ -3339,6 +3388,13 @@ mod tests {
                 "If the browser did not open, visit: \u{1b}]8;;https://claude.com/cai/oauth/authorize?state=test\u{7}https://claude.com/cai/oauth/authorize?state=test\u{1b}]8;;\u{7}",
             ),
             Some("https://claude.com/cai/oauth/authorize?state=test".to_string())
+        );
+        assert_eq!(
+            extract_agent_login_url(
+                AgentBackend::ClaudeAcp,
+                "Legacy Claude login: https://claude.ai/oauth/authorize?state=test",
+            ),
+            Some("https://claude.ai/oauth/authorize?state=test".to_string())
         );
         assert_eq!(
             extract_agent_login_url(

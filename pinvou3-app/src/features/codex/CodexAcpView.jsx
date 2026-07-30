@@ -390,7 +390,7 @@ function PlanBlock({ plan }) {
   );
 }
 
-function PermissionCard({ permission, pending, onRespond, responding, agentName }) {
+function PermissionCard({ permission, pending, onRespond, responding, agentName, copy }) {
   const request = permission.request || {};
   const tool = request.toolCall || {};
   const options = request.options || [];
@@ -400,11 +400,11 @@ function PermissionCard({ permission, pending, onRespond, responding, agentName 
       <div className="flex items-start gap-3">
         <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{agentName} 请求权限</div>
-          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || '执行受保护操作'}</div>
+          <div className="text-[13px] font-semibold">{copy.permissionRequest(agentName)}</div>
+          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || copy.protectedOperation}</div>
           {tool.rawInput && tool.rawInput.command
-            ? <TerminalBlock label="命令" text={String(tool.rawInput.command)} />
-            : <StructuredValue label="操作参数" value={tool.rawInput} />}
+            ? <TerminalBlock label={copy.command} text={String(tool.rawInput.command)} />
+            : <StructuredValue label={copy.operationArguments} value={tool.rawInput} />}
           <div className="mt-3 flex flex-wrap gap-2">
             {options.map(option => (
               <button key={option.optionId} disabled={!actionable || responding}
@@ -415,16 +415,16 @@ function PermissionCard({ permission, pending, onRespond, responding, agentName 
                     : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
                 } disabled:opacity-45 disabled:cursor-not-allowed`}>
                 {option.optionId === 'allow_once'
-                  ? '允许一次'
+                  ? copy.allowOnce
                   : option.optionId === 'allow_always'
-                    ? '本会话允许'
+                    ? copy.allowSession
                     : option.optionId === 'reject_once'
-                      ? '拒绝'
+                      ? copy.reject
                       : option.name}
               </button>
             ))}
           </div>
-          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? '已处理' : '该请求已过期'}</div>}
+          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? copy.handled : copy.expired}</div>}
         </div>
       </div>
     </div>
@@ -517,6 +517,7 @@ function TurnItem({
   item,
   now,
   agentName,
+  copy,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -531,7 +532,7 @@ function TurnItem({
     return (
       <PermissionCard permission={item.permission}
         pending={pendingByTool[item.permission.toolCallId]}
-        onRespond={onRespond} responding={responding} agentName={agentName} />
+        onRespond={onRespond} responding={responding} agentName={agentName} copy={copy} />
     );
   }
   if (item.type === 'elicitation') {
@@ -557,6 +558,7 @@ function Turn({
   now,
   agentId,
   agentName,
+  copy,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -601,7 +603,7 @@ function Turn({
           )}
           {turn.presentation.map((item, index) => (
             <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
-              agentName={agentName}
+              agentName={agentName} copy={copy}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
@@ -1639,6 +1641,7 @@ export function CodexAcpView({
               : (
                   <Turn key={turn.id} turn={turn} now={now}
                     agentId={activeAgentId} agentName={activeAgentName}
+                    copy={t.uiConversation}
                     pendingByTool={pendingByTool}
                     pendingByElicitation={pendingByElicitation}
                     onRespond={respond}

@@ -265,6 +265,11 @@ try {
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
+  assert.ok(runtime.includes('cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))')
+    && runtime.includes('"outcome": "cancelled"'),
+  'account switching must persist permission cancellation through the removed runtime bridge');
+  assert.ok(runtime.includes('cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))'),
+  'account switching must persist elicitation cancellation through the removed runtime bridge');
   assert.ok(runtime.includes('AgentBackend::ClaudeAcp')
     && runtime.includes('AgentBackend::KimiAcp')
     && runtime.includes('command.arg("acp")')
@@ -279,6 +284,16 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  assert.ok(codexView.includes('copy.permissionRequest(agentName)')
+    && codexView.includes('tool.title || copy.protectedOperation')
+    && codexView.includes('label={copy.command}')
+    && codexView.includes('copy.operationArguments')
+    && codexView.includes('copy.allowOnce')
+    && codexView.includes('copy.allowSession')
+    && codexView.includes('copy.reject')
+    && codexView.includes('copy.handled')
+    && codexView.includes('copy.expired'),
+  'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
