@@ -13,8 +13,7 @@ name: PR Check
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test:只在 main push 跑，不作为 PR 或 Merge Queue 合入门禁。
-# - windows/macos-codex-runtime-test:相关 PR 在原生 runner 准备 Node + ACP Bridge，
-#   并启动 Codex/Claude Runtime 冒烟。
+# - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
 # - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
 # - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
 #
@@ -108,6 +107,7 @@ jobs:
       frontend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.frontend }}
       relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
       acp_runtime: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.acp_runtime }}
+      windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -194,6 +194,24 @@ jobs:
               - 'pinvou3-app/tests/codex_acp_*'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
+              - '.github/workflows/pr-check.yml'
+            windows_codex:
+              - '.gitmodules'
+              - 'private-runtimes/windows'
+              - 'pinvou3-app/scripts/codex-bridge-runtime/**'
+              - 'pinvou3-app/scripts/tauri/build.js'
+              - 'pinvou3-app/scripts/tauri/codex-bridge.js'
+              - 'pinvou3-app/scripts/tauri/effective-config.js'
+              - 'pinvou3-app/scripts/tauri/windows-runtime.js'
+              - 'pinvou3-app/src-tauri/config/platforms/windows/runtime/**'
+              - 'pinvou3-app/src-tauri/packaging/windows/runtime/**'
+              - 'pinvou3-app/src-tauri/src/features/codex_acp/**'
+              - 'pinvou3-app/src-tauri/src/platform/capabilities.rs'
+              - 'pinvou3-app/tests/codex_acp_*'
+              - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
+              - '.github/workflows/release-packages.yml'
               - '.github/workflows/pr-check.yml'
 
   fast-gate:
@@ -599,7 +617,7 @@ jobs:
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
     needs: changes
-    if: ${{ needs.changes.outputs.acp_runtime == 'true' }}
+    if: ${{ needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -617,7 +635,9 @@ jobs:
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       - name: Windows Codex Runtime 原生打包冒烟
-        run: npm --prefix pinvou3-app run test:codex-acp-windows-runtime
+        run: |
+          npm --prefix pinvou3-app run test:windows-runtime
+          npm --prefix pinvou3-app run test:codex-acp-windows-runtime
 
   macos-codex-runtime-test:
     name: macos-codex-runtime-test

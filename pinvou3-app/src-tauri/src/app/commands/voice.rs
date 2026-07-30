@@ -228,7 +228,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
                         "recognition_failed",
                         "transcribing",
                         format!(
-                            "Local SenseVoice/FunASR ASR timed out after {} seconds. Check that the q8 model is bundled and the runtime works offline.",
+                            "Local SenseVoice/FunASR ASR timed out after {} seconds. Check that the downloaded q8 model and local runtime are available.",
                             timeout.as_secs()
                         ),
                     ));

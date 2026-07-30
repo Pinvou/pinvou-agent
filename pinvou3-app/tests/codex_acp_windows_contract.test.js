@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -60,8 +60,8 @@ const {
   expectedMarker,
   hideWindowsChildProcesses,
   isPrepared,
+  validateNodeRuntime,
   WINDOWS_CLAUDE_EXECUTABLE,
-  WINDOWS_NODE_VERSION,
   windowsBridgeOverlay,
 } = require("../scripts/tauri/codex-bridge.js");
 
@@ -116,16 +116,6 @@ assert.match(
   "Bridge stderr and exit status must remain available in persistent ACP diagnostics",
 );
 assert.match(
-  codexAcp,
-  /fn command_version[\s\S]*?HiddenCommand::new/,
-  "Windows Claude version probes must not open a console window",
-);
-assert.match(
-  codexAcp,
-  /fn cli_status_success[\s\S]*?HiddenCommand::new\("cmd"\)/,
-  "Windows authentication probes must not open a console window",
-);
-assert.match(
   bridgeBuildScript,
   /windowsHide: true[\s\S]*?hideWindowsChildProcesses/,
   "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
@@ -142,8 +132,13 @@ assert.equal(
 );
 assert.equal(
   windowsBridgeOverlay().bundle.resources["target/windows-runtime/node/"],
-  "runtime/node",
-  "Windows packages must retain the pinned Node.js runtime",
+  undefined,
+  "Codex Bridge must not own or duplicate the shared Windows Node runtime",
+);
+assert.doesNotMatch(
+  bridgeBuildScript,
+  /WINDOWS_NODE_VERSION|nodejs\.org\/dist|curl\.exe|tar\.exe/,
+  "Codex Bridge must reuse an existing Node instead of downloading one",
 );
 assert.match(
   buildScript,
@@ -159,13 +154,10 @@ assert.match(
 const preparedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-codex-bridge-"));
 try {
   const bridgeRoot = path.join(preparedRoot, "codex-bridge");
-  const nodeRoot = path.join(preparedRoot, "node");
-  const nodeExecutable = path.join(nodeRoot, "node.exe");
-  const fakeNode = Buffer.from("pinned-node-runtime");
-  const expected = {
-    ...expectedMarker({ architecture: "x64" }),
-    node_executable_sha256: crypto.createHash("sha256").update(fakeNode).digest("hex"),
-  };
+  const expected = expectedMarker({ architecture: "x64" });
+  const sourcePackage = JSON.parse(
+    read("scripts", "codex-bridge-runtime", "package.json"),
+  );
   const packageJsonPath = path.join(
     bridgeRoot,
     "acp",
@@ -193,15 +185,16 @@ try {
   fs.mkdirSync(path.dirname(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE)), {
     recursive: true,
   });
-  fs.mkdirSync(nodeRoot, { recursive: true });
   fs.writeFileSync(path.join(bridgeRoot, "manifest.json"), JSON.stringify(expected));
   fs.writeFileSync(
     packageJsonPath,
-    JSON.stringify({ version: expected.codex_acp_version }),
+    JSON.stringify({ version: sourcePackage.dependencies["@agentclientprotocol/codex-acp"] }),
   );
   fs.writeFileSync(
     claudePackageJsonPath,
-    JSON.stringify({ version: expected.claude_acp_version }),
+    JSON.stringify({
+      version: sourcePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
+    }),
   );
   const bridgeEntrypoint = path.join(bridgeRoot, BRIDGE_ENTRYPOINT);
   fs.writeFileSync(
@@ -220,10 +213,15 @@ try {
     path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE),
     "native-claude-runtime",
   );
-  fs.writeFileSync(nodeExecutable, fakeNode);
 
-  assert.equal(expected.node_version, WINDOWS_NODE_VERSION);
-  assert.equal(isPrepared(expected, bridgeRoot, nodeRoot), true);
+  assert.deepEqual(Object.keys(expected), [
+    "schema_version",
+    "platform",
+    "arch",
+    "package_json_sha256",
+    "lockfile_sha256",
+  ]);
+  assert.equal(isPrepared(expected, bridgeRoot), true);
   const redundantCodexPackage = path.join(
     bridgeRoot,
     "acp",
@@ -233,7 +231,7 @@ try {
   );
   fs.mkdirSync(redundantCodexPackage, { recursive: true });
   assert.equal(
-    isPrepared(expected, bridgeRoot, nodeRoot),
+    isPrepared(expected, bridgeRoot),
     false,
     "prepared runtime must reject a redundant bundled Codex platform package",
   );
@@ -247,14 +245,14 @@ try {
   );
   fs.mkdirSync(redundantClaudePackage, { recursive: true });
   assert.equal(
-    isPrepared(expected, bridgeRoot, nodeRoot),
+    isPrepared(expected, bridgeRoot),
     false,
     "prepared runtime must reject a redundant bundled Claude platform package",
   );
   fs.rmSync(redundantClaudePackage, { recursive: true });
   fs.rmSync(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE));
   assert.equal(
-    isPrepared(expected, bridgeRoot, nodeRoot),
+    isPrepared(expected, bridgeRoot),
     false,
     "prepared runtime must be rejected when claude.exe is absent",
   );
@@ -262,14 +260,23 @@ try {
     path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE),
     "native-claude-runtime",
   );
-  fs.rmSync(nodeExecutable);
+  fs.rmSync(bridgeEntrypoint);
   assert.equal(
-    isPrepared(expected, bridgeRoot, nodeRoot),
+    isPrepared(expected, bridgeRoot),
     false,
-    "prepared runtime must be rejected when node.exe is absent",
+    "prepared Bridge must be rejected when its entrypoint is absent",
   );
 } finally {
   fs.rmSync(preparedRoot, { recursive: true, force: true });
 }
+
+assert.match(
+  validateNodeRuntime(process.execPath, {
+    environment: process.env,
+    spawn: spawnSync,
+  }),
+  /^v\d+\./,
+  "Bridge preparation must validate and reuse the supplied Node runtime",
+);
 
 console.log("✓ Windows Codex ACP packaging and command-shim contract passed");

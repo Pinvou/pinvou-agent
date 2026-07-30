@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const {
@@ -10,30 +11,38 @@ const {
   WINDOWS_BRIDGE_CONFIG_PATH,
   WINDOWS_BRIDGE_ROOT,
   WINDOWS_CLAUDE_EXECUTABLE,
-  WINDOWS_NODE_EXECUTABLE,
-  WINDOWS_NODE_VERSION,
 } = require("../scripts/tauri/codex-bridge.js");
 const {
   buildResourceManifest,
   composeEffectiveConfig,
 } = require("../scripts/tauri/effective-config.js");
 const { platformConfigPath } = require("../scripts/tauri/platform-config.js");
+const {
+  WINDOWS_RUNTIME_CONFIG_PATH,
+  describeWindowsRuntime,
+} = require("../scripts/tauri/windows-runtime.js");
 
 assert.equal(process.platform, "win32", "此冒烟测试必须在 Windows 原生 runner 执行");
 assert.equal(process.arch, "x64", "Windows Codex Runtime 当前只支持 x64");
 
-prepareWindowsCodexBridge();
-
-const nodeVersion = spawnSync(WINDOWS_NODE_EXECUTABLE, ["--version"], {
-  encoding: "utf8",
+const stagedRuntime = fs.existsSync(WINDOWS_RUNTIME_CONFIG_PATH)
+  ? describeWindowsRuntime()
+  : null;
+const nodeExecutable = stagedRuntime?.nodeExecutable ?? process.execPath;
+prepareWindowsCodexBridge({
+  nodeExecutable,
+  npmExecPath: stagedRuntime?.npmExecPath,
 });
-assert.equal(nodeVersion.error, undefined);
-assert.equal(nodeVersion.status, 0);
-assert.equal(nodeVersion.stdout.trim(), `v${WINDOWS_NODE_VERSION}`);
 
 const marker = expectedMarker({ architecture: "x64" });
+const sourcePackage = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "codex-bridge-runtime", "package.json"),
+    "utf8",
+  ),
+);
 const bridgeVersion = spawnSync(
-  WINDOWS_NODE_EXECUTABLE,
+  nodeExecutable,
   [path.join(WINDOWS_BRIDGE_ROOT, BRIDGE_ENTRYPOINT), "--version"],
   {
     encoding: "utf8",
@@ -44,13 +53,14 @@ assert.equal(bridgeVersion.error, undefined);
 assert.equal(bridgeVersion.status, 0, bridgeVersion.stderr);
 assert.equal(
   bridgeVersion.stdout.trim(),
-  `@agentclientprotocol/codex-acp ${marker.codex_acp_version}`,
+  `@agentclientprotocol/codex-acp ${sourcePackage.dependencies["@agentclientprotocol/codex-acp"]}`,
 );
 
 const claudeExecutable = path.join(WINDOWS_BRIDGE_ROOT, WINDOWS_CLAUDE_EXECUTABLE);
 const claudeVersion = spawnSync(claudeExecutable, ["--version"], {
   encoding: "utf8",
   timeout: 10_000,
+  windowsHide: true,
 });
 assert.equal(claudeVersion.error, undefined);
 assert.equal(claudeVersion.status, 0, claudeVersion.stderr);
@@ -58,23 +68,31 @@ assert.notEqual(`${claudeVersion.stdout}${claudeVersion.stderr}`.trim(), "");
 
 const { effectiveConfig } = composeEffectiveConfig([
   platformConfigPath("win32"),
+  ...(stagedRuntime ? [stagedRuntime.configPath] : []),
   WINDOWS_BRIDGE_CONFIG_PATH,
 ]);
 const manifest = buildResourceManifest(effectiveConfig, { platform: "win32" });
 const destinations = new Set(manifest.files.map((file) => file.destination));
-assert.ok(destinations.has("runtime/node/node.exe"));
-assert.ok(destinations.has("runtime/node/LICENSE"));
 assert.ok(
   destinations.has(
     `runtime/codex-bridge/${BRIDGE_ENTRYPOINT.replaceAll(path.sep, "/")}`,
   ),
 );
 assert.ok(destinations.has("runtime/codex-bridge/manifest.json"));
+if (stagedRuntime) {
+  assert.ok(destinations.has("runtime/node/node.exe"));
+  assert.ok(destinations.has("runtime/node/LICENSE"));
+} else {
+  assert.ok(
+    [...destinations].every((destination) => !destination.startsWith("runtime/node/")),
+    "Codex Bridge overlay must not package a second Node runtime",
+  );
+}
 
 function initializeClaudeBridge() {
   return new Promise((resolve, reject) => {
     const entrypoint = path.join(WINDOWS_BRIDGE_ROOT, CLAUDE_BRIDGE_ENTRYPOINT);
-    const child = spawn(WINDOWS_NODE_EXECUTABLE, [entrypoint], {
+    const child = spawn(nodeExecutable, [entrypoint], {
       cwd: WINDOWS_BRIDGE_ROOT,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -107,7 +125,7 @@ function initializeClaudeBridge() {
     });
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
-      const lines = stdout.split(/\r?\n/);
+      const lines = stdout.split(/\r?\n/u);
       stdout = lines.pop() || "";
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -149,9 +167,10 @@ function initializeClaudeBridge() {
   });
 }
 
+assert.equal(marker.platform, "win32");
 initializeClaudeBridge()
   .then(() => {
-    console.log("Windows Codex + Claude ACP Bridge + Node installer runtime: ok");
+    console.log("Windows Codex + Claude ACP Bridge existing-Node runtime: ok");
   })
   .catch((error) => {
     console.error(error);

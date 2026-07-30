@@ -76,9 +76,10 @@ assert.deepEqual(configSpecs(linuxArmArgs), [
 ]);
 
 const explicitOverlay = "custom-signing.json";
+const windowsRuntimeOverlay = "target/windows-runtime/tauri.generated.conf.json";
 const bundleArgs = prepareTauriArgs(
   ["bundle", "-c", explicitOverlay],
-  { platform: "win32" },
+  { platform: "win32", stageRuntime: () => null },
 );
 assert.deepEqual(configSpecs(bundleArgs), [
   platformConfigPath("win32"),
@@ -88,11 +89,13 @@ const windowsCodexArgs = prepareTauriArgs(
   ["build", "-c", explicitOverlay],
   {
     platform: "win32",
+    stageRuntime: () => ({ configPath: windowsRuntimeOverlay }),
     additionalConfigs: [WINDOWS_BRIDGE_CONFIG_PATH],
   },
 );
 assert.deepEqual(configSpecs(windowsCodexArgs), [
   platformConfigPath("win32"),
+  windowsRuntimeOverlay,
   WINDOWS_BRIDGE_CONFIG_PATH,
   explicitOverlay,
 ]);
