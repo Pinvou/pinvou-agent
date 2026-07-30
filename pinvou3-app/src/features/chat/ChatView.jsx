@@ -25,6 +25,9 @@ import {
   isSearchTool,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
+import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
+import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
+import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import {
   createPinvouModeScopeKey,
@@ -55,14 +58,35 @@ function unifiedConversationUiEnabled() {
 }
 
 const WORK_MODE_SUBTABS = [
-  { key: 'document-writing', Icon: FileText },
+  { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
 ];
 
 const DESIGN_MODE_SUBTABS = [
-  { key: 'poster', Icon: ImageIcon },
-  { key: 'data-visualization', Icon: BarChart2 },
-  { key: 'ppt', Icon: Presentation, disabled: true },
+  { key: 'poster', labelKey: 'poster', Icon: ImageIcon },
+  { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
+  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation, disabled: true, disabledReasonKey: 'pptUnavailable' },
 ];
+
+function localizeSceneTabs(items, copy) {
+  return items.map(item => ({
+    ...item,
+    label: copy[item.labelKey],
+    disabledReason: item.disabledReasonKey ? copy[item.disabledReasonKey] : undefined,
+  }));
+}
+
+function pinvouSceneDisplay(scene, copy) {
+  switch (scene) {
+    case 'work:document-writing':
+      return { label: copy.documentWriting, Icon: FileText };
+    case 'design:poster':
+      return { label: copy.poster, Icon: ImageIcon };
+    case 'design:data-visualization':
+      return { label: copy.dataVisualization, Icon: BarChart2 };
+    default:
+      return null;
+  }
+}
 
 const openChatExternalUrl = (url) => {
   if (isWeb) {
@@ -330,7 +354,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const updateIndicator = useCallback(() => {
         const track = trackRef.current;
         const button = buttonRefs.current[value];
-        if (!track || !button) return;
+        if (!track || !button) {
+          setIndicator((prev) => (prev.ready ? { left: 0, width: 20, ready: false } : prev));
+          return;
+        }
         const trackRect = track.getBoundingClientRect();
         const buttonRect = button.getBoundingClientRect();
         const width = Math.min(28, Math.max(20, buttonRect.width * 0.32));
@@ -374,6 +401,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   type="button"
                   data-testid={`${testId}-option-${item.key}`}
                   title={disabled ? (item.disabledReason || comingSoonLabel) : item.label}
+                  aria-pressed={selected}
                   aria-disabled={disabled ? 'true' : undefined}
                   disabled={disabled}
                   onClick={() => {
@@ -413,7 +441,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SceneModeTag = ({ isDark, scene }) => {
+    const SceneModeTag = ({ isDark, scene, onClear, clearLabel }) => {
       if (!scene) return null;
       const SceneIcon = scene.Icon || Sparkles;
       return (
@@ -425,6 +453,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           }`}>
             <SceneIcon size={15} className="shrink-0" />
             <span>{scene.label}</span>
+            {onClear && (
+              <button
+                type="button"
+                data-testid="pinvou-scene-tag-clear"
+                aria-label={clearLabel}
+                title={clearLabel}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onClear();
+                }}
+                className={`-mr-1 flex h-5 w-5 items-center justify-center rounded-full transition-colors ${
+                  isDark ? 'text-[#C7C7CC] hover:bg-white/10 hover:text-white' : 'text-[#5F6368] hover:bg-black/10 hover:text-[#1D1D1F]'
+                }`}
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
       );
@@ -434,12 +480,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
-      const workModeSubtabs = WORK_MODE_SUBTABS.map((item) => ({ ...item, label: chatViewCopy.subtabs[item.key] }));
-      const designModeSubtabs = DESIGN_MODE_SUBTABS.map((item) => ({
-        ...item,
-        label: chatViewCopy.subtabs[item.key],
-        disabledReason: item.disabled ? (chatViewCopy.disabledReasons[item.key] || chatViewCopy.comingSoon) : undefined,
-      }));
+      const sceneCopy = chatCopy.sceneModes;
+      const workModeSubtabs = localizeSceneTabs(WORK_MODE_SUBTABS, sceneCopy);
+      const designModeSubtabs = localizeSceneTabs(DESIGN_MODE_SUBTABS, sceneCopy);
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const initialInput = constrainChatInput(
         bridge.available && bridge.chat && bridge.chat.getComposerDraft
@@ -596,6 +639,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
+      const attachmentDragActive = !!(bs && bs.attachmentDragActive);
       const formatAttachmentError = (error) => {
         const raw = String(error || '');
         if (/under sensitive system dir|crosses sensitive (dir|component)/i.test(raw)) {
@@ -680,10 +724,23 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         handlePinvouModeChange(mode);
       }, [handlePinvouModeChange, onSwitchHomeMode]);
       const handleWorkSubtabChange = useCallback((subtab) => {
-        updatePinvouModeState({ type: 'set-work-subtab', subtab });
+        updatePinvouModeState({
+          type: 'set-work-subtab',
+          subtab: subtab === pinvouModeStateRef.current.workSubtab ? 'general' : subtab,
+        });
       }, [updatePinvouModeState]);
       const handleDesignSubtabChange = useCallback((subtab) => {
-        updatePinvouModeState({ type: 'set-design-subtab', subtab });
+        updatePinvouModeState({
+          type: 'set-design-subtab',
+          subtab: subtab === pinvouModeStateRef.current.designSubtab ? 'general' : subtab,
+        });
+      }, [updatePinvouModeState]);
+      const handleClearActiveScene = useCallback(() => {
+        if (pinvouModeStateRef.current.mode === 'work') {
+          updatePinvouModeState({ type: 'set-work-subtab', subtab: 'general' });
+        } else if (pinvouModeStateRef.current.mode === 'design') {
+          updatePinvouModeState({ type: 'set-design-subtab', subtab: 'general' });
+        }
       }, [updatePinvouModeState]);
       const handleDesignRuntimeStatus = useCallback((status) => {
         updatePinvouModeState({ type: 'set-design-runtime-status', status });
@@ -786,7 +843,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             ? chatViewCopy.placeholderDesignDataViz
           : visualPosterSceneActive
             ? chatViewCopy.placeholderDesignPoster
-            : chatViewCopy.placeholderDesignAdjust
+            : sceneCopy.designGeneralPlaceholder
         : pinvouMode === 'work'
           ? documentWritingSceneActive
             ? chatViewCopy.placeholderWorkDocument
@@ -980,10 +1037,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
         let meta;
-        if (outgoing) {
-          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(outgoing);
-          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(outgoing);
-          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(outgoing);
+        if (outgoing || hasReadyAttachment) {
+          const scenePrompt = outgoing || '请根据附件内容继续处理。';
+          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(scenePrompt);
+          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
+          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
@@ -1033,7 +1091,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           throw error;
         }
         return true;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, t, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, t, visualPosterSceneActive]);
       const handleDesignAiSubmit = useCallback((text) => {
         const raw = String(text || '').trim();
         if (!raw) return;
@@ -1269,17 +1327,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function blockWebLocalFileDrop(e) {
-        if (!isWeb) return;
-        const types = Array.from((e.dataTransfer && e.dataTransfer.types) || []);
-        if (!types.includes('Files')) return;
-        e.preventDefault();
-        e.stopPropagation();
-      }
-
       return (
         <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
+            <AttachmentDropOverlay
+              active={attachmentDragActive}
+              dark={isDark}
+              variant={isWeb ? 'web' : 'desktop'}
+              releaseLabel={t.uiAttachments.dropRelease}
+              webTitle={t.uiAttachments.dropWebTitle}
+              webHint={t.uiAttachments.dropWebHint}
+            />
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
@@ -1358,6 +1416,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     renderUser={(item) => (
                       <ChatBubble
                         item={item}
+                        sessionId={activeSessionId}
                         theme={theme}
                         t={t}
                         editable={!busy && item.id === lastUserId}
@@ -1373,6 +1432,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       return (
                         <ChatBubble
                           item={item.legacyItem}
+                          sessionId={activeSessionId}
                           theme={theme}
                           t={t}
                           onPrefill={(text) => setInputText(text)}
@@ -1396,6 +1456,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       <ChatBubble
                         key={item.id}
                         item={item}
+                        sessionId={activeSessionId}
                         theme={theme}
                         t={t}
                         onPrefill={(text) => setInputText(text)}
@@ -1445,7 +1506,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
@@ -1526,9 +1587,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   testId="design-subtab-picker"
                   comingSoonLabel={chatViewCopy.comingSoon}
                 />
-              )}
-              {!scheduledRunContext && conversationStarted && (
-                <SceneModeTag isDark={isDark} scene={activeScene} />
               )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
@@ -1662,6 +1720,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   }`} />
                   <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
                 </div>
+              )}
+              {!scheduledRunContext && !conversationStarted && activeScene && (
+                <SceneModeTag
+                  isDark={isDark}
+                  scene={activeScene}
+                  onClear={handleClearActiveScene}
+                  clearLabel={sceneCopy.clear(activeScene.label)}
+                />
               )}
               <ConversationActivityIndicator
                 turn={activeConversationTurn}
@@ -2125,10 +2191,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       ), document.body);
     };
 
-    const UserBubble = ({ item, theme, editable, t, conversationVariant }) => {
+    const UserBubble = ({ item, sessionId, theme, editable, t, conversationVariant }) => {
       const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
+      const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
+      const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
@@ -2183,14 +2251,54 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const actBtn = isDark
         ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
         : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
+      // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
+      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(item.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
-            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
+            {attachmentNames.length > 0 && (
+              <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
+                {attachmentNames.map((name, index) => {
+                  return (
+                    <ConversationAttachmentBubble
+                      key={`${name}-${index}`}
+                      name={name}
+                      displayText={item.text}
+                      messageIndex={item.messageIndex}
+                      attachmentIndex={index}
+                      sessionId={sessionId}
+                      isDark={isDark}
+                      copyText={copyClipboardText}
+                      labels={{
+                        open: t.attachmentOpen,
+                        download: t.attachmentDownload,
+                        copyAddress: t.attachmentCopyAddress,
+                        copyName: t.attachmentCopyName,
+                        reveal: t.attachmentReveal,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+            {bodyText && <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
               unified
                 ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
                 : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
-            }`}>{item.text}</div>
+            }`}>
+              {sceneDisplay && (
+                <span
+                  data-testid="user-message-scene-tag"
+                  className={`mr-2 inline-flex align-middle items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-semibold leading-5 ${
+                    isDark ? 'bg-black/35 text-white' : 'bg-black text-white'
+                  }`}
+                >
+                  {SceneIcon && <SceneIcon size={14} className="shrink-0" />}
+                  <span>{sceneDisplay.label}</span>
+                </span>
+              )}
+              {bodyText}
+            </div>}
             {deliveryState && (
               <div data-testid={`message-delivery-${deliveryState}`} title={item.deliveryError || undefined} className={`mt-1 flex items-center gap-1.5 pr-1 text-[11px] ${
                 deliveryState === 'failed' || deliveryState === 'unknown'
@@ -2394,7 +2502,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
+    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -2419,7 +2527,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+        return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }
 
       if (item.type === 'card_creator_intro') {

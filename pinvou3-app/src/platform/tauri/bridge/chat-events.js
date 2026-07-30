@@ -793,7 +793,7 @@
       return attachment && attachment.basename;
     }).filter(Boolean);
     var displayText = attachmentNames.length
-      ? content + (content ? "\n\n" : "") + "📎 " + attachmentNames.join(" · ")
+      ? content + (content ? "\n\n" : "") + "📎 " + JSON.stringify(attachmentNames)
       : content;
     if (isBusyFor(sid)) {
       runSyncOnSession(sid, function () {

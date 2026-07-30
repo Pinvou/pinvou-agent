@@ -56,6 +56,9 @@
     return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
   }
   function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
     if (!window.marked || !window.DOMPurify) return escapeHtml(text);
     var html = neutralizeRawDangerousTags(marked.parse(text || ""));
     return DOMPurify.sanitize(html, {
@@ -116,6 +119,8 @@
     personaEvents: [],
     // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
     pinvouReviews: [],
+    // 专业子模式用户消息标签(sidecar, 不进 messages/LLM)。每项 {pos, scene}。
+    pinvouSceneEvents: [],
     // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
     pinvouModal: null,
     // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
@@ -159,6 +164,7 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
+    attachmentDragActive: false,
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
@@ -664,9 +670,102 @@
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
   var personaPlaceholderTitles = {};
+  var PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
+  function normalizePinvouScene(scene) {
+    scene = String(scene || "").trim();
+    return /^(work:document-writing|design:poster|design:data-visualization)$/.test(scene) ? scene : "";
+  }
+  function pinvouSceneStorageKey(sid) {
+    return PINVOU_SCENE_EVENTS_STORAGE_PREFIX + String(sid || "").trim();
+  }
+  function normalizePinvouSceneEvents(events) {
+    return (Array.isArray(events) ? events : []).map(function (event) {
+      var pos = Number(event && event.pos);
+      var scene = normalizePinvouScene(event && event.scene);
+      if (!Number.isFinite(pos) || pos < 0 || !scene) return null;
+      return { pos: Math.floor(pos), scene: scene };
+    }).filter(Boolean).sort(function (left, right) { return left.pos - right.pos; });
+  }
+  function loadPinvouSceneEventsForSession(sid) {
+    if (!sid || !window.localStorage) return [];
+    try {
+      return normalizePinvouSceneEvents(JSON.parse(window.localStorage.getItem(pinvouSceneStorageKey(sid)) || "[]"));
+    } catch (_) {
+      return [];
+    }
+  }
+  function savePinvouSceneEventsForSession(sid, events) {
+    if (!sid) return;
+    var normalized = normalizePinvouSceneEvents(events);
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
+      }
+    } catch (_) {
+      // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
+    }
+    Promise.resolve().then(function () {
+      return invoke("save_session_pinvou_scene_events", {
+        sessionId: sid,
+        events: normalized,
+      });
+    }).catch(function () {});
+  }
+  async function syncPinvouSceneEventsForSession(sid) {
+    var cached = loadPinvouSceneEventsForSession(sid);
+    if (!sid) return cached;
+    try {
+      var remote = normalizePinvouSceneEvents(
+        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+      );
+      if (remote.length) {
+        try {
+          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+        } catch (_) {}
+        return remote;
+      }
+      if (cached.length) {
+        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+      }
+      return cached;
+    } catch (_) {
+      return cached;
+    }
+  }
+  function recordPinvouSceneForMessage(sid, pos, scene) {
+    scene = normalizePinvouScene(scene);
+    pos = Number(pos);
+    if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
+    pos = Math.floor(pos);
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
+      .filter(function (event) { return event.pos !== pos; });
+    events.push({ pos: pos, scene: scene });
+    events = normalizePinvouSceneEvents(events);
+    state.pinvouSceneEvents = events;
+    savePinvouSceneEventsForSession(sid, events);
+  }
+  function recordPinvouSceneForBufferMessage(sid, buffer, pos, scene) {
+    scene = normalizePinvouScene(scene);
+    if (!sid || !buffer || !scene) return;
+    pos = Number(pos);
+    if (!Number.isFinite(pos) || pos < 0) return;
+    var events = normalizePinvouSceneEvents(buffer.pinvouSceneEvents)
+      .filter(function (event) { return event.pos !== Math.floor(pos); });
+    events.push({ pos: Math.floor(pos), scene: scene });
+    events = normalizePinvouSceneEvents(events);
+    buffer.pinvouSceneEvents = events;
+    savePinvouSceneEventsForSession(sid, events);
+  }
+  function pinvouSceneForMessagePos(pos) {
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].pos === pos) return events[i].scene;
+    }
+    return "";
+  }
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -887,6 +986,7 @@
     buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
+    buf.pinvouSceneEvents = state.pinvouSceneEvents;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
     buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
@@ -907,6 +1007,7 @@
     state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
+    state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -936,6 +1037,7 @@
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
     buf.personaEvents = [];
     buf.pinvouReviews = [];
+    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(saved.metadata && saved.metadata.id);
     if (completedRemoteTurn) {
       buf.remoteTurnActive = false;
       buf.remoteTerminalSeen = false;
@@ -1024,6 +1126,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -2509,6 +2612,7 @@
     var saved;
     var personaEvents;
     var pinvouReviews;
+    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     var turnTimeline;
     try {
       var primary = await Promise.all([
@@ -2552,6 +2656,7 @@
       );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.pinvouSceneEvents = pinvouSceneEvents.length ? pinvouSceneEvents : (liveBuffer.pinvouSceneEvents || []);
       state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
@@ -2573,6 +2678,7 @@
       sessionStates[id].sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
+      state.pinvouSceneEvents = pinvouSceneEvents;
       state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];
@@ -3054,7 +3160,9 @@
         var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          var uitem2 = { type: "user", text: utext, time: "" };
+          var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          var scene = pinvouSceneForMessagePos(mi);
+          if (scene) uitem2.pinvouScene = scene;
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
           else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
@@ -3584,6 +3692,16 @@
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
+  function formatAttachmentDisplayText(text, attachments) {
+    var names = (attachments || []).map(function (attachment) {
+      return typeof attachment === "string" ? attachment : attachment && attachment.basename;
+    }).filter(Boolean).map(String);
+    if (!names.length) return String(text || "");
+    var attachmentLine = "📎 " + JSON.stringify(names);
+    return String(text || "").trim()
+      ? String(text) + "\n\n" + attachmentLine
+      : attachmentLine;
+  }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
   // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
@@ -3599,6 +3717,7 @@
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
+    var submittedMessagePos = -1;
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
@@ -3611,11 +3730,18 @@
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      var uitem = { type: "user", text: displayText, time: timeStr() };
+      var uitem = {
+        type: "user",
+        text: displayText,
+        time: timeStr(),
+        messageIndex: state.messages.length,
+      };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
+      if (meta && meta.pinvouScene) uitem.pinvouScene = meta.pinvouScene; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
       submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
+      submittedMessagePos = state.messages.length;
       state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
@@ -3640,6 +3766,11 @@
     return invoke(chatCommand, chatArgs)
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        if (meta && meta.pinvouScene) {
+          runSyncOnSession(sid, function () {
+            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+          });
+        }
         return true;
       })
       .catch(function (err) {
@@ -3686,10 +3817,10 @@
     var items = q.splice(0, q.length);
     // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
     var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
-    var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
     var attachments = [];
     items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
-    var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
+    var displayText = formatAttachmentDisplayText(text, attachments);
+    var meta = items.length === 1 ? items[0].meta : mergedQueuedMeta(items); // 多条同一专业场景时保留展示标签
     var restrictTools = items.some(function (i) { return !!i.restrictTools; });
     notify();
     doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
@@ -3701,6 +3832,15 @@
         Array.prototype.unshift.apply(retryQueue, items);
         notify();
       });
+  }
+  function mergedQueuedMeta(items) {
+    var first = items && items[0] && items[0].meta;
+    var scene = first && first.pinvouScene;
+    if (!scene) return null;
+    for (var i = 1; i < items.length; i++) {
+      if (!items[i] || !items[i].meta || items[i].meta.pinvouScene !== scene) return null;
+    }
+    return { pinvouScene: scene };
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
@@ -3800,7 +3940,7 @@
     return { snapshot: snapshot, payloadText: payloadText, restrictTools: restrictTools };
   }
 
-  function seedAcceptedFirstTurn(buffer, submission) {
+  function seedAcceptedFirstTurn(sessionId, buffer, submission) {
     var existingUser = null;
     for (var index = buffer.chatItems.length - 1; index >= 0; index--) {
       if (buffer.chatItems[index] && buffer.chatItems[index].type === "user") {
@@ -3811,6 +3951,8 @@
     if (existingUser) {
       existingUser.deliveryState = "accepted";
       existingUser.clientMessageId = submission.clientMessageId;
+      if (submission.pinvouScene) existingUser.pinvouScene = submission.pinvouScene;
+      recordPinvouSceneForBufferMessage(sessionId, buffer, 0, submission.pinvouScene);
       return;
     }
 
@@ -3823,9 +3965,12 @@
       type: "user",
       text: submission.displayText,
       time: submission.time,
+      messageIndex: 0,
       deliveryState: "accepted",
       clientMessageId: submission.clientMessageId,
     };
+    if (submission.pinvouScene) userItem.pinvouScene = submission.pinvouScene;
+    recordPinvouSceneForBufferMessage(sessionId, buffer, buffer.messages.length, submission.pinvouScene);
     buffer.chatItems.push(userItem);
     buffer.messages.push({
       role: "user",
@@ -3872,7 +4017,7 @@
     buffer.sessionRevision = String(
       metadata.transcript_revision || metadata.transcriptRevision || buffer.sessionRevision || "",
     );
-    seedAcceptedFirstTurn(buffer, submission);
+    seedAcceptedFirstTurn(sessionId, buffer, submission);
 
     // The desktop consumed these one-shot handles even if the user navigated
     // away while the atomic first turn was in flight. Remove the exact
@@ -3937,10 +4082,12 @@
       type: "user",
       text: displayText,
       time: time,
+      messageIndex: 0,
       deliveryState: "sending",
       deliveryError: "",
       clientMessageId: clientMessageId,
     };
+    if (meta && meta.pinvouScene) optimisticItem.pinvouScene = meta.pinvouScene;
     addChatItem(optimisticItem);
     var submission = {
       clientMessageId: clientMessageId,
@@ -3949,6 +4096,7 @@
       optimisticItemId: optimisticItem.id,
       time: time,
       displayText: displayText,
+      pinvouScene: meta && meta.pinvouScene,
       readyAttachments: readyAttachments.slice(),
       uiSnapshot: prepared.snapshot,
       args: {
@@ -3990,9 +4138,7 @@
       return;
     }
 
-    var displayText = readyAttachments.length > 0
-      ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
-      : text;
+    var displayText = formatAttachmentDisplayText(text, readyAttachments);
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
     if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
@@ -6662,6 +6808,102 @@
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
+  function conversationAttachmentArgs(reference) {
+    reference = reference || {};
+    return {
+      sessionId: reference.sessionId || state.activeSessionId,
+      messageIndex: Number(reference.messageIndex),
+      attachmentIndex: Number(reference.attachmentIndex),
+      basename: String(reference.basename || ""),
+      displayText: String(reference.displayText || ""),
+    };
+  }
+  function resolveConversationAttachment(reference) {
+    if (!IS_WEB) {
+      return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
+    }
+    return Promise.reject(new Error("WebUI does not expose desktop attachment paths"));
+  }
+  async function downloadConversationAttachment(reference) {
+    if (!hasCapability("artifactDownload")) {
+      throw new Error("当前桌面端不支持远程附件下载，请更新桌面端后重试。");
+    }
+    var args = conversationAttachmentArgs(reference);
+    var expectedSize = null;
+    var offset = 0;
+    var chunks = [];
+    var filename = args.basename || "attachment";
+    while (true) {
+      var part = await invoke("web_access_read_conversation_attachment_chunk", Object.assign({
+        offset: offset,
+        limit: 262144,
+      }, args));
+      if (!part) throw new Error("Attachment download returned no data");
+      var partOffset = Number(part.offset);
+      var partSize = Number(part.size);
+      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
+          !Number.isSafeInteger(partSize) || partSize < 0) {
+        throw new Error("桌面端返回了无效的附件分块，已停止下载。");
+      }
+      if (expectedSize === null) {
+        expectedSize = partSize;
+        if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
+          throw webArtifactDownloadLimitError(expectedSize);
+        }
+      } else if (partSize !== expectedSize) {
+        throw new Error("附件在下载期间发生变化，请重试。");
+      }
+      filename = part.name || filename;
+      var encoded = String(part.data_base64 || part.dataBase64 || "");
+      var binary = atob(encoded);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (!bytes.length && !part.eof) throw new Error("Attachment download made no progress");
+      if (offset + bytes.length > expectedSize) {
+        throw new Error("桌面端返回的附件数据超过声明大小，已停止下载。");
+      }
+      chunks.push(bytes);
+      offset += bytes.length;
+      if (part.eof) {
+        if (offset !== expectedSize) throw new Error("附件下载不完整，请重试。");
+        break;
+      }
+    }
+    var blob = new Blob(chunks, { type: "application/octet-stream" });
+    var objectUrl = URL.createObjectURL(blob);
+    var anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
+    return true;
+  }
+  async function openConversationAttachment(reference) {
+    try {
+      if (!IS_WEB) {
+        await invoke("open_conversation_attachment", conversationAttachmentArgs(reference));
+        return true;
+      }
+      return await downloadConversationAttachment(reference);
+    } catch (e) {
+      addSystemItem(bt("openFailed") + e);
+      return false;
+    }
+  }
+  async function revealConversationAttachment(reference) {
+    if (IS_WEB) return false;
+    try {
+      await invoke("reveal_conversation_attachment", conversationAttachmentArgs(reference));
+      return true;
+    } catch (e) {
+      addSystemItem(bt("openFailed") + e);
+      return false;
+    }
+  }
+
   async function addAttachmentByPath(path) {
     var id = ++attachIdSeq;
     var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
@@ -6672,76 +6914,26 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  var recentDroppedPaths = {};
-  var DROP_DEDUP_MS = 1500;
-  function dropPathKey(path) {
-    return String(path || "").toLowerCase();
+  function updateAttachmentDragState(active) {
+    active = !!active;
+    if (!!state.attachmentDragActive === active) return;
+    state.attachmentDragActive = active;
+    notify();
   }
-  function droppedFilePaths(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload.filter(Boolean);
-    if (payload.payload) return droppedFilePaths(payload.payload);
-    if (payload.type && payload.type !== "drop") return [];
-    if (Array.isArray(payload.paths)) return payload.paths.filter(Boolean);
-    if (Array.isArray(payload.files)) return payload.files.filter(Boolean);
-    if (typeof payload.path === "string") return [payload.path];
-    if (typeof payload === "string") return [payload];
-    return [];
-  }
-  async function addDroppedAttachments(paths) {
-    var now = Date.now();
-    var seen = {};
-    var list = (paths || []).filter(function (p) {
-      var key = dropPathKey(p);
-      if (!p || seen[key]) return false;
-      seen[key] = true;
-      if (recentDroppedPaths[key] && now - recentDroppedPaths[key] < DROP_DEDUP_MS) return false;
-      recentDroppedPaths[key] = now;
-      return true;
-    });
-    Object.keys(recentDroppedPaths).forEach(function (key) {
-      if (now - recentDroppedPaths[key] > DROP_DEDUP_MS * 4) delete recentDroppedPaths[key];
-    });
-    for (var i = 0; i < list.length; i++) {
-      await addAttachmentByPath(list[i]);
-    }
-  }
+  // HTML5 拖放与「从此设备上传」共用 deviceFileUpload 分块通道:能力同开同关,
+  // 上传/取消/丢弃语义完全一致,拖放只是多一个入口。
   function initAttachmentDrop() {
     if (initAttachmentDrop.done) return;
     initAttachmentDrop.done = true;
-
-    var currentWindow = TAURI.window && TAURI.window.getCurrentWindow ? TAURI.window.getCurrentWindow() : null;
-    if (currentWindow && typeof currentWindow.onDragDropEvent === "function") {
-      currentWindow.onDragDropEvent(function (event) {
-        var paths = droppedFilePaths(event);
-        if (paths.length) addDroppedAttachments(paths);
-      }).catch(function (e) { console.warn("[attachment] drag-drop listener failed", e); });
+    if (!window.PinvouAttachmentDropController) {
+      console.warn("[attachment] drop controller is unavailable");
+      return;
     }
-
-    listen("tauri://file-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-    listen("tauri://drag-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-
-    document.addEventListener("dragover", function (e) {
-      if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }
-    });
-    document.addEventListener("drop", function (e) {
-      var files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      e.preventDefault();
-      var paths = [];
-      for (var i = 0; i < files.length; i++) {
-        if (files[i] && files[i].path) paths.push(files[i].path);
-      }
-      if (paths.length) addDroppedAttachments(paths);
+    window.PinvouAttachmentDropController.install({
+      document: document,
+      canAccept: function () { return hasCapability("deviceFileUpload"); },
+      onActiveChange: updateAttachmentDragState,
+      onFiles: function (files) { return uploadDeviceFiles(files); }
     });
   }
   async function addPasteImage(filename, bytes) {
@@ -6852,7 +7044,7 @@
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
-  if (!IS_WEB) initAttachmentDrop();
+  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
@@ -8014,6 +8206,9 @@
     clearAttachments: clearAttachments,
     pickAndAttach: pickAndAttach,
     uploadDeviceFiles: uploadDeviceFiles,
+    resolveConversationAttachment: resolveConversationAttachment,
+    openConversationAttachment: openConversationAttachment,
+    revealConversationAttachment: revealConversationAttachment,
     markResolved: markResolved,
     // 工作流
     loadSkills: loadSkills,
@@ -8120,7 +8315,7 @@
   var fields = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
@@ -8197,7 +8392,7 @@
       refreshRemoteControlStatus: "refreshWebAccessStatus"
     }),
     artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverables", "listDeliverableIndex", "openExternalUrl"]),
-    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles"]),
+    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles", "resolveConversationAttachment", "openConversationAttachment", "revealConversationAttachment"]),
     resolutions: domain(["markResolved"]),
     workflow: domain(["loadSkills", "activateSkill", "deactivateSkill", "openDemo", "closeDemo", "setCurrentPhase", "startWorkflowTask", "stopWorkflowTask", "listWorkflows", "resetWorkflowRun", "selectWorkflowRole", "closeWorkflowDrawer", "getRolePrompt", "getRoleOutputs", "getGateReport", "getRoleLogs", "submitWorkflowUserInput", "pickAndAddMaterials", "addMaterialsToSession", "attachRun", "resumeWorkflowOnBoot", "approveWorkflowGate", "rejectWorkflowGate", "retryWorkflowRole"]),
     files: domain(["pickFiles", "pickFeedbackFiles"]),

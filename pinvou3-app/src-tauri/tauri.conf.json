@@ -23,6 +23,7 @@
         "resizable": true,
         "fullscreen": false,
         "maximized": true,
+        "dragDropEnabled": false,
         "decorations": false
       }
     ],

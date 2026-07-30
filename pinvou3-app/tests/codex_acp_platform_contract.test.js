@@ -12,6 +12,7 @@ const windows = read(...featureRoot, "platform", "windows.rs");
 const linux = read(...featureRoot, "platform", "linux.rs");
 const macos = read(...featureRoot, "platform", "macos.rs");
 const prepareBridge = read("scripts", "prepare-codex-bridge-runtime.sh");
+const runDev = read("run-dev.sh");
 
 for (const os of ["windows", "linux", "macos"]) {
   assert.match(
@@ -55,6 +56,16 @@ assert.match(prepareBridge, /npm_ci_for_target "\$ACP_ROOT" darwin arm64/);
 assert.match(prepareBridge, /npm_ci_for_target "\$ACP_X64_ROOT" darwin x64/);
 assert.match(prepareBridge, /claude-agent-sdk-darwin-arm64/);
 assert.match(prepareBridge, /claude-agent-sdk-darwin-x64/);
+assert.match(
+  runDev,
+  /if \[ "\$OS_NAME" = "Linux" \] \|\| \[ "\$OS_NAME" = "Darwin" \]; then\s+\.\/scripts\/prepare-codex-bridge-runtime\.sh\s+fi/,
+  "dev startup must delegate the complete ACP Bridge readiness check to the preparation script",
+);
+assert.doesNotMatch(
+  runDev,
+  /BRIDGE_(?:NODE|ENTRY)=/,
+  "dev startup must not duplicate a partial Bridge readiness check",
+);
 assert.match(feature, /run_brew\(&\["install", "--cask", "codex"\]\)/);
 assert.match(feature, /run_brew\(&\["upgrade", "--cask", "codex"\]\)/);
 assert.doesNotMatch(feature, /brew (?:install|upgrade) codex/);

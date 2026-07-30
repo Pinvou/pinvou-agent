@@ -12,6 +12,7 @@
         "resizable": true,
         "fullscreen": false,
         "maximized": true,
+        "dragDropEnabled": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,

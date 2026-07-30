@@ -14,6 +14,7 @@ import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch, sessionRoute } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
+import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
@@ -23,6 +24,11 @@ import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
+import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
+import {
+  sessionTitlePlainText,
+  sessionTitlePresentation,
+} from '../features/attachments/attachment-message.js';
 import {
   emitTauri,
   invokeTauri,
@@ -45,6 +51,7 @@ import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
 
+installGlobalMarkdownRenderer(window);
 window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
 
 let appFirstRenderMarked = false;
@@ -700,20 +707,29 @@ function workspaceDisplayName(path) {
       // Build chat history from sessions
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
       const sessionBusy = (bs && bs.sessionBusy) || {};
-      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => ({
-        id: s.id,
-        // 后端默认标题是字面 "新对话"/"New chat"(bridge 以此判断是否自动改名)——显示层映射成当前语言
-        title: (!s.title || s.title === '新对话' || s.title === 'New chat') ? t.newChat : s.title,
-        date: formatSessionDate(s.updated_at || s.created_at, language),
-        updatedAt: s.updated_at || s.created_at || '',
-        pinned: !!s.pinned,
-        pinnedAt: s.pinned_at || '',
-        skill: skillBindings[s.id] || null,
-        working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
-        leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
-        testId: 'regular-sidebar-item',
-        menuTestId: 'regular-sidebar-menu',
-      })) : [];
+      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
+        const isPlaceholder = !s.title || s.title === '新对话' || s.title === 'New chat';
+        const titlePresentation = isPlaceholder
+          ? { text: t.newChat, attachments: [] }
+          : sessionTitlePresentation(s.title, s.title_attachment_names);
+        return {
+          id: s.id,
+          // 后端默认标题是字面 "新对话"/"New chat"(bridge 以此判断是否自动改名)——显示层映射成当前语言
+          title: sessionTitlePlainText(titlePresentation),
+          titleContent: titlePresentation.attachments.length
+            ? <SessionAttachmentTitle presentation={titlePresentation} />
+            : null,
+          date: formatSessionDate(s.updated_at || s.created_at, language),
+          updatedAt: s.updated_at || s.created_at || '',
+          pinned: !!s.pinned,
+          pinnedAt: s.pinned_at || '',
+          skill: skillBindings[s.id] || null,
+          working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+          leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
+          testId: 'regular-sidebar-item',
+          menuTestId: 'regular-sidebar-menu',
+        };
+      }) : [];
       const codexHistory = codexSessions.map(session => ({
         id: session.id,
         title: (!session.title || session.title === '新对话' || session.title === 'New chat')
@@ -2596,13 +2612,19 @@ function workspaceDisplayName(path) {
       const archivedList = archived || [];
       // 已收纳复用同一套日期分组管线:归一成 history 形状(updatedAt 取对话自身更新时间),
       // 原始 DTO 挂 raw 供恢复/删除按钮取 archived_at 等信息
-      const archivedHistory = archivedList.map(s => ({
-        id: s.id,
-        title: s.title || t.newChat,
-        date: formatSessionDate(s.updated_at || s.created_at, language),
-        updatedAt: s.updated_at || s.created_at || '',
-        raw: s,
-      }));
+      const archivedHistory = archivedList.map(s => {
+        const titlePresentation = sessionTitlePresentation(s.title || t.newChat, s.title_attachment_names);
+        return {
+          id: s.id,
+          title: sessionTitlePlainText(titlePresentation),
+          titleContent: titlePresentation.attachments.length
+            ? <SessionAttachmentTitle presentation={titlePresentation} />
+            : null,
+          date: formatSessionDate(s.updated_at || s.created_at, language),
+          updatedAt: s.updated_at || s.created_at || '',
+          raw: s,
+        };
+      });
       // 筛选/排序与左侧任务列表同款(仅对话面板):全部/置顶/定时任务 + 置顶优先/最近更新
       const searchFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
@@ -2731,7 +2753,7 @@ function workspaceDisplayName(path) {
                 {selected && <Check size={13} />}
               </span>
               {chat.pinned && <PinIcon size={12} className={`shrink-0 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
-              <span className={`flex-1 min-w-0 truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.title}</span>
+              <span className={`flex-1 min-w-0 truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.titleContent || chat.title}</span>
               <span className={`text-[13px] shrink-0 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{chat.date}</span>
             </div>
           );
@@ -2745,7 +2767,7 @@ function workspaceDisplayName(path) {
               className={`flex items-center gap-2 px-4 py-[12px] rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
             >
               <span className="flex-1 min-w-0 pr-2">
-                <span className={`block truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.title}</span>
+                <span className={`block truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.titleContent || chat.title}</span>
                 <span className={`block truncate text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
                   {t.searchArchivedAt(formatSessionDate(s.archived_at || s.updated_at || s.created_at, language))}
                 </span>

@@ -302,6 +302,15 @@ pub fn session_pinvou_reviews(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("pinvou_reviews.json")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/pinvou_scene_events.json` —— 用户消息的
+/// 专业场景展示标签（每条 `{pos, scene}`）。与 persona/review sidecar 一样独立于
+/// messages，避免把纯 UI 元数据注入 LLM 上下文，同时允许桌面端与 WebUI 共享恢复。
+pub fn session_pinvou_scene_events(session_id: &str) -> PathBuf {
+    sessions_root()
+        .join(session_id)
+        .join("pinvou_scene_events.json")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/timing_events.jsonl` —— 每轮对话端到端耗时
 /// 事件(sidecar)。刻意独立于 messages/session schema, 避免影响上下文和产物逻辑。
 pub fn session_timing_events(session_id: &str) -> PathBuf {

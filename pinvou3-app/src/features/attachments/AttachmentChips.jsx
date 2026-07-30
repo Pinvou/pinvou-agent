@@ -1,4 +1,5 @@
 import React from 'react';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 
 export function AttachmentChips({
   attachments = [],
@@ -21,11 +22,13 @@ export function AttachmentChips({
         return (
           <div
             key={attachment.id}
-            className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] ${
+            className={`flex items-center gap-1.5 pl-1.5 pr-1.5 py-1 rounded-full text-[12px] ${
               dark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F] shadow-sm'
             }`}
           >
-            <span>📎</span>
+            <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] ${dark ? 'bg-white/[0.08]' : 'bg-black/[0.04]'}`}>
+              <FileTypeIcon name={attachment.basename} className="h-4 w-4" />
+            </span>
             <span className="max-w-[160px] truncate" title={attachment.basename}>
               {attachment.basename}
             </span>

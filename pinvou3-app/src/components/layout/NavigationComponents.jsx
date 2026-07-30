@@ -328,7 +328,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           {/* 置顶标:常驻显示在标题前,倾斜小灰标,与「置顶优先」排序呼应 */}
           {chat.pinned && <PinIcon size={12} className={`shrink-0 mr-1.5 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
           <span className="min-w-0 flex-1 pr-2">
-            <span className="block truncate whitespace-nowrap leading-5">{chat.title}</span>
+            <span className="block truncate whitespace-nowrap leading-5">{chat.titleContent || chat.title}</span>
             {chat.subtitle && (
               <span className={`block truncate text-[12px] leading-4 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{chat.subtitle}</span>
             )}

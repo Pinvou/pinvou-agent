@@ -124,6 +124,12 @@ command_protocol!(
     "files.rs",
     [
         "ingest_file",
+        "ingest_dropped_file_chunk",
+        "cancel_dropped_file_upload",
+        "discard_dropped_attachment",
+        "resolve_conversation_attachment",
+        "open_conversation_attachment",
+        "reveal_conversation_attachment",
         "detect_system_tools",
         "save_paste_image",
         "verify_upload"
@@ -307,6 +313,7 @@ command_protocol!(
         "web_access_upload_attachment_chunk",
         "web_access_abort_attachment_upload",
         "web_access_discard_attachment",
+        "web_access_read_conversation_attachment_chunk",
         "web_access_create_session_and_chat",
         "web_access_chat",
         "web_access_save_session_messages_chunk",
@@ -362,6 +369,8 @@ command_protocol!(
         "get_active_session",
         "save_session_messages",
         "save_session_artifacts",
+        "save_session_pinvou_scene_events",
+        "get_session_pinvou_scene_events",
         "list_workspace_files"
     ]
 );

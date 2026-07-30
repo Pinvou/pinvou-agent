@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIB = 1024 * 1024;
 const RELAY_STATE_VERSION = 1;
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.PINVOU_REMOTE_HOST || "0.0.0.0";
 const PUBLIC_BASE_PATH = normalizeBasePath(
   process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote",
 );
@@ -1122,9 +1123,9 @@ const heartbeatTimer = setInterval(() => {
 }, HEARTBEAT_INTERVAL_MS);
 heartbeatTimer.unref();
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, HOST, () => {
   console.log(
-    `pinvou remote relay listening on http://127.0.0.1:${PORT}`
+    `pinvou remote relay listening on http://${HOST}:${PORT}`
     + ` (protocol=v2, max_endpoints=${MAX_ENDPOINTS}`
     + `, max_ws_connections=${MAX_WS_CONNECTIONS}`
     + `, ws_connect_limit=${WS_CONNECT_LIMIT}/${WS_CONNECT_WINDOW_MS}ms`

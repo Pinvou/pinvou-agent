@@ -31,18 +31,32 @@
     .msg-md li { margin:0.2em 0; line-height:1.6; }
     .msg-md code { font-family:"JetBrains Mono","SF Mono",Consolas,monospace; font-size:0.88em; padding:0.15em 0.4em; border-radius:6px; }
     .msg-md pre { margin:0.6em 0; padding:1em; border-radius:12px; overflow-x:auto; font-size:0.88em; line-height:1.5; }
-    .msg-md pre code { padding:0; background:none; }
+    .msg-md pre > code { display:block; padding:0; background:transparent; color:inherit; }
     .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
     .msg-md a { text-decoration:underline; }
     .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; }
     .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
 
     /* Dark theme code blocks */
-    .dark-code .msg-md code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
-    .dark-code .msg-md pre { background:rgba(0,0,0,0.3); color:#E3E3E3; }
+    .dark-code .msg-md :not(pre) > code,
+    .msg-md.dark-code :not(pre) > code,
+    .persona-body.dark-code :not(pre) > code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
+    .dark-code .msg-md pre,
+    .msg-md.dark-code pre,
+    .persona-body.dark-code pre { background:#16181d; color:#E3E3E3; }
+    .dark-code .msg-md pre > code,
+    .msg-md.dark-code pre > code,
+    .persona-body.dark-code pre > code { background:transparent; color:inherit; }
     /* Light theme code blocks */
-    .light-code .msg-md code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
-    .light-code .msg-md pre { background:rgba(0,0,0,0.04); color:#1F1F1F; }
+    .light-code .msg-md :not(pre) > code,
+    .msg-md.light-code :not(pre) > code,
+    .persona-body.light-code :not(pre) > code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
+    .light-code .msg-md pre,
+    .msg-md.light-code pre,
+    .persona-body.light-code pre { background:#F6F8FA; color:#1F2328; }
+    .light-code .msg-md pre > code,
+    .msg-md.light-code pre > code,
+    .persona-body.light-code pre > code { background:transparent; color:inherit; }
 
     /* Codex ACP: scoped Markdown layout (Tailwind preflight removes native list styles). */
     .codex-markdown > :first-child { margin-top:0; }
@@ -72,11 +86,11 @@
     .codex-markdown code {
       padding:.12em .36em;
       border-radius:5px;
-      background:rgba(0,0,0,.055);
       font-family:"JetBrains Mono","SF Mono",Consolas,monospace;
       font-size:.88em;
     }
-    .dark .codex-markdown code { background:rgba(255,255,255,.09); }
+    .codex-markdown :not(pre) > code { background:rgba(0,0,0,.055); }
+    .dark .codex-markdown :not(pre) > code { background:rgba(255,255,255,.09); }
     .codex-markdown pre {
       margin:.7em 0;
       padding:.85em 1em;
@@ -91,7 +105,8 @@
       border-color:rgba(255,255,255,.08);
       background:rgba(0,0,0,.28);
     }
-    .codex-markdown pre code { padding:0; background:none; }
+    .codex-markdown pre > code { display:block; padding:0; background:transparent; color:inherit; }
+    .dark .codex-markdown pre > code { background:transparent; color:inherit; }
     .codex-markdown blockquote {
       margin:.65em 0;
       padding:.1em 0 .1em 1em;
@@ -116,6 +131,268 @@
       padding:.4em .7em;
       border:1px solid rgba(128,128,128,.25);
       text-align:left;
+    }
+
+    /* Shared fenced-code presentation and syntax colors. */
+    .light-code .msg-md,
+    .msg-md.light-code,
+    .persona-body.light-code,
+    .codex-markdown {
+      --pinvou-code-border:rgba(31,35,40,.14);
+      --pinvou-code-divider:rgba(31,35,40,.10);
+      --pinvou-code-label:#57606A;
+      --pinvou-hl-comment:#6E7781;
+      --pinvou-hl-keyword:#CF222E;
+      --pinvou-hl-title:#8250DF;
+      --pinvou-hl-string:#0A3069;
+      --pinvou-hl-number:#0550AE;
+      --pinvou-hl-built-in:#953800;
+      --pinvou-hl-attribute:#116329;
+      --pinvou-hl-property:#0550AE;
+      --pinvou-hl-parameter:#9A6700;
+      --pinvou-hl-meta:#8250DF;
+      --pinvou-hl-punctuation:#8C959F;
+      --pinvou-hl-operator:#57606A;
+      --pinvou-hl-addition:#116329;
+      --pinvou-hl-deletion:#A40E26;
+      --pinvou-hl-warning:#9A6700;
+      --pinvou-hl-addition-bg:rgba(46,160,67,.13);
+      --pinvou-hl-deletion-bg:rgba(255,129,130,.16);
+      --pinvou-hl-quote-bg:rgba(84,174,255,.09);
+    }
+    .dark-code .msg-md,
+    .msg-md.dark-code,
+    .persona-body.dark-code,
+    .dark .codex-markdown {
+      --pinvou-code-border:rgba(240,246,252,.16);
+      --pinvou-code-divider:rgba(240,246,252,.12);
+      --pinvou-code-label:#8B949E;
+      --pinvou-hl-comment:#8B949E;
+      --pinvou-hl-keyword:#FF7B72;
+      --pinvou-hl-title:#D2A8FF;
+      --pinvou-hl-string:#A5D6FF;
+      --pinvou-hl-number:#79C0FF;
+      --pinvou-hl-built-in:#FFA657;
+      --pinvou-hl-attribute:#7EE787;
+      --pinvou-hl-property:#79C0FF;
+      --pinvou-hl-parameter:#E3B341;
+      --pinvou-hl-meta:#D2A8FF;
+      --pinvou-hl-punctuation:#6E7681;
+      --pinvou-hl-operator:#C9D1D9;
+      --pinvou-hl-addition:#7EE787;
+      --pinvou-hl-deletion:#FFA198;
+      --pinvou-hl-warning:#E3B341;
+      --pinvou-hl-addition-bg:rgba(46,160,67,.18);
+      --pinvou-hl-deletion-bg:rgba(248,81,73,.18);
+      --pinvou-hl-quote-bg:rgba(56,139,253,.12);
+    }
+    .msg-md pre.pinvou-code-block,
+    .persona-body pre.pinvou-code-block,
+    .codex-markdown pre.pinvou-code-block {
+      position:relative;
+      padding:2.55rem 1rem 1rem;
+      border:1px solid var(--pinvou-code-border, rgba(128,128,128,.2));
+      tab-size:4;
+      white-space:pre;
+    }
+    .msg-md pre.pinvou-code-block::before,
+    .persona-body pre.pinvou-code-block::before,
+    .codex-markdown pre.pinvou-code-block::before {
+      content:attr(data-language);
+      position:absolute;
+      top:0;
+      right:0;
+      left:0;
+      height:1.85rem;
+      box-sizing:border-box;
+      padding:0 .85rem;
+      border-bottom:1px solid var(--pinvou-code-divider, rgba(128,128,128,.16));
+      color:var(--pinvou-code-label, #6E7781);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      font-size:11px;
+      font-weight:600;
+      line-height:1.85rem;
+      letter-spacing:.02em;
+      user-select:none;
+    }
+    .pinvou-code-block .hljs-comment,.pinvou-code-block .hljs-quote { color:var(--pinvou-hl-comment, #6E7781); font-style:italic; }
+    .pinvou-code-block .hljs-keyword,.pinvou-code-block .hljs-selector-tag,.pinvou-code-block .hljs-literal,.pinvou-code-block .hljs-section,.pinvou-code-block .hljs-link { color:var(--pinvou-hl-keyword, #CF222E); }
+    .pinvou-code-block .hljs-title,.pinvou-code-block .hljs-title.class_,.pinvou-code-block .hljs-title.function_,.pinvou-code-block .hljs-name,.pinvou-code-block .hljs-type { color:var(--pinvou-hl-title, #8250DF); }
+    .pinvou-code-block .hljs-string,.pinvou-code-block .hljs-regexp,.pinvou-code-block .hljs-symbol,.pinvou-code-block .hljs-bullet { color:var(--pinvou-hl-string, #0A3069); }
+    .pinvou-code-block .hljs-number,.pinvou-code-block .hljs-variable,.pinvou-code-block .hljs-template-variable { color:var(--pinvou-hl-number, #0550AE); }
+    .pinvou-code-block .hljs-built_in,.pinvou-code-block .hljs-builtin-name { color:var(--pinvou-hl-built-in, #953800); }
+    .pinvou-code-block .hljs-attr,.pinvou-code-block .hljs-attribute,.pinvou-code-block .hljs-selector-attr,.pinvou-code-block .hljs-selector-class,.pinvou-code-block .hljs-selector-id { color:var(--pinvou-hl-attribute, #116329); }
+    .pinvou-code-block .hljs-property { color:var(--pinvou-hl-property, #0550AE); }
+    .pinvou-code-block .hljs-params { color:var(--pinvou-hl-parameter, #9A6700); }
+    .pinvou-code-block .hljs-meta { color:var(--pinvou-hl-meta, #8250DF); }
+    .pinvou-code-block .hljs-punctuation { color:var(--pinvou-hl-punctuation, #8C959F); }
+    .pinvou-code-block .hljs-operator { color:var(--pinvou-hl-operator, #57606A); }
+    .pinvou-code-block .hljs-addition { color:var(--pinvou-hl-addition, #116329); }
+    .pinvou-code-block .hljs-deletion { color:var(--pinvou-hl-deletion, #A40E26); }
+    .pinvou-code-block .hljs-warning { color:var(--pinvou-hl-warning, #9A6700); }
+    .pinvou-code-block .hljs-emphasis { font-style:italic; }
+    .pinvou-code-block .hljs-strong { font-weight:700; }
+
+    /* Language-specific refinements built on the shared token theme. */
+    code.language-diff .hljs-addition,
+    code.language-diff .hljs-deletion {
+      display:inline-block;
+      min-width:100%;
+      box-sizing:border-box;
+      font-weight:650;
+    }
+    code.language-diff .hljs-addition { background:var(--pinvou-hl-addition-bg); }
+    code.language-diff .hljs-deletion { background:var(--pinvou-hl-deletion-bg); }
+
+    code.language-json .hljs-attr {
+      color:var(--pinvou-hl-property);
+      font-weight:650;
+    }
+    code.language-json .hljs-punctuation { opacity:.64; }
+    code.language-json .hljs-literal { font-weight:600; }
+
+    code:is(.language-yaml,.language-ini) .hljs-attr {
+      color:var(--pinvou-hl-property);
+      font-weight:650;
+    }
+    code:is(.language-yaml,.language-ini) .hljs-section {
+      color:var(--pinvou-hl-title);
+      font-weight:700;
+    }
+    code:is(.language-yaml,.language-ini) .hljs-literal { font-weight:600; }
+
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-built_in {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-variable {
+      color:var(--pinvou-hl-number);
+      font-weight:600;
+    }
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-operator {
+      color:var(--pinvou-hl-operator);
+      font-weight:700;
+    }
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-meta {
+      color:var(--pinvou-code-label);
+      font-weight:500;
+    }
+
+    code:is(.language-sql,.language-pgsql) .hljs-keyword { font-weight:750; }
+    code:is(.language-sql,.language-pgsql) .hljs-built_in {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code:is(.language-sql,.language-pgsql) :is(.hljs-meta,.hljs-variable) {
+      color:var(--pinvou-hl-parameter);
+      font-weight:600;
+    }
+
+    code.language-xml .hljs-tag { color:var(--pinvou-hl-punctuation); }
+    code.language-xml .hljs-name {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code.language-xml .hljs-attr {
+      color:var(--pinvou-hl-attribute);
+      font-weight:600;
+    }
+    pre:is([data-language-id="vue"],[data-language-id="svelte"]) code.language-xml .hljs-name {
+      color:var(--pinvou-hl-built-in);
+      font-weight:700;
+    }
+    pre:is([data-language-id="vue"],[data-language-id="svelte"]) code.language-xml .hljs-attr {
+      color:var(--pinvou-hl-meta);
+    }
+
+    code:is(.language-javascript,.language-typescript) .hljs-title.class_ { font-weight:750; }
+    code:is(.language-javascript,.language-typescript) .hljs-title.function_ { font-weight:650; }
+    code:is(.language-javascript,.language-typescript) :is(.hljs-type,.hljs-meta) {
+      color:var(--pinvou-hl-meta);
+      font-weight:600;
+    }
+
+    code.language-python .hljs-meta {
+      color:var(--pinvou-hl-meta);
+      font-weight:650;
+    }
+    code.language-python .hljs-built_in { font-weight:650; }
+    code.language-python .hljs-title.class_ { font-weight:750; }
+    code.language-python .hljs-title.function_ { font-weight:650; }
+
+    code:is(.language-java,.language-csharp,.language-kotlin) .hljs-meta {
+      color:var(--pinvou-hl-meta);
+      font-weight:650;
+    }
+    code:is(.language-java,.language-csharp,.language-kotlin) :is(.hljs-type,.hljs-title.class_) {
+      color:var(--pinvou-hl-title);
+      font-weight:700;
+    }
+    code:is(.language-java,.language-csharp,.language-kotlin) :is(.hljs-title.function_,.hljs-function > .hljs-title) {
+      font-weight:650;
+    }
+
+    code:is(.language-c,.language-cpp) .hljs-meta {
+      color:var(--pinvou-hl-meta);
+      font-weight:600;
+    }
+    code:is(.language-c,.language-cpp) :is(.hljs-type,.hljs-title.class_,.hljs-class .hljs-title) {
+      color:var(--pinvou-hl-title);
+      font-weight:700;
+    }
+
+    code:is(.language-go,.language-rust) .hljs-type {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code:is(.language-go,.language-rust) :is(.hljs-title.class_,.hljs-title.function_,.hljs-function > .hljs-title) {
+      font-weight:700;
+    }
+    code.language-rust :is(.hljs-symbol,.hljs-built_in) {
+      color:var(--pinvou-hl-meta);
+      font-weight:650;
+    }
+
+    code.language-markdown .hljs-section {
+      color:var(--pinvou-hl-title);
+      font-weight:750;
+    }
+    code.language-markdown .hljs-quote {
+      display:inline-block;
+      min-width:100%;
+      box-sizing:border-box;
+      padding-left:.65em;
+      border-left:3px solid var(--pinvou-hl-comment);
+      background:var(--pinvou-hl-quote-bg);
+    }
+    code.language-markdown .hljs-link {
+      color:var(--pinvou-hl-number);
+      text-decoration:underline;
+      text-underline-offset:2px;
+    }
+
+    code.language-dockerfile > .hljs-keyword {
+      color:var(--pinvou-hl-keyword);
+      font-weight:750;
+      letter-spacing:.02em;
+    }
+
+    code:is(.language-accesslog,.language-log) {
+      font-variant-numeric:tabular-nums;
+    }
+    code:is(.language-accesslog,.language-log) .hljs-keyword {
+      color:var(--pinvou-hl-keyword);
+      font-weight:750;
+    }
+    code:is(.language-accesslog,.language-log) .hljs-string { color:var(--pinvou-hl-string); }
+    code:is(.language-accesslog,.language-log) .hljs-number {
+      color:var(--pinvou-hl-number);
+      font-weight:600;
+    }
+    code.language-log .hljs-warning { font-weight:700; }
+    code.language-log .hljs-deletion {
+      color:var(--pinvou-hl-deletion);
+      font-weight:750;
     }
 
     /* Tool card styles */

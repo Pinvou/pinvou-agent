@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
+import { Paperclip } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCompactViewport } from '../../hooks/useViewport.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -723,15 +725,6 @@ const WidgetCard = ({ title, children, theme }) => {
           return { path, basename: base };
         });
       };
-      const fileExt = (name) => (String(name).split('.').pop() || '').toLowerCase();
-      const fileIcon = (name) => {
-        const e = fileExt(name);
-        if (['md', 'markdown', 'txt'].includes(e)) return '📄';
-        if (['html', 'htm'].includes(e)) return '🌐';
-        if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(e)) return '🖼️';
-        if (['json', 'yaml', 'yml'].includes(e)) return '🔢';
-        return '📎';
-      };
       const verdictStyle = (v) => {
         const s = String(v || '').toLowerCase();
         if (['pass', 'passed', 'approve', 'approved', 'ok'].includes(s)) return isDark ? 'bg-[#1E3A2A] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]';
@@ -834,7 +827,7 @@ const WidgetCard = ({ title, children, theme }) => {
                   <div className="space-y-1">
                     {files.map((f, i) => (
                       <div key={i} title={f.path || f.basename} className={`flex items-center gap-2 px-2.5 py-2 rounded-[12px] border ${isDark ? 'border-white/10 bg-[#131314]' : 'border-black/10 bg-[#F8FAFC]'}`}>
-                        <span className="shrink-0">{fileIcon(f.basename)}</span>
+                        <FileTypeIcon name={f.basename} className="h-4 w-4 shrink-0" />
                         <span onClick={() => f.path && setPreviewPath(f.path)} title={t.uiWorkflow.clickPreview} className={`flex-1 truncate text-[13px] cursor-pointer hover:underline ${titleCls}`}>{f.basename || t.uiWorkflow.unnamed}</span>
                         {f.path && (
                           <button title={t.uiWorkflow.openExternalTitle} onClick={() => bridge.available && bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(f.path)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>↗</button>
@@ -925,7 +918,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 catch (e) { setMatState({ busy: false, names: matState.names }); }
               }}
               className={`px-3 py-1.5 rounded-[10px] text-[13px] border transition-colors disabled:opacity-50 ${isDark ? 'border-[#A8C7FA]/40 text-[#A8C7FA] hover:bg-[#A8C7FA]/10' : 'border-[#0B57D0]/30 text-[#0B57D0] hover:bg-[#0B57D0]/5'}`}>
-              {matState.busy ? t.uiWorkflow.uploading : t.uiWorkflow.uploadMaterials}
+              {matState.busy ? t.uiWorkflow.uploading : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{t.uiWorkflow.uploadMaterials}</span>}
             </button>}
             {matState.names.length > 0 && <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{t.uiWorkflow.uploaded(matState.names.length)}{matState.names.join(t.uiWorkflow.listSep)}</span>}
           </div>
@@ -1127,12 +1120,17 @@ const WidgetCard = ({ title, children, theme }) => {
               {wfUi.attachments && (!isWeb || can('hostFilePicker')) && (
                 <div>
                   <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.attachments}</label>
-                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>{picking ? t.uiWorkflow.picking : (isWeb ? t.uiWorkflow.pickDesktopFiles : t.uiWorkflow.uploadAttachments)}</button>
+                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>
+                    {picking ? t.uiWorkflow.picking : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{isWeb ? t.uiWorkflow.pickDesktopFiles : t.uiWorkflow.uploadAttachments}</span>}
+                  </button>
                   {files.length > 0 && (
                     <div className="mt-2 space-y-1">
                       {files.map(p => (
                         <div key={p} className={`flex items-center justify-between text-[12px] rounded px-2 py-1 ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>
-                          <span className="truncate pr-2">📄 {baseName(p)}</span>
+                          <span className="flex min-w-0 items-center gap-1.5 pr-2">
+                            <FileTypeIcon name={baseName(p)} className="h-4 w-4 shrink-0" />
+                            <span className="truncate">{baseName(p)}</span>
+                          </span>
                           <button onClick={() => setFiles(prev => prev.filter(x => x !== p))} disabled={starting} className="shrink-0 opacity-60 hover:opacity-100">✕</button>
                         </div>
                       ))}
