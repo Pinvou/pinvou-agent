@@ -1587,6 +1587,26 @@ fn image_input_unknown_error_offers_explicit_confirm_path() {
     assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("支持图片"));
 }
 
+/// `get_image_input_capability` 返回体的 wire 形状:前端按字段名与字符串值匹配
+/// (选图即时警告),钉住防手滑改字段。
+#[test]
+fn image_input_capability_info_serializes_stable_fields() {
+    let info = super::settings::ImageInputCapabilityInfo {
+        capability: "unknown".to_string(),
+        image_mode: "vision_tool_fallback".to_string(),
+        has_vision_model: true,
+    };
+    let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "capability": "unknown",
+            "image_mode": "vision_tool_fallback",
+            "has_vision_model": true,
+        })
+    );
+}
+
 /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
 fn mk_attachment(
     kind: &str,

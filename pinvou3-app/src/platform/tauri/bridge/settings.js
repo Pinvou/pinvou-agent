@@ -198,6 +198,12 @@
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
+  // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
+  async function getImageInputCapability(sessionId) {
+    return await invoke("get_image_input_capability", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
+  }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   async function loadModels() {
@@ -279,6 +285,7 @@
       dismissVllmSetup: dismissVllmSetup,
       declineVllmSetup: declineVllmSetup,
       getEffectiveModelConfig: getEffectiveModelConfig,
+      getImageInputCapability: getImageInputCapability,
       loadModels: loadModels,
       saveModel: saveModel,
       revealModelApiKey: revealModelApiKey,

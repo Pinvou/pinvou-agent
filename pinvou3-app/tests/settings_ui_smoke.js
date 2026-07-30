@@ -682,6 +682,79 @@ async function modalWidth(page, headingText) {
   });
   rec('⑦ 输入 API Key 后可保存新增模型', savedModel && savedModel.model === 'deepseek-v4-pro' && savedModel.api_key === 'sk-model-test', JSON.stringify(savedModel));
 
+  // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const imageSectionDefault = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    const capabilityToggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
+    const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    return {
+      hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('自动判断'),
+      hasVisionRow: !!visionToggle && (visionToggle.textContent || '').includes('无'),
+      hasHelpText: text.includes('当前模型不能看图时，用该模型分析图片'),
+    };
+  });
+  rec('⑦.img.1 编辑模型展示图片输入能力与视觉模型控件且默认自动/无', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-enabled"]');
+  await sleep(200);
+  await page.click('[data-testid="vision-model-toggle"]');
+  await sleep(200);
+  const visionOptions = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const options = root ? [...root.querySelectorAll('[data-testid^="vision-model-option-"]')].map(node => node.getAttribute('data-testid')) : [];
+    const editing = window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro');
+    return {
+      hasNone: options.includes('vision-model-option-none'),
+      hasLocalQwen: options.includes('vision-model-option-local-qwen'),
+      excludesSelf: !!editing && !options.includes(`vision-model-option-${editing.id}`),
+    };
+  });
+  rec('⑦.img.2 视觉模型下拉含「无」与其他模型且排除当前模型自身', Object.values(visionOptions).every(Boolean), JSON.stringify(visionOptions));
+  await page.click('[data-testid="vision-model-option-local-qwen"]');
+  await sleep(200);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedImageConfig = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦.img.3 保存写入图片能力 override 与视觉模型引用',
+    savedImageConfig
+      && savedImageConfig.image_capability_override === 'enabled'
+      && savedImageConfig.vision_model_id === 'local-qwen',
+    JSON.stringify(savedImageConfig && { override: savedImageConfig.image_capability_override, vision: savedImageConfig.vision_model_id }));
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const imageSectionRoundTrip = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const capabilityToggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
+    const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    return {
+      capabilityEcho: !!capabilityToggle && (capabilityToggle.textContent || '').includes('支持图片'),
+      visionEcho: !!visionToggle && (visionToggle.textContent || '').includes('本地 vLLM'),
+    };
+  });
+  rec('⑦.img.4 重新打开编辑表单回显已保存的图片能力与视觉模型', Object.values(imageSectionRoundTrip).every(Boolean), JSON.stringify(imageSectionRoundTrip));
+  await page.click('[data-testid="vision-model-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="vision-model-option-none"]');
+  await sleep(200);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const clearedVision = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦.img.5 视觉模型选回「无」保存为 null 且能力 override 保留',
+    clearedVision
+      && clearedVision.vision_model_id === null
+      && clearedVision.image_capability_override === 'enabled',
+    JSON.stringify(clearedVision && { override: clearedVision.image_capability_override, vision: clearedVision.vision_model_id }));
+
   await clickSettingsSection(page, '搜索');
   const searchList = await page.evaluate(() => {
     const text = document.body.innerText;

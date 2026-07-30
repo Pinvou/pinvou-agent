@@ -5534,6 +5534,12 @@
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
+  // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
+  async function getImageInputCapability(sessionId) {
+    return await invoke("get_image_input_capability", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
+  }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   async function loadModels() {
@@ -7938,7 +7944,7 @@
     settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "saveSearchSettings", "saveSearchSettingsAndRestart", "testSearchProvider"]),
     feedback: domain(["submitFeedback"]),
     vllm: domain(["discoverLocalVllm", "detectLocalVllmSetup", "bootstrapLocalVllm", "dismissVllmSetup", "declineVllmSetup"]),
-    models: domain(["getEffectiveModelConfig", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection"]),
+    models: domain(["getEffectiveModelConfig", "getImageInputCapability", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection"]),
     interaction: domain(["toggleSuperPerm", "acceptPlan", "discardPlan", "exitPlanToYolo", "setPlanModeNext", "planStuckReplan", "planStuckGo", "submitUserInput", "cancelUserInput", "summonPinvou", "inspectPinvou", "resolvePinvouReview", "dismissPinvouReview", "editLastTurn", "compactNow"]),
     rendering: domain(["renderMarkdown"]),
     remoteControl: domain(["getWebRelaySettings", "setWebRelayAddress", "resetWebRelayAddress"], {

@@ -1249,7 +1249,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     };
 
     // 添加/编辑模型模态弹窗。
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = [] }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
@@ -1287,6 +1287,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
+      // 图片输入能力三档(auto/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
+      const [imageCapability, setImageCapability] = useState(initial.image_capability_override || 'auto');
+      const [visionModelId, setVisionModelId] = useState(initial.vision_model_id || '');
+      const [imageCapabilityPickerOpen, setImageCapabilityPickerOpen] = useState(false);
+      const [visionModelPickerOpen, setVisionModelPickerOpen] = useState(false);
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
       const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
@@ -1477,10 +1482,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           provider_kind: providerKind || null,
           vendor: vendor || null,
           endpoint_mode: endpointMode || null,
-          // 阶段 C/E 新字段:设置页 UI 在阶段 G 才做,这里先透传已有值,
-          // 避免 GUI 编辑保存把手工配置的图片能力/视觉模型引用抹掉。
-          image_capability_override: initial.image_capability_override || 'auto',
-          vision_model_id: initial.vision_model_id || null,
+          // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
+          image_capability_override: imageCapability || 'auto',
+          vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
         });
       }
       function makeModelId() {
@@ -1746,6 +1750,82 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           </div>
         );
       };
+      // 图片输入能力 + 兜底视觉模型(阶段 G):与发送时后端复核同一组 SavedModel 字段。
+      const imageCapabilityOptions = [
+        { key: 'auto', label: settingsCopy.imageCapabilityAuto },
+        { key: 'enabled', label: settingsCopy.imageCapabilityEnabled },
+        { key: 'disabled', label: settingsCopy.imageCapabilityDisabled },
+      ];
+      const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
+      const visionOptions = [{ key: '', label: settingsCopy.visionModelNone }]
+        .concat(visionCandidates.map(item => ({ key: item.id, label: item.name || item.model })));
+      const renderPickerRow = ({ testId, label, value, options, currentKey, open, onToggle, onChoose }) => (
+        <>
+          <button
+            type="button"
+            data-testid={`${testId}-toggle`}
+            onClick={onToggle}
+            className={`w-full min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${formDivider}`}
+          >
+            <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{label}</span>
+            <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{value}</span>
+            <ChevronDown
+              size={16}
+              className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}
+            />
+          </button>
+          {open && (
+            <div className={`border-b last:border-b-0 ${formDivider}`}>
+              {options.map(option => {
+                const active = option.key === currentKey;
+                return (
+                  <button
+                    type="button"
+                    data-testid={`${testId}-option-${option.key || 'none'}`}
+                    key={option.key || '__none__'}
+                    onClick={() => onChoose(option.key)}
+                    className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'}`}
+                  >
+                    <span className={`min-w-0 flex-1 text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{option.label}</span>
+                    {active && <Check size={17} strokeWidth={2.4} className={isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]'} />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </>
+      );
+      const renderImageInputSection = () => {
+        const capabilityLabel = (imageCapabilityOptions.find(option => option.key === imageCapability) || imageCapabilityOptions[0]).label;
+        const visionLabel = (visionOptions.find(option => option.key === visionModelId) || visionOptions[0]).label;
+        return (
+          <section>
+            <div className={formGroup}>
+              {renderPickerRow({
+                testId: 'image-capability',
+                label: settingsCopy.imageCapability,
+                value: capabilityLabel,
+                options: imageCapabilityOptions,
+                currentKey: imageCapability,
+                open: imageCapabilityPickerOpen,
+                onToggle: () => { setImageCapabilityPickerOpen(open => !open); setVisionModelPickerOpen(false); },
+                onChoose: key => { setImageCapability(key); setImageCapabilityPickerOpen(false); },
+              })}
+              {renderPickerRow({
+                testId: 'vision-model',
+                label: settingsCopy.visionModel,
+                value: visionLabel,
+                options: visionOptions,
+                currentKey: visionModelId,
+                open: visionModelPickerOpen,
+                onToggle: () => { setVisionModelPickerOpen(open => !open); setImageCapabilityPickerOpen(false); },
+                onChoose: key => { setVisionModelId(key); setVisionModelPickerOpen(false); },
+              })}
+            </div>
+            <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.visionModelDesc}</div>
+          </section>
+        );
+      };
       if (initial.__new && pickerOpen) {
         return (
           <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
@@ -1876,6 +1956,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
+              {renderImageInputSection()}
               {showConfigFields && (
                 <section>
                   <div className={formGroup}>
@@ -2734,7 +2815,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </main>
           </div>
           {canManageModels && editingModel && (
-            <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
+            <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
               onSave={m => { onSaveModel(m); setEditingModel(null); }} />
           )}

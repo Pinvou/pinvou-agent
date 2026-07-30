@@ -354,6 +354,46 @@ pub async fn get_session_model_id(
     Ok(store.session_model_id(&session_id))
 }
 
+/// 当前有效模型的图片输入能力(设计 §6.3/§9.2,阶段 G)。前端选图即时警告据此
+/// 提示;发送时 chat 命令仍按同一条解析路径(fresh bridge + 会话模型绑定)复核。
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageInputCapabilityInfo {
+    /// `supported` / `unsupported` / `unknown`(EffectiveImageCapability::as_str)。
+    pub capability: String,
+    /// `native` / `vision_tool_fallback` / `unsupported`(ImageInputMode::as_str)。
+    pub image_mode: String,
+    /// 是否有可用的视觉模型兜底(含 Supported 主模型自复用)。
+    pub has_vision_model: bool,
+}
+
+#[tauri::command]
+pub async fn get_image_input_capability(
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<ImageInputCapabilityInfo, String> {
+    // 与 chat 命令的图片路由同一套解析:fresh bridge 按 session 绑定模型(含本地
+    // vLLM served name 探测与运行时凭据准备)。尚无会话(全新草稿)时退化为
+    // get_effective_model_config 同款 prefs 直读,按全局默认模型解析。
+    let bridge = match session_id.or_else(|| store.active_id()) {
+        Some(sid) => pool
+            .fresh_bridge_for(&sid)
+            .await
+            .map_err(|error| format!("resolve image input capability for {sid}: {error:#}"))?,
+        None => {
+            let mut bridge = pool.bridge.clone();
+            bridge.prefs = refresh_safe_prefs(UserPrefs::load());
+            bridge.session_model = None;
+            bridge
+        }
+    };
+    Ok(ImageInputCapabilityInfo {
+        capability: bridge.effective_image_capability().as_str().to_string(),
+        image_mode: bridge.image_input_mode().as_str().to_string(),
+        has_vision_model: bridge.has_vision_model(),
+    })
+}
+
 fn parse_search_provider(raw: &str) -> Result<SearchProvider, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "bing" => Ok(SearchProvider::Bing),

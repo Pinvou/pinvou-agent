@@ -1498,6 +1498,7 @@
   var dismissVllmSetup = settingsFeature.dismissVllmSetup;
   var declineVllmSetup = settingsFeature.declineVllmSetup;
   var getEffectiveModelConfig = settingsFeature.getEffectiveModelConfig;
+  var getImageInputCapability = settingsFeature.getImageInputCapability;
   var loadModels = settingsFeature.loadModels;
   var saveModel = settingsFeature.saveModel;
   var revealModelApiKey = settingsFeature.revealModelApiKey;
@@ -1802,6 +1803,7 @@
     },
     models: {
       getEffectiveModelConfig: getEffectiveModelConfig,
+      getImageInputCapability: getImageInputCapability,
       loadModels: loadModels,
       saveModel: saveModel,
       revealModelApiKey: revealModelApiKey,

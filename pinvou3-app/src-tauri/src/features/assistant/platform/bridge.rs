@@ -696,6 +696,13 @@ impl Pinvou3Bridge {
         )
     }
 
+    /// 是否配置了**可用**的独立视觉模型(或 Supported 主模型可自复用)。
+    /// 与 `image_input_mode` 内部的 `has_vision_model` 同一口径
+    /// (`resolve_vision_model_config`),供能力查询命令回传前端展示。
+    pub fn has_vision_model(&self) -> bool {
+        self.resolve_vision_model_config().is_some()
+    }
+
     /// Current search API key from env or encrypted credential store.
     pub fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;

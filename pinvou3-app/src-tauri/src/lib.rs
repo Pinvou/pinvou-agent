@@ -608,6 +608,7 @@ pub fn run() {
             commands::settings::set_active_model,
             commands::settings::set_session_model,
             commands::settings::get_session_model_id,
+            commands::settings::get_image_input_capability,
             commands::codex::get_codex_acp_status,
             commands::codex::prepare_codex_acp,
             commands::codex::install_codex_homebrew,

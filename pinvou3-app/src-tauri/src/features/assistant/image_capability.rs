@@ -42,6 +42,29 @@ pub enum ImageInputMode {
     Unsupported,
 }
 
+impl EffectiveImageCapability {
+    /// 稳定 wire 值:`get_image_input_capability` 命令返回给前端,前端按字符串匹配。
+    /// 改名必须同步前端展示逻辑与 commands 层序列化稳定性测试。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Unsupported => "unsupported",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl ImageInputMode {
+    /// 稳定 wire 值:见 `EffectiveImageCapability::as_str`。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::VisionToolFallback => "vision_tool_fallback",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 /// 内置已验证能力表:模型名小写后按子串匹配,命中即 Supported。
 /// 收录原则:仅明确多模态的模型族,且能从仓内 preset 默认模型或公开事实佐证;
 /// 拿不准的一律不收(走 Unknown + 用户 override)。
@@ -169,6 +192,23 @@ mod tests {
             has_secret: false,
             credential_action: None,
         }
+    }
+
+    #[test]
+    fn wire_strings_are_stable() {
+        // 前端按这些字符串匹配(选图即时警告),改动属于 wire 协议破坏。
+        assert_eq!(EffectiveImageCapability::Supported.as_str(), "supported");
+        assert_eq!(
+            EffectiveImageCapability::Unsupported.as_str(),
+            "unsupported"
+        );
+        assert_eq!(EffectiveImageCapability::Unknown.as_str(), "unknown");
+        assert_eq!(ImageInputMode::Native.as_str(), "native");
+        assert_eq!(
+            ImageInputMode::VisionToolFallback.as_str(),
+            "vision_tool_fallback"
+        );
+        assert_eq!(ImageInputMode::Unsupported.as_str(), "unsupported");
     }
 
     #[test]
