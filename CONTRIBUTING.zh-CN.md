@@ -79,6 +79,18 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-thre
 
 依赖真实模型、网络服务、凭据或大型模型资源的测试必须默认忽略，并提供显式启用命令。
 
+## CI 与合并队列
+
+PR 使用按路径选择的快速门禁。发布链路改动只跑轻量契约测试；完整 deb、dmg、nsis 安装包仅在 `VERSION` 改动进入 `main` 后，或人工明确触发 `workflow_dispatch` 时构建。
+
+完整 Rust 测试在 Merge Queue 中基于最新 `main` 执行。高风险 Rust PR 如需提前验证，可添加 `ci:full-rust` 标签。评审阶段只查看 required checks：
+
+```bash
+gh pr checks <编号> --required
+```
+
+不要等待非 required 的合入后平台构建或发布构建；评审期间也不要因 `main` 更新反复 rebase，只在准备进入 Merge Queue 时同步一次最新主线。
+
 ## Pull Request
 
 提交前检查目标分支的实际差异，并完成 [AGENTS.md](AGENTS.md) 要求的质量自检。

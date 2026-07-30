@@ -79,6 +79,18 @@ Run additional frontend, Relay, Rust, CodeWhale, or platform checks when relevan
 
 Tests requiring a live model, network service, credential, or large model asset must be ignored by default and provide an explicit opt-in command.
 
+## CI and merge queue
+
+Pull requests use a fast, path-aware gate. Release-chain changes run lightweight contract tests only; full deb, dmg, and nsis packages are built only after a `VERSION` change reaches `main`, or through an explicit `workflow_dispatch`.
+
+Full Rust tests run against the latest `main` in the merge queue. Add the `ci:full-rust` label when a high-risk Rust pull request should run them before queueing. During review, maintainers should inspect only required checks:
+
+```bash
+gh pr checks <number> --required
+```
+
+Do not wait for non-required post-merge platform or release builds. Do not repeatedly rebase during review; sync with the latest `main` once when the pull request is ready to enter the merge queue.
+
 ## Pull requests
 
 Review the actual diff against the target branch and complete the quality self-check required by [AGENTS.md](AGENTS.md) before submission.

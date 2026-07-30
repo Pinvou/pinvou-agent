@@ -1,0 +1,119 @@
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PR_WORKFLOW = ROOT / ".github/workflows/pr-check.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release-packages.yml"
+MAC_WORKFLOW = ROOT / ".github/workflows/mac-build.yml"
+
+
+def _extract_quoted_paths(block):
+    """提取 YAML 块中 `- 'path'` 形式的路径条目(保持文本序)。"""
+    paths = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- '") and stripped.endswith("'"):
+            paths.append(stripped[3:-1])
+    return paths
+
+
+def _is_covered_by_trigger(entry, trigger_paths):
+    """entry 被 trigger path 覆盖:完全相同,或 trigger 是其上层 `/**` 目录 glob。"""
+    for trigger in trigger_paths:
+        if entry == trigger:
+            return True
+        if trigger.endswith("/**") and entry.startswith(trigger[:-2]):
+            return True
+    return False
+
+
+class CiGatePolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.pr_workflow = PR_WORKFLOW.read_text(encoding="utf-8")
+        cls.release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_full_release_only_runs_for_version_or_manual_trigger(self):
+        trigger = self.release_workflow.split("\non:", maxsplit=1)[1].split(
+            "\npermissions:", maxsplit=1
+        )[0]
+        self.assertNotIn("pull_request:", trigger)
+        self.assertIn("push:", trigger)
+        self.assertIn("paths:\n      - 'VERSION'", trigger)
+        self.assertIn("workflow_dispatch:", trigger)
+        self.assertIn("cancel-in-progress: false", self.release_workflow)
+
+    def test_pull_request_has_lightweight_release_contract_gate(self):
+        self.assertIn("release_contract:", self.pr_workflow)
+        self.assertIn("  release-contract-test:", self.pr_workflow)
+        self.assertIn(
+            "needs.changes.outputs.release_contract == 'true'",
+            self.pr_workflow,
+        )
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- release-contract-test", required_gate)
+        self.assertIn(
+            '"release-contract-test:$RELEASE_CONTRACT_RESULT"',
+            required_gate,
+        )
+
+    def test_full_rust_runs_in_merge_queue_or_by_explicit_label(self):
+        self.assertIn("merge_group:", self.pr_workflow)
+        self.assertIn("ci:full-rust", self.pr_workflow)
+        rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[0]
+        self.assertIn("github.event_name == 'merge_group'", rust_test)
+        self.assertIn(
+            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
+            rust_test,
+        )
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.rust_code == 'true'",
+            rust_test,
+        )
+        self.assertNotIn(
+            "github.event_name == 'push' || needs.changes.outputs.rust_code == 'true'",
+            rust_test,
+        )
+
+    def test_main_cache_writer_is_not_cancelled(self):
+        concurrency = self.pr_workflow.split(
+            "\nconcurrency:", maxsplit=1
+        )[1].split("\njobs:", maxsplit=1)[0]
+        self.assertIn(
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            concurrency,
+        )
+
+    def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
+        # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
+        # filter 只在该 workflow 被触发后才有机会匹配,因此 bundle_chain 的每条
+        # 路径都必须被 on.push.paths 覆盖;不被覆盖的条目永远不会命中(死条目),
+        # 会误导读者以为该路径变更会跑 smoke(例如 VERSION:VERSION-only push
+        # 不触发 mac-build,版本同步提交经 tauri.conf.json/package.json 进入)。
+        mac_workflow = MAC_WORKFLOW.read_text(encoding="utf-8")
+        trigger_block = mac_workflow.split("\non:", maxsplit=1)[1].split(
+            "\npermissions:", maxsplit=1
+        )[0]
+        trigger_paths = _extract_quoted_paths(trigger_block)
+        self.assertTrue(trigger_paths, "mac-build on.push.paths 解析为空")
+
+        bundle_chain_block = mac_workflow.split(
+            "\n            bundle_chain:", maxsplit=1
+        )[1].split("\n\n", maxsplit=1)[0]
+        bundle_chain_paths = _extract_quoted_paths(bundle_chain_block)
+        self.assertTrue(bundle_chain_paths, "mac-build bundle_chain 解析为空")
+
+        for entry in bundle_chain_paths:
+            self.assertTrue(
+                _is_covered_by_trigger(entry, trigger_paths),
+                f"bundle_chain 路径不被 on.push.paths 覆盖(死条目): {entry}",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
