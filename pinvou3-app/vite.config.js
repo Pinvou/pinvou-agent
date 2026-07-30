@@ -8,6 +8,7 @@ const staticExtensions = new Set([
   '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.png', '.svg', '.webp',
 ]);
 const staticScripts = new Set([
+  'features/attachments/attachment-drop-controller.js',
   'features/personas/personas-i18n.js',
   'features/updater/update-notice-logic.js',
   'platform/tauri/bridge.js',

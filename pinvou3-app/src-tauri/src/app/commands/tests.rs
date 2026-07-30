@@ -1542,6 +1542,30 @@ fn concurrent_staging_reserves_distinct_targets_atomically() {
 }
 
 #[test]
+fn session_owned_attachment_reuses_workspace_relative_path() {
+    let workspace = mk_test_ws("reuse-session-attachment");
+    let attachment = workspace
+        .join("attachments")
+        .join("desktop_attach_test")
+        .join("image.png");
+    std::fs::create_dir_all(attachment.parent().unwrap()).expect("attachment directory");
+    std::fs::write(&attachment, b"image bytes").expect("attachment");
+
+    assert_eq!(
+        existing_workspace_relative_file(attachment.to_string_lossy().as_ref(), &workspace),
+        Some("attachments/desktop_attach_test/image.png".to_string())
+    );
+    assert_eq!(
+        std::fs::read_dir(attachment.parent().unwrap())
+            .expect("attachment entries")
+            .count(),
+        1,
+        "reusing a session-owned image must not create a second copy"
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn atomic_staging_keeps_legal_image_and_text_behavior() {
     let workspace = mk_test_ws("legal-atomic-staging");
     let source = workspace.join("source.png");
@@ -1585,7 +1609,8 @@ fn remote_attachment_source_survives_upload_temp_cleanup() {
     std::fs::remove_file(&image_source).unwrap();
     let image_prompt = build_message_with_attachments("看图".into(), vec![image], &workspace);
     assert!(image_prompt.contains("image_analyze"));
-    assert!(workspace.join("attachments/remote.png").exists());
+    assert!(staged_image.exists());
+    assert!(image_prompt.contains(".pinvou3/remote-attachments/remote.png"));
 
     let text_source = root.join("remote.txt");
     std::fs::write(&text_source, "远控大文本\n".repeat(20_000)).unwrap();
