@@ -4,6 +4,7 @@ import {
   FolderOpen, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { CodeViewerModal } from './CodeViewerModal.jsx';
 
 const invoke = invokeTauri;
 const WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width';
@@ -40,13 +41,6 @@ function rememberWorkspaceWidth(width) {
   } catch {
     // localStorage 不可用时只保留当前窗口内的宽度。
   }
-}
-
-function formatBytes(bytes) {
-  const value = Number(bytes || 0);
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function changeLabel(status, copy) {
@@ -140,10 +134,9 @@ function WorkspaceTree({
   });
 }
 
-function PreviewPane({ preview, diff, loading, onBack, onAddReference, referenced, onOpen, onReveal, copy }) {
-  const item = preview || diff;
-  if (!item) return null;
-  const path = item.relativePath;
+function PreviewPane({ diff, loading, onBack, onAddReference, referenced, onOpen, onReveal, copy }) {
+  if (!diff) return null;
+  const path = diff.relativePath;
   return (
     <div className="h-full min-h-0 flex flex-col">
       <div className="h-11 shrink-0 px-2 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
@@ -152,7 +145,6 @@ function PreviewPane({ preview, diff, loading, onBack, onAddReference, reference
         </button>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-medium" title={path}>{path}</div>
-          {preview && <div className="text-[10px] text-gray-400">{formatBytes(preview.size)}</div>}
         </div>
         <button type="button" onClick={() => navigator.clipboard?.writeText(path)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.copyPath}>
           <Copy size={13} />
@@ -170,26 +162,10 @@ function PreviewPane({ preview, diff, loading, onBack, onAddReference, reference
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-auto custom-scrollbar">
-          {diff && (
-            <pre className="min-w-max p-3 text-[11px] leading-[18px] font-mono whitespace-pre">
-              {diff.text || copy.noDiff}
-            </pre>
-          )}
-          {preview?.kind === 'image' && preview.dataUrl && (
-            <div className="p-4 flex justify-center">
-              <img src={preview.dataUrl} alt={preview.name} className="max-w-full h-auto rounded-lg border border-black/[0.06] dark:border-white/[0.08]" />
-            </div>
-          )}
-          {preview?.kind === 'text' && (
-            <pre className="min-w-max p-3 text-[11px] leading-[18px] font-mono whitespace-pre">{preview.text}</pre>
-          )}
-          {preview && preview.kind !== 'text' && !(preview.kind === 'image' && preview.dataUrl) && (
-            <div className="p-6 text-center text-[11px] leading-5 text-gray-400">
-              {preview.truncated ? copy.tooLarge : copy.unsupported}
-              <br />{copy.openHint}
-            </div>
-          )}
-          {(preview?.truncated || diff?.truncated) && (
+          <pre className="min-w-max p-3 text-[11px] leading-[18px] font-mono whitespace-pre">
+            {diff.text || copy.noDiff}
+          </pre>
+          {diff.truncated && (
             <div className="sticky bottom-0 px-3 py-2 text-[10px] text-amber-600 dark:text-amber-300 bg-amber-50/95 dark:bg-amber-950/80">
               {copy.truncated}
             </div>
@@ -232,8 +208,8 @@ export function CodexWorkspacePanel({
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [changes, setChanges] = useState(null);
-  const [preview, setPreview] = useState(null);
   const [diff, setDiff] = useState(null);
+  const [viewer, setViewer] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState('');
   const showError = (nextError) => {
@@ -358,7 +334,7 @@ export function CodexWorkspacePanel({
     setQuery('');
     setSearchResults([]);
     setChanges(null);
-    setPreview(null);
+    setViewer(null);
     setDiff(null);
     setError('');
     if (sessionId) {
@@ -415,24 +391,28 @@ export function CodexWorkspacePanel({
   }
 
   async function showFile(entry) {
-    setPreview(null);
     setDiff(null);
-    setPreviewLoading(true);
+    setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
     try {
-      setPreview(await invoke('preview_codex_workspace_file', {
+      const preview = await invoke('preview_codex_workspace_file', {
         sessionId,
         relativePath: entry.relativePath,
-      }));
+      });
+      setViewer({ name: entry.name, relativePath: entry.relativePath, preview, loading: false, error: '' });
       setError('');
     } catch (nextError) {
-      showError(nextError);
-    } finally {
-      setPreviewLoading(false);
+      console.error('Codex workspace preview failed:', nextError);
+      setViewer({
+        name: entry.name,
+        relativePath: entry.relativePath,
+        preview: null,
+        loading: false,
+        error: copy.showRawErrors ? String(nextError) : copy.operationFailed,
+      });
     }
   }
 
   async function showDiff(change) {
-    setPreview(null);
     setDiff({ relativePath: change.relativePath, text: '' });
     setPreviewLoading(true);
     try {
@@ -448,17 +428,15 @@ export function CodexWorkspacePanel({
     }
   }
 
-  async function openSelected(command) {
-    const path = (preview || diff)?.relativePath;
-    if (!path) return;
+  async function openWorkspacePath(command, relativePath) {
+    if (!relativePath) return;
     try {
-      await invoke(command, { sessionId, relativePath: path });
+      await invoke(command, { sessionId, relativePath });
     } catch (nextError) {
       showError(nextError);
     }
   }
 
-  const selected = preview || diff;
   const rows = query.trim() ? searchResults : null;
 
   return (
@@ -499,17 +477,16 @@ export function CodexWorkspacePanel({
         </button>
       </div>
 
-      {selected ? (
+      {diff ? (
         <div className="flex-1 min-h-0">
           <PreviewPane
-            preview={preview}
             diff={diff}
             loading={previewLoading}
-            onBack={() => { setPreview(null); setDiff(null); }}
+            onBack={() => setDiff(null)}
             onAddReference={onAddReference}
-            referenced={referencedPaths.has(selected.relativePath)}
-            onOpen={() => openSelected('open_codex_workspace_file')}
-            onReveal={() => openSelected('reveal_codex_workspace_file')}
+            referenced={referencedPaths.has(diff.relativePath)}
+            onOpen={() => openWorkspacePath('open_codex_workspace_file', diff.relativePath)}
+            onReveal={() => openWorkspacePath('reveal_codex_workspace_file', diff.relativePath)}
             copy={copy}
           />
         </div>
@@ -604,6 +581,19 @@ export function CodexWorkspacePanel({
             </div>
           )}
         </>
+      )}
+      {viewer && (
+        <CodeViewerModal
+          name={viewer.name}
+          relativePath={viewer.relativePath}
+          preview={viewer.preview}
+          loading={viewer.loading}
+          error={viewer.error}
+          onClose={() => setViewer(null)}
+          onOpen={() => openWorkspacePath('open_codex_workspace_file', viewer.relativePath)}
+          onReveal={() => openWorkspacePath('reveal_codex_workspace_file', viewer.relativePath)}
+          copy={copy}
+        />
       )}
     </aside>
   );
