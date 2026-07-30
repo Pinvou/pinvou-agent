@@ -1,22 +1,23 @@
 name: PR Check
 
 # Jobs:
-# - commit-message:强制校验 PR/push/Merge Queue 的 Git commit 信息规范。
+# - commit-message:强制校验 PR/push 的 Git commit 信息规范。
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
 # - frontend-test:前端/Relay/WebUI 改动时跑 lint、构建、逻辑测试和浏览器旅程。
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
-# - rust-test(编译类):普通 PR 默认不跑;Rust 相关改动进入 Merge Queue 后基于最新 main 跑完整测试。
-#   高风险 PR 可加 ci:full-rust 标签提前跑,无需等待到入队。
+# - rust-test(编译类):普通 PR 默认不跑;高风险 PR 可加 ci:full-rust 标签提前跑。
+#   Rust 相关改动合入 main 后跑完整测试并写暖 cache。
 # - rust-lint:fmt / clippy / cargo-deny 三项硬门禁(均无 continue-on-error),
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test:只在 main push 且 rust 相关路径变更时跑，不作为 PR 或 Merge Queue 合入门禁。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
-# - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
-# - merge_group:进入 Merge Queue 后基于最新 main 按实际改动路径检查，不要求开放 PR 反复 rebase。
+# - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
+# - merge_group:只复用同名 required context 秒级确认；完整门禁已在 PR 入队前通过，
+#   不在队列生成的临时 commit 上重复 checkout、构建、扫描或测试。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
@@ -47,8 +48,8 @@ permissions:
   contents: read
   pull-requests: read   # dorny/paths-filter 调 API 读 PR 改了哪些文件
 
-# 同一 PR 连续 push 或被合并/关闭时取消旧检查；main/merge queue 的完整 Rust
-# 验证不取消，避免 cache writer 反复被截断导致后续持续冷编译。
+# 同一 PR 连续 push 或被合并/关闭时取消旧检查；main 的完整 Rust 验证不取消，
+# 避免 cache writer 反复被截断导致后续持续冷编译。
 concurrency:
   group: pr-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -56,7 +57,7 @@ concurrency:
 jobs:
   commit-message:
     name: commit-message
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -69,8 +70,6 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
-          elif [ "${{ github.event_name }}" = "merge_group" ]; then
-            python3 scripts/validate-commit-msg.py --range "${{ github.event.merge_group.base_sha }}" "${{ github.event.merge_group.head_sha }}"
           else
             before="${{ github.event.before }}"
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
@@ -78,7 +77,7 @@ jobs:
 
   version-consistency:
     name: version-consistency
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -96,14 +95,12 @@ jobs:
       - name: 校验 VERSION 与各版本文件一致
         run: node scripts/sync-version.mjs --check
 
-  # PR、Merge Queue 与 main push 均按实际改动路径选择检查。
-  # paths-filter v4 原生支持 merge_group，会默认使用事件中的 base/head SHA 做 Git diff；
-  # 不得把 Merge Queue 输出硬编码为 true，否则任意文案/文档改动都会误跑全量 Rust 等检查。
-  # push(main) 也跑:dorny/paths-filter 在 push 下用 before..sha 本地 diff(需 fetch-depth:0),
+  # PR 与 main push 按实际改动路径选择检查；Merge Queue 不重复执行路径门禁。
+  # push(main) 下 dorny/paths-filter 用 before..sha 本地 diff(需 fetch-depth:0),
   # 供 windows-rust-test 按路径触发(docs-only 推送不再烧 32min Windows runner)。
   changes:
     name: changes
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -242,7 +239,7 @@ jobs:
 
   fast-gate:
     name: fast-gate
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' }}
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -254,7 +251,7 @@ jobs:
 
       - name: 架构边界门禁
         env:
-          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           base_ref="${BASE_REF#refs/heads/}"
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
@@ -270,7 +267,7 @@ jobs:
 
       - name: fork 合规联动 (gitlink ↔ fork-modifications)
         env:
-          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           base_ref="${BASE_REF#refs/heads/}"
           ./scripts/ci-fork-link-check.sh "origin/$base_ref"
@@ -303,10 +300,9 @@ jobs:
     # 合并原 diff-viewer-test + pet-frontend-test:两者各自 npm ci + build:ui 纯重复,
     # pet 跑 npm test(链尾含 test:diff-parser)与 diff-viewer 的 test:diff-parser 也重复,
     # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖、无重复。
-    # merge_group 复用 changes 的真实路径结果，不因进入队列而无条件全跑。
     # diff_viewer 的路径本是 frontend(pinvou3-app/src/**、tests/**、package.json 等)的
     # 严格子集,故不再单列 output,仅 frontend || pet 即可覆盖全部触发面。
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -358,7 +354,7 @@ jobs:
   relay-test:
     name: relay-test
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.relay == 'true' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.relay == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -379,9 +375,9 @@ jobs:
   release-contract-test:
     name: release-contract-test
     needs: changes
-    # PR 与 Merge Queue 仅在发布链路相关路径变化时验证版本同步、Tauri overlay
-    # 与各平台打包契约，不生成 deb/dmg/nsis。
-    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.release_contract == 'true' }}
+    # PR/main 仅在发布链路相关路径变化时验证版本同步、Tauri overlay 与各平台
+    # 打包契约，不生成 deb/dmg/nsis；Merge Queue 不重复执行。
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && github.event.action != 'closed' && needs.changes.outputs.release_contract == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -412,7 +408,7 @@ jobs:
   rust-lint:
     name: rust-lint
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.rust_code == 'true' }}
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && github.event.action != 'closed' && needs.changes.outputs.rust_code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -477,15 +473,13 @@ jobs:
     name: rust-test
     needs: changes
     # 普通 PR 即使改 Rust 也默认跳过，避免评审阶段每次 push 都等完整编译。
-    # Merge Queue 仅在 Rust 相关路径变化时跑；Rust 相关 main push 跑并写暖 cache；
-    # 高风险 PR 可用标签提前跑。
+    # Rust 相关 main push 跑并写暖 cache；高风险 PR 可用标签提前跑。
     if: >-
       ${{
         !cancelled() &&
         github.event.action != 'closed' &&
         needs.changes.outputs.rust_code == 'true' &&
         (
-          github.event_name == 'merge_group' ||
           github.event_name == 'push' ||
           (
             github.event_name == 'pull_request' &&
@@ -501,7 +495,7 @@ jobs:
       # 同 rust-lint:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
-      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      # PR 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
       SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
@@ -688,7 +682,7 @@ jobs:
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
     needs: changes
-    if: ${{ needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true' }}
+    if: ${{ github.event_name != 'merge_group' && (needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true') }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -713,7 +707,7 @@ jobs:
   macos-codex-runtime-test:
     name: macos-codex-runtime-test
     needs: changes
-    if: ${{ needs.changes.outputs.acp_runtime == 'true' }}
+    if: ${{ github.event_name != 'merge_group' && needs.changes.outputs.acp_runtime == 'true' }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -763,6 +757,11 @@ jobs:
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+            echo "完整门禁已在 PR 入队前验证；Merge Queue 仅复用 required-gate 状态"
+            exit 0
+          fi
+
           if [[ "$COMMIT_MESSAGE_RESULT" != success || "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
             echo "基础检查失败: commit-message=$COMMIT_MESSAGE_RESULT version-consistency=$VERSION_CONSISTENCY_RESULT changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
             exit 1

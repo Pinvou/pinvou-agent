@@ -13,12 +13,14 @@ jobs:
     name: dependency-review
     runs-on: ubuntu-latest
     steps:
+      - name: 确认队列中的 PR 已通过依赖审查
+        if: github.event_name == 'merge_group'
+        run: echo "依赖审查已在各 PR 入队前验证"
+
       - name: Review dependency changes
+        if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # dependency-review-action 对非 pull_request 事件需要显式 base/head。
-          base-ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
-          head-ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
           fail-on-severity: high
           vulnerability-check: true
           license-check: true

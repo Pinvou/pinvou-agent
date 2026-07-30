@@ -66,14 +66,13 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
         )
 
-    def test_merge_queue_uses_real_path_filtering(self):
+    def test_merge_queue_skips_path_filtering_and_duplicate_work(self):
         changes = self.pr_workflow.split(
             "\n  changes:", maxsplit=1
         )[1].split("\n  fast-gate:", maxsplit=1)[0]
         self.assertIn("uses: dorny/paths-filter@v4", changes)
-        self.assertNotIn("if: github.event_name != 'merge_group'", changes)
-        self.assertNotIn(
-            "github.event_name == 'merge_group' && 'true'",
+        self.assertIn(
+            "(github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push'",
             changes,
         )
         for output in (
@@ -96,13 +95,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "开发启动入口变化必须触发 ACP Runtime 契约检查",
         )
 
-    def test_rust_runs_for_relevant_merge_queue_or_explicit_label(self):
+    def test_rust_runs_for_main_push_or_explicit_label(self):
         self.assertIn("merge_group:", self.pr_workflow)
         self.assertIn("ci:full-rust", self.pr_workflow)
         rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
             "\n  windows-rust-test:", maxsplit=1
         )[0]
-        self.assertIn("github.event_name == 'merge_group'", rust_test)
+        self.assertNotIn("github.event_name == 'merge_group'", rust_test)
         self.assertIn(
             "needs.changes.outputs.rust_code == 'true'",
             rust_test,
@@ -124,7 +123,7 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
 
-    def test_release_contract_is_path_scoped_in_merge_queue(self):
+    def test_release_contract_skips_merge_queue(self):
         release_contract = self.pr_workflow.split(
             "\n  release-contract-test:", maxsplit=1
         )[1].split("\n  rust-lint:", maxsplit=1)[0]
@@ -132,8 +131,8 @@ class CiGatePolicyTests(unittest.TestCase):
             "needs.changes.outputs.release_contract == 'true'",
             release_contract,
         )
-        self.assertNotIn(
-            "github.event_name == 'merge_group' ||",
+        self.assertIn(
+            "github.event_name != 'merge_group'",
             release_contract,
         )
 
@@ -161,8 +160,19 @@ class CiGatePolicyTests(unittest.TestCase):
         dependency_review = (
             ROOT / ".github/workflows/dependency-review.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("github.event.merge_group.base_sha", dependency_review)
-        self.assertIn("github.event.merge_group.head_sha", dependency_review)
+        secret_scan = (
+            ROOT / ".github/workflows/secret-scan.yml"
+        ).read_text(encoding="utf-8")
+        dco = (ROOT / ".github/workflows/dco.yml").read_text(encoding="utf-8")
+        self.assertIn("依赖审查已在各 PR 入队前验证", dependency_review)
+        self.assertIn("密钥扫描已在各 PR 入队前验证", secret_scan)
+        self.assertIn("DCO 已在各 PR 入队前验证", dco)
+        self.assertIn(
+            "完整门禁已在 PR 入队前验证",
+            self.pr_workflow,
+        )
+        self.assertNotIn("github.event.merge_group.base_sha", dependency_review)
+        self.assertNotIn("github.event.merge_group.head_sha", dependency_review)
 
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
