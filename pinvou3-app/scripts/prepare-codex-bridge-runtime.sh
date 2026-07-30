@@ -58,22 +58,24 @@ bridge_runtime_valid() {
       claude_native="$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
       [ -x "$root/node/darwin-x64/bin/node" ] \
         && [ -x "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude" ] \
-        && /usr/bin/lipo -verify_arch arm64 "$node" \
-        && /usr/bin/lipo -verify_arch arm64 "$claude_native" \
-        && /usr/bin/lipo -verify_arch x86_64 "$root/node/darwin-x64/bin/node" \
-        && /usr/bin/lipo -verify_arch x86_64 \
-          "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude" || return 1
+        && /usr/bin/lipo "$node" -verify_arch arm64 \
+        && /usr/bin/lipo "$claude_native" -verify_arch arm64 \
+        && /usr/bin/lipo "$root/node/darwin-x64/bin/node" -verify_arch x86_64 \
+        && /usr/bin/lipo \
+          "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude" \
+          -verify_arch x86_64 || return 1
       ;;
     Darwin-x86_64)
       node="$root/node/darwin-x64/bin/node"
       claude_native="$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude"
       [ -x "$root/node/darwin-arm64/bin/node" ] \
         && [ -x "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" ] \
-        && /usr/bin/lipo -verify_arch arm64 "$root/node/darwin-arm64/bin/node" \
-        && /usr/bin/lipo -verify_arch arm64 \
+        && /usr/bin/lipo "$root/node/darwin-arm64/bin/node" -verify_arch arm64 \
+        && /usr/bin/lipo \
           "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" \
-        && /usr/bin/lipo -verify_arch x86_64 "$node" \
-        && /usr/bin/lipo -verify_arch x86_64 "$claude_native" || return 1
+          -verify_arch arm64 \
+        && /usr/bin/lipo "$node" -verify_arch x86_64 \
+        && /usr/bin/lipo "$claude_native" -verify_arch x86_64 || return 1
       ;;
     *)
       return 1

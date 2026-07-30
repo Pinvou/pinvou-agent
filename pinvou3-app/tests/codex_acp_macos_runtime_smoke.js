@@ -55,13 +55,13 @@ assert.equal(manifest.arch, "universal");
 for (const [arch, executable] of Object.entries(nodes)) {
   assert.ok(fs.statSync(executable).size > 0, `${arch} Node Runtime 必须存在且非空`);
   const lipoArch = arch === "x64" ? "x86_64" : "arm64";
-  const result = spawnSync("/usr/bin/lipo", ["-verify_arch", lipoArch, executable]);
+  const result = spawnSync("/usr/bin/lipo", [executable, "-verify_arch", lipoArch]);
   assert.equal(result.status, 0, `${arch} Node Runtime 架构必须正确`);
 }
 for (const [arch, executable] of Object.entries(claudeExecutables)) {
   assert.ok(fs.statSync(executable).size > 0, `${arch} Claude Runtime 必须存在且非空`);
   const lipoArch = arch === "x64" ? "x86_64" : "arm64";
-  const result = spawnSync("/usr/bin/lipo", ["-verify_arch", lipoArch, executable]);
+  const result = spawnSync("/usr/bin/lipo", [executable, "-verify_arch", lipoArch]);
   assert.equal(result.status, 0, `${arch} Claude Runtime 架构必须正确`);
 }
 
