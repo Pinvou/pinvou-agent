@@ -39,6 +39,15 @@ const claudeExecutables = {
     "claude",
   ),
 };
+const codexBridgeEntrypoint = path.join(
+  runtimeRoot,
+  "acp",
+  "node_modules",
+  "@agentclientprotocol",
+  "codex-acp",
+  "dist",
+  "index.js",
+);
 const claudeBridgeEntrypoint = path.join(
   runtimeRoot,
   "acp",
@@ -80,6 +89,15 @@ const claudeVersion = spawnSync(hostClaude, ["--version"], {
 });
 assert.equal(claudeVersion.status, 0, claudeVersion.stderr);
 assert.notEqual(`${claudeVersion.stdout}${claudeVersion.stderr}`.trim(), "");
+const codexVersion = spawnSync(hostNode, [codexBridgeEntrypoint, "--version"], {
+  encoding: "utf8",
+  timeout: 10_000,
+});
+assert.equal(codexVersion.status, 0, codexVersion.stderr);
+assert.equal(
+  codexVersion.stdout.trim(),
+  `@agentclientprotocol/codex-acp ${manifest.codex_acp_version}`,
+);
 
 function initializeClaudeBridge() {
   return new Promise((resolve, reject) => {
@@ -141,6 +159,7 @@ function initializeClaudeBridge() {
         return;
       }
     });
+    child.stdin.on("error", () => {});
     child.stdin.write(
       `${JSON.stringify({
         jsonrpc: "2.0",

@@ -263,7 +263,7 @@ try {
     'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
-  assert.ok(runtime.includes('Codex 会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
+  assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
   assert.ok(runtime.includes('AgentBackend::ClaudeAcp')
     && runtime.includes('AgentBackend::KimiAcp')

@@ -133,6 +133,7 @@ function initializeClaudeBridge() {
         return;
       }
     });
+    child.stdin.on("error", () => {});
     child.stdin.write(
       `${JSON.stringify({
         jsonrpc: "2.0",

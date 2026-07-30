@@ -238,6 +238,20 @@ try {
     "prepared runtime must reject a redundant bundled Codex platform package",
   );
   fs.rmSync(redundantCodexPackage, { recursive: true });
+  const redundantClaudePackage = path.join(
+    bridgeRoot,
+    "acp",
+    "node_modules",
+    "@anthropic-ai",
+    "claude-agent-sdk-win32-arm64",
+  );
+  fs.mkdirSync(redundantClaudePackage, { recursive: true });
+  assert.equal(
+    isPrepared(expected, bridgeRoot, nodeRoot),
+    false,
+    "prepared runtime must reject a redundant bundled Claude platform package",
+  );
+  fs.rmSync(redundantClaudePackage, { recursive: true });
   fs.rmSync(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE));
   assert.equal(
     isPrepared(expected, bridgeRoot, nodeRoot),
