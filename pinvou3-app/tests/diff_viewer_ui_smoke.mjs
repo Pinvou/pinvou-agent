@@ -92,6 +92,7 @@ try {
       appendAddCount: document.querySelectorAll('[data-testid="append-output"] [data-diff-kind="add"]').length,
       appendSummary: document.querySelector('[data-testid="append-output"] [data-testid="diff-summary"]')?.innerText || '',
       appendLegacyText: document.querySelector('[data-testid="append-legacy-output"]')?.innerText || '',
+      appendOmittedText: document.querySelector('[data-testid="append-omitted-output"]')?.innerText || '',
     };
   });
 
@@ -110,6 +111,7 @@ try {
   assert(initial.appendAddCount === 1, 'append_file diff 新增行渲染数量错误', initial);
   assert(initial.appendSummary.includes('Appended 8 bytes'), 'append_file 字节摘要未随 diff 渲染', initial);
   assert(initial.appendLegacyText.includes('追加 8 字节'), '旧格式 append_file 字节摘要兜底失效', initial);
+  assert(initial.appendOmittedText.includes('[diff omitted]') && initial.appendOmittedText.includes('Appended 8 bytes'), 'append_file [diff omitted] 输出未完整展示原文', initial);
 
   await page.click('[data-testid="edit-output"] [aria-label="展开完整 diff"]');
   await page.waitForFunction(() => document.querySelector('[data-testid="edit-output"] [data-testid="diff-view"]')?.clientHeight > 200);

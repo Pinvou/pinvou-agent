@@ -73,8 +73,12 @@ const ToolOutput = ({ item, isDark, t }) => {
         // append_file 与 write_file 一样由后端输出 unified diff,走 DiffView;
         // 旧 session 落盘的是 "appended N bytes" 纯文本,保留字节摘要兜底。
         if (looksDiff(out)) return <DiffView text={out} isDark={isDark} />;
-        const m = String(out).match(/appended (\d+) bytes[\s\S]*?\((\d+) -> (\d+) bytes\)/i);
-        if (m) return <div className={outBox(isDark)}>{t.appendBytes(/^Created/i.test(out), m[1], m[2], m[3])}</div>;
+        // 旧文件超大时后端输出 "summary\n[diff omitted] ...":不能只显示字节摘要,
+        // 否则 omit 说明被吞掉 —— 与 write_file 一样落到 OutputPre 展示完整原文。
+        if (!/\[diff omitted\]/i.test(out)) {
+          const m = String(out).match(/appended (\d+) bytes[\s\S]*?\((\d+) -> (\d+) bytes\)/i);
+          if (m) return <div className={outBox(isDark)}>{t.appendBytes(/^Created/i.test(out), m[1], m[2], m[3])}</div>;
+        }
       }
       else if (TODO_TOOLS.indexOf(item.name) >= 0) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} isDark={isDark} t={t} />; }
       return <OutputPre text={out} isDark={isDark} />;

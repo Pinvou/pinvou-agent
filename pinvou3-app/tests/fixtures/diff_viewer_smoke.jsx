@@ -44,6 +44,13 @@ const appendDiffOutput = [
 // 旧 session 落盘的 append_file 输出:纯字节摘要,无 diff,走 appendBytes 兜底。
 const appendLegacyOutput = 'Appended 8 bytes to notes/deck.html (7 -> 15 bytes)';
 
+// 旧文件超 512KB 时 append_file 输出:字节摘要 + [diff omitted] 说明。
+// 不能走 appendBytes 兜底(omit 说明会被吞掉),应落到 OutputPre 展示完整原文。
+const appendOmittedOutput = [
+  'Appended 8 bytes to notes/big.log (524289 -> 524297 bytes)',
+  '[diff omitted] notes/big.log is too large for an inline append_file diff (old=524289 bytes, limit=524288 bytes). Use read_file with line ranges to inspect it.',
+].join('\n');
+
 const t = {
   receiptNote: '输出已截断',
   receiptEmpty: '无输出',
@@ -84,6 +91,13 @@ const Fixture = () => (
     <section data-testid="append-legacy-output">
       <ToolOutput
         item={{ name: 'append_file', output: appendLegacyOutput, success: true }}
+        isDark={false}
+        t={t}
+      />
+    </section>
+    <section data-testid="append-omitted-output">
+      <ToolOutput
+        item={{ name: 'append_file', output: appendOmittedOutput, success: true }}
         isDark={false}
         t={t}
       />
