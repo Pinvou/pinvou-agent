@@ -199,9 +199,9 @@ docs/                 架构设计、验证报告与维护文档
 
 <a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
  </picture>
 </a>
 
