@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
-  Sparkles, StopCircle, Terminal, Wrench,
+  RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
 } from '../../components/icons.jsx';
-import { CodexLogo } from '../../components/CodexLogo.jsx';
+import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import {
   appendAcpEvent,
@@ -68,6 +68,33 @@ function forgetWorkspace(path) {
     // localStorage 不可用时仍允许当前窗口继续创建新会话。
   }
   return next;
+}
+
+function isAcpAuthenticationFailure(envelope) {
+  if (envelope?.event?.type !== 'turn_completed') return false;
+  const error = String(envelope.event?.data?.error || '');
+  return /authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(error);
+}
+
+function classifyAcpServiceFailure(envelope) {
+  if (envelope?.event?.type !== 'turn_completed') return null;
+  const detail = String(envelope.event?.data?.error || '').trim();
+  if (!detail) return null;
+  let kind = 'service';
+  if (/HTTP\s*402|会员.{0,12}(权益|额度|到期|失效)|订阅.{0,12}(到期|失效)|payment required/i.test(detail)) {
+    kind = 'entitlement';
+  } else if (/HTTP\s*429|rate.?limit|quota|额度.{0,12}(不足|用尽)|用量.{0,12}(超出|耗尽)/i.test(detail)) {
+    kind = 'quota';
+  } else if (/HTTP\s*401|authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(detail)) {
+    kind = 'authentication';
+  } else if (/network|connection|timeout|timed out|网络|连接.{0,8}(失败|超时)/i.test(detail)) {
+    kind = 'network';
+  }
+  return {
+    kind,
+    detail,
+    key: `${envelope.seq || ''}:${envelope.timestamp || ''}:${detail}`,
+  };
 }
 
 function configChoices(option) {
@@ -363,7 +390,7 @@ function PlanBlock({ plan }) {
   );
 }
 
-function PermissionCard({ permission, pending, onRespond, responding }) {
+function PermissionCard({ permission, pending, onRespond, responding, agentName, copy }) {
   const request = permission.request || {};
   const tool = request.toolCall || {};
   const options = request.options || [];
@@ -373,31 +400,31 @@ function PermissionCard({ permission, pending, onRespond, responding }) {
       <div className="flex items-start gap-3">
         <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Codex 请求权限</div>
-          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || '执行受保护操作'}</div>
+          <div className="text-[13px] font-semibold">{copy.permissionRequest(agentName)}</div>
+          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || copy.protectedOperation}</div>
           {tool.rawInput && tool.rawInput.command
-            ? <TerminalBlock label="命令" text={String(tool.rawInput.command)} />
-            : <StructuredValue label="操作参数" value={tool.rawInput} />}
+            ? <TerminalBlock label={copy.command} text={String(tool.rawInput.command)} />
+            : <StructuredValue label={copy.operationArguments} value={tool.rawInput} />}
           <div className="mt-3 flex flex-wrap gap-2">
             {options.map(option => (
               <button key={option.optionId} disabled={!actionable || responding}
                 onClick={() => onRespond(permission.toolCallId, option.optionId)}
-                className={`px-3 py-1.5 rounded-xl text-[12px] font-medium transition-colors ${
+                className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
                   String(option.kind || '').startsWith('allow')
                     ? 'bg-blue-600 text-white hover:bg-blue-700'
                     : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
                 } disabled:opacity-45 disabled:cursor-not-allowed`}>
                 {option.optionId === 'allow_once'
-                  ? '允许一次'
+                  ? copy.allowOnce
                   : option.optionId === 'allow_always'
-                    ? '本会话允许'
+                    ? copy.allowSession
                     : option.optionId === 'reject_once'
-                      ? '拒绝'
+                      ? copy.reject
                       : option.name}
               </button>
             ))}
           </div>
-          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? '已处理' : '该请求已过期'}</div>}
+          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? copy.handled : copy.expired}</div>}
         </div>
       </div>
     </div>
@@ -489,6 +516,8 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy }) 
 function TurnItem({
   item,
   now,
+  agentName,
+  copy,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -503,7 +532,7 @@ function TurnItem({
     return (
       <PermissionCard permission={item.permission}
         pending={pendingByTool[item.permission.toolCallId]}
-        onRespond={onRespond} responding={responding} />
+        onRespond={onRespond} responding={responding} agentName={agentName} copy={copy} />
     );
   }
   if (item.type === 'elicitation') {
@@ -527,6 +556,9 @@ function TurnItem({
 function Turn({
   turn,
   now,
+  agentId,
+  agentName,
+  copy,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -560,7 +592,7 @@ function Turn({
       )}
       <div className="flex items-start gap-3">
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-          <CodexLogo className="h-5 w-5" title="Codex" />
+          <AcpAgentLogo agentId={agentId} className="h-5 w-5" title={agentName} />
         </div>
         <div className="min-w-0 flex-1 space-y-1">
           {running && (
@@ -571,6 +603,7 @@ function Turn({
           )}
           {turn.presentation.map((item, index) => (
             <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
+              agentName={agentName} copy={copy}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
@@ -589,28 +622,54 @@ function Turn({
   );
 }
 
-function RuntimeNotice({ status, working, error, onPrepare, onBrewInstall, onLogin, onOpenLogin, copy }) {
+function setupHintText(copy, hint) {
+  return copy.setupHints?.[hint] || '';
+}
+
+function RuntimeNotice({
+  status,
+  working,
+  error,
+  onPrepare,
+  onBrewInstall,
+  onLogin,
+  onOpenLogin,
+  onSubmitLoginCode,
+  onRefresh,
+  copy,
+}) {
+  const [authorizationCode, setAuthorizationCode] = useState('');
+  useEffect(() => {
+    setAuthorizationCode('');
+  }, [status?.agent_id, status?.login_in_progress]);
   if (!status) return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
     ? (copy.showRawErrors ? rawError : copy.operationFailed)
     : '';
   if (!status.bridge_ready) {
+    const isCodex = status.agent_id === 'codex';
     return (
       <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-4 flex items-start gap-3">
         <AlertTriangle size={19} className="text-red-500 shrink-0 mt-0.5" />
-        <div>
-          <div className="text-[13px] font-semibold">{copy.bridgeUnavailable}</div>
-          <div className="mt-1 text-[12px] text-gray-500">{copy.bridgeRepair}</div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold">{isCodex ? copy.bridgeUnavailable : copy.setupRequired}</div>
+          <div className="mt-1 text-[12px] text-gray-500">{setupHintText(copy, status.setup_hint) || copy.bridgeRepair}</div>
           {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
         </div>
+        {!isCodex && (
+          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-red-500/20 text-[12px] font-medium">
+            {copy.recheck}
+          </button>
+        )}
       </div>
     );
   }
   if (!status.codex_available) {
     const progress = status.download_progress;
+    const isCodex = status.agent_id === 'codex';
     const installMethod = status.install_method;
-    if (installMethod === 'homebrew' || installMethod === 'manual') {
+    if (isCodex && (installMethod === 'homebrew' || installMethod === 'manual')) {
       const incompatible = Boolean(status.system_codex_incompatible);
       const brewInstallable = installMethod === 'homebrew' && status.brew_available;
       return (
@@ -641,12 +700,16 @@ function RuntimeNotice({ status, working, error, onPrepare, onBrewInstall, onLog
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
         <Terminal size={19} className="text-blue-500 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{copy.codexMissing}</div>
-          <div className="text-[12px] text-gray-500">{copy.managedAvailable(status.managed_codex_version)}</div>
+          <div className="text-[13px] font-semibold">{isCodex ? copy.codexMissing : copy.setupRequired}</div>
+          <div className="text-[12px] text-gray-500">
+            {isCodex ? copy.managedAvailable(status.managed_codex_version) : setupHintText(copy, status.setup_hint)}
+          </div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
-        <button onClick={onPrepare} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
-          {working ? (progress == null ? copy.downloading : copy.downloadProgress(progress)) : copy.downloadManaged}
+        <button onClick={isCodex ? onPrepare : onRefresh} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
+          {isCodex
+            ? (working ? (progress == null ? copy.downloading : copy.downloadProgress(progress)) : copy.downloadManaged)
+            : copy.recheck}
         </button>
       </div>
     );
@@ -654,18 +717,59 @@ function RuntimeNotice({ status, working, error, onPrepare, onBrewInstall, onLog
   if (!status.authenticated) {
     const waitingForLogin = Boolean(status.login_in_progress);
     const loginUrlReady = waitingForLogin && Boolean(status.login_url);
+    const agentName = status.agent_name || 'Agent';
+    const waitingTitle = copy.waitingAgentLogin
+      ? copy.waitingAgentLogin(agentName)
+      : copy.waitingLogin;
+    const signedOutTitle = copy.agentNotLoggedIn
+      ? copy.agentNotLoggedIn(agentName)
+      : copy.notLoggedIn;
+    const loginHint = copy.agentLoginHint
+      ? copy.agentLoginHint(agentName)
+      : (setupHintText(copy, status.setup_hint) || copy.loginHint);
     return (
-      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-center gap-3">
+      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-start gap-3">
         <Sparkles size={19} className="text-amber-500 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{waitingForLogin ? copy.waitingLogin : copy.notLoggedIn}</div>
+          <div className="text-[13px] font-semibold">{waitingForLogin ? waitingTitle : signedOutTitle}</div>
           <div className="text-[12px] text-gray-500">
             {loginUrlReady
-              ? copy.finishBrowserAuth
+              ? (copy.finishAgentAuth ? copy.finishAgentAuth(agentName) : copy.finishBrowserAuth)
               : waitingForLogin
                 ? copy.openingAuth
-                : copy.loginHint}
+                : loginHint}
           </div>
+          {status.login_code && (
+            <div className="mt-2 inline-flex rounded-lg border border-amber-500/25 bg-white/70 px-2.5 py-1 font-mono text-[13px] font-semibold tracking-wider text-amber-800 dark:bg-black/20 dark:text-amber-200">
+              {copy.deviceCode ? copy.deviceCode(status.login_code) : status.login_code}
+            </div>
+          )}
+          {waitingForLogin && status.login_input_required && status.agent_id === 'claude' && (
+            <form
+              className="mt-2 flex max-w-md items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const code = authorizationCode.trim();
+                if (code) onSubmitLoginCode(code);
+              }}
+            >
+              <input
+                value={authorizationCode}
+                onChange={event => setAuthorizationCode(event.target.value)}
+                placeholder={copy.authorizationCodePlaceholder}
+                aria-label={copy.authorizationCodePlaceholder}
+                autoComplete="off"
+                className="min-w-0 flex-1 rounded-lg border border-amber-500/25 bg-white/80 px-2.5 py-1.5 text-[12px] outline-none focus:border-amber-500 dark:bg-black/20"
+              />
+              <button
+                type="submit"
+                disabled={!authorizationCode.trim()}
+                className="rounded-lg border border-amber-500/30 px-2.5 py-1.5 text-[12px] font-medium text-amber-700 disabled:opacity-40 dark:text-amber-300"
+              >
+                {copy.submitAuthorizationCode}
+              </button>
+            </form>
+          )}
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {loginUrlReady && (
@@ -688,6 +792,63 @@ function runtimeSourceLabel(status, copy) {
   return copy?.runtimeSources?.[status.runtime_source] || '';
 }
 
+function AgentServiceFailureNotice({
+  failure,
+  agentName,
+  working,
+  onSwitchAccount,
+  onDismiss,
+  copy,
+}) {
+  if (!failure) return null;
+  const recoverWithAccount = ['entitlement', 'quota', 'authentication'].includes(failure.kind);
+  const title = failure.kind === 'entitlement'
+    ? copy.entitlementUnavailable(agentName)
+    : failure.kind === 'quota'
+      ? copy.quotaUnavailable(agentName)
+      : failure.kind === 'authentication'
+        ? copy.authorizationExpired(agentName)
+        : copy.serviceUnavailable(agentName);
+  const description = recoverWithAccount
+    ? copy.accountRecoveryHint
+    : copy.serviceRecoveryHint;
+  return (
+    <div data-testid="acp-service-failure" className="rounded-2xl border border-red-500/20 bg-red-500/[0.055] p-4">
+      <div className="flex items-start gap-3">
+        <AlertTriangle size={19} className="mt-0.5 shrink-0 text-red-500" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold text-red-700 dark:text-red-300">{title}</div>
+          <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] text-gray-400">{copy.errorDetails}</summary>
+            <div className="mt-1 break-words text-[11px] text-red-500">{failure.detail}</div>
+          </details>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {recoverWithAccount && (
+            <button
+              type="button"
+              onClick={onSwitchAccount}
+              disabled={working}
+              className="rounded-xl bg-red-500 px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
+            >
+              {copy.switchAccount}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDismiss}
+            disabled={working}
+            className="rounded-xl border border-red-500/20 px-3 py-1.5 text-[12px] font-medium text-red-600 disabled:opacity-50 dark:text-red-300"
+          >
+            {copy.dismissNotice}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CodexAcpView({
   theme,
   t,
@@ -699,11 +860,15 @@ export function CodexAcpView({
   onSwitchHomeMode,
 }) {
   const codexCopy = t.uiCodex;
+  const [agents, setAgents] = useState([]);
+  const [draftAgentId, setDraftAgentId] = useState('codex');
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]);
   const [pendingElicitations, setPendingElicitations] = useState([]);
   const [sessionInfo, setSessionInfo] = useState(null);
+  const [sessionInfoSessionId, setSessionInfoSessionId] = useState(null);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachmentDrafts, setAttachmentDrafts] = useState({});
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
@@ -721,6 +886,8 @@ export function CodexAcpView({
   const [responding, setResponding] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -729,12 +896,16 @@ export function CodexAcpView({
   const lastScrollTopRef = useRef(0);
   const attachmentIdRef = useRef(0);
   const skipNextActiveLoadRef = useRef(null);
+  const sessionLoadRequestRef = useRef(0);
   const preserveDraftWorkspaceRef = useRef(false);
   const draftEpochRef = useRef(draftEpoch);
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
-  const controls = useMemo(() => resolveAcpSessionControls(sessionInfo), [sessionInfo]);
+  const controls = useMemo(
+    () => resolveAcpSessionControls(sessionInfoSessionId === activeId ? sessionInfo : null),
+    [sessionInfo, sessionInfoSessionId, activeId],
+  );
   const availableCommands = useMemo(() => {
     const event = [...projection.global].reverse().find(item => item.event && item.event.type === 'available_commands');
     const data = event && event.event && event.event.data || {};
@@ -754,6 +925,22 @@ export function CodexAcpView({
     () => sessions.find(session => session.id === activeId) || null,
     [sessions, activeId],
   );
+  const activeAgentId = activeSession?.agent_id || draftAgentId;
+  const activeAgentName = activeSession?.agent_name
+    || agents.find(agent => agent.agent_id === activeAgentId)?.agent_name
+    || (activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
+  const activeAgentIdRef = useRef(activeAgentId);
+  activeAgentIdRef.current = activeAgentId;
+  const activeStatus = status?.agent_id === activeAgentId ? status : null;
+  const serviceFailure = useMemo(() => {
+    const latestCompleted = [...events]
+      .reverse()
+      .find(envelope => envelope?.event?.type === 'turn_completed');
+    return classifyAcpServiceFailure(latestCompleted);
+  }, [events]);
+  const visibleServiceFailure = serviceFailure?.key === dismissedFailureKey
+    ? null
+    : serviceFailure;
   const workspaceUnavailable = Boolean(
     activeSession
       && activeSession.workspace_kind === 'project'
@@ -762,9 +949,15 @@ export function CodexAcpView({
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
   const attachments = attachmentDrafts[attachmentKey] || [];
   const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
+  const sessionReady = !activeId || (
+    sessionInfoSessionId === activeId && Boolean(sessionInfo)
+  );
+  const sessionSyncing = Boolean(activeId && !sessionReady && sessionLoading);
 
-  function applySessionInfo(info) {
+  function applySessionInfo(info, sessionId = activeIdRef.current) {
+    if (sessionId !== activeIdRef.current) return info;
     setSessionInfo(info);
+    setSessionInfoSessionId(sessionId || null);
     return info;
   }
 
@@ -775,39 +968,72 @@ export function CodexAcpView({
     return list;
   }
 
-  async function refreshStatus() {
-    const next = await invoke('get_codex_acp_status');
-    setStatus(next);
+  async function refreshAgents() {
+    const next = await invoke('list_acp_agents');
+    const list = next || [];
+    setAgents(list);
+    return list;
+  }
+
+  async function refreshStatus(agentId = activeAgentId) {
+    const next = await invoke('get_acp_agent_status', { agentId });
+    if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     return next;
   }
 
+  function selectDraftAgent(agentId) {
+    if (activeId || !agentId) return;
+    setDraftAgentId(agentId);
+    setStatus(null);
+    setError('');
+  }
+
   async function loadSession(id) {
+    const requestId = sessionLoadRequestRef.current + 1;
+    sessionLoadRequestRef.current = requestId;
     activeIdRef.current = id;
     setError('');
     setSessionInfo(null);
-    const [timeline, permissions, elicitations] = await Promise.all([
-      invoke('get_codex_acp_timeline', { sessionId: id }),
-      invoke('get_codex_acp_pending_permissions', { sessionId: id }),
-      invoke('get_codex_acp_pending_elicitations', { sessionId: id }),
-    ]);
-    setEvents(timeline || []);
-    setPending(permissions || []);
-    setPendingElicitations(elicitations || []);
-    const runtime = await refreshStatus();
-    if (runtime.installed && runtime.node_supported) {
-      try {
-        return applySessionInfo(await invoke('get_codex_acp_session_info', { sessionId: id }));
-      } catch (err) {
-        showError(err);
+    setSessionInfoSessionId(null);
+    setSessionLoading(true);
+    try {
+      const [timeline, permissions, elicitations] = await Promise.all([
+        invoke('get_codex_acp_timeline', { sessionId: id }),
+        invoke('get_codex_acp_pending_permissions', { sessionId: id }),
+        invoke('get_codex_acp_pending_elicitations', { sessionId: id }),
+      ]);
+      if (sessionLoadRequestRef.current !== requestId) return null;
+      setEvents(timeline || []);
+      setPending(permissions || []);
+      setPendingElicitations(elicitations || []);
+      const session = sessions.find(item => item.id === id);
+      const runtime = await invoke('get_acp_agent_status', {
+        agentId: session?.agent_id || draftAgentId,
+      });
+      if (sessionLoadRequestRef.current !== requestId) return null;
+      if (runtime?.agent_id === activeAgentIdRef.current) setStatus(runtime);
+      if (runtime.installed && runtime.node_supported) {
+        try {
+          const info = await invoke('get_codex_acp_session_info', { sessionId: id });
+          if (sessionLoadRequestRef.current !== requestId) return null;
+          return applySessionInfo(info, id);
+        } catch (err) {
+          if (sessionLoadRequestRef.current === requestId) showError(err);
+        }
       }
+      return null;
+    } finally {
+      if (sessionLoadRequestRef.current === requestId) setSessionLoading(false);
     }
-    return null;
   }
 
   async function createSession(workspacePath = draftWorkspacePath) {
     setError('');
     setWorkspaceMenuOpen(false);
-    const metadata = await invoke('create_codex_acp_session', { workspacePath });
+    const metadata = await invoke('create_codex_acp_session', {
+      workspacePath,
+      agentId: draftAgentId,
+    });
     if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
     await refreshSessions();
     skipNextActiveLoadRef.current = metadata.id;
@@ -845,7 +1071,10 @@ export function CodexAcpView({
     setEvents([]);
     setPending([]);
     setPendingElicitations([]);
+    sessionLoadRequestRef.current += 1;
     setSessionInfo(null);
+    setSessionInfoSessionId(null);
+    setSessionLoading(false);
     setError('');
     if (onActiveSessionChange) onActiveSessionChange(null);
   }
@@ -962,7 +1191,7 @@ export function CodexAcpView({
 
   useEffect(() => {
     let unlisten = null;
-    Promise.all([refreshStatus(), refreshSessions()]).catch(showError);
+    Promise.all([refreshAgents(), refreshSessions()]).catch(showError);
     listenTauri('acp:event', message => {
       const incoming = message.payload;
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
@@ -990,7 +1219,9 @@ export function CodexAcpView({
           if (type === 'permission_resolved') setPending(current => current.filter(item => item.toolCallId !== data.toolCallId));
           refreshSessions().catch(() => {});
         } else if (type === 'runtime_ready') {
-          invoke('get_codex_acp_session_info', { sessionId: incoming.sessionId }).then(applySessionInfo).catch(() => {});
+          invoke('get_codex_acp_session_info', { sessionId: incoming.sessionId })
+            .then(info => applySessionInfo(info, incoming.sessionId))
+            .catch(() => {});
         }
       }
     }).then(fn => { unlisten = fn; });
@@ -998,14 +1229,27 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
+    refreshStatus(activeAgentId).catch(showError);
+  }, [activeAgentId]);
+
+  useEffect(() => {
+    const latest = events[events.length - 1];
+    if (!isAcpAuthenticationFailure(latest)) return;
+    refreshStatus(activeAgentId).catch(() => {});
+  }, [events.length, activeAgentId]);
+
+  useEffect(() => {
     if (!activeId) {
       activeIdRef.current = null;
+      sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
       else setDraftWorkspacePath(null);
       setEvents([]);
       setPending([]);
       setPendingElicitations([]);
       setSessionInfo(null);
+      setSessionInfoSessionId(null);
+      setSessionLoading(false);
       return;
     }
     if (skipNextActiveLoadRef.current === activeId) {
@@ -1022,10 +1266,19 @@ export function CodexAcpView({
   }, [draftEpoch]);
 
   useEffect(() => {
-    if (!status || !status.login_in_progress) return undefined;
-    const timer = window.setInterval(() => refreshStatus().catch(() => {}), 750);
-    return () => window.clearInterval(timer);
-  }, [status && status.login_in_progress]);
+    if (!activeStatus?.login_in_progress) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const poll = async () => {
+      await refreshStatus(activeAgentId).catch(() => {});
+      if (!cancelled) timer = window.setTimeout(poll, 750);
+    };
+    timer = window.setTimeout(poll, 750);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [activeAgentId, activeStatus?.login_in_progress]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -1088,10 +1341,13 @@ export function CodexAcpView({
 
   async function prepare() {
     setWorking(true); setError('');
-    const poll = window.setInterval(() => refreshStatus().catch(() => {}), 500);
-    try { setStatus(await invoke('prepare_codex_acp')); }
+    const poll = window.setInterval(() => refreshStatus(activeAgentId).catch(() => {}), 500);
+    try {
+      const next = await invoke('prepare_codex_acp');
+      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+    }
     catch (err) { showError(err); }
-    finally { window.clearInterval(poll); await refreshStatus().catch(() => {}); setWorking(false); }
+    finally { window.clearInterval(poll); await refreshStatus(activeAgentId).catch(() => {}); setWorking(false); }
   }
 
   async function brewInstall() {
@@ -1104,15 +1360,43 @@ export function CodexAcpView({
 
   async function login() {
     setWorking(true); setError('');
-    try { setStatus(await invoke('login_codex_acp')); }
+    try {
+      const next = await invoke('login_acp_agent', { agentId: activeAgentId });
+      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+    }
     catch (err) { showError(err); }
     finally { setWorking(false); }
   }
 
+  async function switchAccount() {
+    setAccountMenuOpen(false);
+    if (serviceFailure?.key) setDismissedFailureKey(serviceFailure.key);
+    setWorking(true);
+    setError('');
+    try {
+      const next = await invoke('switch_acp_agent_account', { agentId: activeAgentId });
+      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+    } catch (err) {
+      showError(err);
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function openLogin() {
     setError('');
-    try { await invoke('open_codex_login_url'); }
+    try { await invoke('open_acp_agent_login_url', { agentId: activeAgentId }); }
     catch (err) { showError(err); }
+  }
+
+  async function submitLoginCode(code) {
+    setError('');
+    try {
+      await invoke('submit_acp_agent_login_code', { agentId: activeAgentId, code });
+      await refreshStatus(activeAgentId);
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function send() {
@@ -1121,11 +1405,16 @@ export function CodexAcpView({
       attachment.status === 'ready' && attachment.result
     ));
     if ((!message && !readyAttachments.length && !workspaceReferences.length) || busy || working) return;
+    if (!activeStatus?.authenticated) {
+      setError(codexCopy.loginRequiredBeforeSend);
+      return;
+    }
     if (attachments.some(attachment => attachment.status === 'parsing')) {
       setError(codexCopy.attachmentsParsing);
       return;
     }
     if (workspaceUnavailable) return;
+    if (activeId && !sessionReady) return;
     setWorking(true); setError('');
     try {
       let targetId = activeId;
@@ -1230,12 +1519,12 @@ export function CodexAcpView({
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
         {activeSession && (
         <header className="h-14 shrink-0 px-5 flex items-center gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
-          <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><CodexLogo className="h-5 w-5" /></div>
+          <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} /></div>
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {`Codex · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace}${activeSession.workspace_available ? '' : ` · ${codexCopy.projectMissing}`}`}
+              {`${activeAgentName} · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace}${activeSession.workspace_available ? '' : ` · ${codexCopy.projectMissing}`}`}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
@@ -1281,12 +1570,37 @@ export function CodexAcpView({
                 </button>
               </div>
             ) : (
-              <RuntimeNotice status={status} working={working} error={error} onPrepare={prepare} onBrewInstall={brewInstall} onLogin={login} onOpenLogin={openLogin} copy={codexCopy} />
+              <>
+                <RuntimeNotice
+                  status={activeStatus}
+                  working={working}
+                  error={error}
+                  onPrepare={prepare}
+                  onBrewInstall={brewInstall}
+                  onLogin={login}
+                  onOpenLogin={openLogin}
+                  onSubmitLoginCode={submitLoginCode}
+                  onRefresh={() => refreshStatus(activeAgentId)}
+                  copy={codexCopy}
+                />
+                {activeStatus?.authenticated && (
+                  <AgentServiceFailureNotice
+                    failure={visibleServiceFailure}
+                    agentName={activeAgentName}
+                    working={working}
+                    onSwitchAccount={switchAccount}
+                    onDismiss={() => setDismissedFailureKey(serviceFailure?.key || '')}
+                    copy={codexCopy}
+                  />
+                )}
+              </>
             )}
             {!projection.turns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
-                <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><CodexLogo className="h-8 w-8" /></div>
-                <div className="mt-5 text-[20px] font-semibold">{codexCopy.welcomeTitle}</div>
+                <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><AcpAgentLogo agentId={activeAgentId} className="h-8 w-8" title={activeAgentName} /></div>
+                <div className="mt-5 text-[20px] font-semibold">
+                  {codexCopy.welcomeTitle}
+                </div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
                     ? codexCopy.activeHint
@@ -1306,7 +1620,7 @@ export function CodexAcpView({
                     responding={responding}
                     assistantAvatar={(
                       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-                        <CodexLogo className="h-5 w-5" title="Codex" />
+                        <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
                       </div>
                     )}
                     renderItem={(item) => item.type === 'elicitation'
@@ -1320,12 +1634,14 @@ export function CodexAcpView({
                           />
                         )
                       : undefined}
-                    agentLabel="Codex"
+                    agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_external_url', { url }).catch(showError)}
                   />
                 )
               : (
                   <Turn key={turn.id} turn={turn} now={now}
+                    agentId={activeAgentId} agentName={activeAgentName}
+                    copy={t.uiConversation}
                     pendingByTool={pendingByTool}
                     pendingByElicitation={pendingByElicitation}
                     onRespond={respond}
@@ -1360,10 +1676,18 @@ export function CodexAcpView({
               <HomeModeSwitcher
                 mode="code"
                 codeSupported
+                codeAgent={activeAgentId}
+                onCodeAgentChange={selectDraftAgent}
                 isDark={theme === 'dark'}
                 onChange={onSwitchHomeMode}
                 copy={t.uiHomeMode}
               />
+            )}
+            {sessionSyncing && (
+              <div data-testid="acp-session-loading" className="mb-2 flex items-center gap-2 px-3 text-[11px] text-blue-600 dark:text-blue-300">
+                <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-500/20 border-t-blue-500" />
+                <span>{codexCopy.sessionSyncing}</span>
+              </div>
             )}
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
             <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
@@ -1470,7 +1794,12 @@ export function CodexAcpView({
               )}
               <textarea value={draft} onChange={event => setDraft(event.target.value)}
                 onPaste={handlePaste}
-                onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    if (!sessionSyncing) send();
+                  }
+                }}
                 placeholder={codexCopy.placeholder}
                 rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
               <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
@@ -1537,17 +1866,90 @@ export function CodexAcpView({
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
                     title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
-                  <span className={`w-1.5 h-1.5 rounded-full ${status && status.installed && status.authenticated ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-                  <span className="hidden min-w-0 truncate sm:inline">
-                    {status && status.installed && status.authenticated
-                      ? `${codexCopy.connected}${runtimeSourceLabel(status, codexCopy) ? ` · ${runtimeSourceLabel(status, codexCopy)}` : ''}${status.codex_version ? ` ${status.codex_version}` : ''}`
-                      : codexCopy.notReady}
-                  </span>
+                  <div className="relative min-w-0">
+                    <button
+                      type="button"
+                      data-testid="acp-account-menu-trigger"
+                      onClick={() => setAccountMenuOpen(value => !value)}
+                      className="inline-flex h-7 min-w-0 max-w-[260px] items-center gap-1.5 rounded-lg px-2 text-[10px] text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                      title={codexCopy.accountAndService}
+                    >
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                        visibleServiceFailure
+                          ? 'bg-red-500'
+                          : activeStatus?.installed && activeStatus?.authenticated
+                            ? 'bg-emerald-500'
+                            : 'bg-gray-400'
+                      }`} />
+                      <span className="hidden min-w-0 truncate sm:inline">
+                        {activeStatus?.installed && activeStatus?.authenticated
+                          ? `${activeAgentName} ${visibleServiceFailure ? codexCopy.serviceAbnormal : codexCopy.connectedSuffix}`
+                          : `${activeAgentName} ${codexCopy.notReadySuffix}`}
+                      </span>
+                      <ChevronDown size={11} className="shrink-0" />
+                    </button>
+                    {accountMenuOpen && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={codexCopy.closeAccountMenu}
+                          className="fixed inset-0 z-30 cursor-default"
+                          onClick={() => setAccountMenuOpen(false)}
+                        />
+                        <div
+                          data-testid="acp-account-menu"
+                          className="absolute bottom-9 left-0 z-40 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95"
+                        >
+                          <div className="flex items-center gap-3 px-3 py-2.5">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/[0.04] dark:bg-white/[0.07]">
+                              <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[12px] font-semibold">{activeAgentName}</div>
+                              <div className={`mt-0.5 text-[10px] ${visibleServiceFailure ? 'text-red-500' : 'text-gray-400'}`}>
+                                {visibleServiceFailure
+                                  ? codexCopy.serviceAbnormal
+                                  : activeStatus?.authenticated
+                                    ? codexCopy.accountAuthorized
+                                    : codexCopy.accountNotAuthorized}
+                                {runtimeSourceLabel(activeStatus, codexCopy) ? ` · ${runtimeSourceLabel(activeStatus, codexCopy)}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-1 border-t border-black/[0.05] pt-1 dark:border-white/[0.06]">
+                            <button
+                              type="button"
+                              onClick={switchAccount}
+                              disabled={working || activeStatus?.login_in_progress}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
+                            >
+                              <User size={15} className="text-blue-500" />
+                              <span className="min-w-0">
+                                <span className="block">{codexCopy.switchAccount}</span>
+                                <span className="mt-0.5 block text-[10px] font-normal text-gray-400">{codexCopy.switchAccountAffectsSessions}</span>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAccountMenuOpen(false);
+                                refreshStatus(activeAgentId).catch(showError);
+                              }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                            >
+                              <RefreshCw size={15} className="text-gray-400" />
+                              {codexCopy.recheck}
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={(!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !status || !status.installed || !status.authenticated}
+                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !activeStatus || !activeStatus.installed || !activeStatus.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>

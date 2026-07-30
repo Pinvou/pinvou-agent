@@ -86,12 +86,17 @@ assert.deepEqual(
   "非 Windows 平台继续直接调用 npm",
 );
 
-assert.ok(WINDOWS_NPM_CI_ARGS.includes("--omit=optional"));
-assert.equal(expectedBridgeMarker({ architecture: "x64" }).requires_managed_codex, true);
-assert.equal(
-  expectedBridgeMarker({ architecture: "x64" }).windows_child_processes_hidden,
-  true,
-);
+assert.ok(!WINDOWS_NPM_CI_ARGS.includes("--omit=optional"));
+assert.ok(WINDOWS_NPM_CI_ARGS.includes("--include=optional"));
+assert.ok(WINDOWS_NPM_CI_ARGS.includes("--os=win32"));
+assert.ok(WINDOWS_NPM_CI_ARGS.includes("--cpu=x64"));
+assert.deepEqual(Object.keys(expectedBridgeMarker({ architecture: "x64" })), [
+  "schema_version",
+  "platform",
+  "arch",
+  "package_json_sha256",
+  "lockfile_sha256",
+]);
 const bridgePatchRoot = fs.mkdtempSync(
   path.join(require("node:os").tmpdir(), "pinvou3-codex-bridge-"),
 );

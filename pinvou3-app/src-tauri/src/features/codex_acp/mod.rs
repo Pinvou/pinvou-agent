@@ -1,7 +1,8 @@
-//! Codex ACP 运行时。
+//! 外部 Agent ACP 运行时。
 //!
 //! pinvou3 只做 ACP client、进程托管、权限路由、事件持久化和 `acp:event` 投影；
-//! Codex 的模型调用、工具循环、会话与权限协议都由 `codex-acp` Agent 提供。
+//! Codex、Claude Code 与 Kimi 的模型调用、工具循环、会话与权限协议都由各自
+//! ACP Agent 提供。
 
 mod attachments;
 mod diagnostics;
@@ -11,7 +12,8 @@ mod runtime;
 mod store;
 pub(crate) mod workspace;
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -34,10 +36,11 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use wait_timeout::ChildExt;
 
 use crate::features::sessions::SessionStore;
 use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
@@ -56,9 +59,26 @@ pub use store::{
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
 pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
+pub const CLAUDE_ACP_VERSION: &str = "0.62.0";
+const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
+const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
+const KIMI_ACP_PACKAGE: &str = "kimi acp";
+const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 
-fn is_codex_session(backend: AgentBackend, model: &str) -> bool {
-    backend == AgentBackend::CodexAcp || model == CODEX_ACP_SESSION_MODEL
+fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
+    match model {
+        CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
+        CLAUDE_ACP_SESSION_MODEL => Some(AgentBackend::ClaudeAcp),
+        KIMI_ACP_SESSION_MODEL => Some(AgentBackend::KimiAcp),
+        _ => None,
+    }
+}
+
+fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
+    backend
+        .is_acp()
+        .then_some(backend)
+        .or_else(|| backend_for_session_model(model))
 }
 
 fn same_workspace(left: &Path, right: &Path) -> bool {
@@ -70,8 +90,45 @@ fn same_workspace(left: &Path, right: &Path) -> bool {
             .is_some_and(|(left, right)| left == right)
 }
 
-fn codex_recovery_record(
+fn backend_for_acp_state(state: &Value) -> Result<AgentBackend> {
+    let package_backend = match state["adapter"]["package"].as_str() {
+        Some(CODEX_ACP_PACKAGE) => Some(AgentBackend::CodexAcp),
+        Some(CLAUDE_ACP_PACKAGE) => Some(AgentBackend::ClaudeAcp),
+        Some(KIMI_ACP_PACKAGE) => Some(AgentBackend::KimiAcp),
+        Some(other) => bail!("acp-state.json 包含未知 ACP adapter package: {other}"),
+        None => None,
+    };
+    let agent_backend = state["adapter"]["agentId"]
+        .as_str()
+        .map(|agent_id| AgentBackend::parse(Some(agent_id)))
+        .transpose()?
+        .filter(|backend| backend.is_acp());
+    if let (Some(package), Some(agent)) = (package_backend, agent_backend) {
+        if package != agent {
+            bail!("acp-state.json 的 Agent 与 adapter package 不匹配");
+        }
+    }
+    agent_backend
+        .or(package_backend)
+        .context("acp-state.json 缺少可识别的 ACP Agent")
+}
+
+fn acp_mode_from_state(state: &Value) -> Option<String> {
+    state["session"]["modes"]["currentModeId"]
+        .as_str()
+        .or_else(|| {
+            state["session"]["config_options"]
+                .as_array()?
+                .iter()
+                .find(|option| option["id"].as_str() == Some("mode"))?["currentValue"]
+                .as_str()
+        })
+        .map(str::to_string)
+}
+
+fn acp_recovery_record(
     pinvou_session_id: &str,
+    expected_backend: AgentBackend,
     state: &Value,
     workspace_path: PathBuf,
     temporary_workspace: &Path,
@@ -79,8 +136,16 @@ fn codex_recovery_record(
     if state["pinvouSessionId"].as_str() != Some(pinvou_session_id) {
         bail!("acp-state.json 的 Pinvou 会话 ID 不匹配");
     }
-    if state["adapter"]["package"].as_str() != Some(CODEX_ACP_PACKAGE) {
-        bail!("acp-state.json 不是 Codex ACP 状态");
+    if !expected_backend.is_acp() {
+        bail!("会话元数据不是 ACP Agent");
+    }
+    let state_backend = backend_for_acp_state(state)?;
+    if state_backend != expected_backend {
+        bail!(
+            "acp-state.json 的 Agent {} 与会话元数据 {} 不匹配",
+            state_backend.display_name(),
+            expected_backend.display_name()
+        );
     }
     let acp_session_id = state["session"]["session_id"]
         .as_str()
@@ -88,7 +153,7 @@ fn codex_recovery_record(
         .context("acp-state.json 缺少原 ACP session id")?
         .to_string();
     if !workspace_path.is_absolute() {
-        bail!("Codex 工作目录记录不是绝对路径");
+        bail!("ACP 工作目录记录不是绝对路径");
     }
     let workspace_kind = match state["workspace"]["kind"].as_str() {
         Some("temporary") => {
@@ -105,21 +170,20 @@ fn codex_recovery_record(
         None => CodexWorkspaceKind::Project,
     };
     Ok(SessionAgentRecord {
-        backend: AgentBackend::CodexAcp,
+        backend: expected_backend,
         acp_session_id: Some(acp_session_id),
         acp_model_id: state["session"]["current_model_id"]
             .as_str()
             .map(str::to_string),
-        acp_mode_id: state["session"]["modes"]["currentModeId"]
-            .as_str()
-            .map(str::to_string),
+        acp_mode_id: acp_mode_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
     })
 }
 
-fn load_codex_recovery_record(
+fn load_acp_recovery_record(
     session_id: &str,
+    expected_backend: AgentBackend,
     session_store: &SessionStore,
 ) -> Result<SessionAgentRecord> {
     let temporary_workspace = session_store.execution_workspace(session_id)?;
@@ -148,11 +212,19 @@ fn load_codex_recovery_record(
             .map(PathBuf::from)
             .context("Codex 工作区基线缺少 workspace_path")?
     };
-    codex_recovery_record(session_id, &state, workspace_path, &temporary_workspace)
+    acp_recovery_record(
+        session_id,
+        expected_backend,
+        &state,
+        workspace_path,
+        &temporary_workspace,
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexAcpStatus {
+    pub agent_id: &'static str,
+    pub agent_name: &'static str,
     pub version: &'static str,
     pub installed: bool,
     pub bridge_ready: bool,
@@ -183,8 +255,22 @@ pub struct CodexAcpStatus {
     pub authenticated: bool,
     pub login_in_progress: bool,
     pub login_url: Option<String>,
+    pub login_code: Option<String>,
+    pub login_input_required: bool,
     pub installing: bool,
     pub error: Option<String>,
+    /// 稳定的英文提示代码，前端映射 i18n 文案：
+    /// "kimi_cli_missing" / "kimi_auth_required" / "claude_auth_required"。
+    pub setup_hint: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentLoginState {
+    in_progress: bool,
+    url: Option<String>,
+    code: Option<String>,
+    input_required: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -239,6 +325,13 @@ struct PendingElicitation {
     response_tx: oneshot::Sender<CreateElicitationResponse>,
 }
 
+#[derive(Debug)]
+struct KimiDiagnosticCursor {
+    session_id: String,
+    log_path: Option<PathBuf>,
+    offset: u64,
+}
+
 struct AcpSession {
     connection: ConnectionTo<Agent>,
     acp_session_id: String,
@@ -250,6 +343,7 @@ struct AcpSession {
     modes: parking_lot::RwLock<Option<SessionModeState>>,
     config_options: parking_lot::RwLock<Vec<SessionConfigOption>>,
     prompt_capabilities: PromptCapabilities,
+    kimi_session_id: Option<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     child: Mutex<Child>,
 }
@@ -263,7 +357,7 @@ impl AcpSession {
                 .any(|mode| mode.id.to_string() == mode_id)
         });
         if !supported {
-            bail!("Codex ACP 未上报会话模式: {mode_id}");
+            bail!("ACP Agent 未上报会话模式: {mode_id}");
         }
         self.connection
             .send_request(SetSessionModeRequest::new(
@@ -272,7 +366,7 @@ impl AcpSession {
             ))
             .block_task()
             .await
-            .context("Codex ACP session/set_mode 失败")?;
+            .context("ACP session/set_mode 失败")?;
         if let Some(modes) = self.modes.write().as_mut() {
             modes.current_mode_id = mode_id.to_string().into();
         }
@@ -286,6 +380,10 @@ impl AcpSession {
         attachments: Vec<CodexDisplayAttachment>,
     ) -> bool {
         let turn_id = self.bridge.begin_turn(&content, &attachments);
+        let kimi_diagnostic_cursor = match self.kimi_session_id.as_deref() {
+            Some(session_id) => Some(kimi_diagnostic_cursor(session_id).await),
+            None => None,
+        };
         let result = self
             .connection
             .send_request(PromptRequest::new(self.acp_session_id.clone(), blocks))
@@ -294,6 +392,21 @@ impl AcpSession {
         self.busy.store(false, Ordering::Release);
         match result {
             Ok(response) => {
+                // Kimi ACP 将普通 provider failure 映射成 end_turn，详细错误只写入
+                // 会话日志。只读取本回合新增日志中的明确失败标记，避免把正常空回复
+                // 或历史错误误判为本次失败。
+                if let Some(error) = match kimi_diagnostic_cursor {
+                    Some(cursor) => kimi_failure_after(&cursor).await,
+                    None => None,
+                } {
+                    crate::features::assistant::timing::finish_turn(
+                        &self.bridge_session_id(),
+                        "Failed",
+                        Some(&error),
+                    );
+                    self.bridge.finish_turn(&turn_id, "Failed", Some(&error));
+                    return false;
+                }
                 let status = match response.stop_reason {
                     StopReason::EndTurn => "Completed",
                     StopReason::Cancelled => "Interrupted",
@@ -310,7 +423,7 @@ impl AcpSession {
                 false
             }
             Err(error) => {
-                let message = format!("Codex ACP: {error}");
+                let message = format!("ACP Agent: {error}");
                 let upgrade_required = codex_upgrade_required(&message);
                 crate::features::assistant::timing::finish_turn(
                     &self.bridge_session_id(),
@@ -394,17 +507,18 @@ pub struct AcpPool {
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
     agents: SessionAgentStore,
-    codex_metadata_ids: Arc<parking_lot::RwLock<HashSet<String>>>,
+    acp_metadata_backends: Arc<parking_lot::RwLock<HashMap<String, AgentBackend>>>,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
-    login_in_progress: Arc<AtomicBool>,
-    login_url: Arc<parking_lot::RwLock<Option<String>>>,
+    login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
+    login_inputs: Arc<Mutex<HashMap<AgentBackend, ChildStdin>>>,
     downloaded_bytes: Arc<AtomicU64>,
     download_total_bytes: Arc<AtomicU64>,
     last_error: Arc<parking_lot::RwLock<Option<String>>>,
     runtime_probe: Arc<parking_lot::RwLock<RuntimeProbeCache>>,
     runtime_probe_gate: Arc<Mutex<()>>,
     bundled_adapter: Option<PathBuf>,
+    bundled_claude_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
 }
 
@@ -423,78 +537,26 @@ impl AcpPool {
         let development_bridge =
             platform::development_bridge_root(Path::new(env!("CARGO_MANIFEST_DIR")));
         let bundled_adapter = resource_root.as_ref().and_then(|root| {
-            [
-                root.join("runtime")
-                    .join("codex-bridge")
-                    .join("acp")
-                    .join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join("codex-acp")
-                    .join("dist")
-                    .join("index.js"),
-                root.join("codex-bridge")
-                    .join("acp")
-                    .join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join("codex-acp")
-                    .join("dist")
-                    .join("index.js"),
-                root.join("resources")
-                    .join("codex-bridge")
-                    .join("acp")
-                    .join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join("codex-acp")
-                    .join("dist")
-                    .join("index.js"),
-                root.join("codex-acp")
-                    .join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join("codex-acp")
-                    .join("dist")
-                    .join("index.js"),
-                root.join("codex-acp")
-                    .join(platform::bundled_adapter_name()),
-                root.join("resources")
-                    .join("codex-acp")
-                    .join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join("codex-acp")
-                    .join("dist")
-                    .join("index.js"),
-                root.join("resources")
-                    .join("codex-acp")
-                    .join(platform::bundled_adapter_name()),
-                development_bridge
-                    .join("acp")
-                    .join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join("codex-acp")
-                    .join("dist")
-                    .join("index.js"),
-            ]
-            .into_iter()
-            .find(|candidate| candidate.is_file())
+            bundled_adapter_candidates(root, &development_bridge, "codex-acp")
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+        });
+        let bundled_claude_adapter = resource_root.as_ref().and_then(|root| {
+            bundled_adapter_candidates(root, &development_bridge, "claude-agent-acp")
+                .into_iter()
+                .find(|candidate| candidate.is_file())
         });
         let bundled_node = resource_root.as_ref().and_then(|root| {
             let node_name = platform::node_executable_name();
+            let bridge_node = platform::bridge_node_relative_path();
             [
                 root.join("runtime").join("node").join(node_name),
-                root.join("runtime")
-                    .join("codex-bridge")
-                    .join("node")
-                    .join("bin")
-                    .join(node_name),
-                root.join("codex-bridge")
-                    .join("node")
-                    .join("bin")
-                    .join(node_name),
+                root.join("runtime").join("codex-bridge").join(&bridge_node),
+                root.join("codex-bridge").join(&bridge_node),
                 root.join("resources")
                     .join("codex-bridge")
-                    .join("node")
-                    .join("bin")
-                    .join(node_name),
-                development_bridge.join("node").join("bin").join(node_name),
+                    .join(&bridge_node),
+                development_bridge.join(&bridge_node),
             ]
             .into_iter()
             .find(|candidate| candidate.is_file())
@@ -504,23 +566,27 @@ impl AcpPool {
             eprintln!("[pinvou3-app] preload Codex session metadata failed: {error:#}");
             Vec::new()
         });
-        let codex_metadata_ids = metadata
+        let acp_metadata_backends = metadata
             .iter()
-            .filter(|metadata| metadata.model == CODEX_ACP_SESSION_MODEL)
-            .map(|metadata| metadata.id.clone())
-            .collect::<HashSet<_>>();
-        for session_id in &codex_metadata_ids {
-            if agents.backend(session_id) == AgentBackend::CodexAcp {
+            .filter_map(|metadata| {
+                acp_session_backend(agents.backend(&metadata.id), &metadata.model)
+                    .map(|backend| (metadata.id.clone(), backend))
+            })
+            .collect::<HashMap<_, _>>();
+        for (session_id, backend) in &acp_metadata_backends {
+            if agents.backend(session_id).is_acp() {
                 continue;
             }
-            match load_codex_recovery_record(session_id, &session_store)
-                .and_then(|record| agents.restore_missing_codex_record(session_id, record))
+            match load_acp_recovery_record(session_id, *backend, &session_store)
+                .and_then(|record| agents.restore_missing_acp_record(session_id, record))
             {
-                Ok(()) => {
-                    eprintln!("[pinvou3-app] recovered Codex ACP session index for {session_id}")
-                }
+                Ok(()) => eprintln!(
+                    "[pinvou3-app] recovered {} ACP session index for {session_id}",
+                    backend.display_name()
+                ),
                 Err(error) => eprintln!(
-                    "[pinvou3-app] Codex ACP session {session_id} remains read-only until its index can be recovered: {error:#}"
+                    "[pinvou3-app] {} ACP session {session_id} remains read-only until its index can be recovered: {error:#}",
+                    backend.display_name()
                 ),
             }
         }
@@ -530,17 +596,18 @@ impl AcpPool {
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             pending_elicitations: Arc::new(Mutex::new(HashMap::new())),
             agents,
-            codex_metadata_ids: Arc::new(parking_lot::RwLock::new(codex_metadata_ids)),
+            acp_metadata_backends: Arc::new(parking_lot::RwLock::new(acp_metadata_backends)),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
-            login_in_progress: Arc::new(AtomicBool::new(false)),
-            login_url: Arc::new(parking_lot::RwLock::new(None)),
+            login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            login_inputs: Arc::new(Mutex::new(HashMap::new())),
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             download_total_bytes: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(parking_lot::RwLock::new(None)),
             runtime_probe: Arc::new(parking_lot::RwLock::new(RuntimeProbeCache::default())),
             runtime_probe_gate: Arc::new(Mutex::new(())),
             bundled_adapter,
+            bundled_claude_adapter,
             bundled_node,
         })
     }
@@ -549,49 +616,68 @@ impl AcpPool {
         &self.agents
     }
 
-    /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的模型类型兜底。
+    /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的 Agent 模型类型兜底。
     ///
     /// `session-agents.json` 是可重建的辅助索引，缺失或损坏时不能让历史 Codex
-    /// 会话掉回普通聊天列表；创建会话时写入的 `Codex (ACP)` 元数据才是长期兼容
-    /// 依据。列表调用已经持有 metadata，应使用本方法避免重复读取 transcript。
-    pub fn is_codex_metadata(&self, metadata: &SessionMetadata) -> bool {
-        let is_codex = is_codex_session(self.agents.backend(&metadata.id), &metadata.model);
-        if is_codex {
-            self.codex_metadata_ids.write().insert(metadata.id.clone());
+    /// / Claude / Kimi 会话掉回普通聊天列表；创建会话时写入的 `* (ACP)` 元数据
+    /// 是长期兼容依据。列表调用已经持有 metadata，应使用本方法避免重复读取 transcript。
+    pub fn is_acp_metadata(&self, metadata: &SessionMetadata) -> bool {
+        let backend = self.agents.backend(&metadata.id);
+        let Some(backend) = acp_session_backend(backend, &metadata.model) else {
+            return false;
+        };
+        if !self.acp_metadata_backends.read().contains_key(&metadata.id) {
+            self.acp_metadata_backends
+                .write()
+                .insert(metadata.id.clone(), backend);
         }
-        is_codex
+        true
     }
 
-    pub fn is_codex(&self, session_id: &str) -> bool {
-        self.agents.backend(session_id) == AgentBackend::CodexAcp
-            || self.codex_metadata_ids.read().contains(session_id)
+    pub fn is_acp(&self, session_id: &str) -> bool {
+        self.agents.backend(session_id).is_acp()
+            || self.acp_metadata_backends.read().contains_key(session_id)
     }
 
-    fn codex_record(&self, session_id: &str) -> Result<SessionAgentRecord> {
+    pub fn backend(&self, session_id: &str) -> AgentBackend {
+        let backend = self.agents.backend(session_id);
+        if backend.is_acp() {
+            backend
+        } else {
+            self.acp_metadata_backends
+                .read()
+                .get(session_id)
+                .copied()
+                .unwrap_or(backend)
+        }
+    }
+
+    fn acp_record(&self, session_id: &str) -> Result<SessionAgentRecord> {
         let record = self.agents.get(session_id);
-        if record.backend == AgentBackend::CodexAcp {
+        if record.backend.is_acp() {
             return Ok(record);
         }
-        if self.codex_metadata_ids.read().contains(session_id) {
+        if let Some(backend) = self.acp_metadata_backends.read().get(session_id).copied() {
             bail!(
-                "Codex 会话辅助索引缺失，且无法从 acp-state.json 与工作区基线完整恢复；\
-                 为避免在错误目录新建上下文，当前会话仅允许查看历史"
+                "{} 会话辅助索引缺失，且无法从 acp-state.json 与工作区基线完整恢复；\
+                 为避免在错误目录新建上下文，当前会话仅允许查看历史",
+                backend.display_name()
             );
         }
-        bail!("会话不是 Codex ACP 会话")
+        bail!("会话不是 ACP 会话")
     }
 
     pub fn workspace_info(&self, session_id: &str) -> Result<CodexAcpWorkspaceInfo> {
         let record = self.agents.get(session_id);
-        if record.backend != AgentBackend::CodexAcp {
-            if self.codex_metadata_ids.read().contains(session_id) {
+        if !record.backend.is_acp() {
+            if self.acp_metadata_backends.read().contains_key(session_id) {
                 return Ok(CodexAcpWorkspaceInfo {
                     workspace_kind: CodexWorkspaceKind::Temporary,
                     workspace_path: "辅助索引缺失，无法安全恢复原工作目录".to_string(),
                     workspace_available: false,
                 });
             }
-            bail!("会话不是 Codex ACP 会话");
+            bail!("会话不是 ACP 会话");
         }
         let path = match record.workspace_kind {
             CodexWorkspaceKind::Project => record
@@ -614,19 +700,20 @@ impl AcpPool {
     }
 
     fn execution_workspace(&self, session_id: &str) -> Result<PathBuf> {
-        let record = self.codex_record(session_id)?;
+        let record = self.acp_record(session_id)?;
         match record.workspace_kind {
             CodexWorkspaceKind::Temporary => self
                 .session_store
                 .execution_workspace(session_id)
                 .with_context(|| format!("解析会话 {session_id} 临时工作目录失败")),
             CodexWorkspaceKind::Project => {
-                let path = record
-                    .workspace_path
-                    .context("Codex 项目会话缺少工作目录记录")?;
+                let path = record.workspace_path.with_context(|| {
+                    format!("{} 项目会话缺少工作目录记录", record.backend.display_name())
+                })?;
                 validate_codex_project_workspace(&path).with_context(|| {
                     format!(
-                        "Codex 会话绑定的项目目录已不可用: {}。请恢复该目录，或新建会话选择其他项目",
+                        "{} 会话绑定的项目目录已不可用: {}。请恢复该目录，或新建会话选择其他项目",
+                        record.backend.display_name(),
                         path.display()
                     )
                 })
@@ -635,57 +722,251 @@ impl AcpPool {
     }
 
     pub fn status(&self) -> CodexAcpStatus {
-        let adapter = self.resolve_adapter();
-        let probe = self.runtime_probe.read().clone();
-        let node_version = probe.node_version;
+        self.status_for(AgentBackend::CodexAcp)
+    }
+
+    /// status_for 会同步 spawn 子进程探测 CLI（--version / auth status），
+    /// async 上下文必须经 spawn_blocking，避免阻塞 tokio worker。
+    async fn status_for_async(&self, backend: AgentBackend) -> CodexAcpStatus {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || pool.status_for(backend))
+            .await
+            .expect("ACP 状态探测任务异常退出")
+    }
+
+    async fn status_async(&self) -> CodexAcpStatus {
+        self.status_for_async(AgentBackend::CodexAcp).await
+    }
+
+    async fn agent_authenticated_async(&self, backend: AgentBackend, executable: &Path) -> bool {
+        let pool = self.clone();
+        let executable = executable.to_path_buf();
+        tokio::task::spawn_blocking(move || pool.agent_authenticated(backend, &executable))
+            .await
+            .unwrap_or(false)
+    }
+
+    pub fn status_for_agent(&self, agent_id: &str) -> Result<CodexAcpStatus> {
+        let backend = AgentBackend::parse(Some(agent_id))?;
+        if !backend.is_acp() {
+            bail!("Agent 不是 ACP 后端: {agent_id}");
+        }
+        Ok(self.status_for(backend))
+    }
+
+    pub fn agent_statuses(&self) -> Vec<CodexAcpStatus> {
+        [
+            AgentBackend::CodexAcp,
+            AgentBackend::ClaudeAcp,
+            AgentBackend::KimiAcp,
+        ]
+        .into_iter()
+        .map(|backend| self.status_for(backend))
+        .collect()
+    }
+
+    fn status_for(&self, backend: AgentBackend) -> CodexAcpStatus {
+        let login = self
+            .login_states
+            .read()
+            .get(&backend)
+            .cloned()
+            .unwrap_or_default();
+        if backend == AgentBackend::KimiAcp {
+            let kimi = resolve_kimi_path();
+            let kimi_version = kimi.as_deref().and_then(command_version);
+            let authenticated =
+                !login.in_progress && kimi.as_deref().is_some_and(kimi_authenticated);
+            return CodexAcpStatus {
+                agent_id: "kimi",
+                agent_name: "Kimi",
+                version: "native",
+                installed: kimi.is_some(),
+                bridge_ready: kimi.is_some(),
+                adapter_path: kimi
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                node_available: true,
+                node_version: None,
+                node_supported: true,
+                npm_available: find_in_path("npm").is_some(),
+                codex_available: kimi.is_some(),
+                codex_path: kimi
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                codex_version: kimi_version,
+                runtime_source: kimi.as_ref().map(|_| "system"),
+                managed_codex_version: "",
+                min_codex_version: "",
+                install_method: "manual",
+                brew_available: false,
+                system_codex_incompatible: false,
+                download_required: false,
+                downloaded_bytes: 0,
+                download_total_bytes: 0,
+                download_progress: None,
+                authenticated,
+                login_in_progress: login.in_progress,
+                login_url: login.url,
+                login_code: login.code,
+                login_input_required: false,
+                installing: false,
+                error: (!authenticated).then_some(login.error).flatten(),
+                setup_hint: if kimi.is_none() {
+                    Some("kimi_cli_missing")
+                } else if !authenticated {
+                    Some("kimi_auth_required")
+                } else {
+                    None
+                },
+            };
+        }
+
+        let (agent_id, agent_name, version, adapter) = match backend {
+            AgentBackend::CodexAcp => ("codex", "Codex", CODEX_ACP_VERSION, self.resolve_adapter()),
+            AgentBackend::ClaudeAcp => (
+                "claude",
+                "Claude Code",
+                CLAUDE_ACP_VERSION,
+                self.resolve_claude_adapter(),
+            ),
+            AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
+        };
+        let probe = (backend == AgentBackend::CodexAcp).then(|| self.runtime_probe.read().clone());
+        let node_version = if let Some(probe) = probe.as_ref() {
+            probe.node_version.clone()
+        } else {
+            adapter
+                .as_deref()
+                .and_then(|adapter| self.resolve_node(adapter))
+                .as_deref()
+                .and_then(installed_node_version)
+        };
         let node_supported = node_version
             .as_deref()
             .and_then(node_major_version)
             .is_some_and(|major| major >= 20);
-        let codex = probe.codex;
-        let codex_version = codex.as_ref().map(|resolved| resolved.version.clone());
+        let codex = probe.as_ref().and_then(|probe| probe.codex.clone());
+        let claude = (backend == AgentBackend::ClaudeAcp)
+            .then(|| adapter.as_deref().and_then(resolve_claude_cli_from_adapter))
+            .flatten();
+        let provider_available = match backend {
+            AgentBackend::CodexAcp => codex.is_some(),
+            AgentBackend::ClaudeAcp => claude.is_some(),
+            AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
+        };
+        let provider_version = if backend == AgentBackend::CodexAcp {
+            codex.as_ref().map(|resolved| resolved.version.clone())
+        } else {
+            claude.as_deref().and_then(command_version)
+        };
         let downloaded_bytes = self.downloaded_bytes.load(Ordering::Acquire);
         let download_total_bytes = self.download_total_bytes.load(Ordering::Acquire);
         let download_progress = (download_total_bytes > 0).then(|| {
             ((downloaded_bytes.saturating_mul(100) / download_total_bytes).min(100)) as u8
         });
         let bridge_ready = adapter.is_some() && node_supported;
-        let codex_available = codex.is_some();
+        let codex_available = provider_available;
+        let installed = bridge_ready && codex_available;
+        // 登录命令运行期间不要再启动同一 CLI 的 auth status。部分 CLI 会让两条
+        // 命令争用凭证锁，原来的 750ms 状态轮询因此可能拖住 Tauri 的 IPC/UI。
+        let authenticated = !login.in_progress
+            && match backend {
+                AgentBackend::CodexAcp => codex
+                    .as_ref()
+                    .is_some_and(|resolved| codex_authenticated(&resolved.path)),
+                AgentBackend::ClaudeAcp => claude.as_deref().is_some_and(claude_authenticated),
+                AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
+            };
         CodexAcpStatus {
-            version: CODEX_ACP_VERSION,
-            installed: bridge_ready && codex_available,
+            agent_id,
+            agent_name,
+            version,
+            installed,
             bridge_ready,
-            adapter_path: adapter.map(|path| path.to_string_lossy().into_owned()),
+            adapter_path: adapter
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
             node_available: node_version.is_some(),
             node_version,
             node_supported,
             npm_available: find_in_path("npm").is_some(),
             codex_available,
-            codex_path: codex
+            codex_path: if backend == AgentBackend::CodexAcp {
+                codex
+                    .as_ref()
+                    .map(|resolved| resolved.path.to_string_lossy().into_owned())
+            } else {
+                claude
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+            },
+            codex_version: provider_version,
+            runtime_source: if backend == AgentBackend::CodexAcp {
+                codex.as_ref().map(|resolved| resolved.source.as_str())
+            } else {
+                // Claude adapter 可能来自内置资源或 PATH，按实际来源上报。
+                adapter.as_deref().map(|path| {
+                    if self.bundled_claude_adapter.as_deref() == Some(path) {
+                        "bundled"
+                    } else {
+                        "system"
+                    }
+                })
+            },
+            managed_codex_version: if backend == AgentBackend::CodexAcp {
+                MANAGED_CODEX_VERSION
+            } else {
+                ""
+            },
+            min_codex_version: if backend == AgentBackend::CodexAcp {
+                MIN_CODEX_VERSION
+            } else {
+                ""
+            },
+            install_method: if backend == AgentBackend::CodexAcp {
+                platform::install_method()
+            } else {
+                "manual"
+            },
+            brew_available: probe.as_ref().is_some_and(|probe| probe.brew_available),
+            system_codex_incompatible: probe
                 .as_ref()
-                .map(|resolved| resolved.path.to_string_lossy().into_owned()),
-            codex_version,
-            runtime_source: codex.as_ref().map(|resolved| resolved.source.as_str()),
-            managed_codex_version: MANAGED_CODEX_VERSION,
-            min_codex_version: MIN_CODEX_VERSION,
-            install_method: platform::install_method(),
-            brew_available: probe.brew_available,
-            system_codex_incompatible: probe.system_codex_incompatible,
-            download_required: bridge_ready && !codex_available,
+                .is_some_and(|probe| probe.system_codex_incompatible),
+            download_required: backend == AgentBackend::CodexAcp
+                && bridge_ready
+                && !codex_available,
             downloaded_bytes,
             download_total_bytes,
             download_progress,
-            authenticated: codex_authenticated(),
-            login_in_progress: self.login_in_progress.load(Ordering::Acquire),
-            login_url: self.login_url.read().clone(),
-            installing: self.installing.load(Ordering::Acquire),
-            error: self.last_error.read().clone(),
+            authenticated,
+            login_in_progress: login.in_progress,
+            login_url: login.url,
+            login_code: login.code,
+            login_input_required: login.input_required,
+            installing: backend == AgentBackend::CodexAcp
+                && self.installing.load(Ordering::Acquire),
+            error: if authenticated {
+                None
+            } else {
+                login.error.or_else(|| {
+                    (backend == AgentBackend::CodexAcp)
+                        .then(|| self.last_error.read().clone())
+                        .flatten()
+                })
+            },
+            // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示。
+            setup_hint: if backend == AgentBackend::ClaudeAcp && installed && !authenticated {
+                Some("claude_auth_required")
+            } else {
+                None
+            },
         }
     }
 
     pub async fn refresh_status(&self) -> CodexAcpStatus {
         self.refresh_runtime_probe(false).await;
-        self.status()
+        self.status_async().await
     }
 
     async fn refresh_runtime_probe(&self, force: bool) {
@@ -776,7 +1057,7 @@ impl AcpPool {
     pub async fn ensure_installed(&self) -> Result<CodexAcpStatus> {
         let operation_id = diagnostics::operation_id("prepare");
         self.refresh_runtime_probe(false).await;
-        let status = self.status();
+        let status = self.status_async().await;
         diagnostics::write(
             &operation_id,
             "prepare:start",
@@ -850,7 +1131,7 @@ impl AcpPool {
                 self.refresh_runtime_probe(true).await;
                 *self.last_error.write() = None;
                 diagnostics::write(&operation_id, "prepare:complete", "result=success");
-                Ok(self.status())
+                Ok(self.status_async().await)
             }
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -926,7 +1207,7 @@ impl AcpPool {
                 self.refresh_runtime_probe(true).await;
                 *self.last_error.write() = None;
                 diagnostics::write(&operation_id, "homebrew:complete", "result=success");
-                Ok(self.status())
+                Ok(self.status_async().await)
             }
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -941,54 +1222,128 @@ impl AcpPool {
     }
 
     pub async fn login(&self) -> Result<CodexAcpStatus> {
-        self.ensure_installed().await?;
-        let operation_id = diagnostics::operation_id("login");
-        diagnostics::write(&operation_id, "login:start", "request=login");
-        if codex_authenticated() {
-            diagnostics::write(
-                &operation_id,
-                "login:already_authenticated",
-                "result=success",
-            );
-            return Ok(self.status());
-        }
-        let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
-        let codex = self
-            .resolve_codex(&adapter)
-            .context("未检测到可用 Codex；请下载托管 Codex")?;
-        if self.login_in_progress.swap(true, Ordering::AcqRel) {
-            diagnostics::write(
-                &operation_id,
-                "login:already_in_progress",
-                "result=accepted",
-            );
-            return Ok(self.status());
-        }
-        *self.login_url.write() = None;
-        *self.last_error.write() = None;
-        let pool = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = pool.run_login(codex.path, &operation_id).await {
-                let detail = format!("Codex 授权登录失败: {error:#}");
-                diagnostics::write(&operation_id, "login:failed", &detail);
-                *pool.last_error.write() = Some(format!(
-                    "{detail}（诊断编号：{operation_id}；日志：{}）",
-                    diagnostics::log_path().display()
-                ));
-            } else {
-                diagnostics::write(&operation_id, "login:complete", "result=success");
-            }
-            pool.login_in_progress.store(false, Ordering::Release);
-        });
-        Ok(self.status())
+        self.login_agent("codex").await
     }
 
     pub fn open_login_url(&self) -> Result<()> {
+        self.open_agent_login_url("codex")
+    }
+
+    pub async fn login_agent(&self, agent_id: &str) -> Result<CodexAcpStatus> {
+        self.start_agent_login(agent_id, false).await
+    }
+
+    /// 无论当前凭证是否仍然有效，都重新进入 Agent 的官方登录流程。
+    ///
+    /// 登录成功后关闭该 Agent 的现有运行时；会话与时间线仍保留，下一次发送消息时
+    /// 会用新账号重新拉起进程，避免旧进程继续持有切换前的凭证。
+    pub async fn switch_agent_account(&self, agent_id: &str) -> Result<CodexAcpStatus> {
+        self.start_agent_login(agent_id, true).await
+    }
+
+    async fn start_agent_login(&self, agent_id: &str, force: bool) -> Result<CodexAcpStatus> {
+        let backend = AgentBackend::parse(Some(agent_id))?;
+        if !backend.is_acp() {
+            bail!("Agent 不是 ACP 后端: {agent_id}");
+        }
+        if backend == AgentBackend::CodexAcp {
+            self.ensure_installed().await?;
+        }
+        let executable = self
+            .login_executable(backend)
+            .with_context(|| format!("未检测到可用的 {} CLI", backend.display_name()))?;
+        if !force && self.agent_authenticated_async(backend, &executable).await {
+            return Ok(self.status_for_async(backend).await);
+        }
+        let already_in_progress = {
+            let mut states = self.login_states.write();
+            let state = states.entry(backend).or_default();
+            if state.in_progress {
+                true
+            } else {
+                *state = AgentLoginState {
+                    in_progress: true,
+                    input_required: backend == AgentBackend::ClaudeAcp,
+                    ..AgentLoginState::default()
+                };
+                false
+            }
+        };
+        if already_in_progress {
+            return Ok(self.status_for_async(backend).await);
+        }
+        if backend == AgentBackend::CodexAcp {
+            *self.last_error.write() = None;
+        }
+        let pool = self.clone();
+        tokio::spawn(async move {
+            let result = pool.run_agent_login(backend, executable).await;
+            pool.login_inputs.lock().await.remove(&backend);
+            let login_succeeded = {
+                let mut states = pool.login_states.write();
+                let state = states.entry(backend).or_default();
+                state.in_progress = false;
+                state.input_required = false;
+                match result {
+                    Ok(()) => {
+                        *state = AgentLoginState::default();
+                        if backend == AgentBackend::CodexAcp {
+                            *pool.last_error.write() = None;
+                        }
+                    }
+                    Err(error) => {
+                        state.error = Some(format!(
+                            "{} 授权登录失败: {error:#}",
+                            backend.display_name()
+                        ));
+                    }
+                }
+                state.error.is_none()
+            };
+            if login_succeeded {
+                pool.restart_agent_sessions(backend).await;
+            }
+        });
+        Ok(self.status_for_async(backend).await)
+    }
+
+    async fn restart_agent_sessions(&self, backend: AgentBackend) {
+        let runtimes = {
+            let mut sessions = self.sessions.lock().await;
+            let session_ids = sessions
+                .keys()
+                .filter(|session_id| self.agents.backend(session_id) == backend)
+                .cloned()
+                .collect::<Vec<_>>();
+            session_ids
+                .iter()
+                .filter_map(|session_id| {
+                    sessions
+                        .remove(session_id)
+                        .map(|runtime| (session_id.clone(), runtime))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (session_id, runtime) in runtimes {
+            // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
+            // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
+            // 状态同时收口。
+            self.cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))
+                .await;
+            self.cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))
+                .await;
+            runtime.shutdown().await;
+        }
+    }
+
+    pub fn open_agent_login_url(&self, agent_id: &str) -> Result<()> {
+        let backend = AgentBackend::parse(Some(agent_id))?;
         let url = self
-            .login_url
+            .login_states
             .read()
-            .clone()
-            .context("Codex 授权链接尚未生成，请稍候")?;
+            .get(&backend)
+            .and_then(|state| state.url.clone())
+            .with_context(|| format!("{} 授权链接尚未生成，请稍候", backend.display_name()))?;
         if let Some(browser) = [
             "firefox",
             "google-chrome",
@@ -1007,54 +1362,136 @@ impl AcpPool {
                 .spawn()
                 .with_context(|| format!("启动浏览器失败: {}", browser.display()))?;
             eprintln!(
-                "[pinvou3-app] Codex authorization page requested via {}",
-                browser.display()
+                "[pinvou3-app] {} authorization page requested via {}",
+                backend.display_name(),
+                browser.display(),
             );
             return Ok(());
         }
-        crate::platform::os::open_target(&url, "Codex 授权页面").map_err(anyhow::Error::msg)
+        crate::platform::os::open_target(&url, &format!("{} 授权页面", backend.display_name()))
+            .map_err(anyhow::Error::msg)
     }
 
-    async fn run_login(&self, codex_path: PathBuf, operation_id: &str) -> Result<()> {
-        diagnostics::write(
-            operation_id,
-            "login:spawn",
-            format!("codex_path={}", codex_path.display()),
-        );
-        let mut command = platform::codex_login_command(&codex_path);
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = command.spawn().context("启动 Codex CLI 登录失败")?;
-        let stdout = child.stdout.take().context("读取 Codex 登录标准输出失败")?;
-        let stderr = child.stderr.take().context("读取 Codex 登录错误输出失败")?;
-        let stdout_reader = tokio::spawn(capture_login_output(stdout, self.login_url.clone()));
-        let stderr_reader = tokio::spawn(capture_login_output(stderr, self.login_url.clone()));
+    pub async fn submit_agent_login_code(&self, agent_id: &str, code: &str) -> Result<()> {
+        let backend = AgentBackend::parse(Some(agent_id))?;
+        if backend != AgentBackend::ClaudeAcp {
+            bail!("{} 登录不需要回填授权码", backend.display_name());
+        }
+        let code = code.trim();
+        if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
+            bail!("Claude 授权码格式无效");
+        }
+        let mut inputs = self.login_inputs.lock().await;
+        let input = inputs
+            .get_mut(&backend)
+            .context("Claude 登录进程未等待授权码，请重新发起登录")?;
+        input
+            .write_all(format!("{code}\n").as_bytes())
+            .await
+            .context("向 Claude 登录进程提交授权码失败")?;
+        input.flush().await.context("刷新 Claude 授权码失败")?;
+        if let Some(state) = self.login_states.write().get_mut(&backend) {
+            state.input_required = false;
+            state.error = None;
+        }
+        Ok(())
+    }
 
-        let status = match tokio::time::timeout(Duration::from_secs(600), child.wait()).await {
-            Ok(result) => result.context("等待 Codex 登录进程失败")?,
+    fn login_executable(&self, backend: AgentBackend) -> Option<PathBuf> {
+        match backend {
+            AgentBackend::CodexAcp => {
+                let adapter = self.resolve_adapter()?;
+                self.resolve_codex(&adapter).map(|resolved| resolved.path)
+            }
+            AgentBackend::ClaudeAcp => {
+                let adapter = self.resolve_claude_adapter()?;
+                resolve_claude_cli_from_adapter(&adapter)
+            }
+            AgentBackend::KimiAcp => resolve_kimi_path(),
+            AgentBackend::Deepseek => None,
+        }
+    }
+
+    fn agent_authenticated(&self, backend: AgentBackend, executable: &Path) -> bool {
+        match backend {
+            AgentBackend::CodexAcp => codex_authenticated(executable),
+            AgentBackend::ClaudeAcp => claude_authenticated(executable),
+            AgentBackend::KimiAcp => kimi_authenticated(executable),
+            AgentBackend::Deepseek => true,
+        }
+    }
+
+    async fn run_agent_login(&self, backend: AgentBackend, executable: PathBuf) -> Result<()> {
+        let operation_id = diagnostics::operation_id("login");
+        diagnostics::write(
+            &operation_id,
+            "login:spawn",
+            format!(
+                "agent={} executable={}",
+                backend.agent_id().unwrap_or("deepseek"),
+                executable.display()
+            ),
+        );
+        let mut command = agent_login_command(backend, &executable);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("启动 {} CLI 登录失败", backend.display_name()))?;
+        let stdin = child.stdin.take().context("读取 Agent 登录标准输入失败")?;
+        if backend == AgentBackend::ClaudeAcp {
+            self.login_inputs.lock().await.insert(backend, stdin);
+        }
+        let stdout = child.stdout.take().context("读取 Agent 登录标准输出失败")?;
+        let stderr = child.stderr.take().context("读取 Agent 登录错误输出失败")?;
+        let stdout_reader = tokio::spawn(capture_agent_login_output(
+            stdout,
+            backend,
+            self.login_states.clone(),
+        ));
+        let stderr_reader = tokio::spawn(capture_agent_login_output(
+            stderr,
+            backend,
+            self.login_states.clone(),
+        ));
+        let timeout = if backend == AgentBackend::KimiAcp {
+            Duration::from_secs(1800)
+        } else {
+            Duration::from_secs(600)
+        };
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(result) => result.context("等待 Agent 登录进程失败")?,
             Err(_) => {
-                diagnostics::write(operation_id, "login:timeout", "timeout_seconds=600");
+                diagnostics::write(
+                    &operation_id,
+                    "login:timeout",
+                    format!("timeout_seconds={}", timeout.as_secs()),
+                );
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                bail!("授权等待超过 10 分钟，请重新登录");
+                bail!("授权等待超时，请重新登录");
             }
         };
         let _ = stdout_reader.await;
         let _ = stderr_reader.await;
 
         diagnostics::write(
-            operation_id,
+            &operation_id,
             "login:process_exit",
             format!("status={status}"),
         );
 
         if !status.success() {
-            bail!("Codex 登录进程退出: {status}");
+            bail!("{} 登录进程退出: {status}", backend.display_name());
         }
-        if !codex_authenticated() {
-            bail!("Codex 登录进程已结束，但未检测到授权信息");
+        if !self.agent_authenticated_async(backend, &executable).await {
+            bail!(
+                "{} 登录进程已结束，但未检测到有效授权信息",
+                backend.display_name()
+            );
         }
-        *self.login_url.write() = None;
-        *self.last_error.write() = None;
         Ok(())
     }
 
@@ -1070,7 +1507,7 @@ impl AcpPool {
             workspace::resolve_workspace_references(&workspace, &workspace_references)?;
         let runtime = self.get_or_spawn(session_id).await?;
         if runtime.configuring.load(Ordering::Acquire) {
-            bail!("Codex 会话配置仍在同步，请稍候再发送");
+            bail!("ACP 会话配置仍在同步，请稍候再发送");
         }
         // 设计 §6.4 双层 gating:adapter 声明的 image 能力之外,还要按 ACP session
         // 当前模型(ACP agent 侧 config option "model",非 pinvou3 SavedModel)的
@@ -1094,7 +1531,11 @@ impl AcpPool {
             model_capability,
         )?;
         if runtime.busy.swap(true, Ordering::AcqRel) {
-            bail!("Codex ACP 会话仍在生成");
+            bail!("ACP 会话仍在生成");
+        }
+        if let Err(error) = self.session_store.touch_activity(session_id) {
+            runtime.busy.store(false, Ordering::Release);
+            return Err(error).context("更新 ACP 会话最近活跃时间失败");
         }
         let pool = self.clone();
         let session_id = session_id.to_string();
@@ -1199,8 +1640,8 @@ impl AcpPool {
     }
 
     pub async fn session_info(&self, session_id: &str) -> Result<CodexAcpSessionInfo> {
-        if !self.is_codex(session_id) {
-            bail!("当前会话不是 Codex ACP 会话");
+        if !self.is_acp(session_id) {
+            bail!("当前会话不是 ACP 会话");
         }
         let pending_permissions = self.pending_permissions_for(session_id).await;
         let pending_elicitations = self.pending_elicitations_for(session_id).await;
@@ -1231,10 +1672,10 @@ impl AcpPool {
     ) -> Result<CodexAcpSessionInfo> {
         let runtime = self.get_or_spawn(session_id).await?;
         if runtime.busy.load(Ordering::Acquire) {
-            bail!("Codex 正在处理当前任务，配置将在本轮结束后才能修改");
+            bail!("Agent 正在处理当前任务，配置将在本轮结束后才能修改");
         }
         if runtime.configuring.swap(true, Ordering::AcqRel) {
-            bail!("Codex 会话已有配置正在同步");
+            bail!("ACP 会话已有配置正在同步");
         }
         if runtime.busy.load(Ordering::Acquire) {
             runtime.configuring.store(false, Ordering::Release);
@@ -1276,10 +1717,10 @@ impl AcpPool {
     pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<CodexAcpSessionInfo> {
         let runtime = self.get_or_spawn(session_id).await?;
         if runtime.busy.load(Ordering::Acquire) {
-            bail!("Codex 正在处理当前任务，权限模式将在本轮结束后才能修改");
+            bail!("Agent 正在处理当前任务，权限模式将在本轮结束后才能修改");
         }
         if runtime.configuring.swap(true, Ordering::AcqRel) {
-            bail!("Codex 会话已有配置正在同步");
+            bail!("ACP 会话已有配置正在同步");
         }
         if runtime.busy.load(Ordering::Acquire) {
             runtime.configuring.store(false, Ordering::Release);
@@ -1317,8 +1758,8 @@ impl AcpPool {
     }
 
     pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
-        if !self.is_codex(session_id) {
-            bail!("当前会话不是 Codex ACP 会话");
+        if !self.is_acp(session_id) {
+            bail!("当前会话不是 ACP 会话");
         }
         load_timeline(session_id)
     }
@@ -1430,22 +1871,66 @@ impl AcpPool {
     }
 
     async fn cancel_pending_permissions(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|runtime| runtime.bridge.clone());
+        self.cancel_pending_permissions_with_bridge(session_id, bridge.as_ref())
+            .await;
+    }
+
+    async fn cancel_pending_permissions_with_bridge(
+        &self,
+        session_id: &str,
+        bridge: Option<&EventBridge>,
+    ) {
         let mut pending = self.pending_permissions.lock().await;
         let keys = pending
             .iter()
             .filter(|(_, request)| request.view.session_id == session_id)
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
+        let mut cancelled = Vec::new();
         for key in keys {
             if let Some(request) = pending.remove(&key) {
+                cancelled.push(request.view.tool_call_id.clone());
                 let _ = request.response_tx.send(RequestPermissionResponse::new(
                     RequestPermissionOutcome::Cancelled,
                 ));
             }
         }
+        drop(pending);
+        if let Some(bridge) = bridge {
+            for tool_call_id in cancelled {
+                bridge.emit(
+                    "permission_resolved",
+                    json!({
+                        "toolCallId": tool_call_id,
+                        "outcome": "cancelled",
+                    }),
+                );
+            }
+        }
     }
 
     async fn cancel_pending_elicitations(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|runtime| runtime.bridge.clone());
+        self.cancel_pending_elicitations_with_bridge(session_id, bridge.as_ref())
+            .await;
+    }
+
+    async fn cancel_pending_elicitations_with_bridge(
+        &self,
+        session_id: &str,
+        bridge: Option<&EventBridge>,
+    ) {
         let mut pending = self.pending_elicitations.lock().await;
         let keys = pending
             .iter()
@@ -1462,9 +1947,9 @@ impl AcpPool {
             }
         }
         drop(pending);
-        if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
+        if let Some(bridge) = bridge {
             for elicitation_id in cancelled {
-                runtime.bridge.emit(
+                bridge.emit(
                     "elicitation_resolved",
                     json!({
                         "elicitationId": elicitation_id,
@@ -1491,7 +1976,26 @@ impl AcpPool {
             );
             return Ok(runtime.clone());
         }
-        if let Err(error) = self.ensure_installed().await {
+        // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
+        // acp_record 处得到明确报错，而不是误导性的「当前会话不是 ACP 会话」。
+        let backend = self.backend(session_id);
+        let readiness = match backend {
+            AgentBackend::CodexAcp => self.ensure_installed().await.map(|_| ()),
+            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
+                let status = self.status_for_async(backend).await;
+                if !status.installed {
+                    Err(anyhow::anyhow!(
+                        "{} ACP 尚未就绪。{}",
+                        backend.display_name(),
+                        setup_hint_message(status.setup_hint)
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            AgentBackend::Deepseek => Err(anyhow::anyhow!("当前会话不是 ACP 会话")),
+        };
+        if let Err(error) = readiness {
             diagnostics::write(
                 &operation_id,
                 "session:runtime_failed",
@@ -1529,14 +2033,41 @@ impl AcpPool {
         pinvou_session_id: &str,
         operation_id: &str,
     ) -> Result<AcpSession> {
-        let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
+        let backend = self.backend(pinvou_session_id);
+        let (mut command, adapter, package_name, package_version) = match backend {
+            AgentBackend::CodexAcp => {
+                let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
+                let mut command = self.adapter_command(&adapter)?;
+                self.configure_codex_path(&mut command, &adapter)?;
+                (command, adapter, CODEX_ACP_PACKAGE, CODEX_ACP_VERSION)
+            }
+            AgentBackend::ClaudeAcp => {
+                let adapter = self
+                    .resolve_claude_adapter()
+                    .context("Claude ACP Bridge 尚未安装")?;
+                (
+                    self.adapter_command(&adapter)?,
+                    adapter,
+                    CLAUDE_ACP_PACKAGE,
+                    CLAUDE_ACP_VERSION,
+                )
+            }
+            AgentBackend::KimiAcp => {
+                let executable = resolve_kimi_path()
+                    .context("未检测到 Kimi Code CLI；请先安装 Kimi，并确保 kimi 在 PATH 中")?;
+                let mut command = crate::platform::process::HiddenTokioCommand::new(
+                    crate::platform::os::external_application_path(&executable),
+                );
+                command.arg("acp");
+                (command, executable, "kimi acp", "native")
+            }
+            AgentBackend::Deepseek => bail!("当前会话不是 ACP 会话"),
+        };
         let workspace = self.execution_workspace(pinvou_session_id)?;
         if self.agents.get(pinvou_session_id).workspace_kind == CodexWorkspaceKind::Temporary {
             tokio::fs::create_dir_all(&workspace).await?;
         }
 
-        let mut command = self.adapter_command(&adapter)?;
-        self.configure_codex_path(&mut command, &adapter)?;
         command
             .current_dir(&workspace)
             .stdin(Stdio::piped())
@@ -1545,14 +2076,15 @@ impl AcpPool {
             .kill_on_drop(true);
         let mut child = command
             .spawn()
-            .with_context(|| format!("启动 {} 失败", adapter.display()))?;
-        let stdin = child.stdin.take().context("Codex ACP stdin 不可用")?;
-        let stdout = child.stdout.take().context("Codex ACP stdout 不可用")?;
+            .with_context(|| format!("启动 {} 失败", backend.display_name()))?;
+        let stdin = child.stdin.take().context("ACP stdin 不可用")?;
+        let stdout = child.stdout.take().context("ACP stdout 不可用")?;
         let stderr_tail = Arc::new(parking_lot::Mutex::new(VecDeque::<String>::new()));
         if let Some(stderr) = child.stderr.take() {
             let sid = pinvou_session_id.to_string();
             let operation_id = operation_id.to_string();
             let stderr_tail = stderr_tail.clone();
+            let agent_id = backend.agent_id().unwrap_or("acp");
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -1566,7 +2098,7 @@ impl AcpPool {
                     diagnostics::write(
                         &operation_id,
                         "session:bridge_stderr",
-                        format!("session_id={sid} stderr={line}"),
+                        format!("agent={agent_id} session_id={sid} stderr={line}"),
                     );
                 }
             });
@@ -1714,16 +2246,16 @@ impl AcpPool {
                 })
                 .await;
             if let Err(error) = result {
-                eprintln!("[pinvou3-app] Codex ACP 协议连接结束: {error}");
+                eprintln!("[pinvou3-app] ACP 协议连接结束: {error}");
             }
         });
 
         let ready_result: Result<_> = async {
             let received = tokio::time::timeout(Duration::from_secs(30), ready_rx)
                 .await
-                .context("Codex ACP initialize 超时")?;
-            let initialized = received.context("Codex ACP initialize 通道中断")?;
-            initialized.context("Codex ACP initialize 失败")
+                .with_context(|| format!("{} ACP initialize 超时", backend.display_name()))?;
+            let initialized = received.context("ACP initialize 通道中断")?;
+            initialized.context("ACP initialize 失败")
         }
         .await;
         let (connection, initialized) = match ready_result {
@@ -1773,15 +2305,18 @@ impl AcpPool {
                             response.config_options.unwrap_or_default(),
                         ),
                         Err(error) => {
-                            eprintln!("[pinvou3-app] Codex ACP 恢复会话失败，改建新会话: {error}");
-                            new_acp_session(&connection, &workspace).await?
+                            eprintln!(
+                                "[pinvou3-app] {} ACP 恢复会话失败，改建新会话: {error}",
+                                backend.display_name()
+                            );
+                            new_acp_session(&connection, &workspace, backend).await?
                         }
                     }
                 } else {
-                    new_acp_session(&connection, &workspace).await?
+                    new_acp_session(&connection, &workspace, backend).await?
                 }
             } else {
-                new_acp_session(&connection, &workspace).await?
+                new_acp_session(&connection, &workspace, backend).await?
             };
         if let Some(mode_id) = saved.acp_mode_id.as_deref() {
             apply_saved_mode(
@@ -1792,7 +2327,7 @@ impl AcpPool {
                 mode_id,
             )
             .await
-            .with_context(|| format!("恢复 Codex 权限模式 {mode_id} 失败"))?;
+            .with_context(|| format!("恢复 {} 权限模式 {mode_id} 失败", backend.display_name()))?;
         }
         let current_model_id = current_config_value(&config_options, "model");
         let models = codex_models(&config_options);
@@ -1806,8 +2341,9 @@ impl AcpPool {
             pinvou_session_id,
             json!({
                 "adapter": {
-                    "package": CODEX_ACP_PACKAGE,
-                    "version": CODEX_ACP_VERSION,
+                    "agentId": backend.agent_id(),
+                    "package": package_name,
+                    "version": package_version,
                     "path": adapter,
                 },
                 "agent": &initialized.agent_info,
@@ -1836,6 +2372,7 @@ impl AcpPool {
 
         Ok(AcpSession {
             connection,
+            kimi_session_id: (backend == AgentBackend::KimiAcp).then(|| acp_session_id.clone()),
             acp_session_id,
             bridge: event_bridge,
             busy: AtomicBool::new(false),
@@ -1854,8 +2391,15 @@ impl AcpPool {
         resolve_adapter_from(self.bundled_adapter.as_deref())
     }
 
+    fn resolve_claude_adapter(&self) -> Option<PathBuf> {
+        resolve_claude_adapter_from(self.bundled_claude_adapter.as_deref())
+    }
+
     fn resolve_node(&self, adapter: &Path) -> Option<PathBuf> {
-        if let Some(path) = std::env::var_os("PINVOU3_CODEX_NODE_PATH").map(PathBuf::from) {
+        if let Some(path) = std::env::var_os("PINVOU3_ACP_NODE_PATH")
+            .or_else(|| std::env::var_os("PINVOU3_CODEX_NODE_PATH"))
+            .map(PathBuf::from)
+        {
             if path.is_file() {
                 return Some(path);
             }
@@ -1892,12 +2436,13 @@ impl AcpPool {
 async fn new_acp_session(
     connection: &ConnectionTo<Agent>,
     workspace: &Path,
+    backend: AgentBackend,
 ) -> Result<(String, Option<SessionModeState>, Vec<SessionConfigOption>)> {
     let response = connection
         .send_request(NewSessionRequest::new(workspace))
         .block_task()
         .await
-        .context("Codex ACP session/new 失败")?;
+        .with_context(|| format!("{} ACP session/new 失败", backend.display_name()))?;
     Ok((
         response.session_id.to_string(),
         response.modes,
@@ -1938,7 +2483,7 @@ async fn apply_config_option(
     value_id: &str,
 ) -> Result<()> {
     if !config_option_supports(options, config_id, value_id) {
-        bail!("Codex ACP 配置项或取值不存在: {config_id}={value_id}");
+        bail!("ACP 配置项或取值不存在: {config_id}={value_id}");
     }
     connection
         .send_request(SetSessionConfigOptionRequest::new(
@@ -1948,7 +2493,7 @@ async fn apply_config_option(
         ))
         .block_task()
         .await
-        .context("Codex ACP session/set_config_option 失败")?;
+        .context("ACP session/set_config_option 失败")?;
     for option in options {
         if option.id.to_string() != config_id {
             continue;
@@ -1981,7 +2526,7 @@ async fn apply_saved_mode(
             .any(|mode| mode.id.to_string() == mode_id)
     });
     if !supported {
-        bail!("Codex ACP 未上报会话模式: {mode_id}");
+        bail!("ACP Agent 未上报会话模式: {mode_id}");
     }
     connection
         .send_request(SetSessionModeRequest::new(
@@ -1990,7 +2535,7 @@ async fn apply_saved_mode(
         ))
         .block_task()
         .await
-        .context("Codex ACP session/set_mode 失败")?;
+        .context("ACP session/set_mode 失败")?;
     if let Some(state) = modes.as_mut() {
         state.current_mode_id = mode_id.to_string().into();
     }
@@ -2047,6 +2592,44 @@ fn managed_runtime_dir() -> PathBuf {
         .join(format!("codex-acp-{CODEX_ACP_VERSION}"))
 }
 
+fn bundled_adapter_candidates(
+    resource_root: &Path,
+    development_bridge: &Path,
+    package: &str,
+) -> Vec<PathBuf> {
+    let node_entry = |root: PathBuf| {
+        root.join("node_modules")
+            .join("@agentclientprotocol")
+            .join(package)
+            .join("dist")
+            .join("index.js")
+    };
+    let package_entry = |root: PathBuf| node_entry(root.join("acp"));
+    let mut candidates = vec![
+        package_entry(resource_root.join("runtime").join("codex-bridge")),
+        package_entry(resource_root.join("codex-bridge")),
+        package_entry(resource_root.join("resources").join("codex-bridge")),
+        package_entry(development_bridge.to_path_buf()),
+    ];
+    if package == "codex-acp" {
+        let legacy_binary = if crate::platform::capabilities::is_windows() {
+            "codex-acp.exe"
+        } else {
+            "codex-acp"
+        };
+        candidates.extend([
+            node_entry(resource_root.join("codex-acp")),
+            resource_root.join("codex-acp").join(legacy_binary),
+            node_entry(resource_root.join("resources").join("codex-acp")),
+            resource_root
+                .join("resources")
+                .join("codex-acp")
+                .join(legacy_binary),
+        ]);
+    }
+    candidates
+}
+
 fn managed_adapter_path() -> PathBuf {
     managed_runtime_dir()
         .join("node_modules")
@@ -2054,23 +2637,137 @@ fn managed_adapter_path() -> PathBuf {
         .join(platform::managed_adapter_name())
 }
 
-async fn capture_login_output<R>(reader: R, login_url: Arc<parking_lot::RwLock<Option<String>>>)
-where
-    R: tokio::io::AsyncRead + Unpin,
+/// readiness 报错面向用户展示中文，把结构化 setup_hint 代码映射回中文文案。
+fn setup_hint_message(hint: Option<&str>) -> &'static str {
+    match hint {
+        Some("kimi_cli_missing") => "请先安装 Kimi Code CLI",
+        Some("kimi_auth_required") => "使用 Kimi 账号完成设备码授权",
+        Some("claude_auth_required") => "使用 Claude 账号完成浏览器授权，或设置 ANTHROPIC_API_KEY",
+        _ => "请检查 Agent 安装和 PATH",
+    }
+}
+
+fn agent_login_command(backend: AgentBackend, executable: &Path) -> Command {
+    if backend == AgentBackend::CodexAcp {
+        return platform::codex_login_command(executable);
+    }
+    let args: &[&str] = match backend {
+        AgentBackend::CodexAcp => unreachable!(),
+        AgentBackend::ClaudeAcp => &["auth", "login"],
+        AgentBackend::KimiAcp => &["login"],
+        AgentBackend::Deepseek => &[],
+    };
+    let executable = crate::platform::os::external_application_path(executable);
+    if crate::platform::capabilities::is_windows()
+        && executable.extension().and_then(|value| value.to_str()) == Some("cmd")
+    {
+        let mut command = crate::platform::process::HiddenTokioCommand::new("cmd");
+        command.args(["/D", "/S", "/C"]).arg(executable).args(args);
+        command
+    } else {
+        let mut command = crate::platform::process::HiddenTokioCommand::new(executable);
+        command.args(args);
+        command
+    }
+}
+
+async fn capture_agent_login_output<R>(
+    mut reader: R,
+    backend: AgentBackend,
+    states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
+) where
+    R: AsyncRead + Unpin,
 {
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(url) = extract_codex_login_url(&line) {
-            *login_url.write() = Some(url.to_string());
+    let mut chunk = [0_u8; 2048];
+    let mut output = String::new();
+    loop {
+        let read = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        output.push_str(&String::from_utf8_lossy(&chunk[..read]));
+        if output.len() > 65_536 {
+            output.drain(..output.len() - 65_536);
+        }
+        let url = extract_agent_login_url(backend, &output);
+        let code = extract_device_code(&output, url.as_deref());
+        if url.is_some() || code.is_some() {
+            let mut states = states.write();
+            let state = states.entry(backend).or_default();
+            if url.is_some() {
+                state.url = url;
+            }
+            if code.is_some() {
+                state.code = code;
+            }
         }
     }
 }
 
-fn extract_codex_login_url(line: &str) -> Option<&str> {
-    line.split_whitespace().find(|token| {
-        token.starts_with("https://auth.openai.com/")
-            || token.starts_with("https://platform.openai.com/")
-    })
+fn extract_agent_login_url(backend: AgentBackend, output: &str) -> Option<String> {
+    output
+        .match_indices("https://")
+        .filter_map(|(start, _)| {
+            let tail = &output[start..];
+            let end = tail
+                .char_indices()
+                .find_map(|(index, character)| {
+                    (character.is_whitespace()
+                        || character.is_control()
+                        || matches!(character, '"' | '\'' | '<' | '>'))
+                    .then_some(index)
+                })
+                .unwrap_or(tail.len());
+            let candidate = tail[..end].trim_end_matches(['.', ',', ')', ']']);
+            agent_login_url_allowed(backend, candidate).then(|| candidate.to_string())
+        })
+        .last()
+}
+
+fn agent_login_url_allowed(backend: AgentBackend, url: &str) -> bool {
+    match backend {
+        AgentBackend::CodexAcp => {
+            url.starts_with("https://auth.openai.com/")
+                || url.starts_with("https://platform.openai.com/")
+        }
+        AgentBackend::ClaudeAcp => {
+            url.starts_with("https://claude.com/")
+                || url.starts_with("https://claude.ai/")
+                || url.starts_with("https://platform.claude.com/")
+        }
+        AgentBackend::KimiAcp => {
+            url.starts_with("https://www.kimi.com/") || url.starts_with("https://kimi.com/")
+        }
+        AgentBackend::Deepseek => false,
+    }
+}
+
+fn extract_device_code(output: &str, login_url: Option<&str>) -> Option<String> {
+    if let Some(url) = login_url {
+        if let Some(value) = url.split("user_code=").nth(1) {
+            let code = value
+                .split(|character: char| character == '&' || character.is_whitespace())
+                .next()
+                .unwrap_or_default();
+            if valid_device_code(code) {
+                return Some(code.to_string());
+            }
+        }
+    }
+    ["enter code:", "user code:"]
+        .into_iter()
+        .find_map(|marker| {
+            let start = output.to_ascii_lowercase().rfind(marker)? + marker.len();
+            let code = output[start..].split_whitespace().next()?;
+            valid_device_code(code).then(|| code.to_string())
+        })
+}
+
+fn valid_device_code(code: &str) -> bool {
+    (4..=32).contains(&code.len())
+        && code
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
 }
 
 fn codex_path_for_adapter(adapter: &Path) -> Option<PathBuf> {
@@ -2109,11 +2806,114 @@ fn resolve_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
     find_in_path(platform::managed_adapter_name())
 }
 
+fn resolve_claude_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PINVOU3_CLAUDE_ACP_BIN").map(PathBuf::from) {
+        if nonempty_file(&path) {
+            return Some(path);
+        }
+    }
+    if let Some(path) = bundled {
+        if nonempty_file(path) {
+            return Some(path.to_path_buf());
+        }
+    }
+    find_in_path(if crate::platform::capabilities::is_windows() {
+        "claude-agent-acp.cmd"
+    } else {
+        "claude-agent-acp"
+    })
+}
+
+fn resolve_claude_cli_from_adapter(adapter: &Path) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PINVOU3_CLAUDE_CLI_PATH").map(PathBuf::from) {
+        if nonempty_file(&path) {
+            return Some(path);
+        }
+    }
+    let (package, binary) = claude_native_runtime(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        crate::platform::capabilities::is_musl(),
+    )?;
+    if let Some(path) = adapter.ancestors().find_map(|ancestor| {
+        (ancestor.file_name().and_then(|value| value.to_str()) == Some("node_modules"))
+            .then(|| ancestor.join("@anthropic-ai").join(&package).join(binary))
+            .filter(|candidate| nonempty_file(candidate))
+    }) {
+        return Some(path);
+    }
+    find_in_path(binary)
+}
+
+fn claude_native_runtime(os: &str, arch: &str, musl: bool) -> Option<(String, &'static str)> {
+    let platform = match os {
+        "windows" => "win32",
+        "macos" => "darwin",
+        "linux" => "linux",
+        _ => return None,
+    };
+    let arch = match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        _ => return None,
+    };
+    let libc = if os == "linux" && musl { "-musl" } else { "" };
+    let binary = if os == "windows" {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    Some((format!("claude-agent-sdk-{platform}-{arch}{libc}"), binary))
+}
+
+fn resolve_kimi_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PINVOU3_KIMI_ACP_BIN").map(PathBuf::from) {
+        if nonempty_file(&path) {
+            return Some(path);
+        }
+    }
+    find_in_path(if crate::platform::capabilities::is_windows() {
+        "kimi.exe"
+    } else {
+        "kimi"
+    })
+}
+
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
         .find(|candidate| nonempty_file(candidate))
+}
+
+/// `--version` 探测与 cli_status_success 一致限制 3 秒，避免卡住的 CLI 拖住状态轮询。
+fn command_version_output(executable: &Path) -> Option<String> {
+    let mut child = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(executable),
+    )
+    .arg("--version")
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .ok()?;
+    match child.wait_timeout(Duration::from_secs(3)) {
+        Ok(Some(status)) if status.success() => {}
+        Ok(Some(_)) => return None,
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    }
+    let mut version = String::new();
+    child.stdout.take()?.read_to_string(&mut version).ok()?;
+    Some(version.trim().to_string())
+}
+
+fn command_version(command: &Path) -> Option<String> {
+    let version = command_version_output(command)?;
+    (!version.is_empty()).then_some(version)
 }
 
 fn nonempty_file(path: &Path) -> bool {
@@ -2128,17 +2928,7 @@ fn codex_upgrade_required(message: &str) -> bool {
 }
 
 fn installed_node_version(node: &Path) -> Option<String> {
-    let output = crate::platform::process::HiddenCommand::new(
-        crate::platform::os::external_application_path(node),
-    )
-    .arg("--version")
-    .output()
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let version = String::from_utf8(output.stdout).ok()?;
-    Some(version.trim().trim_start_matches('v').to_string())
+    command_version_output(node).map(|version| version.trim_start_matches('v').to_string())
 }
 
 fn node_major_version(version: &str) -> Option<u32> {
@@ -2173,12 +2963,234 @@ fn codex_client_capabilities() -> ClientCapabilities {
         .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
 }
 
-fn codex_authenticated() -> bool {
-    if std::env::var_os("OPENAI_API_KEY").is_some() {
+fn codex_authenticated(codex: &Path) -> bool {
+    if nonempty_env("OPENAI_API_KEY") {
         return true;
     }
-    let home = crate::platform::os::user_home_dir();
-    home.join(".codex").join("auth.json").is_file()
+    cli_status_success(codex, &["login", "status"])
+}
+
+fn claude_authenticated(claude: &Path) -> bool {
+    if [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ]
+    .into_iter()
+    .any(nonempty_env)
+    {
+        return true;
+    }
+    cli_status_success(claude, &["auth", "status"])
+}
+
+fn kimi_authenticated(_kimi: &Path) -> bool {
+    if nonempty_env("KIMI_API_KEY") {
+        return true;
+    }
+    let root = kimi_data_root();
+    let Ok(raw) = std::fs::read_to_string(root.join("credentials").join("kimi-code.json")) else {
+        return false;
+    };
+    kimi_credentials_valid(&raw)
+}
+
+fn kimi_data_root() -> PathBuf {
+    std::env::var_os("KIMI_CODE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::platform::os::user_home_dir().join(".kimi-code"))
+}
+
+async fn kimi_diagnostic_cursor(session_id: &str) -> KimiDiagnosticCursor {
+    let log_path = resolve_kimi_session_log_path(session_id).await;
+    let offset = match log_path.as_ref() {
+        Some(path) => tokio::fs::metadata(path)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0),
+        None => 0,
+    };
+    KimiDiagnosticCursor {
+        session_id: session_id.to_string(),
+        log_path,
+        offset,
+    }
+}
+
+async fn kimi_failure_after(cursor: &KimiDiagnosticCursor) -> Option<String> {
+    // Kimi 在返回 ACP end_turn 前先写日志，但文件 sink 可能有极短刷新延迟。
+    for delay_ms in [0, 25, 75] {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let log_path = match cursor.log_path.clone() {
+            Some(path) => path,
+            None => match resolve_kimi_session_log_path(&cursor.session_id).await {
+                Some(path) => path,
+                None => continue,
+            },
+        };
+        // 按 offset seek 只增量读取本回合新增内容，不再每回合整读日志文件。
+        let offset = if cursor.log_path.as_ref() == Some(&log_path) {
+            cursor.offset
+        } else {
+            0
+        };
+        let Ok(mut file) = tokio::fs::File::open(&log_path).await else {
+            continue;
+        };
+        if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+            continue;
+        }
+        let mut raw = Vec::new();
+        if file.read_to_end(&mut raw).await.is_err() {
+            continue;
+        }
+        if let Some(error) = parse_kimi_acp_failure(&String::from_utf8_lossy(&raw)) {
+            return Some(error);
+        }
+    }
+    None
+}
+
+async fn resolve_kimi_session_log_path(session_id: &str) -> Option<PathBuf> {
+    let root = kimi_data_root();
+    let raw = tokio::fs::read_to_string(root.join("session_index.jsonl"))
+        .await
+        .ok()?;
+    kimi_session_log_path_from_index(&raw, &root, session_id)
+}
+
+fn kimi_session_log_path_from_index(
+    index: &str,
+    data_root: &Path,
+    session_id: &str,
+) -> Option<PathBuf> {
+    let sessions_root = data_root.join("sessions");
+    index.lines().rev().find_map(|line| {
+        let record = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        (record.get("sessionId")?.as_str()? == session_id).then_some(())?;
+        let raw_dir = PathBuf::from(record.get("sessionDir")?.as_str()?);
+        let session_dir = if raw_dir.is_absolute() {
+            raw_dir
+        } else {
+            data_root.join(raw_dir)
+        };
+        if session_dir
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+            || !session_dir.starts_with(&sessions_root)
+        {
+            return None;
+        }
+        Some(session_dir.join("logs").join("kimi-code.log"))
+    })
+}
+
+fn parse_kimi_acp_failure(log_tail: &str) -> Option<String> {
+    const MARKER: &str = "acp: turn ended with failed reason";
+    log_tail.lines().rev().find_map(|line| {
+        let (_, details) = line.split_once(MARKER)?;
+        let (_, raw_error) = details.split_once("error=")?;
+        let raw_error = raw_error.trim();
+        let decoded = if raw_error.starts_with('"') {
+            serde_json::from_str::<String>(raw_error).ok()?
+        } else {
+            raw_error.to_string()
+        };
+        let error = serde_json::from_str::<serde_json::Value>(&decoded).ok()?;
+        let code = error
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("provider.error");
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Kimi Code 模型请求失败");
+        Some(format_kimi_provider_error(code, message))
+    })
+}
+
+fn format_kimi_provider_error(code: &str, message: &str) -> String {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("402") && normalized.contains("membership benefits") {
+        return "Kimi Code 会员权益校验失败（HTTP 402）：请确认当前登录账号已开通且会员仍有效"
+            .to_string();
+    }
+    if code.contains("auth") || normalized.contains("authentication") || normalized.contains("401")
+    {
+        return "Kimi Code 登录已失效（HTTP 401），请重新登录".to_string();
+    }
+    if normalized.contains("429")
+        || normalized.contains("rate limit")
+        || normalized.contains("quota")
+    {
+        return "Kimi Code 请求受限或额度不足，请稍后重试或检查账号额度".to_string();
+    }
+    let message = message
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(1000)
+        .collect::<String>();
+    format!("Kimi Code 请求失败（{code}）：{message}")
+}
+
+fn kimi_credentials_valid(raw: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let token_present = ["access_token", "refresh_token"].into_iter().all(|key| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|token| !token.trim().is_empty())
+    });
+    // Kimi 的 access_token 约 15 分钟即过期，Kimi CLI 运行时会用 refresh_token 自动续期，
+    // 因此 expires_at（Unix 秒）过期不判未认证，否则登录 15 分钟后状态就会误报。
+    // 这里仅要求 expires_at 是合法的正数时间戳，用于识别损坏的凭证文件。
+    let expiry_valid = value
+        .get("expires_at")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|expiry| expiry > 0);
+    token_present && expiry_valid
+}
+
+fn nonempty_env(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn cli_status_success(executable: &Path, args: &[&str]) -> bool {
+    let mut command = if crate::platform::capabilities::is_windows()
+        && executable.extension().and_then(|value| value.to_str()) == Some("cmd")
+    {
+        let mut command = crate::platform::process::HiddenCommand::new("cmd");
+        command
+            .args(["/D", "/S", "/C"])
+            .arg(crate::platform::os::external_application_path(executable))
+            .args(args);
+        command
+    } else {
+        let mut command = crate::platform::process::HiddenCommand::new(
+            crate::platform::os::external_application_path(executable),
+        );
+        command.args(args);
+        command
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    match child.wait_timeout(Duration::from_secs(3)) {
+        Ok(Some(status)) => status.success(),
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2186,44 +3198,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_session_classification_survives_missing_auxiliary_index() {
-        assert!(is_codex_session(
-            AgentBackend::Deepseek,
-            CODEX_ACP_SESSION_MODEL
-        ));
-        assert!(is_codex_session(
-            AgentBackend::CodexAcp,
-            "unexpected legacy model"
-        ));
-        assert!(!is_codex_session(AgentBackend::Deepseek, "deepseek-chat"));
+    fn acp_session_classification_survives_missing_auxiliary_index() {
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, CODEX_ACP_SESSION_MODEL),
+            Some(AgentBackend::CodexAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, CLAUDE_ACP_SESSION_MODEL),
+            Some(AgentBackend::ClaudeAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, KIMI_ACP_SESSION_MODEL),
+            Some(AgentBackend::KimiAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::ClaudeAcp, "unexpected legacy model"),
+            Some(AgentBackend::ClaudeAcp)
+        );
+        assert_eq!(
+            acp_session_backend(AgentBackend::Deepseek, "deepseek-chat"),
+            None
+        );
     }
 
     #[test]
-    fn codex_recovery_preserves_original_acp_session_and_workspace() {
+    fn acp_recovery_preserves_original_agent_session_mode_and_workspace() {
         let state = json!({
             "pinvouSessionId": "pinvou-session",
-            "adapter": { "package": CODEX_ACP_PACKAGE },
+            "adapter": {
+                "agentId": "kimi",
+                "package": KIMI_ACP_PACKAGE,
+            },
             "session": {
                 "session_id": "acp-session",
-                "current_model_id": "gpt-test",
-                "modes": { "currentModeId": "agent" },
+                "current_model_id": "kimi-test",
+                "modes": null,
+                "config_options": [{
+                    "id": "mode",
+                    "currentValue": "auto",
+                }],
             },
         });
         let temporary = Path::new("/tmp/pinvou-session-workspace");
         let project = PathBuf::from("/tmp/pinvou-project");
-        let recovered =
-            codex_recovery_record("pinvou-session", &state, project.clone(), temporary).unwrap();
+        let recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            project.clone(),
+            temporary,
+        )
+        .unwrap();
 
-        assert_eq!(recovered.backend, AgentBackend::CodexAcp);
+        assert_eq!(recovered.backend, AgentBackend::KimiAcp);
         assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session"));
-        assert_eq!(recovered.acp_model_id.as_deref(), Some("gpt-test"));
-        assert_eq!(recovered.acp_mode_id.as_deref(), Some("agent"));
+        assert_eq!(recovered.acp_model_id.as_deref(), Some("kimi-test"));
+        assert_eq!(recovered.acp_mode_id.as_deref(), Some("auto"));
         assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(recovered.workspace_path, Some(project));
 
-        let temporary_recovered =
-            codex_recovery_record("pinvou-session", &state, temporary.to_path_buf(), temporary)
-                .unwrap();
+        let temporary_recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            temporary.to_path_buf(),
+            temporary,
+        )
+        .unwrap();
         assert_eq!(
             temporary_recovered.workspace_kind,
             CodexWorkspaceKind::Temporary
@@ -2232,15 +3273,35 @@ mod tests {
     }
 
     #[test]
-    fn codex_recovery_rejects_incomplete_state() {
+    fn acp_recovery_rejects_incomplete_or_mismatched_state() {
         let state = json!({
             "pinvouSessionId": "pinvou-session",
-            "adapter": { "package": CODEX_ACP_PACKAGE },
+            "adapter": {
+                "agentId": "claude",
+                "package": CLAUDE_ACP_PACKAGE,
+            },
             "session": {},
         });
-        assert!(codex_recovery_record(
+        assert!(acp_recovery_record(
             "pinvou-session",
+            AgentBackend::ClaudeAcp,
             &state,
+            PathBuf::from("/tmp/pinvou-project"),
+            Path::new("/tmp/pinvou-session-workspace"),
+        )
+        .is_err());
+        let mismatched = json!({
+            "pinvouSessionId": "pinvou-session",
+            "adapter": {
+                "agentId": "claude",
+                "package": CLAUDE_ACP_PACKAGE,
+            },
+            "session": { "session_id": "claude-session" },
+        });
+        assert!(acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &mismatched,
             PathBuf::from("/tmp/pinvou-project"),
             Path::new("/tmp/pinvou-session-workspace"),
         )
@@ -2259,6 +3320,28 @@ mod tests {
         assert_eq!(node_major_version("20.18.1"), Some(20));
         assert_eq!(node_major_version("v20.18.1"), None);
         assert_eq!(node_major_version("unknown"), None);
+    }
+
+    #[test]
+    fn claude_native_runtime_is_explicit_for_supported_platforms() {
+        assert_eq!(
+            claude_native_runtime("macos", "aarch64", false),
+            Some(("claude-agent-sdk-darwin-arm64".to_string(), "claude"))
+        );
+        assert_eq!(
+            claude_native_runtime("macos", "x86_64", false),
+            Some(("claude-agent-sdk-darwin-x64".to_string(), "claude"))
+        );
+        assert_eq!(
+            claude_native_runtime("windows", "x86_64", false),
+            Some(("claude-agent-sdk-win32-x64".to_string(), "claude.exe"))
+        );
+        assert_eq!(
+            claude_native_runtime("linux", "aarch64", true),
+            Some(("claude-agent-sdk-linux-arm64-musl".to_string(), "claude"))
+        );
+        assert_eq!(claude_native_runtime("freebsd", "x86_64", false), None);
+        assert_eq!(claude_native_runtime("windows", "riscv64", false), None);
     }
 
     #[test]
@@ -2304,19 +3387,113 @@ mod tests {
     }
 
     #[test]
-    fn extracts_only_codex_authorization_urls() {
+    fn extracts_only_allowed_agent_authorization_urls() {
         assert_eq!(
-            extract_codex_login_url(
-                "https://auth.openai.com/oauth/authorize?response_type=code&state=test"
+            extract_agent_login_url(
+                AgentBackend::CodexAcp,
+                "https://auth.openai.com/oauth/authorize?response_type=code&state=test",
             ),
-            Some("https://auth.openai.com/oauth/authorize?response_type=code&state=test")
+            Some(
+                "https://auth.openai.com/oauth/authorize?response_type=code&state=test".to_string()
+            )
         );
         assert_eq!(
-            extract_codex_login_url("open https://platform.openai.com/codex/auth now"),
-            Some("https://platform.openai.com/codex/auth")
+            extract_agent_login_url(
+                AgentBackend::ClaudeAcp,
+                "If the browser did not open, visit: \u{1b}]8;;https://claude.com/cai/oauth/authorize?state=test\u{7}https://claude.com/cai/oauth/authorize?state=test\u{1b}]8;;\u{7}",
+            ),
+            Some("https://claude.com/cai/oauth/authorize?state=test".to_string())
         );
         assert_eq!(
-            extract_codex_login_url("https://example.com/not-codex"),
+            extract_agent_login_url(
+                AgentBackend::ClaudeAcp,
+                "Legacy Claude login: https://claude.ai/oauth/authorize?state=test",
+            ),
+            Some("https://claude.ai/oauth/authorize?state=test".to_string())
+        );
+        assert_eq!(
+            extract_agent_login_url(
+                AgentBackend::KimiAcp,
+                "Opening https://www.kimi.com/code/authorize_device?user_code=ABCD-1234",
+            ),
+            Some("https://www.kimi.com/code/authorize_device?user_code=ABCD-1234".to_string())
+        );
+        assert_eq!(
+            extract_agent_login_url(AgentBackend::ClaudeAcp, "https://example.com/not-claude",),
+            None
+        );
+    }
+
+    #[test]
+    fn extracts_kimi_device_code_without_accepting_arbitrary_text() {
+        let url = "https://www.kimi.com/code/authorize_device?user_code=MO3M-6JFK";
+        assert_eq!(
+            extract_device_code("Opening browser", Some(url)),
+            Some("MO3M-6JFK".to_string())
+        );
+        assert_eq!(extract_device_code("enter code: <script>", None), None);
+    }
+
+    #[test]
+    fn kimi_credentials_require_tokens_and_nonzero_expiry() {
+        assert!(kimi_credentials_valid(
+            r#"{"access_token":"access","refresh_token":"refresh","expires_at":1}"#
+        ));
+        // access_token 过期但 refresh_token 仍在时不判未认证（Kimi CLI 会自动续期）。
+        assert!(kimi_credentials_valid(
+            r#"{"access_token":"access","refresh_token":"refresh","expires_at":1700000000}"#
+        ));
+        assert!(!kimi_credentials_valid(
+            r#"{"access_token":"access","refresh_token":"refresh","expires_at":0}"#
+        ));
+        assert!(!kimi_credentials_valid(
+            r#"{"access_token":"","refresh_token":"refresh","expires_at":1}"#
+        ));
+        assert!(!kimi_credentials_valid("not-json"));
+    }
+
+    #[test]
+    fn parses_kimi_provider_failure_from_session_log() {
+        let log = concat!(
+            "2026-07-27T08:18:51Z INFO llm request\n",
+            "2026-07-27T08:18:51Z WARN acp: turn ended with failed reason  ",
+            "error=\"{\\\"code\\\":\\\"provider.api_error\\\",",
+            "\\\"message\\\":\\\"402 We're unable to verify your membership benefits at this time.\\\"}\"\n",
+        );
+        assert_eq!(
+            parse_kimi_acp_failure(log).as_deref(),
+            Some("Kimi Code 会员权益校验失败（HTTP 402）：请确认当前登录账号已开通且会员仍有效")
+        );
+        assert!(parse_kimi_acp_failure("INFO turn completed").is_none());
+    }
+
+    #[test]
+    fn maps_kimi_auth_and_quota_failures_to_actionable_messages() {
+        assert_eq!(
+            format_kimi_provider_error("provider.auth_failed", "401 unauthorized"),
+            "Kimi Code 登录已失效（HTTP 401），请重新登录"
+        );
+        assert_eq!(
+            format_kimi_provider_error("provider.api_error", "429 quota exceeded"),
+            "Kimi Code 请求受限或额度不足，请稍后重试或检查账号额度"
+        );
+    }
+
+    #[test]
+    fn resolves_only_kimi_session_logs_under_the_data_root() {
+        let root = Path::new("/tmp/kimi-home");
+        let index = concat!(
+            "{\"sessionId\":\"session-safe\",\"sessionDir\":\"/tmp/kimi-home/sessions/wd_project/session-safe\"}\n",
+            "{\"sessionId\":\"session-escape\",\"sessionDir\":\"/tmp/kimi-home/sessions/../credentials\"}\n",
+        );
+        assert_eq!(
+            kimi_session_log_path_from_index(index, root, "session-safe"),
+            Some(PathBuf::from(
+                "/tmp/kimi-home/sessions/wd_project/session-safe/logs/kimi-code.log"
+            ))
+        );
+        assert_eq!(
+            kimi_session_log_path_from_index(index, root, "session-escape"),
             None
         );
     }
@@ -2332,6 +3509,8 @@ mod tests {
     #[test]
     fn status_serializes_install_contract_fields() {
         let status = CodexAcpStatus {
+            agent_id: "codex",
+            agent_name: "Codex",
             version: CODEX_ACP_VERSION,
             installed: false,
             bridge_ready: false,
@@ -2356,8 +3535,11 @@ mod tests {
             authenticated: false,
             login_in_progress: false,
             login_url: None,
+            login_code: None,
+            login_input_required: false,
             installing: false,
             error: None,
+            setup_hint: None,
         };
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
         assert_eq!(value["min_codex_version"], json!(MIN_CODEX_VERSION));

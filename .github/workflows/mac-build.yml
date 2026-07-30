@@ -6,20 +6,31 @@ name: mac-build
 #
 # 与 pr-check.yml 的 rust-test 关系:
 # - rust-test 在 ubuntu 上跑完整 lib tests,是主线 gate。
-# - mac-build 在 macos-15 上只跑 cargo check + cargo test --lib + release-fast 冒烟
-#   (cargo build 与 tauri bundle 共用同一 release-fast profile,产物互相复用,不重复编译),
+# - mac-build 在 macos-15 上只跑 cargo check + cargo test --lib + release-fast 冒烟,
 #   验证 macOS 平台目标零回归。真发版的 fat-LTO --release 产物由 scripts/release-macos.sh 产出。
 # - mac-build 不跑 relay e2e(那需要 remote-control-relay 的 node_modules,mac-build 不装
 #   该依赖)。因此不设 PINVOU_REQUIRE_REMOTE_E2E,让 e2e 测试在缺依赖时静默跳过而非 panic。
+#
+# 分层触发(2026-07 CI 成本审计:暖 cache 全量 ~17min,其中 universal bundle smoke 占
+# 8.6min ≈ 50%,与 release-packages 在 VERSION bump 时的真实 dmg 构建重叠;
+# main 高峰期 ~19 pushes/天,每次全量跑完一天排队 5+ 小时 mac runner):
+# - 每次触发:check + test + release-fast + verify(~8min),macOS 原生回归核心。
+# - 仅打包链路(bundle_chain)变更:追加 universal bundle smoke。链路覆盖仍完整:
+#   链路 PR 合入前由 pr-check 跑轻量发布契约;VERSION bump 再构建全量 dmg。
+# - cancel-in-progress 保持 true(verify-tip):8min 任务在 push 间隙大概率跑完,
+#   被取消的中间 run 由更新的 tip 取代,不为每个中间 commit 排队。
+# - 纯前端改动(pinvou3-app/src/**)不触发:cargo check/test 不依赖前端产物,
+#   前端进包由打包链路的 bundle smoke 与正式 release-packages 覆盖。
 
 on:
   push:
     branches: [main]
     paths:
       - 'pinvou3-app/src-tauri/**'
-      - 'pinvou3-app/src/**'
+      - 'pinvou3-app/scripts/tauri/**'
       - 'pinvou3-app/package.json'
       - 'pinvou3-app/package-lock.json'
+      - 'pinvou3-app/vite.config.js'
       - 'CodeWhale'
       - '.github/workflows/mac-build.yml'
       - 'scripts/run-mac-verify.sh'
@@ -32,7 +43,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 打包链路检测:仅这些路径变化时才跑 8.6min 的 universal bundle smoke。
+  # 注意:bundle_chain 的每条路径都必须被上方 on.push.paths 覆盖,否则是死条目
+  # (workflow 根本不会触发,filter 无从匹配);scripts/tests/test_ci_gate_policy.py
+  # 对此有回归断言。VERSION 刻意不在其中:VERSION-only push 不触发本 workflow
+  # (VERSION bump 的全量 dmg 由 release-packages 构建),而真实版本同步提交必伴随
+  # tauri.conf.json/package.json 变更,经这两条进入 bundle_chain,smoke 不会漏。
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      bundle_chain: ${{ steps.filter.outputs.bundle_chain }}
+    steps:
+      # fetch-depth:0:dorny/paths-filter 在 push 事件下用 before..sha 本地 diff。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            bundle_chain:
+              - 'pinvou3-app/scripts/tauri/**'
+              - 'pinvou3-app/src-tauri/tauri.conf.json'
+              - 'pinvou3-app/src-tauri/config/**'
+              - 'pinvou3-app/src-tauri/packaging/**'
+              - 'pinvou3-app/src-tauri/resources/**'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
+              - 'pinvou3-app/vite.config.js'
+              - '.github/workflows/mac-build.yml'
+
   build:
+    needs: changes
     runs-on: macos-15
     timeout-minutes: 50
     env:
@@ -121,10 +165,11 @@ jobs:
         run: cargo build --profile release-fast --target aarch64-apple-darwin --lib
 
       # tauri bundle smoke:验证 dmg/app 实际打包链路(Info.plist/entitlements/资源打包)。
-      # 只在 main push 跑，不作为 PR 检测项。Universal 打包失败会让 mac-build 失败，
-      # 避免主线在没有可发布 arm64 + x86_64 产物时仍显示成功。
-      - name: Tauri bundle smoke (验证 dmg/app 打包,仅 main push)
-        if: github.ref == 'refs/heads/main'
+      # 仅打包链路(bundle_chain)变更时跑(占全量 job 约 50% 耗时,见头部「分层触发」);
+      # 打包链路 PR 合入前由 pr-check 跑轻量发布契约,VERSION bump 再构建全量 dmg。
+      # universal 打包失败会让 mac-build 失败,避免主线在没有可发布 arm64 + x86_64 产物时仍显示成功。
+      - name: Tauri bundle smoke (验证 dmg/app 打包,仅打包链路变更)
+        if: needs.changes.outputs.bundle_chain == 'true'
         working-directory: pinvou3-app
         # universal-apple-darwin 是 Tauri 专属 target(内部跑 aarch64+x86_64 两次 cargo + lipo),
         # 不是合法 rustc target triple;故 cargo check/test/build 仍用 host(aarch64),

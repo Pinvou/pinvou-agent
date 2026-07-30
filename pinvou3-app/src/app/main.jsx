@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
-import { CodexLogo } from '../components/CodexLogo.jsx';
+import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
@@ -18,6 +18,7 @@ import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
+import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
@@ -87,6 +88,9 @@ function workspaceDisplayName(path) {
       // macOS 顶栏走系统原生实现:窗口带 decorations + titleBarStyle=Overlay
       // (见 src-tauri/config/platforms/macos/tauri.conf.json),系统红绿灯悬浮在内容区左上角,
       // 此时不再渲染 Windows 风格三键,并为红绿灯留出左侧空间。
+      // 红绿灯纵向位置由 overlay 配置 trafficLightPosition y=20 决定:tao 按
+      // "容器高 = 按钮高(14) + y" 布局,按钮顶边距窗口顶 y-9,按钮圆心 7,
+      // 故 y=20 时圆心 18,正好与本 h-9(36px)顶栏内容中线对齐;调整顶栏高度需同步改 y。
       // Windows/Linux 窗口无边框(decorations=false),继续用自绘三键。
       // 以窗口实际 decorations 状态为准,不解析 UA / 平台字符串。
       // 初始 null 表示探测未决:此时不渲染自绘三键,避免 macOS 原生顶栏下
@@ -266,6 +270,7 @@ function workspaceDisplayName(path) {
           if (!sessionId || !type) return;
           if (type === 'turn_started') {
             setCodexBusyBySession(current => ({ ...current, [sessionId]: true }));
+            refreshCodexSessions().catch(() => {});
           } else if (type === 'turn_completed') {
             setCodexBusyBySession(current => ({ ...current, [sessionId]: false }));
             refreshCodexSessions().catch(() => {});
@@ -713,7 +718,7 @@ function workspaceDisplayName(path) {
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
         taskKind: 'codex',
-        leadingIcon: <CodexLogo className="h-[18px] w-[18px]" title="Codex" />,
+        leadingIcon: <AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]" title={session.agent_name || t.acpAgent} />,
         testId: 'codex-sidebar-item',
         menuTestId: 'codex-sidebar-menu',
         codexSession: session,
@@ -993,7 +998,12 @@ function workspaceDisplayName(path) {
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
+        } else if (mode === 'design') {
+          savePinvouModeState({ mode: 'design' });
+          if (bridge.available) bridge.sessions.createNewSession();
+          setCurrentView('chat');
         } else if (mode === 'work') {
+          savePinvouModeState({ mode: 'work' });
           if (bridge.available) bridge.sessions.createNewSession();
           setCurrentView('chat');
         }
@@ -1568,12 +1578,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || '代码')
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1766,6 +1776,14 @@ function workspaceDisplayName(path) {
                   onClick={() => navigateFromScheduledRun('scheduled')}
                 />
               )}
+              <NavItem
+                icon={<Package size={18} />} label={t.outputs}
+                active={currentView === 'outputs'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('outputs')}
+                dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
+              />
               <NavItem
                 icon={<BarChart2 size={18} />} label={t.monitor}
                 active={currentView === 'monitor'}
@@ -2116,6 +2134,7 @@ function workspaceDisplayName(path) {
                 onRestoreMany={handleBatchRestoreArchived}
               />
             )}
+            {currentView === 'outputs' && <KnowledgeView theme={activeTheme} t={t} mode="outputs" />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
             {can('webAccessAdmin') && webAccessOpen && (
@@ -2284,6 +2303,8 @@ function workspaceDisplayName(path) {
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),
+              { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
+                active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
               { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
                 active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
               { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
@@ -3089,6 +3110,7 @@ function workspaceDisplayName(path) {
       cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
       toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} t={t} onNewChat={()=>{}} />,
       knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
+      outputs:   ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} mode="outputs" />,
     };
 
     const DetachedShell = ({ kind, id }) => {

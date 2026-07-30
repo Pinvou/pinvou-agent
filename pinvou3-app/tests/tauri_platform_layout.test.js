@@ -95,10 +95,15 @@ for (const [name, command] of Object.entries(packageJson.scripts)) {
 }
 
 const gitmodules = fs.readFileSync(path.join(repoRoot, ".gitmodules"), "utf8");
-assert.doesNotMatch(
+assert.match(
   gitmodules,
-  /private-runtimes\/windows/,
-  "community repository must not reference the private Windows runtime",
+  /\[submodule "private-runtimes\/windows"\][\s\S]*?update = none/,
+  "private Windows runtime must be explicit and excluded from automatic submodule updates",
+);
+assert.doesNotMatch(
+  JSON.stringify({ common, windows }),
+  /private-runtimes\/windows|target\/windows-runtime/,
+  "public Tauri configs must not hard-code private runtime sources",
 );
 const workflow = fs.readFileSync(path.join(repoRoot, ".github/workflows/pr-check.yml"), "utf8");
 const arm64Workflow = fs.readFileSync(

@@ -5,6 +5,7 @@
     "windows": {
       "nsis": {
         "installMode": "perMachine",
+        "installerHooks": "packaging/windows/nsis/installer-hooks.nsh",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
         "languages": [

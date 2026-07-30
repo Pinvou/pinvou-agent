@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, Mic, Monitor, Package, Paperclip, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
@@ -26,6 +26,21 @@ import {
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import {
+  createPinvouModeScopeKey,
+  loadPinvouModeState,
+  reducePinvouModeState,
+  savePinvouModeState,
+} from './pinvou-mode-state.js';
+import { createDesignChange, createDesignChangeScopeKey, reduceScopedDesignChanges, uniqueDesignChanges } from './design-changes.js';
+import { createVisualPosterMessageMeta, shouldUseVisualPosterScene } from './visual-poster-scene.js';
+import {
+  createDataVisualizationMessageMeta,
+  createDocumentWritingMessageMeta,
+  shouldUseDataVisualizationScene,
+  shouldUseDocumentWritingScene,
+} from './work-scene-routes.js';
+import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
@@ -38,6 +53,16 @@ function unifiedConversationUiEnabled() {
     return true;
   }
 }
+
+const WORK_MODE_SUBTABS = [
+  { key: 'document-writing', label: '公文写作', Icon: FileText },
+];
+
+const DESIGN_MODE_SUBTABS = [
+  { key: 'poster', label: '海报', Icon: ImageIcon },
+  { key: 'data-visualization', label: '数据可视化', Icon: BarChart2 },
+  { key: 'ppt', label: 'PPT设计', Icon: Presentation, disabled: true, disabledReason: 'PPT 生成能力修复中' },
+];
 
 const openChatExternalUrl = (url) => {
   if (isWeb) {
@@ -205,18 +230,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return (
         <div className="relative">
           <button ref={triggerRef} onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
-            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'gap-1.5 px-2.5 py-1.5 rounded-xl text-[13px] font-semibold'} ${active
-              ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#E8F0FE] dark:bg-[#1A3A5C] text-[#1A73E8] dark:text-[#A8C7FA] border-[#1A73E8]/20 dark:border-[#A8C7FA]/25')
+            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold'} ${active
+              ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#007AFF]/10 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/25')
               : modelMissing
                 ? 'bg-transparent text-gray-400 dark:text-gray-600 border-transparent opacity-70'
-                : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-black/[0.04] dark:border-white/5')}`}>
-            <BookOpen size={compact ? 18 : 14} className="opacity-70 shrink-0" />
-            {!compact && <span className="max-w-[140px] truncate">{active ? mountedName : t.kbMount}</span>}
-            {!compact && <ChevronDown size={14} className="opacity-50 shrink-0" />}
+                : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]')}`}>
+            <BookOpen size={compact ? 18 : 13} className="opacity-70 shrink-0" />
+            {!compact && <span className="max-w-[116px] truncate">{active ? mountedName : t.kbMount}</span>}
+            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
             {compact && active && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#1A73E8] dark:bg-[#A8C7FA] ring-2 ring-white dark:ring-[#161618]"></span>}
           </button>
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {modelMissing ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
                 ) : collections === null ? (
@@ -277,7 +302,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               : <Zap size={18} className="shrink-0" />}
           </button>
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <button onClick={() => switchTo('yolo')} className={optCls}>
                   <span className="flex flex-col items-start min-w-0">
                     <span className="font-semibold">{t.modeYolo}</span>
@@ -293,6 +318,114 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
                 </button>
           </ComposerPopover>
+        </div>
+      );
+    };
+
+    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker' }) => {
+      const trackRef = useRef(null);
+      const buttonRefs = useRef({});
+      const [indicator, setIndicator] = useState({ left: 0, width: 20, ready: false });
+
+      const updateIndicator = useCallback(() => {
+        const track = trackRef.current;
+        const button = buttonRefs.current[value];
+        if (!track || !button) return;
+        const trackRect = track.getBoundingClientRect();
+        const buttonRect = button.getBoundingClientRect();
+        const width = Math.min(28, Math.max(20, buttonRect.width * 0.32));
+        setIndicator({
+          left: buttonRect.left - trackRect.left + (buttonRect.width - width) / 2,
+          width,
+          ready: true,
+        });
+      }, [value]);
+
+      useLayoutEffect(() => {
+        updateIndicator();
+        window.addEventListener('resize', updateIndicator);
+        return () => window.removeEventListener('resize', updateIndicator);
+      }, [items, updateIndicator]);
+
+      return (
+        <div
+          data-testid={testId}
+          className="mb-1.5 flex justify-center px-1"
+        >
+          <div ref={trackRef} className="relative inline-flex max-w-full items-center justify-center gap-5 overflow-x-auto px-2 py-1">
+            <span
+              aria-hidden="true"
+              className={`absolute bottom-0 h-0.5 rounded-full transition-all duration-200 ease-out ${isDark ? 'bg-[#F5F5F7]' : 'bg-[#1D1D1F]'}`}
+              style={{
+                left: `${indicator.left}px`,
+                width: `${indicator.width}px`,
+                opacity: indicator.ready ? 1 : 0,
+              }}
+            />
+            {items.map((item) => {
+              const selected = value === item.key;
+              const disabled = !!item.disabled;
+              const icon = icons && icons[item.key];
+              const ItemIcon = item.Icon;
+              return (
+                <button
+                  ref={(node) => { buttonRefs.current[item.key] = node; }}
+                  key={item.key}
+                  type="button"
+                  data-testid={`${testId}-option-${item.key}`}
+                  title={disabled ? (item.disabledReason || '即将上线') : item.label}
+                  aria-disabled={disabled ? 'true' : undefined}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (disabled) return;
+                    if (onChange) onChange(item.key);
+                  }}
+                  className={`relative flex h-7 min-w-0 items-center justify-center gap-1.5 px-0.5 text-[13px] font-medium transition-colors duration-200 ${
+                    disabled
+                      ? isDark
+                        ? 'cursor-not-allowed text-[#5F6368] opacity-60'
+                        : 'cursor-not-allowed text-[#A0A4AA] opacity-65'
+                      : selected
+                      ? isDark
+                        ? 'text-[#F5F5F7]'
+                        : 'text-[#1D1D1F]'
+                      : isDark
+                        ? 'text-[#8E8E93] hover:text-[#F5F5F7]'
+                        : 'text-[#8E8E93] hover:text-[#1D1D1F]'
+                  }`}
+                >
+                  {ItemIcon && (
+                    <ItemIcon size={15} className="shrink-0" />
+                  )}
+                  {icon && (
+                    <span className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-white ${
+                      isDark ? 'shadow-[0_0_0_1px_rgba(255,255,255,.14)]' : 'ring-1 ring-black/[0.06]'
+                    }`}>
+                      <img src={icon} alt="" className="h-[13px] w-[13px] object-contain" />
+                    </span>
+                  )}
+                  <span className="min-w-0 truncate">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    const SceneModeTag = ({ isDark, scene }) => {
+      if (!scene) return null;
+      const SceneIcon = scene.Icon || Sparkles;
+      return (
+        <div className="mb-2 flex justify-start px-1" data-testid="pinvou-scene-tag">
+          <div className={`inline-flex h-8 items-center gap-2 rounded-[14px] px-3 text-[13px] font-semibold shadow-sm ${
+            isDark
+              ? 'bg-[#2A2B2D] text-[#F5F5F7] ring-1 ring-white/10'
+              : 'bg-[#F5F5F7] text-[#1D1D1F] ring-1 ring-black/[0.06]'
+          }`}>
+            <SceneIcon size={15} className="shrink-0" />
+            <span>{scene.label}</span>
+          </div>
         </div>
       );
     };
@@ -322,6 +455,34 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }, []);
       const [artifactsOpen, setArtifactsOpen] = useState(false);
+      const [artifactsFullscreen, setArtifactsFullscreen] = useState(false);
+      const [activeArtifactPath, setActiveArtifactPath] = useState(null);
+      const initialPinvouModeScope = createPinvouModeScopeKey(bs && bs.activeSessionId);
+      const [pinvouModeState, setPinvouModeState] = useState(() => loadPinvouModeState(undefined, initialPinvouModeScope));
+      const pinvouModeScopeRef = useRef(initialPinvouModeScope);
+      const pinvouModeStateRef = useRef(pinvouModeState);
+      const pendingModeScopeMigrationRef = useRef(null);
+      const [selectedDesignElement, setSelectedDesignElement] = useState(null);
+      const [designChangesByScope, setDesignChangesByScope] = useState({});
+      const [designCommand, setDesignCommand] = useState(null);
+      const [designAiState, setDesignAiState] = useState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
+      const [sceneCapabilityStatus, setSceneCapabilityStatus] = useState(null);
+      const designAiSessionRef = useRef(null);
+      const previousArtifactCountRef = useRef(0);
+      const updateDesignAiState = useCallback((valueOrUpdater) => {
+        setDesignAiState((prev) => {
+          const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(prev) : valueOrUpdater;
+          const merged = { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0, ...(next || {}) };
+          if (typeof window !== 'undefined') {
+            if (merged.status !== 'idle' || merged.text || merged.lastPrompt) {
+              window.__PINVOU_DESIGN_AI_STATE__ = merged;
+            } else {
+              window.__PINVOU_DESIGN_AI_STATE__ = null;
+            }
+          }
+          return merged;
+        });
+      }, []);
       // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
       const ART_MIN = 360, CHAT_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
       const clampArtifactWidth = (w, rootW) => {
@@ -423,6 +584,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return () => ro.disconnect();
       }, []);
       const chatItems = bs ? bs.chatItems : [];
+      const activeSessionId = bs ? bs.activeSessionId : null;
       const busy = bs ? bs.busy : false;
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
@@ -438,7 +600,191 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
       const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-      const artifactCount = (bs && bs.artifacts) ? bs.artifacts.length : 0;
+      const artifactItems = (bs && bs.artifacts) || [];
+      const artifactCount = artifactItems.length;
+      const latestArtifact = artifactItems[artifactItems.length - 1] || null;
+      const conversationStarted = chatItems.some(item => item && item.type === 'user') || artifactCount > 0;
+      const pinvouMode = pinvouModeState.mode;
+      const workSubtab = pinvouModeState.workSubtab;
+      const designSubtab = pinvouModeState.designSubtab;
+      const designScopeKey = createDesignChangeScopeKey(activeSessionId, activeArtifactPath);
+      const designChanges = designChangesByScope[designScopeKey] || [];
+      const visibleDesignChanges = uniqueDesignChanges(designChanges);
+      const reduceCurrentDesignChanges = useCallback((action) => {
+        setDesignChangesByScope((prev) => reduceScopedDesignChanges(prev, designScopeKey, action));
+      }, [designScopeKey]);
+      const updatePinvouModeState = useCallback((action) => {
+        setPinvouModeState((prev) => {
+          const next = savePinvouModeState(
+            reducePinvouModeState(prev, action),
+            undefined,
+            pinvouModeScopeRef.current,
+          );
+          pinvouModeStateRef.current = next;
+          return next;
+        });
+      }, []);
+      useEffect(() => {
+        const nextScope = createPinvouModeScopeKey(activeSessionId);
+        if (nextScope === pinvouModeScopeRef.current) return;
+
+        const pending = pendingModeScopeMigrationRef.current;
+        if (pending && activeSessionId) {
+          const lastUser = [...chatItems].reverse().find((item) => item && item.type === 'user');
+          if (!lastUser) return;
+          pendingModeScopeMigrationRef.current = null;
+          const lastUserText = String(lastUser.text || '').trim();
+          if (
+            !pending.text ||
+            lastUserText === pending.text ||
+            lastUserText.startsWith(`${pending.text}\n\n📎 `)
+          ) {
+            const migrated = savePinvouModeState(pending.state, undefined, nextScope);
+            pinvouModeScopeRef.current = nextScope;
+            pinvouModeStateRef.current = migrated;
+            setPinvouModeState(migrated);
+            return;
+          }
+        }
+
+        const restored = loadPinvouModeState(undefined, nextScope);
+        pinvouModeScopeRef.current = nextScope;
+        pinvouModeStateRef.current = restored;
+        setPinvouModeState(restored);
+      }, [activeSessionId, chatItems.length]);
+      useEffect(() => {
+        setSelectedDesignElement(null);
+        updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });
+      }, [designScopeKey, updatePinvouModeState]);
+      const handlePinvouModeChange = useCallback((mode) => {
+        updatePinvouModeState({ type: 'set-mode', mode });
+        if (mode !== 'design') setSelectedDesignElement(null);
+        if (mode === 'design' && artifactCount > 0) {
+          if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
+          setArtifactsOpen(true);
+          setArtifactsFullscreen(true);
+        }
+      }, [artifactCount, latestArtifact, updatePinvouModeState]);
+      const handleHomeModeChange = useCallback((mode) => {
+        if (mode === 'code') {
+          if (onSwitchHomeMode) onSwitchHomeMode(mode);
+          return;
+        }
+        handlePinvouModeChange(mode);
+      }, [handlePinvouModeChange, onSwitchHomeMode]);
+      const handleWorkSubtabChange = useCallback((subtab) => {
+        updatePinvouModeState({ type: 'set-work-subtab', subtab });
+      }, [updatePinvouModeState]);
+      const handleDesignSubtabChange = useCallback((subtab) => {
+        updatePinvouModeState({ type: 'set-design-subtab', subtab });
+      }, [updatePinvouModeState]);
+      const handleDesignRuntimeStatus = useCallback((status) => {
+        updatePinvouModeState({ type: 'set-design-runtime-status', status });
+      }, [updatePinvouModeState]);
+      const handleDesignElementSelected = useCallback((element) => {
+        updatePinvouModeState({ type: 'set-selected-design-element', elementId: element && element.id });
+        setSelectedDesignElement(element || null);
+      }, [updatePinvouModeState]);
+      const handleApplyDesignChange = useCallback(({ type, property, oldValue, newValue }) => {
+        if (!selectedDesignElement || !selectedDesignElement.selector) return;
+        if (String(oldValue == null ? '' : oldValue) === String(newValue == null ? '' : newValue)) return;
+        if (designChanges.some((change) => (
+          change.selector === selectedDesignElement.selector &&
+          change.type === type &&
+          change.property === property &&
+          change.oldValue === String(oldValue == null ? '' : oldValue) &&
+          change.newValue === String(newValue == null ? '' : newValue)
+        ))) return;
+        const change = createDesignChange({
+          element: selectedDesignElement,
+          type,
+          property,
+          oldValue,
+          newValue,
+        });
+        reduceCurrentDesignChanges({ type: 'add', change });
+        setDesignCommand({
+          seq: Date.now(),
+          kind: 'apply',
+          payload: {
+            selector: selectedDesignElement.selector,
+            changeId: change.id,
+            changeType: type,
+            property,
+            oldValue,
+            value: newValue,
+          },
+        });
+        setSelectedDesignElement((prev) => {
+          if (!prev) return prev;
+          if (type === 'text') return { ...prev, text: String(newValue || '') };
+          return {
+            ...prev,
+            computedStyle: {
+              ...(prev.computedStyle || {}),
+              [property]: String(newValue || ''),
+            },
+          };
+        });
+      }, [designChanges, reduceCurrentDesignChanges, selectedDesignElement]);
+      const handleDesignChangeApplied = useCallback((result) => {
+        if (!result || !result.changeId || result.changeId === 'clear') return;
+        reduceCurrentDesignChanges({
+          type: 'mark-applied',
+          changeId: result.changeId,
+          ok: result.ok,
+          error: result.error,
+        });
+      }, [reduceCurrentDesignChanges]);
+      const handleDesignMutation = useCallback((payload) => {
+        const element = payload && payload.element;
+        const changes = Array.isArray(payload && payload.changes) ? payload.changes : [];
+        if (!element || !changes.length) return;
+        const groupId = `design-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const groupLabel = payload.groupLabel || 'Edit';
+        changes.forEach((item) => {
+          if (!item || String(item.oldValue == null ? '' : item.oldValue) === String(item.newValue == null ? '' : item.newValue)) return;
+          const change = createDesignChange({
+            element,
+            type: item.type || 'style',
+            property: item.property,
+            oldValue: item.oldValue,
+            newValue: item.newValue,
+            groupId,
+            groupLabel,
+          });
+          reduceCurrentDesignChanges({ type: 'add', change });
+          reduceCurrentDesignChanges({ type: 'mark-applied', changeId: change.id, ok: true });
+        });
+        setSelectedDesignElement(element);
+        updatePinvouModeState({ type: 'set-selected-design-element', elementId: element.id });
+      }, [reduceCurrentDesignChanges, updatePinvouModeState]);
+      const handleClearDesignChanges = useCallback(() => {
+        setDesignCommand({ seq: Date.now(), kind: 'clear' });
+        reduceCurrentDesignChanges({ type: 'clear' });
+        setSelectedDesignElement(null);
+      }, [reduceCurrentDesignChanges]);
+      const visualPosterSceneActive = shouldUseVisualPosterScene(pinvouMode, designSubtab);
+      const documentWritingSceneActive = shouldUseDocumentWritingScene(pinvouMode, workSubtab);
+      const dataVisualizationSceneActive = shouldUseDataVisualizationScene(pinvouMode, designSubtab);
+      const activeScene = pinvouMode === 'work'
+        ? WORK_MODE_SUBTABS.find(item => item.key === workSubtab)
+        : pinvouMode === 'design'
+          ? DESIGN_MODE_SUBTABS.find(item => item.key === designSubtab)
+          : null;
+      const composerPlaceholder = pinvouMode === 'design'
+        ? selectedDesignElement
+          ? '描述你想怎么调整选中的元素'
+          : dataVisualizationSceneActive
+            ? '粘贴数据或描述指标，生成可视化看板'
+          : visualPosterSceneActive
+            ? '描述你想生成或调整的视觉海报'
+            : '描述你想怎么调整选中的元素'
+        : pinvouMode === 'work'
+          ? documentWritingSceneActive
+            ? '描述公文主题、文种、收发单位和关键要求'
+            : t.placeholder
+        : t.placeholder;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
@@ -557,11 +903,48 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const welcomeSessionKeyRef = useRef(null);
-      const activeSessionId = bs ? bs.activeSessionId : null;
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       useEffect(() => {
+        if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
+          updateDesignAiState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
+          if (typeof window !== 'undefined') window.__PINVOU_DESIGN_AI_STATE__ = null;
+        }
+        designAiSessionRef.current = activeSessionId || null;
+      }, [activeSessionId, updateDesignAiState]);
+      useEffect(() => {
+        if (!artifactsFullscreen || typeof window === 'undefined') return;
+        const saved = window.__PINVOU_DESIGN_AI_STATE__;
+        if (!saved || (!saved.text && !saved.lastPrompt && saved.status === 'idle')) return;
+        if (!designAiState.text && !designAiState.lastPrompt && designAiState.status === 'idle') {
+          setDesignAiState(saved);
+        }
+      }, [artifactsFullscreen, designAiState.text, designAiState.lastPrompt, designAiState.status]);
+      useEffect(() => {
         if (!activeSessionId) setArtifactsOpen(false);
+        if (!activeSessionId) setArtifactsFullscreen(false);
       }, [activeSessionId]);
+      useEffect(() => {
+        if (!artifactsVisible) setArtifactsFullscreen(false);
+      }, [artifactsVisible]);
+      const closeArtifactsPanel = useCallback(() => {
+        setArtifactsFullscreen(false);
+        setArtifactsOpen(false);
+      }, []);
+      const handlePreviewArtifact = useCallback((artifact) => {
+        setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
+      }, []);
+      const openArtifactsPreview = useCallback(() => {
+        if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
+        setArtifactsOpen(true);
+      }, [latestArtifact]);
+      useEffect(() => {
+        const previousCount = previousArtifactCountRef.current;
+        previousArtifactCountRef.current = artifactCount;
+        if (pinvouMode !== 'design') return;
+        if (artifactCount <= previousCount || !latestArtifact || !latestArtifact.path) return;
+        setActiveArtifactPath(latestArtifact.path);
+        setArtifactsOpen(true);
+      }, [artifactCount, latestArtifact, pinvouMode]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
       // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
       // 从设置、工具商店等页面返回时 ChatView 会重新挂载，初始 state 也从
@@ -583,8 +966,72 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         item && item.type === 'user' && !!item.deliveryState
       ));
       const canSend = !firstTurnPending && (hasDraftText || hasReadyAttachment);
-      const canFloatingSend = canSend && !voiceActive;
+      const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
+      const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
+      const sendChatMessage = useCallback(async (text) => {
+        if (!bridge.available) return false;
+        const outgoing = String(text || '').trim();
+        let meta;
+        if (outgoing) {
+          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(outgoing);
+          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(outgoing);
+          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(outgoing);
+        }
+        const requirements = requiredCapabilitiesForMeta(meta);
+        if (requirements) {
+          if (!canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
+            setSceneCapabilityStatus(null);
+          } else {
+            setSceneCapabilityStatus({ kind: 'preparing', text: requirements.preparingText });
+            try {
+              const prepared = await prepareSceneCapabilities(meta, invokeTauri);
+              if (!prepared.ok) throw new Error(prepared.error || requirements.failureText);
+              if (prepared.installed) {
+                setSceneCapabilityStatus({ kind: 'ready', text: requirements.readyText });
+                window.setTimeout(() => setSceneCapabilityStatus((current) => (
+                  current && current.kind === 'ready' ? null : current
+                )), 1800);
+              } else {
+                setSceneCapabilityStatus(null);
+              }
+            } catch (error) {
+              const message = error && error.message ? error.message : String(error || '');
+              setSceneCapabilityStatus({
+                kind: 'error',
+                text: message ? `${requirements.failureText} ${message}` : requirements.failureText,
+              });
+              return false;
+            }
+          }
+        } else {
+          setSceneCapabilityStatus(null);
+        }
+        if (!activeSessionId) {
+          pendingModeScopeMigrationRef.current = {
+            text: outgoing,
+            state: pinvouModeStateRef.current,
+          };
+        }
+        try {
+          await bridge.chat.sendMessage(outgoing, meta);
+        } catch (error) {
+          pendingModeScopeMigrationRef.current = null;
+          throw error;
+        }
+        return true;
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, visualPosterSceneActive]);
+      const handleDesignAiSubmit = useCallback((text) => {
+        const raw = String(text || '').trim();
+        if (!raw) return;
+        const elementLabel = selectedDesignElement
+          ? `${selectedDesignElement.tagName || '元素'}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
+          : '';
+        const scopedText = selectedDesignElement
+          ? `请针对当前选中的 ${elementLabel || '元素'} 调整：${raw}`
+          : raw;
+        sendChatMessage(scopedText);
+      }, [selectedDesignElement, sendChatMessage]);
       const [deviceMode, setDeviceMode] = useState(() => {
         const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
         const h = typeof window !== 'undefined' ? window.innerHeight : 900;
@@ -703,7 +1150,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
         : '';
 
-      function handleSend() {
+      async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (!canSend) return;
         const constrained = constrainChatInput(inputText);
@@ -711,8 +1158,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           setInputText(constrained.text);
           return;
         }
-        if (bridge.available) bridge.chat.sendMessage(constrained.text.trim());
-        setInputText('');
+        const accepted = await sendChatMessage(constrained.text);
+        if (accepted) setInputText('');
       }
 
       function handleKeyDown(e) {
@@ -865,7 +1312,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               {activeSessionId && (
                 <button
                   data-testid="chat-artifacts-entry"
-                  onClick={() => setArtifactsOpen(true)}
+                  onClick={openArtifactsPreview}
                   className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
                   <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
                   {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
@@ -900,7 +1347,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   t={t}
                   onSend={(q) => {
                     setWelcomeToolId(null);
-                    if (bridge.available) bridge.chat.sendMessage(q);
+                    sendChatMessage(q);
                   }}
                 />
               </div>
@@ -940,7 +1387,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                           theme={theme}
                           t={t}
                           onPrefill={(text) => setInputText(text)}
-                          onSend={(text) => { if (bridge.available) bridge.chat.sendMessage(text); }}
+                          onSend={sendChatMessage}
                           onOpenEditor={onOpenEditor}
                           isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
                           allowScheduledTaskDraft={isScheduledTaskCreationChat}
@@ -963,7 +1410,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         theme={theme}
                         t={t}
                         onPrefill={(text) => setInputText(text)}
-                        onSend={(text) => { if (bridge.available) bridge.chat.sendMessage(text); }}
+                        onSend={sendChatMessage}
                         editable={!busy && item.id === lastUserId}
                         onOpenEditor={onOpenEditor}
                         isLatestArtifact={latestArtifactIds.has(item.id)}
@@ -1009,7 +1456,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={(txt) => { if (bridge.available) bridge.chat.sendMessage(txt); }} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
@@ -1062,15 +1509,36 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           {/* Floating Input Area */}
           <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
-            {!activeSessionId && !scheduledRunContext && (
-              <HomeModeSwitcher
-                mode="work"
-                codeSupported={codeModeAvailable}
-                isDark={isDark}
-                onChange={onSwitchHomeMode}
-                copy={t.uiHomeMode}
-              />
-            )}
+              {!scheduledRunContext && !conversationStarted && (
+                <HomeModeSwitcher
+                  mode={pinvouMode}
+                  codeSupported={codeModeAvailable}
+                  isDark={isDark}
+                  onChange={handleHomeModeChange}
+                  copy={t.uiHomeMode}
+                />
+              )}
+              {pinvouMode === 'work' && !conversationStarted && (
+                <SubModePicker
+                  isDark={isDark}
+                  value={workSubtab}
+                  onChange={handleWorkSubtabChange}
+                  items={WORK_MODE_SUBTABS}
+                  testId="work-subtab-picker"
+                />
+              )}
+              {pinvouMode === 'design' && !conversationStarted && (
+                <SubModePicker
+                  isDark={isDark}
+                  value={designSubtab}
+                  onChange={handleDesignSubtabChange}
+                  items={DESIGN_MODE_SUBTABS}
+                  testId="design-subtab-picker"
+                />
+              )}
+              {!scheduledRunContext && conversationStarted && (
+                <SceneModeTag isDark={isDark} scene={activeScene} />
+              )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -1190,6 +1658,27 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               );
             })()}
             <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              {sceneCapabilityStatus && (
+                <div
+                  data-testid="scene-capability-status"
+                  className={`mb-2 flex items-center gap-2 rounded-2xl px-3 py-2 text-[13px] ${
+                    sceneCapabilityStatus.kind === 'error'
+                      ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
+                      : sceneCapabilityStatus.kind === 'ready'
+                        ? (isDark ? 'bg-[#10281D] text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]')
+                        : (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+                  }`}
+                >
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${
+                    sceneCapabilityStatus.kind === 'error'
+                      ? 'bg-[#EA4335]'
+                      : sceneCapabilityStatus.kind === 'ready'
+                        ? 'bg-[#34A853]'
+                        : 'bg-[#1A73E8] animate-pulse'
+                  }`} />
+                  <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
+                </div>
+              )}
               <ConversationActivityIndicator
                 turn={activeConversationTurn}
                 now={conversationNow}
@@ -1205,7 +1694,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 maxLength={CHAT_INPUT_MAX_LENGTH}
-                placeholder={t.placeholder}
+                placeholder={composerPlaceholder}
                 rows={1}
                 className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
@@ -1250,7 +1739,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
-                  const ready = canSend;
+                  const ready = canSend && !sceneCapabilityPreparing;
                   return (
                     <button onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
                       className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
@@ -1275,16 +1764,104 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           </div>
           </div>{/* /对话列 */}
 
-          {artifactsVisible && isWide && (
+          {artifactsVisible && artifactsFullscreen && createPortal(
+            <div
+              ref={artColRef}
+              className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"
+              style={{ top: can('desktopChrome') ? '36px' : 0 }}
+              data-testid="artifact-fullscreen-panel">
+              <ArtifactsPanel
+                bs={bs}
+                theme={theme}
+                t={t}
+                onClose={closeArtifactsPanel}
+                isWide={true}
+                isFullscreen={true}
+                onToggleFullscreen={() => setArtifactsFullscreen(false)}
+                preferredArtifactPath={activeArtifactPath}
+                onPreviewArtifact={handlePreviewArtifact}
+                onGotoSettings={onGotoSettings}
+                designMode={pinvouMode === 'design'}
+                designCommand={designCommand}
+                selectedDesignElement={selectedDesignElement}
+                designChanges={visibleDesignChanges}
+                onDesignRuntimeStatus={handleDesignRuntimeStatus}
+                onDesignElementSelected={handleDesignElementSelected}
+                onDesignChangeApplied={handleDesignChangeApplied}
+                onDesignMutation={handleDesignMutation}
+                onDesignApplyChange={handleApplyDesignChange}
+                onDesignClearChanges={handleClearDesignChanges}
+                onDesignAiSubmit={handleDesignAiSubmit}
+                designAiState={designAiState}
+                onDesignAiStateChange={updateDesignAiState}
+              />
+            </div>,
+            document.body
+          )}
+
+          {artifactsVisible && isWide && !artifactsFullscreen && (
             <>
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
-              <div ref={artColRef} className="shrink-0 h-full relative" style={{ width: artifactW + 'px' }}>
-                <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={true} onGotoSettings={onGotoSettings} />
+              <div
+                ref={artColRef}
+                className="shrink-0 h-full relative"
+                style={{ width: artifactW + 'px' }}>
+                <ArtifactsPanel
+                  bs={bs}
+                  theme={theme}
+                  t={t}
+                  onClose={closeArtifactsPanel}
+                  isWide={true}
+                  isFullscreen={false}
+                  onToggleFullscreen={() => setArtifactsFullscreen(true)}
+                  preferredArtifactPath={activeArtifactPath}
+                  onPreviewArtifact={handlePreviewArtifact}
+                  onGotoSettings={onGotoSettings}
+                  designMode={pinvouMode === 'design'}
+                  designCommand={designCommand}
+                  selectedDesignElement={selectedDesignElement}
+                  designChanges={visibleDesignChanges}
+                  onDesignRuntimeStatus={handleDesignRuntimeStatus}
+                  onDesignElementSelected={handleDesignElementSelected}
+                  onDesignChangeApplied={handleDesignChangeApplied}
+                  onDesignMutation={handleDesignMutation}
+                  onDesignApplyChange={handleApplyDesignChange}
+                  onDesignClearChanges={handleClearDesignChanges}
+                  onDesignAiSubmit={handleDesignAiSubmit}
+                  designAiState={designAiState}
+                  onDesignAiStateChange={updateDesignAiState}
+                />
               </div>
             </>
           )}
-          {artifactsVisible && !isWide && <ArtifactsPanel bs={bs} theme={theme} t={t} onClose={() => setArtifactsOpen(false)} isWide={false} onGotoSettings={onGotoSettings} />}
+          {artifactsVisible && !isWide && !artifactsFullscreen && (
+            <ArtifactsPanel
+              bs={bs}
+              theme={theme}
+              t={t}
+              onClose={closeArtifactsPanel}
+              isWide={false}
+              isFullscreen={false}
+              onToggleFullscreen={() => setArtifactsFullscreen(true)}
+              preferredArtifactPath={activeArtifactPath}
+              onPreviewArtifact={handlePreviewArtifact}
+              onGotoSettings={onGotoSettings}
+              designMode={pinvouMode === 'design'}
+              designCommand={designCommand}
+              selectedDesignElement={selectedDesignElement}
+              designChanges={visibleDesignChanges}
+              onDesignRuntimeStatus={handleDesignRuntimeStatus}
+              onDesignElementSelected={handleDesignElementSelected}
+              onDesignChangeApplied={handleDesignChangeApplied}
+              onDesignMutation={handleDesignMutation}
+              onDesignApplyChange={handleApplyDesignChange}
+              onDesignClearChanges={handleClearDesignChanges}
+              onDesignAiSubmit={handleDesignAiSubmit}
+              designAiState={designAiState}
+              onDesignAiStateChange={updateDesignAiState}
+            />
+          )}
         </div>
       );
     };
