@@ -722,9 +722,7 @@ impl Pinvou3Bridge {
         let preset_is_local = match self.effective_model() {
             Some(model) => model.preset == ModelPreset::LocalVllm,
             // 无有效模型(配置损坏):按全局 preset 判定。
-            None => {
-                self.prefs.advanced.model_preset.unwrap_or_default() == ModelPreset::LocalVllm
-            }
+            None => self.prefs.advanced.model_preset.unwrap_or_default() == ModelPreset::LocalVllm,
         };
         preset_is_local || base_url_uses_loopback(&self.base_url())
     }
@@ -1728,7 +1726,10 @@ mod tests {
             .expect("explicit vision model must resolve");
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.api_key.as_deref(), Some("sk-vision"));
-        assert_eq!(config.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
 
         let engine = bridge.build_engine_config();
         assert!(engine.vision_config.is_some());
@@ -1762,7 +1763,8 @@ mod tests {
     /// 复用主模型作为 workspace 图片分析工具(保留旧的复用行为,但仅限 Supported)。
     #[test]
     fn vision_config_reuses_main_model_only_when_supported() {
-        let (_lock, _env) = locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
+        let (_lock, _env) =
+            locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
         std::env::remove_var("DEEPSEEK_API_KEY");
         std::env::remove_var("DEEPSEEK_MODEL");
         std::env::remove_var("DEEPSEEK_BASE_URL");
@@ -1780,7 +1782,10 @@ mod tests {
             .expect("supported main model must be reused as vision tool");
         assert_eq!(config.model, "gpt-5.6-terra");
         assert_eq!(config.api_key.as_deref(), Some("sk-main"));
-        assert_eq!(config.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
         assert!(bridge
             .build_engine_config()
             .features
@@ -1891,7 +1896,10 @@ mod tests {
         );
         push_vision_model(&mut fallback, "vision-1", "gpt-4o", "sk-vision");
         fallback.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
-        assert_eq!(fallback.image_input_mode(), ImageInputMode::VisionToolFallback);
+        assert_eq!(
+            fallback.image_input_mode(),
+            ImageInputMode::VisionToolFallback
+        );
 
         // override Enabled 的未知本地模型 → Native。
         let mut forced = fixture_bridge();
@@ -1919,7 +1927,10 @@ mod tests {
             prefs::ImageCapabilityOverride::Disabled;
         push_vision_model(&mut disabled, "vision-2", "gpt-4o", "sk-vision");
         disabled.prefs.advanced.saved_models[0].vision_model_id = Some("vision-2".to_string());
-        assert_eq!(disabled.image_input_mode(), ImageInputMode::VisionToolFallback);
+        assert_eq!(
+            disabled.image_input_mode(),
+            ImageInputMode::VisionToolFallback
+        );
     }
 
     /// Native(阶段 D):`<system-reminder>` 必须并进结构化 Text block,

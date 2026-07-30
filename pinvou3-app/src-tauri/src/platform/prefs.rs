@@ -1330,7 +1330,10 @@ mod tests {
         overridden.vision_model_id = Some("vision-1".into());
         let json = serde_json::to_string(&overridden).unwrap();
         let back: SavedModel = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.image_capability_override, ImageCapabilityOverride::Enabled);
+        assert_eq!(
+            back.image_capability_override,
+            ImageCapabilityOverride::Enabled
+        );
         assert_eq!(back.vision_model_id.as_deref(), Some("vision-1"));
 
         let json = serde_json::to_string(&model).unwrap();

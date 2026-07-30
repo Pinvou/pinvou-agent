@@ -859,7 +859,9 @@ fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTest
     let raw_lower = raw.to_lowercase();
     let summary = if err.is_timeout() {
         format!("连接超时，请检查网络或服务是否启动: {raw}")
-    } else if raw_lower.contains("certificate") || raw_lower.contains("tls") || raw_lower.contains("ssl")
+    } else if raw_lower.contains("certificate")
+        || raw_lower.contains("tls")
+        || raw_lower.contains("ssl")
     {
         format!("安全证书校验失败，请检查代理或网络环境: {raw}")
     } else if raw_lower.contains("dns")
@@ -1087,7 +1089,10 @@ mod tests {
     #[test]
     fn image_capability_payload_omits_temperature_and_embeds_data_url() {
         let payload = image_capability_test_payload("kimi-for-coding");
-        assert_eq!(payload.get("model").and_then(|m| m.as_str()), Some("kimi-for-coding"));
+        assert_eq!(
+            payload.get("model").and_then(|m| m.as_str()),
+            Some("kimi-for-coding")
+        );
         // kimi-for-coding 等模型只接受默认 temperature,显式传会 400。
         assert!(payload.get("temperature").is_none());
         assert_eq!(
@@ -1131,9 +1136,8 @@ mod tests {
             let len = u32::from_be_bytes(png[pos..pos + 4].try_into().unwrap()) as usize;
             let kind = &png[pos + 4..pos + 8];
             let data = &png[pos + 8..pos + 8 + len];
-            let crc_stored = u32::from_be_bytes(
-                png[pos + 8 + len..pos + 12 + len].try_into().unwrap(),
-            );
+            let crc_stored =
+                u32::from_be_bytes(png[pos + 8 + len..pos + 12 + len].try_into().unwrap());
             let mut crc = flate2::Crc::new();
             crc.update(&png[pos + 4..pos + 8 + len]);
             assert_eq!(
@@ -1167,7 +1171,10 @@ mod tests {
         assert_eq!(raw.len(), stride * 64, "inflated size");
         for row in raw.chunks(stride) {
             assert_eq!(row[0], 0, "filter byte");
-            assert!(row[1..].chunks_exact(3).all(|p| p == [255, 0, 0]), "solid red");
+            assert!(
+                row[1..].chunks_exact(3).all(|p| p == [255, 0, 0]),
+                "solid red"
+            );
         }
     }
 

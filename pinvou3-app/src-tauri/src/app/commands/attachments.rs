@@ -491,16 +491,20 @@ pub(super) fn prepare_native_user_message_in_dir(
         if a.kind == "image" {
             // 暂存复用现有校验链(basename 白名单/symlink 防逃逸/create_new 防覆盖);
             // LocalImage 的 relative_path 只来自暂存结果,不接受前端直给路径(设计 §11)。
-            let relative = stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
-                .ok_or_else(|| {
-                    format!(
-                        "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
-                        a.basename
-                    )
-                })?;
+            let relative =
+                stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+                    .ok_or_else(|| {
+                        format!(
+                            "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
+                            a.basename
+                        )
+                    })?;
             let ext = a.basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
             let mime_type = crate::features::files::file_ingest::image_mime(ext).to_string();
-            segment.push_str(&format!("### {} (image, {} bytes)\n", a.basename, a.byte_size));
+            segment.push_str(&format!(
+                "### {} (image, {} bytes)\n",
+                a.basename, a.byte_size
+            ));
             segment.push_str("🖼 图片内容已随本消息原生提供,你可以直接看到。\n\n");
             image_blocks.push(deepseek_tui::core::ops::UserInputBlock::LocalImage {
                 relative_path: std::path::PathBuf::from(&relative),

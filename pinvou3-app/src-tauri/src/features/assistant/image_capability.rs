@@ -72,14 +72,20 @@ impl ImageInputMode {
 const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // OpenAI 多模态世代。OpenaiCompatible preset 默认模型 `gpt-5.6-terra`
     // (prefs.rs `default_model`)即 gpt-5 族。
-    "gpt-4o", "gpt-4.1", "gpt-5",
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
     // Anthropic Claude 3/4 全系视觉输入。
-    "claude-3", "claude-4",
+    "claude-3",
+    "claude-4",
     // Google Gemini 全系多模态。
     "gemini",
     // 阿里 Qwen VL 系列(qwen-vl / qwen2-vl / qwen2.5-vl / qwen3-vl)。
     // 裸 qwen 名(qwen3.7-plus 等文本模型)不收——见设计 §7.2。
-    "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
+    "qwen-vl",
+    "qwen2-vl",
+    "qwen2.5-vl",
+    "qwen3-vl",
     // 智谱 GLM-4V 视觉系列;glm-5.x 未经验证不收。
     "glm-4v",
     // Kimi for Coding(Moonshot 编程计划模型):用户实测可原生识图(2026-07)。
@@ -108,7 +114,10 @@ fn catalog_declares_image_input(model: &str) -> bool {
         return false;
     }
     deepseek_tui::model_catalog::resolved_entry(normalized).is_some_and(|entry| {
-        entry.modalities.iter().any(|m| m.eq_ignore_ascii_case("image"))
+        entry
+            .modalities
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case("image"))
     })
 }
 
@@ -365,7 +374,10 @@ mod tests {
         assert_eq!(image_input_mode(C::Supported, true), M::Native);
         assert_eq!(image_input_mode(C::Supported, false), M::Native);
         // Unsupported:有视觉模型 → 工具兜底;无 → 拒绝。
-        assert_eq!(image_input_mode(C::Unsupported, true), M::VisionToolFallback);
+        assert_eq!(
+            image_input_mode(C::Unsupported, true),
+            M::VisionToolFallback
+        );
         assert_eq!(image_input_mode(C::Unsupported, false), M::Unsupported);
         // Unknown:有视觉模型 → 工具兜底;无 → 拒绝(提示用户确认能力)。
         assert_eq!(image_input_mode(C::Unknown, true), M::VisionToolFallback);

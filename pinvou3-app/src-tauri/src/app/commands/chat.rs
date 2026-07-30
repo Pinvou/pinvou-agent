@@ -134,7 +134,10 @@ pub(crate) async fn chat_with_reservation(
             .fresh_bridge_for(&sid)
             .await
             .map_err(|error| format!("resolve image input route for {sid}: {error:#}"))?;
-        (bridge.image_input_mode(), bridge.effective_image_capability())
+        (
+            bridge.image_input_mode(),
+            bridge.effective_image_capability(),
+        )
     } else if has_images {
         (
             ImageInputMode::VisionToolFallback,
@@ -147,7 +150,10 @@ pub(crate) async fn chat_with_reservation(
         // 不创建 Engine turn:early return 时 reservation 随 Drop 自动释放
         // (TurnReservation::drop → on_reservation_failed 归还 turn slot),
         // 稳定错误码经 invoke Err 回传前端匹配展示。
-        log::info!("[pinvou3][chat] image input rejected sid={} (capability={capability:?})", sid);
+        log::info!(
+            "[pinvou3][chat] image input rejected sid={} (capability={capability:?})",
+            sid
+        );
         return Err(match capability {
             EffectiveImageCapability::Unknown => IMAGE_INPUT_UNKNOWN_ERROR.to_string(),
             _ => IMAGE_INPUT_UNSUPPORTED_ERROR.to_string(),

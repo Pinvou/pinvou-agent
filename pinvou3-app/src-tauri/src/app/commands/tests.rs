@@ -1372,7 +1372,11 @@ fn image_attachment_stages_and_guides_image_analyze() {
 
 // ── Native 图片输入(设计 §9.2,阶段 D)─────────────────────────────────
 
-fn mk_image_attachment(basename: &str, path: &Path, byte_size: u64) -> crate::features::files::file_ingest::IngestResult {
+fn mk_image_attachment(
+    basename: &str,
+    path: &Path,
+    byte_size: u64,
+) -> crate::features::files::file_ingest::IngestResult {
     crate::features::files::file_ingest::IngestResult {
         kind: "image".into(),
         basename: basename.into(),
@@ -1425,7 +1429,8 @@ fn native_image_message_builds_structured_blocks_in_order() {
         "图片的 workspace 外绝对路径不得进模型消息(设计 §10.1)"
     );
     assert!(
-        text_segment.contains("### a.png (image, 15 bytes)") && text_segment.contains("### b.jpg (image, 11 bytes)"),
+        text_segment.contains("### a.png (image, 15 bytes)")
+            && text_segment.contains("### b.jpg (image, 11 bytes)"),
         "附件清单应保留图片条目"
     );
     assert!(
@@ -1542,8 +1547,9 @@ fn native_image_message_stage_failure_is_error_not_silent_text() {
 fn native_prepare_text_only_and_non_image_regression() {
     let ws = mk_test_ws("native-regression");
 
-    let text_only = prepare_native_user_message_in_dir("你好".to_string(), Vec::new(), &ws, "attachments")
-        .expect("纯文本");
+    let text_only =
+        prepare_native_user_message_in_dir("你好".to_string(), Vec::new(), &ws, "attachments")
+            .expect("纯文本");
     assert_eq!(text_only.text_segment(), "你好");
     assert_eq!(text_only.display_text, "你好");
     assert_eq!(text_only.input_blocks.len(), 1);

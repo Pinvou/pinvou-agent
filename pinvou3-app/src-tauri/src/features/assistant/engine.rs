@@ -484,10 +484,7 @@ impl TurnLifecycle {
                     .content
                     .iter()
                     .filter(|block| {
-                        matches!(
-                            block,
-                            deepseek_tui::models::ContentBlock::LocalImage { .. }
-                        )
+                        matches!(block, deepseek_tui::models::ContentBlock::LocalImage { .. })
                     })
                     .cloned(),
             );
@@ -953,9 +950,13 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
-        let op =
-            self.bridge
-                .build_send_message_op(content, mode, persona_reminder, restrict_tools, None)?;
+        let op = self.bridge.build_send_message_op(
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            None,
+        )?;
         self.send_turn_op(op).await
     }
 
@@ -3080,7 +3081,9 @@ mod turn_lifecycle_tests {
             )
             .expect("display transcript");
         reservation
-            .prepare_actual_user_content("<system-reminder>r</system-reminder>\n\n看看这张图".to_string())
+            .prepare_actual_user_content(
+                "<system-reminder>r</system-reminder>\n\n看看这张图".to_string(),
+            )
             .expect("actual prompt");
 
         let mut engine_message = engine_user("<system-reminder>r</system-reminder>\n\n看看这张图");
