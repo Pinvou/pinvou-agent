@@ -16,8 +16,20 @@ function Invoke-Git {
     [string]$FailureMessage
   )
 
-  $output = & git -C $WorkingDirectory @Arguments 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $output = @()
+  $exitCode = 1
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # Windows PowerShell 5.1 can turn normal native stderr progress into a
+    # terminating NativeCommandError while ErrorActionPreference is Stop.
+    $ErrorActionPreference = "Continue"
+    $output = @(& git -C $WorkingDirectory @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+
+  if ($exitCode -ne 0) {
     throw "$FailureMessage $($output -join ' ')"
   }
   return @($output)
