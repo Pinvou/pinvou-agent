@@ -717,7 +717,7 @@ function workspaceDisplayName(path) {
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
         taskKind: 'codex',
-        leadingIcon: <AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]" title={session.agent_name || 'ACP Agent'} />,
+        leadingIcon: <AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]" title={session.agent_name || t.acpAgent} />,
         testId: 'codex-sidebar-item',
         menuTestId: 'codex-sidebar-menu',
         codexSession: session,

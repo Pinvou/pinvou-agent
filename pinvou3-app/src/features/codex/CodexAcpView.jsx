@@ -390,7 +390,7 @@ function PlanBlock({ plan }) {
   );
 }
 
-function PermissionCard({ permission, pending, onRespond, responding }) {
+function PermissionCard({ permission, pending, onRespond, responding, agentName }) {
   const request = permission.request || {};
   const tool = request.toolCall || {};
   const options = request.options || [];
@@ -400,7 +400,7 @@ function PermissionCard({ permission, pending, onRespond, responding }) {
       <div className="flex items-start gap-3">
         <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Codex 请求权限</div>
+          <div className="text-[13px] font-semibold">{agentName} 请求权限</div>
           <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || '执行受保护操作'}</div>
           {tool.rawInput && tool.rawInput.command
             ? <TerminalBlock label="命令" text={String(tool.rawInput.command)} />
@@ -516,6 +516,7 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy }) 
 function TurnItem({
   item,
   now,
+  agentName,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -530,7 +531,7 @@ function TurnItem({
     return (
       <PermissionCard permission={item.permission}
         pending={pendingByTool[item.permission.toolCallId]}
-        onRespond={onRespond} responding={responding} />
+        onRespond={onRespond} responding={responding} agentName={agentName} />
     );
   }
   if (item.type === 'elicitation') {
@@ -600,6 +601,7 @@ function Turn({
           )}
           {turn.presentation.map((item, index) => (
             <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
+              agentName={agentName}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
@@ -616,6 +618,10 @@ function Turn({
       </div>
     </section>
   );
+}
+
+function setupHintText(copy, hint) {
+  return copy.setupHints?.[hint] || '';
 }
 
 function RuntimeNotice({
@@ -646,7 +652,7 @@ function RuntimeNotice({
         <AlertTriangle size={19} className="text-red-500 shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{isCodex ? copy.bridgeUnavailable : copy.setupRequired}</div>
-          <div className="mt-1 text-[12px] text-gray-500">{status.setup_hint || copy.bridgeRepair}</div>
+          <div className="mt-1 text-[12px] text-gray-500">{setupHintText(copy, status.setup_hint) || copy.bridgeRepair}</div>
           {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {!isCodex && (
@@ -694,7 +700,7 @@ function RuntimeNotice({
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{isCodex ? copy.codexMissing : copy.setupRequired}</div>
           <div className="text-[12px] text-gray-500">
-            {isCodex ? copy.managedAvailable(status.managed_codex_version) : status.setup_hint}
+            {isCodex ? copy.managedAvailable(status.managed_codex_version) : setupHintText(copy, status.setup_hint)}
           </div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
@@ -718,7 +724,7 @@ function RuntimeNotice({
       : copy.notLoggedIn;
     const loginHint = copy.agentLoginHint
       ? copy.agentLoginHint(agentName)
-      : (status.setup_hint || copy.loginHint);
+      : (setupHintText(copy, status.setup_hint) || copy.loginHint);
     return (
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-start gap-3">
         <Sparkles size={19} className="text-amber-500 shrink-0" />
@@ -749,6 +755,7 @@ function RuntimeNotice({
                 value={authorizationCode}
                 onChange={event => setAuthorizationCode(event.target.value)}
                 placeholder={copy.authorizationCodePlaceholder}
+                aria-label={copy.authorizationCodePlaceholder}
                 autoComplete="off"
                 className="min-w-0 flex-1 rounded-lg border border-amber-500/25 bg-white/80 px-2.5 py-1.5 text-[12px] outline-none focus:border-amber-500 dark:bg-black/20"
               />
@@ -1590,7 +1597,7 @@ export function CodexAcpView({
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
                 <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><AcpAgentLogo agentId={activeAgentId} className="h-8 w-8" title={activeAgentName} /></div>
                 <div className="mt-5 text-[20px] font-semibold">
-                  {codexCopy.welcomeTitle.replace('Codex', activeAgentName)}
+                  {codexCopy.welcomeTitle}
                 </div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
@@ -1625,7 +1632,7 @@ export function CodexAcpView({
                           />
                         )
                       : undefined}
-                    agentLabel="Codex"
+                    agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_external_url', { url }).catch(showError)}
                   />
                 )
@@ -1790,7 +1797,7 @@ export function CodexAcpView({
                     if (!sessionSyncing) send();
                   }
                 }}
-                placeholder={codexCopy.placeholder.replace('Codex', activeAgentName)}
+                placeholder={codexCopy.placeholder}
                 rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
               <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
                 <div className="flex min-w-0 items-center gap-2 text-[10px] text-gray-400">
@@ -1873,8 +1880,8 @@ export function CodexAcpView({
                       }`} />
                       <span className="hidden min-w-0 truncate sm:inline">
                         {activeStatus?.installed && activeStatus?.authenticated
-                          ? `${activeAgentName} ${visibleServiceFailure ? codexCopy.serviceAbnormal : codexCopy.connected.replace('Codex', '').trim()}`
-                          : `${activeAgentName} ${codexCopy.notReady.replace('Codex', '').trim()}`}
+                          ? `${activeAgentName} ${visibleServiceFailure ? codexCopy.serviceAbnormal : codexCopy.connectedSuffix}`
+                          : `${activeAgentName} ${codexCopy.notReadySuffix}`}
                       </span>
                       <ChevronDown size={11} className="shrink-0" />
                     </button>
