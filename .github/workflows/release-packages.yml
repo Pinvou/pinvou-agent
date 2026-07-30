@@ -3,9 +3,9 @@ name: release-packages
 # VERSION 或发布链路变更时自动构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
 #
 # 触发条件:
-# - push main 且根目录 VERSION 文件被修改(paths 限定);
-# - 影响版本/打包链路的 PR:有私有凭据时构建四类产物,无凭据时运行 Windows 静态契约;
-# - push 事件按 github.event.before..github.sha 做精确版本号 diff;
+# - push main 且 VERSION 或发布链路文件被修改(paths 限定);
+# - 影响版本/打包链路的 PR:构建公开平台产物并运行无私有凭据的 Windows 静态契约;
+# - push 事件按 github.event.before..github.sha 做精确发布链路 diff;
 # - workflow_dispatch 手动触发:跳过 diff,无条件全量构建(用于补打/重打某版本)。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
@@ -20,19 +20,46 @@ name: release-packages
 #
 # 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
 # (signingIdentity="-",用户首次安装需 xattr -dr com.apple.quarantine)。
-# Windows 正式发布依赖只读 PINVOU3_WINDOWS_RUNTIME_TOKEN；PR 不向 fork 暴露该凭据。
+# Windows 正式发布依赖受保护的 windows-release Environment 及其只读
+# PINVOU3_WINDOWS_RUNTIME_TOKEN；任何 PR job 都不引用该凭据。
 
 on:
   push:
     branches: [main]
     paths:
       - 'VERSION'
+      - 'scripts/sync-version.mjs'
+      - '.github/workflows/release-packages.yml'
+      - '.gitmodules'
+      - 'private-runtimes/windows'
+      - 'pinvou3-app/package.json'
+      - 'pinvou3-app/package-lock.json'
+      - 'pinvou3-app/scripts/tauri/build.js'
+      - 'pinvou3-app/scripts/tauri/codex-bridge.js'
+      - 'pinvou3-app/scripts/tauri/windows-installer.js'
+      - 'pinvou3-app/scripts/tauri/windows-runtime.js'
+      - 'pinvou3-app/src-tauri/config/platforms/windows/**'
+      - 'pinvou3-app/src-tauri/packaging/windows/**'
+      - 'pinvou3-app/tests/codex_acp_windows_*'
+      - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
   pull_request:
     branches: [main]
     paths:
       - 'VERSION'
       - 'scripts/sync-version.mjs'
       - '.github/workflows/release-packages.yml'
+      - '.gitmodules'
+      - 'private-runtimes/windows'
+      - 'pinvou3-app/package.json'
+      - 'pinvou3-app/package-lock.json'
+      - 'pinvou3-app/scripts/tauri/build.js'
+      - 'pinvou3-app/scripts/tauri/codex-bridge.js'
+      - 'pinvou3-app/scripts/tauri/windows-installer.js'
+      - 'pinvou3-app/scripts/tauri/windows-runtime.js'
+      - 'pinvou3-app/src-tauri/config/platforms/windows/**'
+      - 'pinvou3-app/src-tauri/packaging/windows/**'
+      - 'pinvou3-app/tests/codex_acp_windows_*'
+      - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
   workflow_dispatch:
 
 permissions:
@@ -44,17 +71,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ── Job 1: 版本号变更检测(gate,跑 ubuntu 快) ──────────────────────
-  # push 对比事件 before..sha 的 VERSION 内容,覆盖一次 push 含多个 commit 的情况。
+  # ── Job 1: 发布链路变更检测(gate,跑 ubuntu 快) ────────────────────
+  # push 对比事件 before..sha 的实际路径,覆盖一次 push 含多个 commit 的情况。
   # pull_request / workflow_dispatch 无条件放行,保证发布链路改动在合入前真实打包。
   # 首次 push 或 before commit 不可达时直接放行,宁可多构建也不漏构建。
   # 同时用 sync-version.mjs --check 校验三处版本文件与 VERSION 一致,不一致 fail。
   check-version-bump:
-    name: 检测版本号变更
+    name: 检测发布链路变更
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      version_bumped: ${{ steps.diff.outputs.bumped }}
+      build_required: ${{ steps.diff.outputs.build_required }}
       version: ${{ steps.diff.outputs.version }}
     steps:
       # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
@@ -75,7 +102,7 @@ jobs:
       - name: 校验各处版本文件与 VERSION 一致
         run: node scripts/sync-version.mjs --check
 
-      - name: 对比 VERSION
+      - name: 对比发布链路
         id: diff
         run: |
           set -euo pipefail
@@ -86,34 +113,36 @@ jobs:
           EVENT_NAME="${{ github.event_name }}"
           BEFORE="${{ github.event.before }}"
 
-          # PR 改动需要在合入前验证真实产物;手动触发用于补打/重打。
+          # PR 改动需要在合入前验证公开产物和静态契约;手动触发用于补打/重打。
           if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "✓ $EVENT_NAME 触发,无条件构建"
-            BUMPED=true
+            echo "✓ $EVENT_NAME 触发,无条件验证"
+            BUILD_REQUIRED=true
           # 首次 push 的 before 为全零;强推后 before commit 也可能不可达。
           elif [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "⚠️ before commit 不存在或不可达,视为版本 bump,放行"
-            BUMPED=true
+            echo "⚠️ before commit 不存在或不可达,放行构建"
+            BUILD_REQUIRED=true
           else
-            V_OLD=$(git show "${BEFORE}:VERSION" 2>/dev/null | tr -d '[:space:]' || echo "")
-            echo "push 前 VERSION: $V_OLD"
-            if [ "$V" != "$V_OLD" ]; then
-              echo "✓ VERSION 变化,触发全平台构建"
-              BUMPED=true
+            CHANGED_FILES=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+            echo "push 变更路径:"
+            printf '%s\n' "$CHANGED_FILES"
+            if printf '%s\n' "$CHANGED_FILES" | grep -Eq \
+              '^(VERSION|scripts/sync-version\.mjs|\.github/workflows/release-packages\.yml|\.gitmodules|private-runtimes/windows|pinvou3-app/(package(-lock)?\.json|scripts/tauri/(build|codex-bridge|windows-installer|windows-runtime)\.js|src-tauri/(config/platforms/windows|packaging/windows)/|tests/(codex_acp_windows_|windows_runtime_packaging_contract\.test\.js)))'; then
+              echo "✓ 发布链路变化,触发构建"
+              BUILD_REQUIRED=true
             else
-              echo "✗ VERSION 未变化(非版本字段改动),跳过"
-              BUMPED=false
+              echo "✗ 未检测到发布链路变化,跳过"
+              BUILD_REQUIRED=false
             fi
           fi
 
-          echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
+          echo "build_required=$BUILD_REQUIRED" >> "$GITHUB_OUTPUT"
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
   # ── Job 2: Linux x86_64 deb ─────────────────────────────────────────
   build-linux-x64:
     name: 构建 Linux x86_64 deb
     needs: check-version-bump
-    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    if: needs.check-version-bump.outputs.build_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -208,7 +237,7 @@ jobs:
   build-linux-arm64:
     name: 构建 Linux arm64 deb
     needs: check-version-bump
-    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    if: needs.check-version-bump.outputs.build_required == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     env:
@@ -305,13 +334,48 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 4: Windows x86_64 nsis(不签名,config/platforms/windows 无证书配置) ──
+  # ── Job 4: PR 的 Windows 静态验证(不接触私有凭据) ─────────────────
+  validate-windows-runtime-pr:
+    name: 验证 Windows 私有运行时契约
+    needs: check-version-bump
+    if: github.event_name == 'pull_request' && needs.check-version-bump.outputs.build_required == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout (不初始化私有 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      - name: 验证 Windows 打包契约
+        working-directory: pinvou3-app
+        run: |
+          npm run test:windows-runtime
+          npm run test:codex-acp-windows-runtime
+
+  # ── Job 5: Windows x86_64 nsis(仅受保护的非 PR 上下文) ────────────
   build-windows-x64:
     name: 构建 Windows x86_64 nsis
     needs: check-version-bump
-    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.build_required == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
+    environment:
+      name: windows-release
     defaults:
       run:
         # 统一用 Git Bash,sha256sum/通配符逻辑三平台一致。
@@ -326,22 +390,15 @@ jobs:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
         with:
-          # PR 无私有凭据时必须能够先完成静态契约验证；私有运行时由凭据
-          # gate 之后的初始化脚本按锁文件精确拉取。
+          # 私有运行时由初始化脚本按锁文件精确拉取。
           submodules: false
           token: ${{ secrets.PINVOU3_WINDOWS_RUNTIME_TOKEN || github.token }}
 
       - name: 检查 Windows 私有运行时凭据
-        id: runtime-access
         env:
           WINDOWS_RUNTIME_TOKEN: ${{ secrets.PINVOU3_WINDOWS_RUNTIME_TOKEN }}
         run: |
-          if [[ -n "$WINDOWS_RUNTIME_TOKEN" ]]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::PR 未获得 PINVOU3_WINDOWS_RUNTIME_TOKEN；仅验证 Windows 打包契约。"
-          else
+          if [[ -z "$WINDOWS_RUNTIME_TOKEN" ]]; then
             echo "::error::正式 Windows 发布缺少 PINVOU3_WINDOWS_RUNTIME_TOKEN，拒绝生成不完整发布。"
             exit 1
           fi
@@ -354,7 +411,7 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-windows-x64
-          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
+          # 该 job 只在 main 或受控手动构建中运行。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Node.js
@@ -368,26 +425,17 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      - name: 验证 Windows 私有运行时打包契约
-        if: steps.runtime-access.outputs.available != 'true'
-        working-directory: pinvou3-app
-        run: npm run test:windows-runtime
-
       - name: 初始化 Windows 私有运行时
-        if: steps.runtime-access.outputs.available == 'true'
         working-directory: pinvou3-app
         run: npm run runtime:windows:init
 
       - name: 初始化公共底座 submodule
-        if: steps.runtime-access.outputs.available == 'true'
         run: git submodule update --init --recursive -- CodeWhale
 
       - name: 同步版本号
-        if: steps.runtime-access.outputs.available == 'true'
         run: node scripts/sync-version.mjs
 
       - name: bge-m3 占位 (防御性保留)
-        if: steps.runtime-access.outputs.available == 'true'
         run: |
           d=pinvou3-app/src-tauri/resources/bge-m3
           mkdir -p "$d"
@@ -396,13 +444,11 @@ jobs:
           done
 
       - name: 构建 nsis
-        if: steps.runtime-access.outputs.available == 'true'
         working-directory: pinvou3-app
         run: npm run build:nsis
 
       # tauri nsis 产物默认名 pinvou3_<version>_x64-setup.exe,与目标命名一致。
       - name: 校验产物 + sha256
-        if: steps.runtime-access.outputs.available == 'true'
         working-directory: pinvou3-app/src-tauri/target/release/bundle/nsis
         run: |
           set -euo pipefail
@@ -414,7 +460,6 @@ jobs:
           ls -lh "$EXE"
 
       - name: 上传 nsis artifact
-        if: steps.runtime-access.outputs.available == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: pinvou3-windows-${{ needs.check-version-bump.outputs.version }}-x64
@@ -424,11 +469,11 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 5: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
+  # ── Job 6: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
   build-macos-universal:
     name: 构建 macOS universal dmg
     needs: check-version-bump
-    if: needs.check-version-bump.outputs.version_bumped == 'true'
+    if: needs.check-version-bump.outputs.build_required == 'true'
     runs-on: macos-15
     # 首次双 target + fat LTO 实跑约 48 分钟，50 分钟几乎无 runner 抖动余量。
     timeout-minutes: 90

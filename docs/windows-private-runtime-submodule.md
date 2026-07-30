@@ -80,10 +80,15 @@ LFS 对象，后者复用已验证、已展开的安装资源。每次构建都�
 主仓库 checkout 的 refspec、tag 获取和 shallow clone 由 Jenkins SCM 插件控制，不在仓库脚本内。发布 Job 应启用
 `Honor refspec on initial clone`、`No tags`，并把 refspec 限制为实际构建分支或 MR ref；不要在每次构建中抓取全部分支和 tag。
 
-GitHub Actions 构建 Windows NSIS 时，需要配置仓库或组织 Secret
-`PINVOU3_WINDOWS_RUNTIME_TOKEN`。该凭据只需对主仓库和
-`Pinvou/pinvou3-windows-runtime` 具有 `Contents: read` 权限。fork PR 未获得该 Secret 时只运行 Windows 打包契约测试；
-`main` 的版本发布和 `workflow_dispatch` 正式补包缺少该 Secret 时会明确失败，避免产生缺少 Windows 产物的不完整发布。
+GitHub Actions 构建 Windows NSIS 时，需要创建受保护的 GitHub Environment
+`windows-release`，并在该 Environment 内配置 Secret
+`PINVOU3_WINDOWS_RUNTIME_TOKEN`。不要把该凭据配置成仓库或组织 Secret。该凭据只需对主仓库和
+`Pinvou/pinvou3-windows-runtime` 具有 `Contents: read` 权限；Environment 应限制为受保护的
+`main` 分支，并按发布策略配置 required reviewers。
+
+所有 PR（包括同仓 PR）都只运行不引用私有凭据的 Windows 打包契约测试。只有 `main` 的发布链路
+push 或在 `main` 上执行的 `workflow_dispatch` 才能进入 `windows-release` 构建正式 NSIS。
+受保护构建缺少该 Secret 时会明确失败，避免产生缺少 Windows 产物的不完整发布。
 
 `scripts/tauri/build.js` 是项目内 `tauri build` / `tauri bundle` 的统一入口：Windows
 构建前自动执行 staging，所有平台都会加载对应 config overlay，并在调用 Tauri CLI 前

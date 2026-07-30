@@ -271,10 +271,73 @@ try {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
-assert.match(releaseWorkflow, /PINVOU3_WINDOWS_RUNTIME_TOKEN/);
-assert.match(releaseWorkflow, /正式 Windows 发布缺少 PINVOU3_WINDOWS_RUNTIME_TOKEN/);
-assert.match(releaseWorkflow, /npm run runtime:windows:init/);
-assert.match(releaseWorkflow, /npm run test:windows-runtime/);
-assert.match(releaseWorkflow, /submodules: false/);
+const prValidationJobStart = releaseWorkflow.indexOf(
+  "  validate-windows-runtime-pr:",
+);
+const windowsBuildJobStart = releaseWorkflow.indexOf("  build-windows-x64:");
+const macosBuildJobStart = releaseWorkflow.indexOf(
+  "  build-macos-universal:",
+);
+assert.notEqual(prValidationJobStart, -1);
+assert.ok(windowsBuildJobStart > prValidationJobStart);
+assert.ok(macosBuildJobStart > windowsBuildJobStart);
+
+const prValidationJob = releaseWorkflow.slice(
+  prValidationJobStart,
+  windowsBuildJobStart,
+);
+const windowsBuildJob = releaseWorkflow.slice(
+  windowsBuildJobStart,
+  macosBuildJobStart,
+);
+assert.match(prValidationJob, /github\.event_name == 'pull_request'/);
+assert.match(prValidationJob, /npm run test:windows-runtime/);
+assert.match(prValidationJob, /npm run test:codex-acp-windows-runtime/);
+assert.match(prValidationJob, /submodules: false/);
+assert.doesNotMatch(
+  prValidationJob,
+  /PINVOU3_WINDOWS_RUNTIME_TOKEN|secrets\./,
+  "PR validation must never reference private credentials",
+);
+
+assert.match(windowsBuildJob, /github\.event_name != 'pull_request'/);
+assert.match(windowsBuildJob, /github\.ref == 'refs\/heads\/main'/);
+assert.match(windowsBuildJob, /environment:\s*\n\s*name: windows-release/);
+assert.match(windowsBuildJob, /PINVOU3_WINDOWS_RUNTIME_TOKEN/);
+assert.match(
+  windowsBuildJob,
+  /正式 Windows 发布缺少 PINVOU3_WINDOWS_RUNTIME_TOKEN/,
+);
+assert.match(windowsBuildJob, /npm run runtime:windows:init/);
+assert.doesNotMatch(
+  windowsBuildJob,
+  /runtime-access|available == 'true'|available != 'true'/,
+  "protected Windows builds must not fall back to a reduced PR path",
+);
+
+for (const triggerPath of [
+  ".gitmodules",
+  "private-runtimes/windows",
+  "pinvou3-app/package-lock.json",
+  "pinvou3-app/scripts/tauri/windows-runtime.js",
+  "pinvou3-app/src-tauri/config/platforms/windows/**",
+  "pinvou3-app/src-tauri/packaging/windows/**",
+  "pinvou3-app/tests/windows_runtime_packaging_contract.test.js",
+]) {
+  const escapedPath = triggerPath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const occurrences = releaseWorkflow.match(new RegExp(escapedPath, "gu")) ?? [];
+  assert.ok(
+    occurrences.length >= 2,
+    `${triggerPath} must trigger both pull_request and push builds`,
+  );
+}
+assert.match(
+  releaseWorkflow,
+  /git diff --name-only "\$BEFORE" "\$GITHUB_SHA"/,
+);
+assert.match(
+  releaseWorkflow,
+  /build_required: \$\{\{ steps\.diff\.outputs\.build_required \}\}/,
+);
 
 console.log("Windows private runtime packaging contract: ok");
