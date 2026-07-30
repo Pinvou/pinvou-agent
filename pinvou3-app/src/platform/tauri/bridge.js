@@ -487,17 +487,48 @@
     }
   }
   function savePinvouSceneEventsForSession(sid, events) {
-    if (!sid || !window.localStorage) return;
+    if (!sid) return;
+    var normalized = normalizePinvouSceneEvents(events);
     try {
-      window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalizePinvouSceneEvents(events)));
+      if (window.localStorage) {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
+      }
     } catch (_) {
-      // 展示标签持久化失败不影响对话发送。
+      // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
+    }
+    Promise.resolve().then(function () {
+      return invoke("save_session_pinvou_scene_events", {
+        sessionId: sid,
+        events: normalized,
+      });
+    }).catch(function () {});
+  }
+  async function syncPinvouSceneEventsForSession(sid) {
+    var cached = loadPinvouSceneEventsForSession(sid);
+    if (!sid) return cached;
+    try {
+      var remote = normalizePinvouSceneEvents(
+        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+      );
+      if (remote.length) {
+        try {
+          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+        } catch (_) {}
+        return remote;
+      }
+      if (cached.length) {
+        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+      }
+      return cached;
+    } catch (_) {
+      return cached;
     }
   }
-  function recordPinvouSceneForCurrentMessage(sid, scene) {
+  function recordPinvouSceneForMessage(sid, pos, scene) {
     scene = normalizePinvouScene(scene);
-    if (!sid || !scene) return;
-    var pos = Array.isArray(state.messages) ? state.messages.length : 0;
+    pos = Number(pos);
+    if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
+    pos = Math.floor(pos);
     var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
       .filter(function (event) { return event.pos !== pos; });
     events.push({ pos: pos, scene: scene });
@@ -549,7 +580,7 @@
     ensureSessionBufferLoaded: function () { return ensureSessionBufferLoaded.apply(null, arguments); },
     ensureSession: function () { return ensureSession.apply(null, arguments); },
     getBuffer: function () { return getBuffer.apply(null, arguments); },
-    recordPinvouSceneForCurrentMessage: recordPinvouSceneForCurrentMessage,
+    recordPinvouSceneForMessage: recordPinvouSceneForMessage,
     reconcileRemoteTurn: function () { return reconcileRemoteTurn.apply(null, arguments); },
     markRemoteTurn: function () { return markRemoteTurn.apply(null, arguments); },
     clearAttachments: function () { return clearAttachments.apply(null, arguments); },
@@ -629,6 +660,7 @@
     scheduleShellPoll: function () { return scheduleShellPoll.apply(null, arguments); },
     bt: bt, userMessageDisplayText: userMessageDisplayText,
     loadPinvouSceneEventsForSession: loadPinvouSceneEventsForSession,
+    syncPinvouSceneEventsForSession: syncPinvouSceneEventsForSession,
     loadMemoryOverview: function () { return loadMemoryOverview.apply(null, arguments); },
     isScheduledRunSession: isScheduledRunSession,
     get currentStreamText() { return currentStreamText; },

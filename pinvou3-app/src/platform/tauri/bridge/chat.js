@@ -19,7 +19,7 @@
     var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     var ensureSession = context.ensureSession;
     var getBuffer = context.getBuffer;
-    var recordPinvouSceneForCurrentMessage = context.recordPinvouSceneForCurrentMessage || function () {};
+    var recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var markRemoteTurn = context.markRemoteTurn;
     var clearAttachments = context.clearAttachments;
@@ -211,6 +211,7 @@
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
+    var submittedMessagePos = -1;
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
@@ -234,7 +235,7 @@
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
       submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
-      if (meta && meta.pinvouScene) recordPinvouSceneForCurrentMessage(sid, meta.pinvouScene);
+      submittedMessagePos = state.messages.length;
       state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
@@ -249,6 +250,11 @@
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        if (meta && meta.pinvouScene) {
+          runSyncOnSession(sid, function () {
+            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+          });
+        }
         return true;
       })
       .catch(function (err) {

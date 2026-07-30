@@ -3186,12 +3186,14 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "get_session_model_id"
         | "get_session_persona_events"
         | "get_session_pinvou_reviews"
+        | "get_session_pinvou_scene_events"
         | "get_session_timeline"
         | "get_workflow_state"
         | "list_shell_tasks"
         | "list_workspace_files"
         | "save_session_persona_events"
         | "save_session_pinvou_reviews"
+        | "save_session_pinvou_scene_events"
         | "session_mount_collection"
         | "session_mounted_collection"
         | "session_unmount_collection"
@@ -5055,8 +5057,10 @@ mod tests {
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
+            "get_session_pinvou_scene_events",
             "get_session_timeline",
             "kick_workflow",
+            "save_session_pinvou_scene_events",
             "stop_workflow",
             "web_access_chat",
         ] {

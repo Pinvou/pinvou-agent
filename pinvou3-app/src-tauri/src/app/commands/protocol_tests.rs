@@ -369,6 +369,8 @@ command_protocol!(
         "get_active_session",
         "save_session_messages",
         "save_session_artifacts",
+        "save_session_pinvou_scene_events",
+        "get_session_pinvou_scene_events",
         "list_workspace_files"
     ]
 );

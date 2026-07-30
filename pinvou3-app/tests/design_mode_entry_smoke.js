@@ -52,6 +52,10 @@ function injectSource() {
     ];
     window.__PINVOU_TEST_INSTALLS = [];
     window.__PINVOU_TEST_CHAT_CALLS = [];
+    window.__PINVOU_TEST_SCENE_SAVES = [];
+    var SCENE_EVENTS = {
+      's-design': [{pos:0,scene:'design:poster'}]
+    };
     var CONV = { 's-design': {
       metadata:{id:'s-design',title:'HTML设计测试'},
       artifacts:[{path:DRAFT_PATH,basename:'poster-draft.html'},{path:HTML_PATH,basename:'landing.html'}],
@@ -64,9 +68,6 @@ function injectSource() {
       },
       sessionOrder:['session:s-design']
     }));
-    localStorage.setItem('pinvou_scene_events_v1:s-design', JSON.stringify([
-      {pos:0,scene:'design:poster'}
-    ]));
     function invoke(cmd,args){
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
@@ -92,6 +93,12 @@ function injectSource() {
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(null);
+        case 'get_session_pinvou_scene_events':
+          return Promise.resolve((SCENE_EVENTS[args && args.sessionId] || []).map(function(event){ return Object.assign({}, event); }));
+        case 'save_session_pinvou_scene_events':
+          SCENE_EVENTS[args && args.sessionId] = (args && args.events || []).map(function(event){ return Object.assign({}, event); });
+          window.__PINVOU_TEST_SCENE_SAVES.push({sessionId:args && args.sessionId,events:SCENE_EVENTS[args && args.sessionId]});
+          return Promise.resolve(null);
         case 'list_workflows': case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
@@ -485,7 +492,7 @@ async function clickExactButton(page, text) {
       userSceneTag: userSceneTag && userSceneTag.textContent,
     };
   });
-  rec('非空会话隐藏完整场景入口和可取消场景标签，并恢复历史消息只读标签',
+  rec('非空会话从共享 sidecar 恢复历史消息只读标签',
     design.statusHidden &&
       !design.homeSwitcher &&
       !design.designPicker &&

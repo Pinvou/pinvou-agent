@@ -443,17 +443,48 @@
     }
   }
   function savePinvouSceneEventsForSession(sid, events) {
-    if (!sid || !window.localStorage) return;
+    if (!sid) return;
+    var normalized = normalizePinvouSceneEvents(events);
     try {
-      window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalizePinvouSceneEvents(events)));
+      if (window.localStorage) {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
+      }
     } catch (_) {
-      // 展示标签持久化失败不影响对话发送。
+      // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
+    }
+    Promise.resolve().then(function () {
+      return invoke("save_session_pinvou_scene_events", {
+        sessionId: sid,
+        events: normalized,
+      });
+    }).catch(function () {});
+  }
+  async function syncPinvouSceneEventsForSession(sid) {
+    var cached = loadPinvouSceneEventsForSession(sid);
+    if (!sid) return cached;
+    try {
+      var remote = normalizePinvouSceneEvents(
+        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+      );
+      if (remote.length) {
+        try {
+          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+        } catch (_) {}
+        return remote;
+      }
+      if (cached.length) {
+        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+      }
+      return cached;
+    } catch (_) {
+      return cached;
     }
   }
-  function recordPinvouSceneForCurrentMessage(sid, scene) {
+  function recordPinvouSceneForMessage(sid, pos, scene) {
     scene = normalizePinvouScene(scene);
-    if (!sid || !scene) return;
-    var pos = Array.isArray(state.messages) ? state.messages.length : 0;
+    pos = Number(pos);
+    if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
+    pos = Math.floor(pos);
     var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
       .filter(function (event) { return event.pos !== pos; });
     events.push({ pos: pos, scene: scene });
@@ -843,7 +874,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
-    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(sid);
+    buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -2329,7 +2360,7 @@
     var saved;
     var personaEvents;
     var pinvouReviews;
-    var pinvouSceneEvents = loadPinvouSceneEventsForSession(id);
+    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     var turnTimeline;
     try {
       var primary = await Promise.all([
@@ -3434,6 +3465,7 @@
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
+    var submittedMessagePos = -1;
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
@@ -3457,7 +3489,7 @@
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
       submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
-      if (meta && meta.pinvouScene) recordPinvouSceneForCurrentMessage(sid, meta.pinvouScene);
+      submittedMessagePos = state.messages.length;
       state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
@@ -3482,6 +3514,11 @@
     return invoke(chatCommand, chatArgs)
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        if (meta && meta.pinvouScene) {
+          runSyncOnSession(sid, function () {
+            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+          });
+        }
         return true;
       })
       .catch(function (err) {

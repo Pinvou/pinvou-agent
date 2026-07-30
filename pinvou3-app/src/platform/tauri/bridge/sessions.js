@@ -38,6 +38,8 @@
     var applyScheduledRunViewed = context.applyScheduledRunViewed;
     var loadScheduledTaskRecentRuns = context.loadScheduledTaskRecentRuns;
     var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
+    var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
+      function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
     var MAX_SCHEDULED_SESSION_BUFFERS = 64;
     var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     var sessionBufferTouchClock = 0;
@@ -356,7 +358,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
-    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(sid);
+    buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -607,7 +609,7 @@
 
     var personaEvents = [];
     var pinvouReviews = [];
-    var pinvouSceneEvents = loadPinvouSceneEventsForSession(id);
+    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     var turnTimeline = [];
     try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
     try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}

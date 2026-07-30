@@ -5,8 +5,11 @@ const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'chat.js'), 'utf8');
 const chatViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
+const tauriBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
+const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const sessionsRustSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'app', 'commands', 'sessions.rs'), 'utf8');
 
-function createFeature() {
+function createFeature(options = {}) {
   const sandbox = {
     window: { __PINVOU_TAURI_BRIDGE_FEATURES__: {} },
     console,
@@ -32,6 +35,9 @@ function createFeature() {
     state,
     invoke(command, args) {
       invokes.push({ command, args });
+      if (options.failChat && command === 'chat') {
+        return Promise.reject(new Error('admission failed'));
+      }
       return Promise.resolve(null);
     },
     notify() {},
@@ -48,8 +54,10 @@ function createFeature() {
     ensureSessionBufferLoaded() { return Promise.resolve(); },
     ensureSession() { state.activeSessionId = 's1'; return Promise.resolve('s1'); },
     getBuffer(sid) { return sessionStates[sid]; },
-    recordPinvouSceneForCurrentMessage(sid, scene) {
-      sceneEvents.push({ sid, scene, pos: state.messages.length });
+    recordPinvouSceneForMessage(sid, pos, scene) {
+      const existing = sceneEvents.findIndex(event => event.sid === sid && event.pos === pos);
+      if (existing >= 0) sceneEvents.splice(existing, 1);
+      sceneEvents.push({ sid, scene, pos });
     },
     reconcileRemoteTurn() { return Promise.resolve(true); },
     markRemoteTurn() {},
@@ -94,6 +102,30 @@ function rec(name, pass, detail = '') {
   }
 
   {
+    const { feature, state, sceneEvents } = createFeature({ failChat: true });
+    let rejected = false;
+    try {
+      await feature.doSendFor(
+        's1',
+        '失败 payload',
+        '失败消息',
+        [],
+        { pinvouScene: 'design:poster' },
+        false,
+        true,
+      );
+    } catch (_) {
+      rejected = true;
+    }
+    rec('发送准入失败时不提交 scene sidecar',
+      rejected &&
+        state.messages.length === 0 &&
+        !state.chatItems.some(item => item.type === 'user') &&
+        sceneEvents.length === 0,
+      JSON.stringify({ rejected, messages: state.messages, chatItems: state.chatItems, sceneEvents }));
+  }
+
+  {
     const { feature, state, sceneEvents } = createFeature();
     state.queued.push(
       { id: 1, text: 'payload 1', displayText: '第一条', attachments: [], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
@@ -133,6 +165,17 @@ function rec(name, pass, detail = '') {
       /const scenePrompt = outgoing \|\| '请根据附件内容继续处理。';/.test(chatViewSource) &&
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
+
+  rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
+    /get_session_pinvou_scene_events/.test(tauriBridgeSource) &&
+      /save_session_pinvou_scene_events/.test(tauriBridgeSource) &&
+      /syncPinvouSceneEventsForSession/.test(tauriBridgeSource) &&
+      /get_session_pinvou_scene_events/.test(webBridgeSource) &&
+      /save_session_pinvou_scene_events/.test(webBridgeSource) &&
+      /syncPinvouSceneEventsForSession/.test(webBridgeSource) &&
+      /pub async fn save_session_pinvou_scene_events/.test(sessionsRustSource) &&
+      /pub async fn get_session_pinvou_scene_events/.test(sessionsRustSource),
+    'shared session scene sidecar contract');
 
   const failed = results.filter(item => !item.pass);
   if (failed.length) {

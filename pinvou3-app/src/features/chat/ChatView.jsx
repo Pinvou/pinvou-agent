@@ -58,23 +58,31 @@ function unifiedConversationUiEnabled() {
 }
 
 const WORK_MODE_SUBTABS = [
-  { key: 'document-writing', label: '公文写作', Icon: FileText },
+  { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
 ];
 
 const DESIGN_MODE_SUBTABS = [
-  { key: 'poster', label: '海报', Icon: ImageIcon },
-  { key: 'data-visualization', label: '数据可视化', Icon: BarChart2 },
-  { key: 'ppt', label: 'PPT设计', Icon: Presentation, disabled: true, disabledReason: 'PPT 生成能力修复中' },
+  { key: 'poster', labelKey: 'poster', Icon: ImageIcon },
+  { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
+  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation, disabled: true, disabledReasonKey: 'pptUnavailable' },
 ];
 
-function pinvouSceneDisplay(scene) {
+function localizeSceneTabs(items, copy) {
+  return items.map(item => ({
+    ...item,
+    label: copy[item.labelKey],
+    disabledReason: item.disabledReasonKey ? copy[item.disabledReasonKey] : undefined,
+  }));
+}
+
+function pinvouSceneDisplay(scene, copy) {
   switch (scene) {
     case 'work:document-writing':
-      return { label: '公文写作', Icon: FileText };
+      return { label: copy.documentWriting, Icon: FileText };
     case 'design:poster':
-      return { label: '海报', Icon: ImageIcon };
+      return { label: copy.poster, Icon: ImageIcon };
     case 'design:data-visualization':
-      return { label: '数据可视化', Icon: BarChart2 };
+      return { label: copy.dataVisualization, Icon: BarChart2 };
     default:
       return null;
   }
@@ -433,7 +441,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SceneModeTag = ({ isDark, scene, onClear }) => {
+    const SceneModeTag = ({ isDark, scene, onClear, clearLabel }) => {
       if (!scene) return null;
       const SceneIcon = scene.Icon || Sparkles;
       return (
@@ -449,8 +457,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <button
                 type="button"
                 data-testid="pinvou-scene-tag-clear"
-                aria-label={`取消${scene.label}`}
-                title={`取消${scene.label}`}
+                aria-label={clearLabel}
+                title={clearLabel}
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -471,6 +479,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
+      const sceneCopy = chatCopy.sceneModes;
+      const workModeSubtabs = localizeSceneTabs(WORK_MODE_SUBTABS, sceneCopy);
+      const designModeSubtabs = localizeSceneTabs(DESIGN_MODE_SUBTABS, sceneCopy);
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const initialInput = constrainChatInput(
         bridge.available && bridge.chat && bridge.chat.getComposerDraft
@@ -820,9 +831,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const documentWritingSceneActive = shouldUseDocumentWritingScene(pinvouMode, workSubtab);
       const dataVisualizationSceneActive = shouldUseDataVisualizationScene(pinvouMode, designSubtab);
       const activeScene = pinvouMode === 'work'
-        ? WORK_MODE_SUBTABS.find(item => item.key === workSubtab)
+        ? workModeSubtabs.find(item => item.key === workSubtab)
         : pinvouMode === 'design'
-          ? DESIGN_MODE_SUBTABS.find(item => item.key === designSubtab)
+          ? designModeSubtabs.find(item => item.key === designSubtab)
           : null;
       const composerPlaceholder = pinvouMode === 'design'
         ? selectedDesignElement
@@ -831,7 +842,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             ? '粘贴数据或描述指标，生成可视化看板'
           : visualPosterSceneActive
             ? '描述你想生成或调整的视觉海报'
-            : '描述你想生成或调整的内容'
+            : sceneCopy.designGeneralPlaceholder
         : pinvouMode === 'work'
           ? documentWritingSceneActive
             ? '描述公文主题、文种、收发单位和关键要求'
@@ -1555,7 +1566,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   isDark={isDark}
                   value={workSubtab}
                   onChange={handleWorkSubtabChange}
-                  items={WORK_MODE_SUBTABS}
+                  items={workModeSubtabs}
                   testId="work-subtab-picker"
                 />
               )}
@@ -1564,7 +1575,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   isDark={isDark}
                   value={designSubtab}
                   onChange={handleDesignSubtabChange}
-                  items={DESIGN_MODE_SUBTABS}
+                  items={designModeSubtabs}
                   testId="design-subtab-picker"
                 />
               )}
@@ -1702,7 +1713,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </div>
               )}
               {!scheduledRunContext && !conversationStarted && activeScene && (
-                <SceneModeTag isDark={isDark} scene={activeScene} onClear={handleClearActiveScene} />
+                <SceneModeTag
+                  isDark={isDark}
+                  scene={activeScene}
+                  onClear={handleClearActiveScene}
+                  clearLabel={sceneCopy.clear(activeScene.label)}
+                />
               )}
               <ConversationActivityIndicator
                 turn={activeConversationTurn}
@@ -2170,7 +2186,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
-      const sceneDisplay = pinvouSceneDisplay(item.pinvouScene);
+      const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
       const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);

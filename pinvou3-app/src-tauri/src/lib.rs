@@ -672,6 +672,8 @@ pub fn run() {
             commands::sessions::get_active_session,
             commands::sessions::save_session_messages,
             commands::sessions::save_session_artifacts,
+            commands::sessions::save_session_pinvou_scene_events,
+            commands::sessions::get_session_pinvou_scene_events,
             commands::sessions::list_workspace_files,
             commands::runtime::cancel_generation,
             commands::runtime::list_shell_tasks,
