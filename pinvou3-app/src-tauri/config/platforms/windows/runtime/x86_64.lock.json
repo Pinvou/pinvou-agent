@@ -10,5 +10,8 @@
   "manifest": {
     "path": "windows-runtime.manifest.json",
     "sha256": "0d14c4b67fd6dc1e0e5c3d4dc07c50a0e7a5072722b082edbeaef6a22b6cdc14"
+  },
+  "vcRedist": {
+    "minimumVersion": "14.51.36247.0"
   }
 }

@@ -29,6 +29,15 @@ $lock = Get-Content -LiteralPath $LockFile -Raw -Encoding UTF8 | ConvertFrom-Jso
 if ([int]$lock.schemaVersion -ne 2 -or [string]$lock.source.type -ne "git-submodule") {
   throw "Unsupported Windows runtime lock schema or source type."
 }
+$vcMinimumVersionText = [string]$lock.vcRedist.minimumVersion
+if ($vcMinimumVersionText -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+  throw "Windows runtime lock must declare vcRedist.minimumVersion as a four-part version."
+}
+try {
+  $vcMinimumVersion = [System.Version]$vcMinimumVersionText
+} catch {
+  throw "Windows runtime lock contains an invalid VC++ minimum version: $vcMinimumVersionText"
+}
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
   $runtimeRootFromEnvironment = [Environment]::GetEnvironmentVariable("PINVOU3_WINDOWS_RUNTIME_ROOT")
   if (-not [string]::IsNullOrWhiteSpace($runtimeRootFromEnvironment)) {
@@ -199,6 +208,22 @@ function Get-VerifiedManifest {
     if ((Get-Sha256 -Path $sourcePath) -ne [string]$entry.sha256) {
       throw "Locked Windows runtime file SHA-256 mismatch: $($entry.path)"
     }
+  }
+
+  $vcEntries = @($manifest.files | Where-Object { [string]$_.component -eq "vc_redist" })
+  if ($vcEntries.Count -ne 1) {
+    throw "Windows runtime manifest must contain exactly one VC++ redistributable."
+  }
+  $vcSourcePath = Join-Path $RuntimeRoot ([string]$vcEntries[0].path).Replace('/', '\')
+  $vcVersionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($vcSourcePath)
+  $vcActualVersion = [System.Version]::new(
+    $vcVersionInfo.FileMajorPart,
+    $vcVersionInfo.FileMinorPart,
+    $vcVersionInfo.FileBuildPart,
+    $vcVersionInfo.FilePrivatePart
+  )
+  if ($vcActualVersion -lt $vcMinimumVersion) {
+    throw "Locked VC++ redistributable version $vcActualVersion is older than required version $vcMinimumVersion."
   }
 
   Write-Host ("Validated Windows runtime submodule: {0} files at {1}" -f $manifest.files.Count, $actualCommit)

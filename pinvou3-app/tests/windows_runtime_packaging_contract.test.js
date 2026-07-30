@@ -69,6 +69,15 @@ assert.equal(lock.source.path, "private-runtimes/windows");
 assert.equal(lock.source.url, "https://github.com/Pinvou/pinvou3-windows-runtime.git");
 assert.match(lock.source.commit, /^[0-9a-f]{40}$/u);
 assert.match(lock.manifest.sha256, /^[0-9a-f]{64}$/u);
+assert.match(lock.vcRedist.minimumVersion, /^\d+\.\d+\.\d+\.\d+$/u);
+
+const [vcMajor, vcMinor, vcBuild, vcRevision] = lock.vcRedist.minimumVersion
+  .split(".")
+  .map(Number);
+assert.ok(
+  [vcMajor, vcMinor, vcBuild, vcRevision].every(Number.isSafeInteger),
+  "VC++ minimum version components must be safe integers",
+);
 
 const gitlink = spawnSync(
   "git",
@@ -99,6 +108,9 @@ for (const contract of [
   assert.ok(runtimeScript.includes(contract), `runtime staging must retain ${contract}`);
 }
 assert.match(runtimeScript, /Get-Sha256 -Path \$sourcePath/u);
+assert.match(runtimeScript, /vcRedist\.minimumVersion/u);
+assert.match(runtimeScript, /System\.Diagnostics\.FileVersionInfo/u);
+assert.match(runtimeScript, /\$vcActualVersion -lt \$vcMinimumVersion/u);
 assert.match(runtimeScript, /HashSet\[string\]/u);
 assert.match(runtimeScript, /Remove-Item -LiteralPath \$bundledAsrModelPath/u);
 assert.match(runtimeScript, /Remove-Item -LiteralPath \$stageContext\.PayloadRoot/u);
@@ -137,8 +149,63 @@ assert.match(installerHook, /VC_redist\.x64\.exe/);
 assert.match(installerHook, /\.\.\\\.\.\\\.\.\\windows-runtime\\nsis\\vc_redist/);
 assert.doesNotMatch(installerHook, /\.\.\\\.\.\\\.\.\\target\\windows-runtime/);
 assert.match(installerHook, /\/install \/quiet \/norestart/);
-assert.match(installerHook, /IntCmp \$1 3010/);
-assert.match(installerHook, /IntCmp \$1 1641/);
+for (const [name, version] of [
+  ["MAJOR", vcMajor],
+  ["MINOR", vcMinor],
+  ["BUILD", vcBuild],
+  ["REVISION", vcRevision],
+]) {
+  assert.ok(
+    installerHook.includes(`!define PINVOU_VC_REDIST_MIN_${name} ${version}`),
+    `NSIS VC++ ${name.toLowerCase()} minimum must match the runtime lock`,
+  );
+}
+for (const registryValue of ["Major", "Minor", "Bld", "Rbld"]) {
+  assert.match(
+    installerHook,
+    new RegExp(`ReadRegDWORD \\$\\d[^\\r\\n]+"${registryValue}"`),
+    `NSIS hook must inspect the installed VC++ ${registryValue} value`,
+  );
+}
+assert.match(
+  installerHook,
+  /IntCmpU \$1 \$\{PINVOU_VC_REDIST_MIN_MAJOR\} pinvou_vc_redist_check_minor pinvou_vc_redist_install pinvou_vc_redist_ready/,
+);
+assert.match(
+  installerHook,
+  /IntCmpU \$2 \$\{PINVOU_VC_REDIST_MIN_MINOR\} pinvou_vc_redist_check_build pinvou_vc_redist_install pinvou_vc_redist_ready/,
+);
+assert.match(
+  installerHook,
+  /IntCmpU \$3 \$\{PINVOU_VC_REDIST_MIN_BUILD\} pinvou_vc_redist_check_revision pinvou_vc_redist_install pinvou_vc_redist_ready/,
+);
+assert.match(
+  installerHook,
+  /IntCmpU \$4 \$\{PINVOU_VC_REDIST_MIN_REVISION\} pinvou_vc_redist_ready pinvou_vc_redist_install pinvou_vc_redist_ready/,
+);
+assert.match(
+  installerHook,
+  /ClearErrors\r?\n\s*ExecWait[^\r\n]+\$5\r?\n\s*IfErrors pinvou_vc_redist_exec_failed/,
+  "ExecWait errors must be cleared and handled immediately",
+);
+assert.match(installerHook, /IntCmp \$5 3010/);
+assert.match(installerHook, /IntCmp \$5 1641/);
+for (const [label, nextLabel] of [
+  ["pinvou_vc_redist_exec_failed", "pinvou_vc_redist_exit_failed"],
+  ["pinvou_vc_redist_exit_failed", "pinvou_vc_redist_reboot"],
+]) {
+  const start = installerHook.indexOf(`${label}:`);
+  const end = installerHook.indexOf(`${nextLabel}:`, start);
+  assert.notEqual(start, -1, `NSIS hook must define ${label}`);
+  assert.ok(end > start, `${label} must end before ${nextLabel}`);
+  const failureBranch = installerHook.slice(start, end);
+  assert.match(
+    failureBranch,
+    /MessageBox[^\r\n]+\/SD IDOK/,
+    `${label} must not prompt indefinitely during an unattended install`,
+  );
+  assert.match(failureBranch, /\r?\n\s*Abort\s*(?:\r?\n|$)/, `${label} must abort the install`);
+}
 
 assert.deepEqual(windowsBundleTargets(["build"]), ["msi", "nsis"]);
 assert.deepEqual(windowsBundleTargets(["build", "--bundles", "msi"]), ["msi"]);
