@@ -385,10 +385,14 @@
         scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
-      var payloadText = text;
+      var requestedPayloadText = meta && meta.pinvouPayloadText
+        ? String(meta.pinvouPayloadText || "").trim()
+        : "";
+      var payloadText = requestedPayloadText || text;
       var restrictTools = false;
       if (state.scheduledTaskPendingGuide) {
         payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+        if (requestedPayloadText) payloadText = state.scheduledTaskPendingGuide + "\n\n" + requestedPayloadText;
         restrictTools = true;
         state.scheduledTaskPendingGuide = null;
         state.scheduledTaskCreationSessionId = sid;

@@ -3529,17 +3529,20 @@
     state.activeSkill = snapshot.activeSkill;
   }
 
-  function consumeFirstTurnUiState(text) {
+  function consumeFirstTurnUiState(text, meta) {
     var snapshot = {
       scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
       scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
       scheduledTaskDraft: state.scheduledTaskDraft,
       activeSkill: state.activeSkill,
     };
-    var payloadText = text;
+    var requestedPayloadText = meta && meta.pinvouPayloadText
+      ? String(meta.pinvouPayloadText || "").trim()
+      : "";
+    var payloadText = requestedPayloadText || text;
     var restrictTools = false;
     if (state.scheduledTaskPendingGuide) {
-      payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+      payloadText = state.scheduledTaskPendingGuide + "\n\n" + (requestedPayloadText || text);
       restrictTools = true;
       state.scheduledTaskPendingGuide = null;
       state.scheduledTaskDraft = null;
@@ -3676,8 +3679,8 @@
     }
   }
 
-  function submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload) {
-    var prepared = consumeFirstTurnUiState(text);
+  function submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
+    var prepared = consumeFirstTurnUiState(text, meta);
     var clientMessageId = webRequestId("chat");
     var requestId = "first_turn_" + clientMessageId;
     var time = timeStr();
@@ -3748,7 +3751,7 @@
         return item && item.type === "user" && !!item.deliveryState;
       });
       if (existingFirstTurn) return;
-      submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload);
+      submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
       return;
     }
 
@@ -3765,11 +3768,15 @@
         scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
-      var payloadText = text;
+      var requestedPayloadText = meta && meta.pinvouPayloadText
+        ? String(meta.pinvouPayloadText || "").trim()
+        : "";
+      var payloadText = requestedPayloadText || text;
       var restrictTools = false;
       // 定时任务引导只进入模型 payload；准入失败时由下面的 snapshot 恢复。
       if (state.scheduledTaskPendingGuide) {
         payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
+        if (requestedPayloadText) payloadText = state.scheduledTaskPendingGuide + "\n\n" + requestedPayloadText;
         restrictTools = true;
         state.scheduledTaskPendingGuide = null;
         state.scheduledTaskCreationSessionId = sid;
@@ -4387,13 +4394,14 @@
     // present_artifact：不渲染灰色工具卡，等 tool_end 成功时渲染成品卡
     if (isPresentArtifactTool(p.name)) { notify(); return; }
 
-    // load_skill：模型加载技能 → 点亮 composer 技能标（内置自动技能"正在使用"指示），
-    // 不渲染裸工具卡（用药丸指示器替代）。当前只识别视觉设计。
+    // load_skill：模型加载技能 → 点亮 composer 技能标（内置自动技能"正在使用"指示）。
     if (p.name === "load_skill") {
       var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
-      if (skArg.indexOf("视觉设计") >= 0 || skArg.toLowerCase().indexOf("visual-design") >= 0) {
-        state.activeSkill = "visual-design";
-      }
+      var skLower = skArg.toLowerCase();
+      if (skArg.indexOf("视觉设计") >= 0 || skLower.indexOf("visual-design") >= 0) state.activeSkill = "visual-design";
+      else if (skArg.indexOf("公文写作") >= 0 || skLower.indexOf("government-writing") >= 0) state.activeSkill = "government-writing";
+      else if (skArg.indexOf("PPT") >= 0 || skArg.indexOf("幻灯片") >= 0 || skLower.indexOf("pptx") >= 0) state.activeSkill = "pptx";
+      else if (skArg.indexOf("数据分析可视化") >= 0 || skArg.indexOf("数据可视化") >= 0 || skLower.indexOf("visualizer") >= 0) state.activeSkill = "visualizer";
       // 不 return：照常出工具卡。卡内容在 tool_end / rerender 处脱敏成占位，
       // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
     }
