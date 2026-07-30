@@ -1863,6 +1863,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 onToggle: () => { setVisionModelPickerOpen(open => !open); setImageCapabilityPickerOpen(false); },
                 onChoose: key => { setVisionModelId(key); setVisionModelPickerOpen(false); },
               })}
+            </div>
+            <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.visionModelDesc}</div>
+            <div className={`mt-3 ${formGroup}`}>
               <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                 <span data-testid="image-capability-test-result" className={`min-w-0 flex-1 text-[13px] leading-5 ${imageTestColor}`}>
                   {imageTestText}
@@ -1874,7 +1877,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </button>
               </div>
             </div>
-            <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.visionModelDesc}</div>
           </section>
         );
       };
