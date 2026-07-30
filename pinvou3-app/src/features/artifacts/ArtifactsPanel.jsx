@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FolderOpen, XCircle } from '../../components/icons.jsx';
+import { Download, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { AcFmtIcon } from '../tools/tool-common.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
+import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
+import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
@@ -47,6 +49,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       if (!change || !change.sessionId || !bs?.activeSessionId) return true;
       return change.sessionId === bs.activeSessionId;
     };
+    const HTML_ZOOM_OPTIONS = [
+      { key: 'fit', label: '适应窗口' },
+      { key: 'actual', label: '原始大小' },
+    ];
+    const clampHtmlScale = (value) => Math.max(0.1, Math.min(3, Number(value) || 1));
     // 注入到 office→HTML 预览 iframe 末尾:LibreOffice 导出的表格 border=0、字号 x-small,
     // 这里补网格线/字号/单元格换行,让 xlsx 读起来像表格。放在文档后 → 同特异性下后定义胜出。
     const OFFICE_HTML_STYLE = '<style>'
@@ -57,18 +64,229 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings }) => {
+    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const isDark = theme === 'dark';
+      const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');
       const canDownloadArtifacts = can('artifactDownload');
       const artifacts = (bs && bs.artifacts) || [];
       const activeSessionId = bs && bs.activeSessionId;
-      const [tab, setTab] = useState('list');     // 'list' | 'preview'
-      const [sel, setSel] = useState(null);        // 选中的 artifact { path, basename }
-      const [pv, setPv] = useState({});            // 预览态
+      const initialPreviewArtifact = preferredArtifactPath
+        ? artifacts.find((a) => sameArtifactPath(a.path, preferredArtifactPath))
+        : artifacts[artifacts.length - 1] || null;
+      const initialSelectedArtifact = initialPreviewArtifact || artifacts[artifacts.length - 1] || null;
+      const [tab, setTab] = useState(initialSelectedArtifact ? 'preview' : 'list');     // 'list' | 'preview'
+      const [sel, setSel] = useState(initialSelectedArtifact ? { ...initialSelectedArtifact, sessionId: initialSelectedArtifact.sessionId || activeSessionId } : null);        // 选中的 artifact { path, basename }
+      const [pv, setPv] = useState(initialSelectedArtifact ? { loading: true } : {});            // 预览态
       const [infos, setInfos] = useState({});      // path → { size, kind, modified }(列表行元信息)
       const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(false);
+      const [htmlZoomMode, setHtmlZoomMode] = useState('fit');
+      const [htmlScale, setHtmlScale] = useState(1);
+      const [htmlCustomScale, setHtmlCustomScale] = useState(1);
+      const [htmlZoomMenuOpen, setHtmlZoomMenuOpen] = useState(false);
+      const [artifactMenuOpen, setArtifactMenuOpen] = useState(false);
+      const [localDesignAiState, setLocalDesignAiState] = useState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
+      const [designAiNow, setDesignAiNow] = useState(() => Date.now());
       const mdPreviewRef = useRef(null);
+      const designFrameRef = useRef(null);
+      const designRuntimeScriptRef = useRef(null);
+      const designAiTimerRef = useRef(null);
+      const designChangesRef = useRef(designChanges);
+      designChangesRef.current = designChanges;
+
+      function setDesignStatus(status, error) {
+        if (onDesignRuntimeStatus) onDesignRuntimeStatus(status, error);
+      }
+      const currentZoomOption = HTML_ZOOM_OPTIONS.find((option) => option.key === htmlZoomMode) || HTML_ZOOM_OPTIONS[0];
+      const setPresetZoomMode = (mode) => {
+        setHtmlZoomMode(mode);
+        setHtmlZoomMenuOpen(false);
+      };
+      const adjustHtmlCustomScale = (delta) => {
+        const next = clampHtmlScale((htmlZoomMode === 'custom' ? htmlCustomScale : htmlScale) + delta);
+        setHtmlCustomScale(next);
+        setHtmlZoomMode('custom');
+      };
+      const handleHtmlCustomScaleChange = (scale) => {
+        setHtmlCustomScale(clampHtmlScale(scale));
+        setHtmlZoomMode('custom');
+      };
+      const currentDesignAiState = designAiState || localDesignAiState;
+      const designAiText = currentDesignAiState.text || '';
+      const designAiStatus = currentDesignAiState.status || 'idle';
+      const designAiLastPrompt = currentDesignAiState.lastPrompt || '';
+      const designAiPendingPath = currentDesignAiState.pendingPath || '';
+      const designAiStartedAt = Number(currentDesignAiState.startedAt || 0);
+      const designAiElapsedSec = designAiStartedAt > 0 ? Math.max(0, Math.round((designAiNow - designAiStartedAt) / 1000)) : 0;
+      const setDesignAiStatePatch = (patchOrUpdater) => {
+        const apply = (prev) => {
+          const base = prev || { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 };
+          const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(base) : patchOrUpdater;
+          return { ...base, ...(patch || {}) };
+        };
+        if (onDesignAiStateChange) onDesignAiStateChange(apply);
+        else setLocalDesignAiState(apply);
+      };
+      const describeDesignAiActivity = () => {
+        if (designAiStatus === 'updated') return '当前产物已刷新';
+        if (designAiStatus === 'no-update') return '可以继续补充描述';
+        if (designAiStatus === 'cancelled') return '';
+        if (bs?.thinking?.active && bs.thinking.phase === 'tool' && bs.thinking.toolName) {
+          return `正在调用工具 ${bs.thinking.toolName}`;
+        }
+        if (bs?.thinking?.active) return '正在思考';
+        if (bs?.busy) return '正在等待模型返回';
+        if (designAiStatus === 'sending') return '已发送，等待处理';
+        return '';
+      };
+      const designAiStatusTitle = (() => {
+        const suffix = (designAiStatus === 'sending' || designAiStatus === 'running') && designAiStartedAt ? ` · ${designAiElapsedSec}s` : '';
+        if (designAiStatus === 'updated') return '已更新';
+        if (designAiStatus === 'no-update') return '未更新';
+        if (designAiStatus === 'cancelled') return '已停止';
+        return `调整中${suffix}`;
+      })();
+      const designAiActivity = describeDesignAiActivity();
+      const designAiStatusDetail = [designAiLastPrompt, designAiActivity].filter(Boolean).join(' · ');
+      const submitDesignAiText = (event) => {
+        event.preventDefault();
+        const text = designAiText.trim();
+        if (!text || !onDesignAiSubmit) return;
+        onDesignAiSubmit(text);
+        setDesignAiStatePatch({
+          text: '',
+          lastPrompt: text,
+          pendingPath: sel && sel.path || '',
+          status: bs && bs.busy ? 'running' : 'sending',
+          startedAt: Date.now(),
+        });
+      };
+      const resetDesignAiStatusSoon = (delay = 2200) => {
+        if (designAiTimerRef.current) window.clearTimeout(designAiTimerRef.current);
+        designAiTimerRef.current = window.setTimeout(() => {
+          setDesignAiStatePatch({ status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
+        }, delay);
+      };
+      const cancelDesignAi = () => {
+        if (bridge.chat && bridge.chat.cancelGeneration) bridge.chat.cancelGeneration().catch(() => {});
+        setDesignAiStatePatch({ status: 'cancelled', startedAt: 0 });
+        resetDesignAiStatusSoon(1400);
+      };
+
+      useEffect(() => {
+        if (designAiStatus !== 'sending' && designAiStatus !== 'running') return undefined;
+        setDesignAiNow(Date.now());
+        const timer = window.setInterval(() => setDesignAiNow(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+      }, [designAiStatus]);
+
+      function destroyDesignRuntime() {
+        const frame = designFrameRef.current;
+        if (!frame || !frame.contentWindow) return;
+        try {
+          frame.contentWindow.postMessage({ type: DESIGN_MESSAGE_TYPES.DESTROY }, '*');
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      function postDesignCommand(message) {
+        const frame = designFrameRef.current;
+        if (!frame || !frame.contentWindow || !message) return false;
+        try {
+          frame.contentWindow.postMessage(message, '*');
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function replayDesignChanges() {
+        designChangesRef.current
+          .filter((change) => change && change.status !== 'failed' && change.selector)
+          .forEach((change) => {
+            postDesignCommand({
+              type: DESIGN_MESSAGE_TYPES.APPLY_CHANGE,
+              payload: {
+                selector: change.selector,
+                changeId: change.id,
+                changeType: change.type,
+                property: change.property,
+                oldValue: change.oldValue,
+                value: change.newValue,
+              },
+            });
+          });
+      }
+
+      function injectDesignRuntime(frame) {
+        designFrameRef.current = frame || null;
+        if (!designMode || !frame || !frame.contentWindow) return;
+        setDesignStatus('injecting');
+        try {
+          const script = designRuntimeScriptRef.current || (designRuntimeScriptRef.current = buildDesignRuntimeScript());
+          frame.contentWindow.eval(script);
+        } catch (error) {
+          setDesignStatus('error', String(error && error.message || error));
+        }
+      }
+
+      const handlePreviewFrameLoad = (frame) => {
+        injectDesignRuntime(frame);
+      };
+
+      useEffect(() => {
+        if (!designMode) {
+          destroyDesignRuntime();
+          setDesignStatus('idle');
+          return undefined;
+        }
+        injectDesignRuntime(designFrameRef.current);
+        return undefined;
+      }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
+
+      useEffect(() => {
+        if (!designMode || !designCommand || !designCommand.seq) return;
+        if (designCommand.kind === 'apply') {
+          const ok = postDesignCommand({
+            type: DESIGN_MESSAGE_TYPES.APPLY_CHANGE,
+            payload: designCommand.payload,
+          });
+          if (!ok && onDesignChangeApplied) {
+            onDesignChangeApplied({ changeId: designCommand.payload && designCommand.payload.changeId, ok: false, error: 'design runtime is not ready' });
+          }
+        } else if (designCommand.kind === 'clear') {
+          postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
+        }
+      }, [designMode, designCommand && designCommand.seq]);
+
+      useEffect(() => {
+        const onMessage = (event) => {
+          const data = event && event.data;
+          if (!data || data.source !== 'pinvou-design-runtime') return;
+          if (designFrameRef.current && event.source !== designFrameRef.current.contentWindow) return;
+          if (data.type === DESIGN_MESSAGE_TYPES.READY) {
+            setDesignStatus('ready');
+            replayDesignChanges();
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_SELECTED) {
+            const element = data.payload && data.payload.element;
+            if (onDesignElementSelected) onDesignElementSelected(element || null);
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ERROR) {
+            setDesignStatus('error', data.payload && data.payload.error);
+          } else if (data.type === DESIGN_MESSAGE_TYPES.DESTROYED) {
+            setDesignStatus('idle');
+          } else if (data.type === DESIGN_MESSAGE_TYPES.CHANGE_APPLIED) {
+            if (onDesignChangeApplied) onDesignChangeApplied(data.payload || {});
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_MUTATED) {
+            if (onDesignMutation) onDesignMutation(data.payload || {});
+          }
+        };
+        window.addEventListener('message', onMessage);
+        return () => {
+          window.removeEventListener('message', onMessage);
+          destroyDesignRuntime();
+        };
+      }, [onDesignElementSelected, onDesignRuntimeStatus, onDesignMutation]);
 
       async function flushMarkdownPreview() {
         if (tab !== 'preview' || pv.kind !== 'md' || !mdPreviewRef.current) return true;
@@ -126,27 +344,54 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         }
       }, [pathsKey]);
 
-      async function preview(a) {
-        const ok = await flushMarkdownPreview();
+      async function preview(a, options = {}) {
+        const ok = options.skipFlush ? true : await flushMarkdownPreview();
         if (!ok) return;
         const selected = { ...a, sessionId: a.sessionId || activeSessionId };
         setSel(selected);
+        onPreviewArtifact?.(selected);
         setTab('preview');
         setPv({ loading: true });
         setExternalUpdateBlocked(false);
-        try {
-          const info = await bridge.artifacts.artifactInfo(a.path);
-          if (!info || !info.exists) { setPv({ missing: true, info }); return; }
-          if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-            const text = await bridge.artifacts.readArtifactText(a.path);
-            setPv({ kind: info.kind, text, info });
-          } else {
-            // image / pdf / docx / xlsx / legacy_office / binary → 后端可视化转换
-            const visual = await bridge.artifacts.renderArtifactVisual(a.path);
-            setPv({ kind: info.kind, visual, info });
-          }
-        } catch (e) { setPv({ error: String(e) }); }
       }
+
+      useEffect(() => {
+        if (!sel || !sel.path || !pv.loading) return;
+        let cancelled = false;
+        (async () => {
+          try {
+            const info = await bridge.artifacts.artifactInfo(sel.path);
+            if (cancelled) return;
+            if (!info || !info.exists) { setPv({ missing: true, info }); return; }
+            if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
+              const text = await bridge.artifacts.readArtifactText(sel.path);
+              if (!cancelled) setPv({ kind: info.kind, text, info });
+            } else {
+              const visual = await bridge.artifacts.renderArtifactVisual(sel.path);
+              if (!cancelled) setPv({ kind: info.kind, visual, info });
+            }
+          } catch (e) {
+            if (!cancelled) setPv({ error: String(e) });
+          }
+        })();
+        return () => { cancelled = true; };
+      }, [sel && sel.path, pv.loading]);
+
+      useEffect(() => {
+        if (pv.loading || artifacts.length === 0) return;
+        const preferred = preferredArtifactPath
+          ? artifacts.find((a) => sameArtifactPath(a.path, preferredArtifactPath))
+          : null;
+        const fallback = artifacts[artifacts.length - 1] || null;
+        const target = preferred || (!sel ? fallback : null);
+        if (!target) return;
+        if (sel && sameArtifactPath(sel.path, target.path)) return;
+        preview(target, { skipFlush: !sel });
+      }, [preferredArtifactPath, pathsKey, activeSessionId, sel && sel.path, pv.loading]);
+
+      useEffect(() => {
+        setArtifactMenuOpen(false);
+      }, [sel && sel.path, tab]);
 
       async function handleTabSelect(key) {
         if (key === tab) return;
@@ -173,6 +418,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!change?.seq || !sel || tab !== 'preview') return;
         if (!changeMatchesSession(change, bs)) return;
         if (!sameArtifactPath(change.path, sel.path)) return;
+        if (designAiStatus === 'sending' || designAiStatus === 'running' || designAiStatus === 'refreshing') {
+          setDesignAiStatePatch({ status: 'updated', startedAt: 0 });
+          resetDesignAiStatusSoon();
+        }
         if (change.event === 'removed') {
           if (hasDirtyMarkdownPreview()) {
             setExternalUpdateBlocked('removed');
@@ -194,6 +443,26 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         return () => { cancelled = true; };
       }, [bs?.artifactChange?.seq]);
 
+      useEffect(() => {
+        if (designAiStatus === 'sending' && bs && bs.busy) {
+          setDesignAiStatePatch((current) => ({ status: 'running', startedAt: current.startedAt || Date.now() }));
+        }
+        if ((designAiStatus === 'sending' || designAiStatus === 'running') && bs && !bs.busy) {
+          if (designAiTimerRef.current) window.clearTimeout(designAiTimerRef.current);
+          designAiTimerRef.current = window.setTimeout(() => {
+            setDesignAiStatePatch((current) => {
+              if (current.status !== 'sending' && current.status !== 'running') return {};
+              return { status: designAiPendingPath ? 'no-update' : 'idle', startedAt: 0 };
+            });
+            if (designAiPendingPath) resetDesignAiStatusSoon(2600);
+          }, 3500);
+        }
+      }, [bs && bs.busy, designAiStatus, designAiPendingPath]);
+
+      useEffect(() => () => {
+        if (designAiTimerRef.current) window.clearTimeout(designAiTimerRef.current);
+      }, []);
+
       const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
       const dependencyCheckButton = (message) => (
@@ -213,6 +482,101 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 : (isDark ? 'text-[#C4C7C5] hover:bg-[#282A2C]' : 'text-[#444746] hover:bg-[#F0F4F9]')}`}>
             {label}
           </button>
+        );
+      };
+      const renderArtifactSwitcher = () => {
+        if (tab !== 'preview' || !sel) {
+          return (
+            <div className={`flex items-center gap-1 rounded-full p-0.5 ${isDark ? 'bg-[#141517]' : 'bg-[#F0F4F9]'}`}>
+              {tabBtn('list', t.apTabList)}
+              {tabBtn('preview', t.apTabPreview)}
+            </div>
+          );
+        }
+        const info = infos[sel.path];
+        return (
+          <div className="relative min-w-0">
+            <button
+              type="button"
+              data-testid="artifact-switcher-button"
+              onClick={() => setArtifactMenuOpen((open) => !open)}
+              className={`flex h-9 max-w-[360px] items-center gap-2 rounded-full border px-3 text-left text-[13px] font-semibold shadow-sm transition-colors ${
+                isDark
+                  ? 'border-white/10 bg-[#2C2C2E] text-[#F5F5F7] hover:bg-[#3A3A3C]'
+                  : 'border-black/[0.06] bg-white text-[#1D1D1F] hover:bg-[#F5F5F7]'
+              }`}
+              aria-haspopup="menu"
+              aria-expanded={artifactMenuOpen ? 'true' : 'false'}
+              title={sel.basename}
+            >
+              <ArtifactTileIcon name={sel.basename} tileCls="w-6 h-6 rounded-[8px]" glyphCls="w-3.5 h-3.5" />
+              <span className="min-w-0 truncate">{sel.basename}</span>
+              {artifacts.length > 1 && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] ${isDark ? 'bg-white/10 text-[#D1D1D6]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>{artifacts.length}</span>}
+              <span className={`shrink-0 text-[10px] ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>▼</span>
+            </button>
+            {artifactMenuOpen && (
+              <div
+                data-testid="artifact-switcher-menu"
+                role="menu"
+                className={`absolute left-0 top-11 z-40 w-[320px] max-w-[calc(100vw-48px)] rounded-[18px] border p-1.5 shadow-2xl backdrop-blur-2xl ${
+                  isDark ? 'border-white/10 bg-[#2C2C2E]/95 text-[#F5F5F7]' : 'border-black/10 bg-white/95 text-[#1D1D1F]'
+                }`}
+              >
+                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>
+                  切换产物
+                </div>
+                {artifacts.map((a) => {
+                  const itemInfo = infos[a.path];
+                  const active = sel && sameArtifactPath(sel.path, a.path);
+                  return (
+                    <div
+                      key={a.path}
+                      role="menuitem"
+                      className={`group flex w-full items-center gap-1 rounded-[12px] transition-colors ${
+                        active
+                          ? (isDark ? 'bg-[#0A84FF]/24' : 'bg-[#E5F0FF]')
+                          : (isDark ? 'hover:bg-white/10' : 'hover:bg-black/[0.05]')
+                      }`}
+                      title={a.path}
+                    >
+                      <button
+                        type="button"
+                        data-testid="artifact-switcher-item"
+                        onClick={() => { setArtifactMenuOpen(false); preview(a); }}
+                        className="flex min-w-0 flex-1 items-center gap-2 rounded-[12px] px-2.5 py-2 text-left"
+                      >
+                        <ArtifactTileIcon name={a.basename} tileCls="w-8 h-8 rounded-[10px]" glyphCls="w-4 h-4" />
+                        <span className="min-w-0 flex-1">
+                          <span className={`block truncate text-[13px] font-medium ${isDark ? 'text-[#F5F5F7]' : 'text-[#1D1D1F]'}`}>{a.basename}</span>
+                          <span className={`block truncate text-[11px] ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>
+                            {itemInfo ? apFormatMtime(itemInfo.modified) : '—'}
+                          </span>
+                        </span>
+                        {active && <span className="shrink-0 text-[12px] text-[#007AFF]">✓</span>}
+                      </button>
+                      {canOpenContainingFolder && (
+                        <button
+                          type="button"
+                          title={t.apBtnLocate}
+                          onClick={(event) => { event.preventDefault(); event.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
+                          className={`mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 ${
+                            isDark ? 'hover:bg-white/10 text-[#D1D1D6]' : 'hover:bg-white text-[#6E6E73]'
+                          }`}
+                        >
+                          <FolderOpen size={14} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {info && (
+                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] ${isDark ? 'border-white/10 text-[#A1A1AA]' : 'border-black/10 text-[#8E8E93]'}`}>
+                    当前修改时间 {apFormatMtime(info.modified)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         );
       };
 
@@ -247,7 +611,16 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (pv.kind === 'html') {
           // 方角 + 不裁剪:WebKitGTK 对「会内部滚动的 iframe」做任何 border-radius 裁剪
           // (含外层 overflow-hidden)都会在边缘留黑色梳齿残影。去掉圆角是唯一彻底解。
-          return <ScaledHtmlPreview html={pv.text || ''} />;
+          return (
+            <ScaledHtmlPreview
+              html={pv.text || ''}
+              onFrameLoad={handlePreviewFrameLoad}
+              zoomMode={showDesignWorkbench ? htmlZoomMode : 'auto-width'}
+              customScale={htmlCustomScale}
+              onScaleChange={setHtmlScale}
+              onCustomScaleChange={handleHtmlCustomScaleChange}
+            />
+          );
         }
         if (pv.kind === 'text') {
           return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>;
@@ -258,7 +631,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return (
             <div className="flex flex-col gap-2 h-full">
               {vis.warning && <div className={`flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
-              <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+              <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+                data-testid="artifact-html-preview-frame"
+                onLoad={(e) => handlePreviewFrameLoad(e.currentTarget)}
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
             </div>
           );
@@ -295,11 +670,40 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           <div className={`relative h-full flex flex-col ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} ${isWide ? 'w-full border-l ' + (isDark ? 'border-white/10' : 'border-black/10') : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
             <div className={`flex items-center justify-between px-3 py-2.5 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-              <div className={`flex items-center gap-1 rounded-full p-0.5 ${isDark ? 'bg-[#141517]' : 'bg-[#F0F4F9]'}`}>
-                {tabBtn('list', t.apTabList)}
-                {tabBtn('preview', t.apTabPreview)}
+              {renderArtifactSwitcher()}
+              <div className="flex items-center gap-1.5">
+                {onToggleFullscreen && (
+                  <button
+                    onClick={onToggleFullscreen}
+                    data-testid="artifact-fullscreen-toggle"
+                    aria-label={designMode
+                      ? (isFullscreen ? '退出编辑模式并回到右侧预览' : '进入编辑模式：放大预览并编辑选中元素')
+                      : (isFullscreen ? '退出全屏并回到右侧预览' : '全屏显示产物预览')}
+                    title={designMode
+                      ? (isFullscreen ? '退出编辑模式并回到右侧预览' : '进入编辑模式：放大预览并编辑选中元素')
+                      : (isFullscreen ? '退出全屏' : '全屏显示')}
+                    className={designMode
+                      ? `h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-sm ${
+                          isFullscreen
+                            ? 'bg-[#007AFF] text-white hover:bg-[#0066D6]'
+                            : isDark
+                              ? 'bg-white/10 text-[#F5F5F7] hover:bg-white/15 ring-1 ring-white/10'
+                              : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/[0.04]'
+                        }`
+                      : `w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>
+                    {isFullscreen ? <Minimize2 size={designMode ? 15 : 17} /> : <Maximize2 size={designMode ? 15 : 17} />}
+                    {designMode && <span>{isFullscreen ? '退出编辑' : '编辑模式'}</span>}
+                  </button>
+                )}
+                <button
+                  onClick={handleClose}
+                  data-testid="artifact-close"
+                  aria-label="关闭产物预览"
+                  title="关闭预览"
+                  className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>
+                  <XCircle size={18} />
+                </button>
               </div>
-              <button onClick={handleClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}><XCircle size={18} /></button>
             </div>
 
             {/* body */}
@@ -333,9 +737,165 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               ) : (
                 <>
                   {/* preview content */}
-                  <div className="flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">{renderContent()}</div>
+                  <div className={`flex-1 min-h-0 flex min-w-0 ${showDesignWorkbench ? 'flex-row' : 'flex-col xl:flex-row'}`}>
+                    <div className="relative flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0" data-testid="artifact-preview-content">
+                      {renderContent()}
+                      {showDesignWorkbench && pv.kind === 'html' && (
+                        <div data-testid="artifact-html-zoom-controls" className={`absolute bottom-4 right-4 z-20 flex items-center gap-1 rounded-full border p-1 text-[12px] shadow-lg backdrop-blur-2xl ${isDark ? 'border-white/10 bg-[#1E1F20]/95 text-[#E3E3E3]' : 'border-black/10 bg-white/95 text-[#1F1F1F]'}`}>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              data-testid="artifact-html-zoom-mode"
+                              onClick={() => setHtmlZoomMenuOpen((open) => !open)}
+                              className={`h-8 rounded-full px-3 font-semibold transition-colors ${isDark ? 'bg-[#0A84FF] text-white hover:bg-[#409CFF]' : 'bg-[#007AFF] text-white hover:bg-[#006EE6]'}`}
+                              aria-haspopup="menu"
+                              aria-expanded={htmlZoomMenuOpen ? 'true' : 'false'}
+                            >
+                              {htmlZoomMode === 'custom' ? '自定义' : currentZoomOption.label}
+                              <span className="ml-1 text-[10px] opacity-80">▼</span>
+                            </button>
+                            {htmlZoomMenuOpen && (
+                              <div
+                                data-testid="artifact-html-zoom-menu"
+                                className={`absolute bottom-10 left-0 min-w-[128px] rounded-[14px] border p-1.5 text-[13px] shadow-xl ${
+                                  isDark ? 'border-white/10 bg-[#2C2C2E] text-[#F5F5F7]' : 'border-black/10 bg-white text-[#1D1D1F]'
+                                }`}
+                              >
+                                {HTML_ZOOM_OPTIONS.map((option) => (
+                                  <button
+                                    key={option.key}
+                                    type="button"
+                                    data-testid={`artifact-html-zoom-${option.key}`}
+                                    onClick={() => setPresetZoomMode(option.key)}
+                                    className={`flex h-9 w-full items-center justify-between rounded-[10px] px-3 text-left font-medium transition-colors ${
+                                      htmlZoomMode === option.key
+                                        ? (isDark ? 'bg-[#0A84FF]/25 text-[#F5F5F7]' : 'bg-[#E5F0FF] text-[#0057D9]')
+                                        : (isDark ? 'hover:bg-white/10' : 'hover:bg-black/[0.05]')
+                                    }`}
+                                  >
+                                    <span>{option.label}</span>
+                                    {htmlZoomMode === option.key && <span className="text-[12px]">✓</span>}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <span data-testid="artifact-html-zoom-scale" className={`min-w-[42px] px-2 text-center font-medium ${isDark ? 'text-[#F5F5F7]' : 'text-[#1D1D1F]'}`}>{Math.round(htmlScale * 100)}%</span>
+                          <button
+                            type="button"
+                            data-testid="artifact-html-zoom-out"
+                            onClick={() => adjustHtmlCustomScale(-0.1)}
+                            className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                            aria-label="缩小画布"
+                            title="缩小画布"
+                          >
+                            -
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="artifact-html-zoom-in"
+                            onClick={() => adjustHtmlCustomScale(0.1)}
+                            className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                            aria-label="放大画布"
+                            title="放大画布"
+                          >
+                            +
+                          </button>
+                        </div>
+                      )}
+                      {showDesignWorkbench && (
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-gradient-to-t from-black/45 via-black/16 to-transparent"
+                        />
+                      )}
+                      {showDesignWorkbench && (
+                        <form
+                          data-testid="artifact-design-ai-composer"
+                          onSubmit={submitDesignAiText}
+                          className={`absolute bottom-16 left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-[22px] border px-2.5 py-1.5 shadow-[0_14px_38px_rgba(0,0,0,.24)] backdrop-blur-2xl ${
+                            isDark ? 'border-white/15 bg-[#1C1C1E]/95 text-[#F5F5F7]' : 'border-white/80 bg-white/[0.96] text-[#1D1D1F]'
+                          }`}
+                          style={{ width: 'min(520px, calc(100% - 260px))' }}
+                        >
+                          {designAiStatus === 'idle' ? (
+                            <>
+                              <input
+                                value={designAiText}
+                                onChange={(event) => setDesignAiStatePatch({ text: event.target.value })}
+                                data-testid="artifact-design-ai-input"
+                                placeholder={selectedDesignElement ? '描述你想怎么调整已选中的元素' : '描述你想怎么调整这张设计'}
+                                className={`min-w-0 flex-1 bg-transparent text-[13px] outline-none ${
+                                  isDark ? 'placeholder:text-[#C7C7CC]' : 'placeholder:text-[#6E6E73]'
+                                }`}
+                              />
+                              <button
+                                type="submit"
+                                data-testid="artifact-design-ai-send"
+                                disabled={!designAiText.trim()}
+                                className={`h-8 rounded-full px-3 text-[12px] font-semibold transition-colors ${
+                                  designAiText.trim()
+                                    ? 'bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6]'
+                                    : (isDark ? 'bg-white/14 text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#8E8E93]')
+                                }`}
+                              >
+                                发送
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex min-w-0 flex-1 items-center gap-2" data-testid="artifact-design-ai-status">
+                                <div className="flex min-w-0 flex-1 flex-col justify-center">
+                                  <div className="flex items-center gap-2 text-[13px] font-semibold leading-5">
+                                  {(designAiStatus === 'sending' || designAiStatus === 'running') && <span className="h-2 w-2 animate-pulse rounded-full bg-[#007AFF]" />}
+                                  <span>{designAiStatusTitle}</span>
+                                  </div>
+                                  {designAiStatusDetail && (
+                                    <div className={`truncate text-[11px] leading-4 ${isDark ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'}`}>
+                                      {designAiStatusDetail}
+                                    </div>
+                                  )}
+                                </div>
+                                {(designAiStatus === 'updated' || designAiStatus === 'no-update') && (
+                                  <div className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium ${isDark ? 'bg-white/10 text-[#D1D1D6]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
+                                    {designAiStatus === 'updated' ? '预览已刷新' : '可继续描述'}
+                                  </div>
+                                )}
+                              </div>
+                              {(designAiStatus === 'sending' || designAiStatus === 'running') && (
+                                <button
+                                  type="button"
+                                  data-testid="artifact-design-ai-stop"
+                                  onClick={cancelDesignAi}
+                                  className={`h-7 shrink-0 rounded-full px-2.5 text-[12px] font-semibold transition-colors ${
+                                    isDark ? 'bg-white text-[#1D1D1F] hover:bg-[#F2F2F7]' : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA]'
+                                  }`}
+                                >
+                                  停止
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </form>
+                      )}
+                    </div>
+                    {showDesignWorkbench && (
+                      <div
+                        className={`w-[300px] shrink-0 overflow-hidden border-l ${isDark ? 'border-white/10 bg-[#1E1F20]' : 'border-black/10 bg-white'}`}
+                        data-testid="artifact-design-inspector-host">
+                        <DesignInspectorPanel
+                          isDark={isDark}
+                          selectedElement={selectedDesignElement}
+                          changes={designChanges}
+                          onApplyChange={onDesignApplyChange}
+                          onClearChanges={onDesignClearChanges}
+                          docked
+                        />
+                      </div>
+                    )}
+                  </div>
                   {/* meta footer */}
-                  <div className={`shrink-0 border-t px-4 py-3 ${isDark ? 'border-white/10 bg-[#1A1B1D]' : 'border-black/10 bg-[#F8FAFD]'}`}>
+                  {!isFullscreen && <div className={`shrink-0 border-t px-4 py-3 ${isDark ? 'border-white/10 bg-[#1A1B1D]' : 'border-black/10 bg-[#F8FAFD]'}`} data-testid="artifact-meta-footer">
                     <div className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel.basename}</div>
                     <div className={`mt-0.5 text-[12px] ${muted}`}>
                       {apKindLabel(t, pv.info && pv.info.kind, sel.basename)}
@@ -365,7 +925,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         </button>
                       )}
                     </div>
-                  </div>
+                  </div>}
                 </>
               )}
             </div>

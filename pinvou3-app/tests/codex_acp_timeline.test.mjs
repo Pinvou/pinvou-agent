@@ -357,8 +357,8 @@ try {
     && homeModeSwitcher.includes('Codex'),
   'the home composer must expose Work/Code modes and the current Codex code agent');
   assert.ok(homeModeSwitcher.includes("key: 'design'")
-    && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = false'),
-  'Design must remain in the home mode configuration but stay hidden');
+    && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = true'),
+  'Design must share the real home mode entry with Work and Code');
   assert.ok(homeModeSwitcher.includes("key: 'claude'")
     && homeModeSwitcher.includes("key: 'kimi'")
     && homeModeSwitcher.includes("key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true")
@@ -367,7 +367,8 @@ try {
     && homeModeSwitcher.includes('onCodeAgentChange'),
   'the code home must expose Codex, Claude, and Kimi through one ACP Agent selector');
   assert.ok(homeModeSwitcher.includes('prominent')
-    && iosControls.includes('compact && prominent')
+    && iosControls.includes('if (compact)')
+    && iosControls.includes("const heightClass = prominent ? 'h-10' : 'h-9'")
     && iosControls.includes('transition-transform duration-200 ease-out'),
   'the home mode switcher must keep the PR #16 sliding segmented-control treatment');
   assert.ok(main.includes('function handleSwitchHomeMode(mode)')
@@ -376,6 +377,9 @@ try {
     && main.includes("setCurrentView('codex')"),
   'selecting Codex must continue to enter the existing Codex draft page');
   const acpAgentLogo = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpAgentLogo.jsx'), 'utf8');
+  assert.match(main,
+    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}\);[\s\S]*?bridge\.sessions\.createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
+  'selecting Design from the shared mode entry must return to ChatView design mode');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
     && acpAgentLogo.includes('<CodexLogo')
     && acpAgentLogo.includes("brand-icons/claude.png")

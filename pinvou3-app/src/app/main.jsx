@@ -18,6 +18,7 @@ import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
+import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
@@ -997,7 +998,12 @@ function workspaceDisplayName(path) {
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
+        } else if (mode === 'design') {
+          savePinvouModeState({ mode: 'design' });
+          if (bridge.available) bridge.sessions.createNewSession();
+          setCurrentView('chat');
         } else if (mode === 'work') {
+          savePinvouModeState({ mode: 'work' });
           if (bridge.available) bridge.sessions.createNewSession();
           setCurrentView('chat');
         }

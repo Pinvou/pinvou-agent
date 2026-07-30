@@ -4,7 +4,7 @@ import { CodexLogo } from '../../components/CodexLogo.jsx';
 import { AcpAgentLogo } from '../codex/AcpAgentLogo.jsx';
 import { IosSegmentedControl } from '../../components/IosControls.jsx';
 
-const HOME_DESIGN_MODE_ENABLED = false;
+const HOME_DESIGN_MODE_ENABLED = true;
 
 const HOME_MODE_OPTIONS = [
   { key: 'work', labelKey: 'work', Icon: Briefcase, testId: 'home-mode-work' },
