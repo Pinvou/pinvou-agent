@@ -846,7 +846,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   <span className={`hidden md:block text-right text-[12px] ${muted}`}>{fmtSize(f.size)}</span>
                                   <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
                                   <div className="flex shrink-0 items-center justify-end gap-1">
-                                    <button title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); }}
+                                    <button title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
                                       className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
                                       <Plus size={15} />
                                     </button>
@@ -1339,12 +1339,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 ) : (
                   <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
                     {colls.map((c) => (
-                      <button key={c.id} onClick={async () => { try { setIdx(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch (e) {} setAddToKb(null); setSub('kb'); }}
+                      <button key={c.id} onClick={async () => { try { setIdx(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch (e) {} setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
                         className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
                     ))}
                   </div>
                 )}
-                <button onClick={() => { const p = addToKb; setAddToKb(null); setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
+                <button onClick={() => { const p = addToKb; setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
               </div>
             </div>
           )}
