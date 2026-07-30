@@ -1507,6 +1507,7 @@
   var loadSessionModel = settingsFeature.loadSessionModel;
   var switchModel = settingsFeature.switchModel;
   var testModelConnection = settingsFeature.testModelConnection;
+  var testImageInputCapability = settingsFeature.testImageInputCapability;
   var testSearchProvider = settingsFeature.testSearchProvider;
 
   var interactionFeature = installBridgeFeature("interaction", {
@@ -1812,6 +1813,7 @@
       loadSessionModel: loadSessionModel,
       switchModel: switchModel,
       testModelConnection: testModelConnection,
+      testImageInputCapability: testImageInputCapability,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
       // Plan/YOLO

@@ -382,6 +382,7 @@ command_protocol!(
         "get_image_input_capability",
         "test_search_provider",
         "test_model_connection",
+        "test_image_input_capability",
         "update_settings",
         "update_search_settings",
         "save_settings_and_restart",

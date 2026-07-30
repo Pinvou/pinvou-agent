@@ -1092,6 +1092,11 @@ const dict = {
       providerCatalog:{},
       imageCapability:'图片输入能力', imageCapabilityAuto:'自动判断', imageCapabilityEnabled:'支持图片', imageCapabilityDisabled:'不支持图片',
       visionModel:'视觉模型', visionModelNone:'无', visionModelDesc:'当前模型不能看图时，用该模型分析图片',
+      imageCapabilityTest:'测试图片能力', imageCapabilityTestHint:'发送一张纯色测试图，验证当前模型能否识图',
+      imageCapabilityTestSupported:'支持图片', imageCapabilityTestUnsupported:'不支持图片输入',
+      imageCapabilityTestError:'测试失败，请先确认连接与 API Key 可用',
+      imageCapabilityTestReply:summary=>`模型回复：${summary}`,
+      imageCapabilityTestEnableHint:'可在上方将图片输入能力设为“支持图片”',
     });
     Object.assign(dict.zh.uiAttachments, {
       imageUnsupported:'当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。',
@@ -1121,6 +1126,11 @@ const dict = {
       },
       imageCapability:'Image input', imageCapabilityAuto:'Auto', imageCapabilityEnabled:'Supports images', imageCapabilityDisabled:'No image support',
       visionModel:'Vision model', visionModelNone:'None', visionModelDesc:'Used to analyze images when the current model cannot see them',
+      imageCapabilityTest:'Test image input', imageCapabilityTestHint:'Send a solid-color test image to check whether the model can see images',
+      imageCapabilityTestSupported:'Supports images', imageCapabilityTestUnsupported:'No image support',
+      imageCapabilityTestError:'Test failed. Check the connection and API Key first',
+      imageCapabilityTestReply:summary=>`Model reply: ${summary}`,
+      imageCapabilityTestEnableHint:'You can set image input to “Supports images” above',
     });
     Object.assign(dict.en.uiAttachments, {
       imageUnsupported:'The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.',
@@ -1150,6 +1160,11 @@ const dict = {
       },
       imageCapability:'画像入力', imageCapabilityAuto:'自動判定', imageCapabilityEnabled:'画像対応', imageCapabilityDisabled:'画像非対応',
       visionModel:'ビジョンモデル', visionModelNone:'なし', visionModelDesc:'現在のモデルが画像を扱えない場合、このモデルで画像を解析します',
+      imageCapabilityTest:'画像テスト', imageCapabilityTestHint:'単色のテスト画像を送信して、モデルが画像を認識できるか確認します',
+      imageCapabilityTestSupported:'画像対応', imageCapabilityTestUnsupported:'画像非対応',
+      imageCapabilityTestError:'テストに失敗しました。接続と API Key を先に確認してください',
+      imageCapabilityTestReply:summary=>`モデルの回答：${summary}`,
+      imageCapabilityTestEnableHint:'上の画像入力を「画像対応」に設定できます',
     });
     Object.assign(dict.ja.uiAttachments, {
       imageUnsupported:'現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。',

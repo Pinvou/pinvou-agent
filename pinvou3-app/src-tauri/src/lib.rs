@@ -635,6 +635,7 @@ pub fn run() {
             commands::codex::open_codex_workspace_file,
             commands::codex::reveal_codex_workspace_file,
             commands::settings::test_model_connection,
+            commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
             commands::voice::reset_microphone_permission,

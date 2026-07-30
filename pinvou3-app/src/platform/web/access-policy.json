@@ -103,6 +103,7 @@
     "submit_feedback",
     "submit_user_input",
     "summon_pinvou",
+    "test_image_input_capability",
     "unbind_session_skill",
     "unequip_persona",
     "update_memory_profile",

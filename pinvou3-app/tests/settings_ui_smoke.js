@@ -89,6 +89,7 @@ function injectSource() {
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
+    var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     window.alert = function (message) { record('window_alert', { message: message }); };
@@ -136,6 +137,7 @@ function injectSource() {
           return Promise.resolve(null);
         case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
         case 'test_model_connection': return Promise.resolve(Object.assign({}, modelTestResponse));
+        case 'test_image_input_capability': return Promise.resolve(Object.assign({}, imageTestResponse));
         case 'discover_local_vllm': return Promise.resolve({ candidates: [
           {
             provider: 'ollama',
@@ -188,6 +190,7 @@ function injectSource() {
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
+      setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       resolveDownload: function () {
         if (pendingDownloadResolve) {
           var resolve = pendingDownloadResolve;
@@ -754,6 +757,97 @@ async function modalWidth(page, headingText) {
       && clearedVision.vision_model_id === null
       && clearedVision.image_capability_override === 'enabled',
     JSON.stringify(clearedVision && { override: clearedVision.image_capability_override, vision: clearedVision.vision_model_id }));
+
+  // ⑦.img.6-11 测试图片能力(设计 §7.3):按钮渲染、supported/unsupported/error 分态、表单变更清除结果。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const imageTestInitial = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = root && root.querySelector('[data-testid="image-capability-test"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    return {
+      hasButton: !!button && (button.textContent || '').includes('测试图片能力'),
+      buttonEnabled: !!button && !button.disabled,
+      hintShown: !!result && (result.textContent || '').includes('纯色测试图'),
+    };
+  });
+  rec('⑦.img.6 编辑模型展示「测试图片能力」按钮且默认显示提示文案', Object.values(imageTestInitial).every(Boolean), JSON.stringify(imageTestInitial));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestSupported = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'test_image_input_capability');
+    return {
+      text: text,
+      args: call && call.args,
+      showsSupported: text.includes('支持图片'),
+      showsReply: text.includes('模型回复：红色'),
+      // 当前档位已是「支持图片」(⑦.img.3 保存),不应再提示设置。
+      noEnableHint: !text.includes('可在上方将图片输入能力设为'),
+    };
+  });
+  rec('⑦.img.7 supported 结果展示模型回复摘要且按当前表单值发起测试',
+    imageTestSupported.showsSupported
+      && imageTestSupported.showsReply
+      && imageTestSupported.noEnableHint
+      && imageTestSupported.args
+      && imageTestSupported.args.model === 'deepseek-v4-pro'
+      && imageTestSupported.args.baseUrl === 'https://api.deepseek.com'
+      && imageTestSupported.args.apiKey === '',
+    JSON.stringify(imageTestSupported));
+  // 档位切回「自动判断」,supported 结果应提示可设为「支持图片」。
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-auto"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestAutoHint = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return { text: text, showsEnableHint: text.includes('可在上方将图片输入能力设为') };
+  });
+  rec('⑦.img.8 档位为自动时 supported 结果提示可设为「支持图片」', imageTestAutoHint.showsEnableHint, imageTestAutoHint.text);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'unsupported', verified: false, summary: 'this model does not support image input', http_status: 400 }));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestUnsupported = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return {
+      text: text,
+      showsUnsupported: text.includes('不支持图片输入'),
+      showsProvider: text.includes('does not support image input'),
+    };
+  });
+  rec('⑦.img.9 unsupported 结果展示 provider 错误摘要', imageTestUnsupported.showsUnsupported && imageTestUnsupported.showsProvider, imageTestUnsupported.text);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'error', verified: false, summary: '连接超时', http_status: null }));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestError = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return { text: text, showsError: text.includes('测试失败') && !text.includes('不支持图片输入') && !text.includes('支持图片') };
+  });
+  rec('⑦.img.10 error 结果与「不支持」严格区分', imageTestError.showsError, imageTestError.text);
+  // 表单值变化后上一次测试结果应清除(恢复提示文案)。已存 Key 的模型占位符是掩码,按类型选择。
+  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] input[type="password"]');
+  await imageTestKeyInput.type('k');
+  await sleep(200);
+  const imageTestCleared = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return { text: text, backToHint: text.includes('纯色测试图') };
+  });
+  rec('⑦.img.11 表单值变化后清除上一次测试结果', imageTestCleared.backToHint, imageTestCleared.text);
+  await clickExact(page, '取消');
+  await sleep(200);
 
   await clickSettingsSection(page, '搜索');
   const searchList = await page.evaluate(() => {
