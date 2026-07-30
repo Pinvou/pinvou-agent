@@ -7,7 +7,7 @@ name: PR Check
 # - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
 # - frontend-test:前端/Relay/WebUI 改动时跑 lint、构建、逻辑测试和浏览器旅程。
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
-# - rust-test(编译类):普通 PR 默认不跑;进入 Merge Queue 后基于最新 main 跑完整测试。
+# - rust-test(编译类):普通 PR 默认不跑;Rust 相关改动进入 Merge Queue 后基于最新 main 跑完整测试。
 #   高风险 PR 可加 ci:full-rust 标签提前跑,无需等待到入队。
 # - rust-lint:fmt / clippy / cargo-deny 三项硬门禁(均无 continue-on-error),
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
@@ -16,7 +16,7 @@ name: PR Check
 # - windows-rust-test:只在 main push 且 rust 相关路径变更时跑，不作为 PR 或 Merge Queue 合入门禁。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
 # - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
-# - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
+# - merge_group:进入 Merge Queue 后基于最新 main 按实际改动路径检查，不要求开放 PR 反复 rebase。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
@@ -96,7 +96,9 @@ jobs:
       - name: 校验 VERSION 与各版本文件一致
         run: node scripts/sync-version.mjs --check
 
-  # PR 按路径选择检查；Merge Queue 对最新 main 组合跑完整检查。
+  # PR、Merge Queue 与 main push 均按实际改动路径选择检查。
+  # paths-filter v4 原生支持 merge_group，会默认使用事件中的 base/head SHA 做 Git diff；
+  # 不得把 Merge Queue 输出硬编码为 true，否则任意文案/文档改动都会误跑全量 Rust 等检查。
   # push(main) 也跑:dorny/paths-filter 在 push 下用 before..sha 本地 diff(需 fetch-depth:0),
   # 供 windows-rust-test 按路径触发(docs-only 推送不再烧 32min Windows runner)。
   changes:
@@ -105,21 +107,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      rust_code: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.rust_code }}
-      release_contract: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.release_contract }}
-      l1: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.l1 }}
-      pet: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.pet }}
-      frontend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.frontend }}
-      relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
-      acp_runtime: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.acp_runtime }}
-      windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
+      rust_code: ${{ steps.filter.outputs.rust_code }}
+      release_contract: ${{ steps.filter.outputs.release_contract }}
+      l1: ${{ steps.filter.outputs.l1 }}
+      pet: ${{ steps.filter.outputs.pet }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      relay: ${{ steps.filter.outputs.relay }}
+      acp_runtime: ${{ steps.filter.outputs.acp_runtime }}
+      windows_codex: ${{ steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v4
         id: filter
-        if: github.event_name != 'merge_group'
         with:
           filters: |
             rust_code:
@@ -208,6 +209,7 @@ jobs:
               - 'remote-control-relay/**'
               - '.github/workflows/pr-check.yml'
             acp_runtime:
+              - 'pinvou3-app/run-dev.sh'
               - 'pinvou3-app/scripts/codex-bridge-runtime/**'
               - 'pinvou3-app/scripts/prepare-codex-bridge-runtime.sh'
               - 'pinvou3-app/scripts/tauri/build.js'
@@ -301,7 +303,7 @@ jobs:
     # 合并原 diff-viewer-test + pet-frontend-test:两者各自 npm ci + build:ui 纯重复,
     # pet 跑 npm test(链尾含 test:diff-parser)与 diff-viewer 的 test:diff-parser 也重复,
     # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖、无重复。
-    # (merge_group 事件下 changes outputs 恒为 true,故自动覆盖前端全量检查。)
+    # merge_group 复用 changes 的真实路径结果，不因进入队列而无条件全跑。
     # diff_viewer 的路径本是 frontend(pinvou3-app/src/**、tests/**、package.json 等)的
     # 严格子集,故不再单列 output,仅 frontend || pet 即可覆盖全部触发面。
     if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
@@ -377,9 +379,9 @@ jobs:
   release-contract-test:
     name: release-contract-test
     needs: changes
-    # PR 只验证版本同步、Tauri overlay 与各平台打包契约，不生成 deb/dmg/nsis。
-    # Merge Queue 全量执行，确保组合后的 main 仍满足发布契约。
-    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'merge_group' || needs.changes.outputs.release_contract == 'true') }}
+    # PR 与 Merge Queue 仅在发布链路相关路径变化时验证版本同步、Tauri overlay
+    # 与各平台打包契约，不生成 deb/dmg/nsis。
+    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.release_contract == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -475,17 +477,18 @@ jobs:
     name: rust-test
     needs: changes
     # 普通 PR 即使改 Rust 也默认跳过，避免评审阶段每次 push 都等完整编译。
-    # Merge Queue 必跑；Rust 相关 main push 跑并写暖 cache；高风险 PR 可用标签提前跑。
+    # Merge Queue 仅在 Rust 相关路径变化时跑；Rust 相关 main push 跑并写暖 cache；
+    # 高风险 PR 可用标签提前跑。
     if: >-
       ${{
         !cancelled() &&
         github.event.action != 'closed' &&
+        needs.changes.outputs.rust_code == 'true' &&
         (
           github.event_name == 'merge_group' ||
-          (github.event_name == 'push' && needs.changes.outputs.rust_code == 'true') ||
+          github.event_name == 'push' ||
           (
             github.event_name == 'pull_request' &&
-            needs.changes.outputs.rust_code == 'true' &&
             contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
           )
         )
@@ -590,9 +593,9 @@ jobs:
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
       - name: L1 harness 严格错误回归（不调用真模型）
-        # Merge Queue/main 完整跑；显式 PR 只在 harness 相关路径变化时追加。
+        # 仅在 harness 及其直接依赖路径变化时追加，避免无关 Rust 改动重复跑。
         # 保留 --test-threads=1:仅 3 个 strict_mode_ 测试,harness 本身需串行语义。
-        if: ${{ github.event_name == 'merge_group' || github.event_name == 'push' || needs.changes.outputs.l1 == 'true' }}
+        if: ${{ needs.changes.outputs.l1 == 'true' }}
         run: >-
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --test l1_dialog_harness strict_mode_

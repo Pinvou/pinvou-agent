@@ -66,7 +66,37 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
         )
 
-    def test_full_rust_runs_in_merge_queue_or_by_explicit_label(self):
+    def test_merge_queue_uses_real_path_filtering(self):
+        changes = self.pr_workflow.split(
+            "\n  changes:", maxsplit=1
+        )[1].split("\n  fast-gate:", maxsplit=1)[0]
+        self.assertIn("uses: dorny/paths-filter@v4", changes)
+        self.assertNotIn("if: github.event_name != 'merge_group'", changes)
+        self.assertNotIn(
+            "github.event_name == 'merge_group' && 'true'",
+            changes,
+        )
+        for output in (
+            "rust_code",
+            "release_contract",
+            "l1",
+            "pet",
+            "frontend",
+            "relay",
+            "acp_runtime",
+            "windows_codex",
+        ):
+            self.assertIn(
+                f"{output}: ${{{{ steps.filter.outputs.{output} }}}}",
+                changes,
+            )
+        self.assertIn(
+            "- 'pinvou3-app/run-dev.sh'",
+            changes,
+            "开发启动入口变化必须触发 ACP Runtime 契约检查",
+        )
+
+    def test_rust_runs_for_relevant_merge_queue_or_explicit_label(self):
         self.assertIn("merge_group:", self.pr_workflow)
         self.assertIn("ci:full-rust", self.pr_workflow)
         rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
@@ -74,16 +104,37 @@ class CiGatePolicyTests(unittest.TestCase):
         )[0]
         self.assertIn("github.event_name == 'merge_group'", rust_test)
         self.assertIn(
+            "needs.changes.outputs.rust_code == 'true'",
+            rust_test,
+        )
+        self.assertIn(
             "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
             rust_test,
         )
         self.assertIn(
-            "github.event_name == 'push' && needs.changes.outputs.rust_code == 'true'",
+            "github.event_name == 'push'",
             rust_test,
         )
         self.assertNotIn(
             "github.event_name == 'push' || needs.changes.outputs.rust_code == 'true'",
             rust_test,
+        )
+        self.assertIn(
+            "if: ${{ needs.changes.outputs.l1 == 'true' }}",
+            rust_test,
+        )
+
+    def test_release_contract_is_path_scoped_in_merge_queue(self):
+        release_contract = self.pr_workflow.split(
+            "\n  release-contract-test:", maxsplit=1
+        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        self.assertIn(
+            "needs.changes.outputs.release_contract == 'true'",
+            release_contract,
+        )
+        self.assertNotIn(
+            "github.event_name == 'merge_group' ||",
+            release_contract,
         )
 
     def test_main_cache_writer_is_not_cancelled(self):
