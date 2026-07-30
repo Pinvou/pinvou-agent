@@ -10,7 +10,7 @@
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
 | 公开固定基线 | tag `pinvou-v0.9.0-r1`，commit `070f4413eeb0e0c4e6f2634f1ada13c60fd2e86e` |
-| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `070f4413eeb0`；本地 `feat/native-image-input` 另有未推送维护提交 `9be4f1d03`（见 T5） |
+| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `070f4413eeb0`；本地 `feat/native-image-input` 另有未推送维护提交 `4671b579b`（见 T5） |
 | 组织方式 | **6 个长期主题 commit + 3 个维护/修复 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
 | drift | 对 `v0.9.0`：**+5246 / -659，74 文件**（含本地未推送的结构化图片输入 patch） |
 | 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
@@ -86,7 +86,7 @@
   - `b6991463b fix: 修复宿主工具仅在 Plan 模式注册`
   - `c7dbe0353 fix(workflow): 修复工作流子代理写入权限丢失 (#19)`
   - `b2e3a83bf chore(ci): 补齐 Pinvou fork 公开分支门禁`
-  - `9be4f1d03 feat: 支持结构化图片消息输入`（本地未推送）
+  - `4671b579b feat: 支持结构化图片消息输入`（本地未推送）
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/engine/tests.rs`、`core/ops.rs`、`core/events.rs`、`tools/subagent/mod.rs`、`tools/subagent/tests.rs`、`mcp/oauth.rs`、`models.rs`、`vision/image_input.rs`、`core/engine/turn_loop.rs`、`client/anthropic.rs`、`vision/tools.rs`、`session_manager.rs`。
 - **内容**：
   - `EngineConfig.extra_tools`、hard `tool_whitelist`、会话 reasoning effort 和动态 disallowed tools；宿主注入工具在 Plan / Agent / Yolo 三种 turn registry 中统一注册，避免非 Plan 分支提前返回时丢失 `kb_search`。
