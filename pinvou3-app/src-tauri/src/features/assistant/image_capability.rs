@@ -5,8 +5,9 @@
 //!
 //! 解析优先级:
 //! 1. 用户对 SavedModel 的显式 override(`Enabled`→Supported,`Disabled`→Unsupported);
-//! 2. 模型目录 `modalities.input` 含 `image` —— **仓内目前没有模型目录/modalities
-//!    数据源**,该级暂缺;将来接入时插到 override 之后、内置表之前;
+//! 2. 底座模型目录(`deepseek_tui::model_catalog`,合并链:用户覆盖 → provider 缓存
+//!    → 内置快照)条目 `modalities` 含 `image` → Supported;命中但不含 image **不下
+//!    否定结论**(目录否定标记不可全信,如 claude-opus-4-8 标 text-only),继续下落;
 //! 3. 内置已验证能力表(`VERIFIED_IMAGE_CAPABLE_MODELS`);
 //! 4. 都判不出 → `Unknown`(默认不冒充支持,允许用户在设置里 override Enabled)。
 //!
@@ -97,6 +98,20 @@ fn builtin_verified_supports_image(model: &str) -> bool {
         .any(|entry| normalized.contains(entry))
 }
 
+/// 底座模型目录查询:条目存在且输入模态含 `image` 时为 true(设计 §6.3 第②级)。
+/// 只用于下 Supported 结论;命中但不含 image 一律返回 false 由调用方继续下落,
+/// 不用目录的否定标记否决(目录对 kimi-k2.7-code、claude-opus-4-8 等标 text-only
+/// 与实际部署可能不符)。
+fn catalog_declares_image_input(model: &str) -> bool {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+    deepseek_tui::model_catalog::resolved_entry(normalized).is_some_and(|entry| {
+        entry.modalities.iter().any(|m| m.eq_ignore_ascii_case("image"))
+    })
+}
+
 /// 解析一条 SavedModel 的生效图片输入能力(优先级见模块头注释)。
 pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapability {
     // ① 用户显式覆盖优先于一切自动判断。
@@ -105,7 +120,10 @@ pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapabilit
         ImageCapabilityOverride::Disabled => return EffectiveImageCapability::Unsupported,
         ImageCapabilityOverride::Auto => {}
     }
-    // ② 模型目录 modalities.input:仓内无此数据源,暂缺(见模块头注释)。
+    // ② 底座模型目录 modalities 含 image。
+    if catalog_declares_image_input(&model.model) {
+        return EffectiveImageCapability::Supported;
+    }
     // ③ 内置已验证能力表。
     if builtin_verified_supports_image(&model.model) {
         return EffectiveImageCapability::Supported;
@@ -118,8 +136,9 @@ pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapabilit
 ///
 /// ACP session 的模型由 ACP agent 管理,不是 pinvou3 SavedModel;解析规则与普通
 /// 会话保持一致:wire model 名命中用户 SavedModel 时走完整解析链(承接显式
-/// override),否则只查内置已验证表,判不出 → Unknown(不冒充支持,由 ACP 侧
-/// 提示用户在模型设置里确认)。`acp_model_id` 缺失(会话未上报模型)同样 Unknown。
+/// override),否则依次查底座模型目录与内置已验证表,判不出 → Unknown(不冒充
+/// 支持,由 ACP 侧提示用户在模型设置里确认)。`acp_model_id` 缺失(会话未上报
+/// 模型)同样 Unknown。
 pub fn acp_model_image_capability(
     prefs: &UserPrefs,
     acp_model_id: Option<&str>,
@@ -138,7 +157,8 @@ pub fn acp_model_image_capability(
     {
         return effective_image_capability(saved);
     }
-    if builtin_verified_supports_image(model_id) {
+    // wire model 未命中 SavedModel:与普通会话同一规则,先查底座模型目录再落内置表。
+    if catalog_declares_image_input(model_id) || builtin_verified_supports_image(model_id) {
         EffectiveImageCapability::Supported
     } else {
         EffectiveImageCapability::Unknown
@@ -254,7 +274,9 @@ mod tests {
 
     #[test]
     fn builtin_table_misses_text_models() {
-        // 各 preset 默认文本模型不得误判 Supported。
+        // 各 preset 默认文本模型不得误判 Supported(底座目录也不含 image)。
+        // 注意:mimo-v2.5-pro 已不在此列——底座目录标其 modalities 含 image,
+        // 经第②级判 Supported(见 catalog_positive_hit_upgrades_to_supported)。
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
             (ModelPreset::Kimi, "kimi-k3"),
@@ -262,7 +284,6 @@ mod tests {
             (ModelPreset::Doubao, "doubao-seed-evolving"),
             (ModelPreset::Minimax, "MiniMax-M3"),
             (ModelPreset::Glm, "glm-5.2"),
-            (ModelPreset::Mimo, "mimo-v2.5-pro"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(
@@ -271,6 +292,51 @@ mod tests {
                 "{name} 不应被误判为支持图片"
             );
         }
+    }
+
+    #[test]
+    fn catalog_positive_hit_upgrades_to_supported() {
+        // 底座目录标 image 但内置表未收录的模型:经第②级判 Supported。
+        for (preset, name) in [
+            (ModelPreset::Mimo, "mimo-v2.5-pro"),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
+        ] {
+            let model = saved_model(preset, name);
+            assert_eq!(
+                effective_image_capability(&model),
+                EffectiveImageCapability::Supported,
+                "{name} 应经底座模型目录判为支持图片"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_negative_never_vetoes() {
+        // 目录标 text-only 但内置表命中:目录否定不否决,仍 Supported。
+        // (gpt-5-codex 在底座目录为 ["text"],内置表 gpt-5 子串命中。)
+        let model = saved_model(ModelPreset::OpenaiCompatible, "gpt-5-codex");
+        assert_eq!(
+            effective_image_capability(&model),
+            EffectiveImageCapability::Supported
+        );
+        // 目录 text-only 且内置表也不命中:落 Unknown 而非 Unsupported——
+        // 否定结论只允许来自用户 override Disabled。
+        let model = saved_model(ModelPreset::OpenaiCompatible, "claude-opus-4-8");
+        assert_eq!(
+            effective_image_capability(&model),
+            EffectiveImageCapability::Unknown
+        );
+    }
+
+    #[test]
+    fn kimi_for_coding_unaffected_by_k27_code_text_marker() {
+        // 底座目录把 kimi-k2.7-code 标为 text-only,但 kimi-for-coding 是另一部署
+        // (用户实测可识图):目录查不到该 id,内置表(实测记录)判 Supported。
+        let model = saved_model(ModelPreset::Kimi, "kimi-for-coding");
+        assert_eq!(
+            effective_image_capability(&model),
+            EffectiveImageCapability::Supported
+        );
     }
 
     #[test]
