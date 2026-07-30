@@ -12,15 +12,15 @@ name: mac-build
 #   该依赖)。因此不设 PINVOU_REQUIRE_REMOTE_E2E,让 e2e 测试在缺依赖时静默跳过而非 panic。
 #
 # 分层触发(2026-07 CI 成本审计:暖 cache 全量 ~17min,其中 universal bundle smoke 占
-# 8.6min ≈ 50%,与 release-packages 在 VERSION bump/打包链路 PR 时的真实 dmg 构建重叠;
+# 8.6min ≈ 50%,与 release-packages 在 VERSION bump 时的真实 dmg 构建重叠;
 # main 高峰期 ~19 pushes/天,每次全量跑完一天排队 5+ 小时 mac runner):
 # - 每次触发:check + test + release-fast + verify(~8min),macOS 原生回归核心。
 # - 仅打包链路(bundle_chain)变更:追加 universal bundle smoke。链路覆盖仍完整:
-#   链路 PR 合入前由 release-packages 全平台真实打包验证;VERSION bump 全量 dmg。
+#   链路 PR 合入前由 pr-check 跑轻量发布契约;VERSION bump 再构建全量 dmg。
 # - cancel-in-progress 保持 true(verify-tip):8min 任务在 push 间隙大概率跑完,
 #   被取消的中间 run 由更新的 tip 取代,不为每个中间 commit 排队。
 # - 纯前端改动(pinvou3-app/src/**)不触发:cargo check/test 不依赖前端产物,
-#   前端进包由打包链路的 bundle smoke 与 release-packages 覆盖。
+#   前端进包由打包链路的 bundle smoke 与正式 release-packages 覆盖。
 
 on:
   push:
@@ -162,7 +162,7 @@ jobs:
 
       # tauri bundle smoke:验证 dmg/app 实际打包链路(Info.plist/entitlements/资源打包)。
       # 仅打包链路(bundle_chain)变更时跑(占全量 job 约 50% 耗时,见头部「分层触发」);
-      # 打包链路 PR 合入前由 release-packages 全平台真实打包验证,VERSION bump 全量 dmg。
+      # 打包链路 PR 合入前由 pr-check 跑轻量发布契约,VERSION bump 再构建全量 dmg。
       # universal 打包失败会让 mac-build 失败,避免主线在没有可发布 arm64 + x86_64 产物时仍显示成功。
       - name: Tauri bundle smoke (验证 dmg/app 打包,仅打包链路变更)
         if: needs.changes.outputs.bundle_chain == 'true'

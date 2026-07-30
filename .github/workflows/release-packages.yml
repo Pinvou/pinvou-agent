@@ -1,12 +1,11 @@
 name: release-packages
 
-# VERSION 或发布链路变更时自动构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
+# 仅正式版本或人工明确要求时构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
 #
 # 触发条件:
-# - push main 且 VERSION 或发布链路文件被修改(paths 限定);
-# - 影响版本/打包链路的 PR:构建公开平台产物并运行无私有凭据的 Windows 静态契约;
-# - push 事件按 github.event.before..github.sha 做精确发布链路 diff;
-# - workflow_dispatch 手动触发:跳过 diff,无条件全量构建(用于补打/重打某版本)。
+# - push main 且 VERSION 被修改;
+# - workflow_dispatch 手动触发:无条件全量构建(用于补打/重打或显式验证)。
+# 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
 # scripts/sync-version.mjs --check 校验各处版本文件(tauri.conf.json / Cargo.toml /
@@ -14,8 +13,9 @@ name: release-packages
 # 保证打进包里的任何版本号都来自 VERSION。
 #
 # 与其他 workflow 的分工:
-# - pr-check / mac-build:每次改动跑编译验证 gate(不产出可用产物)。
-# - release-packages(本 workflow):VERSION bump 或发布链路 PR 跑,产出全平台安装包 artifact。
+# - pr-check:PR 快速门禁与发布契约验证(不产出安装包)。
+# - mac-build:相关改动进入 main 后跑 macOS 原生回归。
+# - release-packages(本 workflow):VERSION bump 或人工触发时产出全平台安装包 artifact。
 # - 本 workflow 只上传 CI artifact,绝不创建/推送 GitHub Release,release 由人工填写。
 #
 # 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
@@ -28,44 +28,6 @@ on:
     branches: [main]
     paths:
       - 'VERSION'
-      - 'scripts/sync-version.mjs'
-      - '.github/workflows/release-packages.yml'
-      - '.gitmodules'
-      - 'private-runtimes/windows'
-      - 'pinvou3-app/package.json'
-      - 'pinvou3-app/package-lock.json'
-      - 'pinvou3-app/scripts/tauri/build.js'
-      - 'pinvou3-app/scripts/tauri/codex-bridge.js'
-      - 'pinvou3-app/scripts/tauri/windows-installer.js'
-      - 'pinvou3-app/scripts/tauri/windows-runtime.js'
-      - 'pinvou3-app/src-tauri/config/platforms/windows/**'
-      - 'pinvou3-app/src-tauri/packaging/windows/**'
-      - 'pinvou3-app/tests/codex_acp_windows_*'
-      - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'VERSION'
-      - 'scripts/sync-version.mjs'
-      - '.github/workflows/release-packages.yml'
-      - '.gitmodules'
-      - 'private-runtimes/windows'
-      - 'pinvou3-app/package.json'
-      - 'pinvou3-app/package-lock.json'
-      # 整目录 glob 覆盖 build/codex-bridge/effective-config/windows-* 等全部打包脚本,
-      # 以及 config/platforms/{windows,linux,macos} 与 packaging/** 全平台发布配置。
-      - 'pinvou3-app/scripts/tauri/**'
-      - 'pinvou3-app/src-tauri/tauri.conf.json'
-      - 'pinvou3-app/src-tauri/config/**'
-      - 'pinvou3-app/src-tauri/packaging/**'
-      # 以下三条字面路径虽已被上方 glob 覆盖,但必须保留:
-      # tests/windows_runtime_packaging_contract.test.js 按字面字符串断言它们在
-      # push 与 pull_request 两处 paths 中各出现一次(私有运行时发布契约)。
-      - 'pinvou3-app/scripts/tauri/windows-runtime.js'
-      - 'pinvou3-app/src-tauri/config/platforms/windows/**'
-      - 'pinvou3-app/src-tauri/packaging/windows/**'
-      - 'pinvou3-app/tests/codex_acp_windows_*'
-      - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
   workflow_dispatch:
 
 permissions:
@@ -73,22 +35,19 @@ permissions:
 
 concurrency:
   group: release-packages-${{ github.ref }}
-  # PR 连续更新时取消旧验证；main 的正式版本构建必须完整保留。
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # 正式产物不可被后续 push 或重复点击中途取消。
+  cancel-in-progress: false
 
 jobs:
-  # ── Job 1: 发布链路变更检测(gate,跑 ubuntu 快) ────────────────────
-  # push 对比事件 before..sha 的实际路径,覆盖一次 push 含多个 commit 的情况。
-  # pull_request / workflow_dispatch 无条件放行,保证发布链路改动在合入前真实打包。
-  # 首次 push 或 before commit 不可达时直接放行,宁可多构建也不漏构建。
-  # 同时用 sync-version.mjs --check 校验三处版本文件与 VERSION 一致,不一致 fail。
+  # ── Job 1: 发布 gate(跑 ubuntu 快) ─────────────────────────────────
+  # 只有 VERSION push 或人工触发能进入本工作流，因此通过版本一致性检查后直接放行。
   check-version-bump:
-    name: 检测发布链路变更
+    name: 校验发布版本
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      build_required: ${{ steps.diff.outputs.build_required }}
-      version: ${{ steps.diff.outputs.version }}
+      build_required: ${{ steps.release.outputs.build_required }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
       - uses: actions/checkout@v7
@@ -108,40 +67,14 @@ jobs:
       - name: 校验各处版本文件与 VERSION 一致
         run: node scripts/sync-version.mjs --check
 
-      - name: 对比发布链路
-        id: diff
+      - name: 输出发布版本
+        id: release
         run: |
           set -euo pipefail
 
           V=$(tr -d '[:space:]' < VERSION)
           echo "当前 VERSION: $V"
-
-          EVENT_NAME="${{ github.event_name }}"
-          BEFORE="${{ github.event.before }}"
-
-          # PR 改动需要在合入前验证公开产物和静态契约;手动触发用于补打/重打。
-          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "✓ $EVENT_NAME 触发,无条件验证"
-            BUILD_REQUIRED=true
-          # 首次 push 的 before 为全零;强推后 before commit 也可能不可达。
-          elif [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "⚠️ before commit 不存在或不可达,放行构建"
-            BUILD_REQUIRED=true
-          else
-            CHANGED_FILES=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
-            echo "push 变更路径:"
-            printf '%s\n' "$CHANGED_FILES"
-            if printf '%s\n' "$CHANGED_FILES" | grep -Eq \
-              '^(VERSION|scripts/sync-version\.mjs|\.github/workflows/release-packages\.yml|\.gitmodules|private-runtimes/windows|pinvou3-app/(package(-lock)?\.json|scripts/tauri/(build|codex-bridge|windows-installer|windows-runtime)\.js|src-tauri/(config/platforms/windows|packaging/windows)/|tests/(codex_acp_windows_|windows_runtime_packaging_contract\.test\.js)))'; then
-              echo "✓ 发布链路变化,触发构建"
-              BUILD_REQUIRED=true
-            else
-              echo "✗ 未检测到发布链路变化,跳过"
-              BUILD_REQUIRED=false
-            fi
-          fi
-
-          echo "build_required=$BUILD_REQUIRED" >> "$GITHUB_OUTPUT"
+          echo "build_required=true" >> "$GITHUB_OUTPUT"
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
   # ── Job 2: Linux x86_64 deb ─────────────────────────────────────────
@@ -167,7 +100,7 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-linux-x64
-          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
+          # 手动分支验证只读，main 正式发布保存。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # pinvou3 编译链接的系统库(gtk/webkit/soup/rsvg/openssl/X11×3/appindicator),
@@ -299,22 +232,8 @@ jobs:
 
       # arm64 原生构建:build.js 检测到 linux/arm64 会自动跑
       # scripts/fetch-linux-arm64-connectors.sh 下载连接器二进制(gitignored)。
-      # GitHub 原生 ARM runner 会在约 40 分钟后被托管服务回收。PR 只验证发布
-      # 链路，因此保留 release 的 opt-level/strip/panic，同时关闭 fat-LTO、
-      # 提高代码生成并行度并使用 lld。
-      - name: 构建 deb（PR 快速验证）
-        if: github.event_name == 'pull_request'
-        working-directory: pinvou3-app
-        env:
-          CARGO_PROFILE_RELEASE_LTO: "false"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-        run: node scripts/tauri/build.js build --bundles deb
-
-      # main 的 VERSION bump 和 workflow_dispatch 都产出正式发布 artifact，
-      # 必须完整使用 Cargo.toml 的 release profile，不注入 PR 加速参数。
-      - name: 构建 deb（正式发布配置）
-        if: github.event_name != 'pull_request'
+      # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
+      - name: 构建 deb
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
@@ -340,44 +259,11 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 4: PR 的 Windows 静态验证(不接触私有凭据) ─────────────────
-  validate-windows-runtime-pr:
-    name: 验证 Windows 私有运行时契约
-    needs: check-version-bump
-    if: github.event_name == 'pull_request' && needs.check-version-bump.outputs.build_required == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Checkout (不初始化私有 submodule)
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-
-      - name: Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: pinvou3-app/package-lock.json
-
-      - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
-
-      - name: 验证 Windows 打包契约
-        working-directory: pinvou3-app
-        run: |
-          npm run test:windows-runtime
-          npm run test:codex-acp-windows-runtime
-
-  # ── Job 5: Windows x86_64 nsis(仅受保护的非 PR 上下文) ────────────
+  # ── Job 4: Windows x86_64 nsis(仅受保护的 main 上下文) ─────────────
   build-windows-x64:
     name: 构建 Windows x86_64 nsis
     needs: check-version-bump
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.build_required == 'true'
+    if: github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.build_required == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
     environment:
@@ -475,7 +361,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 6: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
+  # ── Job 5: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
   build-macos-universal:
     name: 构建 macOS universal dmg
     needs: check-version-bump
