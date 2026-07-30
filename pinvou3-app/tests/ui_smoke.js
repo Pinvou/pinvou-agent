@@ -67,7 +67,10 @@ function injectSource() {
       stdin_available:false,stale:false,linked_task_id:null,
     }];
     window.__CANCEL_SHELL_ARGS__=null;
-    const CONV={s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
+    const CONV={'s-pinned-old':{metadata:{id:'s-pinned-old'},artifacts:[],messages:[
+      {role:'user',content:[{type:'text',text:'置顶旧会话'}]},
+      {role:'assistant',content:[{type:'text',text:'已打开置顶旧会话。'}]}]},
+      s1:{metadata:{id:'s1'},artifacts:['/home/x/会议纪要.md'],messages:[
       {role:'user',content:[{type:'text',text:'整理纪要'}]},
       {role:'assistant',content:[{type:'text',text:'已生成会议纪要。'},{type:'tool_use',id:'t1',name:'write_file',input:{path:'/home/x/会议纪要.md',content:'# 会议纪要'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'written'}]},
@@ -1421,6 +1424,46 @@ async function expand(page) {
     return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
   rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
+
+  const collaborationTaskSourceOpen = await page.evaluate(async () => {
+    const beforeCreateCount = window.__TAURI_INVOKES__.filter(entry => entry.cmd === 'create_session').length;
+    const handlers = window.__TAURI_EVENT_HANDLERS__['collaboration:status'] || [];
+    await Promise.all(handlers.map(handler => handler({ payload: {
+      enabled: true,
+      connected: true,
+      config: { peerId: 'peer-me', displayName: '我' },
+      configState: {
+        identityRegistered: true,
+        projectConfigured: true,
+        identity: { peerId: 'peer-me', name: '我' },
+      },
+      peers: [],
+      incomingTasks: [],
+      outgoingTasks: [],
+      localTasks: [],
+    } })));
+    const opened = await window.TauriBridge.collaboration.openCollaborationTaskSession({
+      taskId: 'local-task-source-session',
+      title: '源会话跳转验证',
+      instruction: '回到原始会话',
+      fromPeerId: 'peer-me',
+      toPeerId: 'peer-me',
+      source_session_id: 's-pinned-old',
+    });
+    const after = window.TauriBridge.state.getMany(['sessions', 'chat']);
+    const afterCreateCount = window.__TAURI_INVOKES__.filter(entry => entry.cmd === 'create_session').length;
+    return {
+      opened,
+      activeSessionId: after.activeSessionId,
+      createdNewSession: afterCreateCount > beforeCreateCount,
+    };
+  });
+  rec('⑪ 工作台本地任务点击回到源会话且不新建会话',
+    collaborationTaskSourceOpen.opened && collaborationTaskSourceOpen.opened.sessionId === 's-pinned-old' &&
+    collaborationTaskSourceOpen.opened.source === true &&
+    collaborationTaskSourceOpen.activeSessionId === 's-pinned-old' &&
+    collaborationTaskSourceOpen.createdNewSession === false,
+    JSON.stringify(collaborationTaskSourceOpen));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

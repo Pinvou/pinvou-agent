@@ -9,6 +9,7 @@
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
 mod app;
+mod collaboration;
 mod core;
 pub mod features;
 pub mod platform;
@@ -19,6 +20,7 @@ pub use app::commands::attachments::build_message_with_attachments;
 use tauri::Manager;
 
 use crate::app::commands;
+use crate::collaboration::CollaborationManager;
 use crate::features::{
     assistant::{engine_pool::EnginePool, platform::bridge},
     connectors::connector_cli,
@@ -383,6 +385,9 @@ pub fn run() {
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
             ));
             app.handle().manage(remote_control_manager.clone());
+            let collaboration_manager = CollaborationManager::new(app.handle().clone());
+            collaboration_manager.start_if_configured();
+            app.handle().manage(collaboration_manager);
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -764,6 +769,21 @@ pub fn run() {
             commands::remote_control::web_access_get_role_outputs,
             commands::remote_control::web_access_get_role_logs,
             commands::remote_control::web_access_get_gate_report,
+            collaboration::collaboration_status,
+            collaboration::collaboration_get_config,
+            collaboration::collaboration_start,
+            collaboration::collaboration_register_identity,
+            collaboration::collaboration_create_project,
+            collaboration::collaboration_join_project,
+            collaboration::collaboration_export_member_invite,
+            collaboration::collaboration_create_task,
+            collaboration::collaboration_get_task_context,
+            collaboration::collaboration_create_local_task,
+            collaboration::collaboration_list_local_tasks,
+            collaboration::collaboration_update_local_task,
+            collaboration::collaboration_complete_local_task,
+            collaboration::collaboration_accept_task,
+            collaboration::collaboration_reject_task,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
             commands::memory::get_memory_profile,
