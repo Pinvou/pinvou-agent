@@ -37,6 +37,7 @@
     var invalidateScheduledTaskReads = context.invalidateScheduledTaskReads;
     var applyScheduledRunViewed = context.applyScheduledRunViewed;
     var loadScheduledTaskRecentRuns = context.loadScheduledTaskRecentRuns;
+    var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
     var MAX_SCHEDULED_SESSION_BUFFERS = 64;
     var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     var sessionBufferTouchClock = 0;
@@ -45,7 +46,7 @@
     var sessionSwitchRequestToken = 0;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -268,6 +269,7 @@
     buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
+    buf.pinvouSceneEvents = state.pinvouSceneEvents;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
     buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
@@ -288,6 +290,7 @@
     state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
+    state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -317,6 +320,7 @@
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
     buf.personaEvents = [];
     buf.pinvouReviews = [];
+    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(saved.metadata && saved.metadata.id);
     if (completedRemoteTurn) {
       buf.remoteTurnActive = false;
       buf.remoteTerminalSeen = false;
@@ -352,6 +356,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -602,6 +607,7 @@
 
     var personaEvents = [];
     var pinvouReviews = [];
+    var pinvouSceneEvents = loadPinvouSceneEventsForSession(id);
     var turnTimeline = [];
     try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
     try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
@@ -629,6 +635,7 @@
       );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.pinvouSceneEvents = pinvouSceneEvents.length ? pinvouSceneEvents : (liveBuffer.pinvouSceneEvents || []);
       state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
@@ -647,6 +654,7 @@
       sessionStates[id].loadedFromDisk = true;
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
+      state.pinvouSceneEvents = pinvouSceneEvents;
       state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];

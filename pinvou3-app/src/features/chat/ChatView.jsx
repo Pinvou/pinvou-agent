@@ -67,6 +67,19 @@ const DESIGN_MODE_SUBTABS = [
   { key: 'ppt', label: 'PPT设计', Icon: Presentation, disabled: true, disabledReason: 'PPT 生成能力修复中' },
 ];
 
+function pinvouSceneDisplay(scene) {
+  switch (scene) {
+    case 'work:document-writing':
+      return { label: '公文写作', Icon: FileText };
+    case 'design:poster':
+      return { label: '海报', Icon: ImageIcon };
+    case 'design:data-visualization':
+      return { label: '数据可视化', Icon: BarChart2 };
+    default:
+      return null;
+  }
+}
+
 const openChatExternalUrl = (url) => {
   if (isWeb) {
     const opened = window.open(url, '_blank', 'noopener,noreferrer');
@@ -333,7 +346,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const updateIndicator = useCallback(() => {
         const track = trackRef.current;
         const button = buttonRefs.current[value];
-        if (!track || !button) return;
+        if (!track || !button) {
+          setIndicator((prev) => (prev.ready ? { left: 0, width: 20, ready: false } : prev));
+          return;
+        }
         const trackRect = track.getBoundingClientRect();
         const buttonRect = button.getBoundingClientRect();
         const width = Math.min(28, Math.max(20, buttonRect.width * 0.32));
@@ -377,6 +393,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   type="button"
                   data-testid={`${testId}-option-${item.key}`}
                   title={disabled ? (item.disabledReason || '即将上线') : item.label}
+                  aria-pressed={selected}
                   aria-disabled={disabled ? 'true' : undefined}
                   disabled={disabled}
                   onClick={() => {
@@ -416,7 +433,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SceneModeTag = ({ isDark, scene }) => {
+    const SceneModeTag = ({ isDark, scene, onClear }) => {
       if (!scene) return null;
       const SceneIcon = scene.Icon || Sparkles;
       return (
@@ -428,6 +445,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           }`}>
             <SceneIcon size={15} className="shrink-0" />
             <span>{scene.label}</span>
+            {onClear && (
+              <button
+                type="button"
+                data-testid="pinvou-scene-tag-clear"
+                aria-label={`取消${scene.label}`}
+                title={`取消${scene.label}`}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onClear();
+                }}
+                className={`-mr-1 flex h-5 w-5 items-center justify-center rounded-full transition-colors ${
+                  isDark ? 'text-[#C7C7CC] hover:bg-white/10 hover:text-white' : 'text-[#5F6368] hover:bg-black/10 hover:text-[#1D1D1F]'
+                }`}
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
       );
@@ -677,10 +712,23 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         handlePinvouModeChange(mode);
       }, [handlePinvouModeChange, onSwitchHomeMode]);
       const handleWorkSubtabChange = useCallback((subtab) => {
-        updatePinvouModeState({ type: 'set-work-subtab', subtab });
+        updatePinvouModeState({
+          type: 'set-work-subtab',
+          subtab: subtab === pinvouModeStateRef.current.workSubtab ? 'general' : subtab,
+        });
       }, [updatePinvouModeState]);
       const handleDesignSubtabChange = useCallback((subtab) => {
-        updatePinvouModeState({ type: 'set-design-subtab', subtab });
+        updatePinvouModeState({
+          type: 'set-design-subtab',
+          subtab: subtab === pinvouModeStateRef.current.designSubtab ? 'general' : subtab,
+        });
+      }, [updatePinvouModeState]);
+      const handleClearActiveScene = useCallback(() => {
+        if (pinvouModeStateRef.current.mode === 'work') {
+          updatePinvouModeState({ type: 'set-work-subtab', subtab: 'general' });
+        } else if (pinvouModeStateRef.current.mode === 'design') {
+          updatePinvouModeState({ type: 'set-design-subtab', subtab: 'general' });
+        }
       }, [updatePinvouModeState]);
       const handleDesignRuntimeStatus = useCallback((status) => {
         updatePinvouModeState({ type: 'set-design-runtime-status', status });
@@ -783,7 +831,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             ? '粘贴数据或描述指标，生成可视化看板'
           : visualPosterSceneActive
             ? '描述你想生成或调整的视觉海报'
-            : '描述你想怎么调整选中的元素'
+            : '描述你想生成或调整的内容'
         : pinvouMode === 'work'
           ? documentWritingSceneActive
             ? '描述公文主题、文种、收发单位和关键要求'
@@ -977,10 +1025,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
         let meta;
-        if (outgoing) {
-          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(outgoing);
-          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(outgoing);
-          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(outgoing);
+        if (outgoing || hasReadyAttachment) {
+          const scenePrompt = outgoing || '请根据附件内容继续处理。';
+          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(scenePrompt);
+          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
+          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
@@ -1024,7 +1073,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           throw error;
         }
         return true;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, visualPosterSceneActive]);
       const handleDesignAiSubmit = useCallback((text) => {
         const raw = String(text || '').trim();
         if (!raw) return;
@@ -1519,9 +1568,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   testId="design-subtab-picker"
                 />
               )}
-              {!scheduledRunContext && conversationStarted && (
-                <SceneModeTag isDark={isDark} scene={activeScene} />
-              )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
@@ -1654,6 +1700,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   }`} />
                   <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
                 </div>
+              )}
+              {!scheduledRunContext && !conversationStarted && activeScene && (
+                <SceneModeTag isDark={isDark} scene={activeScene} onClear={handleClearActiveScene} />
               )}
               <ConversationActivityIndicator
                 turn={activeConversationTurn}
@@ -2121,6 +2170,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
+      const sceneDisplay = pinvouSceneDisplay(item.pinvouScene);
+      const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
@@ -2209,7 +2260,20 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               unified
                 ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
                 : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
-            }`}>{bodyText}</div>}
+            }`}>
+              {sceneDisplay && (
+                <span
+                  data-testid="user-message-scene-tag"
+                  className={`mr-2 inline-flex align-middle items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-semibold leading-5 ${
+                    isDark ? 'bg-black/35 text-white' : 'bg-black text-white'
+                  }`}
+                >
+                  {SceneIcon && <SceneIcon size={14} className="shrink-0" />}
+                  <span>{sceneDisplay.label}</span>
+                </span>
+              )}
+              {bodyText}
+            </div>}
             {deliveryState && (
               <div data-testid={`message-delivery-${deliveryState}`} title={item.deliveryError || undefined} className={`mt-1 flex items-center gap-1.5 pr-1 text-[11px] ${
                 deliveryState === 'failed' || deliveryState === 'unknown'

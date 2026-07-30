@@ -66,6 +66,7 @@
     "test:pet-bootstrap": "node tests/pet_bootstrap_isolation.test.mjs",
     "validate:pet-assets": "node scripts/validate-pet-assets.mjs",
     "test:pinvou-mode-state": "node tests/pinvou_mode_state.test.js",
+    "test:pinvou-scene-sidecar": "node tests/pinvou_scene_sidecar.test.js",
     "test:design-runtime": "node tests/design_runtime_logic.test.js",
     "test:design-changes": "node tests/design_changes_logic.test.js",
     "test:scene-capabilities": "node tests/scene_capabilities_logic.test.js",

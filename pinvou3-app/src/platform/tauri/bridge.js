@@ -174,6 +174,8 @@
     personaEvents: [],
     // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
     pinvouReviews: [],
+    // 专业子模式用户消息标签(sidecar, 不进 messages/LLM)。每项 {pos, scene}。
+    pinvouSceneEvents: [],
     // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
     pinvouModal: null,
     // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
@@ -460,6 +462,56 @@
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
   var personaPlaceholderTitles = {};
+  var PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
+  function normalizePinvouScene(scene) {
+    scene = String(scene || "").trim();
+    return /^(work:document-writing|design:poster|design:data-visualization)$/.test(scene) ? scene : "";
+  }
+  function pinvouSceneStorageKey(sid) {
+    return PINVOU_SCENE_EVENTS_STORAGE_PREFIX + String(sid || "").trim();
+  }
+  function normalizePinvouSceneEvents(events) {
+    return (Array.isArray(events) ? events : []).map(function (event) {
+      var pos = Number(event && event.pos);
+      var scene = normalizePinvouScene(event && event.scene);
+      if (!Number.isFinite(pos) || pos < 0 || !scene) return null;
+      return { pos: Math.floor(pos), scene: scene };
+    }).filter(Boolean).sort(function (left, right) { return left.pos - right.pos; });
+  }
+  function loadPinvouSceneEventsForSession(sid) {
+    if (!sid || !window.localStorage) return [];
+    try {
+      return normalizePinvouSceneEvents(JSON.parse(window.localStorage.getItem(pinvouSceneStorageKey(sid)) || "[]"));
+    } catch (_) {
+      return [];
+    }
+  }
+  function savePinvouSceneEventsForSession(sid, events) {
+    if (!sid || !window.localStorage) return;
+    try {
+      window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalizePinvouSceneEvents(events)));
+    } catch (_) {
+      // 展示标签持久化失败不影响对话发送。
+    }
+  }
+  function recordPinvouSceneForCurrentMessage(sid, scene) {
+    scene = normalizePinvouScene(scene);
+    if (!sid || !scene) return;
+    var pos = Array.isArray(state.messages) ? state.messages.length : 0;
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
+      .filter(function (event) { return event.pos !== pos; });
+    events.push({ pos: pos, scene: scene });
+    events = normalizePinvouSceneEvents(events);
+    state.pinvouSceneEvents = events;
+    savePinvouSceneEventsForSession(sid, events);
+  }
+  function pinvouSceneForMessagePos(pos) {
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].pos === pos) return events[i].scene;
+    }
+    return "";
+  }
   var artifactTrackerFeature = installBridgeFeature("artifact-tracker", {
     state: state, invoke: invoke, sessionStates: sessionStates,
     notify: function () { return notify.apply(null, arguments); },
@@ -497,6 +549,7 @@
     ensureSessionBufferLoaded: function () { return ensureSessionBufferLoaded.apply(null, arguments); },
     ensureSession: function () { return ensureSession.apply(null, arguments); },
     getBuffer: function () { return getBuffer.apply(null, arguments); },
+    recordPinvouSceneForCurrentMessage: recordPinvouSceneForCurrentMessage,
     reconcileRemoteTurn: function () { return reconcileRemoteTurn.apply(null, arguments); },
     markRemoteTurn: function () { return markRemoteTurn.apply(null, arguments); },
     clearAttachments: function () { return clearAttachments.apply(null, arguments); },
@@ -575,6 +628,7 @@
     filterSessionArtifacts: filterSessionArtifacts,
     scheduleShellPoll: function () { return scheduleShellPoll.apply(null, arguments); },
     bt: bt, userMessageDisplayText: userMessageDisplayText,
+    loadPinvouSceneEventsForSession: loadPinvouSceneEventsForSession,
     loadMemoryOverview: function () { return loadMemoryOverview.apply(null, arguments); },
     isScheduledRunSession: isScheduledRunSession,
     get currentStreamText() { return currentStreamText; },
@@ -1200,6 +1254,8 @@
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          var scene = pinvouSceneForMessagePos(mi);
+          if (scene) uitem2.pinvouScene = scene;
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
           else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);

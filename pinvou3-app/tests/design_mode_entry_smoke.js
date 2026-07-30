@@ -51,6 +51,7 @@ function injectSource() {
       {id:'visualizer', installed:false}
     ];
     window.__PINVOU_TEST_INSTALLS = [];
+    window.__PINVOU_TEST_CHAT_CALLS = [];
     var CONV = { 's-design': {
       metadata:{id:'s-design',title:'HTML设计测试'},
       artifacts:[{path:DRAFT_PATH,basename:'poster-draft.html'},{path:HTML_PATH,basename:'landing.html'}],
@@ -63,13 +64,29 @@ function injectSource() {
       },
       sessionOrder:['session:s-design']
     }));
+    localStorage.setItem('pinvou_scene_events_v1:s-design', JSON.stringify([
+      {pos:0,scene:'design:poster'}
+    ]));
     function invoke(cmd,args){
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve(SESSIONS);
+        case 'create_session': {
+          var id = 's-new-' + Date.now();
+          var meta = {id:id,title:'新对话',created_at:Date.now(),updated_at:Date.now(),message_count:0};
+          SESSIONS.unshift(meta);
+          CONV[id] = {metadata:meta,artifacts:[],messages:[]};
+          return Promise.resolve(meta);
+        }
         case 'load_session': return Promise.resolve(CONV[args && args.id] || CONV['s-design']);
+        case 'chat':
+          window.__PINVOU_TEST_CHAT_CALLS.push(args || {});
+          return Promise.resolve(null);
+        case 'save_session_messages':
+          if (args && args.id && CONV[args.id]) CONV[args.id].messages = args.messages || [];
+          return Promise.resolve(null);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});
@@ -144,13 +161,57 @@ async function clickExactButton(page, text) {
       homeHasCode: !!homeSwitcher && homeSwitcher.textContent.includes('代码'),
       workHasPptDesign: !!document.querySelector('[data-testid="work-subtab-picker-option-ppt-design"]'),
       workHasDataVisualization: !!document.querySelector('[data-testid="work-subtab-picker-option-data-visualization"]'),
+      sceneTag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
       placeholder: textarea && textarea.getAttribute('placeholder'),
     };
   });
   rec('默认只渲染一个工作/设计/代码主入口',
     initial.homeSwitcher && !initial.duplicateSwitcher && initial.homeHasWork && initial.homeHasDesign && initial.homeHasCode &&
-      !initial.workHasPptDesign && !initial.workHasDataVisualization,
+      !initial.workHasPptDesign && !initial.workHasDataVisualization && !initial.sceneTag &&
+      initial.placeholder !== '描述公文主题、文种、收发单位和关键要求',
     JSON.stringify(initial));
+
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  await page.focus('textarea');
+  await page.keyboard.type('发送后气泡标签测试');
+  await page.keyboard.press('Enter');
+  await sleep(900);
+  const sentBubbleScene = await page.evaluate(() => {
+    const chat = window.TauriBridge && window.TauriBridge.state && window.TauriBridge.state.get
+      ? window.TauriBridge.state.get('chat')
+      : {};
+    const sidecars = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith('pinvou_scene_events_v1:')) {
+        sidecars.push({ key, value: JSON.parse(localStorage.getItem(key) || '[]') });
+      }
+    }
+    return {
+      tag: document.querySelector('[data-testid="user-message-scene-tag"]')?.textContent || '',
+      composerTag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+      chatCalls: window.__PINVOU_TEST_CHAT_CALLS || [],
+      sidecars,
+      messageHasScene: !!(chat.messages || []).some((message) =>
+        Object.prototype.hasOwnProperty.call(message || {}, 'pinvouScene')
+      ),
+    };
+  });
+  rec('发送后专业子模式显示为用户气泡只读标签且不污染 messages',
+    sentBubbleScene.tag.includes('公文写作') &&
+      !sentBubbleScene.composerTag &&
+      sentBubbleScene.chatCalls.length === 1 &&
+      /公文写作场景路由/.test(sentBubbleScene.chatCalls[0].message || '') &&
+      sentBubbleScene.sidecars.some(entry =>
+        entry.value.some(item => item.pos === 0 && item.scene === 'work:document-writing')
+      ) &&
+      !sentBubbleScene.messageHasScene,
+    JSON.stringify(sentBubbleScene));
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload({ waitUntil: 'networkidle0' });
+  await sleep(1500);
 
   await page.evaluate(() => {
     window.__PINVOU_TEST_SENT_MESSAGES = [];
@@ -161,12 +222,57 @@ async function clickExactButton(page, text) {
       };
     }
   });
-  const workDocumentPlaceholder = await page.evaluate(() => {
+  await page.focus('textarea');
+  await page.keyboard.type('普通工作问题');
+  await page.keyboard.press('Enter');
+  await sleep(250);
+  const workGeneralPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
+      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
+    };
+  });
+  rec('工作 general 发送不注入专业场景 meta',
+    workGeneralPayload &&
+      workGeneralPayload.text === '普通工作问题' &&
+      !workGeneralPayload.scene &&
+      !workGeneralPayload.requiredSkill &&
+      !workGeneralPayload.requiredTool,
+    JSON.stringify(workGeneralPayload));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  const selectedWorkScene = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
-    return textarea && textarea.getAttribute('placeholder');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      clear: !!document.querySelector('[data-testid="pinvou-scene-tag-clear"]'),
+    };
   });
   await page.focus('textarea');
   await page.keyboard.type('写一份项目验收通知');
+  await page.click('[data-testid="pinvou-scene-tag-clear"]');
+  await sleep(250);
+  const clearedWorkScene = await page.evaluate(() => ({
+    tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+    text: document.querySelector('textarea')?.value || '',
+  }));
+  rec('工作子模式以标签显示并可取消且保留草稿',
+    selectedWorkScene.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      selectedWorkScene.tag.includes('公文写作') &&
+      selectedWorkScene.clear &&
+      !clearedWorkScene.tag &&
+      clearedWorkScene.text === '写一份项目验收通知',
+    JSON.stringify({ selectedWorkScene, clearedWorkScene }));
+
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  await page.focus('textarea');
   await page.keyboard.press('Enter');
   await sleep(700);
   const documentPayload = await page.evaluate(() => {
@@ -182,7 +288,7 @@ async function clickExactButton(page, text) {
     };
   });
   rec('工作-公文写作自动准备并强制路由到 government-writing + gongwen',
-    workDocumentPlaceholder === '描述公文主题、文种、收发单位和关键要求' &&
+    selectedWorkScene.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
       documentPayload &&
       documentPayload.text === '写一份项目验收通知' &&
       documentPayload.scene === 'work:document-writing' &&
@@ -192,11 +298,42 @@ async function clickExactButton(page, text) {
       /公文写作场景路由/.test(documentPayload.payload || '') &&
       /government-writing/.test(documentPayload.payload || '') &&
       /gongwen/.test(documentPayload.payload || ''),
-    JSON.stringify({ workDocumentPlaceholder, documentPayload }));
+    JSON.stringify({ selectedWorkScene, documentPayload }));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
   await clickExactButton(page, '设计');
   await sleep(250);
+  const designGeneralState = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+    };
+  });
+  await page.focus('textarea');
+  await page.keyboard.type('把当前页面调得更高级');
+  await page.keyboard.press('Enter');
+  await sleep(250);
+  const designGeneralPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      designScene: sent.meta && sent.meta.pinvouDesignScene,
+      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
+    };
+  });
+  rec('设计 general 保持设计语境但不注入子场景 meta',
+    designGeneralState.placeholder === '描述你想生成或调整的内容' &&
+      !designGeneralState.tag &&
+      designGeneralPayload &&
+      designGeneralPayload.text === '把当前页面调得更高级' &&
+      !designGeneralPayload.scene &&
+      !designGeneralPayload.designScene &&
+      !designGeneralPayload.requiredSkill,
+    JSON.stringify({ designGeneralState, designGeneralPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
   await page.click('[data-testid="design-subtab-picker-option-data-visualization"]');
   await sleep(250);
   const designDataPlaceholder = await page.evaluate(() => {
@@ -338,19 +475,22 @@ async function clickExactButton(page, text) {
     const homeSwitcher = document.querySelector('[data-testid="home-mode-switcher"]');
     const designPicker = document.querySelector('[data-testid="design-subtab-picker"]');
     const sceneTag = document.querySelector('[data-testid="pinvou-scene-tag"]');
+    const userSceneTag = document.querySelector('[data-testid="user-message-scene-tag"]');
     return {
       statusHidden: !document.querySelector('[data-testid="design-mode-status"]'),
       placeholder: textarea && textarea.getAttribute('placeholder'),
       homeSwitcher: !!homeSwitcher,
       designPicker: !!designPicker,
       sceneTag: sceneTag && sceneTag.textContent,
+      userSceneTag: userSceneTag && userSceneTag.textContent,
     };
   });
-  rec('非空会话隐藏完整场景入口并展示当前场景标签',
+  rec('非空会话隐藏完整场景入口和可取消场景标签，并恢复历史消息只读标签',
     design.statusHidden &&
       !design.homeSwitcher &&
       !design.designPicker &&
-      /海报/.test(design.sceneTag || '') &&
+      !design.sceneTag &&
+      /海报/.test(design.userSceneTag || '') &&
       design.placeholder === '描述你想生成或调整的视觉海报',
     JSON.stringify(design));
 
