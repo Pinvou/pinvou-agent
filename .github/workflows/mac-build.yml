@@ -44,6 +44,11 @@ concurrency:
 
 jobs:
   # 打包链路检测:仅这些路径变化时才跑 8.6min 的 universal bundle smoke。
+  # 注意:bundle_chain 的每条路径都必须被上方 on.push.paths 覆盖,否则是死条目
+  # (workflow 根本不会触发,filter 无从匹配);scripts/tests/test_ci_gate_policy.py
+  # 对此有回归断言。VERSION 刻意不在其中:VERSION-only push 不触发本 workflow
+  # (VERSION bump 的全量 dmg 由 release-packages 构建),而真实版本同步提交必伴随
+  # tauri.conf.json/package.json 变更,经这两条进入 bundle_chain,smoke 不会漏。
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -68,7 +73,6 @@ jobs:
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
               - 'pinvou3-app/vite.config.js'
-              - 'VERSION'
               - '.github/workflows/mac-build.yml'
 
   build:
