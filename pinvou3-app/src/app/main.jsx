@@ -1572,12 +1572,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || '代码')
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1770,6 +1770,14 @@ function workspaceDisplayName(path) {
                   onClick={() => navigateFromScheduledRun('scheduled')}
                 />
               )}
+              <NavItem
+                icon={<Package size={18} />} label={t.outputs}
+                active={currentView === 'outputs'}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('outputs')}
+                dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
+              />
               <NavItem
                 icon={<BarChart2 size={18} />} label={t.monitor}
                 active={currentView === 'monitor'}
@@ -2120,6 +2128,7 @@ function workspaceDisplayName(path) {
                 onRestoreMany={handleBatchRestoreArchived}
               />
             )}
+            {currentView === 'outputs' && <KnowledgeView theme={activeTheme} t={t} mode="outputs" />}
             {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
 
             {can('webAccessAdmin') && webAccessOpen && (
@@ -2288,6 +2297,8 @@ function workspaceDisplayName(path) {
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),
+              { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
+                active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
               { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
                 active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
               { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
@@ -3093,6 +3104,7 @@ function workspaceDisplayName(path) {
       cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
       toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} t={t} onNewChat={()=>{}} />,
       knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
+      outputs:   ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} mode="outputs" />,
     };
 
     const DetachedShell = ({ kind, id }) => {

@@ -286,7 +286,7 @@ fn md_display_title(bytes: &[u8]) -> Option<String> {
 }
 
 /// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
-/// artifacts 汇成一张扁平表(供本地知识 → 产出物 tab 用)。只走磁盘真相:
+/// artifacts 汇成一张扁平表(供「产出物」一级入口用)。只走磁盘真相:
 /// 文件已被删则跳过;mtime/size 现取 fs。
 #[derive(Debug, Deserialize)]
 struct DvSessionView {
