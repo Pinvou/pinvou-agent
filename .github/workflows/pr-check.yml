@@ -12,7 +12,7 @@ name: PR Check
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
-# - windows-rust-test:只在 main push 跑，不作为 PR 或 Merge Queue 合入门禁。
+# - windows-rust-test:只在 main push 且 rust 相关路径变更时跑，不作为 PR 或 Merge Queue 合入门禁。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
 # - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
 # - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
@@ -95,9 +95,11 @@ jobs:
         run: node scripts/sync-version.mjs --check
 
   # PR 按路径选择检查；Merge Queue 对最新 main 组合跑完整检查。
+  # push(main) 也跑:dorny/paths-filter 在 push 下用 before..sha 本地 diff(需 fetch-depth:0),
+  # 供 windows-rust-test 按路径触发(docs-only 推送不再烧 32min Windows runner)。
   changes:
     name: changes
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -110,9 +112,11 @@ jobs:
       windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: dorny/paths-filter@v4
         id: filter
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         with:
           filters: |
             rust:
@@ -545,8 +549,11 @@ jobs:
 
   windows-rust-test:
     name: windows-rust-test
-    # 跨平台构建不作为 PR 检测项；合入 main 后再做 Windows 原生验证。
-    if: ${{ github.event_name == 'push' }}
+    needs: changes
+    # 跨平台构建不作为 PR 检测项；合入 main 后按路径做 Windows 原生验证:
+    # 仅 rust 相关改动才跑(docs-only 推送烧 32min Windows runner 零收益——其 cache
+    # shared-key 只被自身消费,不为 PR 提供暖 cache)。
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.changes.outputs.rust == 'true' }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 45min:aws-lc-sys(NASM 预生成对象)冷编译比纯 Rust 图更久。

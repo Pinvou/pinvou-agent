@@ -32,7 +32,10 @@ jobs:
               "dependabot[bot]",
               "github-actions[bot]",
             ]);
-            const unsigned = commits.filter(({ author, committer, commit }) => {
+            // merge commit(parents > 1,如同步 main 产生的 "Merge branch 'main' into ...")
+            // 天然不带 sign-off,按 probot/dco 惯例豁免;普通 commit 缺 sign-off 仍 fail。
+            const unsigned = commits.filter(({ author, committer, commit, parents }) => {
+              if ((parents?.length ?? 0) > 1) return false;
               const login = author?.login ?? committer?.login;
               return !trustedBots.has(login) && !signoff.test(commit.message);
             });
