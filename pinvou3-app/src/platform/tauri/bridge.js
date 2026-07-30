@@ -108,6 +108,9 @@
     return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
   }
   function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
     if (!window.marked || !window.DOMPurify) return escapeHtml(text);
     var html = neutralizeRawDangerousTags(marked.parse(text || ""));
     return DOMPurify.sanitize(html, {
