@@ -467,6 +467,727 @@
   </div>
   <script src="../purify.min.js"></script>
   <script>
+    // —— 最小 i18n:语言检测 + zh/en/ja 三语字典 + t() 助手 ——
+    // 语言解析顺序:URL 参数(lang,hash 优先于 query) → localStorage(pinvou_remote_lang)
+    // → 浏览器语言(仅 zh/ja 自动切换) → zh 兜底。英文需经 ?lang= 或 localStorage 显式
+    // 指定:本页经桌面端二维码打开,语言以桌面端生成的链接为准;且测试基线(jsdom 固定
+    // en-US)断言中文文案,浏览器 en 自动切换会打破既有测试。
+    const LANG_TAGS = { zh: 'zh-CN', en: 'en', ja: 'ja' };
+    const I18N = {
+      zh: {
+        'common.close': '关闭',
+        'common.download': '下载',
+        'common.cancel': '取消',
+        'common.current': '当前',
+        'common.preview': '预览',
+        'common.approve': '就这么干',
+        'common.failed': '失败',
+        'common.unknownError': '未知错误',
+        'common.unknownReason': '未知原因',
+        'common.notConnected': '未连接到桌面端。',
+        'aria.openArtifacts': '打开产物',
+        'aria.more': '更多',
+        'aria.backToBottom': '回到底部',
+        'aria.attach': '选择附件',
+        'aria.previewZoom': 'HTML 预览缩放',
+        'aria.zoomOut': '缩小预览',
+        'aria.zoomIn': '放大预览',
+        'aria.cancelUpload': '取消上传',
+        'menu.theme': '主题模式',
+        'composer.placeholder': '发送消息到桌面端当前 session',
+        'composer.send': '发送',
+        'composer.stop': '停',
+        'composer.hint': '云端仅中继，不保存消息全文',
+        'status.connecting': '连接中',
+        'status.connected': '已连接',
+        'status.reconnecting': '重连中',
+        'status.pairing': '配对中',
+        'status.occupied': '已被占用',
+        'status.switched': '已切换',
+        'status.idle': '空闲',
+        'status.error': '连接异常',
+        'status.desktopReconnecting': '桌面重连中',
+        'status.currentSession': '当前 session',
+        'status.sessionId': p => `session ${p.id}`,
+        'status.synced': '已同步',
+        'status.syncedCount': n => `已同步 ${n} 条`,
+        'chip.artifacts': n => `${n} 个产物`,
+        'chip.knowledge': '📚 知识库',
+        'chip.tools': '🔧 工具',
+        'chip.defaultModel': '默认模型',
+        'chip.knowledgeMounted': id => `知识库 #${id}`,
+        'chip.pinvouOn': '品悟开启',
+        'sheet.panel': '面板',
+        'sheet.sessions': '选择 Session',
+        'sheet.artifacts': '产物',
+        'sheet.mode': '切换 Mode',
+        'sheet.model': '切换 Model',
+        'sheet.theme': '界面风格',
+        'sheet.knowledge': '知识库',
+        'sheet.tools': '工具开关',
+        'session.create': '+ 新建 Session',
+        'session.creating': '正在新建...',
+        'sessions.connecting': '正在连接桌面端。连接成功后会加载 session 列表。',
+        'sessions.loading': '正在加载 session 列表。',
+        'sessions.empty': '暂无 session 列表，可以新建一个。',
+        'sessions.messageCount': p => `${p.id} · ${p.count} 条消息`,
+        'artifacts.empty': '当前 session 暂无产物。',
+        'artifacts.fallbackName': '成品',
+        'mode.yoloSub': '直接执行当前请求',
+        'mode.planSub': '先规划，再执行',
+        'model.followGlobal': '跟随全局默认',
+        'model.defaultIs': id => `默认 ${id}`,
+        'model.globalSub': '使用桌面端当前默认模型',
+        'theme.dark': '暗色',
+        'theme.darkSub': '适合夜间和微信内置浏览器',
+        'theme.light': '亮色',
+        'theme.lightSub': '白底高对比，适合看文档',
+        'theme.system': '跟随系统',
+        'theme.systemSub': '按手机系统外观自动切换',
+        'kb.loading': '正在加载知识库列表…',
+        'kb.unavailableTitle': '知识库检索暂不可用,请确认已有索引内容且 Embedding 模型已就绪',
+        'kb.unavailableNote': '知识库检索暂不可用,请确认已有索引内容且 Embedding 模型已就绪。',
+        'kb.mountedSub': '已挂载到当前 session',
+        'kb.mountedMark': '挂载中',
+        'kb.noneMounted': '当前 session 未挂载知识库。',
+        'kb.noCollections': '没有可用的知识库 collection。',
+        'kb.mounted': '已挂载',
+        'kb.mount': '挂载',
+        'tools.loading': '正在加载工具列表…',
+        'tools.empty': '暂无可用工具。',
+        'tools.enabled': '已启用',
+        'tools.disabled': '已禁用',
+        'plan.replaced': '已被新方案替换',
+        'plan.title': '方案确认',
+        'plan.history': '历史方案',
+        'plan.approved': '已批准',
+        'plan.discard': '算了',
+        'plan.discarded': '已放弃',
+        'tool.running': '运行中',
+        'tool.done': '完成',
+        'tool.failed': '失败',
+        'thinking.tool': p => `调用 ${p.name}... ${p.elapsed}s`,
+        'thinking.stopping': p => `停止中... ${p.elapsed}s`,
+        'thinking.thinking': p => `思考中... ${p.elapsed}s${p.suffix}`,
+        'thinking.longSuffix': ' · 本地模型在生成长内容,请耐心等',
+        'thinking.localSuffix': ' · 本地模型生成中',
+        'upload.notConnected': '未连接到桌面端,无法上传。',
+        'upload.emptyFile': '空文件无法上传。',
+        'upload.tooLarge': '附件超过 20MiB 上限,未上传。',
+        'upload.busy': '已有附件正在上传,请等待完成或取消。',
+        'upload.failed': p => `附件上传失败: ${p.error}`,
+        'upload.ready': '已就绪',
+        'upload.failedSub': p => `失败: ${p.error}`,
+        'upload.rateLimited': '被限流,稍后重试',
+        'upload.waiting': '等待桌面端响应…',
+        'upload.readySystem': p => `附件 ${p.name} 已就绪。`,
+        'upload.failedSystem': p => `附件 ${p.name} 处理失败: ${p.error}`,
+        'upload.abortedSystem': p => `附件上传已中止: ${p.reason}`,
+        'upload.startAckMissing': 'attach_file_start_ack 缺少 upload_id',
+        'download.invalidDesc': p => `下载 ${p.name} 失败：桌面端返回了非法的下载描述。`,
+        'download.downloading': p => `正在下载 ${p.name}（${p.size}）…`,
+        'download.downloadingPct': p => `正在下载 ${p.name}（${p.size}）… ${p.percent}%`,
+        'download.failed': p => `下载 ${p.name} 失败：${p.reason}`,
+        'download.chunkMismatch': '结束消息的分块数与开始不一致。',
+        'download.sizeMismatch': '结束消息的字节数与开始不一致。',
+        'download.incomplete': '数据不完整，请重试。',
+        'download.byteMismatch': p => `字节数不符（预期 ${p.expected}，实际 ${p.actual}）。`,
+        'download.done': p => `已下载 ${p.name}（${p.size}）。`,
+        'download.aborted': p => `下载 ${p.name} 中断：${p.reason}`,
+        'download.desktopError': '桌面端返回错误。',
+        'download.connInterrupted': '连接中断，请重试。',
+        'download.inProgress': '下载进行中，请等待当前下载完成。',
+        'download.nothingToDownload': '当前预览没有可下载的产物。',
+        'pinvou.scanningWu': '正在深度查漏...',
+        'pinvou.scanningPin': '正在智能找错...',
+        'pinvou.doneWu': '已完成覆盖度检查。',
+        'pinvou.donePin': '已完成产物检阅。',
+        'pinvou.issues': '问题',
+        'pinvou.recommendations': '建议',
+        'pinvou.coverage': '缺口',
+        'pinvou.topicFallback': '建议',
+        'pinvou.dimensionFallback': '维度',
+        'pinvou.pass': '已通过，可继续交付。',
+        'pinvou.noIssues': '没有发现需要处理的明显问题。',
+        'pinvou.issueRow': p => `${p.severity} · ${p.text}${p.suggestion ? `；建议：${p.suggestion}` : ''}`,
+        'pinvou.recRow': p => `${p.topic}：${p.pick}${p.why ? `，${p.why}` : ''}`,
+        'pinvou.covRow': p => `${p.dimension}：${p.text}${p.suggestion ? `；建议：${p.suggestion}` : ''}`,
+        'preview.fitScreen': '适应屏幕',
+        'preview.fit': '适应',
+        'preview.original': '原始',
+        'preview.fitting': '正在适配…',
+        'preview.imageAlt': '产物预览',
+        'preview.invalidImage': '图片预览数据无效。',
+        'preview.unsupported': '这个产物暂不支持手机端预览。',
+        'preview.truncated': '预览内容已截断，仅显示前 256 KB。',
+        'empty.connecting': '正在连接桌面端。连接成功后会同步当前会话。',
+        'empty.noHistory': '当前 session 暂无历史消息。你可以直接发送第一条远程消息。',
+        'empty.chooseSession': '请选择一个 session 进入。',
+        'confirm.title': '需要确认',
+        'confirm.prompt': '需要你确认后继续。',
+        'confirm.submitted': '✓ 已提交',
+        'confirm.choose': '请选择',
+        'confirm.other': '其他',
+        'confirm.otherPlaceholder': '输入其他答案',
+        'confirm.option': '选择',
+        'confirm.submit': '提交选择',
+        'system.carefulBlocked': '已拦截一个高风险操作。',
+        'system.personaEquip': p => `已加持 ${p.name}`,
+        'system.personaEquipGeneric': '已加持专家卡。',
+        'system.desktopInterrupted': '桌面连接暂时中断，正在自动恢复。',
+        'system.desktopRecovered': '桌面端已恢复连接。',
+        'system.desktopRecovering': '桌面端正在恢复连接，请稍候。',
+        'system.notConnectedYet': '还没有连接到桌面端，连接成功后再发送。',
+        'system.sendFailed': '发送失败：远控连接尚未就绪。',
+        'system.pairing': '已连到中继，正在等待桌面端确认配对。',
+        'system.errorPrefix': p => `错误: ${p.message}`,
+        'takeover.eyebrow': '远程会话被占用',
+        'takeover.title': '当前会话已在其他设备打开',
+        'takeover.intro': '为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。',
+        'takeover.currentDevice': '当前接管设备',
+        'takeover.deviceName': '另一台移动设备',
+        'takeover.deviceMeta': '刚刚接入 · Relay 已切换',
+        'takeover.pill': '已接管',
+        'takeover.nextSteps': '接下来怎么做',
+        'takeover.step1': '继续使用新接入的设备，无需额外操作。',
+        'takeover.step2': '需要切回本设备时，点击重新连接；当前正在控制的设备会被断开。',
+        'takeover.reconnect': '重新连接本设备',
+        'takeover.closePage': '关闭页面',
+        'takeover.hint': '重新连接后，当前正在控制的设备会被断开。',
+        'takeover.restartHint': '请返回桌面端重新开启远程控制。',
+        'takeover.reconnecting': '正在重新连接...',
+        'takeover.retaking': '正在重新接管当前远程会话。',
+        'takeover.closing': '正在关闭...',
+        'takeover.canClose': '可直接关闭页面',
+        'takeover.manualClose': '浏览器未允许自动关闭，请直接关闭这个页面。',
+        'expired.statusTitle': '连接状态',
+        'expired.qrTitle': '远程连接',
+        'expired.qrMeta': '当前连接已失效',
+        'expired.badge': '已结束',
+        'expired.nextTitle': '下一步',
+        'expired.step1': '关闭当前页面。',
+        'expired.step2': '使用手机扫描桌面端最新显示的二维码，重新建立连接。',
+        'expired.tip': '桌面端生成新二维码后，之前打开的二维码会立即失效。',
+        'terminal.endedStatus': '连接已结束',
+        'terminal.endedTitle': '远程连接已结束',
+        'terminal.endedMessage': '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。',
+        'terminal.endedHint': '请扫描桌面端显示的二维码重新连接。',
+        'terminal.dcStatus': '连接异常',
+        'terminal.dcTitle': '桌面端连接已断开',
+        'terminal.dcMessage': '桌面端或中继连接发生异常，当前远程控制已经中止。',
+        'terminal.dcHint': '请确认桌面端在线后刷新本页面或重新扫码。',
+      },
+      en: {
+        'common.close': 'Close',
+        'common.download': 'Download',
+        'common.cancel': 'Cancel',
+        'common.current': 'Current',
+        'common.preview': 'Preview',
+        'common.approve': 'Go ahead',
+        'common.failed': 'Failed',
+        'common.unknownError': 'Unknown error',
+        'common.unknownReason': 'Unknown reason',
+        'common.notConnected': 'Not connected to the desktop.',
+        'aria.openArtifacts': 'Open artifacts',
+        'aria.more': 'More',
+        'aria.backToBottom': 'Back to bottom',
+        'aria.attach': 'Choose attachment',
+        'aria.previewZoom': 'HTML preview zoom',
+        'aria.zoomOut': 'Zoom out preview',
+        'aria.zoomIn': 'Zoom in preview',
+        'aria.cancelUpload': 'Cancel upload',
+        'menu.theme': 'Theme',
+        'composer.placeholder': 'Send a message to the current desktop session',
+        'composer.send': 'Send',
+        'composer.stop': 'Stop',
+        'composer.hint': 'The cloud only relays messages and never stores full message content',
+        'status.connecting': 'Connecting',
+        'status.connected': 'Connected',
+        'status.reconnecting': 'Reconnecting',
+        'status.pairing': 'Pairing',
+        'status.occupied': 'Occupied',
+        'status.switched': 'Switched',
+        'status.idle': 'Idle',
+        'status.error': 'Connection error',
+        'status.desktopReconnecting': 'Desktop reconnecting',
+        'status.currentSession': 'Current session',
+        'status.sessionId': p => `session ${p.id}`,
+        'status.synced': 'Synced',
+        'status.syncedCount': n => `Synced ${n}`,
+        'chip.artifacts': n => n === 1 ? `${n} artifact` : `${n} artifacts`,
+        'chip.knowledge': '📚 Knowledge',
+        'chip.tools': '🔧 Tools',
+        'chip.defaultModel': 'Default model',
+        'chip.knowledgeMounted': id => `KB #${id}`,
+        'chip.pinvouOn': 'Pinvou review on',
+        'sheet.panel': 'Panel',
+        'sheet.sessions': 'Select Session',
+        'sheet.artifacts': 'Artifacts',
+        'sheet.mode': 'Switch Mode',
+        'sheet.model': 'Switch Model',
+        'sheet.theme': 'Appearance',
+        'sheet.knowledge': 'Knowledge Base',
+        'sheet.tools': 'Tool Toggles',
+        'session.create': '+ New Session',
+        'session.creating': 'Creating...',
+        'sessions.connecting': 'Connecting to the desktop. The session list will load once connected.',
+        'sessions.loading': 'Loading session list.',
+        'sessions.empty': 'No sessions yet. You can create one.',
+        'sessions.messageCount': p => `${p.id} · ${p.count} ${p.count === 1 ? 'message' : 'messages'}`,
+        'artifacts.empty': 'No artifacts in the current session.',
+        'artifacts.fallbackName': 'Result',
+        'mode.yoloSub': 'Run the current request directly',
+        'mode.planSub': 'Plan first, then execute',
+        'model.followGlobal': 'Follow global default',
+        'model.defaultIs': id => `Default: ${id}`,
+        'model.globalSub': "Use the desktop's current default model",
+        'theme.dark': 'Dark',
+        'theme.darkSub': "Good for night and WeChat's built-in browser",
+        'theme.light': 'Light',
+        'theme.lightSub': 'High-contrast white background, good for documents',
+        'theme.system': 'System',
+        'theme.systemSub': "Follows the phone's system appearance",
+        'kb.loading': 'Loading knowledge base list…',
+        'kb.unavailableTitle': 'Knowledge base search is temporarily unavailable. Make sure indexed content exists and the Embedding model is ready',
+        'kb.unavailableNote': 'Knowledge base search is temporarily unavailable. Make sure indexed content exists and the Embedding model is ready.',
+        'kb.mountedSub': 'Mounted to the current session',
+        'kb.mountedMark': 'Mounted',
+        'kb.noneMounted': 'No knowledge base mounted to the current session.',
+        'kb.noCollections': 'No knowledge base collections available.',
+        'kb.mounted': 'Mounted',
+        'kb.mount': 'Mount',
+        'tools.loading': 'Loading tool list…',
+        'tools.empty': 'No tools available.',
+        'tools.enabled': 'Enabled',
+        'tools.disabled': 'Disabled',
+        'plan.replaced': 'Replaced by a new plan',
+        'plan.title': 'Plan Confirmation',
+        'plan.history': 'Historical plan',
+        'plan.approved': 'Approved',
+        'plan.discard': 'Never mind',
+        'plan.discarded': 'Discarded',
+        'tool.running': 'Running',
+        'tool.done': 'Done',
+        'tool.failed': 'Failed',
+        'thinking.tool': p => `Calling ${p.name}... ${p.elapsed}s`,
+        'thinking.stopping': p => `Stopping... ${p.elapsed}s`,
+        'thinking.thinking': p => `Thinking... ${p.elapsed}s${p.suffix}`,
+        'thinking.longSuffix': ' · Local model is generating long content, please wait',
+        'thinking.localSuffix': ' · Local model generating',
+        'upload.notConnected': 'Not connected to the desktop; cannot upload.',
+        'upload.emptyFile': 'Empty files cannot be uploaded.',
+        'upload.tooLarge': 'Attachment exceeds the 20MiB limit and was not uploaded.',
+        'upload.busy': 'Another attachment is uploading. Wait for it to finish or cancel it.',
+        'upload.failed': p => `Attachment upload failed: ${p.error}`,
+        'upload.ready': 'Ready',
+        'upload.failedSub': p => `Failed: ${p.error}`,
+        'upload.rateLimited': 'Rate limited; retrying shortly',
+        'upload.waiting': 'Waiting for desktop response…',
+        'upload.readySystem': p => `Attachment ${p.name} is ready.`,
+        'upload.failedSystem': p => `Attachment ${p.name} failed: ${p.error}`,
+        'upload.abortedSystem': p => `Attachment upload aborted: ${p.reason}`,
+        'upload.startAckMissing': 'attach_file_start_ack missing upload_id',
+        'download.invalidDesc': p => `Download of ${p.name} failed: the desktop returned an invalid download descriptor.`,
+        'download.downloading': p => `Downloading ${p.name} (${p.size})…`,
+        'download.downloadingPct': p => `Downloading ${p.name} (${p.size})… ${p.percent}%`,
+        'download.failed': p => `Download of ${p.name} failed: ${p.reason}`,
+        'download.chunkMismatch': 'The chunk count in the end message does not match the start.',
+        'download.sizeMismatch': 'The byte size in the end message does not match the start.',
+        'download.incomplete': 'Data incomplete. Please retry.',
+        'download.byteMismatch': p => `Byte count mismatch (expected ${p.expected}, got ${p.actual}).`,
+        'download.done': p => `Downloaded ${p.name} (${p.size}).`,
+        'download.aborted': p => `Download of ${p.name} interrupted: ${p.reason}`,
+        'download.desktopError': 'The desktop returned an error.',
+        'download.connInterrupted': 'Connection interrupted. Please retry.',
+        'download.inProgress': 'A download is in progress. Wait for it to finish.',
+        'download.nothingToDownload': 'The current preview has no downloadable artifact.',
+        'pinvou.scanningWu': 'Running deep coverage check...',
+        'pinvou.scanningPin': 'Running smart review...',
+        'pinvou.doneWu': 'Coverage check complete.',
+        'pinvou.donePin': 'Artifact review complete.',
+        'pinvou.issues': 'Issues',
+        'pinvou.recommendations': 'Suggestions',
+        'pinvou.coverage': 'Gaps',
+        'pinvou.topicFallback': 'Suggestion',
+        'pinvou.dimensionFallback': 'Dimension',
+        'pinvou.pass': 'Passed. Ready to deliver.',
+        'pinvou.noIssues': 'No obvious issues found.',
+        'pinvou.issueRow': p => `${p.severity} · ${p.text}${p.suggestion ? `; suggestion: ${p.suggestion}` : ''}`,
+        'pinvou.recRow': p => `${p.topic}: ${p.pick}${p.why ? `, ${p.why}` : ''}`,
+        'pinvou.covRow': p => `${p.dimension}: ${p.text}${p.suggestion ? `; suggestion: ${p.suggestion}` : ''}`,
+        'preview.fitScreen': 'Fit to screen',
+        'preview.fit': 'Fit',
+        'preview.original': 'Original',
+        'preview.fitting': 'Fitting…',
+        'preview.imageAlt': 'Artifact preview',
+        'preview.invalidImage': 'Invalid image preview data.',
+        'preview.unsupported': 'This artifact cannot be previewed on mobile yet.',
+        'preview.truncated': 'Preview truncated; showing the first 256 KB only.',
+        'empty.connecting': 'Connecting to the desktop. The current session will sync once connected.',
+        'empty.noHistory': 'No history in the current session. You can send the first remote message directly.',
+        'empty.chooseSession': 'Choose a session to enter.',
+        'confirm.title': 'Confirmation Needed',
+        'confirm.prompt': 'Your confirmation is needed to continue.',
+        'confirm.submitted': '✓ Submitted',
+        'confirm.choose': 'Please choose',
+        'confirm.other': 'Other',
+        'confirm.otherPlaceholder': 'Enter another answer',
+        'confirm.option': 'Option',
+        'confirm.submit': 'Submit',
+        'system.carefulBlocked': 'A high-risk operation was blocked.',
+        'system.personaEquip': p => `Equipped ${p.name}`,
+        'system.personaEquipGeneric': 'Expert card equipped.',
+        'system.desktopInterrupted': 'The desktop connection was interrupted and is recovering automatically.',
+        'system.desktopRecovered': 'The desktop reconnected.',
+        'system.desktopRecovering': 'The desktop is reconnecting. Please wait.',
+        'system.notConnectedYet': 'Not connected to the desktop yet. Send after the connection succeeds.',
+        'system.sendFailed': 'Send failed: the remote connection is not ready yet.',
+        'system.pairing': 'Connected to the relay. Waiting for the desktop to confirm pairing.',
+        'system.errorPrefix': p => `Error: ${p.message}`,
+        'takeover.eyebrow': 'Remote session occupied',
+        'takeover.title': 'This session is open on another device',
+        'takeover.intro': 'To avoid conflicts, only one mobile controller can be active at a time. You can continue on the new device, or reconnect this device to switch back.',
+        'takeover.currentDevice': 'Device in control',
+        'takeover.deviceName': 'Another mobile device',
+        'takeover.deviceMeta': 'Just connected · Relay switched',
+        'takeover.pill': 'In control',
+        'takeover.nextSteps': 'What to do next',
+        'takeover.step1': 'Keep using the newly connected device; nothing else needed.',
+        'takeover.step2': 'To switch back to this device, tap Reconnect; the device currently in control will be disconnected.',
+        'takeover.reconnect': 'Reconnect this device',
+        'takeover.closePage': 'Close page',
+        'takeover.hint': 'After reconnecting, the device currently in control will be disconnected.',
+        'takeover.restartHint': 'Return to the desktop to re-enable remote control.',
+        'takeover.reconnecting': 'Reconnecting...',
+        'takeover.retaking': 'Taking over the current remote session.',
+        'takeover.closing': 'Closing...',
+        'takeover.canClose': 'You can close this page',
+        'takeover.manualClose': 'The browser blocked auto-close. Please close this page manually.',
+        'expired.statusTitle': 'Connection status',
+        'expired.qrTitle': 'Remote connection',
+        'expired.qrMeta': 'This connection has expired',
+        'expired.badge': 'Ended',
+        'expired.nextTitle': 'Next steps',
+        'expired.step1': 'Close this page.',
+        'expired.step2': 'Use your phone to scan the latest QR code shown on the desktop to reconnect.',
+        'expired.tip': 'Once the desktop generates a new QR code, previously opened QR codes become invalid immediately.',
+        'terminal.endedStatus': 'Connection ended',
+        'terminal.endedTitle': 'Remote connection ended',
+        'terminal.endedMessage': 'The remote connection has ended. The desktop may have stopped remote control or refreshed the connection QR code.\n\nReturn to the desktop to check the status, then scan the QR code shown to reconnect.',
+        'terminal.endedHint': 'Scan the QR code shown on the desktop to reconnect.',
+        'terminal.dcStatus': 'Connection error',
+        'terminal.dcTitle': 'Desktop connection lost',
+        'terminal.dcMessage': 'The desktop or relay connection failed, and the current remote control session has stopped.',
+        'terminal.dcHint': 'Make sure the desktop is online, then refresh this page or scan the QR code again.',
+      },
+      ja: {
+        'common.close': '閉じる',
+        'common.download': 'ダウンロード',
+        'common.cancel': 'キャンセル',
+        'common.current': '現在',
+        'common.preview': 'プレビュー',
+        'common.approve': 'そのまま実行',
+        'common.failed': '失敗',
+        'common.unknownError': '不明なエラー',
+        'common.unknownReason': '不明な理由',
+        'common.notConnected': 'デスクトップに接続されていません。',
+        'aria.openArtifacts': '成果物を開く',
+        'aria.more': 'その他',
+        'aria.backToBottom': '一番下へ',
+        'aria.attach': '添付ファイルを選択',
+        'aria.previewZoom': 'HTML プレビューのズーム',
+        'aria.zoomOut': 'プレビューを縮小',
+        'aria.zoomIn': 'プレビューを拡大',
+        'aria.cancelUpload': 'アップロードをキャンセル',
+        'menu.theme': 'テーマ',
+        'composer.placeholder': 'デスクトップの現在のセッションにメッセージを送信',
+        'composer.send': '送信',
+        'composer.stop': '停止',
+        'composer.hint': 'クラウドは中継のみで、メッセージ全文は保存しません',
+        'status.connecting': '接続中',
+        'status.connected': '接続済み',
+        'status.reconnecting': '再接続中',
+        'status.pairing': 'ペアリング中',
+        'status.occupied': '占有されています',
+        'status.switched': '切り替えました',
+        'status.idle': '待機中',
+        'status.error': '接続エラー',
+        'status.desktopReconnecting': 'デスクトップ再接続中',
+        'status.currentSession': '現在のセッション',
+        'status.sessionId': p => `セッション ${p.id}`,
+        'status.synced': '同期済み',
+        'status.syncedCount': n => `${n} 件を同期しました`,
+        'chip.artifacts': n => `${n} 件の成果物`,
+        'chip.knowledge': '📚 ナレッジベース',
+        'chip.tools': '🔧 ツール',
+        'chip.defaultModel': 'デフォルトモデル',
+        'chip.knowledgeMounted': id => `ナレッジベース #${id}`,
+        'chip.pinvouOn': '品悟オン',
+        'sheet.panel': 'パネル',
+        'sheet.sessions': 'セッションを選択',
+        'sheet.artifacts': '成果物',
+        'sheet.mode': 'モードを切り替え',
+        'sheet.model': 'モデルを切り替え',
+        'sheet.theme': '外観',
+        'sheet.knowledge': 'ナレッジベース',
+        'sheet.tools': 'ツールの切り替え',
+        'session.create': '+ 新規セッション',
+        'session.creating': '作成中...',
+        'sessions.connecting': 'デスクトップに接続中です。接続後にセッション一覧を読み込みます。',
+        'sessions.loading': 'セッション一覧を読み込んでいます。',
+        'sessions.empty': 'セッションがありません。新しく作成できます。',
+        'sessions.messageCount': p => `${p.id} · ${p.count} 件のメッセージ`,
+        'artifacts.empty': '現在のセッションに成果物はありません。',
+        'artifacts.fallbackName': '成果物',
+        'mode.yoloSub': '現在のリクエストを直接実行',
+        'mode.planSub': 'まず計画し、その後実行',
+        'model.followGlobal': 'グローバルデフォルトに従う',
+        'model.defaultIs': id => `デフォルト: ${id}`,
+        'model.globalSub': 'デスクトップの現在のデフォルトモデルを使用',
+        'theme.dark': 'ダーク',
+        'theme.darkSub': '夜間や WeChat 内蔵ブラウザに最適',
+        'theme.light': 'ライト',
+        'theme.lightSub': '白背景で高コントラスト。ドキュメント閲覧に最適',
+        'theme.system': 'システムに従う',
+        'theme.systemSub': 'スマートフォンのシステム外観に合わせて自動切替',
+        'kb.loading': 'ナレッジベース一覧を読み込んでいます…',
+        'kb.unavailableTitle': 'ナレッジベース検索は一時的に利用できません。インデックス済みコンテンツがあり、Embedding モデルが準備完了していることを確認してください',
+        'kb.unavailableNote': 'ナレッジベース検索は一時的に利用できません。インデックス済みコンテンツがあり、Embedding モデルが準備完了していることを確認してください。',
+        'kb.mountedSub': '現在のセッションにマウント済み',
+        'kb.mountedMark': 'マウント中',
+        'kb.noneMounted': '現在のセッションにマウントされたナレッジベースはありません。',
+        'kb.noCollections': '利用可能なナレッジベースコレクションがありません。',
+        'kb.mounted': 'マウント済み',
+        'kb.mount': 'マウント',
+        'tools.loading': 'ツール一覧を読み込んでいます…',
+        'tools.empty': '利用可能なツールがありません。',
+        'tools.enabled': '有効',
+        'tools.disabled': '無効',
+        'plan.replaced': '新しいプランに置き換えられました',
+        'plan.title': 'プランの確認',
+        'plan.history': '過去のプラン',
+        'plan.approved': '承認済み',
+        'plan.discard': 'やめる',
+        'plan.discarded': '破棄しました',
+        'tool.running': '実行中',
+        'tool.done': '完了',
+        'tool.failed': '失敗',
+        'thinking.tool': p => `${p.name} を呼び出し中... ${p.elapsed}s`,
+        'thinking.stopping': p => `停止中... ${p.elapsed}s`,
+        'thinking.thinking': p => `思考中... ${p.elapsed}s${p.suffix}`,
+        'thinking.longSuffix': ' · ローカルモデルが長文を生成中です。お待ちください',
+        'thinking.localSuffix': ' · ローカルモデル生成中',
+        'upload.notConnected': 'デスクトップに接続されていないため、アップロードできません。',
+        'upload.emptyFile': '空のファイルはアップロードできません。',
+        'upload.tooLarge': '添付ファイルが 20MiB の上限を超えているため、アップロードされませんでした。',
+        'upload.busy': '別の添付ファイルをアップロード中です。完了を待つかキャンセルしてください。',
+        'upload.failed': p => `添付ファイルのアップロードに失敗しました: ${p.error}`,
+        'upload.ready': '準備完了',
+        'upload.failedSub': p => `失敗: ${p.error}`,
+        'upload.rateLimited': 'レート制限中です。しばらくしてから再試行します',
+        'upload.waiting': 'デスクトップの応答を待っています…',
+        'upload.readySystem': p => `添付ファイル ${p.name} の準備ができました。`,
+        'upload.failedSystem': p => `添付ファイル ${p.name} の処理に失敗しました: ${p.error}`,
+        'upload.abortedSystem': p => `添付ファイルのアップロードが中止されました: ${p.reason}`,
+        'upload.startAckMissing': 'attach_file_start_ack に upload_id がありません',
+        'download.invalidDesc': p => `${p.name} のダウンロードに失敗しました: デスクトップが不正なダウンロード情報を返しました。`,
+        'download.downloading': p => `${p.name}（${p.size}）をダウンロード中…`,
+        'download.downloadingPct': p => `${p.name}（${p.size}）をダウンロード中… ${p.percent}%`,
+        'download.failed': p => `${p.name} のダウンロードに失敗しました: ${p.reason}`,
+        'download.chunkMismatch': '終了メッセージのチャンク数が開始時と一致しません。',
+        'download.sizeMismatch': '終了メッセージのバイト数が開始時と一致しません。',
+        'download.incomplete': 'データが不完全です。もう一度お試しください。',
+        'download.byteMismatch': p => `バイト数が一致しません（想定 ${p.expected}、実際 ${p.actual}）。`,
+        'download.done': p => `${p.name}（${p.size}）をダウンロードしました。`,
+        'download.aborted': p => `${p.name} のダウンロードが中断されました: ${p.reason}`,
+        'download.desktopError': 'デスクトップがエラーを返しました。',
+        'download.connInterrupted': '接続が中断されました。もう一度お試しください。',
+        'download.inProgress': 'ダウンロード中です。現在のダウンロードが完了するまでお待ちください。',
+        'download.nothingToDownload': '現在のプレビューにはダウンロード可能な成果物がありません。',
+        'pinvou.scanningWu': '網羅性を深くチェック中...',
+        'pinvou.scanningPin': 'スマートレビュー中...',
+        'pinvou.doneWu': '網羅性チェックが完了しました。',
+        'pinvou.donePin': '成果物のレビューが完了しました。',
+        'pinvou.issues': '問題',
+        'pinvou.recommendations': '提案',
+        'pinvou.coverage': 'ギャップ',
+        'pinvou.topicFallback': '提案',
+        'pinvou.dimensionFallback': '観点',
+        'pinvou.pass': '合格です。納品に進めます。',
+        'pinvou.noIssues': '対応が必要な明らかな問題は見つかりませんでした。',
+        'pinvou.issueRow': p => `${p.severity} · ${p.text}${p.suggestion ? `；提案: ${p.suggestion}` : ''}`,
+        'pinvou.recRow': p => `${p.topic}：${p.pick}${p.why ? `，${p.why}` : ''}`,
+        'pinvou.covRow': p => `${p.dimension}：${p.text}${p.suggestion ? `；提案: ${p.suggestion}` : ''}`,
+        'preview.fitScreen': '画面に合わせる',
+        'preview.fit': 'フィット',
+        'preview.original': '原寸',
+        'preview.fitting': '調整中…',
+        'preview.imageAlt': '成果物のプレビュー',
+        'preview.invalidImage': '画像プレビューのデータが無効です。',
+        'preview.unsupported': 'この成果物はモバイルでのプレビューにまだ対応していません。',
+        'preview.truncated': 'プレビューは切り詰められ、先頭 256 KB のみ表示しています。',
+        'empty.connecting': 'デスクトップに接続中です。接続後に現在の会話を同期します。',
+        'empty.noHistory': '現在のセッションに履歴メッセージはありません。最初のリモートメッセージをそのまま送信できます。',
+        'empty.chooseSession': 'セッションを選択して入ってください。',
+        'confirm.title': '確認が必要です',
+        'confirm.prompt': '続行には確認が必要です。',
+        'confirm.submitted': '✓ 送信済み',
+        'confirm.choose': '選択してください',
+        'confirm.other': 'その他',
+        'confirm.otherPlaceholder': 'その他の回答を入力',
+        'confirm.option': '選択肢',
+        'confirm.submit': '選択を送信',
+        'system.carefulBlocked': '高リスクの操作をブロックしました。',
+        'system.personaEquip': p => `${p.name} を装備しました`,
+        'system.personaEquipGeneric': 'エキスパートカードを装備しました。',
+        'system.desktopInterrupted': 'デスクトップ接続が一時的に切断されました。自動で復旧します。',
+        'system.desktopRecovered': 'デスクトップとの接続が復旧しました。',
+        'system.desktopRecovering': 'デスクトップが再接続中です。しばらくお待ちください。',
+        'system.notConnectedYet': 'まだデスクトップに接続されていません。接続後に送信してください。',
+        'system.sendFailed': '送信に失敗しました：リモート接続がまだ準備できていません。',
+        'system.pairing': 'リレーに接続しました。デスクトップのペアリング確認を待っています。',
+        'system.errorPrefix': p => `エラー: ${p.message}`,
+        'takeover.eyebrow': 'リモートセッションが占有されています',
+        'takeover.title': 'このセッションは別のデバイスで開かれています',
+        'takeover.intro': '操作の競合を避けるため、同時に使用できるモバイルコントローラーは 1 台のみです。新しいデバイスで続けるか、このデバイスに再接続して切り替えてください。',
+        'takeover.currentDevice': '現在操作中のデバイス',
+        'takeover.deviceName': '別のモバイルデバイス',
+        'takeover.deviceMeta': '接続したばかり · リレー切替済み',
+        'takeover.pill': '操作中',
+        'takeover.nextSteps': '次にできること',
+        'takeover.step1': '新しく接続したデバイスをそのまま使用できます。追加の操作は不要です。',
+        'takeover.step2': 'このデバイスに切り替えるには「再接続」をタップしてください。現在操作中のデバイスは切断されます。',
+        'takeover.reconnect': 'このデバイスに再接続',
+        'takeover.closePage': 'ページを閉じる',
+        'takeover.hint': '再接続すると、現在操作中のデバイスは切断されます。',
+        'takeover.restartHint': 'デスクトップに戻ってリモートコントロールを再度有効にしてください。',
+        'takeover.reconnecting': '再接続中...',
+        'takeover.retaking': '現在のリモートセッションを引き継いでいます。',
+        'takeover.closing': '閉じています...',
+        'takeover.canClose': 'このページを閉じられます',
+        'takeover.manualClose': 'ブラウザが自動クローズを許可しませんでした。このページを直接閉じてください。',
+        'expired.statusTitle': '接続状態',
+        'expired.qrTitle': 'リモート接続',
+        'expired.qrMeta': 'この接続は無効になりました',
+        'expired.badge': '終了',
+        'expired.nextTitle': '次のステップ',
+        'expired.step1': 'このページを閉じてください。',
+        'expired.step2': 'デスクトップに表示されている最新の QR コードをスマートフォンでスキャンして、再接続してください。',
+        'expired.tip': 'デスクトップで新しい QR コードが生成されると、以前の QR コードは直ちに無効になります。',
+        'terminal.endedStatus': '接続終了',
+        'terminal.endedTitle': 'リモート接続が終了しました',
+        'terminal.endedMessage': 'リモート接続が終了しました。デスクトップでリモートコントロールが停止されたか、接続用 QR コードが更新された可能性があります。\n\nデスクトップに戻って状態を確認し、表示されている QR コードをスキャンして再接続してください。',
+        'terminal.endedHint': 'デスクトップに表示されている QR コードをスキャンして再接続してください。',
+        'terminal.dcStatus': '接続エラー',
+        'terminal.dcTitle': 'デスクトップ接続が切断されました',
+        'terminal.dcMessage': 'デスクトップまたはリレー接続で異常が発生し、現在のリモートコントロールは中止されました。',
+        'terminal.dcHint': 'デスクトップがオンラインであることを確認し、このページを更新するか、QR コードをスキャンし直してください。',
+      },
+    };
+    function normalizeLang(value) {
+      const v = String(value || '').toLowerCase();
+      if (v.startsWith('zh')) return 'zh';
+      if (v.startsWith('ja')) return 'ja';
+      if (v.startsWith('en')) return 'en';
+      return '';
+    }
+    function detectLang() {
+      let explicit = '';
+      try {
+        explicit = new URLSearchParams(String(location.hash || '').replace(/^#/, '')).get('lang')
+          || new URLSearchParams(String(location.search || '')).get('lang')
+          || '';
+      } catch { explicit = ''; }
+      if (!explicit) {
+        try { explicit = localStorage.getItem('pinvou_remote_lang') || ''; } catch { explicit = ''; }
+      }
+      const fromSetting = normalizeLang(explicit);
+      if (fromSetting) return fromSetting;
+      const nav = (navigator.languages && navigator.languages[0]) || navigator.language || '';
+      return normalizeLang(nav) === 'ja' ? 'ja' : 'zh';
+    }
+    const currentLang = detectLang();
+    function t(key, params) {
+      const dict = I18N[currentLang] || I18N.zh;
+      const value = dict[key] != null ? dict[key] : I18N.zh[key];
+      if (typeof value === 'function') return value(params);
+      return value != null ? value : key;
+    }
+    // 静态 HTML 文案(首屏与 JS 不再重写的部分)一次性本地化;JS 动态路径另行走 t()。
+    function applyStaticI18n() {
+      document.documentElement.lang = LANG_TAGS[currentLang] || 'zh-CN';
+      const byId = id => document.getElementById(id);
+      const setText = (id, key, params) => { const n = byId(id); if (n) n.textContent = t(key, params); };
+      const setAria = (id, key) => { const n = byId(id); if (n) n.setAttribute('aria-label', t(key)); };
+      setAria('artifactChip', 'aria.openArtifacts');
+      setAria('moreChip', 'aria.more');
+      setText('subtitle', 'status.currentSession');
+      setText('status', 'status.connecting');
+      setText('artifactTextChip', 'chip.artifacts', 0);
+      setAria('jumpBottom', 'aria.backToBottom');
+      setText('knowledgeChip', 'chip.knowledge');
+      setText('toolsChip', 'chip.tools');
+      setAria('attachBtn', 'aria.attach');
+      const input = byId('input');
+      if (input) input.placeholder = t('composer.placeholder');
+      setText('actionButton', 'composer.send');
+      setText('hint', 'composer.hint');
+      setText('sheetTitle', 'sheet.panel');
+      setText('sheetClose', 'common.close');
+      setText('previewTitle', 'common.preview');
+      setText('previewDownload', 'common.download');
+      setText('previewClose', 'common.close');
+      setAria('previewToolbar', 'aria.previewZoom');
+      setAria('previewZoomOut', 'aria.zoomOut');
+      setText('previewZoomFit', 'preview.fitScreen');
+      setAria('previewZoomIn', 'aria.zoomIn');
+      const themeChip = byId('themeChip');
+      const themeLabel = themeChip && themeChip.querySelector('span');
+      if (themeLabel) themeLabel.textContent = t('menu.theme');
+      const messages = byId('messages');
+      const emptyTip = messages && messages.querySelector('.empty');
+      if (emptyTip) emptyTip.textContent = t('empty.connecting');
+      setText('takeoverEyebrow', 'takeover.eyebrow');
+      setText('takeoverTitle', 'takeover.title');
+      setText('takeoverIntro', 'takeover.intro');
+      setText('takeoverReconnect', 'takeover.reconnect');
+      setText('takeoverClose', 'takeover.closePage');
+      setText('takeoverHint', 'takeover.hint');
+      const takeoverDetails = byId('takeoverDetails');
+      if (takeoverDetails) {
+        const sectionTitles = takeoverDetails.querySelectorAll('.takeover-section-title');
+        if (sectionTitles[0]) sectionTitles[0].textContent = t('takeover.currentDevice');
+        if (sectionTitles[1]) sectionTitles[1].textContent = t('takeover.nextSteps');
+        const deviceName = takeoverDetails.querySelector('.takeover-device-name');
+        if (deviceName) deviceName.textContent = t('takeover.deviceName');
+        const deviceMeta = takeoverDetails.querySelector('.takeover-device-meta');
+        if (deviceMeta) deviceMeta.textContent = t('takeover.deviceMeta');
+        const pill = takeoverDetails.querySelector('.takeover-pill');
+        if (pill) pill.textContent = t('takeover.pill');
+        const steps = takeoverDetails.querySelectorAll('.takeover-step > div:last-child');
+        if (steps[0]) steps[0].textContent = t('takeover.step1');
+        if (steps[1]) steps[1].textContent = t('takeover.step2');
+      }
+      const expiredDetails = byId('expiredDetails');
+      if (expiredDetails) {
+        const sectionTitles = expiredDetails.querySelectorAll('.expired-section-title');
+        if (sectionTitles[0]) sectionTitles[0].textContent = t('expired.statusTitle');
+        if (sectionTitles[1]) sectionTitles[1].textContent = t('expired.nextTitle');
+        const qrTitle = expiredDetails.querySelector('.expired-qr-title');
+        if (qrTitle) qrTitle.textContent = t('expired.qrTitle');
+        const qrMeta = expiredDetails.querySelector('.expired-qr-meta');
+        if (qrMeta) qrMeta.textContent = t('expired.qrMeta');
+        const badge = expiredDetails.querySelector('.expired-badge');
+        if (badge) badge.textContent = t('expired.badge');
+        const steps = expiredDetails.querySelectorAll('.takeover-step > div:last-child');
+        if (steps[0]) steps[0].textContent = t('expired.step1');
+        if (steps[1]) steps[1].textContent = t('expired.step2');
+        const tip = expiredDetails.querySelector('.expired-tip');
+        if (tip) tip.textContent = t('expired.tip');
+      }
+    }
+    applyStaticI18n();
+
     function syncViewportMetrics() {
       const viewport = window.visualViewport;
       const height = Math.round((viewport && viewport.height) || window.innerHeight || document.documentElement.clientHeight || 0);
@@ -670,22 +1391,22 @@
       clearTimeout(joinTimer);
       clearTimeout(reconnectTimer);
       setTurnActive(false);
-      setStatus('已被占用');
+      setStatus(t('status.occupied'));
       setControlsDisabled(true);
       el.sheetOverlay.classList.add('hidden');
       closePreview();
       state.sheet = '';
       el.takeoverWarn.innerHTML = '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
-      el.takeoverEyebrow.textContent = '远程会话被占用';
-      el.takeoverTitle.textContent = '当前会话已在其他设备打开';
-      el.takeoverIntro.textContent = '为避免操作冲突，同一时间只能保留一个手机控制端。你可以继续使用新设备，或重新连接本设备切换回来。';
+      el.takeoverEyebrow.textContent = t('takeover.eyebrow');
+      el.takeoverTitle.textContent = t('takeover.title');
+      el.takeoverIntro.textContent = t('takeover.intro');
       el.takeoverDetails.classList.remove('hidden');
       el.expiredDetails.classList.add('hidden');
       el.takeoverReconnect.classList.remove('hidden');
       el.takeoverClose.className = 'takeover-secondary';
       el.takeoverReconnect.disabled = false;
-      el.takeoverReconnect.textContent = '重新连接本设备';
-      el.takeoverHint.textContent = '重新连接后，当前正在控制的设备会被断开。';
+      el.takeoverReconnect.textContent = t('takeover.reconnect');
+      el.takeoverHint.textContent = t('takeover.hint');
       el.takeoverScreen.classList.remove('hidden');
       el.takeoverScreen.scrollTop = 0;
       updateChipLabels();
@@ -720,9 +1441,9 @@
       el.takeoverWarn.innerHTML = variant === 'ended'
         ? '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 6v6l3 2"></path><circle cx="12" cy="12" r="9"></circle></svg>'
         : '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.9"><path d="M12 8v5"></path><path d="M12 17h.01"></path><path d="M10.3 3.8 2.9 17a2 2 0 0 0 1.8 3h14.6a2 2 0 0 0 1.8-3L13.7 3.8a2 2 0 0 0-3.4 0Z"></path></svg>';
-      el.takeoverHint.textContent = hint || '请返回桌面端重新开启远程控制。';
+      el.takeoverHint.textContent = hint || t('takeover.restartHint');
       el.takeoverClose.disabled = false;
-      el.takeoverClose.textContent = '关闭页面';
+      el.takeoverClose.textContent = t('takeover.closePage');
       el.takeoverScreen.classList.remove('hidden');
       el.takeoverScreen.scrollTop = 0;
     }
@@ -787,10 +1508,10 @@
     }
     function thinkingText() {
       const elapsed = elapsedSeconds(Date.now() - state.turn.startedAt);
-      if (state.turn.phase === 'tool' && state.turn.toolName) return `调用 ${state.turn.toolName}... ${elapsed}s`;
-      if (state.turn.phase === 'stopping') return `停止中... ${elapsed}s`;
-      const suffix = elapsed >= 120 ? ' · 本地模型在生成长内容,请耐心等' : elapsed >= 30 ? ' · 本地模型生成中' : '';
-      return `思考中... ${elapsed}s${suffix}`;
+      if (state.turn.phase === 'tool' && state.turn.toolName) return t('thinking.tool', { name: state.turn.toolName, elapsed });
+      if (state.turn.phase === 'stopping') return t('thinking.stopping', { elapsed });
+      const suffix = elapsed >= 120 ? t('thinking.longSuffix') : elapsed >= 30 ? t('thinking.localSuffix') : '';
+      return t('thinking.thinking', { elapsed, suffix });
     }
     function setTurnActive(active, phase = active ? 'waiting' : 'idle') {
       state.turn.active = active;
@@ -811,11 +1532,11 @@
     function renderRunState() {
       if (state.turn.active) {
         clearEmpty();
-        el.actionButton.textContent = '停';
+        el.actionButton.textContent = t('composer.stop');
         el.actionButton.className = 'danger';
         thinkingFrame = (thinkingFrame + 1) % BRAILLE.length;
         const text = thinkingText();
-        el.hint.textContent = '云端仅中继，不保存消息全文';
+        el.hint.textContent = t('composer.hint');
         setStatus(text);
         if (!runStatusNode) {
           runStatusNode = document.createElement('div');
@@ -829,7 +1550,7 @@
       } else {
         el.actionButton.innerHTML = '<svg fill="none" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>';
         el.actionButton.className = 'primary';
-        el.hint.textContent = '云端仅中继，不保存消息全文';
+        el.hint.textContent = t('composer.hint');
         if (runStatusNode) {
           runStatusNode.remove();
           runStatusNode = null;
@@ -839,16 +1560,16 @@
     function renderChips() {
       const activeSession = state.sessions.find(s => s.active || s.id === sessionId);
       el.title.textContent = activeSession ? activeSession.title || shortId(activeSession.id) : shortId(sessionId) || 'PINVOU Remote';
-      el.artifactTextChip.textContent = `${state.artifacts.length} 个产物`;
+      el.artifactTextChip.textContent = t('chip.artifacts', state.artifacts.length);
       el.modeChip.classList.add('control');
       el.modelChip.classList.add('control');
       el.modeChip.innerHTML = `${state.chips.mode === 'plan' ? '◇' : '⚡'} <strong>${escapeHtml(modeLabel(state.chips.mode))}</strong>`;
-      el.modelChip.innerHTML = `▣ ${escapeHtml(state.chips.effective_model_name || '默认模型')}`;
+      el.modelChip.innerHTML = `▣ ${escapeHtml(state.chips.effective_model_name || t('chip.defaultModel'))}`;
       [...el.chipbar.querySelectorAll('.chip.readonly')].forEach(node => node.remove());
       if (state.chips.skill && state.chips.skill.name) addReadonlyChip(`Skill ${state.chips.skill.name}`);
       if (state.chips.persona_id) addReadonlyChip(`Persona ${state.chips.persona_id}`);
-      if (state.chips.mounted_collection) addReadonlyChip(`知识库 #${state.chips.mounted_collection}`);
-      if (state.chips.pinvou_review_enabled) addReadonlyChip('品悟开启');
+      if (state.chips.mounted_collection) addReadonlyChip(t('chip.knowledgeMounted', state.chips.mounted_collection));
+      if (state.chips.pinvou_review_enabled) addReadonlyChip(t('chip.pinvouOn'));
       updateChipLabels();
     }
     // knowledgeChip / toolsChip / attachBtn 的文案与 disabled 状态。
@@ -862,14 +1583,14 @@
           const label = (col && (col.name || col.title)) || ('#' + mounted);
           el.knowledgeChip.innerHTML = '📚 <strong>' + escapeHtml(label) + '</strong>';
         } else {
-          el.knowledgeChip.textContent = '📚 知识库';
+          el.knowledgeChip.textContent = t('chip.knowledge');
         }
         // 后端按知识库索引与 embedding 就绪状态下发可用性；所有工作模式语义一致。
         const kbAvailable = !!(state.chips && state.chips.kb_search_available);
         el.knowledgeChip.disabled = !joined || state.replaced || !kbAvailable;
         el.knowledgeChip.title = kbAvailable
           ? ''
-          : '知识库检索暂不可用,请确认已有索引内容且 Embedding 模型已就绪';
+          : t('kb.unavailableTitle');
       }
       if (el.toolsChip) {
         const all = (state.tools && state.tools.all) || [];
@@ -1068,7 +1789,7 @@
       const btn = document.createElement('button');
       btn.className = 'sheet-create';
       btn.disabled = state.creatingSession || !joined;
-      btn.textContent = state.creatingSession ? '正在新建...' : '+ 新建 Session';
+      btn.textContent = state.creatingSession ? t('session.creating') : t('session.create');
       btn.onclick = () => {
         if (state.creatingSession) return;
         state.creatingSession = true;
@@ -1082,65 +1803,65 @@
       el.sheetBody.appendChild(bar);
     }
     function renderSessionSheet() {
-      el.sheetTitle.textContent = '选择 Session';
+      el.sheetTitle.textContent = t('sheet.sessions');
       el.sheetBody.innerHTML = '';
       state.sessions = normalizeSessions(state.sessions);
       if (!joined) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">正在连接桌面端。连接成功后会加载 session 列表。</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('sessions.connecting')}</div>`;
         return;
       }
       renderCreateSessionButton();
       if (!state.sessionsLoaded) {
         const empty = document.createElement('div');
         empty.className = 'empty-panel';
-        empty.textContent = '正在加载 session 列表。';
+        empty.textContent = t('sessions.loading');
         el.sheetBody.appendChild(empty);
         return;
       }
       if (!state.sessions.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-panel';
-        empty.textContent = '暂无 session 列表，可以新建一个。';
+        empty.textContent = t('sessions.empty');
         el.sheetBody.appendChild(empty);
         return;
       }
       state.sessions.forEach(s => {
         el.sheetBody.appendChild(sheetItem({
           title: s.title || shortId(s.id),
-          sub: `${shortId(s.id)} · ${s.message_count || 0} 条消息`,
-          mark: s.active || s.id === sessionId ? '当前' : '',
+          sub: t('sessions.messageCount', { id: shortId(s.id), count: s.message_count || 0 }),
+          mark: s.active || s.id === sessionId ? t('common.current') : '',
           active: s.active || s.id === sessionId,
           onClick: () => enterRemoteSession(s.id),
         }));
       });
     }
     function renderArtifactSheet() {
-      el.sheetTitle.textContent = '产物';
+      el.sheetTitle.textContent = t('sheet.artifacts');
       el.sheetBody.innerHTML = '';
       if (!state.artifacts.length) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">当前 session 暂无产物。</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('artifacts.empty')}</div>`;
         return;
       }
       state.artifacts.forEach(a => {
         el.sheetBody.appendChild(sheetItem({
-          title: a.basename || basename(a.path_tail) || '成品',
+          title: a.basename || basename(a.path_tail) || t('artifacts.fallbackName'),
           sub: `${a.path_tail || ''} · ${formatSize(a.byte_size)}`,
-          mark: '预览',
+          mark: t('common.preview'),
           onClick: () => requestArtifactPreview(a),
         }));
       });
     }
     function renderModeSheet() {
-      el.sheetTitle.textContent = '切换 Mode';
+      el.sheetTitle.textContent = t('sheet.mode');
       el.sheetBody.innerHTML = '';
       [
-        { id: 'yolo', title: 'YOLO', sub: '直接执行当前请求' },
-        { id: 'plan', title: 'Plan', sub: '先规划，再执行' },
+        { id: 'yolo', title: 'YOLO', sub: t('mode.yoloSub') },
+        { id: 'plan', title: 'Plan', sub: t('mode.planSub') },
       ].forEach(item => {
         el.sheetBody.appendChild(sheetItem({
           title: item.title,
           sub: item.sub,
-          mark: state.chips.mode === item.id ? '当前' : '',
+          mark: state.chips.mode === item.id ? t('common.current') : '',
           active: state.chips.mode === item.id,
           onClick: () => {
             sendAction('set_mode', { mode: item.id });
@@ -1150,12 +1871,12 @@
       });
     }
     function renderModelSheet() {
-      el.sheetTitle.textContent = '切换 Model';
+      el.sheetTitle.textContent = t('sheet.model');
       el.sheetBody.innerHTML = '';
       el.sheetBody.appendChild(sheetItem({
-        title: '跟随全局默认',
-        sub: state.chips.global_model_id ? `默认 ${state.chips.global_model_id}` : '使用桌面端当前默认模型',
-        mark: state.chips.model_id ? '' : '当前',
+        title: t('model.followGlobal'),
+        sub: state.chips.global_model_id ? t('model.defaultIs', state.chips.global_model_id) : t('model.globalSub'),
+        mark: state.chips.model_id ? '' : t('common.current'),
         active: !state.chips.model_id,
         onClick: () => {
           sendAction('set_model', { model_id: null });
@@ -1166,7 +1887,7 @@
         el.sheetBody.appendChild(sheetItem({
           title: m.name || m.model || m.id,
           sub: m.model || m.id,
-          mark: state.chips.effective_model_id === m.id ? '当前' : '',
+          mark: state.chips.effective_model_id === m.id ? t('common.current') : '',
           active: state.chips.effective_model_id === m.id,
           onClick: () => {
             sendAction('set_model', { model_id: m.id });
@@ -1176,17 +1897,17 @@
       });
     }
     function renderThemeSheet() {
-      el.sheetTitle.textContent = '界面风格';
+      el.sheetTitle.textContent = t('sheet.theme');
       el.sheetBody.innerHTML = '';
       [
-        { id: 'dark', title: '暗色', sub: '适合夜间和微信内置浏览器' },
-        { id: 'light', title: '亮色', sub: '白底高对比，适合看文档' },
-        { id: 'system', title: '跟随系统', sub: '按手机系统外观自动切换' },
+        { id: 'dark', title: t('theme.dark'), sub: t('theme.darkSub') },
+        { id: 'light', title: t('theme.light'), sub: t('theme.lightSub') },
+        { id: 'system', title: t('theme.system'), sub: t('theme.systemSub') },
       ].forEach(item => {
         el.sheetBody.appendChild(sheetItem({
           title: item.title,
           sub: item.sub,
-          mark: state.theme === item.id ? '当前' : '',
+          mark: state.theme === item.id ? t('common.current') : '',
           active: state.theme === item.id,
           onClick: () => {
             state.theme = item.id;
@@ -1198,14 +1919,14 @@
       });
     }
     function renderKnowledgeSheet() {
-      el.sheetTitle.textContent = '知识库';
+      el.sheetTitle.textContent = t('sheet.knowledge');
       el.sheetBody.innerHTML = '';
       if (!joined) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">未连接到桌面端。</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('common.notConnected')}</div>`;
         return;
       }
       if (state.kb.loading) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">正在加载知识库列表…</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('kb.loading')}</div>`;
         return;
       }
       const collections = Array.isArray(state.kb.collections) ? state.kb.collections : [];
@@ -1218,14 +1939,14 @@
       if (!kbAvailable) {
         const warn = document.createElement('div');
         warn.className = 'empty-panel';
-        warn.textContent = '知识库检索暂不可用,请确认已有索引内容且 Embedding 模型已就绪。';
+        warn.textContent = t('kb.unavailableNote');
         el.sheetBody.appendChild(warn);
       }
       if (mounted) {
         el.sheetBody.appendChild(sheetItem({
           title: (mountedItem && (mountedItem.name || mountedItem.title)) || ('#' + mounted),
-          sub: '已挂载到当前 session',
-          mark: '挂载中',
+          sub: t('kb.mountedSub'),
+          mark: t('kb.mountedMark'),
           active: true,
           onClick: () => {
             sendAction('unmount_kb_collection', {});
@@ -1235,13 +1956,13 @@
       } else {
         const empty = document.createElement('div');
         empty.className = 'empty-panel';
-        empty.textContent = '当前 session 未挂载知识库。';
+        empty.textContent = t('kb.noneMounted');
         el.sheetBody.appendChild(empty);
       }
       if (!collections.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-panel';
-        empty.textContent = '没有可用的知识库 collection。';
+        empty.textContent = t('kb.noCollections');
         el.sheetBody.appendChild(empty);
         return;
       }
@@ -1251,7 +1972,7 @@
         el.sheetBody.appendChild(sheetItem({
           title: c.name || c.title || ('#' + c.id),
           sub: c.description || c.id,
-          mark: isMounted ? '已挂载' : '挂载',
+          mark: isMounted ? t('kb.mounted') : t('kb.mount'),
           active: isMounted,
           onClick: () => {
             if (isMounted) {
@@ -1267,36 +1988,36 @@
       });
     }
     function renderToolsSheet() {
-      el.sheetTitle.textContent = '工具开关';
+      el.sheetTitle.textContent = t('sheet.tools');
       el.sheetBody.innerHTML = '';
       if (!joined) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">未连接到桌面端。</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('common.notConnected')}</div>`;
         return;
       }
       if (state.tools.loading) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">正在加载工具列表…</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('tools.loading')}</div>`;
         return;
       }
       const all = Array.isArray(state.tools.all) ? state.tools.all : [];
       const disabled = Array.isArray(state.tools.disabledIds) ? state.tools.disabledIds : [];
       const disabledSet = new Set(disabled);
       if (!all.length) {
-        el.sheetBody.innerHTML = '<div class="empty-panel">暂无可用工具。</div>';
+        el.sheetBody.innerHTML = `<div class="empty-panel">${t('tools.empty')}</div>`;
         return;
       }
-      all.forEach(t => {
+      all.forEach(tool => {
         // MarketplaceToolInfo 字段是 id(marketplace.rs:337),不是 connector_id。
-        if (!t || !t.id) return;
-        const isEnabled = !disabledSet.has(t.id);
+        if (!tool || !tool.id) return;
+        const isEnabled = !disabledSet.has(tool.id);
         el.sheetBody.appendChild(sheetItem({
-          title: t.name || t.id,
-          sub: t.description || t.id,
-          mark: isEnabled ? '已启用' : '已禁用',
+          title: tool.name || tool.id,
+          sub: tool.description || tool.id,
+          mark: isEnabled ? t('tools.enabled') : t('tools.disabled'),
           active: isEnabled,
           onClick: () => {
             const next = new Set(state.tools.disabledIds || []);
-            if (isEnabled) next.add(t.id);
-            else next.delete(t.id);
+            if (isEnabled) next.add(tool.id);
+            else next.delete(tool.id);
             state.tools.disabledIds = Array.from(next);
             renderToolsSheet();
             scheduleSetDisabledConnectors();
@@ -1420,7 +2141,7 @@
       [...el.messages.querySelectorAll('.plan-card[data-active="true"]')].forEach(node => {
         node.dataset.active = 'false';
         const status = node.querySelector('.plan-card-status');
-        if (status) status.textContent = '已被新方案替换';
+        if (status) status.textContent = t('plan.replaced');
         const actions = node.querySelector('.actions');
         if (actions) actions.remove();
       });
@@ -1428,7 +2149,7 @@
       card.className = 'plan-card';
       card.dataset.active = fromHistory ? 'false' : 'true';
       const title = document.createElement('h3');
-      title.textContent = '方案确认';
+      title.textContent = t('plan.title');
       card.appendChild(title);
       if (plan && plan.explanation) {
         const explain = document.createElement('div');
@@ -1455,30 +2176,30 @@
       }
       const status = document.createElement('div');
       status.className = 'small plan-card-status';
-      status.textContent = fromHistory ? '历史方案' : '';
+      status.textContent = fromHistory ? t('plan.history') : '';
       card.appendChild(status);
       if (!fromHistory) {
         const actions = document.createElement('div');
         actions.className = 'actions';
         const go = document.createElement('button');
         go.className = 'primary';
-        go.textContent = '就这么干';
+        go.textContent = t('common.approve');
         go.onclick = () => {
           const planMarkdown = composePlanMarkdown({ plan, todos });
           sendAction('accept_plan', { plan_markdown: planMarkdown });
           card.dataset.active = 'false';
-          status.textContent = '已批准';
+          status.textContent = t('plan.approved');
           actions.remove();
-          addMessage('user', '✅ 就这么干');
+          addMessage('user', `✅ ${t('common.approve')}`);
           setTurnActive(true, 'waiting');
         };
         const drop = document.createElement('button');
         drop.className = 'ghost';
-        drop.textContent = '算了';
+        drop.textContent = t('plan.discard');
         drop.onclick = () => {
           sendAction('discard_plan', {});
           card.dataset.active = 'false';
-          status.textContent = '已放弃';
+          status.textContent = t('plan.discarded');
           actions.remove();
         };
         actions.appendChild(go);
@@ -1570,7 +2291,7 @@
       if (path.textContent) left.appendChild(path);
       const status = document.createElement('div');
       status.className = 'tool-status';
-      status.textContent = tool.status || '运行中';
+      status.textContent = tool.status || t('tool.running');
       div.appendChild(left);
       div.appendChild(status);
       appendToMessages(div);
@@ -1586,11 +2307,11 @@
           id,
           name: payload && payload.name,
           args: payload && payload.args,
-          status: payload && payload.success === false ? '失败' : '完成',
+          status: payload && payload.success === false ? t('tool.failed') : t('tool.done'),
         });
         return;
       }
-      rec.status.textContent = payload && payload.success === false ? '失败' : '完成';
+      rec.status.textContent = payload && payload.success === false ? t('tool.failed') : t('tool.done');
       rec.status.style.color = payload && payload.success === false ? '#f28b82' : '#93d5a6';
     }
     function basename(path) {
@@ -1653,7 +2374,7 @@
       head.appendChild(kind);
       const name = document.createElement('div');
       name.className = 'name';
-      name.textContent = artifact.name || artifact.basename || basename(cardPath) || '成品';
+      name.textContent = artifact.name || artifact.basename || basename(cardPath) || t('artifacts.fallbackName');
       const path = document.createElement('div');
       path.className = 'path';
       path.textContent = cardPath;
@@ -1684,7 +2405,7 @@
     // 同时只允许一个上传在飞(state.uploadBusy)。
     async function requestAttachFile(file) {
       if (!joined || state.replaced) {
-        addSystem('未连接到桌面端,无法上传。');
+        addSystem(t('upload.notConnected'));
         return;
       }
       // 客户端预检:与桌面端 UPLOAD_LIMIT_BYTES(20MiB,对齐 file_ingest::MAX_FILE_BYTES)
@@ -1696,15 +2417,15 @@
       // 而不是「超过 20MiB 上限」,误导用户。
       const UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
       if (!file || typeof file.size !== 'number' || file.size === 0) {
-        addSystem('空文件无法上传。');
+        addSystem(t('upload.emptyFile'));
         return;
       }
       if (file.size > UPLOAD_LIMIT_BYTES) {
-        addSystem('附件超过 20MiB 上限,未上传。');
+        addSystem(t('upload.tooLarge'));
         return;
       }
       if (state.uploadBusy) {
-        addSystem('已有附件正在上传,请等待完成或取消。');
+        addSystem(t('upload.busy'));
         return;
       }
       state.uploadBusy = true;
@@ -1758,7 +2479,7 @@
         const chunkBytes = (Number.isInteger(rawChunkBytes) && rawChunkBytes >= 1 && rawChunkBytes <= 8 * 1024 * 1024)
           ? rawChunkBytes
           : DEFAULT_CHUNK_BYTES;
-        if (!realUploadId) throw new Error('attach_file_start_ack 缺少 upload_id');
+        if (!realUploadId) throw new Error(t('upload.startAckMissing'));
         // 把临时 state 迁移到真实 upload_id
         const tempState = state.uploads[tempUploadId] || {};
         delete state.uploads[tempUploadId];
@@ -1815,9 +2536,9 @@
           check();
         });
       } catch (err) {
-        addSystem('附件上传失败: ' + (err && err.message || err));
+        addSystem(t('upload.failed', { error: (err && err.message) || err }));
         if (tempUploadId && state.uploads[tempUploadId]) {
-          setUploadState(tempUploadId, { status: 'error', error: (err && err.message) || '失败', busy: false });
+          setUploadState(tempUploadId, { status: 'error', error: (err && err.message) || t('common.failed'), busy: false });
         }
         if (realUploadId) {
           sendAction('attach_file_abort', { upload_id: realUploadId });
@@ -1848,12 +2569,12 @@
         || totalChunks !== Math.ceil(byteSize / (768 * 1024))
       ) {
         setDownloadBusy(false);
-        addSystem(`下载 ${name} 失败：桌面端返回了非法的下载描述。`);
+        addSystem(t('download.invalidDesc', { name }));
         return;
       }
       const node = document.createElement('div');
       node.className = 'system';
-      node.textContent = `正在下载 ${name}（${formatSize(byteSize)}）…`;
+      node.textContent = t('download.downloading', { name, size: formatSize(byteSize) });
       appendToMessages(node);
       scrollBottom();
       state.downloads[p.download_id] = {
@@ -1886,7 +2607,7 @@
       download.receivedBytes += bytes.length;
       if (download.node && download.totalChunks > 1) {
         const percent = Math.min(100, Math.round((download.received / download.totalChunks) * 100));
-        download.node.textContent = `正在下载 ${download.name}（${formatSize(download.size)}）… ${percent}%`;
+        download.node.textContent = t('download.downloadingPct', { name: download.name, size: formatSize(download.size), percent });
       }
     }
     function finishArtifactDownload(p) {
@@ -1895,22 +2616,22 @@
       delete state.downloads[p.download_id];
       setDownloadBusy(false);
       const fail = reason => {
-        if (download.node) download.node.textContent = `下载 ${download.name} 失败：${reason}`;
+        if (download.node) download.node.textContent = t('download.failed', { name: download.name, reason });
       };
       if (p.total_chunks !== undefined && Number(p.total_chunks) !== download.totalChunks) {
-        fail('结束消息的分块数与开始不一致。');
+        fail(t('download.chunkMismatch'));
         return;
       }
       if (p.byte_size !== undefined && Number(p.byte_size) !== download.size) {
-        fail('结束消息的字节数与开始不一致。');
+        fail(t('download.sizeMismatch'));
         return;
       }
       if (download.received !== download.totalChunks) {
-        fail('数据不完整，请重试。');
+        fail(t('download.incomplete'));
         return;
       }
       if (download.receivedBytes !== download.size) {
-        fail(`字节数不符（预期 ${download.size}，实际 ${download.receivedBytes}）。`);
+        fail(t('download.byteMismatch', { expected: download.size, actual: download.receivedBytes }));
         return;
       }
       try {
@@ -1923,7 +2644,7 @@
         anchor.click();
         anchor.remove();
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
-        if (download.node) download.node.textContent = `已下载 ${download.name}（${formatSize(download.size)}）。`;
+        if (download.node) download.node.textContent = t('download.done', { name: download.name, size: formatSize(download.size) });
       } catch (error) {
         fail((error && error.message) || error);
       }
@@ -1934,7 +2655,7 @@
       if (!active.length) return;
       state.downloads = {};
       active.forEach(download => {
-        if (download.node) download.node.textContent = `下载 ${download.name} 中断：${reason}`;
+        if (download.node) download.node.textContent = t('download.aborted', { name: download.name, reason });
       });
     }
     function artifactKind(kind, path) {
@@ -1971,7 +2692,7 @@
       const card = document.createElement('div');
       card.className = 'pinvou-card';
       const isWu = payload && payload.mode === 'coverage';
-      card.innerHTML = `<h3>Pinvou ${isWu ? '悟' : '品'}</h3><div class="pinvou-trace">${isWu ? '正在深度查漏...' : '正在智能找错...'}</div>`;
+      card.innerHTML = `<h3>Pinvou ${isWu ? '悟' : '品'}</h3><div class="pinvou-trace">${isWu ? t('pinvou.scanningWu') : t('pinvou.scanningPin')}</div>`;
       pinvouNode = appendToMessages(card);
     }
     function showPinvouReview(payload) {
@@ -1988,15 +2709,15 @@
       card.appendChild(title);
       const trace = document.createElement('div');
       trace.className = 'pinvou-trace';
-      trace.textContent = review.trace || (isWu ? '已完成覆盖度检查。' : '已完成产物检阅。');
+      trace.textContent = review.trace || (isWu ? t('pinvou.doneWu') : t('pinvou.donePin'));
       card.appendChild(trace);
-      renderPinvouList(card, '问题', review.issues, row => `${row.severity || 'medium'} · ${row.text || ''}${row.suggestion ? `；建议：${row.suggestion}` : ''}`);
-      renderPinvouList(card, '建议', review.recommendations, row => `${row.topic || '建议'}：${row.pick || ''}${row.why ? `，${row.why}` : ''}`);
-      renderPinvouList(card, '缺口', review.coverage, row => `${row.dimension || '维度'}：${row.text || ''}${row.suggestion ? `；建议：${row.suggestion}` : ''}`);
+      renderPinvouList(card, t('pinvou.issues'), review.issues, row => t('pinvou.issueRow', { severity: row.severity || 'medium', text: row.text || '', suggestion: row.suggestion || '' }));
+      renderPinvouList(card, t('pinvou.recommendations'), review.recommendations, row => t('pinvou.recRow', { topic: row.topic || t('pinvou.topicFallback'), pick: row.pick || '', why: row.why || '' }));
+      renderPinvouList(card, t('pinvou.coverage'), review.coverage, row => t('pinvou.covRow', { dimension: row.dimension || t('pinvou.dimensionFallback'), text: row.text || '', suggestion: row.suggestion || '' }));
       if (!review.issues?.length && !review.recommendations?.length && !review.coverage?.length) {
         const ok = document.createElement('div');
         ok.className = 'pinvou-row';
-        ok.textContent = review.verdict === 'pass' ? '已通过，可继续交付。' : '没有发现需要处理的明显问题。';
+        ok.textContent = review.verdict === 'pass' ? t('pinvou.pass') : t('pinvou.noIssues');
         card.appendChild(ok);
       }
       appendToMessages(card);
@@ -2007,8 +2728,8 @@
     function updatePreviewZoomToolbar() {
       const percent = Math.round((previewZoom.current || 1) * 100);
       el.previewZoomFit.textContent = previewZoom.ready
-        ? `${previewZoom.overflow ? '适应' : '原始'} · ${percent}%`
-        : '正在适配…';
+        ? `${previewZoom.overflow ? t('preview.fit') : t('preview.original')} · ${percent}%`
+        : t('preview.fitting');
       el.previewZoomOut.disabled = !previewZoom.ready || previewZoom.current <= 0.25;
       el.previewZoomIn.disabled = !previewZoom.ready || previewZoom.current >= 2;
       el.previewZoomFit.disabled = !previewZoom.ready;
@@ -2048,7 +2769,7 @@
     });
     function showPreview(payload) {
       const preview = payload.preview || {};
-      const previewName = payload.basename || basename(payload.path_tail) || '预览';
+      const previewName = payload.basename || basename(payload.path_tail) || t('common.preview');
       state.previewArtifact = {
         id: payload.artifact_id || '',
         path: payload.path_tail || '',
@@ -2067,13 +2788,13 @@
         if (objectUrl) {
           previewImageUrl = objectUrl;
           const img = document.createElement('img');
-          img.alt = payload.basename || 'artifact preview';
+          img.alt = payload.basename || t('preview.imageAlt');
           img.src = objectUrl;
           el.previewBody.appendChild(img);
         } else {
           const invalid = document.createElement('div');
           invalid.className = 'empty-panel';
-          invalid.textContent = '图片预览数据无效。';
+          invalid.textContent = t('preview.invalidImage');
           el.previewBody.appendChild(invalid);
         }
       } else if (preview.type === 'html') {
@@ -2106,13 +2827,13 @@
       } else {
         const empty = document.createElement('div');
         empty.className = 'empty-panel';
-        empty.textContent = preview.reason || '这个产物暂不支持手机端预览。';
+        empty.textContent = preview.reason || t('preview.unsupported');
         el.previewBody.appendChild(empty);
       }
       if (preview.truncated) {
         const note = document.createElement('div');
         note.className = 'system';
-        note.textContent = '预览内容已截断，仅显示前 256 KB。';
+        note.textContent = t('preview.truncated');
         el.previewBody.appendChild(note);
       }
       el.previewOverlay.classList.remove('hidden');
@@ -2513,17 +3234,17 @@
           if (up.preview.kind) parts.push(up.preview.kind);
           if (up.preview.byte_size) parts.push(formatSize(up.preview.byte_size));
           if (up.preview.token_estimate) parts.push('~' + up.preview.token_estimate + ' tok');
-          subText = parts.join(' · ') || '已就绪';
+          subText = parts.join(' · ') || t('upload.ready');
           if (up.preview.warning) subText += '  ⚠ ' + up.preview.warning;
         } else if (up.status === 'error') {
-          subText = '失败: ' + (up.error || '未知错误');
+          subText = t('upload.failedSub', { error: up.error || t('common.unknownError') });
         } else if (up.status === 'rate_limited') {
-          subText = '被限流,稍后重试';
+          subText = t('upload.rateLimited');
         } else if (typeof up.received === 'number' && typeof up.byte_size === 'number' && up.byte_size > 0) {
           const pct = Math.min(100, Math.round((up.received / up.byte_size) * 100));
           subText = formatSize(up.received) + ' / ' + formatSize(up.byte_size) + ' · ' + pct + '%';
         } else if (up.status === 'starting') {
-          subText = '等待桌面端响应…';
+          subText = t('upload.waiting');
         } else {
           subText = formatSize(up.byte_size || 0);
         }
@@ -2545,7 +3266,7 @@
           const x = document.createElement('button');
           x.className = 'att-x';
           x.textContent = '×';
-          x.setAttribute('aria-label', '取消上传');
+          x.setAttribute('aria-label', t('aria.cancelUpload'));
           x.onclick = () => {
             // start 前就有稳定 upload_id，因此 ACK 尚未返回也能让桌面端准确取消。
             if (up.realUploadId) sendAction('attach_file_abort', { upload_id: up.realUploadId });
@@ -2695,7 +3416,7 @@
             }
             return;
           }
-          addToolCard({ id: b.id, name: b.name, args, status: resultSuccess(res) ? '完成' : '失败' });
+          addToolCard({ id: b.id, name: b.name, args, status: resultSuccess(res) ? t('tool.done') : t('tool.failed') });
           finishToolCard({ id: b.id, success: resultSuccess(res), output: res && res.content });
 
           const produced = artifactPathFromOutput(res && res.content);
@@ -2754,13 +3475,13 @@
         if (!state.pendingSessionId || state.pendingSessionId === sessionId) state.pendingSessionId = '';
         rememberSnapshotSession(session);
         el.title.textContent = session.title || 'PINVOU Remote';
-        el.subtitle.textContent = session.id ? `session ${session.id}` : '当前 session';
+        el.subtitle.textContent = session.id ? t('status.sessionId', { id: session.id }) : t('status.currentSession');
         updateArtifacts(Array.isArray(snapshot.artifacts) ? snapshot.artifacts : []);
         const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
         const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
         useChatItems = chatItems.length > 0 && (!messages.length || chatItems.length >= messages.length);
         if (!messages.length && !chatItems.length && survivingSystemNodes.length === 0) {
-          el.messages.innerHTML = '<div class="empty">当前 session 暂无历史消息。你可以直接发送第一条远程消息。</div>';
+          el.messages.innerHTML = `<div class="empty">${t('empty.noHistory')}</div>`;
         }
         if (useChatItems) {
           renderChatItemSnapshot(chatItems);
@@ -2770,7 +3491,7 @@
           messages.forEach(m => {
             if (m.content) addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
             if (Array.isArray(m.tools) && m.tools.length) {
-              m.tools.forEach(t => addToolCard({ id: t.id, name: t.name, args: t.args, status: '完成' }));
+              m.tools.forEach(tool => addToolCard({ id: tool.id, name: tool.name, args: tool.args, status: t('tool.done') }));
             }
           });
         }
@@ -2793,7 +3514,7 @@
       const chatItems = Array.isArray(snapshot.chat_items) ? snapshot.chat_items : [];
       const messageCount = snapshotMessageCount(snapshot);
       const snapshotCount = snapshotDisplayCount(snapshot);
-      const syncedText = snapshotCount ? `已同步 ${snapshotCount} 条` : '已同步';
+      const syncedText = snapshotCount ? t('status.syncedCount', snapshotCount) : t('status.synced');
       const isLive = snapshot.snapshot_source === 'live' || chatItems.length > 0;
       if (isLive) {
         const knownCount = knownSessionMessageCount(sid, snapshot);
@@ -2822,21 +3543,21 @@
       const card = document.createElement('div');
       card.className = 'card';
       const title = document.createElement('h3');
-      title.textContent = '需要确认';
+      title.textContent = t('confirm.title');
       card.appendChild(title);
       const questions = Array.isArray(payload.questions) ? payload.questions : [];
       if (!questions.length) {
         const text = document.createElement('div');
         text.className = 'question';
-        text.textContent = payload.prompt || payload.message || '需要你确认后继续。';
+        text.textContent = payload.prompt || payload.message || t('confirm.prompt');
         card.appendChild(text);
         const actions = document.createElement('div');
         actions.className = 'actions';
         const ok = document.createElement('button');
         ok.className = 'primary';
-        ok.textContent = '就这么干';
+        ok.textContent = t('common.approve');
         ok.onclick = () => {
-          const submitted = [{ id: 'confirm', label: '就这么干', value: 'approved' }];
+          const submitted = [{ id: 'confirm', label: t('common.approve'), value: 'approved' }];
           sendAction('submit_user_input', {
             tool_call_id: payload.id,
             answers: submitted,
@@ -2845,7 +3566,7 @@
           actions.remove();
           const status = document.createElement('div');
           status.className = 'small';
-          status.textContent = '✓ 已提交';
+          status.textContent = t('confirm.submitted');
           card.appendChild(status);
         };
         actions.appendChild(ok);
@@ -2863,14 +3584,14 @@
         block.className = 'question-block';
         const qn = document.createElement('div');
         qn.className = 'question';
-        qn.textContent = q.question || q.header || '请选择';
+        qn.textContent = q.question || q.header || t('confirm.choose');
         block.appendChild(qn);
         const actions = document.createElement('div');
         actions.className = 'actions';
         const optionButtons = [];
         const otherInput = document.createElement('input');
         otherInput.className = 'other-field';
-        otherInput.placeholder = '输入其他答案';
+        otherInput.placeholder = t('confirm.otherPlaceholder');
         function markSelected(btn) {
           optionButtons.forEach(node => node.classList.toggle('selected', node === btn));
         }
@@ -2879,7 +3600,7 @@
           btn.className = 'choice';
           const label = document.createElement('span');
           label.className = 'choice-label';
-          label.textContent = opt.label || opt.value || '选择';
+          label.textContent = opt.label || opt.value || t('confirm.option');
           btn.appendChild(label);
           if (opt.description) {
             const desc = document.createElement('span');
@@ -2888,7 +3609,7 @@
             btn.appendChild(desc);
           }
           btn.onclick = () => {
-            answers[qi] = { id: questionId, label: opt.label || opt.value || '选择', value: opt.value || opt.label };
+            answers[qi] = { id: questionId, label: opt.label || opt.value || t('confirm.option'), value: opt.value || opt.label };
             otherInput.classList.remove('visible');
             otherInput.value = '';
             markSelected(btn);
@@ -2901,13 +3622,13 @@
         other.className = 'choice';
         const otherLabel = document.createElement('span');
         otherLabel.className = 'choice-label';
-        otherLabel.textContent = '其他';
+        otherLabel.textContent = t('confirm.other');
         other.appendChild(otherLabel);
         other.onclick = () => {
           otherInput.classList.add('visible');
           markSelected(other);
           const val = otherInput.value.trim();
-          answers[qi] = val ? { id: questionId, label: '其他', value: val } : null;
+          answers[qi] = val ? { id: questionId, label: t('confirm.other'), value: val } : null;
           otherInput.focus();
           updateSubmitState();
         };
@@ -2915,7 +3636,7 @@
         actions.appendChild(other);
         otherInput.oninput = () => {
           const val = otherInput.value.trim();
-          answers[qi] = val ? { id: questionId, label: '其他', value: val } : null;
+          answers[qi] = val ? { id: questionId, label: t('confirm.other'), value: val } : null;
           markSelected(other);
           updateSubmitState();
         };
@@ -2930,7 +3651,7 @@
       row.className = 'actions';
       if (questions.length) {
         submit.className = 'primary';
-        submit.textContent = '提交选择';
+        submit.textContent = t('confirm.submit');
         submit.onclick = () => {
           if (submit.disabled) return;
           sendAction('submit_user_input', { tool_call_id: payload.id, answers });
@@ -2938,7 +3659,7 @@
           row.remove();
           const status = document.createElement('div');
           status.className = 'small';
-          status.textContent = '✓ 已提交';
+          status.textContent = t('confirm.submitted');
           card.appendChild(status);
         };
         row.appendChild(submit);
@@ -2946,7 +3667,7 @@
       }
       const cancel = document.createElement('button');
       cancel.className = 'danger';
-      cancel.textContent = '取消';
+      cancel.textContent = t('common.cancel');
       cancel.onclick = () => { sendAction('cancel_user_input', { tool_call_id: payload.id }); card.remove(); };
       row.appendChild(cancel);
       card.appendChild(row);
@@ -2957,7 +3678,7 @@
       const card = document.createElement('div');
       card.className = 'card submitted';
       const title = document.createElement('h3');
-      title.textContent = '需要确认';
+      title.textContent = t('confirm.title');
       card.appendChild(title);
       const questions = Array.isArray(payload && payload.questions) ? payload.questions : [];
       questions.forEach((q, qi) => {
@@ -2966,13 +3687,13 @@
         block.className = 'question-block';
         const qn = document.createElement('div');
         qn.className = 'question';
-        qn.textContent = q.question || q.header || '请选择';
+        qn.textContent = q.question || q.header || t('confirm.choose');
         block.appendChild(qn);
         const actions = document.createElement('div');
         actions.className = 'actions';
         let matched = false;
         (q.options || []).forEach(opt => {
-          const labelText = opt.label || opt.value || '选择';
+          const labelText = opt.label || opt.value || t('confirm.option');
           const btn = document.createElement('button');
           btn.className = 'choice';
           if (!matched && (answer.label === labelText || answer.value === opt.value || answer.value === opt.label)) {
@@ -2991,12 +3712,12 @@
           }
           actions.appendChild(btn);
         });
-        if (answer.label === '其他' || (!matched && answer.value)) {
+        if (answer.label === t('confirm.other') || (!matched && answer.value)) {
           const other = document.createElement('button');
           other.className = 'choice selected';
           const otherLabel = document.createElement('span');
           otherLabel.className = 'choice-label';
-          otherLabel.textContent = '其他';
+          otherLabel.textContent = t('confirm.other');
           other.appendChild(otherLabel);
           actions.appendChild(other);
           const otherInput = document.createElement('input');
@@ -3011,7 +3732,7 @@
       });
       const status = document.createElement('div');
       status.className = 'small';
-      status.textContent = '✓ 已提交';
+      status.textContent = t('confirm.submitted');
       card.appendChild(status);
       appendToMessages(card);
     }
@@ -3037,7 +3758,7 @@
             id: item.toolId,
             name: item.name,
             args: item.args,
-            status: item.state === 'failed' ? '失败' : item.state === 'done' ? '完成' : '运行中',
+            status: item.state === 'failed' ? t('tool.failed') : item.state === 'done' ? t('tool.done') : t('tool.running'),
           });
           if (item.state === 'done' || item.state === 'failed' || item.success != null) {
             finishToolCard({
@@ -3077,12 +3798,12 @@
           return;
         }
         if (item.type === 'careful_blocked') {
-          addSystem('已拦截一个高风险操作。');
+          addSystem(t('system.carefulBlocked'));
           return;
         }
         if (item.type === 'persona_equip') {
           const name = item.card && (item.card.title || item.card.name);
-          addSystem(name ? `已加持 ${name}` : '已加持专家卡。');
+          addSystem(name ? t('system.personaEquip', { name }) : t('system.personaEquipGeneric'));
           return;
         }
       });
@@ -3117,9 +3838,9 @@
           sessionId = s.id || sessionId;
           state.pendingSessionId = '';
           el.title.textContent = s.title || 'PINVOU Remote';
-          el.subtitle.textContent = sessionId ? `session ${sessionId}` : '当前 session';
+          el.subtitle.textContent = sessionId ? t('status.sessionId', { id: sessionId }) : t('status.currentSession');
           setTurnActive(false);
-          setStatus('已切换');
+          setStatus(t('status.switched'));
           updateChipLabels();
           break;
         }
@@ -3195,10 +3916,10 @@
           if (!up) break;
           if (rp.ok) {
             setUploadState(rp.upload_id, { status: 'done', preview: rp.ingest_preview || null, busy: false });
-            addSystem('附件 ' + (up.filename || rp.upload_id) + ' 已就绪。');
+            addSystem(t('upload.readySystem', { name: up.filename || rp.upload_id }));
           } else {
-            setUploadState(rp.upload_id, { status: 'error', error: rp.error || '未知错误', busy: false });
-            addSystem('附件 ' + (up.filename || rp.upload_id) + ' 处理失败: ' + (rp.error || '未知错误'));
+            setUploadState(rp.upload_id, { status: 'error', error: rp.error || t('common.unknownError'), busy: false });
+            addSystem(t('upload.failedSystem', { name: up.filename || rp.upload_id, error: rp.error || t('common.unknownError') }));
           }
           renderAttachmentPreview();
           break;
@@ -3208,7 +3929,7 @@
           const au = ap.upload_id && state.uploads[ap.upload_id];
           clearUploadState(ap.upload_id);
           rejectAllPendingRelayAcks(ap.upload_id, ap.reason || 'aborted');
-          addSystem('附件上传已中止: ' + (ap.reason || '未知原因'));
+          addSystem(t('upload.abortedSystem', { reason: ap.reason || t('common.unknownReason') }));
           if (au && au.filename) {
             // 已在 addSystem 中说明
           }
@@ -3292,7 +4013,7 @@
           setTurnPhase('tool', msg.payload && msg.payload.name);
           if (isUserInputTool(msg.payload && msg.payload.name)) break;
           if (isPresentArtifactTool(msg.payload && msg.payload.name)) break;
-          addToolCard({ id: msg.payload && msg.payload.id, name: msg.payload && msg.payload.name, args: msg.payload && msg.payload.args, status: '运行中' });
+          addToolCard({ id: msg.payload && msg.payload.id, name: msg.payload && msg.payload.name, args: msg.payload && msg.payload.args, status: t('tool.running') });
           break;
         case 'tool_call_end': {
           const p = msg.payload || {};
@@ -3349,41 +4070,41 @@
           state.turnDirtyArtifacts = [];
           state.turnPresentedArtifacts = [];
           setTurnActive(false);
-          setStatus((msg.payload && msg.payload.status) || '空闲');
+          setStatus((msg.payload && msg.payload.status) || t('status.idle'));
           break;
         case 'desktop_connection_state':
           if (msg.status === 'reconnecting') {
-            if (!state.desktopReconnecting) addSystem('桌面连接暂时中断，正在自动恢复。');
+            if (!state.desktopReconnecting) addSystem(t('system.desktopInterrupted'));
             state.desktopReconnecting = true;
             setControlsDisabled(true);
-            setStatus('桌面重连中');
+            setStatus(t('status.desktopReconnecting'));
           } else if (msg.status === 'connected') {
             const wasReconnecting = state.desktopReconnecting;
             state.desktopReconnecting = false;
             if (!state.replaced && !state.terminal) setControlsDisabled(false);
-            setStatus('已连接');
-            if (wasReconnecting) addSystem('桌面端已恢复连接。');
+            setStatus(t('status.connected'));
+            if (wasReconnecting) addSystem(t('system.desktopRecovered'));
           }
           break;
         case 'error':
           state.creatingSession = false;
-          abortArtifactDownloads('桌面端返回错误。');
+          abortArtifactDownloads(t('download.desktopError'));
           {
             const message = (msg.payload && msg.payload.message) || msg.message || 'unknown';
             if (/room expired|not found|invalid token/i.test(message)) {
-              enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+              enterTerminalState(t('terminal.endedStatus'), t('terminal.endedTitle'), t('terminal.endedMessage'), t('terminal.endedHint'), 'ended');
               break;
             }
           }
-          setStatus('连接异常');
+          setStatus(t('status.error'));
           if (state.sheet === 'sessions') {
             renderSessionSheet();
             const empty = document.createElement('div');
             empty.className = 'empty-panel';
-            empty.textContent = (msg.payload && msg.payload.message) || msg.message || '连接异常';
+            empty.textContent = (msg.payload && msg.payload.message) || msg.message || t('status.error');
             el.sheetBody.appendChild(empty);
           }
-          addSystem(`错误: ${(msg.payload && msg.payload.message) || msg.message || 'unknown'}`);
+          addSystem(t('system.errorPrefix', { message: (msg.payload && msg.payload.message) || msg.message || 'unknown' }));
           break;
         case 'room_replaced':
           rejectAllPendingAcks('room replaced');
@@ -3395,11 +4116,11 @@
           break;
         case 'room_closed':
           if (msg.reason === 'qr_refreshed') {
-            enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+            enterTerminalState(t('terminal.endedStatus'), t('terminal.endedTitle'), t('terminal.endedMessage'), t('terminal.endedHint'), 'ended');
           } else if (msg.reason === 'desktop_disconnected') {
-            enterTerminalState('连接异常', '桌面端连接已断开', '桌面端或中继连接发生异常，当前远程控制已经中止。', '请确认桌面端在线后刷新本页面或重新扫码。');
+            enterTerminalState(t('terminal.dcStatus'), t('terminal.dcTitle'), t('terminal.dcMessage'), t('terminal.dcHint'));
           } else {
-            enterTerminalState('连接已结束', '远程连接已结束', '当前远程连接已结束。可能是桌面端停止了远程控制，或已经更新了连接二维码。\n\n请返回桌面端确认状态，并扫描当前显示的二维码重新连接。', '请扫描桌面端显示的二维码重新连接。', 'ended');
+            enterTerminalState(t('terminal.endedStatus'), t('terminal.endedTitle'), t('terminal.endedMessage'), t('terminal.endedHint'), 'ended');
           }
           break;
       }
@@ -3410,9 +4131,9 @@
         clearTimeout(joinTimer);
         sessionId = msg.session_id || '';
         hideTakeoverScreen();
-        setStatus('已连接');
+        setStatus(t('status.connected'));
         state.sessionChoiceRequired = true;
-        el.messages.innerHTML = '<div class="empty">请选择一个 session 进入。</div>';
+        el.messages.innerHTML = `<div class="empty">${t('empty.chooseSession')}</div>`;
         updateChipLabels();
         openSheet('sessions');
         return;
@@ -3423,7 +4144,7 @@
       clearTimeout(reconnectTimer);
       clearTimeout(joinTimer);
       if (state.terminal) return;
-      setStatus('连接中');
+      setStatus(t('status.connecting'));
       ws = new WebSocket(wsUrl);
       function joinRoom() {
         if (!ws || ws.readyState !== WebSocket.OPEN || joined) return;
@@ -3434,9 +4155,9 @@
         joinTimer = setTimeout(() => {
           if (!joined) {
             joinRoom();
-            setStatus('配对中');
+            setStatus(t('status.pairing'));
             if (!el.messages.querySelector('.system')) {
-              addSystem('已连到中继，正在等待桌面端确认配对。');
+              addSystem(t('system.pairing'));
             }
           }
         }, 5000);
@@ -3454,21 +4175,21 @@
         clearAllUploadRuntime();
         renderAttachmentPreview();
         updateChipLabels();
-        abortArtifactDownloads('连接中断，请重试。');
+        abortArtifactDownloads(t('download.connInterrupted'));
         if (state.replaced || state.terminal) return;
-        setStatus('重连中');
+        setStatus(t('status.reconnecting'));
         reconnectTimer = setTimeout(connect, 1600);
       };
-      ws.onerror = () => setStatus('连接异常');
+      ws.onerror = () => setStatus(t('status.error'));
     }
     function submitComposer() {
       if (state.replaced) {
-        setStatus('已被占用');
+        setStatus(t('status.occupied'));
         return;
       }
       if (state.desktopReconnecting) {
-        setStatus('桌面重连中');
-        addSystem('桌面端正在恢复连接，请稍候。');
+        setStatus(t('status.desktopReconnecting'));
+        addSystem(t('system.desktopRecovering'));
         return;
       }
       if (state.turn.active) {
@@ -3477,8 +4198,8 @@
         return;
       }
       if (!joined) {
-        setStatus('连接中');
-        addSystem('还没有连接到桌面端，连接成功后再发送。');
+        setStatus(t('status.connecting'));
+        addSystem(t('system.notConnectedYet'));
         return;
       }
       const text = el.input.value.trim();
@@ -3497,7 +4218,7 @@
       const sent = sendAction('user_message', { content: text, attachment_upload_ids: doneUploadIds }, id);
       if (!sent) {
         setTurnActive(false);
-        addSystem('发送失败：远控连接尚未就绪。');
+        addSystem(t('system.sendFailed'));
         return;
       }
       // sendAction 成功(ws 已 open),清掉已发的附件预览卡片。
@@ -3507,8 +4228,8 @@
     function reconnectThisDevice() {
       syncViewportMetrics();
       el.takeoverReconnect.disabled = true;
-      el.takeoverReconnect.textContent = '正在重新连接...';
-      el.takeoverHint.textContent = '正在重新接管当前远程会话。';
+      el.takeoverReconnect.textContent = t('takeover.reconnecting');
+      el.takeoverHint.textContent = t('takeover.retaking');
       detachCurrentSocket();
       joined = false;
       state.replaced = false;
@@ -3516,7 +4237,7 @@
     }
     function closeRemotePage() {
       el.takeoverClose.disabled = true;
-      el.takeoverClose.textContent = '正在关闭...';
+      el.takeoverClose.textContent = t('takeover.closing');
       try { window.close(); } catch {}
       setTimeout(() => {
         if (document.hidden) return;
@@ -3524,8 +4245,8 @@
           history.back();
           return;
         }
-        el.takeoverClose.textContent = '可直接关闭页面';
-        el.takeoverHint.textContent = '浏览器未允许自动关闭，请直接关闭这个页面。';
+        el.takeoverClose.textContent = t('takeover.canClose');
+        el.takeoverHint.textContent = t('takeover.manualClose');
       }, 180);
     }
     el.actionButton.onclick = submitComposer;
@@ -3554,11 +4275,11 @@
     el.previewClose.onclick = closePreview;
     el.previewDownload.onclick = () => {
       if (state.downloadBusy) {
-        addSystem('下载进行中，请等待当前下载完成。');
+        addSystem(t('download.inProgress'));
         return;
       }
       if (!requestArtifactDownload(state.previewArtifact)) {
-        addSystem('当前预览没有可下载的产物。');
+        addSystem(t('download.nothingToDownload'));
         return;
       }
       setDownloadBusy(true);

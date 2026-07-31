@@ -6,13 +6,20 @@ const vm = require("vm");
 
 const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "voice.js");
 const source = fs.readFileSync(bridgePath, "utf8");
+// voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
+// 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
+const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
+const zhTableMatch = bridgeMainSource.match(/    zh: \{([\s\S]*?)\n    \},\n  \};/);
+assert.notStrictEqual(zhTableMatch, null, "bridge.js BT_TABLE zh block must exist");
+const zhTable = new Function(`return ({${zhTableMatch[1]}});`)();
+const bt = (key) => zhTable[key] !== undefined ? zhTable[key] : key;
 const start = source.indexOf("  function normalizeVoiceError(err, fallbackStage) {");
 const end = source.indexOf("\n  function stopMediaTracks(", start);
 
 assert.notStrictEqual(start, -1, "normalizeVoiceError must exist");
 assert.notStrictEqual(end, -1, "normalizeVoiceError boundary must exist");
 
-const context = {};
+const context = { bt };
 vm.createContext(context);
 vm.runInContext(`${source.slice(start, end)}\nthis.normalizeVoiceError = normalizeVoiceError;`, context, {
   filename: bridgePath,
@@ -53,6 +60,7 @@ assert.notStrictEqual(mediaEnd, -1, "voice media helper boundary must exist");
 
 let getUserMedia = () => new Promise(() => {});
 const mediaContext = {
+  bt,
   navigator: {
     mediaDevices: {
       enumerateDevices: async () => [],
@@ -117,8 +125,13 @@ vm.runInContext(
   );
   assert.match(
     source.slice(permissionCatchAt, permissionCatchAt + 900),
-    /请再次点击语音输入并在授权提示中选择允许/,
+    /bt\("voicePermissionDeniedRetry"\)/,
     "permission denial must tell the user how to trigger the prompt again",
+  );
+  assert.match(
+    zhTable.voicePermissionDeniedRetry,
+    /请再次点击语音输入并在授权提示中选择允许/,
+    "permission denial retry hint must keep the actionable guidance",
   );
 
   console.log("voice_input_error_logic: ok");

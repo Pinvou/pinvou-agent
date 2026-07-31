@@ -9,6 +9,7 @@
     var notify = context.notify;
     var invoke = context.invoke;
     var listen = context.listen;
+    var bt = context.bt;
     var desktopProxyStarted = false;
     var eventForwarders = {};
     var policyPromise = null;
@@ -102,11 +103,11 @@
 
         var command = String(request.command || "");
         if (!policy.commands.has(command)) {
-          await respondToWebAccess(requestId, false, null, "远程控制不允许调用该命令：" + command);
+          await respondToWebAccess(requestId, false, null, bt("remoteCmdNotAllowed")(command));
           return;
         }
         if (command === "__dialog_open") {
-          await respondToWebAccess(requestId, false, null, "远程控制使用桌面端文件选择器");
+          await respondToWebAccess(requestId, false, null, bt("remoteDialogDesktop"));
           return;
         }
 

@@ -225,13 +225,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const continueOutput = async (o) => {
         await openOutputChat(o);
         if (bridge && bridge.chat.prefillComposer) {
-          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n${t.uiKnowledge.filePathLabel}${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
       };
       const newOutputProject = async (o) => {
         if (bridge && bridge.sessions.createNewSession) await bridge.sessions.createNewSession();
         if (bridge && bridge.chat.prefillComposer) {
-          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n文件路径：${o.path}\n\n${t.kbOutRequirementLabel}`);
+          bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n${t.uiKnowledge.filePathLabel}${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
       };
       const OutputLivePreview = ({ o, onOpen }) => {
@@ -827,7 +827,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                 <span>{t.kbColTime}</span>
                                 <ChevronDown size={13} className={`transition-transform ${fileSortDir === 'asc' ? 'rotate-180' : ''}`} />
                               </button>
-                              <span className="text-center">{t.kbOutColActions || '操作'}</span>
+                              <span className="text-center">{t.kbOutColActions}</span>
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
                               <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
@@ -922,7 +922,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         </button>
                       )}
                       {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-                        <button title="下载产物" onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
+                        <button title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
                           className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
                           <Download size={15} />
                         </button>
@@ -1007,7 +1007,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   <ChevronDown size={13} className={`transition-transform ${outSortDir === 'asc' ? 'rotate-180' : ''}`} />
                                 </button>
                                 <div className="flex justify-end">
-                                  <span className="w-[144px] text-center">{t.kbOutColActions || '操作'}</span>
+                                  <span className="w-[144px] text-center">{t.kbOutColActions}</span>
                                 </div>
                               </div>
                               {activeOutputs.map((o) => {
@@ -1045,7 +1045,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                           </button>
                                         )}
                                         {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-                                          <button title="下载产物" onClick={(e) => { e.stopPropagation(); bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id); }}
+                                          <button title={t.uiKnowledge.downloadOutput} onClick={(e) => { e.stopPropagation(); bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id); }}
                                             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
                                             <Download size={15} />
                                           </button>
@@ -1067,7 +1067,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 })()}
               </div>
             )}
-            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} onClose={() => setOutputPreview(null)} />}
+            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
 
             {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
             {sub === 'kb' && !modelInstalled && (

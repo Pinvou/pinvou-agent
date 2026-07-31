@@ -215,7 +215,7 @@
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
-      return Promise.reject(new Error("该会话正在同步另一端完成的回合，请稍后重试"));
+      return Promise.reject(new Error(bt("sessionSyncingTurn")));
     }
     if (turnOwnerBuffer) {
       turnOwnerBuffer.localTurnOwned = true;
@@ -341,10 +341,10 @@
   async function sendMessageToSession(sessionId, text, meta) {
     var sid = String(sessionId || "").trim();
     var content = String(text || "").trim();
-    if (!sid) throw new Error("目标会话不存在");
-    if (!content) throw new Error("回复内容为空");
+    if (!sid) throw new Error(bt("targetSessionMissing"));
+    if (!content) throw new Error(bt("replyContentEmpty"));
     var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
-    if (!exists) throw new Error("目标会话不存在");
+    if (!exists) throw new Error(bt("targetSessionMissing"));
 
     await ensureSessionBufferLoaded(sid);
     var targetBuffer = getBuffer(sid);
@@ -365,7 +365,7 @@
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      throw new Error("目标会话仍在同步另一端完成的回合");
+      throw new Error(bt("targetSessionSyncing"));
     }
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
@@ -466,7 +466,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItem("⚠️ " + bt("sessionSyncingTurn"));
       return;
     }
     if (state.activeSessionId !== sid) return;
@@ -517,7 +517,7 @@
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
   async function summonPinvou(focus, mode) {
-    if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
+    if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)

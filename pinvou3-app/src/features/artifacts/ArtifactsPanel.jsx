@@ -47,8 +47,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       return change.sessionId === bs.activeSessionId;
     };
     const HTML_ZOOM_OPTIONS = [
-      { key: 'fit', label: '适应窗口' },
-      { key: 'actual', label: '原始大小' },
+      { key: 'fit', labelKey: 'zoomFit' },
+      { key: 'actual', labelKey: 'zoomActual' },
     ];
     const clampHtmlScale = (value) => Math.max(0.1, Math.min(3, Number(value) || 1));
     // 注入到 office→HTML 预览 iframe 末尾:LibreOffice 导出的表格 border=0、字号 x-small,
@@ -63,6 +63,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
     const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const isDark = theme === 'dark';
+      const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');
       const canDownloadArtifacts = can('artifactDownload');
@@ -125,23 +126,23 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         else setLocalDesignAiState(apply);
       };
       const describeDesignAiActivity = () => {
-        if (designAiStatus === 'updated') return '当前产物已刷新';
-        if (designAiStatus === 'no-update') return '可以继续补充描述';
+        if (designAiStatus === 'updated') return uiA.aiRefreshed;
+        if (designAiStatus === 'no-update') return uiA.aiCanContinue;
         if (designAiStatus === 'cancelled') return '';
         if (bs?.thinking?.active && bs.thinking.phase === 'tool' && bs.thinking.toolName) {
-          return `正在调用工具 ${bs.thinking.toolName}`;
+          return uiA.aiCallingTool(bs.thinking.toolName);
         }
-        if (bs?.thinking?.active) return '正在思考';
-        if (bs?.busy) return '正在等待模型返回';
-        if (designAiStatus === 'sending') return '已发送，等待处理';
+        if (bs?.thinking?.active) return uiA.aiThinking;
+        if (bs?.busy) return uiA.aiWaitingModel;
+        if (designAiStatus === 'sending') return uiA.aiSent;
         return '';
       };
       const designAiStatusTitle = (() => {
         const suffix = (designAiStatus === 'sending' || designAiStatus === 'running') && designAiStartedAt ? ` · ${designAiElapsedSec}s` : '';
-        if (designAiStatus === 'updated') return '已更新';
-        if (designAiStatus === 'no-update') return '未更新';
-        if (designAiStatus === 'cancelled') return '已停止';
-        return `调整中${suffix}`;
+        if (designAiStatus === 'updated') return uiA.aiUpdated;
+        if (designAiStatus === 'no-update') return uiA.aiNoUpdate;
+        if (designAiStatus === 'cancelled') return uiA.aiStopped;
+        return uiA.aiAdjusting(suffix);
       })();
       const designAiActivity = describeDesignAiActivity();
       const designAiStatusDetail = [designAiLastPrompt, designAiActivity].filter(Boolean).join(' · ');
@@ -520,7 +521,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 }`}
               >
                 <div className={`px-3 pb-1 pt-1 text-[11px] font-medium ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>
-                  切换产物
+                  {uiA.switchArtifact}
                 </div>
                 {artifacts.map((a) => {
                   const itemInfo = infos[a.path];
@@ -568,7 +569,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 })}
                 {info && (
                   <div className={`mt-1 border-t px-3 pt-2 text-[11px] ${isDark ? 'border-white/10 text-[#A1A1AA]' : 'border-black/10 text-[#8E8E93]'}`}>
-                    当前修改时间 {apFormatMtime(info.modified)}
+                    {uiA.currentMtime(apFormatMtime(info.modified))}
                   </div>
                 )}
               </div>
@@ -588,8 +589,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               {externalUpdateBlocked && (
                 <div className={`rounded-lg px-3 py-2 text-[12px] ${isDark ? 'bg-[#3A2F16] text-[#FDD663]' : 'bg-[#FFF7E0] text-[#8A5A00]'}`}>
                   {externalUpdateBlocked === 'removed'
-                    ? (t.apMdExternalRemovalBlocked || '文件已在外部删除。未保存编辑已保留在当前编辑器中，请先复制内容或恢复原文件。')
-                    : (t.apMdExternalUpdateBlocked || '文件已在外部更新。当前有未保存编辑，已暂不自动覆盖。')}
+                    ? t.apMdExternalRemovalBlocked
+                    : t.apMdExternalUpdateBlocked}
                 </div>
               )}
               <EditableMarkdownPreview
@@ -676,11 +677,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     onClick={onToggleFullscreen}
                     data-testid="artifact-fullscreen-toggle"
                     aria-label={designMode
-                      ? (isFullscreen ? '退出编辑模式并回到右侧预览' : '进入编辑模式：放大预览并编辑选中元素')
-                      : (isFullscreen ? '退出全屏并回到右侧预览' : '全屏显示产物预览')}
+                      ? (isFullscreen ? uiA.fsExitEdit : uiA.fsEnterEdit)
+                      : (isFullscreen ? uiA.fsExitFullBack : uiA.fsEnterPreview)}
                     title={designMode
-                      ? (isFullscreen ? '退出编辑模式并回到右侧预览' : '进入编辑模式：放大预览并编辑选中元素')
-                      : (isFullscreen ? '退出全屏' : '全屏显示')}
+                      ? (isFullscreen ? uiA.fsExitEdit : uiA.fsEnterEdit)
+                      : (isFullscreen ? uiA.fsExit : uiA.fsEnter)}
                     className={designMode
                       ? `h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-sm ${
                           isFullscreen
@@ -691,14 +692,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         }`
                       : `w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>
                     {isFullscreen ? <Minimize2 size={designMode ? 15 : 17} /> : <Maximize2 size={designMode ? 15 : 17} />}
-                    {designMode && <span>{isFullscreen ? '退出编辑' : '编辑模式'}</span>}
+                    {designMode && <span>{isFullscreen ? uiA.fsExitEditShort : uiA.fsEditMode}</span>}
                   </button>
                 )}
                 <button
                   onClick={handleClose}
                   data-testid="artifact-close"
-                  aria-label="关闭产物预览"
-                  title="关闭预览"
+                  aria-label={uiA.closePreviewAria}
+                  title={uiA.closePreviewTitle}
                   className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>
                   <XCircle size={18} />
                 </button>
@@ -750,7 +751,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                               aria-haspopup="menu"
                               aria-expanded={htmlZoomMenuOpen ? 'true' : 'false'}
                             >
-                              {htmlZoomMode === 'custom' ? '自定义' : currentZoomOption.label}
+                              {htmlZoomMode === 'custom' ? uiA.zoomCustom : uiA[currentZoomOption.labelKey]}
                               <span className="ml-1 text-[10px] opacity-80">▼</span>
                             </button>
                             {htmlZoomMenuOpen && (
@@ -772,7 +773,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                         : (isDark ? 'hover:bg-white/10' : 'hover:bg-black/[0.05]')
                                     }`}
                                   >
-                                    <span>{option.label}</span>
+                                    <span>{uiA[option.labelKey]}</span>
                                     {htmlZoomMode === option.key && <span className="text-[12px]">✓</span>}
                                   </button>
                                 ))}
@@ -785,8 +786,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             data-testid="artifact-html-zoom-out"
                             onClick={() => adjustHtmlCustomScale(-0.1)}
                             className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
-                            aria-label="缩小画布"
-                            title="缩小画布"
+                            aria-label={uiA.zoomOut}
+                            title={uiA.zoomOut}
                           >
                             -
                           </button>
@@ -795,8 +796,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             data-testid="artifact-html-zoom-in"
                             onClick={() => adjustHtmlCustomScale(0.1)}
                             className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
-                            aria-label="放大画布"
-                            title="放大画布"
+                            aria-label={uiA.zoomIn}
+                            title={uiA.zoomIn}
                           >
                             +
                           </button>
@@ -823,7 +824,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 value={designAiText}
                                 onChange={(event) => setDesignAiStatePatch({ text: event.target.value })}
                                 data-testid="artifact-design-ai-input"
-                                placeholder={selectedDesignElement ? '描述你想怎么调整已选中的元素' : '描述你想怎么调整这张设计'}
+                                placeholder={selectedDesignElement ? uiA.aiPhElement : uiA.aiPhDesign}
                                 className={`min-w-0 flex-1 bg-transparent text-[13px] outline-none ${
                                   isDark ? 'placeholder:text-[#C7C7CC]' : 'placeholder:text-[#6E6E73]'
                                 }`}
@@ -838,7 +839,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                     : (isDark ? 'bg-white/14 text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#8E8E93]')
                                 }`}
                               >
-                                发送
+                                {uiA.send}
                               </button>
                             </>
                           ) : (
@@ -857,7 +858,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 </div>
                                 {(designAiStatus === 'updated' || designAiStatus === 'no-update') && (
                                   <div className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium ${isDark ? 'bg-white/10 text-[#D1D1D6]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
-                                    {designAiStatus === 'updated' ? '预览已刷新' : '可继续描述'}
+                                    {designAiStatus === 'updated' ? uiA.previewRefreshed : uiA.canContinue}
                                   </div>
                                 )}
                               </div>
@@ -870,7 +871,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                     isDark ? 'bg-white text-[#1D1D1F] hover:bg-[#F2F2F7]' : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA]'
                                   }`}
                                 >
-                                  停止
+                                  {uiA.stop}
                                 </button>
                               )}
                             </>
@@ -884,6 +885,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         data-testid="artifact-design-inspector-host">
                         <DesignInspectorPanel
                           isDark={isDark}
+                          t={t}
                           selectedElement={selectedDesignElement}
                           changes={designChanges}
                           onApplyChange={onDesignApplyChange}

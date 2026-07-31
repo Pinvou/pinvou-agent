@@ -12,7 +12,7 @@ const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {
   const btnCls = `w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`;
   return (
     <div data-testid="mobile-top-bar" className={`h-12 shrink-0 flex items-center gap-1 px-2 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-      <button type="button" aria-label="打开导航" onClick={onMenu} className={btnCls}>
+      <button type="button" aria-label={t.uiComponents.openNavigation} onClick={onMenu} className={btnCls}>
         <Menu size={20} />
       </button>
       <span className="flex-1 min-w-0 truncate text-center text-[15px] font-medium px-1">{title}</span>

@@ -248,7 +248,7 @@ try {
   assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')
     && toolRenderers.includes('!allowOther || !isFreeTextPlaceholderOption(option)'),
   'free-text questions must not render duplicate Other placeholder choices');
-  assert.ok(toolRenderers.includes('otherPlaceholder="Other"'),
+  assert.ok(toolRenderers.includes('otherPlaceholder={t.uiToolRender.other}'),
     'DeepSeek and Codex question cards must use the same free-text placeholder');
   assert.ok(questionChoiceCard.includes("type={question.multiSelect ? 'checkbox' : 'radio'}")
     && questionChoiceCard.includes('onClick={submit}'),

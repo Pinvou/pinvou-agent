@@ -385,7 +385,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                       <button onClick={() => { setActiveTab('individual'); setChooser(true); }} title={t.cpNewCardTitle}
                         className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-[#0066D6]">
                         <Plus size={14} className="mr-2" />
-                        {t.cpNewCard || '新建卡牌'}
+                        {t.cpNewCard}
                       </button>
                     </div>
                   </div>

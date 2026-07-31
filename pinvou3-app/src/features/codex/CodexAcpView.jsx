@@ -200,14 +200,6 @@ function elapsedMs(start, end, now) {
   return Math.max(0, to - from);
 }
 
-function formatElapsed(milliseconds) {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  if (seconds < 60) return `${seconds}秒`;
-  const minutes = Math.floor(seconds / 60);
-  const remaining = seconds % 60;
-  return remaining ? `${minutes}分${remaining}秒` : `${minutes}分`;
-}
-
 function terminalStatus(status, exitCode = null) {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'failed' || (exitCode != null && exitCode !== 0)) return 'failed';
@@ -267,46 +259,46 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
   );
 }
 
-function CommandExecutionItem({ item, now }) {
+function CommandExecutionItem({ item, now, copy }) {
   const details = commandExecutionDetails(item.tool);
   const state = terminalStatus(item.status, details.exitCode);
   const [open, setOpen] = useState(false);
-  const countHint = details.commandCount > 1 ? ` · ${details.commandCount} 段` : '';
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const countHint = details.commandCount > 1 ? ` · ${copy.segments(details.commandCount)}` : '';
+  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const outcome = state === 'running'
-    ? `执行中 · ${duration}`
+    ? `${copy.running} · ${duration}`
     : state === 'failed'
-      ? `执行失败${details.exitCode == null ? '' : ` · exit ${details.exitCode}`}`
-      : `执行结束${details.exitCode == null ? '' : ` · exit ${details.exitCode}`} · ${duration}`;
+      ? `${copy.executionFailed}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`}`
+      : `${copy.executionFinished}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`} · ${duration}`;
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Terminal size={13} />} title={details.summary}
         meta={`${outcome}${countHint}`} status={state} open={open} onToggle={() => setOpen(value => !value)} />
       {open && (
         <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          <TerminalBlock label="命令" text={details.command} />
+          <TerminalBlock label={copy.command} text={details.command} />
           {details.cwd && (
             <div className="mt-2 text-[10px] text-gray-400">
-              工作目录 <span className="ml-1 font-mono text-gray-600 dark:text-gray-300">{details.cwd}</span>
+              {copy.workingDirectory} <span className="ml-1 font-mono text-gray-600 dark:text-gray-300">{details.cwd}</span>
             </div>
           )}
-          <TerminalBlock label="输出" text={details.output} />
+          <TerminalBlock label={copy.output} text={details.output} />
         </div>
       )}
     </div>
   );
 }
 
-function GenericToolItem({ item, now }) {
+function GenericToolItem({ item, now, copy, cv }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const label = item.type === 'file_change' ? '文件变更' : (tool.kind || 'Codex 工具');
+  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
-        meta={`${label} · ${state === 'running' ? `进行中 · ${duration}` : state === 'failed' ? '失败' : `已结束 · ${duration}`}`}
+        meta={`${label} · ${state === 'running' ? `${copy.inProgress} · ${duration}` : state === 'failed' ? copy.failed : `${cv.ended} · ${duration}`}`}
         status={state} open={open} onToggle={() => setOpen(value => !value)} />
       {open && (
         <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
@@ -319,15 +311,15 @@ function GenericToolItem({ item, now }) {
               ))}
             </div>
           )}
-          <StructuredValue label="参数" value={tool.rawInput} />
-          <StructuredValue label="结果" value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
+          <StructuredValue label={copy.arguments} value={tool.rawInput} />
+          <StructuredValue label={copy.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
         </div>
       )}
     </div>
   );
 }
 
-function ToolGroup({ group, now }) {
+function ToolGroup({ group, now, copy, cv }) {
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
   const failed = items.some(item => terminalStatus(
@@ -340,30 +332,30 @@ function ToolGroup({ group, now }) {
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
-        <span>{running ? '正在执行' : failed ? '执行步骤包含失败' : '执行步骤'} · {items.length}</span>
+        <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <div className="ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => item.type === 'command_execution'
-            ? <CommandExecutionItem key={item.id} item={item} now={now} />
-            : <GenericToolItem key={item.id} item={item} now={now} />)}
+            ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
+            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} />)}
         </div>
       )}
     </div>
   );
 }
 
-function ReasoningItem({ item, now }) {
+function ReasoningItem({ item, now, copy }) {
   const running = item.status === 'in_progress';
   const [open, setOpen] = useState(false);
-  const duration = formatElapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   return (
     <div>
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
-        <span>{running ? '思考中' : '思考完成'} · {duration}</span>
+        <span>{running ? copy.thinking : copy.thoughtCompleted} · {duration}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && <div className="ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap">{item.text}</div>}
@@ -371,12 +363,12 @@ function ReasoningItem({ item, now }) {
   );
 }
 
-function PlanBlock({ plan }) {
+function PlanBlock({ plan, copy }) {
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;
   return (
     <div className="rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
-      <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">执行计划</div>
+      <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">{copy.plan}</div>
       <div className="space-y-2">
         {entries.map((entry, index) => (
           <div key={index} className="flex items-start gap-2 text-[13px]">
@@ -432,7 +424,7 @@ function PermissionCard({ permission, pending, onRespond, responding, agentName,
   );
 }
 
-function ElicitationCard({ elicitation, pending, onRespond, responding, copy }) {
+function ElicitationCard({ elicitation, pending, onRespond, responding, copy, conversationCopy }) {
   const request = elicitation.request || {};
   const schema = request.requestedSchema || {};
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
@@ -469,7 +461,7 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy }) 
       question: field.description || '',
       options: choices(field),
       allowOther: Boolean(other),
-      otherPlaceholder: other && (other.field.title || 'Other'),
+      otherPlaceholder: other && (other.field.title || (conversationCopy && conversationCopy.otherPlaceholder) || 'Other'),
       required: required.has(id)
         || Boolean(field && field._meta && field._meta.codex && field._meta.codex.isOther),
       inputType: field.type || 'string',
@@ -501,6 +493,8 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy }) 
       submitting={responding}
       submitLabel={copy.submit}
       cancelLabel={copy.cancel}
+      otherAnswerLabel={conversationCopy && conversationCopy.otherAnswer}
+      inputPlaceholder={conversationCopy && conversationCopy.inputPlaceholder}
       statusText={!actionable
         ? elicitation.resolved
           ? (elicitation.action === 'accept' ? copy.submitted : copy.canceled)
@@ -519,6 +513,7 @@ function TurnItem({
   now,
   agentName,
   copy,
+  cv,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -526,9 +521,9 @@ function TurnItem({
   responding,
   onOpenExternal,
 }) {
-  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} />;
-  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} />;
-  if (item.type === 'plan') return <PlanBlock plan={item.plan} />;
+  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
+  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} />;
+  if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
   if (item.type === 'permission') {
     return (
       <PermissionCard permission={item.permission}
@@ -560,6 +555,7 @@ function Turn({
   agentId,
   agentName,
   copy,
+  cv,
   pendingByTool,
   pendingByElicitation,
   onRespond,
@@ -570,7 +566,7 @@ function Turn({
   const waitingPermission = turn.permissions.some(permission => !permission.resolved);
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
   const running = turn.status === 'running';
-  const duration = formatElapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
   return (
     <section className="space-y-4">
       {(turn.userText || turn.userAttachments.length > 0) && (
@@ -583,7 +579,7 @@ function Turn({
                   <span key={`${attachment.name || 'attachment'}-${index}`}
                     className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4">
                     <FileTypeIcon name={attachment.name} className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{attachment.name || '附件'}</span>
+                    <span className="truncate">{attachment.name || copy.attachment}</span>
                   </span>
                 ))}
               </div>
@@ -599,12 +595,12 @@ function Turn({
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission || waitingInput ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission || waitingInput ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? '等待授权' : waitingInput ? '等待输入' : '正在处理'} · {duration}
+              {waitingPermission ? copy.waitingPermission : waitingInput ? copy.waitingInputShort : cv.processing} · {duration}
             </div>
           )}
           {turn.presentation.map((item, index) => (
             <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
-              agentName={agentName} copy={copy}
+              agentName={agentName} copy={copy} cv={cv}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
@@ -613,7 +609,7 @@ function Turn({
             <div className="flex items-center gap-2 pt-2">
               <StatusBadge status={turn.status} />
               <span className="text-[11px] text-gray-400">{duration}</span>
-              {turn.usage && <span className="text-[11px] text-gray-400">上下文 {Number(turn.usage.used || 0).toLocaleString()} / {Number(turn.usage.size || 0).toLocaleString()}</span>}
+              {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
             </div>
           )}
@@ -1632,6 +1628,7 @@ export function CodexAcpView({
                             onRespond={respondElicitation}
                             responding={responding}
                             copy={codexCopy}
+                            conversationCopy={t.uiConversation}
                           />
                         )
                       : undefined}
@@ -1643,6 +1640,7 @@ export function CodexAcpView({
                   <Turn key={turn.id} turn={turn} now={now}
                     agentId={activeAgentId} agentName={activeAgentName}
                     copy={t.uiConversation}
+                    cv={t.uiCodexView}
                     pendingByTool={pendingByTool}
                     pendingByElicitation={pendingByElicitation}
                     onRespond={respond}
@@ -1704,6 +1702,7 @@ export function CodexAcpView({
                 onRemove={removeAttachment}
                 dark={theme === 'dark'}
                 parsingLabel={t.uiAttachments.parsing}
+                uploadingLabel={t.uiAttachments.uploading}
                 failedLabel={t.uiAttachments.failed}
                 removeLabel={t.uiAttachments.remove}
                 className="mb-2"

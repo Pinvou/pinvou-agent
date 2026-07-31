@@ -18,31 +18,30 @@ async function listMarketplaceSkills(invoke) {
   return Array.isArray(skills) ? skills : [];
 }
 
+// 用户可见文案由 UI 层按当前语言从 t.uiChatScenes[requirements.key] 取值，
+// 模块本身只输出场景 key 与能力清单，不携带任何语言上下文。
+const SCENE_CAPABILITY_DEFINITIONS = {
+  'work:document-writing': {
+    key: 'documentWriting',
+    tools: ['gongwen'],
+    skills: ['government-writing'],
+  },
+  'design:data-visualization': {
+    key: 'dataVisualization',
+    tools: [],
+    skills: ['visualizer'],
+  },
+};
+
 function requiredCapabilitiesForMeta(meta) {
   if (!meta) return null;
-  if (meta.pinvouScene === 'work:document-writing') {
-    return {
-      key: 'document-writing',
-      label: '公文写作',
-      preparingText: '正在准备公文写作能力...',
-      readyText: '已启用公文写作，开始生成',
-      failureText: '公文写作能力准备失败，请稍后重试。',
-      tools: ['gongwen'],
-      skills: ['government-writing'],
-    };
-  }
-  if (meta.pinvouScene === 'design:data-visualization') {
-    return {
-      key: 'data-visualization',
-      label: '数据可视化',
-      preparingText: '正在准备数据可视化能力...',
-      readyText: '已启用数据可视化，开始生成',
-      failureText: '数据可视化能力准备失败，请稍后重试。',
-      tools: [],
-      skills: ['visualizer'],
-    };
-  }
-  return null;
+  const definition = SCENE_CAPABILITY_DEFINITIONS[meta.pinvouScene];
+  if (!definition) return null;
+  return {
+    key: definition.key,
+    tools: [...definition.tools],
+    skills: [...definition.skills],
+  };
 }
 
 function canPrepareSceneCapabilities({ isWebHost, dependencyInstallAvailable } = {}) {
@@ -81,7 +80,7 @@ async function prepareSceneCapabilities(meta, invoke) {
       ok: false,
       requirements,
       installed,
-      error: `缺少能力：${[...missingTools, ...missingSkills].join(', ')}`,
+      missing: [...missingTools, ...missingSkills],
     };
   }
 

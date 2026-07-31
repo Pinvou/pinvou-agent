@@ -21,10 +21,10 @@ const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
   || tool.imaOpenapi
 );
 
-const PlatformToolAction = (props) => {
+const PlatformToolAction = ({ copy, t, ...props }) => {
   if (!can('toolStoreMutations')) {
     if (!props.tool?.installed) return null;
-    const label = isRestrictedExternalAuthTool(props.tool) ? '已连接' : '已安装';
+    const label = isRestrictedExternalAuthTool(props.tool) ? copy.connected : copy.installed;
     return (
       <span className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap`}>
         {label}
@@ -35,11 +35,11 @@ const PlatformToolAction = (props) => {
     if (!props.tool.installed) return null;
     return (
       <span className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap`}>
-        已连接
+        {copy.connected}
       </span>
     );
   }
-  return <TsActionBtn {...props} />;
+  return <TsActionBtn {...props} t={t} />;
 };
 
 const THIRD_PARTY_TOOL_LOGOS = {
@@ -227,12 +227,12 @@ const FEISHU_STEPS = [
       );
     };
     // 商店列表行内的迷你进度（详情弹窗关掉后，后台仍在跑）
-    const FeishuMini = ({ flow, onClick }) => {
-      const label = flow.phase === 'qr' ? '待扫码'
-        : (flow.active === 'cli' ? `装 ${Math.round(flow.pct || 0)}%`
-        : (flow.active === 'runtime' ? `解压 ${Math.round(flow.pct || 0)}%` : '接入中'));
+    const FeishuMini = ({ flow, onClick, copy }) => {
+      const label = flow.phase === 'qr' ? copy.scan
+        : (flow.active === 'cli' ? copy.install(Math.round(flow.pct || 0))
+        : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
       return (
-        <button onClick={(e) => { e.stopPropagation(); onClick(); }} title="点开查看进度" className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
+        <button onClick={(e) => { e.stopPropagation(); onClick(); }} title={copy.title} className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
           <span className="w-3 h-3 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
           <span className="tabular-nums whitespace-nowrap">{label}</span>
         </button>
@@ -262,8 +262,9 @@ const FEISHU_STEPS = [
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
-    function ensureFeishuListeners() {
+    function ensureFeishuListeners(copy = {}) {
       if (feishuConn.listenersReady) return;
+      const connFailed = copy.connFailed || '连接失败';
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       feishuConn.listenersReady = true;
@@ -303,7 +304,7 @@ const FEISHU_STEPS = [
         feishuConn.stopTick();
         feishuConn.setFlow(f => {
           const step = (f && f.active) || 'cli';
-          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
         });
       });
     }
@@ -324,8 +325,9 @@ const FEISHU_STEPS = [
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    function ensureWecomListeners() {
+    function ensureWecomListeners(copy = {}) {
       if (wecomConn.listenersReady) return;
+      const connFailed = copy.connFailed || '连接失败';
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       wecomConn.listenersReady = true;
@@ -348,7 +350,7 @@ const FEISHU_STEPS = [
       ev.listen('wecom:error', (e) => {
         const p = e.payload || {};
         wecomConn.stopTick();
-        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
       });
     }
 
@@ -368,8 +370,10 @@ const FEISHU_STEPS = [
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    function ensureDingtalkListeners() {
+    function ensureDingtalkListeners(copy = {}) {
       if (dingtalkConn.listenersReady) return;
+      const connFailed = copy.connFailed || '连接失败';
+      const skillsFailed = copy.dingtalkSkillsFailed || ((err) => `钉钉已授权，但技能启用失败：${err}`);
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       dingtalkConn.listenersReady = true;
@@ -390,13 +394,13 @@ const FEISHU_STEPS = [
           dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
           setTimeout(() => dingtalkConn.setFlow(null), 1800);
         } catch (e) {
-          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: `钉钉已授权，但技能启用失败：${String(e).slice(0, 220)}`, errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: skillsFailed(String(e).slice(0, 220)), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
         }
       });
       ev.listen('dingtalk:error', (e) => {
         const p = e.payload || {};
         dingtalkConn.stopTick();
-        dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
       });
     }
 
@@ -416,8 +420,10 @@ const FEISHU_STEPS = [
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    function ensureTmeetListeners() {
+    function ensureTmeetListeners(copy = {}) {
       if (tmeetConn.listenersReady) return;
+      const connFailed = copy.connFailed || '连接失败';
+      const authIncomplete = copy.tmeetAuthIncomplete || '腾讯会议授权未完成，请完成浏览器登录后重试';
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       tmeetConn.listenersReady = true;
@@ -441,7 +447,7 @@ const FEISHU_STEPS = [
         try {
           const status = await invokeTauri('tmeet_status');
           if (!(status && status.connected)) {
-            throw new Error('腾讯会议授权未完成，请完成浏览器登录后重试');
+            throw new Error(authIncomplete);
           }
           await invokeTauri('tmeet_apply_skills');
           tmeetConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
@@ -453,12 +459,12 @@ const FEISHU_STEPS = [
       ev.listen('tmeet:error', (e) => {
         const p = e.payload || {};
         tmeetConn.stopTick();
-        tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || '连接失败'), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
       });
     }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
-    const TsAlert = ({ alert, theme, onDismiss, onNewChat, onCancelLoading }) => {
+    const TsAlert = ({ alert, theme, onDismiss, onNewChat, onCancelLoading, copy }) => {
       const isDark = theme === 'dark';
       if (!alert.visible && !alert.loading) return null;
       return (
@@ -493,7 +499,7 @@ const FEISHU_STEPS = [
                         isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
                       }`}
                     >
-                      取消
+                      {copy.cancel}
                     </button>
                   </div>
                 )}
@@ -510,7 +516,7 @@ const FEISHU_STEPS = [
                     </div>
                   ) : !alert.isError && (
                     <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                      {alert.isInstall ? '新工具需要在新会话中生效' : '已移除，新会话将不再加载该工具'}
+                      {alert.isInstall ? copy.installHint : copy.removeHint}
                     </div>
                   )}
                 </div>
@@ -521,7 +527,7 @@ const FEISHU_STEPS = [
                       isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
                     }`}
                   >
-                    知道了
+                    {copy.ok}
                   </button>
                 </div>
                 {!alert.isError && (
@@ -532,7 +538,7 @@ const FEISHU_STEPS = [
                         isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
                       }`}
                     >
-                      新建会话
+                      {copy.newChat}
                     </button>
                   </div>
                 )}
@@ -544,7 +550,7 @@ const FEISHU_STEPS = [
     };
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
-    const TsConfigDialog = ({ config, theme, onConfirm, onCancel }) => {
+    const TsConfigDialog = ({ config, theme, onConfirm, onCancel, copy }) => {
       const isDark = theme === 'dark';
       if (!config) return null;
       const [values, setValues] = useState({});
@@ -559,7 +565,7 @@ const FEISHU_STEPS = [
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
               <div className={`text-[17px] font-semibold mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
-                {config.configTitle || `配置「${config.name}」`}
+                {config.configTitle || copy.configTitle(config.name)}
               </div>
               {config.configDescription && (
                 <div className={`text-[12px] leading-relaxed mb-3 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
@@ -571,7 +577,7 @@ const FEISHU_STEPS = [
                   onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl })}
                   className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
                 >
-                  {config.configDocLabel || '查看配置说明'} →
+                  {config.configDocLabel || copy.configDocDefault} →
                 </button>
               )}
               {/* 引导链接放最上,不夹在输入框中间 */}
@@ -580,7 +586,7 @@ const FEISHU_STEPS = [
                   onClick={() => invokeTauri('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
                   className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
                 >
-                  不会建应用？去飞书开放平台建一个 →
+                  {copy.configHelpFeishu}
                 </button>
               )}
               {/* 所有输入框紧挨着 */}
@@ -613,7 +619,7 @@ const FEISHU_STEPS = [
                 onClick={onCancel}
                 className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`}
               >
-                取消
+                {copy.cancel}
               </button>
             </div>
             <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
@@ -626,7 +632,7 @@ const FEISHU_STEPS = [
                     : (isDark ? 'text-slate-600' : 'text-slate-300')
                 }`}
               >
-                {config.backendId === 'feishu' || fields.length > 0 ? '连接' : '安装'}
+                {config.backendId === 'feishu' || fields.length > 0 ? copy.configConnect : copy.configInstall}
               </button>
             </div>
           </div>
@@ -635,14 +641,10 @@ const FEISHU_STEPS = [
     };
 
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
-    const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry, allowDownload = true }) => {
+    const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => {
       const isDark = theme === 'dark';
       if (!guide) return null;
-      const COPY = {
-        not_installed: { title: '需要先安装 Obsidian', body: '「Obsidian 知识库」需配合 Obsidian 使用。检测到你尚未安装，安装并创建一个库后即可连接。', primary: '下载 Obsidian', retry: '我已安装，重新检测' },
-        no_vault: { title: '还没有笔记库', body: '已检测到 Obsidian，但你还没创建过笔记库。请在 Obsidian 里新建一个库后再连接。', primary: null, retry: '我已新建，重新检测' },
-        vault_missing: { title: '库文件夹不存在', body: '上次的笔记库文件夹找不到了。请在 Obsidian 重新打开，或新建一个库后再连接。', primary: null, retry: '重新检测' },
-      };
+      const COPY = copy.obsidianGuide;
       const c = COPY[guide.state] || COPY.not_installed;
       const btn = (label, on, cls) => (
         <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
@@ -655,11 +657,11 @@ const FEISHU_STEPS = [
             <div className="px-6 pt-6 pb-4 text-center">
               <div className="text-[34px] mb-2">📖</div>
               <div className={`text-[17px] font-semibold mb-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>{c.title}</div>
-              <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{!allowDownload && guide.state === 'not_installed' ? '请先在桌面端安装 Obsidian 并创建笔记库，然后在这里重新检测。' : c.body}</div>
+              <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{!allowDownload && guide.state === 'not_installed' ? COPY.desktopHint : c.body}</div>
             </div>
             {allowDownload && c.primary && btn(c.primary, onDownload, `text-[17px] font-semibold ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`)}
             {btn(c.retry, onRetry, `text-[15px] ${isDark ? 'text-slate-300 active:bg-white/5' : 'text-slate-600 active:bg-slate-100'}`)}
-            {btn('取消', onCancel, `text-[15px] ${isDark ? 'text-slate-500 active:bg-white/5' : 'text-slate-400 active:bg-slate-100'}`)}
+            {btn(copy.cancel, onCancel, `text-[15px] ${isDark ? 'text-slate-500 active:bg-white/5' : 'text-slate-400 active:bg-slate-100'}`)}
           </div>
         </div>
       );
@@ -669,6 +671,21 @@ const FEISHU_STEPS = [
       const isDark = theme === 'dark';
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
+      // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
+      // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
+      const storeData = storeCopy.storeData || {};
+      const localizeSkill = (s) => {
+        const ov = (storeData.skills || {})[s.backendId || s.id];
+        return ov ? { ...s, ...ov } : s;
+      };
+      const localizeCategory = (c) => {
+        const label = (storeData.categories || {})[c.id];
+        return label ? { ...c, label } : c;
+      };
+      const localizeCollection = (c) => {
+        const ov = (storeData.featuredCollections || {})[c.id];
+        return ov ? { ...c, ...ov } : c;
+      };
       const externalAuthAvailable = canStartExternalAuth();
       const canMutateToolStore = can('toolStoreMutations');
       const [searchQuery, setSearchQuery] = useState('');
@@ -767,7 +784,7 @@ const FEISHU_STEPS = [
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
       useEffect(() => {
         if (!externalAuthAvailable) return undefined;
-        ensureFeishuListeners();
+        ensureFeishuListeners(storeCopy);
         let prevPhase = feishuConn.flow && feishuConn.flow.phase;
         const unsub = feishuConn.subscribe((flow) => {
           setFeishuFlow(flow);
@@ -775,7 +792,7 @@ const FEISHU_STEPS = [
           if (ph !== prevPhase) {
             if (ph === 'done') {
               setFeishuConnected(true); setBusyId(null);
-              setAlert({ visible: true, loading: false, title: '已连接飞书', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'feishu' });
+              setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.feishu), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'feishu' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId(null);
@@ -790,7 +807,7 @@ const FEISHU_STEPS = [
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
         if (!externalAuthAvailable) return undefined;
-        ensureWecomListeners();
+        ensureWecomListeners(storeCopy);
         let prevPhase = wecomConn.flow && wecomConn.flow.phase;
         const unsub = wecomConn.subscribe((flow) => {
           setWecomFlow(flow);
@@ -798,7 +815,7 @@ const FEISHU_STEPS = [
           if (ph !== prevPhase) {
             if (ph === 'done') {
               setWecomConnected(true); setBusyId(null);
-              setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'wecom' });
+              setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'wecom' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId(null);
@@ -813,7 +830,7 @@ const FEISHU_STEPS = [
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
         if (!externalAuthAvailable) return undefined;
-        ensureDingtalkListeners();
+        ensureDingtalkListeners(storeCopy);
         let prevPhase = dingtalkConn.flow && dingtalkConn.flow.phase;
         const unsub = dingtalkConn.subscribe((flow) => {
           setDingtalkFlow(flow);
@@ -821,7 +838,7 @@ const FEISHU_STEPS = [
           if (ph !== prevPhase) {
             if (ph === 'done') {
               setDingtalkConnected(true); setBusyId(null);
-              setAlert({ visible: true, loading: false, title: '已连接钉钉', subtitle: '官方技能已启用，可新建对话直接用', isInstall: true, isError: false, toolId: 'dingtalk' });
+              setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'dingtalk' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId(null);
@@ -836,7 +853,7 @@ const FEISHU_STEPS = [
       // 订阅腾讯会议 store(镜像钉钉):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
         if (!externalAuthAvailable) return undefined;
-        ensureTmeetListeners();
+        ensureTmeetListeners(storeCopy);
         let prevPhase = tmeetConn.flow && tmeetConn.flow.phase;
         const unsub = tmeetConn.subscribe((flow) => {
           setTmeetFlow(flow);
@@ -871,13 +888,13 @@ const FEISHU_STEPS = [
           setWecomQr(null); setWecomConnected(true); setBusyId(null);
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见。
           invokeTauri('wecom_apply_skills').catch(() => {});
-          setAlert({ visible: true, loading: false, title: '已连接企业微信', subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
+          setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
           notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
         ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
           setWecomQr(null); setBusyId(null);
-          setAlert({ visible: true, loading: false, title: '企业微信连接失败', subtitle: String(p.message || '').slice(0, 240), isError: true });
+          setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
         }).then(u => unlisten.push(u));
         return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
       }, [externalAuthAvailable]);
@@ -915,7 +932,7 @@ const FEISHU_STEPS = [
         || !!tool.installed
       );
       // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
-      const presetSkills = tsSkillsData.map(s => {
+      const presetSkills = tsSkillsData.map(localizeSkill).map(s => {
         if (s.builtin) return { ...s, installed: true };
         // 有配套 MCP 的技能(公文=gongwen,manifest companion_skills 声明)→ 跟随该 MCP 工具态;
         // 同名工具的展示别名(PPT=pptx)同样跟工具态;都不命中才读独立 skill 后端(纯技能/上传)。
@@ -926,8 +943,8 @@ const FEISHU_STEPS = [
         return { ...s, installed: be ? be.installed : false };
       });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
-        id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '用户上传的技能',
-        category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: x.description || '',
+        id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
+        category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
       }));
       const skillCards = [...presetSkills, ...uploadedSkills];
@@ -940,7 +957,7 @@ const FEISHU_STEPS = [
       const searching = searchQuery.trim() !== '';
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
       const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
-      const visibleCategories = tsCategories.filter(cat => cat.id === 'all' || listItems.some(tool => (
+      const visibleCategories = tsCategories.map(localizeCategory).filter(cat => cat.id === 'all' || listItems.some(tool => (
         isLaunchedTool(tool)
         && tool.category === cat.id
       )));
@@ -1068,7 +1085,7 @@ const FEISHU_STEPS = [
         setAlert(prev => ({
           ...prev,
           cancelable: false,
-          subtitle: '正在停止浏览器授权等待…',
+          subtitle: storeCopy.stoppingAuth,
         }));
         try {
           await invokeTauri('cancel_marketplace_tool_oauth_login', {
@@ -1082,14 +1099,15 @@ const FEISHU_STEPS = [
             setBusyId(null);
             const outcome = resolveOAuthInstallOutcome(
               name,
-              { status: 'cancelled', message: '已取消等待浏览器授权，可稍后重新授权。' },
+              { status: 'cancelled', message: storeCopy.authWaitCancelled },
               {
                 installed: true,
                 mcp_configured: true,
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'config_installed_auth_pending',
-              }
+              },
+              storeCopy.oauthOutcome
             );
             setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
             setAlert({ ...outcome.alert, toolId: backendId });
@@ -1103,7 +1121,7 @@ const FEISHU_STEPS = [
             setAlert(prev => ({
               ...prev,
               cancelable: true,
-              subtitle: '取消失败，可重试；授权等待仍在继续。',
+              subtitle: storeCopy.cancelFailed,
             }));
           }
         }
@@ -1119,17 +1137,17 @@ const FEISHU_STEPS = [
         const hasPipDeps = !hasConfig; // 无 config 的本地工具可能有 pip deps
         const oauthServerName = t?.oauthMcp ? oauthServerNameForTool(t) : null;
         if (t?.oauthMcp && !oauthServerName) {
-          setAlert({ visible: true, loading: false, title: 'OAuth 配置错误', subtitle: `「${name}」未声明 MCP server name，无法发起授权。`, isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: storeCopy.oauthConfigError, subtitle: storeCopy.oauthNoServerName(name), isInstall: false, isError: true });
           return;
         }
         const oauthRequestId = t?.oauthMcp ? beginOAuthRequest(backendId) : null;
         setBusyId(backendId);
         if (t?.oauthMcp) {
-          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在写入 MCP 配置…', isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
+          setAlert({ loading: true, visible: false, title: storeCopy.connectingTool(name), subtitle: storeCopy.writingMcpConfig, isInstall: true, isError: false, cancelable: false, toolId: backendId, requestId: oauthRequestId });
         } else if (hasConfig) {
-          setAlert({ loading: true, visible: false, title: `正在连接「${name}」`, subtitle: '正在校验 API Key 与远程工具…', isInstall: true, isError: false });
+          setAlert({ loading: true, visible: false, title: storeCopy.connectingTool(name), subtitle: storeCopy.validatingApiKey, isInstall: true, isError: false });
         } else if (hasPipDeps) {
-          setAlert({ loading: true, visible: false, title: `正在安装「${name}」`, subtitle: '首次安装需下载依赖，请耐心等待…', isInstall: true, isError: false });
+          setAlert({ loading: true, visible: false, title: storeCopy.installingTool(name), subtitle: storeCopy.downloadingDeps, isInstall: true, isError: false });
         }
         try {
           const args = { toolId: backendId };
@@ -1147,7 +1165,7 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'auth_in_progress',
-                message: '正在等待浏览器授权完成。',
+                message: storeCopy.waitingBrowserAuth,
               },
             }));
             const loginPromise = invokeTauri('start_marketplace_tool_oauth_login', { toolId: backendId, requestId: oauthRequestId })
@@ -1159,8 +1177,8 @@ const FEISHU_STEPS = [
             setAlert({
               loading: true,
               visible: false,
-              title: `正在连接「${name}」`,
-              subtitle: '已打开浏览器，正在等待授权…',
+              title: storeCopy.connectingTool(name),
+              subtitle: storeCopy.browserOpenedWaiting,
               isInstall: true,
               isError: false,
               cancelable: true,
@@ -1170,7 +1188,7 @@ const FEISHU_STEPS = [
             const loginResult = await withUiTimeout(
               loginPromise,
               OAUTH_UI_TIMEOUT_MS,
-              oauthUiTimeoutResult(oauthServerName)
+              { ...oauthUiTimeoutResult(oauthServerName), message: storeCopy.oauthBrowserTimeout }
             );
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             if (loginResult?.status === 'timeout') {
@@ -1187,7 +1205,7 @@ const FEISHU_STEPS = [
             await loadBackendState();
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
 
-            const outcome = resolveOAuthInstallOutcome(name, loginResult, authStatus);
+            const outcome = resolveOAuthInstallOutcome(name, loginResult, authStatus, storeCopy.oauthOutcome);
             if (!outcome.connected) {
               setToolAuthStates(prev => ({ ...prev, [backendId]: outcome.authState }));
               setAlert(outcome.alert);
@@ -1209,7 +1227,7 @@ const FEISHU_STEPS = [
           setAlert({
             visible: true,
             loading: false,
-            title: hasConfig ? `已连接「${name}」` : `已安装「${name}」`,
+            title: hasConfig ? storeCopy.connectedQuoted(name) : storeCopy.installedQuoted(name),
             isInstall: true,
             isError: false,
             toolId: backendId,
@@ -1221,7 +1239,7 @@ const FEISHU_STEPS = [
         } catch (e) {
           if (t?.oauthMcp && !isCurrentOAuthRequest(backendId, oauthRequestId)) return;
           console.error('install failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           if (t?.oauthMcp) {
             if (isCurrentOAuthRequest(backendId, oauthRequestId)) {
@@ -1244,14 +1262,14 @@ const FEISHU_STEPS = [
           const cmd = isInstalled ? 'uninstall_marketplace_skill' : 'install_marketplace_skill';
           await invokeTauri(cmd, { skillId: backendId });
           await loadBackendState();
-          setAlert({ visible: true, loading: false, title: `${isInstalled ? '已卸载' : '已安装'}「${name}」`, isInstall: !isInstalled, isError: false });
+          setAlert({ visible: true, loading: false, title: isInstalled ? storeCopy.uninstalledQuoted(name) : storeCopy.installedQuoted(name), isInstall: !isInstalled, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: !isInstalled }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('skill action failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败：' + e, isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1261,18 +1279,18 @@ const FEISHU_STEPS = [
       const handleUploadSkill = async () => {
         if (!canMutateToolStore) return;
         setBusyId('__upload__');
-        setAlert({ loading: true, visible: false, title: '正在导入技能包…', subtitle: '校验并解压中', isInstall: true, isError: false });
+        setAlert({ loading: true, visible: false, title: storeCopy.importingSkill, subtitle: storeCopy.validatingSkillPackage, isInstall: true, isError: false });
         try {
           const ok = await invokeTauri('import_skill_package');
           if (ok) {
             await loadBackendState();
-            setAlert({ visible: true, loading: false, title: '技能包已导入', isInstall: true, isError: false });
+            setAlert({ visible: true, loading: false, title: storeCopy.skillImported, isInstall: true, isError: false });
           } else {
             setAlert({ visible: false, loading: false, title: '', isInstall: false, isError: false }); // 用户取消
           }
         } catch (e) {
           console.error('import skill failed:', e);
-          setAlert({ visible: true, loading: false, title: '导入失败：' + e, isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1327,7 +1345,7 @@ const FEISHU_STEPS = [
       //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
       const connectFeishu = async () => {
         setBusyId('feishu');
-        ensureFeishuListeners();
+        ensureFeishuListeners(storeCopy);
         // 开流程卡（无阻塞弹窗）：先起“准备运行时”步。写进跨视图 store，切走不丢。
         feishuConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         // 客户端秒表 + 爬行条：后端 feishu:progress 有真实 pct 时会覆盖；没有也不至于像卡死。
@@ -1364,11 +1382,11 @@ const FEISHU_STEPS = [
           // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新。
           await invokeTauri('feishu_apply_skills').catch(() => {});
           setFeishuConnected(false);
-          setAlert({ visible: true, loading: false, title: '已断开飞书', isInstall: false, isError: false });
+          setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.feishu), isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('feishu logout failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1377,7 +1395,7 @@ const FEISHU_STEPS = [
       // 连接企业微信(单段扫码):流程卡驱动(镜像飞书),进度走 wecom:* 事件。
       const connectWecom = async () => {
         setBusyId('wecom');
-        ensureWecomListeners();
+        ensureWecomListeners(storeCopy);
         // 开流程卡(无阻塞弹窗):先起"准备运行时"步,写进跨视图 store,切走不丢。
         wecomConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         wecomConn.startTick();
@@ -1411,11 +1429,11 @@ const FEISHU_STEPS = [
           // 断开 → 撤掉技能(should_show 变 false)。
           await invokeTauri('wecom_apply_skills').catch(() => {});
           setWecomConnected(false);
-          setAlert({ visible: true, loading: false, title: '已断开企业微信', isInstall: false, isError: false });
+          setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.wecom), isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('wecom logout failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1424,7 +1442,7 @@ const FEISHU_STEPS = [
       // 连接钉钉(单段扫码):流程卡驱动(镜像企微),进度走 dingtalk:* 事件。
       const connectDingtalk = async () => {
         setBusyId('dingtalk');
-        ensureDingtalkListeners();
+        ensureDingtalkListeners(storeCopy);
         dingtalkConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         dingtalkConn.startTick();
         try {
@@ -1454,11 +1472,11 @@ const FEISHU_STEPS = [
           await invokeTauri('dingtalk_logout');
           await invokeTauri('dingtalk_apply_skills').catch(() => {});
           setDingtalkConnected(false);
-          setAlert({ visible: true, loading: false, title: '已断开钉钉', isInstall: false, isError: false });
+          setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.dingtalk), isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('dingtalk logout failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1467,7 +1485,7 @@ const FEISHU_STEPS = [
       // 连接腾讯会议(单段 OAuth 授权):流程卡驱动(镜像钉钉),进度走 tmeet:* 事件。
       const connectTmeet = async () => {
         setBusyId('tmeet');
-        ensureTmeetListeners();
+        ensureTmeetListeners(storeCopy);
         tmeetConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         tmeetConn.startTick();
         try {
@@ -1603,18 +1621,18 @@ const FEISHU_STEPS = [
                 oauth_required: true,
                 oauth_token_present: false,
                 status: 'not_installed',
-                message: `尚未连接「${name}」。`,
+                message: storeCopy.notConnectedYet(name),
               },
             }));
           }
-          setAlert({ visible: true, loading: false, title: `已卸载「${name}」`, isInstall: false, isError: false });
+          setAlert({ visible: true, loading: false, title: storeCopy.uninstalledQuoted(name), isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed', authMessage: '' }));
           }
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('uninstall failed:', e);
-          setAlert({ visible: true, loading: false, title: '操作失败，请重试', isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isInstall: false, isError: true });
         } finally {
           setBusyId(null);
         }
@@ -1652,16 +1670,18 @@ const FEISHU_STEPS = [
 
       return (
         <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
-          {createPortal(<TsAlert alert={alert} theme={theme} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
+          {createPortal(<TsAlert alert={alert} theme={theme} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
           {createPortal(<TsConfigDialog
             config={externalAuthAvailable ? configDialog : null}
             theme={theme}
+            copy={storeCopy}
             onCancel={() => setConfigDialog(null)}
             onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); if (bid === 'ima') connectIma(values); else doInstall(bid, values); }}
           />, document.body)}
           {createPortal(<TsObsidianGuide
             guide={obsidianGuide}
             theme={theme}
+            copy={storeCopy}
             allowDownload={can('localModelSetup')}
             onCancel={() => setObsidianGuide(null)}
             onDownload={() => invokeTauri('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
@@ -1678,17 +1698,17 @@ const FEISHU_STEPS = [
             return createPortal((
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
-                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">连接企业微信</h3>
+                <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.connectTitle(storeCopy.toolNames.wecom)}</h3>
                 {/* 文案精简(方案A):扫码指引交给内嵌页自己说，这里不重复。直接内嵌企微登录页
                     （其 JS 动态渲染真正的登录码）——避免把 gen 网页地址编码成二维码导致的二次扫码。 */}
                 {wecomQr.url
-                  ? <iframe src={wecomQr.url} title="企业微信登录" className="w-full h-[440px] rounded-2xl border border-slate-200 dark:border-white/10 bg-white" scrolling="no" />
-                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">登录页加载失败，请用下方浏览器授权</div>}
+                  ? <iframe src={wecomQr.url} title={storeCopy.loginFrameTitle(storeCopy.toolNames.wecom)} className="w-full h-[440px] rounded-2xl border border-slate-200 dark:border-white/10 bg-white" scrolling="no" />
+                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">{storeCopy.loginPageLoadFailed}</div>}
                 <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
-                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 等待授权中…
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {storeCopy.waitingAuth}
                 </div>
-                <button onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">在浏览器打开</button>
-                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">取消</button>
+                <button onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
+                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">{storeCopy.cancel}</button>
               </div>
             </div>
             ), document.body);
@@ -1778,7 +1798,7 @@ const FEISHU_STEPS = [
                       className="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-6 no-scrollbar relative"
                       style={{ scrollbarWidth: 'none', maskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)', WebkitMaskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)' }}
                     >
-                      {tsFeaturedCollections.map((collection) => {
+                      {tsFeaturedCollections.map(localizeCollection).map((collection) => {
                         const featTool = tools.find(a => a.id === collection.featuredToolId);
                         if (featTool && !isToolVisibleOnPlatform(featTool)) return null;
                         return (
@@ -1808,7 +1828,7 @@ const FEISHU_STEPS = [
                                       <Cpu size={12} /> {featTool.type}
                                     </p>
                                   </div>
-                                  <PlatformToolAction tool={featTool} busy={busyId === featTool.backendId} onAction={handleAction} />
+                                  <PlatformToolAction tool={featTool} busy={busyId === featTool.backendId} onAction={handleAction} copy={storeCopy} t={t} />
                                 </div>
                               </div>
                             )}
@@ -1864,7 +1884,7 @@ const FEISHU_STEPS = [
                           <div className="absolute bottom-4 left-4 right-4 bg-white/92 dark:bg-[#1c1c1e]/92 backdrop-blur-xl rounded-2xl p-3 flex items-center gap-3 shadow-lg">
                             <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white shadow-inner shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
                             <div className="flex-1 min-w-0"><h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{tool.title}</h4><p className="text-[12px] text-slate-500 dark:text-slate-400 truncate">{tool.subtitle}</p></div>
-                            <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />
+                            <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />
                           </div>
                         );
                         return (
@@ -1898,15 +1918,15 @@ const FEISHU_STEPS = [
                                   <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white text-xl shadow-lg shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
                                   <div className="flex-1 min-w-0"><h4 className="text-white text-[15px] font-bold truncate drop-shadow">{tool.title}</h4><p className="text-white/80 text-[12px] truncate drop-shadow">{tool.subtitle}</p></div>
                                   {tool.builtin
-                                    ? <span className="text-white text-[12px] font-bold bg-white/20 backdrop-blur px-3 py-1 rounded-full shrink-0">内置</span>
-                                    : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />}
+                                    ? <span className="text-white text-[12px] font-bold bg-white/20 backdrop-blur px-3 py-1 rounded-full shrink-0">{storeCopy.builtin}</span>
+                                    : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />}
                                 </div>
                               </>
                             ) : v === 'fallback' ? (
                               <>
                                 <div className={`absolute inset-0 ${tool.color}`} />
                                 <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-transparent to-black/55" />
-                                <div className="absolute top-6 left-6 right-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">技能</p><h2 className="text-white text-[28px] font-bold leading-[1.1] tracking-tight drop-shadow">{tool.title}</h2></div>
+                                <div className="absolute top-6 left-6 right-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{storeCopy.skillLabel}</p><h2 className="text-white text-[28px] font-bold leading-[1.1] tracking-tight drop-shadow">{tool.title}</h2></div>
                                 <tool.icon size={120} strokeWidth={1} className="absolute -bottom-3 -right-1 text-white/15" />
                                 {bar}
                               </>
@@ -1937,10 +1957,10 @@ const FEISHU_STEPS = [
                             <div className="flex items-center gap-2 mt-1.5">
                               <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
                               {tool.internal ? (
-                                <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">内网直连</span>
+                                <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">{storeCopy.internalDirect}</span>
                               ) : tool.authRequired && (
                                 <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
-                                  <Zap size={10} /> 需密钥
+                                  <Zap size={10} /> {storeCopy.keyRequired}
                                 </span>
                               )}
                             </div>
@@ -1949,8 +1969,8 @@ const FEISHU_STEPS = [
                             {(() => {
                               const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
                               return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
-                                ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} />
-                                : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} />;
+                                ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />
+                                : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />;
                             })()}
                           </div>
                         </div>
@@ -1962,8 +1982,8 @@ const FEISHU_STEPS = [
                       <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
                         {isSkillTab ? <Package size={28} /> : <Server size={28} />}
                       </div>
-                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? '未找到匹配的工具' : (installedOnly ? '还没有已安装的工具' : (isSkillTab ? '没有技能' : '未检索到工具'))}</h3>
-                      <p className="text-slate-500 dark:text-slate-400">{searching ? '换个关键词试试，或检查一下拼写。' : (installedOnly ? (canMutateToolStore ? '去商店安装连接器或技能后，会出现在这里。' : '桌面端尚未安装工具或技能。') : (isSkillTab ? (canMutateToolStore ? '点右上「上传技能包」导入 zip。' : '当前没有可浏览的技能。') : '请尝试修改搜索词或查阅 API 开发文档。'))}</p>
+                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? storeCopy.emptyNoMatch : (installedOnly ? storeCopy.emptyNoInstalled : (isSkillTab ? storeCopy.emptyNoSkills : storeCopy.emptyNoTools))}</h3>
+                      <p className="text-slate-500 dark:text-slate-400">{searching ? storeCopy.emptyNoMatchHint : (installedOnly ? (canMutateToolStore ? storeCopy.emptyNoInstalledHint : storeCopy.emptyNoInstalledHintReadonly) : (isSkillTab ? (canMutateToolStore ? storeCopy.emptyNoSkillsHint : storeCopy.emptyNoSkillsHintReadonly) : storeCopy.emptyNoToolsHint))}</p>
                     </div>
                   )}
                 </section>
@@ -2000,40 +2020,40 @@ const FEISHU_STEPS = [
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex items-center gap-4">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
-                          ? <FeishuMini flow={sf} onClick={() => {}} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" />; })()}
+                          ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" copy={storeCopy} t={t} />; })()}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between py-5 mb-8 border-y border-slate-100 dark:border-white/5 overflow-x-auto no-scrollbar gap-8">
                     <div className="flex flex-col flex-shrink-0">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">接口类型</span>
+                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
-                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> 官方支持</span>
+                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">当前版本</span>
+                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.version}</span>
-                      <span className="text-[12px] text-slate-400 mt-1">稳定版发布</span>
+                      <span className="text-[12px] text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0 pr-4">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">平均延迟</span>
+                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.latency}</span>
-                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> 全球加速</span>
+                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
                     </div>
                   </div>
 
                   {externalAuthAvailable && selectedTool.feishuCli && feishuFlow && (
-                    <FeishuFlowCard flow={feishuFlow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
+                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.wecomCli && wecomFlow && (
-                    <FeishuFlowCard flow={wecomFlow} steps={WECOM_STEPS} name="企业微信" twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
+                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
-                    <FeishuFlowCard flow={dingtalkFlow} steps={DINGTALK_STEPS} name="钉钉" twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
+                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
                     <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
@@ -2041,36 +2061,36 @@ const FEISHU_STEPS = [
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
-                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接飞书 · 官方技能已启用，可直接对它下指令</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBanner(storeCopy.toolNames.feishu)}</span>
                     </div>
                   )}
                   {selectedTool.wecomCli && wecomConnected && !wecomFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
-                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接企业微信 · 官方技能已启用，可直接对它下指令</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBanner(storeCopy.toolNames.wecom)}</span>
                     </div>
                   )}
                   {selectedTool.dingtalkCli && dingtalkConnected && !dingtalkFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
-                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接钉钉 · 官方技能已启用，可直接对它下指令</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBanner(storeCopy.toolNames.dingtalk)}</span>
                     </div>
                   )}
                   {selectedTool.tmeetCli && tmeetConnected && !tmeetFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
-                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接腾讯会议 · 官方技能已启用，可直接对它下指令</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBanner(storeCopy.toolNames.tmeet)}</span>
                     </div>
                   )}
                   {selectedTool.imaOpenapi && imaConnected && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
-                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">已连接腾讯 ima · OpenAPI Skill 已启用，可直接对它下指令</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBannerIma}</span>
                     </div>
                   )}
 
                   <div>
-                    <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">关于此能力</h3>
+                    <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.aboutTitle}</h3>
                     <div className="text-slate-600 dark:text-slate-300 leading-relaxed text-[15px] space-y-4 font-medium">
                       <p>{selectedTool.desc}</p>
                     </div>

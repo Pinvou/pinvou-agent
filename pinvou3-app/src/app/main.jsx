@@ -515,6 +515,16 @@ function workspaceDisplayName(path) {
       }, []);
 
       const t = dict[language];
+      // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器)拿不到语言上下文,
+      // 在此按当前语言同步,并把选择器文案暴露给 platform/web/host-file-picker.js。
+      // 桌宠窗口标题由 PetWindow 自行同步(主包不做桌宠检测,见 pet_bootstrap_isolation 测试)。
+      useEffect(() => {
+        const misc = t.uiPlatformMisc;
+        if (!misc) return;
+        document.title = misc.appTitle;
+        if (misc.htmlLang) document.documentElement.lang = misc.htmlLang;
+        window.PinvouHostFilePickerStrings = misc.hostFilePicker;
+      }, [t]);
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const isWebAccessConnected = !!(bs && bs.webAccess && bs.webAccess.web_client_connected);
@@ -727,7 +737,7 @@ function workspaceDisplayName(path) {
           : session.title,
         subtitle: session.workspace_kind === 'project'
           ? workspaceDisplayName(session.workspace_path)
-          : '临时会话',
+          : t.uiCodex.temporarySession,
         date: formatSessionDate(session.updated_at || session.created_at, language),
         updatedAt: session.updated_at || session.created_at || '',
         pinned: !!session.pinned,
@@ -764,7 +774,7 @@ function workspaceDisplayName(path) {
           // 状态由后端 run DTO 直接携带。
           const rawTitle = run.sessionTitle || '';
           const title = (!rawTitle || rawTitle === '新对话' || rawTitle === 'New chat')
-            ? (run.taskName || '定时任务')
+            ? (run.taskName || t.scheduledPlans)
             : rawTitle;
           return {
             id: run.sessionId,
@@ -797,7 +807,7 @@ function workspaceDisplayName(path) {
       function decorateScheduledRunChat(chat, run) {
         if (!run) return chat;
         const title = (!chat.title || chat.title === t.newChat || chat.title === '新对话' || chat.title === 'New chat')
-          ? (run.taskName || '定时任务')
+          ? (run.taskName || t.scheduledPlans)
           : chat.title;
         return Object.assign({}, chat, {
           title,
@@ -965,13 +975,7 @@ function workspaceDisplayName(path) {
       }
 
       function scheduledRunLabel(value) {
-        return ({
-          queued: '等待中',
-          running: '运行中',
-          completed: '已完成',
-          failed: '失败',
-          canceled: '已取消',
-        }[value] || value || '未知');
+        return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }
 
       async function handleOpenScheduledRunShortcut(run) {
@@ -1224,7 +1228,7 @@ function workspaceDisplayName(path) {
                 await emitToPet('pet:reply_failed', {
                   request_id: requestId,
                   session_id: sid,
-                  error: '目标会话不存在',
+                  error: t.uiMainApp.petSessionMissing,
                   unavailable: true,
                 }).catch(() => {});
                 continue;
@@ -1241,7 +1245,7 @@ function workspaceDisplayName(path) {
                     return emitToPet('pet:reply_failed', {
                       request_id: requestId,
                       session_id: sid,
-                      error: String(outcome?.error?.message || outcome?.error || '任务未能启动'),
+                      error: String(outcome?.error?.message || outcome?.error || t.uiMainApp.petTaskStartFailed),
                     }).catch(() => {});
                   });
                 }
@@ -1399,11 +1403,11 @@ function workspaceDisplayName(path) {
           const result = await bridge.interaction.toggleSuperPerm();
           if (!result || result.ok === false) {
             setSuperPerm(!!(result && result.enabled));
-            setSettingsToast((result && result.error) || '无法开启高级执行权限');
+            setSettingsToast((result && result.error) || t.uiMainApp.superPermFailed);
           }
         } catch (error) {
           setSuperPerm(!target);
-          setSettingsToast(String(error || '无法开启高级执行权限'));
+          setSettingsToast(String(error || t.uiMainApp.superPermFailed));
         }
       }
 
@@ -1442,7 +1446,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleTestSearchProvider(p) {
-        if (!bridge.available || !bridge.settings.testSearchProvider) return Promise.resolve('当前环境不可测试搜索源');
+        if (!bridge.available || !bridge.settings.testSearchProvider) return Promise.resolve(t.uiMainApp.searchTestUnavailable);
         const action = searchProviderKeyAction(p);
         const draft = searchKeyDrafts[p] || '';
         return bridge.settings.testSearchProvider(p, action === 'replace' ? draft : '');
@@ -1462,7 +1466,7 @@ function workspaceDisplayName(path) {
         const saved = isWeb
           ? await bridge.settings.saveSearchSettings(search)
           : await bridge.settings.saveSearchSettingsAndRestart(search);
-        if (saved === false) setSettingsToast('搜索配置保存失败，请重试');
+        if (saved === false) setSettingsToast(t.uiMainApp.searchSaveFailed);
       }
 
       async function handleSaveSearchConfig() {
@@ -1470,7 +1474,7 @@ function workspaceDisplayName(path) {
         const search = buildSearchSettingsPayload();
         const saved = await bridge.settings.saveSearchSettings(search);
         if (saved === false) {
-          setSettingsToast('搜索配置保存失败，请重试');
+          setSettingsToast(t.uiMainApp.searchSaveFailed);
           return false;
         }
         return true;
@@ -1593,7 +1597,7 @@ function workspaceDisplayName(path) {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || '代码')
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -1713,7 +1717,7 @@ function workspaceDisplayName(path) {
           {isWeb && isSidebarOpen && (
             <button
               type="button"
-              aria-label="关闭导航"
+              aria-label={t.uiMainApp.closeNavigation}
               onClick={() => setIsSidebarOpen(false)}
               className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
             />
@@ -1788,6 +1792,7 @@ function workspaceDisplayName(path) {
                   active={currentView === 'scheduled'}
                   unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))}
                   theme={activeTheme}
+                  t={t}
                   isSidebarOpen={isSidebarOpen}
                   onClick={() => navigateFromScheduledRun('scheduled')}
                 />
@@ -1989,7 +1994,7 @@ function workspaceDisplayName(path) {
                     </button>}
                     {can('pet') && <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
-                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
+                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
@@ -2029,7 +2034,7 @@ function workspaceDisplayName(path) {
                     </button>}
                     {can('pet') && <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
-                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
+                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
@@ -3117,7 +3122,7 @@ function workspaceDisplayName(path) {
       static getDerivedStateFromError(err) { return { err }; }
       render() {
         if (this.state.err) {
-          return <div className="p-6 text-sm opacity-70">面板加载失败:{String(this.state.err && this.state.err.message || this.state.err)}</div>;
+          return <div className="p-6 text-sm opacity-70">{this.props.t.uiMainApp.panelLoadFailed(String(this.state.err && this.state.err.message || this.state.err))}</div>;
         }
         return this.props.children;
       }
@@ -3162,7 +3167,7 @@ function workspaceDisplayName(path) {
             <span data-tauri-drag-region className="pointer-events-none">{(t && t.tearoffTitle) || '撕离窗口'} · {kind}</span>
           </div>
           <div className="flex-1 min-h-0 overflow-auto">
-            {bs ? <DetachedErrorBoundary><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}
+            {bs ? <DetachedErrorBoundary t={t}><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}
           </div>
         </div>
       );

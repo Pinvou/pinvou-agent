@@ -26,6 +26,7 @@ const DEFAULT_COPY = {
   interrupted: '已中断',
   limitReached: '达到限制',
   processing: '处理中',
+  callingTool: name => `正在调用 ${name}`,
   waitingPermission: '等待授权',
   waitingInput: '等待你的输入',
   waitingInputShort: '等待输入',
@@ -103,6 +104,7 @@ function localizedSemanticLabel(value, copy) {
     网页内容: copy.webContent,
     网页: copy.webPage,
     '执行 Shell 命令': copy.shellCommand,
+    工具: copy.tool,
   }[value] || value;
 }
 
@@ -447,7 +449,7 @@ function GenericToolItem({ item, now, copy }) {
   const label = item.type === 'file_change' ? c.fileChange : (tool.kind || c.tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
-      <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
+      <CompactItemRow icon={<Wrench size={13} />} title={localizedSemanticLabel(tool.title || label, c)}
         meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
         status={state} open={open} onToggle={() => setOpen(value => !value)} />
       {open && (
@@ -720,7 +722,7 @@ export function ConversationTurn({
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityLabel || c.processing)} · {duration}
+              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityToolName ? c.callingTool(turn.activityToolName) : c.processing)} · {duration}
             </div>
           )}
           {presentation.map((item, index) => {

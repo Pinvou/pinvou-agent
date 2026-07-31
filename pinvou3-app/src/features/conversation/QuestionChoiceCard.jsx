@@ -57,6 +57,8 @@ export function QuestionChoiceCard({
   submitLabel = '提交',
   cancelLabel = '取消',
   otherPlaceholder = 'Other',
+  otherAnswerLabel = '其他',
+  inputPlaceholder = '请输入',
   onSubmit,
   onCancel,
 }) {
@@ -121,7 +123,7 @@ export function QuestionChoiceCard({
           answerKey: question.answerKey || question.id,
           otherAnswerKey: question.otherAnswerKey || null,
           multiSelect: false,
-          answers: [{ label: question.otherAnswerLabel || '其他', value: custom, other: true }],
+          answers: [{ label: question.otherAnswerLabel || otherAnswerLabel, value: custom, other: true }],
         };
       }
       const values = question.multiSelect
@@ -230,7 +232,7 @@ export function QuestionChoiceCard({
                             : raw,
                         );
                       }}
-                      placeholder={question.placeholder || '请输入'}
+                      placeholder={question.placeholder || inputPlaceholder}
                       className="mt-2 w-full rounded-xl border border-black/[0.08] dark:border-white/10 bg-white/80 dark:bg-white/[0.04] px-3 py-2 text-[12px] outline-none focus:border-blue-500/50"
                     />
                   )}
