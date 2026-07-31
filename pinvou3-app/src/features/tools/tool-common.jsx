@@ -452,9 +452,24 @@ const AcFmtIcon = FileTypeIcon;
       { id: 16, backendId: 'gongwen', title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
     ];
 
+    // overlay 命中规则：有 backendId 按 backendId 查，占位卡(backendId=null)按 'card'+id 查。
+    // overlay 提供 configFields 时按字段 key 深合并，只覆盖 label/helpText/placeholder，其余源字段保留。
     const localizeTool = (tool, t) => {
-      const localized = tool && t?.uiToolDetails?.tools?.[tool.backendId];
-      return localized ? { ...tool, ...localized } : tool;
+      if (!tool) return tool;
+      const tools = t?.uiToolDetails?.tools;
+      const localized = tools && (tool.backendId ? tools[tool.backendId] : tools['card' + tool.id]);
+      if (!localized) return tool;
+      const merged = { ...tool, ...localized };
+      if (Array.isArray(localized.configFields) && Array.isArray(tool.configFields)) {
+        merged.configFields = tool.configFields.map((src) => {
+          const ov = localized.configFields.find((f) => f && f.key === src.key);
+          if (!ov) return src;
+          const out = { ...src };
+          for (const k of ['label', 'helpText', 'placeholder']) if (ov[k] != null) out[k] = ov[k];
+          return out;
+        });
+      }
+      return merged;
     };
 
     const weatherIconSvg = (code) => {

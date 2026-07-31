@@ -26,7 +26,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
             {icon}
             {unread && (
-              <span data-testid="scheduled-nav-unread" aria-label={t.uiScheduled.unread}
+              <span data-testid="scheduled-nav-unread" aria-label={t.uiScheduled.navUnreadAria}
                 className="absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2"
                 style={{ background: '#0B57D0', borderColor: active ? (isDark ? '#A8C7FA' : '#D3E3FD') : (isDark ? '#1E1F20' : '#F0F4F9') }} />
             )}

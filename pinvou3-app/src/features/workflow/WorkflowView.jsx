@@ -247,7 +247,7 @@ const WidgetCard = ({ title, children, theme }) => {
     const FanoutGrid = ({ fanout, isDark, t }) => {
       if (!fanout || !fanout.pages || !fanout.pages.length) return null;
       const COLORS = {
-        running:  { bg: '#1A73E8', fg: '#fff', label: '写' },
+        running:  { bg: '#1A73E8', fg: '#fff', label: t.uiWorkflow.fanoutRunning },
         done:     { bg: isDark ? '#1E3A2A' : '#137333', fg: '#fff', label: '✓' },
         retrying: { bg: '#E8710A', fg: '#fff', label: '↻' },
         queued:   { bg: isDark ? '#3C4043' : '#DADCE0', fg: isDark ? '#9AA0A6' : '#5F6368', label: '·' },

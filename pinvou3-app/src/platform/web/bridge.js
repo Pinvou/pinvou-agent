@@ -383,17 +383,11 @@
       gateRejectFailed: "⚠️ Rejection failed: ",
       roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
       roleRetryFailed: "⚠️ Rerun failed: ",
-      metricUnavailable: "Not available",
+      metricNotApplicable: "N/A", metricUnavailable: "Not available",
       targetKindRemote: "Remote model",
       targetKindLocal: "Local model",
       targetKindInvalid: "Invalid configuration",
       betaTag: " (Beta)",
-      memoryUpdated: "Memory updated",
-      memoryArchived: "Memory archived",
-      memoryDeleted: "Memory deleted",
-      memoryIgnored: "Ignored",
-      memoryNever: "Never ask again",
-      memoryRemembered: "Remembered",
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
       memoryNeverFailed: "Failed to update the never-ask setting: ",
@@ -489,17 +483,11 @@
       gateRejectFailed: "⚠️ 差し戻しに失敗: ",
       roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
       roleRetryFailed: "⚠️ 再実行に失敗: ",
-      metricUnavailable: "未提供",
+      metricNotApplicable: "対象外", metricUnavailable: "未提供",
       targetKindRemote: "リモートモデル",
       targetKindLocal: "ローカルモデル",
       targetKindInvalid: "構成エラー",
       betaTag: " (ベータ版)",
-      memoryUpdated: "メモリを更新しました",
-      memoryArchived: "メモリをアーカイブしました",
-      memoryDeleted: "メモリを削除しました",
-      memoryIgnored: "無視しました",
-      memoryNever: "今後表示しない",
-      memoryRemembered: "記憶しました",
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
       memoryNeverFailed: "「今後表示しない」の設定に失敗：",
@@ -595,17 +583,11 @@
       gateRejectFailed: "⚠️ 打回失败: ",
       roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
       roleRetryFailed: "⚠️ 重跑失败: ",
-      metricUnavailable: "未提供",
+      metricNotApplicable: "不适用", metricUnavailable: "未提供",
       targetKindRemote: "远端模型",
       targetKindLocal: "本地模型",
       targetKindInvalid: "配置异常",
       betaTag: " (内测版)",
-      memoryUpdated: "记忆已更新",
-      memoryArchived: "记忆已归档",
-      memoryDeleted: "记忆已删除",
-      memoryIgnored: "已忽略",
-      memoryNever: "不再提示",
-      memoryRemembered: "已记住",
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
       memoryNeverFailed: "设置不再提示失败：",
@@ -5697,7 +5679,7 @@
       // Format values for display
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      var metricNotApplicableText = "不适用";
+      var metricNotApplicableText = bt("metricNotApplicable");
       var metricUnavailableText = bt("metricUnavailable");
       var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
       var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
@@ -6165,17 +6147,19 @@
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
 
+  // 记忆状态值是固定中文数据（会被持久化，且 React 侧按固定键做逻辑判断与本地化映射），
+  // 因此这里刻意不走 bt()，与 tauri 端 memory.js 保持一致。
   function memoryWriteLabel(event) {
     var text = event && event.text || "";
-    if (!text) return bt("memoryUpdated");
+    if (!text) return "记忆已更新";
     return text;
   }
   function memoryWriteStatusLabel(event) {
     var action = event && event.action || "";
-    if (action === "confirmed" || action === "remembered") return bt("memoryUpdated");
-    if (action === "archived") return bt("memoryArchived");
-    if (action === "deleted") return bt("memoryDeleted");
-    return bt("memoryUpdated");
+    if (action === "confirmed" || action === "remembered") return "记忆已更新";
+    if (action === "archived") return "记忆已归档";
+    if (action === "deleted") return "记忆已删除";
+    return "记忆已更新";
   }
   function normalizeMemoryCandidateText(text) {
     return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -6227,11 +6211,11 @@
             return;
           }
           existing.resolved = true;
-          existing.statusLabel = event.action === "ignored" ? bt("memoryIgnored")
-            : event.action === "never" ? bt("memoryNever")
-            : event.action === "archived" ? bt("memoryArchived")
-            : event.action === "deleted" ? bt("memoryDeleted")
-            : bt("memoryRemembered");
+          existing.statusLabel = event.action === "ignored" ? "已忽略"
+            : event.action === "never" ? "不再提示"
+            : event.action === "archived" ? "已归档"
+            : event.action === "deleted" ? "已删除"
+            : "已记住";
           existing.kind = event.kind || existing.kind || "preference";
           existing.text = label;
           existing.time = timeStr();
@@ -6399,7 +6383,7 @@
     var sid = state.activeSessionId;
     try {
       await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: bt("memoryRemembered") });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
       await loadMemoryOverview();
       notify();
     } catch (e) {
@@ -6411,7 +6395,7 @@
     var sid = state.activeSessionId;
     try {
       await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: bt("memoryIgnored") });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
       await loadMemoryOverview();
       notify();
     } catch (e) {
@@ -6423,7 +6407,7 @@
     var sid = state.activeSessionId;
     try {
       await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: bt("memoryNever") });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
       await loadMemoryOverview();
       notify();
     } catch (e) {

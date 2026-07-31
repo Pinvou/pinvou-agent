@@ -26,6 +26,7 @@ const DEFAULT_COPY = {
   interrupted: '已中断',
   limitReached: '达到限制',
   processing: '处理中',
+  processingActive: '正在处理',
   callingTool: name => `正在调用 ${name}`,
   waitingPermission: '等待授权',
   waitingInput: '等待你的输入',
@@ -722,7 +723,7 @@ export function ConversationTurn({
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityToolName ? c.callingTool(turn.activityToolName) : c.processing)} · {duration}
+              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityToolName ? c.callingTool(turn.activityToolName) : c.processingActive)} · {duration}
             </div>
           )}
           {presentation.map((item, index) => {
