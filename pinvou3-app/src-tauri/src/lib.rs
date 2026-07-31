@@ -162,6 +162,14 @@ fn install_rustls_provider() {
     drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
 }
 
+/// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
+/// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
+/// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
+#[cfg(any(target_os = "linux", test))]
+fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized: bool) -> bool {
+    main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 必须最先执行:进程级选定 rustls CryptoProvider。
@@ -207,6 +215,14 @@ pub fn run() {
 
                     if webview.label() != "main" {
                         return true;
+                    }
+                    #[cfg(target_os = "linux")]
+                    if matches!(url.as_str(), "about:blank" | "about:srcdoc") {
+                        let main_origin_initialized = main_navigation_origin
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .is_some();
+                        return allow_embedded_document_navigation(url, main_origin_initialized);
                     }
                     let origin = format!(
                         "{}://{}:{}",
@@ -951,6 +967,34 @@ mod blocklist_contract {
             "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
+        }
+    }
+}
+
+#[cfg(test)]
+mod navigation_policy_tests {
+    #[test]
+    fn embedded_srcdoc_navigation_is_allowed_without_broadening_schemes() {
+        for allowed in ["about:blank", "about:srcdoc"] {
+            let url = tauri::Url::parse(allowed).unwrap();
+            assert!(super::allow_embedded_document_navigation(&url, true));
+            assert!(
+                !super::allow_embedded_document_navigation(&url, false),
+                "embedded documents must not become the initial main origin"
+            );
+        }
+        for blocked in [
+            "about:config",
+            "about:blank?next=https://example.com",
+            "data:text/html,hello",
+            "https://example.com/",
+            "file:///etc/passwd",
+        ] {
+            let url = tauri::Url::parse(blocked).unwrap();
+            assert!(
+                !super::allow_embedded_document_navigation(&url, true),
+                "must not classify as embedded document: {blocked}"
+            );
         }
     }
 }
