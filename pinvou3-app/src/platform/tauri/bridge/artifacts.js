@@ -142,7 +142,7 @@
     if (!state.activeSessionId && ensureSession) await ensureSession();
     var sessionId = state.activeSessionId;
     if (!sessionId) {
-      addSystemItem("⚠️ 请先新建会话再添加附件");
+      addSystemItem(bt("attachNeedSession"));
       return;
     }
     var id = ++attachIdSeq;
@@ -152,14 +152,14 @@
     notify();
     try {
       if (!file.size || file.size > 20 * 1024 * 1024) {
-        throw new Error(file.size ? "附件超过 20 MiB 上限" : "空文件无法添加");
+        throw new Error(file.size ? bt("attachTooLarge") : bt("attachEmptyFile"));
       }
       var uploadId = "desktop_attach_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
       att.uploadId = uploadId;
       var offset = 0;
       var result = null;
       while (offset < file.size) {
-        if (att.cancelled) throw new Error("附件添加已取消");
+        if (att.cancelled) throw new Error(bt("attachAddCancelled"));
         var end = Math.min(offset + 192 * 1024, file.size);
         var bytes = await file.slice(offset, end).arrayBuffer();
         result = await invoke("ingest_dropped_file_chunk", {
@@ -174,8 +174,8 @@
         if (end === file.size) commitAcknowledged = true;
         offset = end;
       }
-      if (att.cancelled) throw new Error("附件添加已取消");
-      if (!result || !result.basename) throw new Error("附件添加未返回有效结果");
+      if (att.cancelled) throw new Error(bt("attachAddCancelled"));
+      if (!result || !result.basename) throw new Error(bt("attachInvalidResult"));
       Object.defineProperty(result, "__pinvouManagedAttachmentSessionId", {
         value: sessionId,
         enumerable: false,

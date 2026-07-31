@@ -466,7 +466,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem("⚠️ " + bt("sessionSyncingTurn"));
+      addSystemItem(bt("remoteTurnSyncing"));
       return;
     }
     if (state.activeSessionId !== sid) return;
