@@ -249,7 +249,7 @@ try {
     /if \(type === 'turn_started'\) \{[\s\S]*?refreshCodexSessions\(\)\.catch\(\(\) => \{\}\);[\s\S]*?\} else if \(type === 'turn_completed'\)/,
     'an accepted ACP turn must refresh the shared recent-session list while it is still running',
   );
-  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode || '代码' }")
+  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode }")
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
     && i18n.includes("sidebarTaskFilterCode: 'Code'")

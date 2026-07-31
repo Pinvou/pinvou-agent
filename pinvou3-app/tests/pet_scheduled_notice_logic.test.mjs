@@ -1,17 +1,26 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const source = readFileSync(
-  new URL('../src/features/pet/pet-scheduled-notice.js', import.meta.url),
-  'utf8',
-);
+const here = path.dirname(fileURLToPath(import.meta.url));
+// pet-scheduled-notice.js imports ../../shared/i18n.js，用两层目录的临时副本保持相对路径可解析
+const dir = mkdtempSync(path.join(tmpdir(), 'pinvou3-pet-scheduled-notice-'));
+const tmp = path.join(dir, 'a', 'b', 'pet-scheduled-notice.mjs');
+mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+mkdirSync(path.join(dir, 'shared'), { recursive: true });
+copyFileSync(path.join(here, '..', 'src', 'features', 'pet', 'pet-scheduled-notice.js'), tmp);
+copyFileSync(path.join(here, '..', 'src', 'shared', 'i18n.js'), path.join(dir, 'shared', 'i18n.js'));
+
+try {
 const {
   acknowledgeScheduledNotice,
   formatScheduledNoticeBody,
   isScheduledSessionPayload,
   readScheduledNoticeAcknowledgedAt,
   selectLatestScheduledNotice,
-} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+} = await import(pathToFileURL(tmp).href);
 
 assert.equal(isScheduledSessionPayload({ session_id: 'sched-123' }), true);
 assert.equal(isScheduledSessionPayload({ sessionId: 'sched-456' }), true);
@@ -94,3 +103,6 @@ assert.equal(
 );
 
 console.log('pet scheduled notice logic tests passed');
+} finally {
+  rmSync(dir, { recursive: true, force: true });
+}

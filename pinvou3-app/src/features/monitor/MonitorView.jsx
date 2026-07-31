@@ -4,6 +4,9 @@ import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ListRow, ProgressBar, WidgetCard } from '../workflow/WorkflowView.jsx';
 
+// 界面语言 → BCP 47 locale，用于时钟等本地化格式化
+const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
+
 const ClearStatsHold = ({ theme, t, onClear }) => {
       const isDark = theme === 'dark';
       const HOLD_MS = 850;
@@ -512,7 +515,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
 
                 <div className="flex items-center gap-1.5 bg-white/60 dark:bg-[#1C1C1E] backdrop-blur-[40px] rounded-full p-1.5 shadow-[0_4px_20px_rgb(0,0,0,0.04)] dark:shadow-[0_18px_46px_rgba(0,0,0,0.5)] ring-1 ring-black/[0.03] dark:ring-white/[0.055]">
                   <div className="flex items-center gap-2 px-4 text-[14px] font-semibold font-mono tracking-wider text-black/70 dark:text-white/70">
-                    <Clock size={16} className="text-black/40 dark:text-white/40" /> {clockNow.toLocaleTimeString('zh-CN', { hour12: false })}
+                    <Clock size={16} className="text-black/40 dark:text-white/40" /> {clockNow.toLocaleTimeString(MONITOR_CLOCK_LOCALE[t.langTag] || 'zh-CN', { hour12: false })}
                   </div>
                 </div>
               </header>

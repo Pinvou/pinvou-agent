@@ -6,9 +6,9 @@ export function AttachmentDropOverlay({
   active,
   dark = false,
   variant = 'desktop',
-  releaseLabel = '松开即可添加',
-  webTitle = '添加任意内容',
-  webHint = '将任意文件拖放到此处，以将其添加到对话中',
+  releaseLabel = '',
+  webTitle = '',
+  webHint = '',
 }) {
   if (variant === 'web') {
     const overlay = (

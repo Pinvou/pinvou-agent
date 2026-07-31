@@ -1,3 +1,5 @@
+import { dict } from '../../shared/i18n.js';
+
 export const ACTIVITY_PRIORITY = Object.freeze({
   waiting: 0,
   failed: 1,
@@ -62,16 +64,16 @@ function errorText(payload) {
 // 活动卡正文与标题兜底默认中文；UI 边界(PetWindow)按当前语言从 i18n 的
 // uiPet 命名空间注入同形 copy，键名与词条一一对应。
 const DEFAULT_ACTIVITY_COPY = Object.freeze({
-  activityThinking: '正在思考…',
-  activityProcessing: '正在处理…',
-  activityUsingTool: (tool) => `正在使用 ${tool}`,
-  activityCallingTool: '正在调用工具…',
-  activityContinuing: '继续处理…',
-  activityInputNeeded: '需要你的输入',
-  activityTaskFailed: '任务遇到问题',
-  activityTaskDone: '任务已完成',
-  activityStartFailed: '任务未能启动',
-  activityTitleFallback: '当前任务',
+  activityThinking: dict.zh.uiPet.activityThinking,
+  activityProcessing: dict.zh.uiPet.activityProcessing,
+  activityUsingTool: dict.zh.uiPet.activityUsingTool,
+  activityCallingTool: dict.zh.uiPet.activityCallingTool,
+  activityContinuing: dict.zh.uiPet.activityContinuing,
+  activityInputNeeded: dict.zh.uiPet.activityInputNeeded,
+  activityTaskFailed: dict.zh.uiPet.activityTaskFailed,
+  activityTaskDone: dict.zh.uiPet.activityTaskDone,
+  activityStartFailed: dict.zh.uiPet.activityStartFailed,
+  activityTitleFallback: dict.zh.uiPet.activityTitleFallback,
 });
 
 /** Apply a broadcast chat/pet event to the lightweight per-session activity model. */

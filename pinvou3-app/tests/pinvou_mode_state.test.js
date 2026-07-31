@@ -16,7 +16,6 @@ const workSceneCode = fs.readFileSync(workScenePath, 'utf8')
 const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(`${code}
-this.PINVOU_MODE_LABELS = PINVOU_MODE_LABELS;
 this.PINVOU_MODE_STORAGE_KEY = PINVOU_MODE_STORAGE_KEY;
 this.PINVOU_MODES = PINVOU_MODES;
 this.createPinvouModeScopeKey = createPinvouModeScopeKey;
@@ -34,7 +33,6 @@ this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;`, ctx, {
 });
 
 const {
-  PINVOU_MODE_LABELS,
   PINVOU_MODE_STORAGE_KEY,
   PINVOU_MODES,
   createPinvouModeScopeKey,
@@ -52,9 +50,6 @@ const {
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 assert.deepStrictEqual(plain(PINVOU_MODES), ['work', 'design']);
-assert.strictEqual(PINVOU_MODE_LABELS.work, '工作');
-assert.strictEqual(PINVOU_MODE_LABELS.design, '设计');
-assert.strictEqual(PINVOU_MODE_LABELS.code, '代码');
 
 assert.strictEqual(normalizePinvouMode('design'), 'design');
 assert.strictEqual(normalizePinvouMode('code'), 'work');

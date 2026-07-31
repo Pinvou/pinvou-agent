@@ -42,7 +42,7 @@ function unifiedConversationUiEnabled() {
   }
 }
 
-function workspaceName(path, unknownDirectory = '未知目录') {
+function workspaceName(path, unknownDirectory) {
   const normalized = String(path || '').replace(/[\\/]+$/, '');
   if (!normalized) return unknownDirectory;
   return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
@@ -147,11 +147,11 @@ function configChoices(option) {
 function configLabel(option, copy) {
   const labels = copy?.configLabels || {};
   switch (option && option.id) {
-    case 'mode': return labels.mode || '权限模式';
-    case 'collaboration_mode': return labels.collaboration_mode || '协作方式';
-    case 'model': return labels.model || '模型';
-    case 'reasoning_effort': return labels.reasoning_effort || '推理强度';
-    case 'fast-mode': return labels['fast-mode'] || '快速模式';
+    case 'mode': return labels.mode || '';
+    case 'collaboration_mode': return labels.collaboration_mode || '';
+    case 'model': return labels.model || '';
+    case 'reasoning_effort': return labels.reasoning_effort || '';
+    case 'fast-mode': return labels['fast-mode'] || '';
     default: return option && option.name || '';
   }
 }
@@ -164,7 +164,7 @@ function CodexComposerConfigSelect({
   onChange,
   disabled = false,
   title,
-  unsetLabel = '未设置',
+  unsetLabel,
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -520,7 +520,7 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
       question: field.description || '',
       options: choices(field),
       allowOther: Boolean(other),
-      otherPlaceholder: other && (other.field.title || (conversationCopy && conversationCopy.otherPlaceholder) || 'Other'),
+      otherPlaceholder: other && (other.field.title || (conversationCopy && conversationCopy.otherPlaceholder)),
       required: required.has(id)
         || Boolean(field && field._meta && field._meta.codex && field._meta.codex.isOther),
       inputType: field.type || 'string',

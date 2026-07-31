@@ -42,9 +42,9 @@ import {
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
 // Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
-  { id: 'preview-run-1', automationId: 'preview-daily-brief', taskName: '每日早报', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
-  { id: 'preview-run-4', automationId: 'preview-follow-up', taskName: '事项督办', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
-  { id: 'preview-run-6', automationId: 'preview-weekly-report', taskName: '销售线索周报', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
+  { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
+  { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
+  { id: 'preview-run-6', automationId: 'preview-weekly-report', taskNameKey: 'previewTaskSalesWeekly', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
 ];
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
@@ -515,8 +515,8 @@ function workspaceDisplayName(path) {
       }, []);
 
       const t = dict[language];
-      // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器)拿不到语言上下文,
-      // 在此按当前语言同步,并把选择器文案暴露给 platform/web/host-file-picker.js。
+      // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器、web bootstrap)拿不到语言上下文,
+      // 在此按当前语言同步,并把选择器/bootstrap 错误文案暴露给 platform/web/ 下的脚本。
       // 桌宠窗口标题由 PetWindow 自行同步(主包不做桌宠检测,见 pet_bootstrap_isolation 测试)。
       useEffect(() => {
         const misc = t.uiPlatformMisc;
@@ -524,6 +524,8 @@ function workspaceDisplayName(path) {
         document.title = misc.appTitle;
         if (misc.htmlLang) document.documentElement.lang = misc.htmlLang;
         window.PinvouHostFilePickerStrings = misc.hostFilePicker;
+        // platform/web/bootstrap.js 的 invoke 拒绝错误文案（web bootstrap 内置中文兜底）。
+        window.PinvouWebClientStrings = misc.webClientErrors;
       }, [t]);
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
@@ -754,7 +756,7 @@ function workspaceDisplayName(path) {
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
       const scheduledRunShortcuts = (bs && bs.scheduledTaskRecentRuns && bs.scheduledTaskRecentRuns.length)
         ? bs.scheduledTaskRecentRuns
-        : (!bridge.available ? PREVIEW_SCHEDULED_RUN_SHORTCUTS : []);
+        : (!bridge.available ? PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey })) : []);
       const scheduledRunSessionIds = new Set(
         scheduledRunShortcuts
           .map(run => run && run.sessionId)
@@ -860,14 +862,14 @@ function workspaceDisplayName(path) {
       }, [taskFilterOpen]);
 
       const sidebarTaskFilterOptions = [
-        { id: 'all', label: t.sidebarTaskFilterAll || '全部' },
-        { id: 'pinned', label: t.sidebarTaskFilterPinned || '置顶' },
-        { id: 'code', label: t.sidebarTaskFilterCode || '代码' },
-        { id: 'scheduled', label: t.sidebarTaskFilterScheduled || '定时任务' },
+        { id: 'all', label: t.sidebarTaskFilterAll },
+        { id: 'pinned', label: t.sidebarTaskFilterPinned },
+        { id: 'code', label: t.sidebarTaskFilterCode },
+        { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
       ];
       const sidebarTaskSortOptions = [
-        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst || '置顶优先' },
-        { id: 'recent', label: t.sidebarTaskSortRecent || '最近更新' },
+        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
+        { id: 'recent', label: t.sidebarTaskSortRecent },
       ];
       const allSidebarTasks = pinnedHistory
         .map((chat) => {
@@ -1867,7 +1869,7 @@ function workspaceDisplayName(path) {
                       activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
                     }`}>
                       <span className="truncate">
-                        {t.sidebarTaskList || '任务列表'} ({sidebarTaskHistory.length})
+                        {t.sidebarTaskList} ({sidebarTaskHistory.length})
                       </span>
                       <span className="flex items-center">
                         {/* 对话管理页入口:悬停任务列表行显现(触屏常显),替代原搜索入口 */}
@@ -1876,13 +1878,13 @@ function workspaceDisplayName(path) {
                           onClick={() => navigateFromScheduledRun('search')}
                           className={`mr-1 h-6 px-2 shrink-0 rounded-full text-[12px] font-normal transition-opacity opacity-0 group-hover:opacity-100 max-sm:opacity-100 ${activeTheme === 'dark' ? 'text-[#A8C7FA] hover:bg-[#282A2C]' : 'text-[#0B57D0] hover:bg-[#E1E5EA]'}`}
                         >
-                          {t.sidebarViewAll || '查看全部'}
+                          {t.sidebarViewAll}
                         </button>
                         <button
                           type="button"
                           data-testid="sidebar-task-filter"
                           onClick={() => setTaskFilterOpen(v => !v)}
-                          title={t.sidebarTaskFilter || '筛选'}
+                          title={t.sidebarTaskFilter}
                           className={`w-7 h-7 -mr-2 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                             taskFilterOpen
                               ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
@@ -1901,7 +1903,7 @@ function workspaceDisplayName(path) {
                         }`}
                       >
                         <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${activeTheme === 'dark' ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                          {t.sidebarTaskFilter || '筛选'}
+                          {t.sidebarTaskFilter}
                         </div>
                         {sidebarTaskFilterOptions.map(option => (
                           <button
@@ -1916,7 +1918,7 @@ function workspaceDisplayName(path) {
                         ))}
                         <div className={`my-1 h-px ${activeTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`} />
                         <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${activeTheme === 'dark' ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                          {t.sidebarTaskSort || '排序'}
+                          {t.sidebarTaskSort}
                         </div>
                         {sidebarTaskSortOptions.map(option => (
                           <button
@@ -1937,7 +1939,7 @@ function workspaceDisplayName(path) {
                       <div className="space-y-0.5">
                         {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
                           <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                            {t.sidebarTaskEmpty || '暂无任务'}
+                            {t.sidebarTaskEmpty}
                           </div>
                         )}
                       </div>
@@ -1971,7 +1973,7 @@ function workspaceDisplayName(path) {
                       </>
                     ) : (
                       <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                        {t.sidebarTaskEmpty || '暂无任务'}
+                        {t.sidebarTaskEmpty}
                       </div>
                     )}
                   </div>
@@ -2572,7 +2574,7 @@ function workspaceDisplayName(path) {
                 </button>
               )) : (
                 <div className={`px-4 py-8 text-center text-[14px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                  {t.sidebarTaskEmpty || '暂无任务'}
+                  {t.sidebarTaskEmpty}
                 </div>
               )}
             </div>
@@ -3166,7 +3168,7 @@ function workspaceDisplayName(path) {
         <div className={`h-screen w-screen flex flex-col ${isDark ? 'bg-[#1B1C1D] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
           <div data-tauri-drag-region className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"
                style={{ borderBottom: '1px solid rgba(128,128,128,.2)' }}>
-            <span data-tauri-drag-region className="pointer-events-none">{(t && t.tearoffTitle) || '撕离窗口'} · {kind}</span>
+            <span data-tauri-drag-region className="pointer-events-none">{t.tearoffTitle} · {kind}</span>
           </div>
           <div className="flex-1 min-h-0 overflow-auto">
             {bs ? <DetachedErrorBoundary t={t}><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}

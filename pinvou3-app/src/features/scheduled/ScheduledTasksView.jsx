@@ -398,6 +398,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const tasks = previewMode
         ? [...PREVIEW_SCHEDULED_TASKS, ...previewCreatedTasks].map(task => ({
           ...task,
+          ...(scheduledCopy.previewTasks[task.id] || {}),
+          model: task.model === '自动选择' ? scheduledCopy.autoModel : task.model,
           status: previewTaskStatus[task.id] || task.status,
           nextRunAt: task.nextRunAt || new Date(clockNow + (task.nextRunOffsetMs || 1000 * 60 * 60)).toISOString(),
         }))
@@ -407,7 +409,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const selectedDetail = previewMode
         ? tasks.find(task => task.id === effectiveSelectedId) || null
         : rawSelectedDetail;
-      const runs = previewMode && effectiveSelectedId ? (PREVIEW_SCHEDULED_RUNS[effectiveSelectedId] || []) : rawRuns;
+      const runs = previewMode && effectiveSelectedId
+        ? (PREVIEW_SCHEDULED_RUNS[effectiveSelectedId] || []).map(run => ({
+          ...run,
+          error: run.error ? scheduledCopy.previewRunError : run.error,
+        }))
+        : rawRuns;
       const [createForm, setCreateForm] = useState(null);
       const [createScheduleRepeatIntent, setCreateScheduleRepeatIntent] = useState(null);
       const [deleteConfirmTask, setDeleteConfirmTask] = useState(null);

@@ -1096,10 +1096,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const raw = String(text || '').trim();
         if (!raw) return;
         const elementLabel = selectedDesignElement
-          ? `${selectedDesignElement.tagName || '元素'}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
+          ? `${selectedDesignElement.tagName || chatViewCopy.designElementFallback}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
           : '';
         const scopedText = selectedDesignElement
-          ? `请针对当前选中的 ${elementLabel || '元素'} 调整：${raw}`
+          ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
         sendChatMessage(scopedText);
       }, [selectedDesignElement, sendChatMessage]);
