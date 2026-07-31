@@ -264,7 +264,7 @@ const FEISHU_STEPS = [
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
     function ensureFeishuListeners(copy = {}) {
       if (feishuConn.listenersReady) return;
-      const connFailed = copy.connFailed || '连接失败';
+      const connFailed = copy.connFailed;
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       feishuConn.listenersReady = true;
@@ -327,7 +327,7 @@ const FEISHU_STEPS = [
     };
     function ensureWecomListeners(copy = {}) {
       if (wecomConn.listenersReady) return;
-      const connFailed = copy.connFailed || '连接失败';
+      const connFailed = copy.connFailed;
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       wecomConn.listenersReady = true;
@@ -372,8 +372,8 @@ const FEISHU_STEPS = [
     };
     function ensureDingtalkListeners(copy = {}) {
       if (dingtalkConn.listenersReady) return;
-      const connFailed = copy.connFailed || '连接失败';
-      const skillsFailed = copy.dingtalkSkillsFailed || ((err) => `钉钉已授权，但技能启用失败：${err}`);
+      const connFailed = copy.connFailed;
+      const skillsFailed = copy.dingtalkSkillsFailed;
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       dingtalkConn.listenersReady = true;
@@ -422,8 +422,8 @@ const FEISHU_STEPS = [
     };
     function ensureTmeetListeners(copy = {}) {
       if (tmeetConn.listenersReady) return;
-      const connFailed = copy.connFailed || '连接失败';
-      const authIncomplete = copy.tmeetAuthIncomplete || '腾讯会议授权未完成，请完成浏览器登录后重试';
+      const connFailed = copy.connFailed;
+      const authIncomplete = copy.tmeetAuthIncomplete;
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       tmeetConn.listenersReady = true;

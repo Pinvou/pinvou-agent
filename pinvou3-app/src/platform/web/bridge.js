@@ -409,6 +409,11 @@
       attachChanged: "The attachment changed during download. Please try again",
       attachOverflow: "The desktop app sent more attachment data than declared. Download stopped",
       attachIncomplete: "The attachment download is incomplete. Please try again",
+      attachNoData: "Attachment download returned no data",
+      attachNoProgress: "Attachment download made no progress",
+      artifactNoProgress: "Artifact download made no progress",
+      workflowRejectDefaultReason: "Sent back by the user. Please improve and try again.",
+      newChatFallbackTitle: "New chat",
       mountCollectionFailed: "Failed to mount knowledge collection: ",
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
@@ -515,6 +520,11 @@
       attachChanged: "ダウンロード中に添付ファイルが変更されました。もう一度お試しください",
       attachOverflow: "デスクトップ側が宣言サイズを超える添付ファイルデータを返しました。ダウンロードを中止しました",
       attachIncomplete: "添付ファイルのダウンロードが不完全です。もう一度お試しください",
+      attachNoData: "添付ファイルのダウンロードがデータを返しませんでした",
+      attachNoProgress: "添付ファイルのダウンロードが進みませんでした",
+      artifactNoProgress: "成果物のダウンロードが進みませんでした",
+      workflowRejectDefaultReason: "ユーザーによる差し戻し。改善して再試行してください。",
+      newChatFallbackTitle: "新しいチャット",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
@@ -621,6 +631,11 @@
       attachChanged: "附件在下载期间发生变化，请重试",
       attachOverflow: "桌面端返回的附件数据超过声明大小，已停止下载",
       attachIncomplete: "附件下载不完整，请重试",
+      attachNoData: "附件下载未返回数据",
+      attachNoProgress: "附件下载没有进展",
+      artifactNoProgress: "产物下载没有进展",
+      workflowRejectDefaultReason: "用户打回，请改进后重试",
+      newChatFallbackTitle: "新对话",
       mountCollectionFailed: "挂载知识集失败: ",
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
@@ -647,6 +662,13 @@
     var lang = state.settings && state.settings.language;
     var m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
     return m[key] !== undefined ? m[key] : BT_TABLE.zh[key];
+  }
+  // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
+  // 与 tauri 桥和 main.jsx 的同款判断保持一致。
+  function isDefaultChatTitle(title) {
+    return title === BT_TABLE.zh.newChatFallbackTitle
+      || title === BT_TABLE.en.newChatFallbackTitle
+      || title === BT_TABLE.ja.newChatFallbackTitle;
   }
 
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
@@ -1240,7 +1262,7 @@
     try {
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
+      if (!meta || isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
@@ -6898,7 +6920,7 @@
       var binary = atob(encoded);
       var bytes = new Uint8Array(binary.length);
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      if (!bytes.length && !part.eof) throw new Error("Artifact download made no progress");
+      if (!bytes.length && !part.eof) throw new Error(bt("artifactNoProgress"));
       if (bytes.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset) {
         throw webArtifactDownloadLimitError(offset + bytes.length);
       }
@@ -6956,7 +6978,7 @@
         offset: offset,
         limit: 262144,
       }, args));
-      if (!part) throw new Error("Attachment download returned no data");
+      if (!part) throw new Error(bt("attachNoData"));
       var partOffset = Number(part.offset);
       var partSize = Number(part.size);
       if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
@@ -6976,7 +6998,7 @@
       var binary = atob(encoded);
       var bytes = new Uint8Array(binary.length);
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      if (!bytes.length && !part.eof) throw new Error("Attachment download made no progress");
+      if (!bytes.length && !part.eof) throw new Error(bt("attachNoProgress"));
       if (offset + bytes.length > expectedSize) {
         throw new Error(bt("attachOverflow"));
       }
@@ -7229,13 +7251,13 @@
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
-      // 标题仍是默认值「新对话」→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
+      // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
       var sid = state.activeSessionId;
       var m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
-      if (m && (m.title === "新对话" || m.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
         var newTitle = personaName(card);
         if (newTitle) {
           try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
@@ -8107,7 +8129,7 @@
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
     try {
-      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || "用户打回，请改进后重试", sessionId: state.workflow.run.sessionId });
+      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || bt("workflowRejectDefaultReason"), sessionId: state.workflow.run.sessionId });
       if (cardId) resolveRunCard(cardId, "rejected");
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();

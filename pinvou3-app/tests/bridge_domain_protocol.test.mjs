@@ -93,7 +93,7 @@ const expectedProtocolHashes = {
   settings: '624810915759a0b46f3524e1b401f65b13d44368639e1bc2887fea4168a0e16d',
   updater: '53562c8fe6547a6c422d112d34769d3ac79abeec27633c32b5658605072c9fe2',
   voice: '2e6789eca3969f27e8e0fd9f034bd82e0b0e1f302152efc65c5714839fbf5b72',
-  workflow: 'c9952c2755d4919304c42028139143e10ecce8244d8e307808abcf28178f75f7',
+  workflow: 'c92e92ed3dc3850bae17f451810184fad2cadbfda6bf9f565a8b2862ad0595a1',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {
