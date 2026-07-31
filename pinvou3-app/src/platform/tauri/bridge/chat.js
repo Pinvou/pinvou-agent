@@ -296,8 +296,9 @@
       clientMessageId: clientMessageId || null,
     }).catch(function () { /* 没开远控时静默跳过 */ });
   }
-  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
-  // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
+  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
+  // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
+  // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
     var pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
@@ -309,33 +310,21 @@
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    var items = q.splice(0, q.length);
-    // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
-    var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
-    var attachments = [];
-    items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
-    var displayText = formatAttachmentDisplayText(text, attachments);
-    var meta = items.length === 1 ? items[0].meta : mergedQueuedMeta(items); // 多条同一专业场景时保留展示标签
-    var restrictTools = items.some(function (i) { return !!i.restrictTools; });
+    var item = q.shift();
+    var attachments = item.attachments || [];
+    var displayText = item.displayText == null
+      ? formatAttachmentDisplayText(item.text, attachments)
+      : item.displayText;
     notify();
-    doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
+    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         var retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
         if (!retryQueue) return;
-        Array.prototype.unshift.apply(retryQueue, items);
+        retryQueue.unshift(item);
         notify();
       });
-  }
-  function mergedQueuedMeta(items) {
-    var first = items && items[0] && items[0].meta;
-    var scene = first && first.pinvouScene;
-    if (!scene) return null;
-    for (var i = 1; i < items.length; i++) {
-      if (!items[i] || !items[i].meta || items[i].meta.pinvouScene !== scene) return null;
-    }
-    return { pinvouScene: scene };
   }
 
   async function sendMessageToSession(sessionId, text, meta) {

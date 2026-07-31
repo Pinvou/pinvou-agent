@@ -4,6 +4,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'chat.js'), 'utf8');
+const chatEventsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'chat-events.js'), 'utf8');
 const chatViewSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
 const tauriBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
 const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8');
@@ -126,44 +127,87 @@ function rec(name, pass, detail = '') {
   }
 
   {
-    const { feature, state, sceneEvents } = createFeature();
+    const { feature, state, invokes, sceneEvents } = createFeature();
     state.queued.push(
-      { id: 1, text: 'payload 1', displayText: '第一条', attachments: [], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
-      { id: 2, text: 'payload 2', displayText: '第二条', attachments: [], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
+      { id: 1, text: 'payload 1', displayText: '第一条\n\n📎 ["first.pdf"]', attachments: [{ basename: 'first.pdf' }], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
+      { id: 2, text: 'payload 2', displayText: '第二条\n\n📎 ["second.png"]', attachments: [{ basename: 'second.png' }], meta: { pinvouScene: 'design:poster' }, restrictTools: true },
     );
     feature.flushQueued('s1');
     await Promise.resolve();
-    const user = state.chatItems.find(item => item.type === 'user');
-    rec('queued 多条同一 scene 合并后保留只读标签',
-      user &&
-        user.text === 'payload 1\n\npayload 2' &&
-        user.pinvouScene === 'design:poster' &&
-        sceneEvents.length === 1 &&
-        sceneEvents[0].scene === 'design:poster',
-      JSON.stringify({ user, sceneEvents }));
+    const firstUsers = state.chatItems.filter(item => item.type === 'user');
+    const firstInvokes = invokes.filter(item => item.command === 'chat');
+    const firstPass =
+      state.queued.length === 1 && state.queued[0].id === 2 &&
+      firstUsers.length === 1 && firstUsers[0].text === '第一条\n\n📎 ["first.pdf"]' &&
+      firstUsers[0].pinvouScene === 'design:poster' &&
+      firstInvokes.length === 1 && firstInvokes[0].args.message === 'payload 1' &&
+      firstInvokes[0].args.attachments.length === 1 &&
+      firstInvokes[0].args.attachments[0].basename === 'first.pdf' &&
+      firstInvokes[0].args.restrictTools === false;
+
+    state.busy = false;
+    feature.flushQueued('s1');
+    await Promise.resolve();
+    const users = state.chatItems.filter(item => item.type === 'user');
+    const chatInvokes = invokes.filter(item => item.command === 'chat');
+    rec('queued 多条同一 scene 按 FIFO 分成独立 turn 并各自保留标签',
+      firstPass &&
+        state.queued.length === 0 &&
+        users.length === 2 && users[1].text === '第二条\n\n📎 ["second.png"]' &&
+        users[1].pinvouScene === 'design:poster' &&
+        chatInvokes.length === 2 && chatInvokes[1].args.message === 'payload 2' &&
+        chatInvokes[1].args.attachments.length === 1 &&
+        chatInvokes[1].args.attachments[0].basename === 'second.png' &&
+        chatInvokes[1].args.restrictTools === true &&
+        sceneEvents.length === 2 &&
+        sceneEvents.every(event => event.scene === 'design:poster'),
+      JSON.stringify({ users, chatInvokes, queued: state.queued, sceneEvents }));
   }
 
   {
-    const { feature, state, sceneEvents } = createFeature();
+    const { feature, state, invokes, sceneEvents } = createFeature();
     state.queued.push(
       { id: 1, text: 'payload 1', displayText: '第一条', attachments: [], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
       { id: 2, text: 'payload 2', displayText: '第二条', attachments: [], meta: { pinvouScene: 'design:data-visualization' }, restrictTools: false },
     );
     feature.flushQueued('s1');
     await Promise.resolve();
-    const user = state.chatItems.find(item => item.type === 'user');
-    rec('queued 多条不同 scene 合并后不误标标签',
-      user &&
-        user.text === 'payload 1\n\npayload 2' &&
-        !user.pinvouScene &&
-        sceneEvents.length === 0,
-      JSON.stringify({ user, sceneEvents }));
+    state.busy = false;
+    feature.flushQueued('s1');
+    await Promise.resolve();
+    const users = state.chatItems.filter(item => item.type === 'user');
+    const chatInvokes = invokes.filter(item => item.command === 'chat');
+    rec('queued 多条不同 scene 按 FIFO 分发且标签互不污染',
+      state.queued.length === 0 &&
+        users.length === 2 &&
+        users[0].text === '第一条' && users[0].pinvouScene === 'design:poster' &&
+        users[1].text === '第二条' && users[1].pinvouScene === 'design:data-visualization' &&
+        chatInvokes.length === 2 &&
+        chatInvokes[0].args.message === 'payload 1' &&
+        chatInvokes[1].args.message === 'payload 2' &&
+        sceneEvents.length === 2,
+      JSON.stringify({ users, chatInvokes, sceneEvents }));
+  }
+
+  {
+    const { feature, state } = createFeature({ failChat: true });
+    state.queued.push(
+      { id: 1, text: 'payload 1', displayText: '第一条', attachments: [], meta: null, restrictTools: false },
+      { id: 2, text: 'payload 2', displayText: '第二条', attachments: [], meta: null, restrictTools: false },
+    );
+    feature.flushQueued('s1');
+    await new Promise(resolve => setImmediate(resolve));
+    rec('queued 队首发送失败时按原顺序回队且不吞后续消息',
+      state.queued.length === 2 &&
+        state.queued[0].id === 1 && state.queued[1].id === 2 &&
+        !state.chatItems.some(item => item.type === 'user'),
+      JSON.stringify({ queued: state.queued, chatItems: state.chatItems }));
   }
 
   rec('附件-only 发送也会按当前专业子模式创建 scene meta',
     /if \(outgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
       /const scenePrompt = outgoing \|\| '请根据附件内容继续处理。';/.test(chatViewSource) &&
-      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, visualPosterSceneActive\]\);/.test(chatViewSource),
+      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
@@ -176,6 +220,12 @@ function rec(name, pass, detail = '') {
       /pub async fn save_session_pinvou_scene_events/.test(sessionsRustSource) &&
       /pub async fn get_session_pinvou_scene_events/.test(sessionsRustSource),
     'shared session scene sidecar contract');
+
+  rec('远程消息不会越过已有 FIFO 队列',
+    /var remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
+      /isBusyFor\(sid\) \|\| \(remoteBuffer && remoteBuffer\.queued && remoteBuffer\.queued\.length > 0\)/.test(chatEventsSource) &&
+      /if \(!isBusyFor\(sid\)\) flushQueued\(sid\);/.test(chatEventsSource),
+    'mobile user messages must enqueue behind pending local turns');
 
   const failed = results.filter(item => !item.pass);
   if (failed.length) {

@@ -832,7 +832,8 @@
     var displayText = attachmentNames.length
       ? content + (content ? "\n\n" : "") + "📎 " + JSON.stringify(attachmentNames)
       : content;
-    if (isBusyFor(sid)) {
+    var remoteBuffer = getBuffer(sid);
+    if (isBusyFor(sid) || (remoteBuffer && remoteBuffer.queued && remoteBuffer.queued.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++context.itemIdSeq,
@@ -843,6 +844,7 @@
         });
       });
       notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
       return;
     }
     doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
