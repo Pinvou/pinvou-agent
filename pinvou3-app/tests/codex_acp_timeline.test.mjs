@@ -350,7 +350,7 @@ try {
   assert.ok(codexView.includes('composerControlsVisible && (')
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
-  'Codex controls must appear in the composer only after the session reports real options');
+  'Codex controls must render from the session report or, in draft, the cached agent snapshot');
   assert.ok(codexView.includes('pinvou_codex_draft_controls')
     && codexView.includes('resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo)')
     && codexView.includes('stageDraftConfigSelection')
