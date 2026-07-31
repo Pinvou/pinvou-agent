@@ -203,6 +203,7 @@ function PreviewPane({ diff, loading, onBack, onAddReference, referenced, onOpen
 
 export function CodexWorkspacePanel({
   session,
+  workspacePath = '',
   visible,
   onClose,
   references = [],
@@ -212,6 +213,10 @@ export function CodexWorkspacePanel({
   copy,
 }) {
   const sessionId = session?.id;
+  // 会话前（draft）模式：无 sessionId，直接按项目路径浏览；变更/差异依赖会话基线，仅会话内可用。
+  const browsePath = sessionId ? '' : String(workspacePath || '');
+  const browsable = Boolean(sessionId || browsePath);
+  const scopePayload = () => (sessionId ? { sessionId } : { workspacePath: browsePath });
   const [tab, setTab] = useState('files');
   const [entriesByDirectory, setEntriesByDirectory] = useState({});
   const [expanded, setExpanded] = useState(new Set());
@@ -307,11 +312,11 @@ export function CodexWorkspacePanel({
   }
 
   async function loadDirectory(path = '', { force = false } = {}) {
-    if (!sessionId || (!force && entriesByDirectory[path])) return;
+    if (!browsable || (!force && entriesByDirectory[path])) return;
     setLoadingDirectories(current => new Set([...current, path]));
     try {
       const listing = await invoke('list_codex_workspace', {
-        sessionId,
+        ...scopePayload(),
         relativePath: path || null,
       });
       setEntriesByDirectory(current => ({ ...current, [path]: listing.entries || [] }));
@@ -349,13 +354,15 @@ export function CodexWorkspacePanel({
     setViewer(null);
     setDiff(null);
     setError('');
-    if (sessionId) {
+    if (browsable) {
       loadDirectory('', { force: true });
+    }
+    if (sessionId) {
       loadChanges();
     } else if (onChangeCount) {
       onChangeCount(0);
     }
-  }, [sessionId]);
+  }, [sessionId, browsePath]);
 
   useEffect(() => {
     if (!sessionId || !refreshToken) return;
@@ -367,7 +374,7 @@ export function CodexWorkspacePanel({
   }, [refreshToken, sessionId]);
 
   useEffect(() => {
-    if (!sessionId || !query.trim()) {
+    if (!browsable || !query.trim()) {
       setSearchResults([]);
       setSearching(false);
       return undefined;
@@ -376,7 +383,7 @@ export function CodexWorkspacePanel({
     const timer = window.setTimeout(async () => {
       try {
         const results = await invoke('search_codex_workspace', {
-          sessionId,
+          ...scopePayload(),
           query: query.trim(),
         });
         setSearchResults(results || []);
@@ -388,7 +395,7 @@ export function CodexWorkspacePanel({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [query, sessionId]);
+  }, [query, sessionId, browsePath]);
 
   async function toggleDirectory(entry) {
     const path = entry.relativePath;
@@ -407,7 +414,7 @@ export function CodexWorkspacePanel({
     setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
     try {
       const preview = await invoke('preview_codex_workspace_file', {
-        sessionId,
+        ...scopePayload(),
         relativePath: entry.relativePath,
       });
       setViewer({ name: entry.name, relativePath: entry.relativePath, preview, loading: false, error: '' });
@@ -441,9 +448,9 @@ export function CodexWorkspacePanel({
   }
 
   async function openWorkspacePath(command, relativePath) {
-    if (!relativePath) return;
+    if (!relativePath || !browsable) return;
     try {
-      await invoke(command, { sessionId, relativePath });
+      await invoke(command, { ...scopePayload(), relativePath });
     } catch (nextError) {
       showError(nextError);
     }
@@ -469,8 +476,8 @@ export function CodexWorkspacePanel({
       <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{copy.title}</div>
-          <div className="truncate text-[10px] text-gray-400" title={session?.workspace_path}>
-            {session?.workspace_kind === 'temporary' ? copy.temporary : session?.workspace_path}
+          <div className="truncate text-[10px] text-gray-400" title={session?.workspace_path || browsePath}>
+            {session?.workspace_kind === 'temporary' ? copy.temporary : (session?.workspace_path || browsePath)}
           </div>
         </div>
         <button

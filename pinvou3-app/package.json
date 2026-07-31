@@ -32,6 +32,7 @@
     "test:file-icon-theme": "node tests/file_icon_theme.test.js",
     "test:diff-ui": "node tests/diff_viewer_ui_smoke.mjs",
     "test:code-viewer-ui": "node tests/code_viewer_modal_smoke.mjs",
+    "test:workspace-panel-ui": "node tests/workspace_panel_draft_smoke.mjs",
     "test:marketplace-oauth": "node tests/marketplace_oauth_logic.test.js",
     "test:composer-tools": "node tests/composer_tool_menu_logic.test.js",
     "test:codex-acp": "node tests/codex_acp_platform_contract.test.js && node tests/codex_acp_windows_contract.test.js && node tests/codex_acp_timeline.test.mjs && node tests/deepseek_conversation_timeline.test.mjs",

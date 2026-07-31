@@ -1189,6 +1189,8 @@ export function CodexAcpView({
     preserveDraftWorkspaceRef.current = true;
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
+    // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
+    setWorkspaceOpen(Boolean(workspacePath));
     if (clearComposer) {
       setDraft('');
       setAttachmentDrafts(current => {
@@ -1710,6 +1712,24 @@ export function CodexAcpView({
           </button>
         </header>
         )}
+        {!activeSession && draftWorkspacePath && (
+        <header className="h-14 shrink-0 px-5 flex items-center justify-end border-b border-black/[0.05] dark:border-white/[0.06]">
+          <button
+            type="button"
+            data-testid="codex-workspace-toggle"
+            onClick={() => setWorkspaceOpen(value => !value)}
+            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
+              workspaceOpen
+                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+            }`}
+            title={codexCopy.workspaceTitle}
+          >
+            <FolderOpen size={14} />
+            <span>{codexCopy.workspace}</span>
+          </button>
+        </header>
+        )}
 
         <div className="flex-1 min-h-0 flex">
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
@@ -2122,9 +2142,10 @@ export function CodexAcpView({
           </div>
         </div>
         </div>
-        {activeSession && (
+        {(activeSession || draftWorkspacePath) && (
           <CodexWorkspacePanel
             session={activeSession}
+            workspacePath={activeSession ? '' : (draftWorkspacePath || '')}
             visible={workspaceOpen}
             onClose={() => setWorkspaceOpen(false)}
             references={workspaceReferences}

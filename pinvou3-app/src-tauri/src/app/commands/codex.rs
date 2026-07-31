@@ -222,29 +222,40 @@ pub async fn codex_acp_prompt(
         })
 }
 
+// 会话内浏览走 session_id（解析会话工作区并校验可用性）；
+// 会话前（draft）浏览直接校验并规范化调用方给出的项目路径，无需 ACP 会话。
 fn codex_workspace_root(
-    session_id: &str,
+    session_id: Option<&str>,
+    workspace_path: Option<&str>,
     acp_pool: &AcpPool,
 ) -> Result<std::path::PathBuf, String> {
-    if !acp_pool.is_acp(session_id) {
-        return Err("当前会话不是 ACP 会话".to_string());
+    if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+        if !acp_pool.is_acp(session_id) {
+            return Err("当前会话不是 ACP 会话".to_string());
+        }
+        let info = acp_pool
+            .workspace_info(session_id)
+            .map_err(|error| format!("读取 Codex 工作目录失败: {error:#}"))?;
+        if !info.workspace_available {
+            return Err(format!("Codex 工作目录不可用: {}", info.workspace_path));
+        }
+        return Ok(std::path::PathBuf::from(info.workspace_path));
     }
-    let info = acp_pool
-        .workspace_info(session_id)
-        .map_err(|error| format!("读取 Codex 工作目录失败: {error:#}"))?;
-    if !info.workspace_available {
-        return Err(format!("Codex 工作目录不可用: {}", info.workspace_path));
+    if let Some(path) = workspace_path.filter(|path| !path.trim().is_empty()) {
+        return validate_codex_project_workspace(std::path::Path::new(path))
+            .map_err(|error| format!("Codex 工作目录不可用: {error:#}"));
     }
-    Ok(std::path::PathBuf::from(info.workspace_path))
+    Err("缺少会话或工作区路径".to_string())
 }
 
 #[tauri::command]
 pub async fn list_codex_workspace(
-    session_id: String,
+    session_id: Option<String>,
     relative_path: Option<String>,
+    workspace_path: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspaceListing, String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
     tauri::async_runtime::spawn_blocking(move || {
         workspace::list_workspace(&root, relative_path.as_deref())
             .map_err(|error| format!("读取 Codex 工作区失败: {error:#}"))
@@ -255,11 +266,12 @@ pub async fn list_codex_workspace(
 
 #[tauri::command]
 pub async fn search_codex_workspace(
-    session_id: String,
+    session_id: Option<String>,
     query: String,
+    workspace_path: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<WorkspaceEntry>, String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
     tauri::async_runtime::spawn_blocking(move || {
         workspace::search_workspace(&root, &query)
             .map_err(|error| format!("搜索 Codex 工作区失败: {error:#}"))
@@ -270,11 +282,12 @@ pub async fn search_codex_workspace(
 
 #[tauri::command]
 pub async fn preview_codex_workspace_file(
-    session_id: String,
+    session_id: Option<String>,
     relative_path: String,
+    workspace_path: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspacePreview, String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
     tauri::async_runtime::spawn_blocking(move || {
         workspace::preview_workspace_file(&root, &relative_path)
             .map_err(|error| format!("预览 Codex 工作区文件失败: {error:#}"))
@@ -288,7 +301,7 @@ pub async fn get_codex_workspace_changes(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspaceChanges, String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(Some(&session_id), None, &acp_pool)?;
     tauri::async_runtime::spawn_blocking(move || {
         workspace::workspace_changes(&session_id, &root)
             .map_err(|error| format!("读取 Codex 工作区更改失败: {error:#}"))
@@ -303,7 +316,7 @@ pub async fn get_codex_workspace_diff(
     relative_path: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspaceDiff, String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(Some(&session_id), None, &acp_pool)?;
     tauri::async_runtime::spawn_blocking(move || {
         workspace::workspace_diff(&root, &relative_path)
             .map_err(|error| format!("读取 Codex 文件差异失败: {error:#}"))
@@ -314,11 +327,12 @@ pub async fn get_codex_workspace_diff(
 
 #[tauri::command]
 pub async fn open_codex_workspace_file(
-    session_id: String,
+    session_id: Option<String>,
     relative_path: String,
+    workspace_path: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
     let path = workspace::resolve_workspace_file(&root, &relative_path)
         .map_err(|error| format!("打开 Codex 工作区文件失败: {error:#}"))?;
     crate::platform::os::open_target(
@@ -329,11 +343,12 @@ pub async fn open_codex_workspace_file(
 
 #[tauri::command]
 pub async fn reveal_codex_workspace_file(
-    session_id: String,
+    session_id: Option<String>,
     relative_path: String,
+    workspace_path: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
-    let root = codex_workspace_root(&session_id, &acp_pool)?;
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
     let path = workspace::resolve_workspace_file(&root, &relative_path)
         .map_err(|error| format!("定位 Codex 工作区文件失败: {error:#}"))?;
     let directory = path
