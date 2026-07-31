@@ -361,7 +361,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
           {!aiInputOpen ? (
             <button type="button" onMouseDown={openAiInput}
               className={`h-9 rounded-full border px-3 shadow-[0_8px_24px_rgba(0,0,0,0.16)] inline-flex items-center gap-1.5 text-[13px] font-medium transition-transform duration-150 ease-out hover:scale-[1.02] active:scale-[0.98] ${isDark ? 'border-white/10 bg-[#1C1C1E] text-[#F2F2F7]' : 'border-black/10 bg-white text-[#1C1C1E]'}`}>
-              <Sparkles size={15} /> {t.apMdAiEdit || 'AI 编辑'}
+              <Sparkles size={15} /> {t.apMdAiEdit}
             </button>
           ) : (
             <div className={`w-[316px] max-w-[calc(100vw-24px)] h-11 rounded-[22px] border shadow-[0_12px_32px_rgba(0,0,0,0.18)] flex items-center gap-1.5 px-2.5 ${isDark ? 'border-white/10 bg-[#1C1C1E]' : 'border-black/10 bg-white'}`}>
@@ -378,7 +378,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                   if (e.key === 'Enter') submitAiEdit();
                   if (e.key === 'Escape') clearAiUi();
                 }}
-                placeholder={t.apMdAiInstructionPlaceholder || '想怎么改？'}
+                placeholder={t.apMdAiInstructionPlaceholder}
                 className={`min-w-0 flex-1 bg-transparent outline-none text-[13px] leading-5 ${isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1C1C1E] placeholder:text-[#8E8E93]'}`}
               />
               <button type="button" onClick={submitAiEdit}

@@ -34,12 +34,19 @@ assert.strictEqual(
 );
 
 const dataVisualizationRequirements = requiredCapabilitiesForMeta({ pinvouScene: 'design:data-visualization' });
-assert.strictEqual(dataVisualizationRequirements.key, 'data-visualization');
-assert.strictEqual(dataVisualizationRequirements.label, '数据可视化');
-assert.strictEqual(dataVisualizationRequirements.preparingText, '正在准备数据可视化能力...');
-assert.strictEqual(dataVisualizationRequirements.readyText, '已启用数据可视化，开始生成');
-assert.strictEqual(dataVisualizationRequirements.failureText, '数据可视化能力准备失败，请稍后重试。');
+assert.strictEqual(dataVisualizationRequirements.key, 'dataVisualization');
 assert.deepStrictEqual([...dataVisualizationRequirements.tools], []);
 assert.deepStrictEqual([...dataVisualizationRequirements.skills], ['visualizer']);
+
+const documentWritingRequirements = requiredCapabilitiesForMeta({ pinvouScene: 'work:document-writing' });
+assert.strictEqual(documentWritingRequirements.key, 'documentWriting');
+assert.deepStrictEqual([...documentWritingRequirements.tools], ['gongwen']);
+assert.deepStrictEqual([...documentWritingRequirements.skills], ['government-writing']);
+
+assert.strictEqual(requiredCapabilitiesForMeta(null), null);
+assert.strictEqual(requiredCapabilitiesForMeta({ pinvouScene: 'design:poster' }), null);
+// 用户可见文案由 UI 层从 t.uiChatScenes[requirements.key] 取值，模块不得再携带文案字段。
+assert.strictEqual('label' in dataVisualizationRequirements, false);
+assert.strictEqual('preparingText' in dataVisualizationRequirements, false);
 
 console.log('scene_capabilities_logic: ok');

@@ -346,6 +346,89 @@
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
       shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
       shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
+      sessionChunkInvalid: "The desktop app returned an invalid session chunk",
+      sessionChunkChanged: "Session data changed while reading. Please try again",
+      sessionChunkOverflow: "Session chunk exceeds the declared length",
+      sessionChunkEarlyEnd: "Session chunks ended prematurely",
+      sessionChunkNoProgress: "Session chunks made no progress",
+      scheduledDraftInvalid: "The scheduled task draft is missing a name, task description, or schedule",
+      scheduledCreateFailed: "Failed to create scheduled task: ",
+      scheduledTaskFallbackName: "Scheduled task",
+      scheduledActionBusy: "Another scheduled task operation is still in progress",
+      scheduledCreateNoId: "Failed to create scheduled task: the backend returned no task ID",
+      scheduledChatPrefill: "I'd like to create a scheduled task: ",
+      runNoSession: "This run has no session to open",
+      sessionDataInvalid: "Invalid session data",
+      skillContentHidden: "(Skill loaded; content hidden)",
+      turnSyncRejected: "This session is syncing a turn completed elsewhere. Please try again shortly",
+      targetSessionMissing: "Target session does not exist",
+      replyContentEmpty: "Reply content is empty",
+      targetSessionSyncing: "The target session is still syncing a turn completed elsewhere",
+      sessionIdMissing: "The desktop app returned no new session ID",
+      turnSyncRetry: "⚠️ This session is still syncing a turn completed elsewhere. Please try again shortly",
+      pinvouNeedSession: "Start a chat first, then summon Pinvou for review.",
+      remoteDoneUnsynced: "⚠️ The chat finished on the desktop, but the authoritative record is not synced yet. Retry after reconnecting.",
+      workflowComplete: "🎉 Workflow complete — final artifact ready",
+      workflowBlocked: "⚙️ Workflow stuck: ",
+      unknownReason: "unknown reason",
+      workflowEnableFailed: "⚠️ Failed to enable workflow: ",
+      workflowKickFailed: "⚠️ kick_workflow failed: ",
+      workflowStartFailed: "⚠️ Failed to start workflow: ",
+      workflowNoneToStop: "No workflow to stop right now",
+      workflowSubmitFailed: "⚠️ Submit failed: ",
+      materialsAdded: (count, names) => "✅ Added " + count + " materials to run materials: " + names.join(", "),
+      folderPickerUnavailable: "The folder picker cannot be opened in this environment",
+      pickFolderTitle: "Choose a working directory",
+      gateApproveFailed: "⚠️ Approval failed: ",
+      gateRejectFailed: "⚠️ Rejection failed: ",
+      roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
+      roleRetryFailed: "⚠️ Rerun failed: ",
+      metricUnavailable: "Not available",
+      targetKindRemote: "Remote model",
+      targetKindLocal: "Local model",
+      targetKindInvalid: "Invalid configuration",
+      betaTag: " (Beta)",
+      memoryUpdated: "Memory updated",
+      memoryArchived: "Memory archived",
+      memoryDeleted: "Memory deleted",
+      memoryIgnored: "Ignored",
+      memoryNever: "Never ask again",
+      memoryRemembered: "Remembered",
+      memoryWriteFailed: "Failed to write memory: ",
+      memoryIgnoreFailed: "Failed to ignore memory: ",
+      memoryNeverFailed: "Failed to update the never-ask setting: ",
+      planTicketExpired: "⚠️ The plan ticket has expired. Regenerate the plan before running it",
+      downloadLimitSuffix: size => " (current file " + size + " MiB)",
+      downloadLimitError: suffix => "Remote artifact downloads are limited to 256 MiB" + suffix + ". Open the file directly on the desktop.",
+      downloadUnsupported: "⚠️ This desktop version does not support remote artifact download. Update the desktop app and try again.",
+      downloadFailed: "⚠️ Artifact download failed: ",
+      downloadNotEnabled: "Remote artifact download is not enabled in this environment",
+      artifactMissing: "The artifact does not exist or has been removed",
+      artifactSizeInvalid: "The desktop app returned an invalid artifact size. Download stopped",
+      artifactChunkInvalid: "The desktop app returned an invalid artifact chunk. Download stopped",
+      artifactChanged: "The artifact changed during download. Please try again",
+      artifactOverflow: "The desktop app sent more artifact data than declared. Download stopped",
+      artifactIncomplete: "The artifact download is incomplete. Please try again",
+      mountCollectionFailed: "Failed to mount knowledge collection: ",
+      depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
+      voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
+      voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use.",
+      voiceConstraintUnsupported: "Could not start recording: the current microphone or WebView does not support the required audio configuration. Try again; if it still fails, check microphone settings or update system components.",
+      voiceEmptyResult: "No speech recognized. Move closer to the microphone and try again.",
+      voiceContextMismatch: "Recognition finished, but the active session changed, so the result was not inserted.",
+      voiceTimeout: "Voice input timed out. Please try again.",
+      voiceRecognitionFailed: "Speech recognition failed. Please try again later.",
+      voiceInputFailed: "Voice input failed. Check the microphone and try again.",
+      voiceCancelled: "Voice input cancelled",
+      voiceTranscribing: "Recognizing speech…",
+      voiceTooShort: "Recording too short. Please try again.",
+      voiceWritten: "Voice text inserted into the input box",
+      voiceNeedDesktopAsr: "Install the speech recognition component on the desktop first, then use the microphone from the browser.",
+      voiceRequestingPermission: "Requesting microphone permission…",
+      voiceNoMicCapture: "This WebView does not support microphone capture.",
+      voiceNoAudioRecording: "This WebView does not support audio recording.",
+      voiceAudioStartBlocked: "The browser did not allow audio capture to start. Click the microphone again.",
+      voiceRecording: "Recording… click again to stop",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -369,6 +452,89 @@
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
       shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
       shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
+      sessionChunkInvalid: "デスクトップ側が無効なセッションチャンクを返しました",
+      sessionChunkChanged: "読み込み中にセッションデータが変更されました。もう一度お試しください",
+      sessionChunkOverflow: "セッションチャンクが宣言された長さを超えています",
+      sessionChunkEarlyEnd: "セッションチャンクが途中で終了しました",
+      sessionChunkNoProgress: "セッションチャンクが進みませんでした",
+      scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
+      scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
+      scheduledTaskFallbackName: "スケジュールタスク",
+      scheduledActionBusy: "別のスケジュールタスク操作がまだ進行中です",
+      scheduledCreateNoId: "スケジュールタスクの作成に失敗：バックエンドがタスク ID を返しませんでした",
+      scheduledChatPrefill: "スケジュールタスクを作成したいです：",
+      runNoSession: "この実行記録には開けるセッションがありません",
+      sessionDataInvalid: "セッションデータが無効です",
+      skillContentHidden: "（スキルを読み込みました。内容は表示しません）",
+      turnSyncRejected: "このセッションは別端末で完了したターンを同期中です。しばらくしてから再試行してください",
+      targetSessionMissing: "対象のセッションが存在しません",
+      replyContentEmpty: "返信内容が空です",
+      targetSessionSyncing: "対象のセッションは別端末で完了したターンをまだ同期中です",
+      sessionIdMissing: "デスクトップ側が新しいセッション ID を返しませんでした",
+      turnSyncRetry: "⚠️ このセッションは別端末で完了したターンをまだ同期中です。しばらくしてから再試行してください",
+      pinvouNeedSession: "先にチャットを開始してから Pinvou レビューを呼び出してください。",
+      remoteDoneUnsynced: "⚠️ チャットはデスクトップ側で完了しましたが、正式な記録がまだ同期されていません。接続回復後に再試行できます。",
+      workflowComplete: "🎉 ワークフローが完了し、成果物が生成されました",
+      workflowBlocked: "⚙️ ワークフローが停止：",
+      unknownReason: "不明な原因",
+      workflowEnableFailed: "⚠️ ワークフローの有効化に失敗: ",
+      workflowKickFailed: "⚠️ kick_workflow に失敗: ",
+      workflowStartFailed: "⚠️ ワークフローの開始に失敗: ",
+      workflowNoneToStop: "現在停止できるワークフローはありません",
+      workflowSubmitFailed: "⚠️ 送信に失敗: ",
+      materialsAdded: (count, names) => "✅ 素材を " + count + " 件、配套材料に追加しました：" + names.join("、"),
+      folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
+      pickFolderTitle: "作業ディレクトリを選択",
+      gateApproveFailed: "⚠️ 承認に失敗: ",
+      gateRejectFailed: "⚠️ 差し戻しに失敗: ",
+      roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
+      roleRetryFailed: "⚠️ 再実行に失敗: ",
+      metricUnavailable: "未提供",
+      targetKindRemote: "リモートモデル",
+      targetKindLocal: "ローカルモデル",
+      targetKindInvalid: "構成エラー",
+      betaTag: " (ベータ版)",
+      memoryUpdated: "メモリを更新しました",
+      memoryArchived: "メモリをアーカイブしました",
+      memoryDeleted: "メモリを削除しました",
+      memoryIgnored: "無視しました",
+      memoryNever: "今後表示しない",
+      memoryRemembered: "記憶しました",
+      memoryWriteFailed: "メモリの書き込みに失敗：",
+      memoryIgnoreFailed: "メモリの無視に失敗：",
+      memoryNeverFailed: "「今後表示しない」の設定に失敗：",
+      planTicketExpired: "⚠️ プランの認証情報が失効しました。プランを再生成してから実行してください",
+      downloadLimitSuffix: size => "（現在のファイル " + size + " MiB）",
+      downloadLimitError: suffix => "リモート制御での成果物ダウンロード上限は 256 MiB です" + suffix + "。デスクトップ側で直接開いてください。",
+      downloadUnsupported: "⚠️ 現在のデスクトップ側はリモート制御による成果物ダウンロードに対応していません。デスクトップを更新して再試行してください。",
+      downloadFailed: "⚠️ 成果物のダウンロードに失敗: ",
+      downloadNotEnabled: "現在の環境ではリモート制御による成果物ダウンロードが有効になっていません",
+      artifactMissing: "成果物が存在しないか、削除されています",
+      artifactSizeInvalid: "デスクトップ側が無効な成果物サイズを返しました。ダウンロードを中止しました",
+      artifactChunkInvalid: "デスクトップ側が無効な成果物チャンクを返しました。ダウンロードを中止しました",
+      artifactChanged: "ダウンロード中に成果物が変更されました。もう一度お試しください",
+      artifactOverflow: "デスクトップ側が宣言サイズを超える成果物データを返しました。ダウンロードを中止しました",
+      artifactIncomplete: "成果物のダウンロードが不完全です。もう一度お試しください",
+      mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
+      depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
+      voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
+      voiceNoDevice: "利用可能なマイクが検出されませんでした。録音デバイスが有効か、他で使用されていないか確認してください。",
+      voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定を確認するかシステムコンポーネントを更新してください。",
+      voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
+      voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
+      voiceTimeout: "音声入力がタイムアウトしました。もう一度お試しください。",
+      voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
+      voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
+      voiceCancelled: "音声入力をキャンセルしました",
+      voiceTranscribing: "音声を認識中…",
+      voiceTooShort: "録音が短すぎます。もう一度お試しください。",
+      voiceWritten: "音声を入力欄に書き込みました",
+      voiceNeedDesktopAsr: "先にデスクトップ側で音声認識コンポーネントをインストールしてから、ブラウザーでマイクを使用してください。",
+      voiceRequestingPermission: "マイクの権限を要求中…",
+      voiceNoMicCapture: "現在の WebView はマイク入力に対応していません。",
+      voiceNoAudioRecording: "現在の WebView は音声録音に対応していません。",
+      voiceAudioStartBlocked: "ブラウザーが音声キャプチャの開始を許可しませんでした。マイクをもう一度クリックしてください。",
+      voiceRecording: "録音中です。もう一度クリックすると終了します",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -392,6 +558,89 @@
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
       shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
       shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
+      sessionChunkInvalid: "桌面端返回了无效的会话分块",
+      sessionChunkChanged: "读取期间会话数据发生变化，请重试",
+      sessionChunkOverflow: "会话分块超出声明长度",
+      sessionChunkEarlyEnd: "会话分块提前结束",
+      sessionChunkNoProgress: "会话分块没有前进",
+      scheduledDraftInvalid: "定时任务草稿缺少名称、任务说明或时间规则",
+      scheduledCreateFailed: "定时任务创建失败：",
+      scheduledTaskFallbackName: "定时任务",
+      scheduledActionBusy: "另一个定时任务操作仍在进行中",
+      scheduledCreateNoId: "创建定时任务失败：后端未返回任务 ID",
+      scheduledChatPrefill: "我想创建一个定时任务：",
+      runNoSession: "该运行记录没有可打开的会话",
+      sessionDataInvalid: "会话数据无效",
+      skillContentHidden: "（技能已加载，内容不展示）",
+      turnSyncRejected: "该会话正在同步另一端完成的回合，请稍后重试",
+      targetSessionMissing: "目标会话不存在",
+      replyContentEmpty: "回复内容为空",
+      targetSessionSyncing: "目标会话仍在同步另一端完成的回合",
+      sessionIdMissing: "桌面端未返回新会话 ID",
+      turnSyncRetry: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
+      pinvouNeedSession: "先开始一个对话,再召唤 Pinvou 检阅。",
+      remoteDoneUnsynced: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
+      workflowComplete: "🎉 工作流完成，成品已生成",
+      workflowBlocked: "⚙️ 工作流卡住：",
+      unknownReason: "未知原因",
+      workflowEnableFailed: "⚠️ 启用工作流失败: ",
+      workflowKickFailed: "⚠️ kick_workflow 失败: ",
+      workflowStartFailed: "⚠️ 启动工作流失败: ",
+      workflowNoneToStop: "当前没有可停止的工作流",
+      workflowSubmitFailed: "⚠️ 提交失败: ",
+      materialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
+      folderPickerUnavailable: "当前环境无法打开文件夹选择器",
+      pickFolderTitle: "选择工作目录",
+      gateApproveFailed: "⚠️ 通过失败: ",
+      gateRejectFailed: "⚠️ 打回失败: ",
+      roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
+      roleRetryFailed: "⚠️ 重跑失败: ",
+      metricUnavailable: "未提供",
+      targetKindRemote: "远端模型",
+      targetKindLocal: "本地模型",
+      targetKindInvalid: "配置异常",
+      betaTag: " (内测版)",
+      memoryUpdated: "记忆已更新",
+      memoryArchived: "记忆已归档",
+      memoryDeleted: "记忆已删除",
+      memoryIgnored: "已忽略",
+      memoryNever: "不再提示",
+      memoryRemembered: "已记住",
+      memoryWriteFailed: "记忆写入失败：",
+      memoryIgnoreFailed: "忽略记忆失败：",
+      memoryNeverFailed: "设置不再提示失败：",
+      planTicketExpired: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
+      downloadLimitSuffix: size => "（当前文件 " + size + " MiB）",
+      downloadLimitError: suffix => "远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。",
+      downloadUnsupported: "⚠️ 当前桌面端不支持远程控制产物下载，请更新桌面端后重试。",
+      downloadFailed: "⚠️ 产物下载失败: ",
+      downloadNotEnabled: "当前环境未启用远程控制产物下载能力",
+      artifactMissing: "产物不存在或已被移除",
+      artifactSizeInvalid: "桌面端返回了无效的产物大小，已停止下载",
+      artifactChunkInvalid: "桌面端返回了无效的产物分块，已停止下载",
+      artifactChanged: "产物在下载期间发生变化，请重试",
+      artifactOverflow: "桌面端返回的产物数据超过声明大小，已停止下载",
+      artifactIncomplete: "产物下载不完整，请重试",
+      mountCollectionFailed: "挂载知识集失败: ",
+      depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
+      voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
+      voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
+      voiceConstraintUnsupported: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+      voiceEmptyResult: "未识别到语音内容，请靠近麦克风后重试。",
+      voiceContextMismatch: "识别已完成，但当前会话已切换，结果未自动写入。",
+      voiceTimeout: "本次语音输入超时，请重试。",
+      voiceRecognitionFailed: "语音识别失败，请稍后重试。",
+      voiceInputFailed: "语音输入失败，请检查麦克风后重试。",
+      voiceCancelled: "已取消语音输入",
+      voiceTranscribing: "正在识别语音…",
+      voiceTooShort: "录音时间过短，请重试。",
+      voiceWritten: "语音已写入输入框",
+      voiceNeedDesktopAsr: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
+      voiceRequestingPermission: "正在请求麦克风权限…",
+      voiceNoMicCapture: "当前 WebView 不支持麦克风采集。",
+      voiceNoAudioRecording: "当前 WebView 不支持音频录制。",
+      voiceAudioStartBlocked: "浏览器未允许启动音频采集，请再次点击麦克风。",
+      voiceRecording: "正在录音，再点一次结束",
     },
   };
   function bt(key) {
@@ -838,24 +1087,24 @@
       if (!Number.isSafeInteger(chunkOffset) || chunkOffset !== offset ||
           !Number.isSafeInteger(chunkTotal) || chunkTotal < 0 || chunkTotal > maxSessionBytes ||
           !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
-        throw new Error("桌面端返回了无效的会话分块");
+        throw new Error(bt("sessionChunkInvalid"));
       }
       downloadId = chunkDownloadId;
       if (total === null) {
         total = chunkTotal;
         payload = new Uint8Array(total);
       } else if (chunkTotal !== total) {
-        throw new Error("读取期间会话数据发生变化，请重试");
+        throw new Error(bt("sessionChunkChanged"));
       }
       var data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
-      if (offset + data.length > total) throw new Error("会话分块超出声明长度");
+      if (offset + data.length > total) throw new Error(bt("sessionChunkOverflow"));
       payload.set(data, offset);
       offset += data.length;
       if (chunk.eof) {
-        if (offset !== total) throw new Error("会话分块提前结束");
+        if (offset !== total) throw new Error(bt("sessionChunkEarlyEnd"));
         break;
       }
-      if (!data.length) throw new Error("会话分块没有前进");
+      if (!data.length) throw new Error(bt("sessionChunkNoProgress"));
     }
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
   }
@@ -1461,7 +1710,7 @@
       modelId: lockedModelId,
     }));
     if (!draft) {
-      var invalidDraftError = new Error("定时任务草稿缺少名称、任务说明或时间规则");
+      var invalidDraftError = new Error(bt("scheduledDraftInvalid"));
       setScheduledTaskError(invalidDraftError, "action");
       notify();
       throw invalidDraftError;
@@ -1516,7 +1765,7 @@
         // createScheduledTask 通常已记录错误；忙锁在进入 action 前抛出时在这里补记，且不产生未处理 Promise。
         if (!state.scheduledTaskError) setScheduledTaskError(error, "action");
         runSyncOnSession(creationSessionId, function () {
-          addSystemItem("定时任务创建失败：" + scheduledTaskErrorText(error), {
+          addSystemItem(bt("scheduledCreateFailed") + scheduledTaskErrorText(error), {
             scheduledTaskCreationError: true,
           });
         });
@@ -1587,7 +1836,7 @@
       rememberScheduledRunOwner(run);
       var merged = Object.assign({}, run, {
         automationId: run.automationId || task.id,
-        taskName: task.name || "定时任务",
+        taskName: task.name || bt("scheduledTaskFallbackName"),
         taskModel: task.model || null,
       });
       var index = rows.findIndex(function (row) { return row && row.id === merged.id; });
@@ -1654,7 +1903,7 @@
         var task = tasksById[automationId] || null;
         return Object.assign({}, run, {
           automationId: automationId,
-          taskName: task && task.name || "定时任务",
+          taskName: task && task.name || bt("scheduledTaskFallbackName"),
           taskModel: task && task.model || null,
         });
       }).filter(function (run) {
@@ -1738,7 +1987,7 @@
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
         var task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
-        }) || { id: automationId, name: "定时任务" };
+        }) || { id: automationId, name: bt("scheduledTaskFallbackName") };
         mergeScheduledTaskRecentRuns(task, runs);
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
@@ -1776,7 +2025,7 @@
 
   async function runScheduledTaskAction(action, operation) {
     if (state.scheduledTaskBusyAction) {
-      throw new Error("另一个定时任务操作仍在进行中");
+      throw new Error(bt("scheduledActionBusy"));
     }
     state.scheduledTaskBusyAction = action;
     setScheduledTaskError(null);
@@ -1812,7 +2061,7 @@
       var backendInput = scheduledTaskBackendInput(input);
       var created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
-        throw new Error("创建定时任务失败：后端未返回任务 ID");
+        throw new Error(bt("scheduledCreateNoId"));
       }
       if (templateId) rememberScheduledTaskTemplateSource(created.id, templateId);
       attachScheduledTaskTemplateSource(created);
@@ -1923,7 +2172,7 @@
       state.scheduledTaskAutoOpenId = null;
       await createNewSession();
       state.scheduledTaskPendingGuide = prompt;
-      prefillComposer("我想创建一个定时任务：");
+      prefillComposer(bt("scheduledChatPrefill"));
       notify();
       return prompt;
     });
@@ -2326,7 +2575,7 @@
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("runNoSession")), errorScope);
       return false;
     }
     if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
@@ -2382,7 +2631,7 @@
     }
     if (requestToken !== sessionSwitchRequestToken) return false;
     if (!saved || !saved.metadata || !saved.metadata.id) {
-      reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("sessionDataInvalid")), errorScope);
       return false;
     }
 
@@ -2456,7 +2705,7 @@
   async function openScheduledRunChatOnce(run, task) {
     var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), "scheduled");
+      reportSessionSwitchFailure(new Error(bt("runNoSession")), "scheduled");
       return false;
     }
     rememberScheduledRunOwner(run);
@@ -2934,7 +3183,7 @@
               });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
+              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -3472,7 +3721,7 @@
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
-      return Promise.reject(new Error("该会话正在同步另一端完成的回合，请稍后重试"));
+      return Promise.reject(new Error(bt("turnSyncRejected")));
     }
     if (turnOwnerBuffer) {
       turnOwnerBuffer.localTurnOwned = true;
@@ -3597,10 +3846,10 @@
   async function sendMessageToSession(sessionId, text, meta) {
     var sid = String(sessionId || "").trim();
     var content = String(text || "").trim();
-    if (!sid) throw new Error("目标会话不存在");
-    if (!content) throw new Error("回复内容为空");
+    if (!sid) throw new Error(bt("targetSessionMissing"));
+    if (!content) throw new Error(bt("replyContentEmpty"));
     var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
-    if (!exists) throw new Error("目标会话不存在");
+    if (!exists) throw new Error(bt("targetSessionMissing"));
 
     await ensureSessionBufferLoaded(sid);
     var targetBuffer = getBuffer(sid);
@@ -3621,7 +3870,7 @@
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      throw new Error("目标会话仍在同步另一端完成的回合");
+      throw new Error(bt("targetSessionSyncing"));
     }
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
@@ -3756,7 +4005,7 @@
 
   function acceptFirstTurnSubmission(submission, metadata) {
     var sessionId = String(metadata && metadata.id || "").trim();
-    if (!sessionId) throw new Error("桌面端未返回新会话 ID");
+    if (!sessionId) throw new Error(bt("sessionIdMissing"));
     var existingMetaIndex = state.sessions.findIndex(function (session) {
       return session && session.id === sessionId;
     });
@@ -3965,7 +4214,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItem(bt("turnSyncRetry"));
       return;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
@@ -4022,7 +4271,7 @@
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
   async function summonPinvou(focus, mode) {
-    if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
+    if (!state.activeSessionId) { addSystemItem(bt("pinvouNeedSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
@@ -4637,7 +4886,7 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
+    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
@@ -4807,7 +5056,7 @@
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。");
+          addSystemItem(bt("remoteDoneUnsynced"));
         });
       }
       notify();
@@ -5142,7 +5391,7 @@
     state.workflow.run.status = "complete";
     // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
     if (p.artifact) {
-      pushRunCard({ kind: "artifact", path: p.artifact, text: "🎉 工作流完成，成品已生成", resolved: false });
+      pushRunCard({ kind: "artifact", path: p.artifact, text: bt("workflowComplete"), resolved: false });
     }
     notify();
   });
@@ -5151,7 +5400,7 @@
     if (state.workflow.run.status === "stopped") return;
     state.workflow.run.status = "blocked";
     // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
-    pushRunCard({ kind: "system", text: "⚙️ 工作流卡住：" + (p.message || p.reason || "未知原因"), resolved: false });
+    pushRunCard({ kind: "system", text: bt("workflowBlocked") + (p.message || p.reason || bt("unknownReason")), resolved: false });
     notify();
   });
   listen("workflow:stopped", function (e) {
@@ -5352,12 +5601,12 @@
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
       var metricNotApplicableText = "不适用";
-      var metricUnavailableText = "未提供";
+      var metricUnavailableText = bt("metricUnavailable");
       var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
       var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
         ? vllm.metric_diagnostics[0] : null;
       var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
+      var targetKindLabel = targetKind === "remote" ? bt("targetKindRemote") : (targetKind === "local" ? bt("targetKindLocal") : bt("targetKindInvalid"));
       var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
       var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
       var appQueue = appQueueSnapshot();
@@ -5427,7 +5676,7 @@
           gen: sadj.gen != null ? sadj.gen : null,
           prompt: sadj.prompt != null ? sadj.prompt : null,
         } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaTag") : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
@@ -5821,15 +6070,15 @@
 
   function memoryWriteLabel(event) {
     var text = event && event.text || "";
-    if (!text) return "记忆已更新";
+    if (!text) return bt("memoryUpdated");
     return text;
   }
   function memoryWriteStatusLabel(event) {
     var action = event && event.action || "";
-    if (action === "confirmed" || action === "remembered") return "记忆已更新";
-    if (action === "archived") return "记忆已归档";
-    if (action === "deleted") return "记忆已删除";
-    return "记忆已更新";
+    if (action === "confirmed" || action === "remembered") return bt("memoryUpdated");
+    if (action === "archived") return bt("memoryArchived");
+    if (action === "deleted") return bt("memoryDeleted");
+    return bt("memoryUpdated");
   }
   function normalizeMemoryCandidateText(text) {
     return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -5881,11 +6130,11 @@
             return;
           }
           existing.resolved = true;
-          existing.statusLabel = event.action === "ignored" ? "已忽略"
-            : event.action === "never" ? "不再提示"
-            : event.action === "archived" ? "已归档"
-            : event.action === "deleted" ? "已删除"
-            : "已记住";
+          existing.statusLabel = event.action === "ignored" ? bt("memoryIgnored")
+            : event.action === "never" ? bt("memoryNever")
+            : event.action === "archived" ? bt("memoryArchived")
+            : event.action === "deleted" ? bt("memoryDeleted")
+            : bt("memoryRemembered");
           existing.kind = event.kind || existing.kind || "preference";
           existing.text = label;
           existing.time = timeStr();
@@ -6053,11 +6302,11 @@
     var sid = state.activeSessionId;
     try {
       await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: bt("memoryRemembered") });
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("记忆写入失败：" + e);
+      addSystemItem(bt("memoryWriteFailed") + e);
     }
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
@@ -6065,11 +6314,11 @@
     var sid = state.activeSessionId;
     try {
       await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: bt("memoryIgnored") });
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("忽略记忆失败：" + e);
+      addSystemItem(bt("memoryIgnoreFailed") + e);
     }
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
@@ -6077,11 +6326,11 @@
     var sid = state.activeSessionId;
     try {
       await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
+      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: bt("memoryNever") });
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("设置不再提示失败：" + e);
+      addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
@@ -6110,13 +6359,13 @@
     var planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
-      addSystemItemFor(sid, "⚠️ 方案凭证已失效，请重新生成方案后再执行");
+      addSystemItemFor(sid, bt("planTicketExpired"));
       notify();
       return;
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItemFor(sid, bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -6277,7 +6526,7 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItem(bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -6471,34 +6720,34 @@
   var MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 * 1024 * 1024;
   function webArtifactDownloadLimitError(size) {
     var suffix = Number.isSafeInteger(size) && size >= 0
-      ? "（当前文件 " + (size / (1024 * 1024)).toFixed(1) + " MiB）"
+      ? bt("downloadLimitSuffix")((size / (1024 * 1024)).toFixed(1))
       : "";
-    return new Error("远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。");
+    return new Error(bt("downloadLimitError")(suffix));
   }
 
   async function downloadArtifact(path, sessionId) {
     if (IS_WEB && !hasCapability("artifactDownload")) {
-      addSystemItem("⚠️ 当前桌面端不支持远程控制产物下载，请更新桌面端后重试。");
+      addSystemItem(bt("downloadUnsupported"));
       return false;
     }
     try {
       return await downloadArtifactRaw(path, sessionId);
     } catch (e) {
-      addSystemItem("⚠️ 产物下载失败: " + String((e && e.message) || e));
+      addSystemItem(bt("downloadFailed") + String((e && e.message) || e));
       return false;
     }
   }
 
   async function downloadArtifactRaw(path, sessionId) {
     if (!IS_WEB || !hasCapability("artifactDownload")) {
-      throw new Error("当前环境未启用远程控制产物下载能力");
+      throw new Error(bt("downloadNotEnabled"));
     }
     var resolvedSessionId = sessionId || state.activeSessionId || null;
     var info = await artifactInfo(path, resolvedSessionId);
-    if (!info || info.exists === false) throw new Error("产物不存在或已被移除");
+    if (!info || info.exists === false) throw new Error(bt("artifactMissing"));
     var expectedSize = Number(info.size);
     if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
-      throw new Error("桌面端返回了无效的产物大小，已停止下载");
+      throw new Error(bt("artifactSizeInvalid"));
     }
     if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
       throw webArtifactDownloadLimitError(expectedSize);
@@ -6518,13 +6767,13 @@
       var partSize = Number(part.size);
       if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
           !Number.isSafeInteger(partSize) || partSize < 0) {
-        throw new Error("桌面端返回了无效的产物分块，已停止下载");
+        throw new Error(bt("artifactChunkInvalid"));
       }
       if (partSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
         throw webArtifactDownloadLimitError(partSize);
       }
       if (partSize !== expectedSize) {
-        throw new Error("产物在下载期间发生变化，请重试");
+        throw new Error(bt("artifactChanged"));
       }
       filename = part.name || filename;
       var encoded = String(part.data_base64 || part.dataBase64 || "");
@@ -6536,12 +6785,12 @@
         throw webArtifactDownloadLimitError(offset + bytes.length);
       }
       if (offset + bytes.length > expectedSize) {
-        throw new Error("桌面端返回的产物数据超过声明大小，已停止下载");
+        throw new Error(bt("artifactOverflow"));
       }
       chunks.push(bytes);
       offset += bytes.length;
       if (part.eof) {
-        if (offset !== expectedSize) throw new Error("产物下载不完整，请重试");
+        if (offset !== expectedSize) throw new Error(bt("artifactIncomplete"));
         break;
       }
     }
@@ -6919,7 +7168,7 @@
       state.mountedCollection = collectionId;
       notify();
       return collectionId;
-    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
+    } catch (e) { addSystemItem(bt("mountCollectionFailed") + e); return null; }
   }
   // 摘下当前对话的知识集挂载。
   async function unmountCollection() {
@@ -7115,7 +7364,7 @@
       });
     });
     if (!pkgs.length) {
-      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
+      state.depsInstallError = bt("depsNotInstallable");
       notify();
       return;
     }
@@ -7162,10 +7411,10 @@
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
     var constraint = String((err && err.constraint) || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
-      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
+      return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
-      return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+      return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
     }
     // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
     // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
@@ -7173,26 +7422,26 @@
       return {
         category: "constraint_unsupported",
         stage: "device",
-        message: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+        message: bt("voiceConstraintUnsupported"),
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
     if (rawCategory === "empty_result") {
-      return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
+      return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
     }
     if (rawCategory === "context_mismatch") {
-      return { category: "context_mismatch", stage: "writeback", message: "识别已完成，但当前会话已切换，结果未自动写入。" };
+      return { category: "context_mismatch", stage: "writeback", message: bt("voiceContextMismatch") };
     }
     if (rawCategory === "timeout") {
-      return { category: "timeout", stage: "recording", message: "本次语音输入超时，请重试。" };
+      return { category: "timeout", stage: "recording", message: bt("voiceTimeout") };
     }
     if (rawCategory === "recognition_failed") {
-      return { category: "recognition_failed", stage: rawStage, message: rawMessage || "语音识别失败，请稍后重试。" };
+      return { category: "recognition_failed", stage: rawStage, message: rawMessage || bt("voiceRecognitionFailed") };
     }
     return {
       category: rawCategory || "recording_failed",
       stage: rawStage,
-      message: rawMessage || "语音输入失败，请检查麦克风后重试。",
+      message: rawMessage || bt("voiceInputFailed"),
     };
   }
 
@@ -7286,12 +7535,12 @@
     if (cancelled) {
       cleanupVoiceInputSession(session);
       activeVoiceInput = null;
-      setVoiceInputStatus("cancelled", { message: "已取消语音输入", completedAt: Date.now() });
+      setVoiceInputStatus("cancelled", { message: bt("voiceCancelled"), completedAt: Date.now() });
       emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
       return;
     }
 
-    setVoiceInputStatus("transcribing", { message: "正在识别语音…", stage: "transcribing" });
+    setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing" });
     cleanupVoiceInputSession(session);
 
     try {
@@ -7301,7 +7550,7 @@
       var raw = mergeFloatChunks(session.chunks);
       var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
       if (durationMs < 300) {
-        throw { category: "recording_failed", stage: "recording", message: "录音时间过短，请重试。" };
+        throw { category: "recording_failed", stage: "recording", message: bt("voiceTooShort") };
       }
       var pcm = downsamplePcm(raw, session.sampleRate, 16000);
       var wav = encodeWav(pcm, 16000);
@@ -7326,7 +7575,7 @@
       if (typeof session.writeback === "function") {
         session.writeback(text, session.draftBeforeStart);
       }
-      setVoiceInputStatus("completed", { message: "语音已写入输入框", completedAt: Date.now() });
+      setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
       var normalized = normalizeVoiceError(err, "transcribing");
@@ -7424,7 +7673,7 @@
         if (IS_WEB) {
           if (primedAudioContext) primedAudioContext.close().catch(function () {});
           setVoiceInputStatus("failed", {
-            message: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
+            message: bt("voiceNeedDesktopAsr"),
             error: "voice_asr_not_ready",
             category: "dependency_unavailable",
             stage: "dependency",
@@ -7452,7 +7701,7 @@
     };
     activeVoiceInput = session;
     setVoiceInputStatus("requesting_permission", {
-      message: "正在请求麦克风权限…",
+      message: bt("voiceRequestingPermission"),
       sessionId: session.sessionId,
       startedAt: session.startedAt,
       stage: "permission",
@@ -7461,10 +7710,10 @@
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw { category: "device_unavailable", stage: "device", message: "当前 WebView 不支持麦克风采集。" };
+        throw { category: "device_unavailable", stage: "device", message: bt("voiceNoMicCapture") };
       }
       if (!AudioCtor) {
-        throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
+        throw { category: "recording_failed", stage: "recording", message: bt("voiceNoAudioRecording") };
       }
       session.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -7482,7 +7731,7 @@
       if (primedAudioResume) await primedAudioResume;
       if (session.audioContext.state === "suspended") await session.audioContext.resume();
       if (session.audioContext.state !== "running") {
-        throw { category: "recording_failed", stage: "recording", message: "浏览器未允许启动音频采集，请再次点击麦克风。" };
+        throw { category: "recording_failed", stage: "recording", message: bt("voiceAudioStartBlocked") };
       }
       session.sampleRate = session.audioContext.sampleRate || 16000;
       session.source = session.audioContext.createMediaStreamSource(session.stream);
@@ -7498,7 +7747,7 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: "正在录音，再点一次结束", stage: "recording" });
+      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
@@ -7593,7 +7842,7 @@
       await syncModeState();
       notify();
       return res;
-    } catch (e) { addSystemItem("⚠️ 启用工作流失败: " + e); notify(); return null; }
+    } catch (e) { addSystemItem(bt("workflowEnableFailed") + e); notify(); return null; }
   }
   async function deactivateSkill() {
     if (state.activeSessionId) {
@@ -7629,15 +7878,15 @@
     try {
       var res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
       try { await invoke("kick_workflow", { sessionId: res.session_id }); }
-      catch (e) { addSystemItem("⚠️ kick_workflow 失败: " + e); }
+      catch (e) { addSystemItem(bt("workflowKickFailed") + e); }
       return res;
-    } catch (e) { addSystemItem("⚠️ 启动工作流失败: " + e); return null; }
+    } catch (e) { addSystemItem(bt("workflowStartFailed") + e); return null; }
   }
   // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
   // 供工作流页打开“修改需求并重新开始”的预填表单。
   async function stopWorkflowTask(reason) {
     var sid = state.workflow.run.sessionId;
-    if (!sid) throw new Error("当前没有可停止的工作流");
+    if (!sid) throw new Error(bt("workflowNoneToStop"));
     var result = await invoke("stop_workflow", {
       sessionId: sid,
       reason: reason || "user_stopped",
@@ -7681,7 +7930,7 @@
   // 交互卡动作
   async function submitWorkflowUserInput(cardId, toolCallId, answers) {
     try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
-    catch (e) { addSystemItem("⚠️ 提交失败: " + e); }
+    catch (e) { addSystemItem(bt("workflowSubmitFailed") + e); }
   }
   // [2026-06-06] 素材上传：复用系统文件选择器(dialogOpen) → 拷进当前 run 的 配套材料/。
   // 返回落盘文件名数组(含同名去重);失败 throw 给调用方(卡片上报错)。
@@ -7691,7 +7940,7 @@
     if (!selected) return [];
     var paths = Array.isArray(selected) ? selected : [selected];
     var added = await invoke("add_run_materials", { sessionId: state.workflow.run.sessionId, paths: paths });
-    addSystemItem("✅ 已添加 " + added.length + " 个素材到配套材料：" + added.join("、"));
+    addSystemItem(bt("materialsAdded")(added.length, added));
     return added;
   }
   // [新建任务模态] 只弹系统选择器拿路径,不拷贝(run 还没建)。返回路径数组。
@@ -7702,11 +7951,11 @@
     return Array.isArray(selected) ? selected : [selected];
   }
   async function pickFolder() {
-    if (!dialogOpen) throw new Error("当前环境无法打开文件夹选择器");
+    if (!dialogOpen) throw new Error(bt("folderPickerUnavailable"));
     var selected = await dialogOpen({
       directory: true,
       multiple: false,
-      title: "选择工作目录",
+      title: bt("pickFolderTitle"),
     });
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
@@ -7736,7 +7985,7 @@
       resolveRunCardsForRole(roleId, "approved");
       await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
       notify();
-    } catch (e) { addSystemItem("⚠️ 通过失败: " + e); }
+    } catch (e) { addSystemItem(bt("gateApproveFailed") + e); }
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
     try {
@@ -7745,14 +7994,14 @@
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();
       notify();
-    } catch (e) { addSystemItem("⚠️ 打回失败: " + e); }
+    } catch (e) { addSystemItem(bt("gateRejectFailed") + e); }
   }
   // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
   async function retryWorkflowRole(roleId) {
     try {
       const r = await invoke("retry_workflow_role", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      addSystemItem("🔄 重跑 " + roleId + ": " + r);
-    } catch (e) { addSystemItem("⚠️ 重跑失败: " + e); }
+      addSystemItem(bt("roleRetried")(roleId, r));
+    } catch (e) { addSystemItem(bt("roleRetryFailed") + e); }
   }
 
   // ── Init ─────────────────────────────────────────────────────────

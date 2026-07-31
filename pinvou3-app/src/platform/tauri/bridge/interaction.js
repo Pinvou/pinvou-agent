@@ -116,13 +116,13 @@
     var planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
-      addSystemItemFor(sid, "⚠️ 方案凭证已失效，请重新生成方案后再执行");
+      addSystemItemFor(sid, bt("planTicketInvalid"));
       notify();
       return;
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItemFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
     }
@@ -250,7 +250,7 @@
     try {
       await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.activeSessionId });
       var summary = answers.map(function (a, i) {
-        var text = a.label === "其他" ? "(其他) " + a.value : a.label;
+        var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
         return (questions[i].header || ("Q" + (i + 1))) + ": " + text;
       }).join(" · ");
       pushUserEcho("✓ " + summary, false);

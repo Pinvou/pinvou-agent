@@ -20,19 +20,19 @@ const ToolOutput = ({ item, isDark, t }) => {
         let raw = out;
         const envelope = tryParseJson(out);
         if (envelope && Array.isArray(envelope.content)) {
-          const t = envelope.content.find(c => c.type === 'text');
-          if (t && t.text) raw = t.text;
+          const txt = envelope.content.find(c => c.type === 'text');
+          if (txt && txt.text) raw = txt.text;
         }
         const w = tryParseJson(raw);
-        if (w && w.type === 'weather' && !w.error) return <WeatherCard data={w} />;
+        if (w && w.type === 'weather' && !w.error) return <WeatherCard data={w} t={t} />;
       }
       // 股票报价卡片：iwencai 返回表格数据 → 映射为卡片
       if (isStockQuoteTool(item.name)) {
         let raw = out;
         const envelope = tryParseJson(out);
         if (envelope && Array.isArray(envelope.content)) {
-          const t = envelope.content.find(c => c.type === 'text');
-          if (t && t.text) raw = t.text;
+          const txt = envelope.content.find(c => c.type === 'text');
+          if (txt && txt.text) raw = txt.text;
         }
         const w = tryParseJson(raw);
         if (w && Array.isArray(w.datas) && w.datas.length > 0) {
@@ -52,9 +52,9 @@ const ToolOutput = ({ item, isDark, t }) => {
             high: findVal(d, '最高价'),
             low: findVal(d, '最低价'),
           };
-          return <StockQuoteCard data={mapped} isDark={isDark} />;
+          return <StockQuoteCard data={mapped} isDark={isDark} t={t} />;
         }
-        if (w && w.type === 'stock_quote' && !w.error) return <StockQuoteCard data={w} isDark={isDark} />;
+        if (w && w.type === 'stock_quote' && !w.error) return <StockQuoteCard data={w} isDark={isDark} t={t} />;
       }
       if (isReceipt(out)) return <ReceiptBlock text={out} isDark={isDark} t={t} />;
       if (item.name === 'list_dir') { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} isDark={isDark} t={t} />; }
@@ -68,7 +68,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       // 注意:apply_patch 后端返回 JSON(apply_patch.rs::execute 返回 ToolResult::json),
       // looksDiff 永远 false,所以这里不把 apply_patch 加进路由 —— 加了也只是 dead code
       // (PR #195 M2)。若未来后端给 apply_patch 输出 unified diff,再把它加回来。
-      else if (item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} isDark={isDark} />; }
+      else if (item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} isDark={isDark} t={t} />; }
       else if (item.name === 'append_file') {
         // append_file 与 write_file 一样由后端输出 unified diff,走 DiffView;
         // 旧 session 落盘的是 "appended N bytes" 纯文本,保留字节摘要兜底。
@@ -116,12 +116,12 @@ const ToolOutput = ({ item, isDark, t }) => {
       const statusText = isRunning ? t.toolRunning
         : (item.exitCode != null ? `${isDone ? t.toolDone : t.toolFailed} · exit ${item.exitCode}` : (isDone ? t.toolDone : t.toolFailed));
       const timelineStatusText = isRunning
-        ? '进行中'
+        ? t.uiToolRender.running
         : item.exitCode != null
-          ? `${isDone ? '完成' : '失败'} · exit ${item.exitCode}`
+          ? `${isDone ? t.uiToolRender.done : t.uiToolRender.failed} · exit ${item.exitCode}`
           : isDone
-            ? '完成'
-            : '失败';
+            ? t.uiToolRender.done
+            : t.uiToolRender.failed;
       const mutedColor = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const cancelBackground = async (event) => {
         event.stopPropagation();
@@ -529,7 +529,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
           <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-            {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || '(unknown)'}</code> {t.stuckPlanPost}
+            {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || t.uiToolRender.toolUnknown}</code> {t.stuckPlanPost}
           </div>
           {done ? (
             <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
@@ -627,7 +627,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       function submit(groups) {
         const answers = groups.flatMap(group => group.answers.map(answer => ({
           id: group.questionId,
-          label: answer.other ? '其他' : answer.label,
+          label: answer.other ? t.uiToolRender.other : answer.label,
           value: String(answer.value),
         })));
         bridge.interaction.submitUserInput(item.id, item.toolCallId, answers, questions);
@@ -648,7 +648,9 @@ const ToolOutput = ({ item, isDark, t }) => {
           error={Boolean(item.error)}
           submitLabel={t.uiSubmit}
           cancelLabel={t.cpCancel}
-          otherPlaceholder="Other"
+          otherPlaceholder={t.uiToolRender.other}
+          otherAnswerLabel={t.uiToolRender.other}
+          inputPlaceholder={t.uiConversation.inputPlaceholder}
           onSubmit={submit}
           onCancel={!item.resolved
             ? () => bridge.interaction.cancelUserInput(item.id, item.toolCallId)

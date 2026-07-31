@@ -401,7 +401,7 @@ try {
   'ACP sessions must keep the Codex mark and expose distinct Claude/Kimi identities');
   assert.ok(pinvouLogo.includes("resolveAppAssetUrl('assets/brand/brand-blue.png')")
     && chatView.includes('assistantAvatar={(')
-    && chatView.includes('<PinvouLogo className="h-5 w-5" title="品悟"')
+    && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')
     && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
   'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
   assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');

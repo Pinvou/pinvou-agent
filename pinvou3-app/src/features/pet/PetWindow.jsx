@@ -159,6 +159,13 @@ export default function PetWindow({
   const [language, setLanguage] = useState('zh');
   const t = dict[language] || dict.zh;
   const petCopy = t.uiPet;
+  // pet.html 的 <title>/<html lang> 是静态中文,按当前语言同步一次。
+  useEffect(() => {
+    const misc = t.uiPlatformMisc;
+    if (!misc) return;
+    document.title = misc.petTitle;
+    if (misc.htmlLang) document.documentElement.lang = misc.htmlLang;
+  }, [t]);
   const [activePet, setActivePet] = useState(null);
   const [activationFailed, setActivationFailed] = useState(false);
   const petActivationRef = useRef(createPetActivationState());
@@ -292,7 +299,7 @@ export default function PetWindow({
 
   const refresh = () => {
     const now = Date.now();
-    setActivities(deriveActivities(stateRef.current, now));
+    setActivities(deriveActivities(stateRef.current, now, petCopy));
     setBaseAnimation(deriveAnimation(stateRef.current, now) || 'idle');
   };
 
@@ -384,7 +391,7 @@ export default function PetWindow({
         }
         return;
       }
-      if (applyEvent(stateRef.current, name, event.payload, Date.now())) refresh();
+      if (applyEvent(stateRef.current, name, event.payload, Date.now(), petCopy)) refresh();
     }));
     subscriptions.push(ev.listen('pet:selected_changed', async (event) => {
       const requested = event.payload && event.payload.selected_pet;
@@ -435,6 +442,7 @@ export default function PetWindow({
         chatSessions,
         event.payload && event.payload.sequence,
         Date.now(),
+        petCopy,
       );
       refresh();
     }));
@@ -1171,7 +1179,7 @@ export default function PetWindow({
     event.preventDefault();
     event.stopPropagation();
     removeSessionActivity(stateRef.current, sessionId);
-    setActivities(deriveActivities(stateRef.current));
+    setActivities(deriveActivities(stateRef.current, Date.now(), petCopy));
     dispatchCardUi({ type: 'dismiss', sessionId });
   };
 
@@ -1195,7 +1203,7 @@ export default function PetWindow({
       dispatchCardUi({
         type: 'reply-failed',
         requestId,
-        error: String(error && error.message ? error.message : error),
+        error: String(error && error.message ? error.message : error) || petCopy.sendFailed,
       });
     }
   };

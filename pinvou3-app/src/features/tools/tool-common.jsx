@@ -5,6 +5,10 @@ import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
+import { dict } from '../../shared/i18n.js';
+
+// 调用方尚未下发 t 时回退中文词典（与现状一致），接入 t 后自动多语。
+const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
 const AcFmtIcon = FileTypeIcon;
     // 设计稿专用图标（逐字照搬 前端-产物卡片.txt，含其独有 strokeWidth）。
@@ -43,7 +47,7 @@ const AcFmtIcon = FileTypeIcon;
             {hasCover ? (
               <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
                 <div className="w-full aspect-[16/9] relative">
-                  <img src={coverUrl} alt="Cover" className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
+                  <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
                 </div>
                 <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-sm">
                   {fmt.label}
@@ -65,7 +69,7 @@ const AcFmtIcon = FileTypeIcon;
               <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
                 {title}
               </h2>
-              {canOpenArtifact && <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label="打开">
+              {canOpenArtifact && <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
                 <AcArrowUpRight className="w-[18px] h-[18px]" />
               </button>}
             </div>
@@ -74,13 +78,13 @@ const AcFmtIcon = FileTypeIcon;
             {isLatest && (
               <div className="grid grid-cols-2 gap-3 mb-4 px-3">
                 <button onClick={() => bridge.available && bridge.interaction.summonPinvou(path)} title={t.pvBtnPinTitle}
-                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="智能找错">
+                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label={tc(t).pinAriaLabel}>
                   <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2 shrink-0" />
                   <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnPinLabel}</span>
                 </button>
 
                 <button onClick={() => bridge.available && bridge.interaction.inspectPinvou(path)} title={t.pvBtnWuTitle}
-                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label="深度查漏">
+                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label={tc(t).wuAriaLabel}>
                   <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2 shrink-0" />
                   <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnWuLabel}</span>
                 </button>
@@ -173,7 +177,7 @@ const AcFmtIcon = FileTypeIcon;
       const pv = (f.preview && f.preview !== '(none)') ? f.preview.replace(/\\n/g, '\n') : '';
       const pvIsDiff = pv && (/(^|\n)@@/.test(pv) || (pv.indexOf('@@') >= 0 && /(^|\n)[+-]/.test(pv)));
       const note = <div className={`mt-0.5 text-[11px] ${muted}`}>{t.receiptNote}</div>;
-      if (pvIsDiff) return (<div><DiffView text={pv} isDark={isDark} />{note}</div>);
+      if (pvIsDiff) return (<div><DiffView text={pv} isDark={isDark} t={t} />{note}</div>);
       return (
         <div>
           <div className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap' }}>{pv || t.receiptEmpty}</div>
@@ -239,7 +243,7 @@ const AcFmtIcon = FileTypeIcon;
     // IDE 风格 diff viewer:解析 unified diff → 行号 + 着色背景 + 文件头 + 摘要脚注。
     // 替换原纯文本按行着色版本(2026-07 升级,对齐 Cursor/Claude Code/Cline 行业标准)。
     // 解析失败或 receipt preview 截断时降级为单列文本,绝不崩。
-    const DiffView = ({ text, isDark }) => {
+    const DiffView = ({ text, isDark, t }) => {
       const parsed = useMemo(() => parseUnifiedDiff(text), [text]);
       // M4:diffStats 在 parsed 不变时不必重算,用 useMemo 避免每次渲染 O(n) 扫描。
       // 多文件场景每个 file 段各自算 stats;顶层 stats(向后兼容/全局胶囊)只走聚合。
@@ -295,6 +299,7 @@ const AcFmtIcon = FileTypeIcon;
       // H1:多文件分段渲染 —— 每个文件段独立 header + 统计胶囊;单文件场景下
       // parsed.files 长度为 1,与原行为一致。
       const files = parsed.files && parsed.files.length > 0 ? parsed.files : [{ oldPath: parsed.oldPath, newPath: parsed.newPath, hunks: parsed.hunks }];
+      const T = tc(t);
 
       return (
         // 根节点不用 overflow-hidden class:vendor/tailwind.js 运行时把生成的
@@ -322,8 +327,8 @@ const AcFmtIcon = FileTypeIcon;
                     <button
                       type="button"
                       onClick={() => setExpanded((v) => !v)}
-                      title={expanded ? '收起' : '展开完整 diff'}
-                      aria-label={expanded ? '收起 diff' : '展开完整 diff'}
+                      title={expanded ? T.diffCollapse : T.diffExpand}
+                      aria-label={expanded ? T.diffCollapseAria : T.diffExpand}
                       className={`px-1 py-0.5 rounded ${mutedText} ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
                     >
                       <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
@@ -465,7 +470,8 @@ const AcFmtIcon = FileTypeIcon;
       };
       return svgs[code] || svgs.partly_cloudy;
     };
-    const WeatherCard = ({ data }) => {
+    const WeatherCard = ({ data, t }) => {
+      const T = tc(t);
       const mode = data.queryMode || 'today';
       const daily = Array.isArray(data.daily) ? data.daily : [];
       if (mode === 'multi' && daily.length > 1) {
@@ -474,13 +480,13 @@ const AcFmtIcon = FileTypeIcon;
             className="w-full rounded-[24px] p-8 text-white flex flex-col justify-center min-h-[220px]">
             <div className="grid gap-4 w-full h-full items-center" style={{ gridTemplateColumns: `repeat(${daily.length},minmax(0,1fr))` }}>
               {daily.map((item, i) => {
-                const label = i === 0 ? '今天' : i === 1 ? '明天' : i === 2 ? '后天' : (item.week || `第${i+1}天`);
+                const label = i === 0 ? T.today : i === 1 ? T.tomorrow : i === 2 ? T.dayAfterTomorrow : (item.week || T.dayN(i + 1));
                 const dateText = (item.date || '').length >= 10 ? item.date.slice(5).replace(/-/g, '/') : (item.date || '--/--');
                 return (
                   <div key={i} className="flex flex-col items-center justify-center gap-3 px-2" style={i > 0 ? { borderLeft: '1px solid rgba(255,255,255,0.1)' } : {}}>
                     <span className={`text-[15px] ${i === 0 ? 'font-medium' : 'text-white/90'}`}>{label} ({dateText})</span>
                     <span dangerouslySetInnerHTML={{ __html: weatherIconSvg(item.iconCode || 'partly_cloudy') }} />
-                    <span className="text-[14px] text-white/80">{item.dayWeather || item.nightWeather || '天气'}</span>
+                    <span className="text-[14px] text-white/80">{item.dayWeather || item.nightWeather || T.weatherFallback}</span>
                     <span className="text-[16px] font-semibold mt-1">{item.dayTemp || '--'}° <span className="text-white/50 font-normal">{item.nightTemp || '--'}°</span></span>
                   </div>
                 );
@@ -490,15 +496,15 @@ const AcFmtIcon = FileTypeIcon;
         );
       }
       // today / single_day
-      const forecastLabel = mode === 'single_day' ? '明日预测' : '今日预测';
-      const windText = [data.windDirection || '', data.windPower ? data.windPower + '级' : ''].join(' ').trim();
+      const forecastLabel = mode === 'single_day' ? T.forecastTomorrow : T.forecastToday;
+      const windText = [data.windDirection || '', data.windPower ? T.windLevel(data.windPower) : ''].join(' ').trim();
       return (
         <div style={{ background: 'linear-gradient(135deg,#325a86 0%,#25466a 100%)', boxShadow: '0 10px 30px rgba(37,70,106,.15)' }}
           className="w-full rounded-[24px] p-8 text-white flex flex-col justify-between relative overflow-hidden min-h-[220px]">
           <div className="flex justify-between items-start w-full">
             <div className="flex flex-col gap-1">
-              <h2 className="text-3xl font-medium tracking-wide">{data.city || '当前城市'}</h2>
-              <p className="text-[15px] text-white/80">{data.weather || '天气'}</p>
+              <h2 className="text-3xl font-medium tracking-wide">{data.city || T.currentCity}</h2>
+              <p className="text-[15px] text-white/80">{data.weather || T.weatherFallback}</p>
             </div>
             <div className="mt-[-10px]" style={{ fontSize: '5.5rem', lineHeight: 1, fontWeight: 300, letterSpacing: '-2px' }}>{data.temperature || '--'}°</div>
           </div>
@@ -507,13 +513,13 @@ const AcFmtIcon = FileTypeIcon;
               <span dangerouslySetInnerHTML={{ __html: weatherIconSvg(data.iconCode || (daily[0] && daily[0].iconCode) || 'partly_cloudy') }} />
               {(data.humidity || windText) && <div style={{ width: 1, height: 32, backgroundColor: 'rgba(255,255,255,0.2)', margin: '0 16px' }} />}
               <div className="flex gap-6 text-[13px] text-white/80 leading-relaxed">
-                {data.humidity && <div className="flex flex-col"><span className="text-[12px] opacity-70">湿度</span><span className="text-[15px] font-medium text-white">{data.humidity}%</span></div>}
-                {windText && <div className="flex flex-col"><span className="text-[12px] opacity-70">风向</span><span className="text-[15px] font-medium text-white">{windText}</span></div>}
+                {data.humidity && <div className="flex flex-col"><span className="text-[12px] opacity-70">{T.humidity}</span><span className="text-[15px] font-medium text-white">{data.humidity}%</span></div>}
+                {windText && <div className="flex flex-col"><span className="text-[12px] opacity-70">{T.wind}</span><span className="text-[15px] font-medium text-white">{windText}</span></div>}
               </div>
             </div>
             <div className="flex flex-col items-end text-right">
               <span className="text-[12px] text-white/70 mb-1">{forecastLabel}</span>
-              <span className="text-[16px] font-medium tracking-wide">最高 {data.highTemp || '--'}° <span className="opacity-50 mx-1">/</span> 最低 {data.lowTemp || '--'}°</span>
+              <span className="text-[16px] font-medium tracking-wide">{T.tempHigh} {data.highTemp || '--'}° <span className="opacity-50 mx-1">/</span> {T.tempLow} {data.lowTemp || '--'}°</span>
             </div>
           </div>
         </div>
@@ -521,7 +527,8 @@ const AcFmtIcon = FileTypeIcon;
     };
     const isWeatherTool = (name) => name === 'mcp_weather_get_weather';
     const isStockQuoteTool = (name) => name === 'mcp_iwencai_hithink_market_query';
-    const StockQuoteCard = ({ data, isDark }) => {
+    const StockQuoteCard = ({ data, isDark, t }) => {
+      const T = tc(t);
       const price = typeof data.price === 'string' ? parseFloat(data.price) : data.price;
       const changePercent = typeof data.changePercent === 'string' ? parseFloat(data.changePercent) : data.changePercent;
       const open = typeof data.open === 'string' ? parseFloat(data.open) : data.open;
@@ -562,9 +569,9 @@ const AcFmtIcon = FileTypeIcon;
           <div className={`p-6 ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}>
             <div className="grid grid-cols-3 gap-y-4 gap-x-4">
               {[
-                { label: '今开', value: fmt(open) },
-                { label: '最高', value: fmt(high) },
-                { label: '最低', value: fmt(low) },
+                { label: T.stockOpen, value: fmt(open) },
+                { label: T.stockHigh, value: fmt(high) },
+                { label: T.stockLow, value: fmt(low) },
               ].map((item, i) => (
                 <div key={i} className="flex flex-col space-y-1">
                   <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{item.label}</span>
@@ -607,7 +614,8 @@ const AcFmtIcon = FileTypeIcon;
       { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', img: 'assets/banner-message.jpg', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
     ];
 
-    const TsActionBtn = ({ tool, busy, onAction, size = 'sm' }) => {
+    const TsActionBtn = ({ tool, busy, onAction, size = 'sm', t }) => {
+      const T = tc(t);
       const isLg = size === 'lg';
       const actionAttrs = {
         'data-testid': 'tool-store-action',
@@ -616,13 +624,13 @@ const AcFmtIcon = FileTypeIcon;
       };
       if (tool.builtin) {
         return (
-          <span className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-slate-100 dark:bg-[#2C2C2E] text-slate-500 dark:text-slate-400 whitespace-nowrap`}>内置 · 已启用</span>
+          <span className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-slate-100 dark:bg-[#2C2C2E] text-slate-500 dark:text-slate-400 whitespace-nowrap`}>{T.builtinEnabled}</span>
         );
       }
       if (!tool.backendId) {
         return (
           <button {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
-            即将上线
+            {T.comingSoon}
           </button>
         );
       }
@@ -640,7 +648,7 @@ const AcFmtIcon = FileTypeIcon;
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? '断开' : '卸载'}
+            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? T.disconnect : T.uninstall}
           </button>
         );
       }
@@ -652,7 +660,7 @@ const AcFmtIcon = FileTypeIcon;
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
           >
-            {retry ? '重新授权' : '连接'}
+            {retry ? T.reauthorize : T.connect}
           </button>
         );
       }
@@ -663,7 +671,7 @@ const AcFmtIcon = FileTypeIcon;
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? (hasConfig ? '配置' : '连接') : (hasConfig ? '配置' : '安装')}
+          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? (hasConfig ? T.configure : T.connect) : (hasConfig ? T.configure : T.install)}
         </button>
       );
     };
