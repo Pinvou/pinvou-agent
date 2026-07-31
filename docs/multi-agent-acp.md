@@ -9,7 +9,7 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 | Agent | 启动方式 | 运行时来源 | 登录 |
 |---|---|---|---|
 | Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 可使用系统安装或 Pinvou 托管版本（托管下载仅 Linux/Windows，macOS 引导通过 Homebrew 安装） | Pinvou 内完成 Codex OAuth；也支持 `OPENAI_API_KEY` |
-| Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge，版本固定为 `0.62.0` | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
+| Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge（仅 JS 适配器，版本固定为 `0.62.0`）；Claude Code CLI 使用系统安装（缺失时提示安装，如 `brew install --cask claude-code`） | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
 | Kimi | `kimi acp` | 自动检测系统 `PATH` 中的官方 Kimi Code CLI | 在 Pinvou 点击“授权登录”，按提示完成设备码授权；也支持 `KIMI_API_KEY` |
 
 开发时可以用以下环境变量覆盖可执行文件：
@@ -58,8 +58,10 @@ python3 scripts/architecture-guard.py
 ```
 
 Windows 与 macOS 还会在各自原生 CI runner 上生成实际安装包 Runtime，并启动
-Claude ACP 完成 `initialize`。macOS Runtime 同时包含 arm64/x64 Node 与 Claude
-原生程序，供 universal app 在两种架构上选择。
+Claude ACP 完成 `initialize`。macOS Runtime 包含 arm64/x64 两套 Node，供 universal
+app 在两种架构上选择；Bridge 只携带 JS 适配器，Claude Code 与 Codex 的平台原生
+二进制均不随包发布（单个 claude 二进制约 245MB，随包会让 universal dmg 多出约
+140MB），运行时解析系统安装并通过 `CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE` 注入。
 
 Pinvou 对三种 Agent 复用同一套登录状态机：启动官方 CLI 登录子进程、只接收授权
 URL/设备码等非敏感状态，并在登录完成后重新调用各 CLI 的状态检查。Claude 的
