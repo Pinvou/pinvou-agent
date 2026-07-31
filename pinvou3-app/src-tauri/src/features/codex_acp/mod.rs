@@ -2560,9 +2560,8 @@ impl AcpPool {
         command: &mut Command,
         adapter: Option<&Path>,
     ) -> Result<()> {
-        let claude = resolve_claude_cli(adapter).context(
-            "未检测到 Claude Code CLI；请先安装 Claude Code，并确保 claude 在 PATH 中",
-        )?;
+        let claude = resolve_claude_cli(adapter)
+            .context("未检测到 Claude Code CLI；请先安装 Claude Code，并确保 claude 在 PATH 中")?;
         command.env(
             "CLAUDE_CODE_EXECUTABLE",
             crate::platform::os::external_application_path(&claude),
