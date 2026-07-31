@@ -61,7 +61,6 @@ const {
   hideWindowsChildProcesses,
   isPrepared,
   validateNodeRuntime,
-  WINDOWS_CLAUDE_EXECUTABLE,
   windowsBridgeOverlay,
 } = require("../scripts/tauri/codex-bridge.js");
 
@@ -182,9 +181,6 @@ try {
   fs.mkdirSync(path.dirname(path.join(bridgeRoot, CLAUDE_BRIDGE_ENTRYPOINT)), {
     recursive: true,
   });
-  fs.mkdirSync(path.dirname(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE)), {
-    recursive: true,
-  });
   fs.writeFileSync(path.join(bridgeRoot, "manifest.json"), JSON.stringify(expected));
   fs.writeFileSync(
     packageJsonPath,
@@ -209,10 +205,6 @@ try {
     path.join(bridgeRoot, CLAUDE_BRIDGE_ENTRYPOINT),
     "console.log('claude-agent-acp');",
   );
-  fs.writeFileSync(
-    path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE),
-    "native-claude-runtime",
-  );
 
   assert.deepEqual(Object.keys(expected), [
     "schema_version",
@@ -236,30 +228,26 @@ try {
     "prepared runtime must reject a redundant bundled Codex platform package",
   );
   fs.rmSync(redundantCodexPackage, { recursive: true });
-  const redundantClaudePackage = path.join(
-    bridgeRoot,
-    "acp",
-    "node_modules",
-    "@anthropic-ai",
+  // Claude Code 走系统安装，任何 claude 平台原生包（含 win32-x64）都必须被拒绝。
+  for (const platformPackage of [
     "claude-agent-sdk-win32-arm64",
-  );
-  fs.mkdirSync(redundantClaudePackage, { recursive: true });
-  assert.equal(
-    isPrepared(expected, bridgeRoot),
-    false,
-    "prepared runtime must reject a redundant bundled Claude platform package",
-  );
-  fs.rmSync(redundantClaudePackage, { recursive: true });
-  fs.rmSync(path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE));
-  assert.equal(
-    isPrepared(expected, bridgeRoot),
-    false,
-    "prepared runtime must be rejected when claude.exe is absent",
-  );
-  fs.writeFileSync(
-    path.join(bridgeRoot, WINDOWS_CLAUDE_EXECUTABLE),
-    "native-claude-runtime",
-  );
+    "claude-agent-sdk-win32-x64",
+  ]) {
+    const redundantClaudePackage = path.join(
+      bridgeRoot,
+      "acp",
+      "node_modules",
+      "@anthropic-ai",
+      platformPackage,
+    );
+    fs.mkdirSync(redundantClaudePackage, { recursive: true });
+    assert.equal(
+      isPrepared(expected, bridgeRoot),
+      false,
+      `prepared runtime must reject a bundled Claude platform package: ${platformPackage}`,
+    );
+    fs.rmSync(redundantClaudePackage, { recursive: true });
+  }
   fs.rmSync(bridgeEntrypoint);
   assert.equal(
     isPrepared(expected, bridgeRoot),

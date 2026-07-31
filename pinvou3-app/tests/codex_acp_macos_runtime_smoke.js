@@ -21,24 +21,7 @@ const nodes = {
   arm64: path.join(runtimeRoot, "node", "darwin-arm64", "bin", "node"),
   x64: path.join(runtimeRoot, "node", "darwin-x64", "bin", "node"),
 };
-const claudeExecutables = {
-  arm64: path.join(
-    runtimeRoot,
-    "acp",
-    "node_modules",
-    "@anthropic-ai",
-    "claude-agent-sdk-darwin-arm64",
-    "claude",
-  ),
-  x64: path.join(
-    runtimeRoot,
-    "acp",
-    "node_modules",
-    "@anthropic-ai",
-    "claude-agent-sdk-darwin-x64",
-    "claude",
-  ),
-};
+const anthropicScope = path.join(runtimeRoot, "acp", "node_modules", "@anthropic-ai");
 const codexBridgeEntrypoint = path.join(
   runtimeRoot,
   "acp",
@@ -67,28 +50,24 @@ for (const [arch, executable] of Object.entries(nodes)) {
   const result = spawnSync("/usr/bin/lipo", [executable, "-verify_arch", lipoArch]);
   assert.equal(result.status, 0, `${arch} Node Runtime 架构必须正确`);
 }
-for (const [arch, executable] of Object.entries(claudeExecutables)) {
-  assert.ok(fs.statSync(executable).size > 0, `${arch} Claude Runtime 必须存在且非空`);
-  const lipoArch = arch === "x64" ? "x86_64" : "arm64";
-  const result = spawnSync("/usr/bin/lipo", [executable, "-verify_arch", lipoArch]);
-  assert.equal(result.status, 0, `${arch} Claude Runtime 架构必须正确`);
-}
+// Claude Code 走系统安装（与 Codex/Kimi 一致），Bridge 不得携带 claude 平台原生二进制。
+const leftoverClaudePackages = fs
+  .readdirSync(anthropicScope)
+  .filter((entry) => entry.startsWith("claude-agent-sdk-"));
+assert.deepEqual(
+  leftoverClaudePackages,
+  [],
+  `Bridge 中不得残留 Claude 平台二进制: ${leftoverClaudePackages.join(", ")}`,
+);
 
 const hostArch = process.arch === "arm64" ? "arm64" : "x64";
 const hostNode = nodes[hostArch];
-const hostClaude = claudeExecutables[hostArch];
 const nodeVersion = spawnSync(hostNode, ["--version"], {
   encoding: "utf8",
   timeout: 10_000,
 });
 assert.equal(nodeVersion.status, 0, nodeVersion.stderr);
 assert.equal(nodeVersion.stdout.trim(), `v${manifest.node_version}`);
-const claudeVersion = spawnSync(hostClaude, ["--version"], {
-  encoding: "utf8",
-  timeout: 10_000,
-});
-assert.equal(claudeVersion.status, 0, claudeVersion.stderr);
-assert.notEqual(`${claudeVersion.stdout}${claudeVersion.stderr}`.trim(), "");
 const codexVersion = spawnSync(hostNode, [codexBridgeEntrypoint, "--version"], {
   encoding: "utf8",
   timeout: 10_000,

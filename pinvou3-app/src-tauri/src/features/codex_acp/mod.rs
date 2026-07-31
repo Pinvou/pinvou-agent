@@ -935,7 +935,7 @@ impl AcpPool {
             .is_some_and(|major| major >= 20);
         let codex = probe.as_ref().and_then(|probe| probe.codex.clone());
         let claude = (backend == AgentBackend::ClaudeAcp)
-            .then(|| adapter.as_deref().and_then(resolve_claude_cli_from_adapter))
+            .then(|| resolve_claude_cli(adapter.as_deref()))
             .flatten();
         let provider_available = match backend {
             AgentBackend::CodexAcp => codex.is_some(),
@@ -1042,8 +1042,11 @@ impl AcpPool {
                         .flatten()
                 })
             },
-            // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示。
-            setup_hint: if backend == AgentBackend::ClaudeAcp && installed && !authenticated {
+            // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示；
+            // Claude Code 不再随包内置，系统缺少 claude CLI 时引导用户自行安装。
+            setup_hint: if backend == AgentBackend::ClaudeAcp && claude.is_none() {
+                Some("claude_cli_missing")
+            } else if backend == AgentBackend::ClaudeAcp && installed && !authenticated {
                 Some("claude_auth_required")
             } else {
                 None
@@ -1492,7 +1495,7 @@ impl AcpPool {
             }
             AgentBackend::ClaudeAcp => {
                 let adapter = self.resolve_claude_adapter()?;
-                resolve_claude_cli_from_adapter(&adapter)
+                resolve_claude_cli(Some(&adapter))
             }
             AgentBackend::KimiAcp => resolve_kimi_path(),
             AgentBackend::Deepseek => None,
@@ -2163,12 +2166,9 @@ impl AcpPool {
                 let adapter = self
                     .resolve_claude_adapter()
                     .context("Claude ACP Bridge 尚未安装")?;
-                (
-                    self.adapter_command(&adapter)?,
-                    adapter,
-                    CLAUDE_ACP_PACKAGE,
-                    CLAUDE_ACP_VERSION,
-                )
+                let mut command = self.adapter_command(&adapter)?;
+                self.configure_claude_executable(&mut command, Some(&adapter))?;
+                (command, adapter, CLAUDE_ACP_PACKAGE, CLAUDE_ACP_VERSION)
             }
             AgentBackend::KimiAcp => {
                 let executable = resolve_kimi_path()
@@ -2551,6 +2551,21 @@ impl AcpPool {
         command.env(
             "CODEX_PATH",
             crate::platform::os::external_application_path(&codex.path),
+        );
+        Ok(())
+    }
+
+    fn configure_claude_executable(
+        &self,
+        command: &mut Command,
+        adapter: Option<&Path>,
+    ) -> Result<()> {
+        let claude = resolve_claude_cli(adapter).context(
+            "未检测到 Claude Code CLI；请先安装 Claude Code，并确保 claude 在 PATH 中",
+        )?;
+        command.env(
+            "CLAUDE_CODE_EXECUTABLE",
+            crate::platform::os::external_application_path(&claude),
         );
         Ok(())
     }
@@ -3066,7 +3081,7 @@ fn resolve_claude_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
-fn resolve_claude_cli_from_adapter(adapter: &Path) -> Option<PathBuf> {
+fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PINVOU3_CLAUDE_CLI_PATH").map(PathBuf::from) {
         if nonempty_file(&path) {
             return Some(path);
@@ -3077,10 +3092,12 @@ fn resolve_claude_cli_from_adapter(adapter: &Path) -> Option<PathBuf> {
         std::env::consts::ARCH,
         crate::platform::capabilities::is_musl(),
     )?;
-    if let Some(path) = adapter.ancestors().find_map(|ancestor| {
-        (ancestor.file_name().and_then(|value| value.to_str()) == Some("node_modules"))
-            .then(|| ancestor.join("@anthropic-ai").join(&package).join(binary))
-            .filter(|candidate| nonempty_file(candidate))
+    if let Some(path) = adapter.and_then(|adapter| {
+        adapter.ancestors().find_map(|ancestor| {
+            (ancestor.file_name().and_then(|value| value.to_str()) == Some("node_modules"))
+                .then(|| ancestor.join("@anthropic-ai").join(&package).join(&binary))
+                .filter(|candidate| nonempty_file(candidate))
+        })
     }) {
         return Some(path);
     }
