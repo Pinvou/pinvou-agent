@@ -932,6 +932,35 @@ pub(super) fn url_in_external_allowlist(url: &str) -> bool {
     url_is_loopback_http(url) || EXTERNAL_URL_ALLOWLIST.iter().any(|p| url.starts_with(p))
 }
 
+/// 用户在 ACP 消息或产物预览中明确点击的外链。与工具可调用的固定白名单入口分开：
+/// 这里只允许无 URL 凭据的 HTTP(S)，由系统浏览器承担站点隔离。
+pub(super) fn user_external_url(url: &str) -> Option<reqwest::Url> {
+    let raw = url.trim();
+    let scheme_end = raw.find("://")?;
+    let scheme = &raw[..scheme_end];
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority = &raw[scheme_end + 3..];
+    if authority
+        .chars()
+        .next()
+        .is_none_or(|first| first == '/' || first == '\\' || first.is_whitespace())
+    {
+        return None;
+    }
+
+    let parsed = reqwest::Url::parse(raw).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(parsed)
+}
+
 /// 用系统默认浏览器打开已审计外部 https URL 或严格本机 loopback HTTP(S) URL。
 /// 外部域名白名单写死；loopback 用于 Agent 生成页面的本地预览。
 #[tauri::command]
@@ -940,6 +969,14 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         return Err(format!("URL not in allowlist: {url}"));
     }
     crate::platform::os::open_target(&url, "外部链接")
+}
+
+/// 打开用户亲自点击的 ACP / 产物 HTTP(S) 外链。
+/// URL 先经过严格校验，再直接交给系统默认浏览器；不得阻塞 Tauri/GTK 主事件循环。
+#[tauri::command]
+pub fn open_user_external_url(url: String) -> Result<(), String> {
+    let parsed = user_external_url(&url).ok_or_else(|| "invalid_user_external_url".to_string())?;
+    crate::platform::os::open_target(parsed.as_str(), "用户点击的外部链接")
 }
 
 /// 本机 Obsidian 状态(供工具市场"连接"前分支)。

@@ -519,7 +519,7 @@ try {
     && codexView.includes('[activeAgentId, activeStatus?.login_in_progress]'),
   'switching ACP sessions must never render or keep polling the previous Agent status');
   assert.ok(codexView.includes('<ConversationMarkdown')
-    && codexView.includes("invoke('open_external_url', { url })"),
+    && codexView.includes("invoke('open_user_external_url', { url })"),
   'both unified and fallback Codex messages must route links through the host opener');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),
     'Codex unordered lists must retain bullets after Tailwind preflight');

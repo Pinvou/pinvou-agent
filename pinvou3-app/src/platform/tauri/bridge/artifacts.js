@@ -33,6 +33,8 @@
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
+  function openUserExternalUrl(url) { return invoke("open_user_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
   function listDeliverables(projectDir) {
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
@@ -298,6 +300,7 @@
       listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,
+      openUserExternalUrl: openUserExternalUrl,
       addAttachmentByPath: addAttachmentByPath,
       addPasteImage: addPasteImage,
       removeAttachment: removeAttachment,

@@ -613,6 +613,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <ScaledHtmlPreview
               html={pv.text || ''}
               onFrameLoad={handlePreviewFrameLoad}
+              onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)}
               zoomMode={showDesignWorkbench ? htmlZoomMode : 'auto-width'}
               customScale={htmlCustomScale}
               onScaleChange={setHtmlScale}

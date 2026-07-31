@@ -780,6 +780,7 @@ pub fn run() {
             commands::pet::get_selected_pet,
             commands::pet::set_selected_pet,
             commands::artifacts::open_external_url,
+            commands::artifacts::open_user_external_url,
             commands::files::ingest_file,
             commands::files::ingest_dropped_file_chunk,
             commands::files::cancel_dropped_file_upload,

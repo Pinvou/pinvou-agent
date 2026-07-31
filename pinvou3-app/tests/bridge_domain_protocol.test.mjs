@@ -79,7 +79,7 @@ const protocolSources = {
 
 const expectedProtocolHashes = {
   orchestration: '6d8e2a818ea4edbae35035903c5322a500ff4ede75158b8038cd2a172755c853',
-  artifacts: '35eeb5ac596f039f62d3d1b97aef98306b2b8e8cd02fd13c1a172ca48d920048',
+  artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
   chat: '7dac0045b97cae91fd142482f712dd72cc4e61df51d9fd7a707b9f384a153ae2',
   dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
@@ -152,7 +152,7 @@ const expectedApi = {
   models: ['deleteModel', 'getEffectiveModelConfig', 'loadModels', 'loadSessionModel', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testModelConnection'],
   interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'], remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
-  artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
+  artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
   attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'], resolutions: ['markResolved'],
   workflow: ['activateSkill', 'addMaterialsToSession', 'approveWorkflowGate', 'attachRun', 'closeDemo', 'closeWorkflowDrawer', 'deactivateSkill', 'getGateReport', 'getRoleLogs', 'getRoleOutputs', 'getRolePrompt', 'listWorkflows', 'loadSkills', 'openDemo', 'pickAndAddMaterials', 'rejectWorkflowGate', 'resetWorkflowRun', 'resumeWorkflowOnBoot', 'retryWorkflowRole', 'selectWorkflowRole', 'setCurrentPhase', 'startWorkflowTask', 'stopWorkflowTask', 'submitWorkflowUserInput'],
   files: ['pickFeedbackFiles', 'pickFiles'],

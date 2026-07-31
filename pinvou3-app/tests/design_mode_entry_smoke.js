@@ -40,7 +40,7 @@ function injectSource() {
   return `(function(){
     var HTML_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/landing.html';
     var DRAFT_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/poster-draft.html';
-    var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Pinvou Design</h1><button class="primary">Start</button></section></main></body></html>';
+    var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Pinvou Design</h1><button class="primary">Start</button><a id="external-link" href="https://example.com/docs">Docs</a></section></main></body></html>';
     var DRAFT_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Draft Poster</h1><button class="primary">Draft</button></section></main></body></html>';
     var SESSIONS = [{id:'s-design',title:'HTML设计测试',created_at:1,updated_at:9}];
     var MARKET_TOOLS = [
@@ -53,6 +53,7 @@ function injectSource() {
     window.__PINVOU_TEST_INSTALLS = [];
     window.__PINVOU_TEST_CHAT_CALLS = [];
     window.__PINVOU_TEST_SCENE_SAVES = [];
+    window.__PINVOU_TEST_EXTERNAL_URLS = [];
     var SCENE_EVENTS = {
       's-design': [{pos:0,scene:'design:poster'}]
     };
@@ -120,6 +121,9 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'html',size:(args && args.path) === DRAFT_PATH ? DRAFT_CONTENT.length : HTML_CONTENT.length,modified:(args && args.path) === DRAFT_PATH ? 1 : 2});
         case 'read_artifact_text': return Promise.resolve((args && args.path) === DRAFT_PATH ? DRAFT_CONTENT : HTML_CONTENT);
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
+        case 'open_user_external_url':
+          window.__PINVOU_TEST_EXTERNAL_URLS.push(args && args.url);
+          return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -443,6 +447,17 @@ async function clickExactButton(page, text) {
       directPreview.toggleText === '编辑模式' &&
       directPreview.toggleTitle === '进入编辑模式：放大预览并编辑选中元素',
     JSON.stringify(directPreview));
+  await page.evaluate(() => {
+    const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');
+    const link = frame && frame.contentDocument && frame.contentDocument.querySelector('#external-link');
+    if (link) link.click();
+  });
+  await sleep(100);
+  const externalPreviewLinks = await page.evaluate(() => window.__PINVOU_TEST_EXTERNAL_URLS || []);
+  rec('产物 HTML 外链由宿主交给系统浏览器命令且 iframe 不跳转',
+    externalPreviewLinks.length === 1
+      && externalPreviewLinks[0] === 'https://example.com/docs',
+    JSON.stringify(externalPreviewLinks));
   await page.click('[data-testid="artifact-switcher-button"]');
   await sleep(150);
   const artifactMenu = await page.evaluate(() => ({

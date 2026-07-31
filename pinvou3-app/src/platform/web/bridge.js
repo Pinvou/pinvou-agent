@@ -6721,6 +6721,25 @@
     }
     return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
+  function openUserExternalUrl(url) {
+    try {
+      var rawUrl = String(url || "").trim();
+      if (!/^https?:\/\/[^/\\\s]/i.test(rawUrl)) {
+        return Promise.reject(new Error("only credential-free HTTP(S) links are supported"));
+      }
+      var parsed = new URL(rawUrl);
+      if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
+        return Promise.reject(new Error("only credential-free HTTP(S) links are supported"));
+      }
+      if (IS_WEB) {
+        var opened = window.open(parsed.href, "_blank", "noopener,noreferrer");
+        return Promise.resolve(!!opened);
+      }
+      return invoke("open_user_external_url", { url: parsed.href }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    } catch (_) {
+      return Promise.reject(new Error("invalid external link"));
+    }
+  }
   // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
   function listDeliverables(projectDir, sessionId) {
     var command = IS_WEB ? "web_access_list_deliverables" : "list_deliverables";
@@ -8280,6 +8299,7 @@
     listDeliverables: listDeliverables,
     listDeliverableIndex: listDeliverableIndex,
     openExternalUrl: openExternalUrl,
+    openUserExternalUrl: openUserExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,
     addPasteImage: addPasteImage,
@@ -8472,7 +8492,7 @@
       refreshRemoteControlQr: "rotateWebAccessLink",
       refreshRemoteControlStatus: "refreshWebAccessStatus"
     }),
-    artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverables", "listDeliverableIndex", "openExternalUrl"]),
+    artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverables", "listDeliverableIndex", "openExternalUrl", "openUserExternalUrl"]),
     attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles", "resolveConversationAttachment", "openConversationAttachment", "revealConversationAttachment"]),
     resolutions: domain(["markResolved"]),
     workflow: domain(["loadSkills", "activateSkill", "deactivateSkill", "openDemo", "closeDemo", "setCurrentPhase", "startWorkflowTask", "stopWorkflowTask", "listWorkflows", "resetWorkflowRun", "selectWorkflowRole", "closeWorkflowDrawer", "getRolePrompt", "getRoleOutputs", "getGateReport", "getRoleLogs", "submitWorkflowUserInput", "pickAndAddMaterials", "addMaterialsToSession", "attachRun", "resumeWorkflowOnBoot", "approveWorkflowGate", "rejectWorkflowGate", "retryWorkflowRole"]),

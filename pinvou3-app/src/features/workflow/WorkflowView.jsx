@@ -545,7 +545,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 : pv.missing ? <div className={`text-[13px] ${dim}`}>{t.uiWorkflow.fileMissing}</div>
                 : pv.error ? <div className="text-[13px] text-[#F28B82]">{t.uiWorkflow.readFailed(pv.error)}</div>
                 : pv.kind === 'md' ? <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(pv.text || '') }} />
-                : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} />
+                : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)} />
                 : (pv.kind === 'json' || pv.kind === 'text') ? <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>
                 : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">{t.uiWorkflow.imageReadFailed(pv.imgErr)}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
                 : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
