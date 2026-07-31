@@ -841,6 +841,12 @@ fn base_model_snapshot(
 pub struct OpenAiModelInfo {
     pub id: String,
     pub max_model_len: Option<u32>,
+    /// 是否已加载到内存。`None` = 未知（通用 OpenAI 兼容端点不区分）。
+    /// Ollama（/api/ps vs /api/tags）与 LM Studio（/api/v0/models 的 state）
+    /// 的列表接口返回全部已下载模型，二者都是 JIT 加载——任何推理请求引用
+    /// 模型名就会静默载入内存。探测必须把这个状态传给前端，避免把未加载的
+    /// 大模型当作"就绪"自动填充。
+    pub loaded: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -869,6 +875,7 @@ fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInf
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
+                loaded: None,
             })
         })
         .collect::<Vec<_>>();
@@ -893,6 +900,136 @@ pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     Some(OpenAiModelsProbe {
         models: parse_models_response_list(v)?,
     })
+}
+
+/// Ollama `/api/ps` 返回的已加载模型名集合。解析失败按空集处理
+/// （宁可全部标未加载，也不错标已加载）。
+fn parse_ollama_ps_names(v: serde_json::Value) -> std::collections::HashSet<String> {
+    v.get("models")
+        .and_then(|m| m.as_array())
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|item| {
+                    item.get("name")
+                        .or_else(|| item.get("model"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                })
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。
+fn parse_ollama_tag_names(v: serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
+        for item in models {
+            let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.is_empty() && !out.iter().any(|existing| existing == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// LM Studio 原生 REST `/api/v0/models`：每项带 `state`（loaded / not-loaded）。
+/// 返回 `None` 表示响应形状不认识，调用方回退 OpenAI 兼容探测。
+fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo>> {
+    let data = v.get("data")?.as_array()?;
+    let models = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let loaded = item
+                .get("state")
+                .and_then(|v| v.as_str())
+                .map(|state| state == "loaded");
+            Some(OpenAiModelInfo {
+                id: id.to_string(),
+                max_model_len: None,
+                loaded,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!models.is_empty()).then_some(models)
+}
+
+/// 探测 Ollama：区分"已加载"（/api/ps）与"仅下载未加载"（/api/tags）。
+/// 两个接口都是只读列表，不会触发加载；绝不能用推理请求探测。
+pub async fn probe_ollama_models(base_url: &str) -> Option<OpenAiModelsProbe> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    // 已加载集合：失败按空集（全部未加载），不影响已下载列表。
+    let loaded_names = match client
+        .get(format!("{host}/api/ps"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(resp) => resp
+            .json::<serde_json::Value>()
+            .await
+            .map(parse_ollama_ps_names)
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
+    // 已下载列表：/api/tags 是必需项，失败则整个候选离线。
+    let resp = client
+        .get(format!("{host}/api/tags"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .ok()?;
+    let tags = parse_ollama_tag_names(resp.json::<serde_json::Value>().await.ok()?);
+    (!tags.is_empty()).then_some(OpenAiModelsProbe {
+        models: tags
+            .into_iter()
+            .map(|name| {
+                let loaded = loaded_names.contains(&name);
+                OpenAiModelInfo {
+                    id: name,
+                    max_model_len: None,
+                    loaded: Some(loaded),
+                }
+            })
+            .collect(),
+    })
+}
+
+/// 探测 LM Studio：优先原生 `/api/v0/models`（带 loaded 状态），
+/// 旧版本没有该接口时回退 `/v1/models`（loaded 未知）。
+pub async fn probe_lmstudio_models(base_url: &str) -> Option<OpenAiModelsProbe> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    if let Ok(resp) = client
+        .get(format!("{host}/api/v0/models"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
+        if let Ok(v) = resp.json::<serde_json::Value>().await {
+            if let Some(models) = parse_lmstudio_v0_models(&v) {
+                return Some(OpenAiModelsProbe { models });
+            }
+        }
+    }
+    probe_openai_models(base_url).await
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
@@ -1252,6 +1389,52 @@ mod tests {
         assert_eq!(models[0].max_model_len, None);
         assert_eq!(models[1].id, "deepseek-r1:14b");
         assert_eq!(models[1].max_model_len, Some(32768));
+    }
+
+    #[test]
+    fn ollama_ps_names_collects_loaded_models() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"models":[{"name":"qwen3:8b","model":"qwen3:8b","size_vram":5000000000},{"model":"deepseek-r1:14b"}]}"#,
+        )
+        .unwrap();
+        let names = parse_ollama_ps_names(json);
+        assert!(names.contains("qwen3:8b"));
+        assert!(names.contains("deepseek-r1:14b")); // 缺 name 时回退 model 字段
+        assert!(!names.contains("llama3.2:3b"));
+        // 坏形状按空集（宁全标未加载，不错标已加载）
+        assert!(parse_ollama_ps_names(serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn ollama_tag_names_dedupes_and_keeps_order() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"models":[{"name":"qwen3:8b"},{"name":"deepseek-r1:14b"},{"name":"qwen3:8b"},{"name":" "}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_ollama_tag_names(json),
+            vec!["qwen3:8b".to_string(), "deepseek-r1:14b".to_string()]
+        );
+    }
+
+    #[test]
+    fn lmstudio_v0_models_parse_loaded_state() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"qwen3-8b","state":"loaded"},
+                {"id":"deepseek-r1-14b","state":"not-loaded"},
+                {"id":"legacy-model"}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_lmstudio_v0_models(&json).unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].loaded, Some(true));
+        assert_eq!(models[1].loaded, Some(false));
+        assert_eq!(models[2].loaded, None); // 缺 state 字段 = 未知
+        // 空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测
+        assert!(parse_lmstudio_v0_models(&serde_json::json!({"data":[]})).is_none());
+        assert!(parse_lmstudio_v0_models(&serde_json::json!({})).is_none());
     }
 
     /// 真机冒烟(#[ignore]):对活着的本地 vLLM 跑 `probe_vllm_model_info`,确认拿到
