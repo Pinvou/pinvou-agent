@@ -20,8 +20,8 @@ name: release-packages
 #
 # 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
 # (signingIdentity="-",用户首次安装需 xattr -dr com.apple.quarantine)。
-# Windows 正式发布依赖受保护的 windows-release Environment 及其只读
-# PINVOU3_WINDOWS_RUNTIME_TOKEN；任何 PR job 都不引用该凭据。
+# Windows 正式发布仍进入 windows-release Environment。运行时仓库已公开，
+# checkout 后不保留凭据，后续按锁定 gitlink 匿名拉取运行时和 Git LFS 对象。
 
 on:
   push:
@@ -282,18 +282,9 @@ jobs:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
         with:
-          # 私有运行时由初始化脚本按锁文件精确拉取。
+          # 公开运行时由初始化脚本按锁文件精确拉取；不向跨仓库 submodule 传递 job token。
           submodules: false
-          token: ${{ secrets.PINVOU3_WINDOWS_RUNTIME_TOKEN || github.token }}
-
-      - name: 检查 Windows 私有运行时凭据
-        env:
-          WINDOWS_RUNTIME_TOKEN: ${{ secrets.PINVOU3_WINDOWS_RUNTIME_TOKEN }}
-        run: |
-          if [[ -z "$WINDOWS_RUNTIME_TOKEN" ]]; then
-            echo "::error::正式 Windows 发布缺少 PINVOU3_WINDOWS_RUNTIME_TOKEN，拒绝生成不完整发布。"
-            exit 1
-          fi
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -317,7 +308,7 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      - name: 初始化 Windows 私有运行时
+      - name: 初始化 Windows 独立运行时
         working-directory: pinvou3-app
         run: npm run runtime:windows:init
 

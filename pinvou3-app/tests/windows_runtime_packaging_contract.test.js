@@ -136,6 +136,11 @@ assert.doesNotMatch(runtimeScript, /Stage-NsisBootstrapper/u);
 assert.match(initScript, /git lfs pull/);
 assert.match(initScript, /--include=/);
 assert.match(initScript, /pinvou3-windows-runtime-\$expectedCommit/);
+assert.match(initScript, /\$previousErrorActionPreference = \$ErrorActionPreference/);
+assert.match(initScript, /\$ErrorActionPreference = "Continue"/);
+assert.match(initScript, /\$exitCode = \$LASTEXITCODE/);
+assert.match(initScript, /\$ErrorActionPreference = \$previousErrorActionPreference/);
+assert.match(initScript, /if \(\$exitCode -ne 0\)/);
 
 assert.match(runtimeWrapper, /runtime-descriptor\.json/);
 assert.match(runtimeWrapper, /cleanupLegacyWindowsNodeStaging/);
@@ -308,10 +313,11 @@ assert.doesNotMatch(
 
 assert.match(windowsBuildJob, /github\.ref == 'refs\/heads\/main'/);
 assert.match(windowsBuildJob, /environment:\s*\n\s*name: windows-release/);
-assert.match(windowsBuildJob, /PINVOU3_WINDOWS_RUNTIME_TOKEN/);
-assert.match(
+assert.match(windowsBuildJob, /persist-credentials:\s*false/);
+assert.doesNotMatch(
   windowsBuildJob,
-  /正式 Windows 发布缺少 PINVOU3_WINDOWS_RUNTIME_TOKEN/,
+  /PINVOU3_WINDOWS_RUNTIME_TOKEN|secrets\./,
+  "public Windows runtime builds must not depend on cross-repository credentials",
 );
 assert.match(windowsBuildJob, /npm run runtime:windows:init/);
 assert.doesNotMatch(
@@ -351,4 +357,4 @@ assert.match(
   /build_required: \$\{\{ steps\.release\.outputs\.build_required \}\}/,
 );
 
-console.log("Windows private runtime packaging contract: ok");
+console.log("Windows runtime packaging contract: ok");
