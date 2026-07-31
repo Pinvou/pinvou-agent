@@ -9,7 +9,7 @@ const source = fs.readFileSync(bridgePath, "utf8");
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
 // 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
-const zhTableMatch = bridgeMainSource.match(/    zh: \{([\s\S]*?)\n    \},\n  \};/);
+const zhTableMatch = bridgeMainSource.match(/    zh: \{([\s\S]*?)\r?\n    \},\r?\n  \};/);
 assert.notStrictEqual(zhTableMatch, null, "bridge.js BT_TABLE zh block must exist");
 const zhTable = new Function(`return ({${zhTableMatch[1]}});`)();
 const bt = (key) => zhTable[key] !== undefined ? zhTable[key] : key;
