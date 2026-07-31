@@ -57,6 +57,9 @@ assert.doesNotMatch(prepareBridge, /ACP_X64_ROOT/);
 // Claude Code 与 Codex/Kimi 一致走系统安装，Bridge 不得携带 claude 平台原生二进制。
 assert.match(prepareBridge, /claude-agent-sdk-\{darwin,linux,win32\}-\*/);
 assert.match(prepareBridge, /Bridge 中仍残留 Claude 平台二进制，拒绝打包/);
+// 旧 staging 残留 claude 平台包时必须判为无效并重打包，防止本地复用旧产物
+// 把原生二进制静默打回安装包。
+assert.match(prepareBridge, /旧 staging 可能仍残留 Claude 平台原生二进制/);
 assert.match(
   runDev,
   /if \[ "\$OS_NAME" = "Linux" \] \|\| \[ "\$OS_NAME" = "Darwin" \]; then\s+\.\/scripts\/prepare-codex-bridge-runtime\.sh\s+fi/,

@@ -38,6 +38,12 @@ BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 bridge_runtime_valid() {
   local root="$1"
   local node
+  # 本 PR 前生成的旧 staging 可能仍残留 Claude 平台原生二进制；发现即视为无效，
+  # 强制重打包，避免本地复用旧产物时把约 245MB 的二进制重新打进安装包。
+  if find "$root/acp/node_modules/@anthropic-ai" -maxdepth 1 -mindepth 1 \
+    -type d -name 'claude-agent-sdk-*' -print -quit 2>/dev/null | grep -q .; then
+    return 1
+  fi
   local entry="$root/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
   local claude_entry="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
   local package_json="$root/acp/node_modules/@agentclientprotocol/codex-acp/package.json"
