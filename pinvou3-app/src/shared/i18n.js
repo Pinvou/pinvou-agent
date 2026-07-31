@@ -1221,14 +1221,17 @@ const dict = {
     dict.zh.uiSettingsDetail.customModelTitles = {
       glm:'自定义 GLM 模型', qwen:'自定义通义模型',
       openai_compatible:'自定义兼容模型', glm_coding_plan:'自定义 GLM Coding Plan 模型',
+      tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
     };
     dict.en.uiSettingsDetail.customModelTitles = {
       glm:'Custom GLM model', qwen:'Custom Qwen model',
       openai_compatible:'Custom compatible model', glm_coding_plan:'Custom GLM Coding Plan model',
+      tencent_coding_plan:'Custom Tencent Cloud Coding Plan model', kimi_coding_plan:'Custom Kimi Coding Plan model',
     };
     dict.ja.uiSettingsDetail.customModelTitles = {
       glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',
       openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
+      tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
     };
     dict.zh.uiToolDetails.flow = {
       incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,

@@ -1763,13 +1763,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="space-y-4">
           {catalogGroups.map(group => (
             <section key={group.key}>
-              <div className={catalogSectionTitleClass}>{presetProviderLabel(group.preset, t)}</div>
+              <div className={catalogSectionTitleClass}>{group.providerKind === PROVIDER_KIND_CODING_PLAN ? group.title : presetProviderLabel(group.preset, t)}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {
                   const active = preset === group.preset && model === item.model && !item.custom;
-                  const itemTitle = item.custom ? settingsCopy.customModelTitle(presetProviderLabel(group.preset, t)) : item.title;
+                  const itemTitle = item.custom ? (settingsCopy.customModelTitles[group.key] || settingsCopy.customModelTitle(presetProviderLabel(group.preset, t))) : item.title;
                   const itemDescription = item.custom
-                    ? (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))
+                    ? (group.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc)))
                     : (settingsCopy.modelDescriptions[item.desc] || item.desc);
                   return (
                     <button
