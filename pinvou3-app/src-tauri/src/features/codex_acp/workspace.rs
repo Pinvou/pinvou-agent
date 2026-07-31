@@ -1011,7 +1011,11 @@ mod tests {
         fs::write(root.path().join("script.rb"), "puts 1\n").unwrap();
         fs::write(root.path().join("notes"), "plain text without extension\n").unwrap();
         fs::write(root.path().join("empty.weird"), "").unwrap();
-        fs::write(root.path().join("payload.bin"), [0x89, 0x50, 0x4E, 0x47, 0x00, 0x0D]).unwrap();
+        fs::write(
+            root.path().join("payload.bin"),
+            [0x89, 0x50, 0x4E, 0x47, 0x00, 0x0D],
+        )
+        .unwrap();
 
         for (path, expected) in [
             ("Dockerfile", "text"),
@@ -1026,7 +1030,10 @@ mod tests {
             assert_eq!(preview.kind, expected, "unexpected kind for {path}");
         }
         let preview = preview_workspace_file(root.path(), "notes").unwrap();
-        assert_eq!(preview.text.as_deref(), Some("plain text without extension\n"));
+        assert_eq!(
+            preview.text.as_deref(),
+            Some("plain text without extension\n")
+        );
     }
 
     #[test]
