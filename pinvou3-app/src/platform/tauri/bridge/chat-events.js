@@ -129,6 +129,14 @@
           afterMessageIndex = Number(candidate.messageIndex);
         }
       }
+      // 没有任何 user 气泡时无法锚定轮次;若把全部历史 assistant 项都标记为
+      // 仅展示,下次权威重载会在末尾追加整段历史的重复副本。此时放弃保留,
+      // 退化为修复前行为(重载后消失),但必须清空 pending 以免污染下一轮。
+      if (userItemIndex < 0) {
+        context.pendingAssistantText = "";
+        context.pendingAssistantBlocks = [];
+        return;
+      }
       for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
         var item = state.chatItems[itemIndex];
         if (!item || item.type !== "assistant" || !item.html) continue;

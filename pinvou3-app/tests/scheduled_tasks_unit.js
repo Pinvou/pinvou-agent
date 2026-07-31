@@ -1392,6 +1392,90 @@ async function remoteInterruptedTurnKeepsItsDisplayPosition() {
   );
 }
 
+async function interruptedTurnWithoutUserItemDropsPartial() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-interrupted-no-user-anchor";
+  var durableMessages = [
+    { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+  ];
+  harness.handlers.list_sessions = function () {
+    return [{ id: sessionId, title: "Unanchored interrupt", message_count: durableMessages.length }];
+  };
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Unanchored interrupt",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "no-user-" + durableMessages.length,
+    };
+  };
+
+  // transcript 里没有任何 user 消息(无 user 气泡、无法锚定轮次)的中断:
+  // 不得把全部历史 assistant 项标记为仅展示,否则权威重载会在末尾复活它们,
+  // 复制出整段历史的重复副本。
+  await bridge.sessions.switchToSession(sessionId);
+  await harness.emit("chat:turn_started", { session_id: sessionId });
+  await harness.emit("chat:delta", { session_id: sessionId, text: "orphan partial" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var unanchoredState = bridge.state.get("chat");
+  assert.ok(
+    !unanchoredState.chatItems.some(function (item) {
+      return item.interruptedDisplayOnly === true;
+    }),
+    "without any user turn anchor, nothing may be marked display-only"
+  );
+  assert.strictEqual(
+    unanchoredState.chatItems.filter(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("old reply");
+    }).length,
+    1,
+    "authority reconciliation must not duplicate the unanchored history"
+  );
+  assert.ok(
+    !unanchoredState.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("orphan partial");
+    }),
+    "an unanchorable interrupted partial must not be resurrected by authority reconciliation"
+  );
+
+  durableMessages = [
+    { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+    { role: "user", content: [{ type: "text", text: "next question" }] },
+    { role: "assistant", content: [{ type: "text", text: "clean reply" }] },
+  ];
+  await bridge.chat.sendMessage("next question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "clean reply" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var followupState = bridge.state.get("chat");
+  var assistantMessages = followupState.messages.filter(function (message) {
+    return message.role === "assistant";
+  });
+  assert.ok(
+    assistantMessages.length > 0 &&
+      !JSON.stringify(assistantMessages).includes("orphan partial"),
+    "the dropped partial must not leak into the next authoritative assistant message"
+  );
+}
+
 async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -3332,6 +3416,7 @@ Promise.resolve()
   .then(authoritativeHydrateDropsReplayedAssistantTail)
   .then(interruptedTurnRetainsDisplayOnlyPartial)
   .then(remoteInterruptedTurnKeepsItsDisplayPosition)
+  .then(interruptedTurnWithoutUserItemDropsPartial)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
