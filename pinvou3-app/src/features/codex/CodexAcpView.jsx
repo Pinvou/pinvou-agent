@@ -1833,8 +1833,8 @@ export function CodexAcpView({
           </div>
         )}
 
-        <div className="shrink-0 px-6 pb-5 pt-2">
-          <div className="w-full max-w-[920px] mx-auto">
+        <div className={`shrink-0 px-6 pt-2 ${activeId ? 'pb-5' : 'pb-[60px]'}`}>
+          <div className={`w-full mx-auto ${activeId ? 'max-w-[920px]' : 'max-w-[800px]'}`}>
             {!activeId && (
               <HomeModeSwitcher
                 mode="code"

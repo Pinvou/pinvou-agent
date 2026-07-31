@@ -112,24 +112,30 @@ function normalizeTurnItems(turn) {
       };
     }
     if (block.type === 'tool') {
+      const status = block.tool && block.tool.status || 'pending';
       return {
         ...block,
         type: toolItemType(block.tool),
-        status: block.tool && block.tool.status || 'pending',
+        status: turn.completedAt && !isTerminalToolStatus(status) ? 'cancelled' : status,
+        completedAt: block.completedAt || turn.completedAt || null,
       };
     }
     if (block.type === 'permission') {
       return {
         ...block,
-        status: block.permission.resolved ? 'completed' : 'waiting',
-        completedAt: block.permission.resolvedAt || null,
+        status: block.permission.resolved
+          ? 'completed'
+          : turn.completedAt ? 'cancelled' : 'waiting',
+        completedAt: block.permission.resolvedAt || turn.completedAt || null,
       };
     }
     if (block.type === 'elicitation') {
       return {
         ...block,
-        status: block.elicitation.resolved ? 'completed' : 'waiting',
-        completedAt: block.elicitation.resolvedAt || null,
+        status: block.elicitation.resolved
+          ? 'completed'
+          : turn.completedAt ? 'cancelled' : 'waiting',
+        completedAt: block.elicitation.resolvedAt || turn.completedAt || null,
       };
     }
     if (block.type === 'plan') {
@@ -320,7 +326,8 @@ export function projectAcpTimeline(input) {
   }
 
   for (const turn of turns) {
-    turn.waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
+    turn.waitingInput = !turn.completedAt
+      && turn.elicitations.some(elicitation => !elicitation.resolved);
     turn.items = normalizeTurnItems(turn);
     turn.presentation = presentTurnItems(turn.items);
     const operations = turn.items.filter(item => (
