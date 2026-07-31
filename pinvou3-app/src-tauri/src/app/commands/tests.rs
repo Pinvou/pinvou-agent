@@ -1196,6 +1196,36 @@ async fn open_external_url_rejects_off_allowlist_targets() {
     }
 }
 
+#[test]
+fn user_clicked_external_urls_allow_http_https_only() {
+    for allowed in [
+        "https://example.com/path?q=1#section",
+        "http://127.0.0.1:8080/preview",
+        "https://例子.测试/",
+    ] {
+        assert!(
+            user_external_url(allowed).is_some(),
+            "user-clicked HTTP(S) URL should be accepted: {allowed}"
+        );
+    }
+    for rejected in [
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "data:text/html,hello",
+        "https://user@example.com/",
+        "https://user:secret@example.com/",
+        "https:///missing-host",
+        "https:\\\\example.com",
+        "https://\\example.com",
+        "",
+    ] {
+        assert!(
+            user_external_url(rejected).is_none(),
+            "unsafe user-clicked URL must be rejected: {rejected}"
+        );
+    }
+}
+
 /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:目标域名放行,仿冒/非 https 拒绝。
 #[test]
 fn external_allowlist_allows_known_targets_rejects_lookalikes() {

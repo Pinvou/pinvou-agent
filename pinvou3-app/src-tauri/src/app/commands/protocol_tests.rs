@@ -60,6 +60,7 @@ command_protocol!(
         "read_artifact_thumbnail",
         "render_artifact_visual",
         "open_external_url",
+        "open_user_external_url",
         "detect_obsidian",
         "open_in_system",
         "open_containing_folder",

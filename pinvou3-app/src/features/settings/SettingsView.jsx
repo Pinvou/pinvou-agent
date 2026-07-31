@@ -19,6 +19,10 @@ import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import tencentCloudIcon from '../../brand-icons/tencentcloud.svg';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import {
+  artifactPreviewExternalUrlFromMessage,
+  buildArtifactPreviewDocument,
+} from '../artifacts/artifact-preview-navigation.js';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -1027,7 +1031,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
     // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
     const clampPreviewScale = value => Math.max(0.1, Math.min(3, Number(value) || 1));
-    const ScaledHtmlPreview = ({ html, onFrameLoad, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
+    const ScaledHtmlPreview = ({ html, onFrameLoad, onOpenExternal, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
       const [box, setBox] = useState(null); // { w, h, scale }
@@ -1108,6 +1112,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         doc.addEventListener('wheel', handleFrameWheel, { passive: false, capture: true });
         return () => doc.removeEventListener('wheel', handleFrameWheel, { capture: true });
       }, [managedZoom, ready, box && box.scale, customScale, onCustomScaleChange]);
+      useEffect(() => {
+        const handlePreviewMessage = event => {
+          const frameWindow = frameRef.current && frameRef.current.contentWindow;
+          if (!frameWindow || event.source !== frameWindow) return;
+          const url = artifactPreviewExternalUrlFromMessage(event.data);
+          if (url && onOpenExternal) onOpenExternal(url);
+        };
+        window.addEventListener('message', handlePreviewMessage);
+        return () => window.removeEventListener('message', handlePreviewMessage);
+      }, [onOpenExternal]);
       const scaled = box && box.scale !== 1;
       const scaledW = box ? Math.max(1, Math.ceil(box.w * box.scale)) : 0;
       const scaledH = box ? Math.max(1, Math.ceil(box.h * box.scale)) : 0;
@@ -1140,13 +1154,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 data-zoom-mode={zoomMode}
                 data-zoom-scale={box ? String(box.scale) : ''}
                 style={frameStyle()}
-                srcDoc={"<script>"
-                  + "document.addEventListener('contextmenu',function(e){e.preventDefault();});"
-                  // 预览内拦截 <a> 导航：srcDoc 的 base 是父文档(app)，放任会把 iframe 跳成 app 首页。
-                  // 阻止默认导航；页内 #锚点 改为在预览内滚动；外链/# 不跳走。<button> 的 onclick 不受影响。
-                  + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a'):null;if(!a)return;e.preventDefault();var h=a.getAttribute('href')||'';if(h.charAt(0)==='#'&&h.length>1){var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView({behavior:'smooth'});}},true);"
-                  + "document.addEventListener('submit',function(e){e.preventDefault();},true);"
-                  + "<\/script><style>html,body{background:#15171a;margin:0;}</style>" + (html || '')} />
+                srcDoc={buildArtifactPreviewDocument(html)} />
             </div>
           </div>
         </div>

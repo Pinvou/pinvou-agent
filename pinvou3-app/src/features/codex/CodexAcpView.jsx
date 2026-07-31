@@ -1797,7 +1797,7 @@ export function CodexAcpView({
                         )
                       : undefined}
                     agentLabel={activeAgentName}
-                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(showError)}
+                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
                   />
                 )
               : (
@@ -1810,7 +1810,7 @@ export function CodexAcpView({
                     onRespond={respond}
                     onRespondElicitation={respondElicitation}
                     responding={responding}
-                    onOpenExternal={(url) => invoke('open_external_url', { url }).catch(showError)} />
+                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)} />
                 ))}
           </div>
         </div>
