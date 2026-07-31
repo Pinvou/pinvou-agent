@@ -46,6 +46,7 @@ use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
 };
+use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -134,6 +135,33 @@ impl SessionShellManagers {
 
     fn remove(&self, session_id: &str) {
         self.managers.lock().remove(session_id);
+    }
+}
+
+#[derive(Clone, Default)]
+struct SessionTurnShellTasks {
+    registries: Arc<SyncMutex<HashMap<String, TurnShellTaskRegistry>>>,
+}
+
+impl SessionTurnShellTasks {
+    fn for_session(
+        &self,
+        session_id: &str,
+        shell_manager: SharedShellManager,
+    ) -> TurnShellTaskRegistry {
+        let mut registries = self.registries.lock();
+        registries
+            .entry(session_id.to_string())
+            .or_insert_with(|| TurnShellTaskRegistry::new(shell_manager))
+            .clone()
+    }
+
+    fn get(&self, session_id: &str) -> Option<TurnShellTaskRegistry> {
+        self.registries.lock().get(session_id).cloned()
+    }
+
+    fn remove(&self, session_id: &str) {
+        self.registries.lock().remove(session_id);
     }
 }
 
@@ -282,6 +310,7 @@ pub struct EnginePool {
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
+    turn_shell_tasks: SessionTurnShellTasks,
     app: AppHandle,
     store: SessionStore,
     tool_factory: EngineToolFactory,
@@ -334,6 +363,7 @@ impl EnginePool {
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
+            turn_shell_tasks: SessionTurnShellTasks::default(),
             app,
             store,
             tool_factory,
@@ -504,6 +534,9 @@ impl EnginePool {
             .map(|profile| profile.workspace)
             .unwrap_or_else(|| bridge.session_workspace(session_id));
         let shell_manager = self.shell_managers.for_session(session_id, shell_workspace);
+        let turn_shell_tasks = self
+            .turn_shell_tasks
+            .for_session(session_id, shell_manager.clone());
         let mut extra_tools = (self.tool_factory)(&self.app, session_id);
         extra_tools.push(Arc::new(
             crate::features::connectors::ima::ImaOpenApiTool::new(),
@@ -517,6 +550,7 @@ impl EnginePool {
             self.compute_disallowed_tools(),
             self.turn_lifecycles.for_session(session_id),
             shell_manager,
+            turn_shell_tasks,
         )
         .await?;
 
@@ -624,15 +658,47 @@ impl EnginePool {
         let EngineEntry {
             engine, forwarder, ..
         } = entry;
+        let active_turn_id = self
+            .turn_lifecycles
+            .get(session_id)
+            .and_then(|lifecycle| lifecycle.active_turn_id());
+        let turn_shell_tasks = self.turn_shell_tasks.get(session_id);
+        if let (Some(registry), Some(turn_id)) =
+            (turn_shell_tasks.as_ref(), active_turn_id.as_deref())
+        {
+            registry.request_cancel(turn_id);
+        }
+        let registry_for_drain = turn_shell_tasks.clone();
+        let turn_for_drain = active_turn_id.clone();
         let reclaimed = quiesce_engine_before_reclaim(
             || engine.cancel_current(),
             || async move {
+                if let (Some(registry), Some(turn_id)) =
+                    (registry_for_drain.as_ref(), turn_for_drain.as_deref())
+                {
+                    if let Err(error) = registry.drain_cancelled_turn(turn_id) {
+                        log::error!(
+                            "[engine_pool] failed to drain shell tasks before reclaim turn={turn_id}: {error:#}"
+                        );
+                    }
+                }
                 forwarder.abort();
                 let _ = forwarder.await;
             },
             || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
         )
         .await;
+        if let (Some(registry), Some(turn_id)) =
+            (turn_shell_tasks.as_ref(), active_turn_id.as_deref())
+        {
+            if let Err(error) = registry.finish_turn(turn_id, true) {
+                log::error!(
+                    "[engine_pool] failed to finalize shell tasks after reclaim sid={} turn={}: {error:#}",
+                    session_id,
+                    turn_id
+                );
+            }
+        }
         if reclaimed {
             log::warn!(
                 "[engine_pool] emitted interrupted terminal before reclaim sid={}",
@@ -660,6 +726,7 @@ impl EnginePool {
 
     pub(crate) fn forget_session(&self, session_id: &str) {
         self.turn_lifecycles.remove(session_id);
+        self.turn_shell_tasks.remove(session_id);
         self.shell_managers.remove(session_id);
     }
 
@@ -892,10 +959,43 @@ impl EnginePool {
     pub async fn cancel(&self, session_id: &str) {
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
+        let active_turn_id = self
+            .turn_lifecycles
+            .get(session_id)
+            .and_then(|lifecycle| lifecycle.active_turn_id());
+        let turn_shell_tasks = self.turn_shell_tasks.get(session_id);
+        if let (Some(registry), Some(turn_id)) =
+            (turn_shell_tasks.as_ref(), active_turn_id.as_deref())
+        {
+            registry.request_cancel(turn_id);
+        }
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             lifecycle.invalidate_unsubmitted_reservation();
+        }
+        if let (Some(registry), Some(turn_id)) = (turn_shell_tasks, active_turn_id) {
+            let drain_turn_id = turn_id.clone();
+            let drained = tauri::async_runtime::spawn_blocking(move || {
+                registry.drain_cancelled_turn(&drain_turn_id)
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("cancel turn shell tasks join failed: {error}"))
+            .and_then(|result| result);
+            match drained {
+                Ok(killed) if !killed.is_empty() => log::info!(
+                    "[pinvou3][chat] canceled {} shell task(s) for sid={} turn={}",
+                    killed.len(),
+                    session_id,
+                    turn_id
+                ),
+                Ok(_) => {}
+                Err(error) => log::error!(
+                    "[pinvou3][chat] failed to cancel shell tasks sid={} turn={}: {error:#}",
+                    session_id,
+                    turn_id
+                ),
+            }
         }
     }
 

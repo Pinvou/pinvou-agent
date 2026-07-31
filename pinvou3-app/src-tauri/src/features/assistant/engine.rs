@@ -33,6 +33,7 @@ use tokio::sync::broadcast;
 
 use crate::core::mode_state::{SerializableMode, SessionModeState};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
     transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
     ScheduledTokenAccounting, SessionStore,
@@ -341,6 +342,13 @@ fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmissi
 }
 
 impl TurnLifecycle {
+    pub(crate) fn active_turn_id(&self) -> Option<String> {
+        let state = self.state.lock();
+        (state.active && state.submitted)
+            .then(|| state.turn_id.clone())
+            .flatten()
+    }
+
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
         let reservation_id = {
             let mut state = self.state.lock();
@@ -813,6 +821,7 @@ impl AppEngine {
         disallowed: Vec<String>,
         turn_lifecycle: Arc<TurnLifecycle>,
         shell_manager: SharedShellManager,
+        turn_shell_tasks: TurnShellTaskRegistry,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
@@ -881,6 +890,7 @@ impl AppEngine {
             scheduled_unattended.clone(),
             turn_lifecycle.clone(),
             shell_manager,
+            turn_shell_tasks,
         );
 
         Ok((
@@ -1441,6 +1451,7 @@ fn spawn_event_forwarder(
     scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
+    turn_shell_tasks: TurnShellTaskRegistry,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -1491,6 +1502,13 @@ fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
+                    if let Err(error) = turn_shell_tasks.begin_turn(&turn_id) {
+                        log::error!(
+                            "[pinvou3][chat] failed to open shell task scope sid={} turn={}: {error:#}",
+                            session_id,
+                            turn_id
+                        );
+                    }
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
@@ -1574,6 +1592,25 @@ fn spawn_event_forwarder(
                         } else {
                             None
                         };
+                    if let (Some(turn_id), Some(task_id)) =
+                        (current_turn_id.as_deref(), background_task_id.as_deref())
+                    {
+                        match turn_shell_tasks.register_task(turn_id, task_id) {
+                            Ok(killed) if !killed.is_empty() => log::info!(
+                                "[pinvou3][chat] canceled {} late shell task(s) sid={} turn={}",
+                                killed.len(),
+                                session_id,
+                                turn_id
+                            ),
+                            Ok(_) => {}
+                            Err(error) => log::error!(
+                                "[pinvou3][chat] failed to register shell task sid={} turn={} task={}: {error:#}",
+                                session_id,
+                                turn_id,
+                                task_id
+                            ),
+                        }
+                    }
                     shell_output.tool_completed(&id, background_task_id.as_deref());
                     let tracked_input = tool_inputs
                         .remove(&id)
@@ -2189,6 +2226,25 @@ fn spawn_event_forwarder(
                     // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
                     ..
                 } => {
+                    let shell_turn_id = current_turn_id.clone();
+                    if let Some(turn_id) = shell_turn_id.as_deref() {
+                        match turn_shell_tasks
+                            .finish_turn(turn_id, status == TurnOutcomeStatus::Interrupted)
+                        {
+                            Ok(killed) if !killed.is_empty() => log::info!(
+                                "[pinvou3][chat] finalized {} interrupted shell task(s) sid={} turn={}",
+                                killed.len(),
+                                session_id,
+                                turn_id
+                            ),
+                            Ok(_) => {}
+                            Err(error) => log::error!(
+                                "[pinvou3][chat] failed to finalize shell task scope sid={} turn={}: {error:#}",
+                                session_id,
+                                turn_id
+                            ),
+                        }
+                    }
                     let mut terminal_status = status;
                     let mut terminal_error = error;
                     if let Some(base_total_tokens) = scheduled_base_total_tokens {
@@ -2615,6 +2671,15 @@ fn spawn_event_forwarder(
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
+        if let Some(turn_id) = current_turn_id.as_deref() {
+            if let Err(error) = turn_shell_tasks.finish_turn(turn_id, true) {
+                log::error!(
+                    "[pinvou3][chat] failed to close shell task scope after event stream stop sid={} turn={}: {error:#}",
+                    session_id,
+                    turn_id
+                );
+            }
+        }
         match finish_reclaimed_lifecycle_turn(
             &turn_lifecycle,
             &app,
@@ -2929,6 +2994,21 @@ mod turn_lifecycle_tests {
         assert!(!lifecycle.on_submitted());
         assert!(lifecycle.finish_once(|| {}).is_some());
         assert!(lifecycle.on_submitted());
+    }
+
+    #[test]
+    fn forkguard_active_turn_id_is_available_only_while_the_turn_is_running() {
+        let lifecycle = TurnLifecycle::default();
+        assert_eq!(lifecycle.active_turn_id(), None);
+        lifecycle.on_submitted();
+        assert_eq!(lifecycle.active_turn_id(), None);
+        lifecycle.on_started("turn-shell-owner".to_string());
+        assert_eq!(
+            lifecycle.active_turn_id().as_deref(),
+            Some("turn-shell-owner")
+        );
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        assert_eq!(lifecycle.active_turn_id(), None);
     }
 
     #[test]
