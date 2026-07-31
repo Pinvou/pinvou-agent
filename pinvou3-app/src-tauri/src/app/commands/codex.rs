@@ -9,6 +9,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::codex_acp::reader_window::{self, ReaderOpenRequest};
 use crate::features::codex_acp::workspace::{
     self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
 };
@@ -358,6 +359,34 @@ pub async fn reveal_codex_workspace_file(
         crate::platform::os::external_application_path(directory),
         "Codex 工作区目录",
     )
+}
+
+// 代码弹窗「新窗口打开」：校验工作区可读且目标文件存在，再交给单例阅读器窗口（tab 复用见 reader_window）。
+#[tauri::command]
+pub async fn open_code_reader(
+    session_id: Option<String>,
+    workspace_path: Option<String>,
+    relative_path: String,
+    app: tauri::AppHandle,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
+    workspace::resolve_workspace_file(&root, &relative_path)
+        .map_err(|error| format!("打开代码阅读器失败: {error:#}"))?;
+    reader_window::open_code_reader(
+        &app,
+        ReaderOpenRequest {
+            session_id,
+            workspace_path,
+            relative_path,
+        },
+    )
+}
+
+// ReaderApp 挂载后拉取建窗前排队的打开请求（拉模式，规避窗口加载时序竞态）。
+#[tauri::command]
+pub async fn take_code_reader_pending() -> Result<Vec<ReaderOpenRequest>, String> {
+    Ok(reader_window::take_pending_open())
 }
 
 #[tauri::command]

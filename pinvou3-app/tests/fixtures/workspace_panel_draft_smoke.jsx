@@ -42,6 +42,7 @@ window.__TAURI__ = {
           return [{ name: 'main.py', relativePath: 'main.py', kind: 'file' }];
         case 'open_codex_workspace_file':
         case 'reveal_codex_workspace_file':
+        case 'open_code_reader':
           return null;
         default:
           throw new Error(`unexpected command: ${command}`);
@@ -90,6 +91,11 @@ const copy = {
   resizeCorner: '调整弹窗大小，双击恢复默认',
   fontDecrease: '减小字号',
   fontIncrease: '增大字号',
+  openInNewWindow: '在新窗口打开',
+  readerTitle: '代码阅读器',
+  readerEmpty: '从工作区文件弹窗选择「在新窗口打开」，文件会在此以标签页累积。',
+  closeTab: '关闭标签页',
+  noSessionChanges: '创建会话后，这里会列出本会话对项目的更改。',
   showRawErrors: true,
   operationFailed: '工作区操作失败，请重试',
 };

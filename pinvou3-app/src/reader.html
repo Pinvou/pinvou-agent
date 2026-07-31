@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>代码阅读器</title>
+  <script src="/vendor/tailwind.js"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+</head>
+<body class="m-0 p-0">
+  <div id="root"></div>
+  <script>document.addEventListener('contextmenu', function (event) { event.preventDefault(); });</script>
+  <script type="module" src="/app/reader-main.jsx"></script>
+</body>
+</html>

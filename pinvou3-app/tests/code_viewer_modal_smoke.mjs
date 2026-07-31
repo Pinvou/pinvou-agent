@@ -56,7 +56,7 @@ try {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewport({ width: 1200, height: 900, deviceScaleFactor: 1 });
-  await page.goto(url, { waitUntil: 'networkidle0' });
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-testid="code-viewer-modal"]', { timeout: 10000 });
 
   const initial = await page.evaluate(() => {

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, ChevronDown, ChevronRight, Copy, ExternalLink, FileText,
-  FolderOpen, Plus, RefreshCw, Search, X,
+  AppWindow, ArrowLeft, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileText,
+  FolderOpen, Link, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
@@ -69,10 +69,21 @@ function WorkspaceTree({
   onPreview,
   onAddReference,
   onOpenExternal,
+  onOpenReader,
   referencedPaths,
   copy,
 }) {
   const entries = entriesByDirectory[directory] || [];
+  const [copiedPath, setCopiedPath] = useState('');
+
+  function copyRowPath(relativePath) {
+    navigator.clipboard?.writeText(relativePath);
+    setCopiedPath(relativePath);
+    window.setTimeout(() => {
+      setCopiedPath(current => (current === relativePath ? '' : current));
+    }, 1200);
+  }
+
   return entries.map(entry => {
     const isDirectory = entry.kind === 'directory';
     const open = expanded.has(entry.relativePath);
@@ -100,16 +111,29 @@ function WorkspaceTree({
             <span className="truncate text-[12px]">{entry.name}</span>
           </button>
           {!isDirectory && (
+            <button
+              type="button"
+              aria-label={copy.openInNewWindow}
+              title={copy.openInNewWindow}
+              onClick={() => onOpenReader(entry)}
+              className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+            >
+              <AppWindow size={13} />
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
+            title={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
+            onClick={() => copyRowPath(entry.relativePath)}
+            className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+          >
+            {copiedPath === entry.relativePath
+              ? <Check size={13} className="text-emerald-500" />
+              : <Link size={13} />}
+          </button>
+          {!isDirectory && (
             <>
-              <button
-                type="button"
-                aria-label={copy.open}
-                title={copy.open}
-                onClick={() => onOpenExternal(entry)}
-                className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
-              >
-                <ExternalLink size={13} />
-              </button>
               <button
                 type="button"
                 aria-label={referenced ? copy.addedPath(entry.relativePath) : copy.addPath(entry.relativePath)}
@@ -122,6 +146,15 @@ function WorkspaceTree({
                 }`}
               >
                 <Plus size={13} />
+              </button>
+              <button
+                type="button"
+                aria-label={copy.open}
+                title={copy.open}
+                onClick={() => onOpenExternal(entry)}
+                className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+              >
+                <ExternalLink size={13} />
               </button>
             </>
           )}
@@ -137,6 +170,7 @@ function WorkspaceTree({
             onPreview={onPreview}
             onAddReference={onAddReference}
             onOpenExternal={onOpenExternal}
+            onOpenReader={onOpenReader}
             referencedPaths={referencedPaths}
             copy={copy}
           />
@@ -229,6 +263,7 @@ export function CodexWorkspacePanel({
   const [viewer, setViewer] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState('');
+  const previewRequestRef = useRef(0);
   const showError = (nextError) => {
     console.error('Codex workspace operation failed:', nextError);
     setError(copy.showRawErrors ? String(nextError) : copy.operationFailed);
@@ -346,6 +381,8 @@ export function CodexWorkspacePanel({
   }
 
   useEffect(() => {
+    // 工作区切换：作废在途预览响应（见 showFile 的序号校验）。
+    previewRequestRef.current += 1;
     setEntriesByDirectory({});
     setExpanded(new Set());
     setQuery('');
@@ -410,6 +447,8 @@ export function CodexWorkspacePanel({
   }
 
   async function showFile(entry) {
+    // 请求序号防竞态：只应用最后一次点击的响应，慢响应（旧文件/旧工作区）直接丢弃。
+    const requestId = ++previewRequestRef.current;
     setDiff(null);
     setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
     try {
@@ -417,9 +456,11 @@ export function CodexWorkspacePanel({
         ...scopePayload(),
         relativePath: entry.relativePath,
       });
+      if (requestId !== previewRequestRef.current) return;
       setViewer({ name: entry.name, relativePath: entry.relativePath, preview, loading: false, error: '' });
       setError('');
     } catch (nextError) {
+      if (requestId !== previewRequestRef.current) return;
       console.error('Codex workspace preview failed:', nextError);
       setViewer({
         name: entry.name,
@@ -448,11 +489,13 @@ export function CodexWorkspacePanel({
   }
 
   async function openWorkspacePath(command, relativePath) {
-    if (!relativePath || !browsable) return;
+    if (!relativePath || !browsable) return false;
     try {
       await invoke(command, { ...scopePayload(), relativePath });
+      return true;
     } catch (nextError) {
       showError(nextError);
+      return false;
     }
   }
 
@@ -561,6 +604,7 @@ export function CodexWorkspacePanel({
                     onPreview={showFile}
                     onAddReference={onAddReference}
                     onOpenExternal={(entry) => openWorkspacePath('open_codex_workspace_file', entry.relativePath)}
+                    onOpenReader={(entry) => openWorkspacePath('open_code_reader', entry.relativePath)}
                     referencedPaths={referencedPaths}
                     copy={copy}
                   />
@@ -572,31 +616,38 @@ export function CodexWorkspacePanel({
             </>
           ) : (
             <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-2 py-3">
-              {!changes?.baselineAvailable && (
-                <div className="mx-1 mb-2 rounded-lg bg-amber-500/8 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
-                  {copy.noBaseline}
-                </div>
-              )}
-              {changes?.branch && <div className="px-2 pb-2 text-[10px] text-gray-400">{copy.branch} · {changes.branch}</div>}
-              {(changes?.changes || []).map(change => (
-                <button
-                  key={`${change.status}:${change.relativePath}`}
-                  type="button"
-                  onClick={() => showDiff(change)}
-                  className="w-full min-h-11 px-2 py-1.5 rounded-lg flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
-                >
-                  <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
-                    {changeLabel(change.status, copy)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[11px]" title={change.relativePath}>{change.relativePath}</span>
-                    <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin, copy)}{change.staged ? ` · ${copy.staged}` : ''}</span>
-                  </span>
-                  <ChevronRight size={12} className="shrink-0 text-gray-400" />
-                </button>
-              ))}
-              {changes && changes.changes.length === 0 && (
-                <div className="py-12 text-center text-[11px] text-gray-400">{copy.noChanges}</div>
+              {!sessionId ? (
+                // draft（无会话）模式：变更对比依赖会话基线，给专属空态而非复用旧会话文案。
+                <div className="py-12 px-4 text-center text-[11px] leading-5 text-gray-400">{copy.noSessionChanges}</div>
+              ) : (
+                <>
+                  {!changes?.baselineAvailable && (
+                    <div className="mx-1 mb-2 rounded-lg bg-amber-500/8 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                      {copy.noBaseline}
+                    </div>
+                  )}
+                  {changes?.branch && <div className="px-2 pb-2 text-[10px] text-gray-400">{copy.branch} · {changes.branch}</div>}
+                  {(changes?.changes || []).map(change => (
+                    <button
+                      key={`${change.status}:${change.relativePath}`}
+                      type="button"
+                      onClick={() => showDiff(change)}
+                      className="w-full min-h-11 px-2 py-1.5 rounded-lg flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                    >
+                      <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
+                        {changeLabel(change.status, copy)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[11px]" title={change.relativePath}>{change.relativePath}</span>
+                        <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin, copy)}{change.staged ? ` · ${copy.staged}` : ''}</span>
+                      </span>
+                      <ChevronRight size={12} className="shrink-0 text-gray-400" />
+                    </button>
+                  ))}
+                  {changes && changes.changes.length === 0 && (
+                    <div className="py-12 text-center text-[11px] text-gray-400">{copy.noChanges}</div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -612,6 +663,9 @@ export function CodexWorkspacePanel({
           onClose={() => setViewer(null)}
           onOpen={() => openWorkspacePath('open_codex_workspace_file', viewer.relativePath)}
           onReveal={() => openWorkspacePath('reveal_codex_workspace_file', viewer.relativePath)}
+          onOpenInNewWindow={async () => {
+            if (await openWorkspacePath('open_code_reader', viewer.relativePath)) setViewer(null);
+          }}
           copy={copy}
         />
       )}

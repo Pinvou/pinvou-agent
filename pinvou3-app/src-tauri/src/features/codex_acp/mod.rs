@@ -8,6 +8,7 @@ mod attachments;
 mod diagnostics;
 mod events;
 mod platform;
+pub(crate) mod reader_window;
 mod runtime;
 mod store;
 pub(crate) mod workspace;

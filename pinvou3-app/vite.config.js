@@ -83,6 +83,7 @@ export default defineConfig(({ mode }) => {
         : {
             main: resolve(sourceRoot, 'index.html'),
             pet: resolve(sourceRoot, 'pet.html'),
+            reader: resolve(sourceRoot, 'reader.html'),
           },
     },
   },

@@ -667,7 +667,11 @@ fn looks_like_text(path: &Path) -> bool {
     if sample.contains(&0) {
         return false;
     }
-    std::str::from_utf8(sample).is_ok()
+    match std::str::from_utf8(sample) {
+        Ok(_) => true,
+        // 8KB 截断点恰好落在多字节字符中间时，容忍末尾不完整序列（≤4 字节）。
+        Err(error) => error.valid_up_to() > 0 && sample.len() - error.valid_up_to() <= 4,
+    }
 }
 
 fn image_mime_type(path: &Path) -> &'static str {
@@ -1023,6 +1027,16 @@ mod tests {
         }
         let preview = preview_workspace_file(root.path(), "notes").unwrap();
         assert_eq!(preview.text.as_deref(), Some("plain text without extension\n"));
+    }
+
+    #[test]
+    fn preview_kind_tolerates_utf8_boundary_at_sniff_cutoff() {
+        let root = TestDir::new("utf8-boundary");
+        // 8191 个 ASCII + 一个三字节字符：8KB 采样正好切在该字符中间。
+        let content = format!("{}中", "a".repeat(8191));
+        fs::write(root.path().join("boundary.unknown"), content).unwrap();
+        let preview = preview_workspace_file(root.path(), "boundary.unknown").unwrap();
+        assert_eq!(preview.kind, "text");
     }
 
     #[test]

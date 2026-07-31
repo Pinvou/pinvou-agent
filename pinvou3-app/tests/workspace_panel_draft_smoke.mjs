@@ -99,12 +99,44 @@ try {
     openCalls,
   );
 
-  // 「更改」tab：无会话无基线，显示降级提示且不发起 changes 请求。
+  // 文件行悬浮按钮 → 新窗口打开（阅读器）同样只带 workspacePath。
+  await page.evaluate(() => {
+    const readerButton = [...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '在新窗口打开');
+    readerButton?.click();
+  });
+  const readerCalls = await page.evaluate(() => window.__invokeLog.filter((entry) => entry.command === 'open_code_reader'));
+  assert(
+    readerCalls.length === 1 && readerCalls[0].args.workspacePath === 'D:/proj/demo' && readerCalls[0].args.sessionId == null,
+    'draft 模式新窗口打开应只携带 workspacePath',
+    readerCalls,
+  );
+
+  // 目录行也有「复制相对路径」按钮；文件行按钮顺序：新窗口打开 → 复制路径 → 添加引用 → 外部打开。
+  const rowButtons = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.group')];
+    const summarize = (row) => [...row.querySelectorAll('button[aria-label]')]
+      .map((button) => button.getAttribute('aria-label'));
+    const dirRow = rows.find((row) => row.innerText.includes('src'));
+    const fileRow = rows.find((row) => row.innerText.includes('main.py'));
+    return { dir: dirRow ? summarize(dirRow) : null, file: fileRow ? summarize(fileRow) : null };
+  });
+  assert(
+    rowButtons.dir?.includes('复制相对路径'),
+    '目录行应有复制相对路径按钮',
+    rowButtons,
+  );
+  assert(
+    JSON.stringify(rowButtons.file) === JSON.stringify(['在新窗口打开', '复制相对路径', '添加 main.py 到对话', '用系统应用打开']),
+    '文件行按钮顺序错误',
+    rowButtons,
+  );
+
+  // 「更改」tab：无会话时显示专属空态文案，且不发起 changes 请求。
   await page.evaluate(() => {
     const tab = [...document.querySelectorAll('button')].find((button) => button.textContent.trim().startsWith('更改'));
     tab?.click();
   });
-  await page.waitForFunction(() => document.body.innerText.includes('无法判断更改'), { timeout: 5000 });
+  await page.waitForFunction(() => document.body.innerText.includes('创建会话后'), { timeout: 5000 });
   const changesCalls = await page.evaluate(() => window.__invokeLog.filter((entry) => entry.command === 'get_codex_workspace_changes'));
   assert(changesCalls.length === 0, 'draft 模式不应请求工作区变更', changesCalls);
 
