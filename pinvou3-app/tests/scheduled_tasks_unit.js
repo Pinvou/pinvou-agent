@@ -25,6 +25,10 @@ const tauriBridge = tauriBridgeFeatureNames
   .map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8'))
   .concat(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'))
   .join('\n');
+const webBridge = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'),
+  'utf8'
+);
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
 const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
@@ -457,6 +461,13 @@ assert.ok(
   /fn should_sync_session\(_is_scheduled: bool, _has_messages: bool\)[\s\S]{0,520}\n\s*true\s*\n}/.test(enginePoolRust) &&
     /should_sync_session\(is_scheduled, !saved\.messages\.is_empty\(\)\)/.test(enginePoolRust),
   'every Session must SyncSession even when its durable message list is empty'
+);
+assert.ok(
+  tauriBridge.includes('preserveInterruptedAssistantPresentation') &&
+    webBridge.includes('preserveInterruptedAssistantPresentation') &&
+    tauriBridge.includes('item.interruptedDisplayOnly = true') &&
+    webBridge.includes('item.interruptedDisplayOnly = true'),
+  'desktop and Web bridges must share the display-only interrupted response behavior'
 );
 assert.ok(
   /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\./.test(scheduledTaskPromptRust) &&
@@ -1212,6 +1223,256 @@ async function authoritativeHydrateDropsReplayedAssistantTail() {
     (JSON.stringify(assistantItems).match(/answer tail/g) || []).length,
     1,
     "the mid-turn replay tail must not be appended after the authoritative full answer"
+  );
+}
+
+async function interruptedTurnRetainsDisplayOnlyPartial() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-interrupted-display-only";
+  var durableMessages = [];
+  harness.handlers.create_session = function () {
+    return { id: sessionId, title: "New chat", transcript_revision: "empty" };
+  };
+  harness.handlers.list_sessions = function () {
+    return [{ id: sessionId, title: "Interrupted display", message_count: durableMessages.length }];
+  };
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Interrupted display",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "display-" + durableMessages.length,
+    };
+  };
+
+  await bridge.sessions.createNewSession();
+  await bridge.chat.sendMessage("first question");
+  durableMessages = [
+    { role: "user", content: [{ type: "text", text: "first question" }] },
+  ];
+  await harness.emit("chat:delta", { session_id: sessionId, text: "partial reply" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var interruptedState = bridge.state.get("chat");
+  assert.strictEqual(
+    interruptedState.messages.some(function (message) {
+      return JSON.stringify(message).includes("partial reply");
+    }),
+    false,
+    "an interrupted partial response must not enter the authoritative message list"
+  );
+  assert.ok(
+    interruptedState.chatItems.some(function (item) {
+      return item.type === "assistant" && item.interruptedDisplayOnly === true &&
+        String(item.html || "").includes("partial reply");
+    }),
+    "the interrupted partial response must remain visible after authority reconciliation"
+  );
+
+  await bridge.chat.sendMessage("follow up");
+  var followupState = bridge.state.get("chat");
+  var firstUserIndex = followupState.chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "first question";
+  });
+  var partialIndex = followupState.chatItems.findIndex(function (item) {
+    return item.type === "assistant" && item.interruptedDisplayOnly === true;
+  });
+  var followupIndex = followupState.chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "follow up";
+  });
+  assert.ok(
+    firstUserIndex >= 0 && firstUserIndex < partialIndex && partialIndex < followupIndex,
+    "the display-only partial must stay in its original turn when the user continues"
+  );
+
+  durableMessages = [
+    { role: "user", content: [{ type: "text", text: "first question" }] },
+    { role: "user", content: [{ type: "text", text: "follow up" }] },
+    { role: "assistant", content: [{ type: "text", text: "complete follow-up" }] },
+  ];
+  await harness.emit("chat:delta", { session_id: sessionId, text: "complete follow-up" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var completedState = bridge.state.get("chat");
+  var completedPartialIndex = completedState.chatItems.findIndex(function (item) {
+    return item.type === "assistant" && item.interruptedDisplayOnly === true &&
+      String(item.html || "").includes("partial reply");
+  });
+  var completedFollowupIndex = completedState.chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "follow up";
+  });
+  assert.ok(
+    completedPartialIndex >= 0 && completedPartialIndex < completedFollowupIndex,
+    "later authoritative refreshes must not move the interrupted partial into another turn"
+  );
+  assert.strictEqual(
+    completedState.messages.some(function (message) {
+      return JSON.stringify(message).includes("partial reply");
+    }),
+    false,
+    "later turns must not promote the display-only partial into model context"
+  );
+}
+
+async function remoteInterruptedTurnKeepsItsDisplayPosition() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-remote-interrupted-display";
+  var durableMessages = [
+    { role: "user", content: [{ type: "text", text: "older question" }] },
+    { role: "assistant", content: [{ type: "text", text: "remote partial reply" }] },
+  ];
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Remote interrupted display",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "remote-" + durableMessages.length,
+    };
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: "remote question",
+    operation: "append",
+    base_transcript_revision: "remote-2",
+  });
+  await harness.emit("chat:turn_started", { session_id: sessionId });
+  durableMessages = durableMessages.concat([
+    { role: "user", content: [{ type: "text", text: "remote question" }] },
+  ]);
+  await harness.emit("chat:delta", {
+    session_id: sessionId,
+    text: "remote partial reply",
+  });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var chatItems = bridge.state.get("chat").chatItems;
+  var olderUserIndex = chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "older question";
+  });
+  var remoteUserIndex = chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "remote question";
+  });
+  var partialIndex = chatItems.findIndex(function (item) {
+    return item.type === "assistant" && item.interruptedDisplayOnly === true &&
+      String(item.html || "").includes("remote partial reply");
+  });
+  assert.ok(
+    olderUserIndex >= 0 && olderUserIndex < remoteUserIndex && remoteUserIndex < partialIndex,
+    "a remote interrupted partial must stay after the remote user turn, not an older turn"
+  );
+}
+
+async function interruptedTurnWithoutUserItemDropsPartial() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-interrupted-no-user-anchor";
+  var durableMessages = [
+    { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+  ];
+  harness.handlers.list_sessions = function () {
+    return [{ id: sessionId, title: "Unanchored interrupt", message_count: durableMessages.length }];
+  };
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Unanchored interrupt",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "no-user-" + durableMessages.length,
+    };
+  };
+
+  // transcript 里没有任何 user 消息(无 user 气泡、无法锚定轮次)的中断:
+  // 不得把全部历史 assistant 项标记为仅展示,否则权威重载会在末尾复活它们,
+  // 复制出整段历史的重复副本。
+  await bridge.sessions.switchToSession(sessionId);
+  await harness.emit("chat:turn_started", { session_id: sessionId });
+  await harness.emit("chat:delta", { session_id: sessionId, text: "orphan partial" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var unanchoredState = bridge.state.get("chat");
+  assert.ok(
+    !unanchoredState.chatItems.some(function (item) {
+      return item.interruptedDisplayOnly === true;
+    }),
+    "without any user turn anchor, nothing may be marked display-only"
+  );
+  assert.strictEqual(
+    unanchoredState.chatItems.filter(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("old reply");
+    }).length,
+    1,
+    "authority reconciliation must not duplicate the unanchored history"
+  );
+  assert.ok(
+    !unanchoredState.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("orphan partial");
+    }),
+    "an unanchorable interrupted partial must not be resurrected by authority reconciliation"
+  );
+
+  durableMessages = [
+    { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+    { role: "user", content: [{ type: "text", text: "next question" }] },
+    { role: "assistant", content: [{ type: "text", text: "clean reply" }] },
+  ];
+  await bridge.chat.sendMessage("next question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "clean reply" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var followupState = bridge.state.get("chat");
+  var assistantMessages = followupState.messages.filter(function (message) {
+    return message.role === "assistant";
+  });
+  assert.ok(
+    assistantMessages.length > 0 &&
+      !JSON.stringify(assistantMessages).includes("orphan partial"),
+    "the dropped partial must not leak into the next authoritative assistant message"
   );
 }
 
@@ -3153,6 +3414,9 @@ Promise.resolve()
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
   .then(authoritativeTurnSyncDoesNotCrossSessions)
   .then(authoritativeHydrateDropsReplayedAssistantTail)
+  .then(interruptedTurnRetainsDisplayOnlyPartial)
+  .then(remoteInterruptedTurnKeepsItsDisplayPosition)
+  .then(interruptedTurnWithoutUserItemDropsPartial)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
