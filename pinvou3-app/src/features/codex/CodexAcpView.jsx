@@ -1815,25 +1815,24 @@ export function CodexAcpView({
           </div>
         </div>
 
-        {showScrollBottom && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-[106px] z-20 flex justify-center">
-            <button
-              type="button"
-              onClick={scrollConversationToBottom}
-              aria-label={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
-              title={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
-              className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 border ${
-                pending.length || pendingElicitations.length
-                  ? 'bg-amber-500/95 text-white border-amber-400'
-                  : 'bg-white/95 dark:bg-[#2B2C2F]/95 text-[#1F1F1F] dark:text-[#E3E3E3] border-black/10 dark:border-white/10'
-              }`}
-            >
-              <ChevronDown size={15} />
-            </button>
-          </div>
-        )}
-
-        <div className={`shrink-0 px-6 pt-2 ${activeId ? 'pb-5' : 'pb-[60px]'}`}>
+        <div className={`relative shrink-0 px-6 pt-2 ${activeId ? 'pb-5' : 'pb-[60px]'}`}>
+          {showScrollBottom && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-center pb-2">
+              <button
+                type="button"
+                onClick={scrollConversationToBottom}
+                aria-label={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
+                title={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
+                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 border ${
+                  pending.length || pendingElicitations.length
+                    ? 'bg-amber-500/95 text-white border-amber-400'
+                    : 'bg-white/95 dark:bg-[#2B2C2F]/95 text-[#1F1F1F] dark:text-[#E3E3E3] border-black/10 dark:border-white/10'
+                }`}
+              >
+                <ChevronDown size={15} />
+              </button>
+            </div>
+          )}
           <div className={`w-full mx-auto ${activeId ? 'max-w-[920px]' : 'max-w-[800px]'}`}>
             {!activeId && (
               <HomeModeSwitcher

@@ -461,8 +461,10 @@ try {
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
     && codexView.includes('scrollConversationToBottom')
-    && codexView.includes('codexCopy.latest'),
-  'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
+    && codexView.includes('codexCopy.latest')
+    && codexView.includes('bottom-full')
+    && !codexView.includes('bottom-[106px]'),
+  'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
