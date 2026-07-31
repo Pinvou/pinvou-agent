@@ -111,7 +111,7 @@ assert.match(genericLog, /hljs-attr">status</u);
 const unsupported = renderMarkdownMarkup('```unknown-lang\n<script>alert("x")</script>\n```');
 assert.match(unsupported, /class="hljs language-plaintext"/u);
 assert.match(unsupported, /&lt;script&gt;/u);
-assert.doesNotMatch(unsupported, /<script>/u);
+assert.doesNotMatch(unsupported, /<script>/iu);
 
 const oversizedJavaScript = highlightCode(
   `const value = 1;\n${'x'.repeat(MAX_HIGHLIGHT_SOURCE_BYTES)}`,
@@ -143,7 +143,7 @@ assert.notStrictEqual(cachedAfterEviction, cachedFirst, 'highlight cache must ev
 
 const dangerousRawHtml = renderMarkdownMarkup('before <script>alert("x")</script> after');
 assert.match(dangerousRawHtml, /&lt;script&gt;/u);
-assert.doesNotMatch(dangerousRawHtml, /<script>/u);
+assert.doesNotMatch(dangerousRawHtml, /<script>/iu);
 
 const css = readApp('src', 'styles', 'base.css');
 assert.match(css, /\.dark-code \.msg-md :not\(pre\) > code/u);
