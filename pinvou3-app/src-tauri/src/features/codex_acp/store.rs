@@ -483,7 +483,12 @@ pub fn validate_codex_project_workspace(path: &Path) -> Result<PathBuf> {
     if !canonical.is_dir() {
         anyhow::bail!("Codex 工作目录必须是文件夹: {}", canonical.display());
     }
-    Ok(canonical)
+    // Windows 的 canonicalize 返回 \\?\ 前缀的 verbatim 路径；ACP agent（如 kimi acp）的
+    // 工作目录校验不识别该形式，会把一切相对路径误判为“工作目录之外”而拒绝读取。
+    // 统一归一化为常规盘符路径（非 Windows 平台为恒等映射）。
+    Ok(crate::platform::os::platform_compat_path(
+        &canonical.to_string_lossy(),
+    ))
 }
 
 #[cfg(test)]
@@ -539,9 +544,19 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
+        let validated = validate_codex_project_workspace(&root).unwrap();
+        assert!(validated.is_dir());
         assert_eq!(
-            validate_codex_project_workspace(&root).unwrap(),
+            validated.canonicalize().unwrap(),
             root.canonicalize().unwrap()
+        );
+        // 回归断言：交给 ACP agent 的工作目录不得保留 \\?\ verbatim 前缀，
+        // 否则 kimi acp 会把相对路径误判为“工作目录之外”。该断言全平台有效——
+        // 非 Windows 的 canonicalize 本就不产生该前缀，Windows 上由 platform_compat_path 归一化。
+        assert!(
+            !validated.to_string_lossy().starts_with(r"\\?\"),
+            "validated workspace must not keep the verbatim prefix: {}",
+            validated.display()
         );
         assert!(validate_codex_project_workspace(&root.join("missing")).is_err());
         fs::remove_dir_all(&root).unwrap();
