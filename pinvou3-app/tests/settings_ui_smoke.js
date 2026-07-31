@@ -10,7 +10,28 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const assert = require('assert');
 const { startUiTestServer } = require('./ui_test_server');
+
+const settingsViewSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
+  'utf8',
+);
+const detectStart = settingsViewSource.indexOf('async function handleDetect()');
+const detectEnd = settingsViewSource.indexOf('function vllmStatusLabel(', detectStart);
+assert.notStrictEqual(detectStart, -1, 'local model detect handler must exist');
+assert.notStrictEqual(detectEnd, -1, 'local model detect handler boundary must exist');
+const detectSource = settingsViewSource.slice(detectStart, detectEnd);
+assert.match(
+  detectSource,
+  /loaded === true/,
+  'automatic local-model fill must require an explicitly loaded model',
+);
+assert.doesNotMatch(
+  detectSource,
+  /loaded !== false/,
+  'unknown model state must not be treated as loaded during automatic fill',
+);
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
@@ -143,7 +164,7 @@ function injectSource() {
             base_url: 'http://127.0.0.1:11434/v1',
             status: 'ready',
             model: 'qwen2.5-coder:32b',
-            models: ['qwen2.5-coder:32b', 'deepseek-r1:14b'],
+            models: [{ id: 'qwen2.5-coder:32b', loaded: true }, { id: 'deepseek-r1:14b', loaded: false }],
             max_model_len: 32768,
           },
           {
@@ -594,6 +615,9 @@ async function modalWidth(page, headingText) {
       ollamaModel: text.includes('qwen2.5-coder:32b') && text.includes('deepseek-r1:14b'),
       vllmModel: text.includes('qwen36_35b_256k'),
       providerLine: text.includes('Ollama · http://127.0.0.1:11434/v1') && text.includes('vLLM · http://127.0.0.1:8000/v1'),
+      notLoadedTag: text.includes('未加载') && text.includes('尚未载入内存，首次使用时会自动加载'),
+      loadedSortedFirst: text.indexOf('qwen2.5-coder:32b') > -1 && text.indexOf('deepseek-r1:14b') > -1
+        && text.indexOf('qwen2.5-coder:32b') < text.indexOf('deepseek-r1:14b'),
     };
   });
   rec('⑥.3 本地模型自动检测展示多个服务与多个模型 ID', Object.values(localDetectUi).every(Boolean), JSON.stringify(localDetectUi));
