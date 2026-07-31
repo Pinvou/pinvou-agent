@@ -94,7 +94,7 @@ const openChatExternalUrl = (url) => {
     if (opened) opened.opener = null;
     return;
   }
-  invokeTauri('open_external_url', { url }).catch(() => {});
+  invokeTauri('open_user_external_url', { url }).catch(() => {});
 };
 
 const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
@@ -2561,7 +2561,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   const href = a.getAttribute('href') || '';
                   if (/^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    invokeTauri('open_external_url', { url: href }).catch(() => {});
+                    invokeTauri('open_user_external_url', { url: href }).catch(() => {});
                   }
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
