@@ -595,10 +595,79 @@ fn file_kind(path: &Path) -> String {
             | "java"
             | "kt"
             | "swift"
+            | "rb"
+            | "php"
+            | "cs"
+            | "lua"
+            | "scala"
+            | "gradle"
+            | "tf"
+            | "tex"
+            | "rst"
+            | "pl"
+            | "pm"
+            | "r"
+            | "m"
+            | "mm"
     ) {
         return "text".to_string();
     }
+    // 无扩展名的常见文本文件名（Dockerfile、Makefile、LICENSE、.gitignore 等）。
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        file_name.as_str(),
+        "dockerfile"
+            | "makefile"
+            | "gnumakefile"
+            | "jenkinsfile"
+            | "vagrantfile"
+            | "gemfile"
+            | "rakefile"
+            | "brewfile"
+            | "cmakelists.txt"
+            | "license"
+            | "licence"
+            | "copying"
+            | "notice"
+            | "authors"
+            | "contributors"
+            | "changelog"
+            | "readme"
+            | ".gitignore"
+            | ".gitattributes"
+            | ".gitmodules"
+            | ".editorconfig"
+            | ".npmrc"
+            | ".yarnrc"
+            | ".env"
+            | ".envrc"
+    ) {
+        return "text".to_string();
+    }
+    // 扩展名白名单之外的内容嗅探：头部 8KB 无 NUL 且为合法 UTF-8 即按文本处理，
+    // 覆盖 .hbs/.ipynb/.cmake 等未列举扩展名及无扩展名的文本文件。
+    if looks_like_text(path) {
+        return "text".to_string();
+    }
     "binary".to_string()
+}
+
+fn looks_like_text(path: &Path) -> bool {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut buffer = [0u8; 8192];
+    let read = std::io::Read::read(&mut file, &mut buffer).unwrap_or(0);
+    let sample = &buffer[..read];
+    if sample.contains(&0) {
+        return false;
+    }
+    std::str::from_utf8(sample).is_ok()
 }
 
 fn image_mime_type(path: &Path) -> &'static str {
@@ -927,6 +996,33 @@ mod tests {
         let preview = preview_workspace_file(root.path(), "src/main.rs").unwrap();
         assert_eq!(preview.kind, "text");
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
+    }
+
+    #[test]
+    fn preview_kind_covers_special_names_and_sniffs_unknown_text() {
+        let root = TestDir::new("file-kind");
+        fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        fs::write(root.path().join("LICENSE"), "MIT License\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(root.path().join("script.rb"), "puts 1\n").unwrap();
+        fs::write(root.path().join("notes"), "plain text without extension\n").unwrap();
+        fs::write(root.path().join("empty.weird"), "").unwrap();
+        fs::write(root.path().join("payload.bin"), [0x89, 0x50, 0x4E, 0x47, 0x00, 0x0D]).unwrap();
+
+        for (path, expected) in [
+            ("Dockerfile", "text"),
+            ("LICENSE", "text"),
+            (".gitignore", "text"),
+            ("script.rb", "text"),
+            ("notes", "text"),
+            ("empty.weird", "text"),
+            ("payload.bin", "binary"),
+        ] {
+            let preview = preview_workspace_file(root.path(), path).unwrap();
+            assert_eq!(preview.kind, expected, "unexpected kind for {path}");
+        }
+        let preview = preview_workspace_file(root.path(), "notes").unwrap();
+        assert_eq!(preview.text.as_deref(), Some("plain text without extension\n"));
     }
 
     #[test]
