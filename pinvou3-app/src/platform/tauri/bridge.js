@@ -439,6 +439,7 @@
       workflowMediaFilterName: "Images and videos",
       workflowApproveFailed: "⚠️ Approve failed: ",
       workflowRejectFailed: "⚠️ Reject failed: ",
+      workflowRejectDefaultReason: "Sent back by the user. Please improve and try again.",
       workflowRerunPrefix: "🔄 Rerun ",
       workflowRerunFailed: "⚠️ Rerun failed: ",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
@@ -524,6 +525,7 @@
       workflowMediaFilterName: "画像と動画",
       workflowApproveFailed: "⚠️ 承認に失敗: ",
       workflowRejectFailed: "⚠️ 差し戻しに失敗: ",
+      workflowRejectDefaultReason: "ユーザーによる差し戻し。改善して再試行してください。",
       workflowRerunPrefix: "🔄 再実行 ",
       workflowRerunFailed: "⚠️ 再実行に失敗: ",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
@@ -538,7 +540,7 @@
       remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
       remoteDialogDesktop: "リモートコントロールではデスクトップ側のファイル選択ダイアログを使用します",
       echoOtherPrefix: "(その他) ",
-      newChatFallbackTitle: "新規チャット",
+      newChatFallbackTitle: "新しいチャット",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -609,6 +611,7 @@
       workflowMediaFilterName: "图片和视频",
       workflowApproveFailed: "⚠️ 通过失败: ",
       workflowRejectFailed: "⚠️ 打回失败: ",
+      workflowRejectDefaultReason: "用户打回，请改进后重试",
       workflowRerunPrefix: "🔄 重跑 ",
       workflowRerunFailed: "⚠️ 重跑失败: ",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
@@ -630,6 +633,13 @@
     var lang = state.settings && state.settings.language;
     var m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
     return m[key] !== undefined ? m[key] : BT_TABLE.zh[key];
+  }
+  // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
+  // 与 web 桥和 main.jsx 的同款判断保持一致。
+  function isDefaultChatTitle(title) {
+    return title === BT_TABLE.zh.newChatFallbackTitle
+      || title === BT_TABLE.en.newChatFallbackTitle
+      || title === BT_TABLE.ja.newChatFallbackTitle;
   }
 
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
@@ -768,6 +778,7 @@
     sessionStates: sessionStates, turnUsageDirty: turnUsageDirty,
     personaPlaceholderTitles: personaPlaceholderTitles,
     renderMarkdown: renderMarkdown, safeConsoleInfo: safeConsoleInfo, bt: bt,
+    isDefaultChatTitle: isDefaultChatTitle,
     notify: function () { return notify.apply(null, arguments); },
     runSyncOnSession: function () { return runSyncOnSession.apply(null, arguments); },
     startThinking: function () { return startThinking.apply(null, arguments); },
@@ -997,7 +1008,7 @@
     try {
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
+      if (!meta || isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
@@ -1887,7 +1898,7 @@
   var resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   var openConversationAttachment = artifactsFeature.openConversationAttachment;
   var revealConversationAttachment = artifactsFeature.revealConversationAttachment;
-  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
+  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, isDefaultChatTitle: isDefaultChatTitle, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
   var loadPersonas = personasFeature.loadPersonas;
   var getPersonas = personasFeature.getPersonas;
   var createPersona = personasFeature.createPersona;

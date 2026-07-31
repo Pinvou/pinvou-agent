@@ -15,6 +15,7 @@
     var timeStr = context.timeStr;
     var ensureSession = context.ensureSession;
     var personaPlaceholderTitles = context.personaPlaceholderTitles;
+    var isDefaultChatTitle = context.isDefaultChatTitle;
     var personaPoolCache = [];
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
@@ -80,13 +81,13 @@
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
-      // 标题仍是默认值「新对话」→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
+      // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
       var sid = state.activeSessionId;
       var m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
-      if (m && (m.title === "新对话" || m.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
         var newTitle = personaName(card);
         if (newTitle) {
           try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}

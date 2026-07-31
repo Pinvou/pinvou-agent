@@ -13,6 +13,7 @@
     var renderMarkdown = context.renderMarkdown;
     var safeConsoleInfo = context.safeConsoleInfo;
     var bt = context.bt;
+    var isDefaultChatTitle = context.isDefaultChatTitle;
     var runSyncOnSession = context.runSyncOnSession;
     var startThinking = context.startThinking;
     var stopThinking = context.stopThinking;
@@ -643,7 +644,7 @@
       try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
       // Auto-title
       var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[state.activeSessionId])) {
+      if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {
         var firstUser = state.messages.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {

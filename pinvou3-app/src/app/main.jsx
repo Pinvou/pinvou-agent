@@ -40,6 +40,10 @@ import {
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
+
+// 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
+// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。
+const DEFAULT_CHAT_TITLES = new Set(Object.values(dict).map(d => d && d.newChat).filter(Boolean));
 // Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
   { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
@@ -710,13 +714,13 @@ function workspaceDisplayName(path) {
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
       const sessionBusy = (bs && bs.sessionBusy) || {};
       const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
-        const isPlaceholder = !s.title || s.title === '新对话' || s.title === 'New chat';
+        const isPlaceholder = !s.title || DEFAULT_CHAT_TITLES.has(s.title);
         const titlePresentation = isPlaceholder
           ? { text: t.newChat, attachments: [] }
           : sessionTitlePresentation(s.title, s.title_attachment_names);
         return {
           id: s.id,
-          // 后端默认标题是字面 "新对话"/"New chat"(bridge 以此判断是否自动改名)——显示层映射成当前语言
+          // 后端默认标题是三语哨兵之一(见 DEFAULT_CHAT_TITLES;bridge 以此判断是否自动改名)——显示层映射成当前语言
           title: sessionTitlePlainText(titlePresentation),
           titleContent: titlePresentation.attachments.length
             ? <SessionAttachmentTitle presentation={titlePresentation} />
@@ -734,7 +738,7 @@ function workspaceDisplayName(path) {
       }) : [];
       const codexHistory = codexSessions.map(session => ({
         id: session.id,
-        title: (!session.title || session.title === '新对话' || session.title === 'New chat')
+        title: (!session.title || DEFAULT_CHAT_TITLES.has(session.title))
           ? t.newChat
           : session.title,
         subtitle: session.workspace_kind === 'project'
@@ -775,7 +779,7 @@ function workspaceDisplayName(path) {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
           // 状态由后端 run DTO 直接携带。
           const rawTitle = run.sessionTitle || '';
-          const title = (!rawTitle || rawTitle === '新对话' || rawTitle === 'New chat')
+          const title = (!rawTitle || DEFAULT_CHAT_TITLES.has(rawTitle))
             ? (run.taskName || t.scheduledPlans)
             : rawTitle;
           return {
@@ -808,7 +812,7 @@ function workspaceDisplayName(path) {
 
       function decorateScheduledRunChat(chat, run) {
         if (!run) return chat;
-        const title = (!chat.title || chat.title === t.newChat || chat.title === '新对话' || chat.title === 'New chat')
+        const title = (!chat.title || DEFAULT_CHAT_TITLES.has(chat.title))
           ? (run.taskName || t.scheduledPlans)
           : chat.title;
         return Object.assign({}, chat, {

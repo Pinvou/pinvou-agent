@@ -196,7 +196,7 @@
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
     try {
-      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || "用户打回，请改进后重试", sessionId: state.workflow.run.sessionId });
+      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || bt("workflowRejectDefaultReason"), sessionId: state.workflow.run.sessionId });
       if (cardId) resolveRunCard(cardId, "rejected");
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();
