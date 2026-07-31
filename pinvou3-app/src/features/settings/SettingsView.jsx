@@ -1484,7 +1484,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const entries = Array.isArray(c.models) && c.models.length
           ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
           : [];
-        const preferred = entries.find(e => e && e.id && e.loaded !== false);
+        const preferred = entries.find(e => e && e.id && e.loaded === true)
+          || entries.find(e => e && e.id && e.loaded == null);
         const modelId = preferred ? preferred.id : (c.model || '');
         if (c.base_url) setBaseUrl(c.base_url);
         if (modelId) { setModel(modelId); if (!name.trim()) setName(modelId); }
@@ -1513,7 +1514,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             const entries = Array.isArray(c.models) && c.models.length
               ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
               : (c.model ? [{ id: c.model, loaded: null }] : []);
-            const loadedEntry = entries.find(e => e && e.id && e.loaded !== false);
+            const loadedEntry = entries.find(e => e && e.id && e.loaded === true);
             if (loadedEntry) applyCandidate({ base_url: c.base_url, model: loadedEntry.id });
           }
           else if (online.length === 0) {

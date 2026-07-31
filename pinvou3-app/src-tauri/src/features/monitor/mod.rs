@@ -1431,8 +1431,8 @@ mod tests {
         assert_eq!(models.len(), 3);
         assert_eq!(models[0].loaded, Some(true));
         assert_eq!(models[1].loaded, Some(false));
-        assert_eq!(models[2].loaded, None); // 缺 state 字段 = 未知
-        // 空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测
+        // 缺 state 字段 = 未知；空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测。
+        assert_eq!(models[2].loaded, None);
         assert!(parse_lmstudio_v0_models(&serde_json::json!({"data":[]})).is_none());
         assert!(parse_lmstudio_v0_models(&serde_json::json!({})).is_none());
     }

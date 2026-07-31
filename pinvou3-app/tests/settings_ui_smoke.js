@@ -10,7 +10,28 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const assert = require('assert');
 const { startUiTestServer } = require('./ui_test_server');
+
+const settingsViewSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
+  'utf8',
+);
+const detectStart = settingsViewSource.indexOf('async function handleDetect()');
+const detectEnd = settingsViewSource.indexOf('function vllmStatusLabel(', detectStart);
+assert.notStrictEqual(detectStart, -1, 'local model detect handler must exist');
+assert.notStrictEqual(detectEnd, -1, 'local model detect handler boundary must exist');
+const detectSource = settingsViewSource.slice(detectStart, detectEnd);
+assert.match(
+  detectSource,
+  /loaded === true/,
+  'automatic local-model fill must require an explicitly loaded model',
+);
+assert.doesNotMatch(
+  detectSource,
+  /loaded !== false/,
+  'unknown model state must not be treated as loaded during automatic fill',
+);
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
@@ -143,7 +164,7 @@ function injectSource() {
             base_url: 'http://127.0.0.1:11434/v1',
             status: 'ready',
             model: 'qwen2.5-coder:32b',
-            models: [{ id: 'deepseek-r1:14b', loaded: false }, { id: 'qwen2.5-coder:32b', loaded: true }],
+            models: [{ id: 'qwen2.5-coder:32b', loaded: true }, { id: 'deepseek-r1:14b', loaded: false }],
             max_model_len: 32768,
           },
           {
