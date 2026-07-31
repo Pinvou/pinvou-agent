@@ -926,6 +926,9 @@ const FEISHU_STEPS = [
           oauthTokenPresent: !!authState?.oauth_token_present,
         };
       });
+      // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
+      const findLocalizedTool = (backendId) =>
+        tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
       const isToolVisibleOnPlatform = (tool) => (
         externalAuthAvailable
         || !isRestrictedExternalAuthTool(tool)
@@ -1093,8 +1096,8 @@ const FEISHU_STEPS = [
             requestId,
           });
           if (isCurrentOAuthRequest(backendId, requestId)) {
-            const t = tsToolsData.find(x => x.backendId === backendId);
-            const name = t ? t.title : backendId;
+            const tool = findLocalizedTool(backendId);
+            const name = tool ? tool.title : backendId;
             clearOAuthRequest(backendId, requestId);
             setBusyId(null);
             const outcome = resolveOAuthInstallOutcome(
@@ -1130,7 +1133,7 @@ const FEISHU_STEPS = [
       // 执行安装（已拿到 config 或无需 config）
       const doInstall = async (backendId, userConfig) => {
         if (!canMutateToolStore) return;
-        const t = tsToolsData.find(x => x.backendId === backendId);
+        const t = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(t)) return;
         const name = t ? t.title : backendId;
         const hasConfig = Boolean(t?.configFields?.length);
@@ -1532,13 +1535,13 @@ const FEISHU_STEPS = [
         // 纯技能(无配套 MCP、无同名工具:如上传技能)才走 handleSkillAction。PPT=pptx 有同名工具,落下方正常工具流。
         if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
         else if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
-        const requestedTool = tools.find(x => x.backendId === backendId) || tsToolsData.find(x => x.backendId === backendId);
+        const requestedTool = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;
         // 飞书走 CLI 连接流程,不走 marketplace install
         if (backendId === 'feishu') {
           if (isInstalled) return disconnectFeishu();
           // 未连接 → 弹详情弹窗（里面有进度卡）+ 触发 config init --new(浏览器自动建 app + 两段扫码,不收表单)
-          const ft = tools.find(x => x.feishuCli) || tsToolsData.find(x => x.backendId === 'feishu');
+          const ft = tools.find(x => x.feishuCli) || localizeTool(tsToolsData.find(x => x.backendId === 'feishu'), t);
           if (ft) setSelectedTool(ft);
           return connectFeishu();
         }
@@ -1546,28 +1549,28 @@ const FEISHU_STEPS = [
         if (backendId === 'wecom') {
           if (isInstalled) return disconnectWecom();
           // 打开详情弹窗(里面有流程卡)+ 触发连接
-          const wt = tools.find(x => x.wecomCli) || tsToolsData.find(x => x.backendId === 'wecom');
+          const wt = tools.find(x => x.wecomCli) || localizeTool(tsToolsData.find(x => x.backendId === 'wecom'), t);
           if (wt) setSelectedTool(wt);
           return connectWecom();
         }
         // 钉钉同走 CLI 连接流程(单段扫码)
         if (backendId === 'dingtalk') {
           if (isInstalled) return disconnectDingtalk();
-          const dt = tools.find(x => x.dingtalkCli) || tsToolsData.find(x => x.backendId === 'dingtalk');
+          const dt = tools.find(x => x.dingtalkCli) || localizeTool(tsToolsData.find(x => x.backendId === 'dingtalk'), t);
           if (dt) setSelectedTool(dt);
           return connectDingtalk();
         }
         // 腾讯会议同走 CLI 连接流程(单段 OAuth 授权)
         if (backendId === 'tmeet') {
           if (isInstalled) return disconnectTmeet();
-          const tt = tools.find(x => x.tmeetCli) || tsToolsData.find(x => x.backendId === 'tmeet');
+          const tt = tools.find(x => x.tmeetCli) || localizeTool(tsToolsData.find(x => x.backendId === 'tmeet'), t);
           if (tt) setSelectedTool(tt);
           return connectTmeet();
         }
         // IMA 是 OpenAPI Skill 连接器:校验凭据 + 安装 skill,不写 mcp.json。
         if (backendId === 'ima') {
           if (isInstalled) return disconnectIma();
-          const it = tools.find(x => x.backendId === 'ima') || tsToolsData.find(x => x.backendId === 'ima');
+          const it = tools.find(x => x.backendId === 'ima') || localizeTool(tsToolsData.find(x => x.backendId === 'ima'), t);
           if (!it) return;
           setConfigDialog({
             backendId,
@@ -1580,8 +1583,8 @@ const FEISHU_STEPS = [
           });
           return;
         }
-        const t = tsToolsData.find(x => x.backendId === backendId);
-        const name = t ? t.title : backendId;
+        const tool = findLocalizedTool(backendId);
+        const name = tool ? tool.title : backendId;
 
         // 安装：有 configFields 的工具先弹配置弹窗
         if (!isInstalled) {
@@ -1592,15 +1595,15 @@ const FEISHU_STEPS = [
             if (st && st.state && st.state !== 'ok') { setObsidianGuide({ backendId, name, ...st }); return; }
             return doInstall(backendId, {});
           }
-          if (t?.configFields && t.configFields.length > 0) {
+          if (tool?.configFields && tool.configFields.length > 0) {
             setConfigDialog({
               backendId,
               name,
-              fields: t.configFields,
-              configTitle: t.configTitle,
-              configDescription: t.configDescription,
-              configDocUrl: t.configDocUrl,
-              configDocLabel: t.configDocLabel,
+              fields: tool.configFields,
+              configTitle: tool.configTitle,
+              configDescription: tool.configDescription,
+              configDocUrl: tool.configDocUrl,
+              configDocLabel: tool.configDocLabel,
             });
             return;
           }
@@ -1612,7 +1615,7 @@ const FEISHU_STEPS = [
         try {
           await invokeTauri('uninstall_marketplace_tool', { toolId: backendId });
           await loadBackendState();
-          if (t?.oauthMcp) {
+          if (tool?.oauthMcp) {
             setToolAuthStates(prev => ({
               ...prev,
               [backendId]: {

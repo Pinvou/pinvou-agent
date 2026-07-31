@@ -25,7 +25,7 @@ export function HomeModeSwitcher({
   codeAgent = 'codex',
   onCodeAgentChange,
   isDark = false,
-  copy = { work: '工作', design: '设计', code: '代码' },
+  copy = {},
 }) {
   const visibleModes = HOME_MODE_OPTIONS
     .filter(option => option.enabled !== false && (option.key !== 'code' || codeSupported))

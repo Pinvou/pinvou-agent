@@ -403,6 +403,12 @@
       artifactChanged: "The artifact changed during download. Please try again",
       artifactOverflow: "The desktop app sent more artifact data than declared. Download stopped",
       artifactIncomplete: "The artifact download is incomplete. Please try again",
+      attachPathUnavailable: "WebUI does not expose desktop attachment paths",
+      attachDownloadUnsupported: "⚠️ This desktop version does not support remote attachment download. Update the desktop app and try again.",
+      attachChunkInvalid: "The desktop app returned an invalid attachment chunk. Download stopped",
+      attachChanged: "The attachment changed during download. Please try again",
+      attachOverflow: "The desktop app sent more attachment data than declared. Download stopped",
+      attachIncomplete: "The attachment download is incomplete. Please try again",
       mountCollectionFailed: "Failed to mount knowledge collection: ",
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
@@ -503,6 +509,12 @@
       artifactChanged: "ダウンロード中に成果物が変更されました。もう一度お試しください",
       artifactOverflow: "デスクトップ側が宣言サイズを超える成果物データを返しました。ダウンロードを中止しました",
       artifactIncomplete: "成果物のダウンロードが不完全です。もう一度お試しください",
+      attachPathUnavailable: "WebUI はデスクトップ側の添付ファイルパスを公開していません",
+      attachDownloadUnsupported: "⚠️ 現在のデスクトップ側はリモート添付ファイルのダウンロードに対応していません。デスクトップを更新して再試行してください。",
+      attachChunkInvalid: "デスクトップ側が無効な添付ファイルチャンクを返しました。ダウンロードを中止しました",
+      attachChanged: "ダウンロード中に添付ファイルが変更されました。もう一度お試しください",
+      attachOverflow: "デスクトップ側が宣言サイズを超える添付ファイルデータを返しました。ダウンロードを中止しました",
+      attachIncomplete: "添付ファイルのダウンロードが不完全です。もう一度お試しください",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
@@ -603,6 +615,12 @@
       artifactChanged: "产物在下载期间发生变化，请重试",
       artifactOverflow: "桌面端返回的产物数据超过声明大小，已停止下载",
       artifactIncomplete: "产物下载不完整，请重试",
+      attachPathUnavailable: "WebUI 无法访问桌面端附件路径",
+      attachDownloadUnsupported: "⚠️ 当前桌面端不支持远程附件下载，请更新桌面端后重试。",
+      attachChunkInvalid: "桌面端返回了无效的附件分块，已停止下载",
+      attachChanged: "附件在下载期间发生变化，请重试",
+      attachOverflow: "桌面端返回的附件数据超过声明大小，已停止下载",
+      attachIncomplete: "附件下载不完整，请重试",
       mountCollectionFailed: "挂载知识集失败: ",
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
@@ -6922,11 +6940,11 @@
     if (!IS_WEB) {
       return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
     }
-    return Promise.reject(new Error("WebUI does not expose desktop attachment paths"));
+    return Promise.reject(new Error(bt("attachPathUnavailable")));
   }
   async function downloadConversationAttachment(reference) {
     if (!hasCapability("artifactDownload")) {
-      throw new Error("当前桌面端不支持远程附件下载，请更新桌面端后重试。");
+      throw new Error(bt("attachDownloadUnsupported"));
     }
     var args = conversationAttachmentArgs(reference);
     var expectedSize = null;
@@ -6943,7 +6961,7 @@
       var partSize = Number(part.size);
       if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
           !Number.isSafeInteger(partSize) || partSize < 0) {
-        throw new Error("桌面端返回了无效的附件分块，已停止下载。");
+        throw new Error(bt("attachChunkInvalid"));
       }
       if (expectedSize === null) {
         expectedSize = partSize;
@@ -6951,7 +6969,7 @@
           throw webArtifactDownloadLimitError(expectedSize);
         }
       } else if (partSize !== expectedSize) {
-        throw new Error("附件在下载期间发生变化，请重试。");
+        throw new Error(bt("attachChanged"));
       }
       filename = part.name || filename;
       var encoded = String(part.data_base64 || part.dataBase64 || "");
@@ -6960,12 +6978,12 @@
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       if (!bytes.length && !part.eof) throw new Error("Attachment download made no progress");
       if (offset + bytes.length > expectedSize) {
-        throw new Error("桌面端返回的附件数据超过声明大小，已停止下载。");
+        throw new Error(bt("attachOverflow"));
       }
       chunks.push(bytes);
       offset += bytes.length;
       if (part.eof) {
-        if (offset !== expectedSize) throw new Error("附件下载不完整，请重试。");
+        if (offset !== expectedSize) throw new Error(bt("attachIncomplete"));
         break;
       }
     }

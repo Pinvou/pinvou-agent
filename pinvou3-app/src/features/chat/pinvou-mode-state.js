@@ -6,12 +6,6 @@ const LEGACY_PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v1';
 const DEFAULT_PINVOU_MODE_SCOPE = 'draft';
 const MAX_SESSION_MODE_STATES = 200;
 
-const PINVOU_MODE_LABELS = {
-  work: '工作',
-  design: '设计',
-  code: '代码',
-};
-
 const UNROUTED_WORK_SUBTAB = 'general';
 const DEFAULT_WORK_SUBTAB = UNROUTED_WORK_SUBTAB;
 const DEFAULT_DESIGN_SUBTAB = UNROUTED_WORK_SUBTAB;
@@ -223,7 +217,6 @@ function reducePinvouModeState(state, action) {
 export {
   DEFAULT_PINVOU_MODE_SCOPE,
   DESIGN_SUBTABS,
-  PINVOU_MODE_LABELS,
   PINVOU_MODE_STORAGE_KEY,
   PINVOU_MODES,
   WORK_SUBTABS,

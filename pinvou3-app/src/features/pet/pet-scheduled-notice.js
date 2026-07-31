@@ -1,3 +1,5 @@
+import { dict } from '../../shared/i18n.js';
+
 export const SCHEDULED_NOTICE_ACK_KEY = 'pinvou3-pet-scheduled-notice-ack-v1';
 
 function sessionId(payload) {
@@ -41,7 +43,7 @@ export function selectLatestScheduledNotice(tasks, runsByTask, acknowledgedAt = 
   return latest;
 }
 
-export function formatScheduledNoticeBody(notice, locale = 'zh-CN', completedLabel = '已完成') {
+export function formatScheduledNoticeBody(notice, locale = 'zh-CN', completedLabel = dict.zh.uiPet.done) {
   const time = new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
     minute: '2-digit',

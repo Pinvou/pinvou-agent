@@ -23,35 +23,20 @@ const markdownFenceFor = (text) => {
 
 const buildAiPrompt = ({ t, artifact, selectedText, instruction }) => {
   const fence = markdownFenceFor(selectedText);
-  if (typeof t.apMdAiPrompt === 'function') {
-    return t.apMdAiPrompt({
-      path: artifact.path,
-      title: artifact.basename || artifact.path,
-      selectedText,
-      instruction,
-      fence,
-    });
-  }
-  return [
-    'Please edit the selected content in this Markdown artifact.',
-    '',
-    `File path: ${artifact.path}`,
-    '',
-    'Selected content:',
-    `${fence}markdown`,
+  return t.apMdAiPrompt({
+    path: artifact.path,
+    title: artifact.basename || artifact.path,
     selectedText,
-    fence,
-    '',
-    'Edit request:',
     instruction,
-  ].join('\n');
+    fence,
+  });
 };
 
 const statusText = (t, state) => {
-  if (state === 'dirty') return t.apMdDirty || 'Unsaved';
-  if (state === 'saving') return t.apMdSaving || 'Saving...';
-  if (state === 'error') return t.apMdSaveFailed || 'Save failed';
-  return t.apMdSaved || 'Saved';
+  if (state === 'dirty') return t.apMdDirty || '';
+  if (state === 'saving') return t.apMdSaving || '';
+  if (state === 'error') return t.apMdSaveFailed || '';
+  return t.apMdSaved || '';
 };
 
 const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
@@ -315,7 +300,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     if (!instruction) return;
     const ok = await saveNow();
     if (!ok) return;
-    const confirmText = t.apMdComposerReplaceConfirm || 'This will fill the chat input with the AI edit instruction. Continue?';
+    const confirmText = t.apMdComposerReplaceConfirm || '';
     if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
     bridge.chat.prefillComposer?.(buildAiPrompt({
       t,

@@ -140,7 +140,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const head = `${timestamp ? '[' + timestamp + '] ' : ''}${eventLabels[event] || event}`;
       const context = [];
       if (record.role_id) context.push(logLabels.role + ': ' + record.role_id);
-      if (record.agent_id) context.push('Agent: ' + record.agent_id);
+      if (record.agent_id) context.push(logLabels.agent + ': ' + record.agent_id);
       if (record.stage) context.push(logLabels.stage + ': ' + record.stage);
       if (record.category && record.category !== 'unknown') context.push(logLabels.category + ': ' + (categoryLabels[record.category] || record.category));
       if (record.attempt) context.push(logLabels.retry + ': ' + record.attempt + '/' + (record.max_retries || '?'));
@@ -925,7 +925,7 @@ const WidgetCard = ({ title, children, theme }) => {
           <div className="space-y-4">
             {questions.map((q, qi) => (
               <div key={q.id || qi}>
-                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || ('Q' + (qi + 1))}</div>
+                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || t.uiWorkflow.questionHeader(qi + 1)}</div>
                 <div className={`text-[13px] mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{q.question || ''}</div>
                 <div className="flex flex-col gap-1.5">
                   {(q.options || []).map((opt, oi) => {

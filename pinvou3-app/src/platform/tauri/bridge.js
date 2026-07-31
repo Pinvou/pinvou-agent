@@ -453,6 +453,7 @@
       remoteCmdNotAllowed: cmd => "Remote control does not allow this command: " + cmd,
       remoteDialogDesktop: "Remote control uses the desktop file picker",
       echoOtherPrefix: "(Other) ",
+      newChatFallbackTitle: "New chat",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -537,6 +538,7 @@
       remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
       remoteDialogDesktop: "リモートコントロールではデスクトップ側のファイル選択ダイアログを使用します",
       echoOtherPrefix: "(その他) ",
+      newChatFallbackTitle: "新規チャット",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -621,6 +623,7 @@
       remoteCmdNotAllowed: cmd => "远程控制不允许调用该命令：" + cmd,
       remoteDialogDesktop: "远程控制使用桌面端文件选择器",
       echoOtherPrefix: "(其他) ",
+      newChatFallbackTitle: "新对话",
     },
   };
   function bt(key) {
@@ -1215,7 +1218,7 @@
       snapshot_source: "live",
       session: {
         id: sid,
-        title: meta.title || "新对话",
+        title: meta.title || bt("newChatFallbackTitle"),
         status: ws.busy ? "running" : "idle",
         updated_at: meta.updated_at || "",
         message_count: meta.message_count || msgs.length || chatItems.length || 0,
@@ -1897,7 +1900,7 @@
   var mountCollection = personasFeature.mountCollection;
   var unmountCollection = personasFeature.unmountCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
-  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer });
+  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
   var loadAppVersion = updaterFeature.loadAppVersion;
   var checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   var checkForUpdate = updaterFeature.checkForUpdate;

@@ -13,6 +13,7 @@
     var listen = context.listen;
     var publishRemoteLiveSnapshot = context.publishRemoteLiveSnapshot;
     var getBuffer = context.getBuffer;
+    var bt = context.bt;
   // ── 应用内升级 ───────────────────────────────────────────────────
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
@@ -37,7 +38,7 @@
       if (!state.sessions.some(function (item) { return item.id === s.id; })) {
         state.sessions.unshift({
           id: s.id,
-          title: s.title || "新对话",
+          title: s.title || bt("newChatFallbackTitle"),
           updated_at: s.updated_at || "",
           message_count: s.message_count || 0,
         });

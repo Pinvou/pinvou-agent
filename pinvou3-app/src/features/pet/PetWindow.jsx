@@ -1460,7 +1460,7 @@ export default function PetWindow({
             type="button"
             className="pet-activation-fallback"
             data-pet-activation-failed="true"
-            aria-label={`${petCopy.loadFailed}，${petCopy.retry}`}
+            aria-label={petCopy.loadFailedRetry(petCopy.loadFailed, petCopy.retry)}
             onClick={() => { void activateSelectedPet(DEFAULT_PET_ID, true); }}
           >
             <span className="pet-activation-fallback-icon" aria-hidden="true">!</span>

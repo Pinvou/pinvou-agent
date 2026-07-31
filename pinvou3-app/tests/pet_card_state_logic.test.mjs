@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = path.join(here, '..', 'src', 'features', 'pet', 'pet-card-state.js');
+const i18nSrc = path.join(here, '..', 'src', 'shared', 'i18n.js');
 const dir = mkdtempSync(path.join(tmpdir(), 'pinvou3-pet-card-state-'));
-const tmp = path.join(dir, 'pet-card-state.mjs');
+// pet-card-state.js imports ../../shared/i18n.js，保持两层目录结构以便相对路径解析
+const tmp = path.join(dir, 'a', 'b', 'pet-card-state.mjs');
 
 try {
+  mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+  mkdirSync(path.join(dir, 'shared'), { recursive: true });
   copyFileSync(src, tmp);
+  copyFileSync(i18nSrc, path.join(dir, 'shared', 'i18n.js'));
   const cards = await import(`${pathToFileURL(tmp).href}?t=${Date.now()}`);
 
   const initial = cards.createPetCardUiState();

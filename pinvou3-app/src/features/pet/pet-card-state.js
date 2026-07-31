@@ -1,3 +1,5 @@
+import { dict } from '../../shared/i18n.js';
+
 export function createPetCardUiState() {
   return {
     expandedSessionId: null,
@@ -61,14 +63,14 @@ export function petCardUiReducer(state, action) {
           replySessionId: state.retrySubmission.sessionId,
           draft: state.retrySubmission.text,
           retrySubmission: null,
-          error: action.error || '发送失败',
+          error: action.error || dict.zh.uiPet.sendFailed,
         };
       }
       return {
         ...state,
         pendingRequestId: null,
         retrySubmission: null,
-        error: action.error || '发送失败',
+        error: action.error || dict.zh.uiPet.sendFailed,
       };
 
     case 'close-reply':

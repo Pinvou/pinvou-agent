@@ -251,14 +251,6 @@ export function elapsedMs(start, end, now = Date.now()) {
   return Math.max(0, to - from);
 }
 
-export function formatElapsed(milliseconds) {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  if (seconds < 60) return `${seconds}秒`;
-  const minutes = Math.floor(seconds / 60);
-  const remaining = seconds % 60;
-  return remaining ? `${minutes}分${remaining}秒` : `${minutes}分`;
-}
-
 export function terminalStatus(status, exitCode = null) {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'failed' || (exitCode != null && exitCode !== 0)) return 'failed';
