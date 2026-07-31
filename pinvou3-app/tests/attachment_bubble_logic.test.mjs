@@ -104,13 +104,13 @@ for (const relativePath of [
   const bridgeSource = await readFile(new URL(relativePath, import.meta.url), 'utf8');
   assert.match(
     bridgeSource,
-    /var displayText = formatAttachmentDisplayText\(text, attachments\)/,
-    `${relativePath} must rebuild merged queue display text from the combined attachment list`,
+    /var item = q\.shift\(\);[\s\S]*var displayText = item\.displayText == null[\s\S]*formatAttachmentDisplayText\(item\.text, attachments\)/,
+    `${relativePath} must preserve each queued message's own display text and attachment fallback`,
   );
   assert.doesNotMatch(
     bridgeSource,
-    /items\.map\(function \(i\) \{ return i\.displayText; \}\)/,
-    `${relativePath} must not concatenate already-decorated queued messages`,
+    /q\.splice\(0, q\.length\)|items\.map\(function \(i\)/,
+    `${relativePath} must not merge multiple queued messages or their attachments`,
   );
 }
 assert.match(
