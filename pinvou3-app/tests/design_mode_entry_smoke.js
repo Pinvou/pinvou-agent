@@ -455,7 +455,8 @@ async function clickExactButton(page, text) {
   await sleep(100);
   const externalPreviewLinks = await page.evaluate(() => window.__PINVOU_TEST_EXTERNAL_URLS || []);
   rec('产物 HTML 外链由宿主交给系统浏览器命令且 iframe 不跳转',
-    externalPreviewLinks.includes('https://example.com/docs'),
+    externalPreviewLinks.length === 1
+      && externalPreviewLinks[0] === 'https://example.com/docs',
     JSON.stringify(externalPreviewLinks));
   await page.click('[data-testid="artifact-switcher-button"]');
   await sleep(150);
