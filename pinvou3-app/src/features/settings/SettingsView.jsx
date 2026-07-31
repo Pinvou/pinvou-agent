@@ -1479,8 +1479,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
       function applyCandidate(c) {
         if (!c) return;
+        // 优先填充已加载的模型：Ollama/LM Studio 的列表含全部已下载模型，
+        // 选未加载的模型 = 首次推理时由框架 JIT 静默载入内存（可能几十 GB）。
+        const entries = Array.isArray(c.models) && c.models.length
+          ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+          : [];
+        const preferred = entries.find(e => e && e.id && e.loaded === true)
+          || entries.find(e => e && e.id && e.loaded == null);
+        const modelId = preferred ? preferred.id : (c.model || '');
         if (c.base_url) setBaseUrl(c.base_url);
-        if (c.model) { setModel(c.model); if (!name.trim()) setName(c.model); }
+        if (modelId) { setModel(modelId); if (!name.trim()) setName(modelId); }
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
@@ -1498,7 +1506,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           });
           const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
           setDetectResult({ candidates: online });
-          if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
+          // 唯一可用实例直接填充——但只自动填充"已加载"的模型。Ollama/LM Studio
+          // 的列表接口返回全部已下载模型，JIT 机制下选未加载模型 = 首次推理时
+          // 静默载入内存（可能是几十 GB），必须交给用户显式选择。
+          if (online.length === 1) {
+            const c = online[0];
+            const entries = Array.isArray(c.models) && c.models.length
+              ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+              : (c.model ? [{ id: c.model, loaded: null }] : []);
+            const loadedEntry = entries.find(e => e && e.id && e.loaded === true);
+            if (loadedEntry) applyCandidate({ base_url: c.base_url, model: loadedEntry.id });
+          }
           else if (online.length === 0) {
             // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
             const setup = await bridge.vllm.detectLocalVllmSetup();
@@ -1585,18 +1603,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function localCandidateRows(result) {
         const candidates = (result && Array.isArray(result.candidates)) ? result.candidates : [];
         return candidates.flatMap(candidate => {
-          const ids = Array.isArray(candidate.models) && candidate.models.length
-            ? candidate.models
-            : (candidate.model ? [candidate.model] : []);
-          return ids.map((modelId, index) => ({
-            key: `${candidate.base_url || 'local'}:${modelId}`,
-            model: modelId,
+          // 新后端 models 为 [{id, loaded}]；兼容旧后端的字符串数组。
+          const entries = Array.isArray(candidate.models) && candidate.models.length
+            ? candidate.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+            : (candidate.model ? [{ id: candidate.model, loaded: null }] : []);
+          return entries.map((entry, index) => ({
+            key: `${candidate.base_url || 'local'}:${entry.id}`,
+            model: entry.id,
+            loaded: entry.loaded === undefined ? null : entry.loaded,
             base_url: candidate.base_url || '',
             provider: candidate.provider || 'local',
             label: candidate.label || settingsCopy.localModel,
             max_model_len: index === 0 ? candidate.max_model_len : null,
           })).filter(row => row.model && row.base_url);
-        });
+        }).sort((a, b) => (a.loaded === false ? 1 : 0) - (b.loaded === false ? 1 : 0)); // 已加载/未知的排前，未加载的沉底
       }
       function buildLocalModelPayload(row) {
         return {
@@ -1819,8 +1839,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                     <ProviderIcon preset="local_vllm" isDark={isDark} compact />
                     <span className="min-w-0 flex-1">
-                      <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{row.model}</span>
-                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{row.label} · {row.base_url}</span>
+                      <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>
+                        <span className="truncate">{row.model}</span>
+                        {row.loaded === false && (
+                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>{settingsCopy.modelNotLoadedTag}</span>
+                        )}
+                      </span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
+                        {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
+                      </span>
                     </span>
                     <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
                       className={actionClass}>{settingsCopy.add}</button>
