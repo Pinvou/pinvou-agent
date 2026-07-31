@@ -342,15 +342,25 @@ try {
     && workspaceSelectorIndex > composerFooterIndex
     && attachmentButtonIndex > workspaceSelectorIndex,
   'the draft workspace selector must live in the composer footer before the attachment control');
-  assert.ok(codexView.includes('sessionInfo && (')
+  const accountTriggerIndex = codexView.indexOf('data-testid="acp-account-menu-trigger"');
+  const composerConfigsIndex = codexView.indexOf('data-testid="codex-composer-configs"');
+  assert.ok(accountTriggerIndex > composerFooterIndex
+    && composerConfigsIndex > accountTriggerIndex,
+  'Codex session controls must live in the composer footer right of the connection status');
+  assert.ok(codexView.includes('composerControlsVisible && (')
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
-  'Codex controls must appear in the composer only after the session reports real options');
+  'Codex controls must render from the session report or, in draft, the cached agent snapshot');
+  assert.ok(codexView.includes('pinvou_codex_draft_controls')
+    && codexView.includes('resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo)')
+    && codexView.includes('stageDraftConfigSelection')
+    && codexView.includes('applyDraftConfigSelections(targetId, created.info)'),
+  'the draft composer must prefill model, mode and config controls from the agent cache and apply staged choices on first send');
   assert.ok(codexView.includes('function CodexComposerConfigSelect')
     && codexView.includes('data-testid={`codex-config-${id}`}')
-    && codexView.includes('appearance-none opacity-0')
+    && codexView.includes('<ComposerPopover')
     && codexView.includes('focus-within:ring-2 focus-within:ring-[#007AFF]/10'),
-  'Codex session controls must use the unified visual selector while retaining native select behavior');
+  'Codex session controls must use the unified visual selector with the app-styled ComposerPopover menu');
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
   assert.ok(homeModeSwitcher.includes("labelKey: 'work'") && homeModeSwitcher.includes("labelKey: 'code'")

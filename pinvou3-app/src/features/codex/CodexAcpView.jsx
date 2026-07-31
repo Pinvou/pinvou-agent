@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
+  AlertTriangle, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
   RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
+import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
   commandExecutionDetails,
@@ -31,6 +32,7 @@ const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
+const DRAFT_CONTROLS_CACHE_KEY = 'pinvou_codex_draft_controls';
 
 function unifiedConversationUiEnabled() {
   try {
@@ -69,6 +71,41 @@ function forgetWorkspace(path) {
     // localStorage 不可用时仍允许当前窗口继续创建新会话。
   }
   return next;
+}
+
+// 草稿态（尚未创建会话）也需要展示模型/权限模式/推理强度等选项：ACP 的配置项是会话级的，
+// 这里缓存每个 agent 最近一次会话上报的配置快照，供新会话草稿预展示和预选。
+function loadDraftControlsCache() {
+  try {
+    const value = JSON.parse(localStorage.getItem(DRAFT_CONTROLS_CACHE_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function snapshotSessionControls(info) {
+  if (!info) return null;
+  const snapshot = {
+    models: Array.isArray(info.models) ? info.models : [],
+    current_model_id: info.current_model_id || '',
+    modes: info.modes || null,
+    config_options: Array.isArray(info.config_options) ? info.config_options : [],
+  };
+  if (!snapshot.models.length && !snapshot.modes && !snapshot.config_options.length) return null;
+  return snapshot;
+}
+
+function rememberDraftControls(agentId, info) {
+  const snapshot = snapshotSessionControls(info);
+  if (!agentId || !snapshot) return null;
+  const cache = { ...loadDraftControlsCache(), [agentId]: snapshot };
+  try {
+    localStorage.setItem(DRAFT_CONTROLS_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // 缓存写不进去时仅影响下次草稿预展示，本次会话不受影响。
+  }
+  return snapshot;
 }
 
 function isAcpAuthenticationFailure(envelope) {
@@ -129,43 +166,65 @@ function CodexComposerConfigSelect({
   title,
   unsetLabel = '未设置',
 }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
   const selected = choices.find(choice => String(choice.value) === String(value));
   const selectedLabel = selected && (selected.name || selected.value) || value || unsetLabel;
+  const pick = (choiceValue) => {
+    setOpen(false);
+    if (String(choiceValue) !== String(value)) onChange(choiceValue);
+  };
   return (
-    <label
-      data-testid={`codex-config-${id}`}
-      title={title || `${label}：${selectedLabel}`}
-      className={`group relative inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all ${
-        disabled
-          ? 'cursor-default opacity-50'
-          : 'cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10'
-      } border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]`}
-    >
-      <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
-        {label}
-      </span>
-      <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
-        {selectedLabel}
-      </span>
-      <ChevronDown
-        size={12}
-        aria-hidden="true"
-        className="pointer-events-none ml-auto shrink-0 text-gray-400 transition-transform group-focus-within:rotate-180"
-      />
-      <select
+    <div className="relative min-w-0" data-testid={`codex-config-${id}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        title={title || `${label}：${selectedLabel}`}
         aria-label={label}
-        value={value || ''}
-        onChange={event => onChange(event.target.value)}
+        aria-expanded={open}
         disabled={disabled}
-        className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0 disabled:cursor-default"
+        onClick={() => setOpen(current => !current)}
+        className={`inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all ${
+          disabled
+            ? 'cursor-default opacity-50'
+            : 'cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10'
+        } border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]`}
       >
-        {choices.map(choice => (
-          <option key={choice.value} value={choice.value}>
-            {choice.name || choice.value}
-          </option>
-        ))}
-      </select>
-    </label>
+        <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
+          {label}
+        </span>
+        <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
+          {selectedLabel}
+        </span>
+        <ChevronDown
+          size={12}
+          aria-hidden="true"
+          className={`pointer-events-none ml-auto shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      <ComposerPopover
+        open={open}
+        onClose={() => setOpen(false)}
+        triggerRef={triggerRef}
+        compact={false}
+        desktopClassName="absolute bottom-full left-0 mb-2 z-50 max-h-72 w-56 overflow-y-auto custom-scrollbar rounded-2xl border border-black/5 bg-white/95 p-1.5 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1E1E20]/95"
+      >
+        {choices.map(choice => {
+          const isSelected = String(choice.value) === String(value);
+          return (
+            <button
+              key={choice.value}
+              type="button"
+              onClick={() => pick(choice.value)}
+              className="group w-full flex items-center justify-between gap-2.5 rounded-xl px-3 py-2.5 text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
+            >
+              <span className="min-w-0 truncate">{choice.name || choice.value}</span>
+              {isSelected && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+            </button>
+          );
+        })}
+      </ComposerPopover>
+    </div>
   );
 }
 
@@ -887,6 +946,9 @@ export function CodexAcpView({
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
+  const [draftControlsCache, setDraftControlsCache] = useState(loadDraftControlsCache);
+  // 草稿态（会话未创建）下用户预选的配置：{ [agentId]: { model?, mode?, configs: { [id]: value } } }
+  const [draftConfigSelections, setDraftConfigSelections] = useState({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
   const autoScrollRef = useRef(true);
@@ -899,10 +961,31 @@ export function CodexAcpView({
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
+  // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
+  const draftControlsInfo = !activeId ? draftControlsCache[draftAgentId] || null : null;
+  const sessionControlsInfo = sessionInfoSessionId === activeId ? sessionInfo : null;
   const controls = useMemo(
-    () => resolveAcpSessionControls(sessionInfoSessionId === activeId ? sessionInfo : null),
-    [sessionInfo, sessionInfoSessionId, activeId],
+    () => resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo),
+    [sessionControlsInfo, draftControlsInfo],
   );
+  const draftConfigSelection = draftConfigSelections[draftAgentId] || null;
+  const composerControlsVisible = Boolean(sessionControlsInfo || draftControlsInfo);
+  // 有会话时以会话上报为准；草稿态优先显示用户预选，其次显示缓存快照里的当前值。
+  const composerModelValue = sessionControlsInfo
+    ? sessionControlsInfo.current_model_id || ''
+    : (draftConfigSelection && draftConfigSelection.model)
+      || (draftControlsInfo && draftControlsInfo.current_model_id)
+      || '';
+  const composerModeValue = sessionControlsInfo
+    ? controls.effectiveMode || ''
+    : (draftConfigSelection && draftConfigSelection.mode) || controls.effectiveMode || '';
+  function composerConfigOptionValue(option) {
+    if (sessionControlsInfo) return option.currentValue || '';
+    const staged = draftConfigSelection && draftConfigSelection.configs
+      ? draftConfigSelection.configs[option.id]
+      : undefined;
+    return staged !== undefined ? String(staged) : (option.currentValue || '');
+  }
   const availableCommands = useMemo(() => {
     const event = [...projection.global].reverse().find(item => item.event && item.event.type === 'available_commands');
     const data = event && event.event && event.event.data || {};
@@ -955,7 +1038,70 @@ export function CodexAcpView({
     if (sessionId !== activeIdRef.current) return info;
     setSessionInfo(info);
     setSessionInfoSessionId(sessionId || null);
+    const agentId = activeAgentIdRef.current;
+    const snapshot = rememberDraftControls(agentId, info);
+    if (snapshot) {
+      setDraftControlsCache(current => ({ ...current, [agentId]: snapshot }));
+    }
     return info;
+  }
+
+  function stageDraftConfigSelection(patch) {
+    setDraftConfigSelections(current => {
+      const prev = current[draftAgentId] || {};
+      const next = {
+        model: patch.model !== undefined ? patch.model : prev.model,
+        mode: patch.mode !== undefined ? patch.mode : prev.mode,
+        configs: { ...(prev.configs || {}), ...(patch.configs || {}) },
+      };
+      return { ...current, [draftAgentId]: next };
+    });
+  }
+
+  // 首次发送创建会话后，把草稿态预选的模型/权限模式/配置应用到新会话。
+  // 以新会话实际上报的 config_options 为准自适应：走 config 的项用 set_config_option，
+  // 否则退回 set_model/set_mode；与当前值相同或会话未暴露的项跳过。
+  async function applyDraftConfigSelections(targetId, info) {
+    const staged = draftConfigSelections[draftAgentId];
+    if (!staged) return info;
+    let current = info || null;
+    const currentOptionValue = (configId) => {
+      const options = current && Array.isArray(current.config_options) ? current.config_options : [];
+      const option = options.find(item => item && item.id === configId);
+      return option ? String(option.currentValue ?? '') : null;
+    };
+    try {
+      if (staged.model) {
+        const viaConfig = currentOptionValue('model') !== null;
+        const currentValue = viaConfig
+          ? currentOptionValue('model')
+          : String(current && current.current_model_id || '');
+        if (String(staged.model) !== currentValue) {
+          current = viaConfig
+            ? await invoke('set_codex_acp_config_option', { sessionId: targetId, configId: 'model', valueId: staged.model })
+            : await invoke('set_codex_acp_model', { sessionId: targetId, modelId: staged.model });
+        }
+      }
+      if (staged.mode) {
+        const viaConfig = currentOptionValue('mode') !== null;
+        const currentValue = viaConfig
+          ? currentOptionValue('mode')
+          : String(current && current.modes && current.modes.currentModeId || '');
+        if (String(staged.mode) !== currentValue) {
+          current = viaConfig
+            ? await invoke('set_codex_acp_config_option', { sessionId: targetId, configId: 'mode', valueId: staged.mode })
+            : await invoke('set_codex_acp_mode', { sessionId: targetId, modeId: staged.mode });
+        }
+      }
+      for (const [configId, valueId] of Object.entries(staged.configs || {})) {
+        const optionValue = currentOptionValue(configId);
+        if (optionValue === null || optionValue === String(valueId)) continue;
+        current = await invoke('set_codex_acp_config_option', { sessionId: targetId, configId, valueId });
+      }
+    } catch (err) {
+      showError(err);
+    }
+    return current;
   }
 
   async function refreshSessions() {
@@ -1418,6 +1564,13 @@ export function CodexAcpView({
       if (!targetId) {
         const created = await createSession(draftWorkspacePath);
         targetId = created.id;
+        const appliedInfo = await applyDraftConfigSelections(targetId, created.info);
+        if (appliedInfo && appliedInfo !== created.info) applySessionInfo(appliedInfo, targetId);
+        setDraftConfigSelections(current => {
+          const next = { ...current };
+          delete next[draftAgentId];
+          return next;
+        });
         setAttachmentDrafts(current => {
           const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
           const next = { ...current, [targetId]: draftAttachments };
@@ -1485,7 +1638,11 @@ export function CodexAcpView({
   }
 
   async function changeModel(modelId) {
-    if (!activeId || !modelId) return;
+    if (!modelId) return;
+    if (!activeId) {
+      stageDraftConfigSelection({ model: modelId });
+      return;
+    }
     setWorking(true); setConfigApplying('model');
     try { applySessionInfo(await invoke('set_codex_acp_model', { sessionId: activeId, modelId })); }
     catch (err) { showError(err); }
@@ -1493,7 +1650,10 @@ export function CodexAcpView({
   }
 
   async function changeConfig(configId, valueId) {
-    if (!activeId) return;
+    if (!activeId) {
+      stageDraftConfigSelection({ configs: { [configId]: valueId } });
+      return;
+    }
     setWorking(true); setConfigApplying(configId); setError('');
     try {
       applySessionInfo(await invoke('set_codex_acp_config_option', {
@@ -1504,7 +1664,11 @@ export function CodexAcpView({
   }
 
   async function changeMode(modeId) {
-    if (!activeId || !modeId) return;
+    if (!modeId) return;
+    if (!activeId) {
+      stageDraftConfigSelection({ mode: modeId });
+      return;
+    }
     setWorking(true); setConfigApplying('mode'); setError('');
     try {
       applySessionInfo(await invoke('set_codex_acp_mode', { sessionId: activeId, modeId }));
@@ -1730,52 +1894,6 @@ export function CodexAcpView({
                   ))}
                 </div>
               )}
-              {sessionInfo && (
-                <div data-testid="codex-composer-configs" className="mb-2 flex flex-wrap items-center gap-2">
-                  {controls.fallbackModels.length > 0 && (
-                    <CodexComposerConfigSelect
-                      id="model"
-                      label={codexCopy.model}
-                      value={sessionInfo.current_model_id || ''}
-                      choices={controls.fallbackModels.map(model => ({
-                        value: model.id,
-                        name: model.name || model.id,
-                      }))}
-                      onChange={changeModel}
-                      disabled={busy || working}
-                      unsetLabel={codexCopy.notSet}
-                    />
-                  )}
-                  {controls.fallbackModes && controls.fallbackModes.availableModes && (
-                    <CodexComposerConfigSelect
-                      id="mode"
-                      label={codexCopy.permissionMode}
-                      value={controls.effectiveMode || ''}
-                      choices={controls.fallbackModes.availableModes.map(item => ({
-                        value: item.id,
-                        name: item.name || item.id,
-                      }))}
-                      onChange={changeMode}
-                      disabled={busy || working}
-                      title={codexCopy.sessionModeTitle}
-                      unsetLabel={codexCopy.notSet}
-                    />
-                  )}
-                  {controls.configOptions.map(option => (
-                    <CodexComposerConfigSelect
-                      key={option.id}
-                      id={option.id}
-                      label={configLabel(option, codexCopy)}
-                      value={option.currentValue || ''}
-                      choices={configChoices(option)}
-                      onChange={value => changeConfig(option.id, value)}
-                      disabled={busy || working}
-                      title={option.description || option.name}
-                      unsetLabel={codexCopy.notSet}
-                    />
-                  ))}
-                </div>
-              )}
               {commandOpen && availableCommands.length > 0 && (
                 <>
                   <button aria-label={codexCopy.commandMenuClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
@@ -1803,7 +1921,7 @@ export function CodexAcpView({
                 placeholder={codexCopy.placeholder}
                 rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
               <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
-                <div className="flex min-w-0 items-center gap-2 text-[10px] text-gray-400">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-[10px] text-gray-400">
                   {!activeId && (
                     <div className="relative min-w-0">
                       <button
@@ -1945,6 +2063,52 @@ export function CodexAcpView({
                       </>
                     )}
                   </div>
+                  {composerControlsVisible && (
+                    <div data-testid="codex-composer-configs" className="flex flex-wrap items-center gap-2">
+                      {controls.fallbackModels.length > 0 && (
+                        <CodexComposerConfigSelect
+                          id="model"
+                          label={codexCopy.model}
+                          value={composerModelValue}
+                          choices={controls.fallbackModels.map(model => ({
+                            value: model.id,
+                            name: model.name || model.id,
+                          }))}
+                          onChange={changeModel}
+                          disabled={busy || working}
+                          unsetLabel={codexCopy.notSet}
+                        />
+                      )}
+                      {controls.fallbackModes && controls.fallbackModes.availableModes && (
+                        <CodexComposerConfigSelect
+                          id="mode"
+                          label={codexCopy.permissionMode}
+                          value={composerModeValue}
+                          choices={controls.fallbackModes.availableModes.map(item => ({
+                            value: item.id,
+                            name: item.name || item.id,
+                          }))}
+                          onChange={changeMode}
+                          disabled={busy || working}
+                          title={codexCopy.sessionModeTitle}
+                          unsetLabel={codexCopy.notSet}
+                        />
+                      )}
+                      {controls.configOptions.map(option => (
+                        <CodexComposerConfigSelect
+                          key={option.id}
+                          id={option.id}
+                          label={configLabel(option, codexCopy)}
+                          value={composerConfigOptionValue(option)}
+                          choices={configChoices(option)}
+                          onChange={value => changeConfig(option.id, value)}
+                          disabled={busy || working}
+                          title={option.description || option.name}
+                          unsetLabel={codexCopy.notSet}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
