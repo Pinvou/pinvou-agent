@@ -68,6 +68,7 @@ function WorkspaceTree({
   onToggle,
   onPreview,
   onAddReference,
+  onOpenExternal,
   referencedPaths,
   copy,
 }) {
@@ -99,19 +100,30 @@ function WorkspaceTree({
             <span className="truncate text-[12px]">{entry.name}</span>
           </button>
           {!isDirectory && (
-            <button
-              type="button"
-              aria-label={referenced ? copy.addedPath(entry.relativePath) : copy.addPath(entry.relativePath)}
-              title={referenced ? copy.added : copy.add}
-              onClick={() => onAddReference(entry.relativePath)}
-              className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
-                referenced
-                  ? 'text-blue-500 bg-blue-500/10'
-                  : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
-              }`}
-            >
-              <Plus size={13} />
-            </button>
+            <>
+              <button
+                type="button"
+                aria-label={copy.open}
+                title={copy.open}
+                onClick={() => onOpenExternal(entry)}
+                className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+              >
+                <ExternalLink size={13} />
+              </button>
+              <button
+                type="button"
+                aria-label={referenced ? copy.addedPath(entry.relativePath) : copy.addPath(entry.relativePath)}
+                title={referenced ? copy.added : copy.add}
+                onClick={() => onAddReference(entry.relativePath)}
+                className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
+                  referenced
+                    ? 'text-blue-500 bg-blue-500/10'
+                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
+                }`}
+              >
+                <Plus size={13} />
+              </button>
+            </>
           )}
         </div>
         {isDirectory && open && (
@@ -124,6 +136,7 @@ function WorkspaceTree({
             onToggle={onToggle}
             onPreview={onPreview}
             onAddReference={onAddReference}
+            onOpenExternal={onOpenExternal}
             referencedPaths={referencedPaths}
             copy={copy}
           />
@@ -540,6 +553,7 @@ export function CodexWorkspacePanel({
                     onToggle={toggleDirectory}
                     onPreview={showFile}
                     onAddReference={onAddReference}
+                    onOpenExternal={(entry) => openWorkspacePath('open_codex_workspace_file', entry.relativePath)}
                     referencedPaths={referencedPaths}
                     copy={copy}
                   />

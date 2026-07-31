@@ -1,16 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Check, Copy, ExternalLink, FolderOpen, RefreshCw, X,
+  Check, Copy, ExternalLink, FolderOpen, Link, RefreshCw, X,
 } from '../../components/icons.jsx';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { highlightCode } from '../../shared/syntax-highlighter.js';
 
 const VIEWER_SIZE_KEY = 'pinvou_code_viewer_size';
+const VIEWER_FONT_SIZE_KEY = 'pinvou_code_viewer_font_size';
 const VIEWER_MIN_WIDTH = 480;
 const VIEWER_MIN_HEIGHT = 320;
 const VIEWER_DEFAULT_WIDTH = 1100;
 const VIEWER_DEFAULT_HEIGHT = 760;
+const VIEWER_MIN_FONT_SIZE = 10;
+const VIEWER_MAX_FONT_SIZE = 24;
+const VIEWER_DEFAULT_FONT_SIZE = 12;
 
 function clampViewerSize(width, height) {
   return {
@@ -49,6 +53,28 @@ function rememberViewerSize(size) {
   }
 }
 
+function clampViewerFontSize(value) {
+  return Math.max(VIEWER_MIN_FONT_SIZE, Math.min(VIEWER_MAX_FONT_SIZE, Math.round(value)));
+}
+
+function savedViewerFontSize() {
+  try {
+    const parsed = Number(localStorage.getItem(VIEWER_FONT_SIZE_KEY));
+    if (Number.isFinite(parsed) && parsed > 0) return clampViewerFontSize(parsed);
+  } catch {
+    // localStorage 不可用时回退默认字号。
+  }
+  return VIEWER_DEFAULT_FONT_SIZE;
+}
+
+function rememberViewerFontSize(fontSize) {
+  try {
+    localStorage.setItem(VIEWER_FONT_SIZE_KEY, String(fontSize));
+  } catch {
+    // localStorage 不可用时只保留当前窗口内的字号。
+  }
+}
+
 // 高亮语言提示：优先扩展名（app.jsx → jsx），无扩展名时用完整文件名（Dockerfile / Makefile）。
 function languageHintForFile(name) {
   const base = String(name || '').split(/[\\/]/u).pop() || '';
@@ -71,6 +97,7 @@ export function CodeViewerModal({
   const dialogRef = useRef(null);
   const resizeCleanupRef = useRef(null);
   const [size, setSize] = useState(savedViewerSize);
+  const [fontSize, setFontSize] = useState(savedViewerFontSize);
   const [copied, setCopied] = useState('');
 
   const fileName = preview?.name || name || String(relativePath || '').split('/').pop() || '';
@@ -163,6 +190,14 @@ export function CodeViewerModal({
     rememberViewerSize(nextSize);
   }
 
+  function adjustViewerFontSize(delta) {
+    setFontSize((current) => {
+      const next = clampViewerFontSize(current + delta);
+      rememberViewerFontSize(next);
+      return next;
+    });
+  }
+
   const iconButton = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
 
   return createPortal(
@@ -191,6 +226,28 @@ export function CodeViewerModal({
           </div>
           <button
             type="button"
+            onClick={() => adjustViewerFontSize(-1)}
+            disabled={fontSize <= VIEWER_MIN_FONT_SIZE}
+            className={`${iconButton} text-[12px] font-medium tracking-tight`}
+            title={copy.fontDecrease}
+            aria-label={copy.fontDecrease}
+            data-testid="code-viewer-font-decrease"
+          >
+            A-
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustViewerFontSize(1)}
+            disabled={fontSize >= VIEWER_MAX_FONT_SIZE}
+            className={`${iconButton} text-[12px] font-medium tracking-tight`}
+            title={copy.fontIncrease}
+            aria-label={copy.fontIncrease}
+            data-testid="code-viewer-font-increase"
+          >
+            A+
+          </button>
+          <button
+            type="button"
             onClick={() => copyText('content', preview?.kind === 'text' ? preview.text : '')}
             disabled={preview?.kind !== 'text'}
             className={iconButton}
@@ -204,7 +261,7 @@ export function CodeViewerModal({
             className={iconButton}
             title={copied === 'path' ? copy.copied : copy.copyPath}
           >
-            {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+            {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
           </button>
           <button type="button" onClick={onReveal} className={iconButton} title={copy.reveal}>
             <FolderOpen size={13} />
@@ -234,7 +291,11 @@ export function CodeViewerModal({
                   {copy.truncated}
                 </div>
               )}
-              <pre className="pinvou-code-block min-w-max px-4 py-3 text-[12px] leading-[19px] font-mono whitespace-pre">
+              <pre
+                className="pinvou-code-block min-w-max px-4 py-3 font-mono whitespace-pre"
+                style={{ fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.6)}px` }}
+                data-testid="code-viewer-pre"
+              >
                 <code
                   className={`hljs language-${highlighted.language}`}
                   dangerouslySetInnerHTML={{ __html: highlighted.html }}

@@ -132,6 +132,28 @@ try {
   const resetPersisted = await page.evaluate(() => JSON.parse(localStorage.getItem('pinvou_code_viewer_size') || 'null'));
   assert(resetPersisted?.width === 1100 && resetPersisted?.height === 760, '双击恢复默认后持久化值错误', resetPersisted);
 
+  // 默认字号 12px / 行高 19px；A+ → 13px 并持久化；A− 回到 12px。
+  const initialFont = await page.evaluate(() => {
+    const pre = document.querySelector('[data-testid="code-viewer-pre"]');
+    return { fontSize: pre?.style.fontSize, lineHeight: pre?.style.lineHeight };
+  });
+  assert(initialFont.fontSize === '12px' && initialFont.lineHeight === '19px', '默认字号/行高错误', initialFont);
+  await page.click('[data-testid="code-viewer-font-increase"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="code-viewer-pre"]')?.style.fontSize === '13px');
+  const persistedFont = await page.evaluate(() => Number(localStorage.getItem('pinvou_code_viewer_font_size')));
+  assert(persistedFont === 13, '字号未持久化', { persistedFont });
+  await page.click('[data-testid="code-viewer-font-decrease"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="code-viewer-pre"]')?.style.fontSize === '12px');
+
+  // Esc 关闭后重开 → 字号从 localStorage 恢复（先调到 14px 再验证）。
+  await page.click('[data-testid="code-viewer-font-increase"]');
+  await page.click('[data-testid="code-viewer-font-increase"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="code-viewer-pre"]')?.style.fontSize === '14px');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="code-viewer-modal"]'));
+  await page.click('[data-testid="reopen"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="code-viewer-pre"]')?.style.fontSize === '14px');
+
   assert(pageErrors.length === 0, '浏览器运行时异常', pageErrors);
 
   console.log('code_viewer_modal_smoke: ok');

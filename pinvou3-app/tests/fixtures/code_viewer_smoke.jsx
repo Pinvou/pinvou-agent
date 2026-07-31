@@ -29,6 +29,8 @@ const copy = {
   resizeWidth: '调整弹窗宽度',
   resizeHeight: '调整弹窗高度',
   resizeCorner: '调整弹窗大小，双击恢复默认',
+  fontDecrease: '减小字号',
+  fontIncrease: '增大字号',
 };
 
 const Fixture = () => {
