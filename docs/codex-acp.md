@@ -60,13 +60,24 @@ Reasoning 使用事件时间戳显示耗时；完成的工具步骤默认折叠�
 `session-agents.json`，ACP `session/new`、`session/load` 或进程重连后会先重新应用，
 再把会话标记为可发送。配置应用期间和 Turn 运行期间不能发送另一项配置修改。
 
+ACP 的配置作用域是单个 session，不提供跨 session 默认值。Pinvou 会把用户成功选择的
+模型、权限模式、推理强度等配置按 Agent 写入 `acp-agent-defaults.json`；新建该 Agent
+会话后，根据 Agent 实际上报的可选项重新应用。历史会话仍使用自己的 session 配置，
+不会被后来修改的新会话默认值覆盖。旧版本升级时会从该 Agent 最近的有效会话迁移一次。
+
+应用被直接关闭时，旧进程中的 ACP Prompt 无法在新进程重新挂接。Pinvou 启动恢复会把
+`acp-timeline.jsonl` 中只有 `turn_started`、没有 `turn_completed` 的遗留 Turn 收口为
+`Interrupted`；对应的运行中工具、权限和输入项显示为已取消。恢复后的会话保留原历史和
+工作目录，并可继续发送新消息，不会永久停在“处理中”。
+
 Codex 自己上报的 `/skills`、`/mcp` 等命令可直接在输入框使用。开发时也可用
 `PINVOU3_CODEX_ACP_BIN=/absolute/path/to/codex-acp` 覆盖运行时。
 
 ## 数据位置
 
 - `~/.pinvou3/session-agents.json`：pinvou 会话与 ACP session ID / model /
-  用户确认权限模式的轻量索引。
+  用户确认配置的轻量索引。
+- `~/.pinvou3/acp-agent-defaults.json`：每个 ACP Agent 的新会话默认配置。
 - `~/.pinvou3/sessions/<id>/acp-state.json`：Agent、capability、model、mode、config 和最后状态。
 - `~/.pinvou3/sessions/<id>/acp-timeline.jsonl`：按 `seq` 追加的完整 ACP 事件时间线。
 - `~/.pinvou3/sessions/<id>/workspace/`：仅临时 Codex 会话使用的执行目录。

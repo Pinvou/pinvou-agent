@@ -12,7 +12,7 @@ mod runtime;
 mod store;
 pub(crate) mod workspace;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -51,10 +51,10 @@ use runtime::{
     install_managed_codex, is_managed_newer_than, resolve_codex_path, system_codex_incompatible,
     ResolvedCodex, MANAGED_CODEX_VERSION, MIN_CODEX_VERSION,
 };
-use store::SessionAgentRecord;
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
 };
+use store::{AcpConfigDefaultsStore, SessionAgentRecord};
 
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
 pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
@@ -114,16 +114,60 @@ fn backend_for_acp_state(state: &Value) -> Result<AgentBackend> {
 }
 
 fn acp_mode_from_state(state: &Value) -> Option<String> {
-    state["session"]["modes"]["currentModeId"]
-        .as_str()
+    acp_config_values_from_state(state)
+        .remove("mode")
         .or_else(|| {
-            state["session"]["config_options"]
-                .as_array()?
-                .iter()
-                .find(|option| option["id"].as_str() == Some("mode"))?["currentValue"]
+            state["session"]["modes"]["currentModeId"]
                 .as_str()
+                .map(str::to_string)
         })
-        .map(str::to_string)
+}
+
+fn acp_config_values_from_state(state: &Value) -> HashMap<String, String> {
+    state["session"]["config_options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            Some((
+                option["id"].as_str()?.to_string(),
+                option["currentValue"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn saved_config_values(record: &SessionAgentRecord) -> HashMap<String, String> {
+    let mut values = record.acp_config_values.clone();
+    if let Some(model_id) = &record.acp_model_id {
+        values
+            .entry("model".to_string())
+            .or_insert_with(|| model_id.clone());
+    }
+    if let Some(mode_id) = &record.acp_mode_id {
+        values
+            .entry("mode".to_string())
+            .or_insert_with(|| mode_id.clone());
+    }
+    values
+}
+
+fn load_acp_config_values_from_state(
+    session_id: &str,
+    expected_backend: AgentBackend,
+) -> Result<HashMap<String, String>> {
+    let state_path = crate::platform::paths::sessions_root()
+        .join(session_id)
+        .join("acp-state.json");
+    let state: Value = serde_json::from_slice(
+        &std::fs::read(&state_path)
+            .with_context(|| format!("读取 {} 失败", state_path.display()))?,
+    )
+    .with_context(|| format!("解析 {} 失败", state_path.display()))?;
+    if backend_for_acp_state(&state)? != expected_backend {
+        bail!("acp-state.json 的 Agent 与会话元数据不匹配");
+    }
+    Ok(acp_config_values_from_state(&state))
 }
 
 fn acp_recovery_record(
@@ -176,6 +220,7 @@ fn acp_recovery_record(
             .as_str()
             .map(str::to_string),
         acp_mode_id: acp_mode_from_state(state),
+        acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
     })
@@ -480,8 +525,9 @@ impl AcpSession {
             model_id,
         )
         .await?;
+        let current_model = current_config_value(&options, "model");
         *self.config_options.write() = options;
-        *self.current_model.write() = Some(model_id.to_string());
+        *self.current_model.write() = current_model;
         Ok(())
     }
 
@@ -495,7 +541,9 @@ impl AcpSession {
             value_id,
         )
         .await?;
+        let current_model = current_config_value(&options, "model");
         *self.config_options.write() = options;
+        *self.current_model.write() = current_model;
         Ok(())
     }
 }
@@ -507,6 +555,7 @@ pub struct AcpPool {
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
     agents: SessionAgentStore,
+    config_defaults: AcpConfigDefaultsStore,
     acp_metadata_backends: Arc<parking_lot::RwLock<HashMap<String, AgentBackend>>>,
     session_store: SessionStore,
     installing: Arc<AtomicBool>,
@@ -590,12 +639,50 @@ impl AcpPool {
                 ),
             }
         }
+        let config_defaults = AcpConfigDefaultsStore::load_or_empty();
+        // 旧版本只保存了 session 级状态。按更新时间从新到旧，为每个 Agent
+        // 迁移最近一次成功配置，使升级后的第一个新会话也能继承用户选择。
+        for item in &metadata {
+            let Some(backend) = acp_metadata_backends.get(&item.id).copied() else {
+                continue;
+            };
+            if config_defaults.has_backend(backend) {
+                continue;
+            }
+            let values = load_acp_config_values_from_state(&item.id, backend)
+                .unwrap_or_else(|_| saved_config_values(&agents.get(&item.id)));
+            match config_defaults.set_all_if_absent(backend, values) {
+                Ok(true) => eprintln!(
+                    "[pinvou3-app] migrated {} ACP defaults from session {}",
+                    backend.display_name(),
+                    item.id
+                ),
+                Ok(false) => {}
+                Err(error) => eprintln!(
+                    "[pinvou3-app] failed to migrate {} ACP defaults: {error:#}",
+                    backend.display_name()
+                ),
+            }
+        }
+        // 新进程无法继续持有上次进程里的 ACP prompt future。恢复原 Agent session
+        // 只恢复对话上下文，不会重新挂接当时正在等待的 prompt；因此必须在任何
+        // runtime lazy spawn 之前，把 timeline 中遗留的 running 回合收口。
+        for session_id in acp_metadata_backends.keys() {
+            let bridge = EventBridge::new(app.clone(), session_id.clone());
+            let interrupted = bridge.interrupt_orphaned_turns("application_restarted");
+            if interrupted > 0 {
+                eprintln!(
+                    "[pinvou3-app] interrupted {interrupted} orphaned ACP turn(s) for {session_id}"
+                );
+            }
+        }
         Ok(Self {
             app,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             pending_elicitations: Arc::new(Mutex::new(HashMap::new())),
             agents,
+            config_defaults,
             acp_metadata_backends: Arc::new(parking_lot::RwLock::new(acp_metadata_backends)),
             session_store,
             installing: Arc::new(AtomicBool::new(false)),
@@ -1609,10 +1696,23 @@ impl AcpPool {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
         if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
-            runtime.cancel();
-            runtime
-                .bridge
-                .emit("cancel_requested", json!({ "status": "cancelling" }));
+            if runtime.busy.load(Ordering::Acquire) {
+                runtime.cancel();
+                runtime
+                    .bridge
+                    .emit("cancel_requested", json!({ "status": "cancelling" }));
+            } else {
+                // session 已恢复但当前进程没有活跃 prompt 时，session/cancel 无法
+                // 命中旧进程的 turn。直接收口持久化孤儿回合，让停止操作可恢复且幂等。
+                runtime
+                    .bridge
+                    .interrupt_orphaned_turns("cancel_without_active_prompt");
+            }
+        } else {
+            // 正常 UI 加载会先 lazy spawn runtime；这里仍为启动失败或竞态保留兜底，
+            // 避免“停止”在没有内存 runtime 时静默无效。
+            EventBridge::new(self.app.clone(), session_id.to_string())
+                .interrupt_orphaned_turns("cancel_without_runtime");
         }
     }
 
@@ -1636,11 +1736,48 @@ impl AcpPool {
             .info(pending_permissions, pending_elicitations))
     }
 
+    fn remember_config_choice(
+        &self,
+        session_id: &str,
+        runtime: &AcpSession,
+        config_id: &str,
+        value_id: &str,
+    ) {
+        let backend = self.backend(session_id);
+        let mut errors = Vec::new();
+        if let Err(error) = self
+            .agents
+            .set_acp_config_value(session_id, config_id, value_id)
+        {
+            errors.push(format!("会话配置: {error:#}"));
+        }
+        if let Err(error) = self.config_defaults.set(backend, config_id, value_id) {
+            errors.push(format!("新会话默认值: {error:#}"));
+        }
+        if !errors.is_empty() {
+            let message = errors.join("；");
+            eprintln!(
+                "[pinvou3-app] failed to persist {} ACP config {}={}: {}",
+                backend.display_name(),
+                config_id,
+                value_id,
+                message
+            );
+            runtime.bridge.emit(
+                "config_persistence_failed",
+                json!({
+                    "configId": config_id,
+                    "valueId": value_id,
+                    "message": message,
+                }),
+            );
+        }
+    }
+
     pub async fn set_model(&self, session_id: &str, model_id: &str) -> Result<CodexAcpSessionInfo> {
         let runtime = self.get_or_spawn(session_id).await?;
         runtime.set_model(model_id).await?;
-        self.agents
-            .set_acp_model(session_id, Some(model_id.to_string()))?;
+        self.remember_config_choice(session_id, &runtime, "model", model_id);
         let info = runtime.info(
             self.pending_permissions_for(session_id).await,
             self.pending_elicitations_for(session_id).await,
@@ -1683,10 +1820,7 @@ impl AcpPool {
             );
             return Err(error);
         }
-        if config_id == "mode" {
-            self.agents
-                .set_acp_mode(session_id, Some(value_id.to_string()))?;
-        }
+        self.remember_config_choice(session_id, &runtime, config_id, value_id);
         runtime.bridge.emit(
             "config_change_applied",
             json!({ "configId": config_id, "valueId": value_id }),
@@ -1728,8 +1862,7 @@ impl AcpPool {
             );
             return Err(error);
         }
-        self.agents
-            .set_acp_mode(session_id, Some(mode_id.to_string()))?;
+        self.remember_config_choice(session_id, &runtime, "mode", mode_id);
         runtime.bridge.emit(
             "config_change_applied",
             json!({ "configId": "mode", "valueId": mode_id }),
@@ -2274,6 +2407,11 @@ impl AcpPool {
         };
 
         let saved = self.agents.get(pinvou_session_id);
+        let desired_config_values = if saved.acp_session_id.is_some() {
+            saved_config_values(&saved)
+        } else {
+            self.config_defaults.get(backend)
+        };
         let (acp_session_id, mut mode_state, mut config_options) =
             if initialized.agent_capabilities.load_session {
                 if let Some(saved_id) = saved.acp_session_id.clone() {
@@ -2303,24 +2441,24 @@ impl AcpPool {
             } else {
                 new_acp_session(&connection, &workspace, backend).await?
             };
-        if let Some(mode_id) = saved.acp_mode_id.as_deref() {
-            apply_saved_mode(
-                &connection,
-                &acp_session_id,
-                &mut mode_state,
-                &mut config_options,
-                mode_id,
-            )
-            .await
-            .with_context(|| format!("恢复 {} 权限模式 {mode_id} 失败", backend.display_name()))?;
-        }
+        restore_config_values(
+            &connection,
+            &acp_session_id,
+            &mut mode_state,
+            &mut config_options,
+            &desired_config_values,
+            backend,
+        )
+        .await;
         let current_model_id = current_config_value(&config_options, "model");
         let models = codex_models(&config_options);
+        let config_values = config_values_from_options(&config_options, &mode_state);
         let prompt_capabilities = initialized.agent_capabilities.prompt_capabilities.clone();
         self.agents.set_acp_session(
             pinvou_session_id,
             acp_session_id.clone(),
             current_model_id.clone(),
+            config_values,
         )?;
         persist_acp_state(
             pinvou_session_id,
@@ -2463,14 +2601,14 @@ fn config_option_supports(
 async fn apply_config_option(
     connection: &ConnectionTo<Agent>,
     acp_session_id: &str,
-    options: &mut [SessionConfigOption],
+    options: &mut Vec<SessionConfigOption>,
     config_id: &str,
     value_id: &str,
 ) -> Result<()> {
     if !config_option_supports(options, config_id, value_id) {
         bail!("ACP 配置项或取值不存在: {config_id}={value_id}");
     }
-    connection
+    let response = connection
         .send_request(SetSessionConfigOptionRequest::new(
             acp_session_id.to_string(),
             config_id.to_string(),
@@ -2479,14 +2617,9 @@ async fn apply_config_option(
         .block_task()
         .await
         .context("ACP session/set_config_option 失败")?;
-    for option in options {
-        if option.id.to_string() != config_id {
-            continue;
-        }
-        if let SessionConfigKind::Select(select) = &mut option.kind {
-            select.current_value = value_id.to_string().into();
-        }
-    }
+    // ACP 规定响应包含完整的最新配置集。配置项之间可能联动，必须以 Agent
+    // 返回值整体替换，不能只在本地手工修改当前字段。
+    *options = response.config_options;
     Ok(())
 }
 
@@ -2494,7 +2627,7 @@ async fn apply_saved_mode(
     connection: &ConnectionTo<Agent>,
     acp_session_id: &str,
     modes: &mut Option<SessionModeState>,
-    config_options: &mut [SessionConfigOption],
+    config_options: &mut Vec<SessionConfigOption>,
     mode_id: &str,
 ) -> Result<()> {
     if config_options
@@ -2527,6 +2660,106 @@ async fn apply_saved_mode(
     Ok(())
 }
 
+async fn restore_config_values(
+    connection: &ConnectionTo<Agent>,
+    acp_session_id: &str,
+    modes: &mut Option<SessionModeState>,
+    config_options: &mut Vec<SessionConfigOption>,
+    values: &HashMap<String, String>,
+    backend: AgentBackend,
+) {
+    let mut desired = values.iter().collect::<Vec<_>>();
+    desired.sort_by(|(left, _), (right, _)| {
+        let priority = |config_id: &str| match config_id {
+            "model" => 0,
+            "mode" => 1,
+            _ => 2,
+        };
+        priority(left)
+            .cmp(&priority(right))
+            .then_with(|| left.cmp(right))
+    });
+    let mut failed = HashSet::new();
+
+    // 某些 Agent 会根据 model/mode 改变后续可选项。最多多跑两轮，让 Agent
+    // 返回的完整配置集稳定下来，同时避免互斥配置导致无限来回设置。
+    for _ in 0..3 {
+        let mut progress = false;
+        for (config_id, value_id) in &desired {
+            if failed.contains(config_id.as_str())
+                || current_config_value(config_options, config_id) == Some((*value_id).clone())
+            {
+                continue;
+            }
+            if !config_option_supports(config_options, config_id, value_id) {
+                continue;
+            }
+            match apply_config_option(
+                connection,
+                acp_session_id,
+                config_options,
+                config_id,
+                value_id,
+            )
+            .await
+            {
+                Ok(()) => progress = true,
+                Err(error) => {
+                    failed.insert((*config_id).clone());
+                    eprintln!(
+                        "[pinvou3-app] skipped {} saved ACP config {}={}: {error:#}",
+                        backend.display_name(),
+                        config_id,
+                        value_id
+                    );
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+
+    if let Some(mode_id) = values.get("mode") {
+        let has_config_mode = config_options
+            .iter()
+            .any(|option| option.id.to_string() == "mode");
+        if !has_config_mode
+            && modes
+                .as_ref()
+                .is_some_and(|state| state.current_mode_id.to_string() != mode_id.as_str())
+        {
+            if let Err(error) =
+                apply_saved_mode(connection, acp_session_id, modes, config_options, mode_id).await
+            {
+                eprintln!(
+                    "[pinvou3-app] skipped {} saved ACP mode {}: {error:#}",
+                    backend.display_name(),
+                    mode_id
+                );
+            }
+        }
+    }
+
+    for (config_id, value_id) in desired {
+        if config_id == "mode"
+            && !config_options
+                .iter()
+                .any(|option| option.id.to_string() == "mode")
+        {
+            continue;
+        }
+        if current_config_value(config_options, config_id) != Some(value_id.clone()) {
+            eprintln!(
+                "[pinvou3-app] {} ACP no longer supports saved config {}={}",
+                backend.display_name(),
+                config_id,
+                value_id
+            );
+        }
+    }
+}
+
 fn current_config_value(options: &[SessionConfigOption], config_id: &str) -> Option<String> {
     options.iter().find_map(|option| {
         if option.id.to_string() != config_id {
@@ -2537,6 +2770,30 @@ fn current_config_value(options: &[SessionConfigOption], config_id: &str) -> Opt
             _ => None,
         }
     })
+}
+
+fn config_values_from_options(
+    options: &[SessionConfigOption],
+    modes: &Option<SessionModeState>,
+) -> HashMap<String, String> {
+    let mut values = options
+        .iter()
+        .filter_map(|option| {
+            let SessionConfigKind::Select(select) = &option.kind else {
+                return None;
+            };
+            Some((option.id.to_string(), select.current_value.to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+    if !values.contains_key("mode") {
+        if let Some(mode_id) = modes
+            .as_ref()
+            .map(|state| state.current_mode_id.to_string())
+        {
+            values.insert("mode".to_string(), mode_id);
+        }
+    }
+    values
 }
 
 fn codex_models(options: &[SessionConfigOption]) -> Vec<CodexAcpModel> {
@@ -3217,11 +3474,20 @@ mod tests {
             "session": {
                 "session_id": "acp-session",
                 "current_model_id": "kimi-test",
-                "modes": null,
-                "config_options": [{
-                    "id": "mode",
-                    "currentValue": "auto",
-                }],
+                "modes": {
+                    "currentModeId": "stale-agent-mode",
+                    "availableModes": [],
+                },
+                "config_options": [
+                    {
+                        "id": "mode",
+                        "currentValue": "auto",
+                    },
+                    {
+                        "id": "reasoning_effort",
+                        "currentValue": "high",
+                    }
+                ],
             },
         });
         let temporary = Path::new("/tmp/pinvou-session-workspace");
@@ -3239,6 +3505,10 @@ mod tests {
         assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session"));
         assert_eq!(recovered.acp_model_id.as_deref(), Some("kimi-test"));
         assert_eq!(recovered.acp_mode_id.as_deref(), Some("auto"));
+        assert_eq!(
+            recovered.acp_config_values.get("reasoning_effort"),
+            Some(&"high".to_string())
+        );
         assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(recovered.workspace_path, Some(project));
 

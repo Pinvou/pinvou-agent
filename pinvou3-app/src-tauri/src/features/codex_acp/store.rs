@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-const STORE_VERSION: u32 = 4;
+const STORE_VERSION: u32 = 5;
+const CONFIG_DEFAULTS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -86,6 +87,12 @@ pub struct SessionAgentRecord {
     /// `agent`，所以 Pinvou 必须在运行时就绪前重新应用该期望值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_mode_id: Option<String>,
+    /// 当前 Pinvou 会话最后一次确认成功的 ACP 配置。
+    ///
+    /// `model` / `mode` 仍保留独立字段用于兼容旧版本；其余 Agent 动态上报的
+    /// 配置项统一保存在这里，恢复同一会话时不会被 Agent 默认值覆盖。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub acp_config_values: HashMap<String, String>,
     /// ACP Agent 的执行目录类型。旧记录没有该字段时按临时会话兼容。
     #[serde(default)]
     pub workspace_kind: CodexWorkspaceKind,
@@ -179,6 +186,7 @@ impl SessionAgentStore {
                 record.acp_session_id = None;
                 record.acp_model_id = None;
                 record.acp_mode_id = None;
+                record.acp_config_values.clear();
                 record.workspace_kind = CodexWorkspaceKind::Temporary;
                 record.workspace_path = None;
             }
@@ -226,12 +234,22 @@ impl SessionAgentStore {
         session_id: &str,
         acp_session_id: String,
         model_id: Option<String>,
+        config_values: HashMap<String, String>,
     ) -> Result<()> {
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
             record.acp_session_id = Some(acp_session_id);
-            record.acp_model_id = model_id;
+            record.acp_model_id = model_id
+                .clone()
+                .or_else(|| config_values.get("model").cloned());
+            record.acp_mode_id = config_values.get("mode").cloned();
+            record.acp_config_values = config_values;
+            if let Some(model_id) = model_id {
+                record
+                    .acp_config_values
+                    .insert("model".to_string(), model_id);
+            }
         }
         self.persist()
     }
@@ -240,7 +258,17 @@ impl SessionAgentStore {
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
-            record.acp_model_id = model_id;
+            record.acp_model_id = model_id.clone();
+            match model_id {
+                Some(model_id) => {
+                    record
+                        .acp_config_values
+                        .insert("model".to_string(), model_id);
+                }
+                None => {
+                    record.acp_config_values.remove("model");
+                }
+            }
         }
         self.persist()
     }
@@ -249,7 +277,36 @@ impl SessionAgentStore {
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
-            record.acp_mode_id = mode_id;
+            record.acp_mode_id = mode_id.clone();
+            match mode_id {
+                Some(mode_id) => {
+                    record.acp_config_values.insert("mode".to_string(), mode_id);
+                }
+                None => {
+                    record.acp_config_values.remove("mode");
+                }
+            }
+        }
+        self.persist()
+    }
+
+    pub fn set_acp_config_value(
+        &self,
+        session_id: &str,
+        config_id: &str,
+        value_id: &str,
+    ) -> Result<()> {
+        {
+            let mut records = self.records.write();
+            let record = records.entry(session_id.to_string()).or_default();
+            record
+                .acp_config_values
+                .insert(config_id.to_string(), value_id.to_string());
+            if config_id == "model" {
+                record.acp_model_id = Some(value_id.to_string());
+            } else if config_id == "mode" {
+                record.acp_mode_id = Some(value_id.to_string());
+            }
         }
         self.persist()
     }
@@ -293,6 +350,122 @@ impl SessionAgentStore {
         let value = AgentStoreFile {
             version: STORE_VERSION,
             sessions: self.records.read().clone(),
+        };
+        fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
+        fs::rename(&tmp, &self.path)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct AcpConfigDefaultsFile {
+    #[serde(default = "config_defaults_version")]
+    version: u32,
+    #[serde(default)]
+    agents: HashMap<AgentBackend, HashMap<String, String>>,
+}
+
+fn config_defaults_version() -> u32 {
+    CONFIG_DEFAULTS_VERSION
+}
+
+/// 用户为每个 ACP Agent 选择的新会话默认配置。
+///
+/// ACP 只定义 session 级配置，不负责跨 session 持久化；Pinvou 作为 client 将
+/// 用户成功应用过的配置按 Agent 隔离保存，并在新建 session 后重新应用。
+#[derive(Clone)]
+pub struct AcpConfigDefaultsStore {
+    path: PathBuf,
+    records: Arc<RwLock<HashMap<AgentBackend, HashMap<String, String>>>>,
+}
+
+impl AcpConfigDefaultsStore {
+    pub fn load() -> Result<Self> {
+        let path = crate::platform::paths::pinvou3_home().join("acp-agent-defaults.json");
+        let records = if path.exists() {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("读取 {} 失败", path.display()))?;
+            serde_json::from_str::<AcpConfigDefaultsFile>(&raw)
+                .with_context(|| format!("解析 {} 失败", path.display()))?
+                .agents
+        } else {
+            HashMap::new()
+        };
+        Ok(Self {
+            path,
+            records: Arc::new(RwLock::new(records)),
+        })
+    }
+
+    /// 默认值文件损坏不能阻断 Agent 启动；保留原文件，下一次用户成功修改配置时
+    /// 会重新生成可用内容。
+    pub fn load_or_empty() -> Self {
+        match Self::load() {
+            Ok(store) => store,
+            Err(error) => {
+                let path = crate::platform::paths::pinvou3_home().join("acp-agent-defaults.json");
+                eprintln!(
+                    "[pinvou3-app] ACP agent defaults unavailable, starting empty: {error:#}"
+                );
+                Self {
+                    path,
+                    records: Arc::new(RwLock::new(HashMap::new())),
+                }
+            }
+        }
+    }
+
+    pub fn get(&self, backend: AgentBackend) -> HashMap<String, String> {
+        self.records
+            .read()
+            .get(&backend)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn has_backend(&self, backend: AgentBackend) -> bool {
+        self.records.read().contains_key(&backend)
+    }
+
+    pub fn set(&self, backend: AgentBackend, config_id: &str, value_id: &str) -> Result<()> {
+        if !backend.is_acp() {
+            anyhow::bail!("不能为非 ACP Agent 保存配置默认值");
+        }
+        self.records
+            .write()
+            .entry(backend)
+            .or_default()
+            .insert(config_id.to_string(), value_id.to_string());
+        self.persist()
+    }
+
+    pub fn set_all_if_absent(
+        &self,
+        backend: AgentBackend,
+        values: HashMap<String, String>,
+    ) -> Result<bool> {
+        if !backend.is_acp() || values.is_empty() {
+            return Ok(false);
+        }
+        {
+            let mut records = self.records.write();
+            if records.contains_key(&backend) {
+                return Ok(false);
+            }
+            records.insert(backend, values);
+        }
+        self.persist()?;
+        Ok(true)
+    }
+
+    fn persist(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = self.path.with_extension("json.tmp");
+        let value = AcpConfigDefaultsFile {
+            version: CONFIG_DEFAULTS_VERSION,
+            agents: self.records.read().clone(),
         };
         fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
         fs::rename(&tmp, &self.path)?;
@@ -355,6 +528,7 @@ mod tests {
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Temporary);
         assert_eq!(record.workspace_path, None);
         assert_eq!(record.acp_mode_id, None);
+        assert!(record.acp_config_values.is_empty());
     }
 
     #[test]
@@ -392,7 +566,7 @@ mod tests {
             )
             .unwrap();
         store
-            .set_acp_session("session-1", "acp-1".to_string(), None)
+            .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
             .unwrap();
         assert!(store
             .set_acp_workspace(
@@ -439,6 +613,10 @@ mod tests {
                     acp_session_id: Some("acp-session-1".to_string()),
                     acp_model_id: Some("gpt-test".to_string()),
                     acp_mode_id: Some("agent".to_string()),
+                    acp_config_values: HashMap::from([(
+                        "reasoning_effort".to_string(),
+                        "high".to_string(),
+                    )]),
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(root.clone()),
                 },
@@ -451,6 +629,10 @@ mod tests {
         assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session-1"));
         assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(recovered.workspace_path.as_deref(), Some(root.as_path()));
+        assert_eq!(
+            recovered.acp_config_values.get("reasoning_effort"),
+            Some(&"high".to_string())
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -473,6 +655,70 @@ mod tests {
         assert_eq!(
             value["sessions"]["session-1"]["acp_mode_id"],
             "agent-full-access"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn generic_acp_config_is_persisted_with_the_session_record() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-config-store-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let store = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .set_acp_config_value("session-1", "reasoning_effort", "high")
+            .unwrap();
+
+        let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.sessions["session-1"].acp_config_values["reasoning_effort"],
+            "high"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn acp_defaults_are_isolated_by_agent_and_not_overwritten_by_migration() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-defaults-store-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("acp-agent-defaults.json");
+        let store = AcpConfigDefaultsStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .set(AgentBackend::CodexAcp, "mode", "agent-full-access")
+            .unwrap();
+        store
+            .set(AgentBackend::ClaudeAcp, "mode", "default")
+            .unwrap();
+        assert!(!store
+            .set_all_if_absent(
+                AgentBackend::CodexAcp,
+                HashMap::from([("mode".to_string(), "agent".to_string())]),
+            )
+            .unwrap());
+
+        let persisted: AcpConfigDefaultsFile =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.agents[&AgentBackend::CodexAcp]["mode"],
+            "agent-full-access"
+        );
+        assert_eq!(
+            persisted.agents[&AgentBackend::ClaudeAcp]["mode"],
+            "default"
         );
         fs::remove_dir_all(&root).unwrap();
     }

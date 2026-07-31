@@ -124,6 +124,36 @@ try {
   assert.equal(pendingInputTurn.waitingInput, true);
   assert.equal(pendingInputTurn.items[0].status, 'waiting');
 
+  const interruptedTurn = projectAcpTimeline([
+    event(16, 'turn_started', { status: 'running' }, 'turn-interrupted'),
+    event(17, 'tool_call', { update: {
+      toolCallId: 'tool-interrupted',
+      title: '执行长任务',
+      kind: 'execute',
+      status: 'in_progress',
+    } }, 'turn-interrupted'),
+    event(18, 'permission_requested', {
+      toolCallId: 'permission-interrupted',
+      request: { options: [] },
+    }, 'turn-interrupted'),
+    event(19, 'elicitation_requested', {
+      elicitationId: 'input-interrupted',
+      request: { mode: 'form', requestedSchema: { type: 'object', properties: {} } },
+    }, 'turn-interrupted'),
+    event(20, 'turn_completed', {
+      status: 'Interrupted',
+      error: null,
+      recoveryReason: 'application_restarted',
+    }, 'turn-interrupted'),
+  ]).turns[0];
+  assert.equal(interruptedTurn.status, 'Interrupted');
+  assert.equal(interruptedTurn.waitingInput, false);
+  assert.deepEqual(
+    interruptedTurn.items.map(item => item.status),
+    ['cancelled', 'cancelled', 'cancelled'],
+    'terminal recovery must not leave tool, permission, or input items visually running',
+  );
+
   const commandEvents = [
     event(20, 'user_message', { content: [{ type: 'text', text: '检查 PR' }] }, 'turn-command'),
     event(21, 'turn_started', { status: 'running' }, 'turn-command'),
@@ -261,6 +291,10 @@ try {
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
   assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
     'an accepted ACP turn must persist the session activity timestamp before it starts');
+  assert.ok(runtime.includes('interrupt_orphaned_turns("application_restarted")')
+    && runtime.includes('cancel_without_active_prompt')
+    && runtime.includes('runtime.busy.load(Ordering::Acquire)'),
+  'app restart and stale stop must close orphaned ACP turns without cancelling an idle runtime');
   assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
@@ -427,8 +461,10 @@ try {
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
     && codexView.includes('scrollConversationToBottom')
-    && codexView.includes('codexCopy.latest'),
-  'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
+    && codexView.includes('codexCopy.latest')
+    && codexView.includes('bottom-full')
+    && !codexView.includes('bottom-[106px]'),
+  'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')

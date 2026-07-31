@@ -2058,7 +2058,9 @@ function workspaceDisplayName(path) {
           <div className={`flex-1 flex flex-col relative min-w-0 overflow-hidden ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'} ${isCompactShell ? '' : 'rounded-tl-[28px]'}`}>
 
             {/* Gemini Style Background Glow */}
-            {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
+            {(currentView === 'chat'
+              || currentView === 'codex'
+              || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
               activeTheme === 'light' ? (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] h-[800px] bg-[radial-gradient(ellipse_at_center,_rgba(232,240,254,0.8)_0%,_transparent_60%)] pointer-events-none z-0"></div>
               ) : (
