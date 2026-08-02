@@ -11,8 +11,9 @@ pub(super) const SYSTEM_CODEX_NAME: &str = "codex";
 pub(super) const MANAGED_ADAPTER_NAME: &str = "codex-acp";
 pub(super) const BUNDLED_ADAPTER_NAME: &str = "codex-acp";
 pub(super) const MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex";
-/// macOS 没有托管下载产物，系统 Codex 通过 Homebrew cask 安装。
-pub(super) const INSTALL_METHOD: &str = "homebrew";
+/// macOS 与 Linux/Windows 一样走托管下载；系统 Homebrew cask 版本过旧时
+/// 的 `brew upgrade` 特例由 features/codex_acp/mod.rs 处理。
+pub(super) const INSTALL_METHOD: &str = "managed_download";
 
 pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
     manifest_dir
@@ -57,7 +58,25 @@ pub(super) fn codex_login_command(codex: &Path) -> Command {
 }
 
 pub(super) fn managed_artifact(architecture: &str) -> Result<ManagedCodexArtifact> {
-    bail!("当前托管 Codex 下载不支持平台: macos-{architecture}")
+    match architecture {
+        "aarch64" => Ok(ManagedCodexArtifact {
+            urls: &[
+                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-darwin-arm64.tgz",
+                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-darwin-arm64.tgz",
+            ],
+            integrity: "sha512-6zgvh70MzBNSeT17HEhSOrmmGGZGAKzSC7x6JAq+edkJkdPYA9P0I1tG7aJ49GlBkBxuC+MKBH1qm6+2Cghcww==",
+            vendor_triple: "aarch64-apple-darwin",
+        }),
+        "x86_64" => Ok(ManagedCodexArtifact {
+            urls: &[
+                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-darwin-x64.tgz",
+                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-darwin-x64.tgz",
+            ],
+            integrity: "sha512-THRyPG0zSU6M8NQAge1LHEHsJDnoH4BpKsfJHB/qe3Fm+Wf6zqAmWJFlOKzBm27m0K2Hq3za4Ac2I5p5i4yp/A==",
+            vendor_triple: "x86_64-apple-darwin",
+        }),
+        _ => bail!("当前托管 Codex 下载不支持平台: macos-{architecture}"),
+    }
 }
 
 pub(super) fn should_retry_file_lock(_error: &io::Error) -> bool {
@@ -88,4 +107,29 @@ pub(super) fn brew_available() -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_artifacts_are_available_for_supported_architectures() {
+        for (architecture, triple) in [
+            ("aarch64", "aarch64-apple-darwin"),
+            ("x86_64", "x86_64-apple-darwin"),
+        ] {
+            let artifact =
+                managed_artifact(architecture).expect("resolve supported macOS Codex artifact");
+            assert_eq!(artifact.vendor_triple, triple);
+            assert!(artifact.urls[0].starts_with("https://"));
+            assert!(artifact.integrity.starts_with("sha512-"));
+        }
+        assert!(managed_artifact("riscv64").is_err());
+    }
+
+    #[test]
+    fn file_lock_errors_are_not_retried() {
+        assert!(!should_retry_file_lock(&io::Error::from_raw_os_error(13)));
+    }
 }

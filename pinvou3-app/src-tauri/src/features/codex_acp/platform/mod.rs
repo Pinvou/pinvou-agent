@@ -73,7 +73,9 @@ pub(super) fn managed_artifact(architecture: &str) -> Result<ManagedCodexArtifac
 }
 
 /// 当前平台的 Codex 安装方式（status.install_method 契约字段）：
-/// "managed_download"（linux/windows）/ "homebrew"（macOS）/ "manual"（其他）。
+/// "managed_download"（linux/windows/macos）/ "manual"（其他）。
+/// macOS 系统 Homebrew cask 版本过旧的 brew upgrade 特例由
+/// features/codex_acp/mod.rs 在 install_method 之外另行判定。
 pub(super) fn install_method() -> &'static str {
     current::INSTALL_METHOD
 }

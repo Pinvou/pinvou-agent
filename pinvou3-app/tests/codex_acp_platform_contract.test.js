@@ -70,8 +70,22 @@ assert.doesNotMatch(
   /BRIDGE_(?:NODE|ENTRY)=/,
   "dev startup must not duplicate a partial Bridge readiness check",
 );
-assert.match(feature, /run_brew\(&\["install", "--cask", "codex"\]\)/);
-assert.match(feature, /run_brew\(&\["upgrade", "--cask", "codex"\]\)/);
+assert.match(feature, /vec!\["install", "--cask", "codex"\]/);
+assert.match(feature, /vec!\["upgrade", "--cask", "codex"\]/);
+// brew 升级已泛化到三个 Agent：claude-code 是 cask，kimi-code 是 formula（无 --cask）。
+assert.match(feature, /vec!\["upgrade", "--cask", "claude-code"\]/);
+assert.match(feature, /vec!\["upgrade", "kimi-code"\]/);
+assert.match(feature, /&\["list", "--cask", "codex"\]/);
+assert.match(feature, /&\["list", "--cask", "claude-code"\]/);
+assert.match(feature, /&\["list", "kimi-code"\]/);
 assert.doesNotMatch(feature, /brew (?:install|upgrade) codex/);
+// npm 全局来源探测与升级：Windows 用 npm.cmd，包名固定，升级参数 install -g <pkg>@latest。
+assert.match(feature, /find_in_path\("npm\.cmd"\)/);
+assert.match(feature, /@openai\/codex/);
+assert.match(feature, /@anthropic-ai\/claude-code/);
+assert.match(feature, /@moonshot-ai\/kimi-code/);
+assert.match(feature, /"ls", "-g", package, "--depth=0"/);
+assert.match(feature, /format!\("\{\}@latest", npm_package\(backend\)\?\)/);
+assert.match(feature, /"npm_upgrade" => self\.upgrade_via_npm\(backend\)/);
 
 console.log("✓ Codex ACP compile-time platform contract passed");

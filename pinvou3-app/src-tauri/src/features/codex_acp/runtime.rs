@@ -18,9 +18,9 @@ use super::{diagnostics, platform};
 
 pub const MANAGED_CODEX_VERSION: &str = "0.144.6";
 
-/// codex-acp 1.1.5 验证过的最低 Codex CLI 版本。
+/// codex-acp 1.1.5 官方依赖的最低 Codex CLI 版本（与托管下载版本一致）。
 /// 所有运行时来源都必须满足，显式覆盖路径也不能绕过兼容性门禁。
-pub const MIN_CODEX_VERSION: &str = "0.144.0";
+pub const MIN_CODEX_VERSION: &str = "0.144.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -196,13 +196,22 @@ fn codex_version_result(path: &Path) -> Result<String> {
         .context("读取 Codex 自检标准输出失败")?
         .read_to_string(&mut stdout)
         .context("解析 Codex 自检标准输出失败")?;
+    parse_codex_version_output(&stdout).context("Codex 自检未返回版本号")
+}
+
+/// 从 `codex --version` 标准输出提取版本号。
+/// 输出形如 `codex-cli 0.146.0`（带包名前缀）或裸 semver `0.146.0`，
+/// 取首个以纯数字段开头的空白分隔字段；找不到视为不合规。
+fn parse_codex_version_output(stdout: &str) -> Option<String> {
     stdout
         .split_whitespace()
-        .last()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .find(|token| {
+            token
+                .split(['.', '-', '+'])
+                .next()
+                .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+        })
         .map(ToOwned::to_owned)
-        .context("Codex 自检未返回版本号")
 }
 
 pub async fn install_managed_codex(
@@ -583,13 +592,33 @@ mod tests {
 
     #[test]
     fn min_codex_version_enforced_by_semver_order() {
-        assert!(runtime_version_is_compatible("0.144.0"));
         assert!(runtime_version_is_compatible("0.144.6"));
         assert!(runtime_version_is_compatible("0.145.0"));
         assert!(runtime_version_is_compatible("1.0.0"));
+        assert!(!runtime_version_is_compatible("0.144.5"));
+        assert!(!runtime_version_is_compatible("0.144.0"));
         assert!(!runtime_version_is_compatible("0.143.9"));
         assert!(!runtime_version_is_compatible("0.100.0"));
         assert!(!runtime_version_is_compatible("unknown"));
+    }
+
+    #[test]
+    fn version_output_parses_prefixed_and_bare_formats() {
+        assert_eq!(
+            parse_codex_version_output("codex-cli 0.146.0"),
+            Some("0.146.0".to_string())
+        );
+        assert_eq!(
+            parse_codex_version_output("0.146.0"),
+            Some("0.146.0".to_string())
+        );
+        assert_eq!(
+            parse_codex_version_output("codex-cli 0.144.6\n"),
+            Some("0.144.6".to_string())
+        );
+        assert_eq!(parse_codex_version_output("codex-cli"), None);
+        assert_eq!(parse_codex_version_output(""), None);
+        assert_eq!(parse_codex_version_output("not-a-version"), None);
     }
 
     #[test]

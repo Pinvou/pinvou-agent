@@ -90,6 +90,22 @@ pub async fn install_codex_homebrew(
         .map_err(|error| format!("{error:#}"))
 }
 
+/// 统一的 ACP Agent 安装入口：按 status.install_action 分派（codex 托管下载 /
+/// brew、npm 升级 / claude、kimi 官方脚本），完成后返回最新状态。
+/// action 提供时经合法性校验后优先于计算的 install_action（前端用于
+/// codex 用户拒绝包管理器升级后改选 managed_download）。
+#[tauri::command]
+pub async fn install_acp_agent(
+    agent: String,
+    action: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpStatus, String> {
+    acp_pool
+        .install_agent(&agent, action.as_deref())
+        .await
+        .map_err(|error| format!("安装 ACP Agent 失败: {error:#}"))
+}
+
 #[tauri::command]
 pub async fn login_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpStatus, String> {
     acp_pool
