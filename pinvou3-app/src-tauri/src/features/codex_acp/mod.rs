@@ -309,6 +309,9 @@ pub struct CodexAcpStatus {
     /// 已探测到 CLI 的安装来源："brew" / "npm" / "script"（官方脚本目录）/
     /// "managed"（codex 托管目录）/ null（无 CLI 或来源未知）。
     pub install_source: Option<String>,
+    /// 当前平台是否支持 codex 托管下载；前端据此决定「暂不升级」后是否提供
+    /// 托管回退入口（claude/kimi 与 codex 不支持托管的平台恒 false）。
+    pub managed_download_supported: bool,
     /// 仅 macOS 探测 Homebrew；其他平台恒 false。
     pub brew_available: bool,
     /// 系统 PATH 里找到了 codex 但版本低于 min_codex_version，
@@ -885,6 +888,18 @@ impl AcpPool {
         Ok(self.status_for(backend))
     }
 
+    /// 「重新检测」入口：忽略探测缓存强制重新探测后返回最新状态，
+    /// 供用户在 App 外手动安装/升级 CLI 后刷新（安装/升级成功路径
+    /// 已通过 refresh_agent_cli_probe 自动失效缓存）。
+    pub async fn recheck_agent_status(&self, agent_id: &str) -> Result<CodexAcpStatus> {
+        let backend = AgentBackend::parse(Some(agent_id))?;
+        if !backend.is_acp() {
+            bail!("Agent 不是 ACP 后端: {agent_id}");
+        }
+        self.refresh_agent_cli_probe(backend).await;
+        Ok(self.status_for_async(backend).await)
+    }
+
     pub fn agent_statuses(&self) -> Vec<CodexAcpStatus> {
         [
             AgentBackend::CodexAcp,
@@ -916,8 +931,10 @@ impl AcpPool {
             let version_supported = kimi_version.as_deref().is_some_and(kimi_version_supported);
             // Kimi 直接 spawn 原生 CLI（kimi acp）：CLI 存在且版本合规即可用。
             let installed = kimi.is_some() && version_supported;
-            let authenticated =
-                !login.in_progress && kimi.as_ref().is_some_and(|cli| kimi_authenticated(&cli.path));
+            let authenticated = !login.in_progress
+                && kimi
+                    .as_ref()
+                    .is_some_and(|cli| kimi_authenticated(&cli.path));
             return CodexAcpStatus {
                 agent_id: "kimi",
                 agent_name: "Kimi",
@@ -950,6 +967,7 @@ impl AcpPool {
                     )
                 },
                 install_source,
+                managed_download_supported: false,
                 brew_available: false,
                 system_codex_incompatible: false,
                 download_required: false,
@@ -961,7 +979,7 @@ impl AcpPool {
                 login_url: login.url,
                 login_code: login.code,
                 login_input_required: false,
-                installing: false,
+                installing: self.installing.load(Ordering::Acquire),
                 error: (!authenticated).then_some(login.error).flatten(),
                 setup_hint: if !installed {
                     Some("kimi_cli_missing")
@@ -1023,6 +1041,9 @@ impl AcpPool {
             AgentBackend::ClaudeAcp => provider_available,
             AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
         };
+        let managed_download_supported = backend == AgentBackend::CodexAcp
+            && platform::install_method() == "managed_download"
+            && platform::managed_artifact(std::env::consts::ARCH).is_ok();
         let install_action = match backend {
             AgentBackend::CodexAcp => {
                 if codex.is_some() {
@@ -1035,8 +1056,7 @@ impl AcpPool {
                         probe.as_ref().and_then(|probe| probe.codex_install_source),
                         npm_executable().is_some(),
                         false,
-                        platform::install_method() == "managed_download"
-                            && platform::managed_artifact(std::env::consts::ARCH).is_ok(),
+                        managed_download_supported,
                     )
                 }
             }
@@ -1135,6 +1155,7 @@ impl AcpPool {
                     .map(str::to_string),
                 AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
             },
+            managed_download_supported,
             brew_available: probe.as_ref().is_some_and(|probe| probe.brew_available),
             system_codex_incompatible: probe
                 .as_ref()
@@ -1150,8 +1171,8 @@ impl AcpPool {
             login_url: login.url,
             login_code: login.code,
             login_input_required: login.input_required,
-            installing: backend == AgentBackend::CodexAcp
-                && self.installing.load(Ordering::Acquire),
+            // installing 标志由三条安装路径（托管/brew/npm/脚本）共享，三端统一上报。
+            installing: self.installing.load(Ordering::Acquire),
             error: if authenticated {
                 None
             } else {
@@ -1392,10 +1413,12 @@ impl AcpPool {
             };
             // 幂等提示不算错误：install 报 already installed，upgrade 报 already up-to-date。
             let already_done = |output: &std::process::Output| {
-                ["already installed", "already up-to-date"].iter().any(|marker| {
-                    String::from_utf8_lossy(&output.stdout).contains(marker)
-                        || String::from_utf8_lossy(&output.stderr).contains(marker)
-                })
+                ["already installed", "already up-to-date"]
+                    .iter()
+                    .any(|marker| {
+                        String::from_utf8_lossy(&output.stdout).contains(marker)
+                            || String::from_utf8_lossy(&output.stderr).contains(marker)
+                    })
             };
             let (command, args) = brew_install_args(backend, brew_package_installed(backend))
                 .with_context(|| format!("{} 不支持 Homebrew 升级", backend.display_name()))?;
@@ -1527,7 +1550,11 @@ impl AcpPool {
             );
         }
         if self.installing.swap(true, Ordering::AcqRel) {
-            diagnostics::write(&operation_id, "script:already_installing", "result=rejected");
+            diagnostics::write(
+                &operation_id,
+                "script:already_installing",
+                "result=rejected",
+            );
             bail!("{} 正在安装，请稍候", backend.display_name());
         }
         diagnostics::write(
@@ -1542,7 +1569,9 @@ impl AcpPool {
         match result {
             Ok(()) => {
                 diagnostics::write(&operation_id, "script:complete", "result=success");
-                Ok(self.status_for_async(backend).await)
+                let status = self.status_for_async(backend).await;
+                ensure_agent_cli_ready(backend, &status)?;
+                Ok(status)
             }
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -3531,8 +3560,7 @@ fn npm_global_installed(package: &str) -> bool {
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
-    .spawn()
-    else {
+    .spawn() else {
         return false;
     };
     match child.wait_timeout(Duration::from_secs(10)) {
@@ -3545,16 +3573,86 @@ fn npm_global_installed(package: &str) -> bool {
     }
 }
 
-/// 判定已解析 CLI 的安装来源：macOS 优先 brew（brew list 判定），三端再查
-/// npm 全局，最后按官方脚本/托管目录前缀判定；无法识别返回 None。
+/// 判定已解析 CLI 的安装来源。多份并存（如同机同时有 brew cask 与官方脚本版）
+/// 时必须按「实际被解析使用的那一份」判定，否则升级会打到包管理器管理的另一份，
+/// 正在使用的旧版原地不动。顺序：脚本/托管目录前缀 → brew 前缀+brew 已装 →
+/// npm 全局根+npm 已装 → 路径无法判定时回退 brew/npm 全局查询（维持原行为）。
 fn detect_install_source(backend: AgentBackend, path: &Path) -> Option<&'static str> {
-    if brew_package_installed(backend) {
+    if let Some(source) = path_install_source(backend, path) {
+        return Some(source);
+    }
+    let brew_path_match = platform::brew_prefix().is_some_and(|prefix| path.starts_with(prefix));
+    let brew_installed = brew_package_installed(backend);
+    let npm_path_match = npm_global_root().is_some_and(|root| {
+        path_in_npm_global(path, &root, crate::platform::capabilities::is_windows())
+    });
+    let npm_installed = npm_package(backend).is_some_and(npm_global_installed);
+    finalize_install_source(
+        brew_path_match,
+        brew_installed,
+        npm_path_match,
+        npm_installed,
+    )
+}
+
+/// 路径与包管理器双重判定的优先级：路径命中且包管理器确认已装才认来源；
+/// 路径无法判定时回退包管理器全局查询。纯函数，便于单测覆盖多份并存场景。
+fn finalize_install_source(
+    brew_path_match: bool,
+    brew_installed: bool,
+    npm_path_match: bool,
+    npm_installed: bool,
+) -> Option<&'static str> {
+    if brew_path_match && brew_installed {
         return Some("brew");
     }
-    if npm_package(backend).is_some_and(npm_global_installed) {
+    if npm_path_match && npm_installed {
         return Some("npm");
     }
-    path_install_source(backend, path)
+    if brew_installed {
+        return Some("brew");
+    }
+    if npm_installed {
+        return Some("npm");
+    }
+    None
+}
+
+/// `npm prefix -g` 输出的全局根目录；npm 不可用或超时返回 None。
+fn npm_global_root() -> Option<PathBuf> {
+    let npm = npm_executable()?;
+    let mut child = crate::platform::process::HiddenCommand::new(
+        crate::platform::os::external_application_path(&npm),
+    )
+    .args(["prefix", "-g"])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .ok()?;
+    match child.wait_timeout(Duration::from_secs(10)) {
+        Ok(Some(status)) if status.success() => {
+            let mut stdout = String::new();
+            child.stdout.take()?.read_to_string(&mut stdout).ok()?;
+            let root = stdout.trim();
+            (!root.is_empty()).then_some(PathBuf::from(root))
+        }
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
+}
+
+/// 路径是否位于 npm 全局根下：unix 可执行文件链接在 <root>/bin，Windows 直接在根目录。
+fn path_in_npm_global(path: &Path, root: &Path, windows: bool) -> bool {
+    let bin = if windows {
+        root.to_path_buf()
+    } else {
+        root.join("bin")
+    };
+    path.starts_with(bin)
 }
 
 /// 按路径前缀判定官方脚本（claude ~/.local/bin、kimi ~/.kimi-code/bin）与
@@ -3631,12 +3729,14 @@ fn brew_install_args(
     brew_installed: bool,
 ) -> Option<(&'static str, Vec<&'static str>)> {
     match backend {
-        AgentBackend::CodexAcp if brew_installed => {
-            Some(("brew upgrade --cask codex", vec!["upgrade", "--cask", "codex"]))
-        }
-        AgentBackend::CodexAcp => {
-            Some(("brew install --cask codex", vec!["install", "--cask", "codex"]))
-        }
+        AgentBackend::CodexAcp if brew_installed => Some((
+            "brew upgrade --cask codex",
+            vec!["upgrade", "--cask", "codex"],
+        )),
+        AgentBackend::CodexAcp => Some((
+            "brew install --cask codex",
+            vec!["install", "--cask", "codex"],
+        )),
         AgentBackend::ClaudeAcp => Some((
             "brew upgrade --cask claude-code",
             vec!["upgrade", "--cask", "claude-code"],
@@ -3678,9 +3778,9 @@ fn ensure_agent_cli_ready(backend: AgentBackend, status: &CodexAcpStatus) -> Res
 fn is_bare_semver(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
     parts.len() == 3
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.chars().all(|character| character.is_ascii_digit()))
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+        })
 }
 
 /// claude `--version` 输出形如 `2.1.163 (Claude Code)`，取首个空白分隔 token。
@@ -3722,19 +3822,7 @@ async fn run_official_install_script(backend: AgentBackend, operation_id: &str) 
         AgentBackend::KimiAcp => (KIMI_INSTALL_SCRIPT_UNIX, KIMI_INSTALL_SCRIPT_WINDOWS),
         _ => bail!("{} 不支持官方脚本安装", backend.display_name()),
     };
-    let mut command = if crate::platform::capabilities::is_windows() {
-        let mut command = crate::platform::process::HiddenTokioCommand::new("powershell");
-        command
-            .args(["-NoProfile", "-NonInteractive", "-Command"])
-            .arg(format!("irm {windows_url} | iex"));
-        command
-    } else {
-        let mut command = crate::platform::process::HiddenTokioCommand::new("sh");
-        command
-            .arg("-c")
-            .arg(format!("curl -fsSL {unix_url} | bash"));
-        command
-    };
+    let mut command = crate::platform::process::install_script_command(unix_url, windows_url);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4494,6 +4582,7 @@ mod tests {
             install_method: platform::install_method(),
             install_action: "managed_download",
             install_source: Some("npm".to_string()),
+            managed_download_supported: false,
             brew_available: false,
             system_codex_incompatible: true,
             download_required: false,
@@ -4516,8 +4605,74 @@ mod tests {
         assert_eq!(value["install_method"], json!(platform::install_method()));
         assert_eq!(value["install_action"], json!("managed_download"));
         assert_eq!(value["install_source"], json!("npm"));
+        assert_eq!(value["managed_download_supported"], json!(false));
         assert_eq!(value["brew_available"], json!(false));
         assert_eq!(value["system_codex_incompatible"], json!(true));
+    }
+
+    #[test]
+    fn install_source_follows_path_of_cli_in_use() {
+        // 多份并存时以「正在使用的这份」的路径为准，避免升级打到另一份：
+        // 路径命中 brew 前缀且 brew 确认已装 → brew；npm 全局根同理。
+        assert_eq!(
+            finalize_install_source(true, true, false, false),
+            Some("brew")
+        );
+        assert_eq!(
+            finalize_install_source(false, false, true, true),
+            Some("npm")
+        );
+        // 路径命中但包管理器查无此包（如手动拷贝进前缀目录）→ 不冒认，继续回退。
+        assert_eq!(
+            finalize_install_source(true, false, false, true),
+            Some("npm")
+        );
+        assert_eq!(finalize_install_source(true, false, false, false), None);
+        // 路径无法判定时回退包管理器全局查询（维持原行为）。
+        assert_eq!(
+            finalize_install_source(false, true, false, false),
+            Some("brew")
+        );
+        assert_eq!(
+            finalize_install_source(false, false, false, true),
+            Some("npm")
+        );
+        assert_eq!(finalize_install_source(false, false, false, false), None);
+    }
+
+    #[test]
+    fn npm_global_path_matches_platform_layout() {
+        let root = Path::new("/home/user/.nvm/versions/node/v22.0.0");
+        assert!(path_in_npm_global(
+            &root.join("bin").join("claude"),
+            root,
+            false
+        ));
+        assert!(!path_in_npm_global(
+            &root
+                .join("lib")
+                .join("node_modules")
+                .join(".bin")
+                .join("claude"),
+            root,
+            false
+        ));
+        assert!(!path_in_npm_global(
+            Path::new("/usr/local/bin/claude"),
+            root,
+            false
+        ));
+        let win_root = Path::new("C:\\Users\\u\\AppData\\Roaming\\npm");
+        assert!(path_in_npm_global(
+            &win_root.join("claude.cmd"),
+            win_root,
+            true
+        ));
+        assert!(!path_in_npm_global(
+            Path::new("C:\\tools\\claude.cmd"),
+            win_root,
+            true
+        ));
     }
 
     #[test]
@@ -4594,11 +4749,17 @@ mod tests {
         // codex：已装 brew cask 走 upgrade，未装走 install。
         assert_eq!(
             brew_install_args(AgentBackend::CodexAcp, true),
-            Some(("brew upgrade --cask codex", vec!["upgrade", "--cask", "codex"]))
+            Some((
+                "brew upgrade --cask codex",
+                vec!["upgrade", "--cask", "codex"]
+            ))
         );
         assert_eq!(
             brew_install_args(AgentBackend::CodexAcp, false),
-            Some(("brew install --cask codex", vec!["install", "--cask", "codex"]))
+            Some((
+                "brew install --cask codex",
+                vec!["install", "--cask", "codex"]
+            ))
         );
         assert_eq!(
             brew_install_args(AgentBackend::ClaudeAcp, true),

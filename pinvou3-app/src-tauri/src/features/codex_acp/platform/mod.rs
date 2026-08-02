@@ -92,6 +92,17 @@ pub(super) fn brew_bin() -> &'static str {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn brew_prefix() -> Option<std::path::PathBuf> {
+    current::brew_prefix()
+}
+
+/// Homebrew 仅 macOS 使用；其他平台恒 None。
+#[cfg(not(target_os = "macos"))]
+pub(super) fn brew_prefix() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn brew_available() -> bool {
     current::brew_available()
 }

@@ -60,8 +60,18 @@ pub async fn list_acp_agents(acp_pool: State<'_, AcpPool>) -> Result<Vec<CodexAc
 #[tauri::command]
 pub async fn get_acp_agent_status(
     agent_id: String,
+    recheck: Option<bool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
+    // recheck=true 时忽略探测缓存强制重探测：用户在 App 外手动安装/升级
+    // CLI 后点击「重新检测」必须拿到最新状态。轮询调用不传，保持读缓存。
+    if recheck.unwrap_or(false) {
+        let pool = acp_pool.inner().clone();
+        return pool
+            .recheck_agent_status(&agent_id)
+            .await
+            .map_err(|error| format!("重新检测 ACP Agent 状态失败: {error:#}"));
+    }
     if agent_id == "codex" {
         return Ok(acp_pool.refresh_status().await);
     }

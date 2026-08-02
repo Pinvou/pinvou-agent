@@ -96,6 +96,28 @@ pub(super) fn brew_bin() -> &'static str {
     "brew"
 }
 
+/// brew 安装前缀（如 /opt/homebrew、/usr/local），由 brew_bin() 推导；
+/// 标准路径未命中时回退 `brew --prefix` 查询，brew 不可用返回 None。
+/// 供 install_source 判定时确认「正在使用的 CLI 路径」是否真由 brew 管理。
+pub(super) fn brew_prefix() -> Option<PathBuf> {
+    let bin = brew_bin();
+    if bin != "brew" {
+        return Path::new(bin)
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+    }
+    crate::platform::process::HiddenCommand::new("brew")
+        .arg("--prefix")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (!prefix.is_empty()).then_some(PathBuf::from(prefix))
+        })
+}
+
 /// 探测 Homebrew 是否可用。brew_bin() 返回非 "brew" 说明标准路径下找到了
 /// brew，一定可用；回退到裸 "brew" 时走 which 检查 PATH（覆盖非标准安装位置）。
 pub(super) fn brew_available() -> bool {

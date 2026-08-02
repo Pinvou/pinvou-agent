@@ -97,14 +97,27 @@ fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
     detail.chars().take(4000).collect()
 }
 
-// HiddenTokioCommand 为 Windows 隐藏控制台窗口的异步子进程创建预留,当前各平台
-// 均未接入调用方,故在 lib 视角下被误报为 dead code;new 返回 Command 而非 Self
-// 是有意设计(构造器语义)。
-#[allow(dead_code)]
+/// 构造执行远程安装脚本的异步子进程命令：Windows 用 PowerShell
+/// `irm <url> | iex`，其他平台用 `sh -c "curl -fsSL <url> | bash"`。
+pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio::process::Command {
+    if crate::platform::capabilities::is_windows() {
+        let mut command = HiddenTokioCommand::new("powershell");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!("irm {windows_url} | iex"));
+        command
+    } else {
+        let mut command = HiddenTokioCommand::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("curl -fsSL {unix_url} | bash"));
+        command
+    }
+}
+
 pub(crate) struct HiddenTokioCommand;
 
 impl HiddenTokioCommand {
-    #[allow(dead_code)]
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<S: AsRef<OsStr>>(program: S) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(program);

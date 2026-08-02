@@ -729,9 +729,9 @@ function RuntimeNotice({
     const agentName = status.agent_name || 'Agent';
     const action = status.install_action || 'manual';
     const isUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
-    // 用户暂不升级时：codex 改用托管下载；其余 agent 没有托管方案，保持不可用。
-    const declinedManaged = isUpgrade && declinedUpgrade && status.agent_id === 'codex';
-    const declinedBlocked = isUpgrade && declinedUpgrade && status.agent_id !== 'codex';
+    // 用户暂不升级时：codex 且平台支持托管下载则改用托管；其余情况没有托管方案，保持不可用。
+    const declinedManaged = isUpgrade && declinedUpgrade && status.agent_id === 'codex' && status.managed_download_supported;
+    const declinedBlocked = isUpgrade && declinedUpgrade && !declinedManaged;
     const effectiveAction = declinedManaged ? 'managed_download' : action;
     const installHints = {
       managed_download: copy.managedDownloadHint(status.min_version),
@@ -1144,8 +1144,9 @@ export function CodexAcpView({
     return list;
   }
 
-  async function refreshStatus(agentId = activeAgentId) {
-    const next = await invoke('get_acp_agent_status', { agentId });
+  async function refreshStatus(agentId = activeAgentId, recheck = false) {
+    // recheck=true 强制后端忽略缓存重新探测（「重新检测」按钮）；轮询不传，保持读缓存。
+    const next = await invoke('get_acp_agent_status', recheck ? { agentId, recheck: true } : { agentId });
     if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     return next;
   }
@@ -1780,7 +1781,7 @@ export function CodexAcpView({
                   onLogin={login}
                   onOpenLogin={openLogin}
                   onSubmitLoginCode={submitLoginCode}
-                  onRefresh={() => refreshStatus(activeAgentId)}
+                  onRefresh={() => refreshStatus(activeAgentId, true)}
                   copy={codexCopy}
                 />
                 {activeStatus?.authenticated && (
@@ -2089,7 +2090,7 @@ export function CodexAcpView({
                               type="button"
                               onClick={() => {
                                 setAccountMenuOpen(false);
-                                refreshStatus(activeAgentId).catch(showError);
+                                refreshStatus(activeAgentId, true).catch(showError);
                               }}
                               className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                             >

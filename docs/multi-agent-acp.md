@@ -26,7 +26,11 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 存在且版本不低于最低要求时直接使用，不提示升级或重装；缺失或版本过旧时，前端按
 `install_action` 提示用户，用户确认后调用 `install_acp_agent` 自动安装或升级，完成后
 重新探测。版本过旧时先判定安装来源（Homebrew / npm 全局 / 官方脚本），再决定升级
-方式，避免同一 CLI 多来源并存。
+方式，避免同一 CLI 多来源并存。来源判定以「实际被解析使用的那一份 CLI」的路径为准：
+先匹配脚本/托管安装目录，再要求 brew 前缀 / npm 全局根与包管理器安装记录双重命中；
+路径无法判定时才回退 `brew list` / `npm ls -g` 全局查询。探测结果有缓存（前端按秒
+轮询），安装/升级成功后自动失效；用户在 App 外手动安装或升级后，点击界面的
+「重新检测」会忽略缓存强制重新探测。
 
 最低版本与 `--version` 输出格式：
 
@@ -49,9 +53,9 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 
 | 来源 | 判定 | 升级方式 |
 |---|---|---|
-| Homebrew（macOS） | `brew list` 命中；kimi-code 为 formula，codex / claude-code 为 cask | `brew upgrade` 对应 formula/cask |
-| npm 全局（三端） | `npm ls -g` 命中 `@openai/codex`、`@anthropic-ai/claude-code`、`@moonshot-ai/kimi-code` | `npm install -g <包名>@latest` |
-| 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`） | 重新运行官方安装脚本 |
+| Homebrew（macOS） | CLI 路径位于 brew 前缀下且 `brew list` 命中；kimi-code 为 formula，codex / claude-code 为 cask | `brew upgrade` 对应 formula/cask |
+| npm 全局（三端） | CLI 路径位于 `npm prefix -g` 下且 `npm ls -g` 命中 `@openai/codex`、`@anthropic-ai/claude-code`、`@moonshot-ai/kimi-code` | `npm install -g <包名>@latest` |
+| 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`），优先于 brew/npm 判定 | 重新运行官方安装脚本 |
 
 Homebrew / npm 全局来源的旧版一律走对应包管理器升级，禁止使用官方脚本安装，避免同一
 CLI 多来源并存引发混乱；以上来源均未命中的旧版按全新安装矩阵处理。用户不同意升级时：
@@ -65,8 +69,12 @@ Claude Code / Kimi 暂无托管方案，保持不可用并在界面挂起升级�
 `install_source: String`（`"brew"` / `"npm"` / `"script"` / `"managed"` / `null`，
 当前探测到 CLI 的安装来源，未安装时为 `null`）、
 `install_action: String`（`"none"` / `"managed_download"` / `"brew_upgrade"` /
-`"npm_upgrade"` / `"official_script"` / `"manual"`，已安装时为 `"none"`）；
+`"npm_upgrade"` / `"official_script"` / `"manual"`，已安装时为 `"none"`）、
+`managed_download_supported: bool`（当前平台是否支持 Codex 托管下载；前端据此决定
+用户拒绝包管理器升级后是否提供托管回退入口，Claude/Kimi 恒为 `false`）；
 `bridge_ready`、`authenticated`、`setup_hint` 等既有字段语义不变。
+`get_acp_agent_status(agent_id, recheck?)` 传 `recheck: true` 时忽略探测缓存强制
+重新探测（「重新检测」按钮）；默认读取缓存，供前端轮询使用。
 
 新增 Tauri 命令 `install_acp_agent(agent, action?)`：按 `install_action` 分派执行安装
 或升级（Codex 托管下载、Homebrew `brew upgrade`、npm 全局升级、Claude/Kimi 官方脚本），
