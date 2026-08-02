@@ -68,7 +68,7 @@ lark-cli task <resource> <method> [flags] # 调用 API
   - `create` — 创建任务
   - `delete` — 删除任务
   - `get` — 获取任务详情
-  - `list` — 列取任务列表
+  - `list` — 获取任务列表
   - `patch` — 更新任务
 
 ### tasklists

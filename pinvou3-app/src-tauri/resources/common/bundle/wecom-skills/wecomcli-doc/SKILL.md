@@ -24,7 +24,7 @@ metadata:
 | `https://doc.weixin.qq.com/smartsheet/*` | **智能表格**（doc_type=10） | 参阅 `wecomcli-smartsheet` skill |
 | `https://doc.weixin.qq.com/smartpage/*` | **智能文档**（原名智能主页） | `smartpage_export_task` → `smartpage_get_export_result` |
 
-> ⚠️ `/sheet/`（表格）与 `/smartsheet/`（智能表格）是不同品类；读取都用 `get_doc_content`，智能表格的结构/记录管理见 `wecomcli-smartsheet` skill。
+> ⚠️ `/sheet/`（表格）与 `/smartsheet/`（智能表格）是不同品类；表格读取用 `get_doc_content`，智能表格的读取与结构/记录管理见 `wecomcli-smartsheet` skill。
 
 ## 调用方式
 
@@ -57,7 +57,7 @@ wecom-cli doc <tool_name> '<json_params>'
 
 ### get_doc_content
 
-获取**文档 / 表格（在线表格） / 智能表格**的完整内容数据，统一以 Markdown 格式返回。采用**异步轮询机制**：首次调用无需传 `task_id`，接口返回 `task_id`；若 `task_done` 为 false，需携带该 `task_id` 再次调用，直到 `task_done` 为 true 时返回完整内容。
+获取**文档 / 表格（在线表格）**的完整内容数据，统一以 Markdown 格式返回。采用**异步轮询机制**：首次调用无需传 `task_id`，接口返回 `task_id`；若 `task_done` 为 false，需携带该 `task_id` 再次调用，直到 `task_done` 为 true 时返回完整内容。
 
 > 适用 URL：`/doc/*`、`/sheet/*`。`/smartsheet/*`（智能表格）不适用，请改用 `wecomcli-smartsheet` skill；`/smartpage/*`（智能文档）不适用，请改用 `smartpage_export_task`。
 
@@ -127,7 +127,7 @@ wecom-cli doc edit_doc_content '{"docid": "DOCID", "content": "# 标题\n\n正�
 
 创建智能文档（原名智能主页），支持传入标题和多个子页面。每个子页面可指定标题、内容类型和本地文件路径。创建成功返回 docid 和 url。
 
-> ⚠️ **特殊语法**：此命令必须使用 `+smartpage_create`（带 `+` 前缀），加号不可省略；该 `+` 仅适用于此命令，不要泛化到其他 `doc` 子命令。
+> ⚠️ **特殊语法**：此命令必须使用 `+smartpage_create`（带 `+` 前缀），加号不可省略；不要自行给其他 `doc` 子命令加 `+`，带 `+` 的命令（如此命令及 smartsheet 的 `+smartsheet_add_records_auto_file` / `+smartsheet_update_records_auto_file`）必须原样保留加号。
 
 ```bash
 wecom-cli doc +smartpage_create '{"title": "项目概览", "pages": [{"page_title": "需求文档", "content_type": 1, "page_filepath": "/path/to/requirements.md"}]}'
