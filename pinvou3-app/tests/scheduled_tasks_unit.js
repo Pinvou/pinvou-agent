@@ -21,14 +21,19 @@ const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
   'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow'
 ];
-const tauriBridge = tauriBridgeFeatureNames
-  .map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8'))
-  .concat(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'))
-  .join('\n');
-const webBridge = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'),
+const bridgeMessages = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
   'utf8'
 );
+const tauriBridge = [bridgeMessages]
+  .concat(tauriBridgeFeatureNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8')))
+  .concat(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'))
+  .join('\n');
+const webBridge = [
+  bridgeMessages,
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge', 'turn-terminal.js'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
+].join('\n');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
 const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
