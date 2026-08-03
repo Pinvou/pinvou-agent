@@ -17,7 +17,6 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiChat',
     'uiChatExtra',
     'uiChatScenes',
-    'uiAccount',
     'uiWorkflow',
     'uiToolStore',
     'uiPet',
@@ -51,8 +50,7 @@ for (const language of ['zh', 'en', 'ja']) {
     `${language}.uiChat.sceneModes.clear must be a function`,
   );
   assert.ok(dict[language].uiChatExtra.draftingScheduled, `${language}.uiChatExtra.draftingScheduled must exist`);
-  assert.ok(dict[language].uiAccount.availableQuota, `${language}.uiAccount.availableQuota must exist`);
-  assert.ok(dict[language].uiAccount.settingsLoadFailed, `${language}.uiAccount.settingsLoadFailed must exist`);
+  assert.ok(dict[language].uiSettingsDetail.settingsLoadFailed, `${language}.uiSettingsDetail.settingsLoadFailed must exist`);
 }
 
 const main = source('app/main.jsx');
@@ -62,7 +60,7 @@ assert.match(main, /<WebConnectionStatus[^>]*t=\{t\}/);
 assert.match(main, /<SettingsErrorBoundary[^>]*t=\{t\}/);
 assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
 const settingsErrorBoundary = source('features/settings/SettingsErrorBoundary.jsx');
-assert.match(settingsErrorBoundary, /accountCopy\.settingsLoadFailed/);
+assert.match(settingsErrorBoundary, /settingsCopy\.settingsLoadFailed/);
 assert.doesNotMatch(settingsErrorBoundary, />设置页加载失败</);
 
 const petWindow = source('features/pet/PetWindow.jsx');
