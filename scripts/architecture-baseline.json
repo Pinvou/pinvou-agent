@@ -7,7 +7,7 @@
     "frontend_large_file_lines": {
       "pinvou3-app/src/app/main.jsx": 2277,
       "pinvou3-app/src/features/chat/ChatView.jsx": 2764,
-      "pinvou3-app/src/features/codex/CodexAcpView.jsx": 2196,
+      "pinvou3-app/src/features/codex/CodexAcpView.jsx": 2192,
       "pinvou3-app/src/features/knowledge/KnowledgeView.jsx": 1363,
       "pinvou3-app/src/features/personas/personas-i18n.js": 2014,
       "pinvou3-app/src/features/pet/PetWindow.jsx": 1508,
@@ -32,7 +32,7 @@
       "pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs": 1575,
       "pinvou3-app/src-tauri/src/features/assistant/harness.rs": 3054,
       "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs": 3080,
-      "pinvou3-app/src-tauri/src/features/codex_acp/mod.rs": 5119,
+      "pinvou3-app/src-tauri/src/features/codex_acp/mod.rs": 5106,
       "pinvou3-app/src-tauri/src/features/files/file_ingest.rs": 3419,
       "pinvou3-app/src-tauri/src/features/marketplace/mod.rs": 2654,
       "pinvou3-app/src-tauri/src/features/memory/mod.rs": 4734,

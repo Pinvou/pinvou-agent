@@ -7,6 +7,7 @@
 mod attachments;
 mod diagnostics;
 mod events;
+mod latest;
 mod platform;
 pub(crate) mod reader_window;
 mod runtime;
@@ -48,6 +49,7 @@ use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
 use deepseek_tui::session_manager::SessionMetadata;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
+use latest::LatestVersionProbe;
 use runtime::{
     resolve_codex_path, system_codex_incompatible, version_at_least, ResolvedCodex,
     MIN_CODEX_VERSION,
@@ -283,9 +285,13 @@ pub struct CodexAcpStatus {
     pub agent_name: &'static str,
     /// 实际探测到的 CLI 版本（`--version` 原始输出）；未探测到时为 None。
     pub version: Option<String>,
-    /// CLI 存在且版本满足 min_version 门禁。
+    /// 检测到官方新版本时的升级目标；已是最新、离线或接口异常时为 None。
+    pub latest_version: Option<String>,
+    /// CLI 存在且满足最低兼容版本；官方 latest 仅通过 update_available 提醒。
     pub installed: bool,
-    /// Agent 明确报告当前 CLI 需要升级；即使满足静态最低版本也进入升级流程。
+    /// 当前 CLI 低于官方最新版；这是可暂缓的升级提醒，不阻止继续使用。
+    pub update_available: bool,
+    /// Agent 明确报告必须升级；这是不可暂缓的动态门禁。
     pub update_required: bool,
     pub bridge_ready: bool,
     pub adapter_path: Option<String>,
@@ -301,7 +307,7 @@ pub struct CodexAcpStatus {
     pub min_codex_version: &'static str,
     /// 该 Agent CLI 的最低版本要求（"0.144.6" / "2.0.0" / "0.9.0"）。
     pub min_version: &'static str,
-    /// installed=false 时前端应提供的安装动作：
+    /// 缺失、低于最低版本或发现官方新版本时前端应提供的安装/升级动作：
     /// "none"（已合规）/ "brew_upgrade"（macOS brew 升级）/
     /// "npm_upgrade"（npm 全局升级）/ "official_script"（官方脚本）/ "manual"。
     pub install_action: &'static str,
@@ -603,6 +609,7 @@ pub struct AcpPool {
     runtime_probe: Arc<parking_lot::RwLock<RuntimeProbeCache>>,
     runtime_probe_gate: Arc<Mutex<()>>,
     cli_probe: Arc<parking_lot::RwLock<CliProbeCache>>,
+    latest_version_probe: LatestVersionProbe,
     bundled_adapter: Option<PathBuf>,
     bundled_claude_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
@@ -780,6 +787,7 @@ impl AcpPool {
             runtime_probe: Arc::new(parking_lot::RwLock::new(RuntimeProbeCache::default())),
             runtime_probe_gate: Arc::new(Mutex::new(())),
             cli_probe: Arc::new(parking_lot::RwLock::new(CliProbeCache::default())),
+            latest_version_probe: LatestVersionProbe::new()?,
             bundled_adapter,
             bundled_claude_adapter,
             bundled_node,
@@ -899,15 +907,6 @@ impl AcpPool {
         self.status_for(AgentBackend::CodexAcp)
     }
 
-    /// status_for 会同步 spawn 子进程探测 CLI（--version / auth status），
-    /// async 上下文必须经 spawn_blocking，避免阻塞 tokio worker。
-    async fn status_for_async(&self, backend: AgentBackend) -> CodexAcpStatus {
-        let pool = self.clone();
-        tokio::task::spawn_blocking(move || pool.status_for(backend))
-            .await
-            .expect("ACP 状态探测任务异常退出")
-    }
-
     async fn status_async(&self) -> CodexAcpStatus {
         self.status_for_async(AgentBackend::CodexAcp).await
     }
@@ -918,14 +917,6 @@ impl AcpPool {
         tokio::task::spawn_blocking(move || pool.agent_authenticated(backend, &executable))
             .await
             .unwrap_or(false)
-    }
-
-    pub fn status_for_agent(&self, agent_id: &str) -> Result<CodexAcpStatus> {
-        let backend = AgentBackend::parse(Some(agent_id))?;
-        if !backend.is_acp() {
-            bail!("Agent 不是 ACP 后端: {agent_id}");
-        }
-        Ok(self.status_for(backend))
     }
 
     /// 「重新检测」入口：忽略探测缓存强制重新探测后返回最新状态，
@@ -948,6 +939,7 @@ impl AcpPool {
             })
             .flatten();
         self.refresh_agent_cli_probe(backend).await;
+        self.latest_version_probe.refresh(backend, true).await;
         let current_codex_version = self
             .runtime_probe
             .read()
@@ -964,17 +956,6 @@ impl AcpPool {
             self.runtime_errors.clear(AgentBackend::CodexAcp);
         }
         Ok(self.status_for_async(backend).await)
-    }
-
-    pub fn agent_statuses(&self) -> Vec<CodexAcpStatus> {
-        [
-            AgentBackend::CodexAcp,
-            AgentBackend::ClaudeAcp,
-            AgentBackend::KimiAcp,
-        ]
-        .into_iter()
-        .map(|backend| self.status_for(backend))
-        .collect()
     }
 
     fn status_for(&self, backend: AgentBackend) -> CodexAcpStatus {
@@ -995,8 +976,10 @@ impl AcpPool {
                 .and_then(|cli| cli.install_source)
                 .map(str::to_string);
             let version_supported = kimi_version.as_deref().is_some_and(kimi_version_supported);
-            // Kimi 直接 spawn 原生 CLI（kimi acp）：CLI 存在且版本合规即可用。
-            let installed = kimi.is_some() && version_supported;
+            // Kimi 直接 spawn 原生 CLI（kimi acp）：先表达最低版本门禁；官方
+            // latest 门禁由异步 status_for_async 在联网查询完成后统一叠加。
+            let cli_ready = kimi.is_some() && version_supported;
+            let installed = cli_ready;
             let authenticated = !login.in_progress
                 && kimi
                     .as_ref()
@@ -1005,7 +988,9 @@ impl AcpPool {
                 agent_id: "kimi",
                 agent_name: "Kimi",
                 version: kimi_version.clone(),
+                latest_version: None,
                 installed,
+                update_available: false,
                 update_required: false,
                 // Kimi 直接运行原生 CLI，不依赖独立 Bridge。CLI 是否可用由
                 // installed 单独表达，避免未安装时被前端 Bridge 错误分支截断。
@@ -1016,7 +1001,7 @@ impl AcpPool {
                 node_version: None,
                 node_supported: true,
                 npm_available: npm_executable().is_some(),
-                codex_available: installed,
+                codex_available: cli_ready,
                 codex_path: kimi_path,
                 codex_version: kimi_version,
                 runtime_source: kimi.as_ref().map(|_| "system"),
@@ -1042,7 +1027,7 @@ impl AcpPool {
                 login_input_required: false,
                 installing: self.installing_agents.read().contains(&backend),
                 error: login.error.or_else(|| self.runtime_errors.get(backend)),
-                setup_hint: if !installed {
+                setup_hint: if !cli_ready {
                     Some("kimi_cli_missing")
                 } else if !authenticated {
                     Some("kimi_auth_required")
@@ -1092,16 +1077,18 @@ impl AcpPool {
         };
         let bridge_ready = adapter.is_some() && node_supported;
         let codex_available = provider_available;
-        let codex_upgrade_required = backend == AgentBackend::CodexAcp
+        let dynamic_codex_upgrade_required = backend == AgentBackend::CodexAcp
             && self.codex_upgrade_required.load(Ordering::Acquire);
         let installed = match backend {
-            AgentBackend::CodexAcp => bridge_ready && codex_available && !codex_upgrade_required,
+            AgentBackend::CodexAcp => {
+                bridge_ready && codex_available && !dynamic_codex_upgrade_required
+            }
             AgentBackend::ClaudeAcp => provider_available,
             AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
         };
         let install_action = match backend {
             AgentBackend::CodexAcp => {
-                if codex.is_some() && !codex_upgrade_required {
+                if codex.is_some() && !dynamic_codex_upgrade_required {
                     "none"
                 } else {
                     // 过旧 CLI 按安装来源分派 brew/npm 升级；无 CLI、脚本来源或
@@ -1144,8 +1131,10 @@ impl AcpPool {
             agent_id,
             agent_name,
             version: provider_version.clone(),
+            latest_version: None,
             installed,
-            update_required: codex_upgrade_required,
+            update_available: false,
+            update_required: dynamic_codex_upgrade_required,
             bridge_ready,
             adapter_path: adapter
                 .as_ref()
@@ -1212,10 +1201,11 @@ impl AcpPool {
             installing: self.installing_agents.read().contains(&backend),
             error: login.error.or_else(|| self.runtime_errors.get(backend)),
             // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示；
-            // Claude Code 不再随包内置，缺少 claude CLI 或版本过旧时引导用户安装。
-            setup_hint: if backend == AgentBackend::ClaudeAcp && !installed {
+            // Claude Code 不再随包内置；仅在 CLI 缺失或低于最低版本时给 missing
+            // 提示，低于 latest 的升级提示由 update_available 单独表达。
+            setup_hint: if backend == AgentBackend::ClaudeAcp && !provider_available {
                 Some("claude_cli_missing")
-            } else if backend == AgentBackend::ClaudeAcp && installed && !authenticated {
+            } else if backend == AgentBackend::ClaudeAcp && provider_available && !authenticated {
                 Some("claude_auth_required")
             } else {
                 None
@@ -1377,7 +1367,7 @@ impl AcpPool {
                 status = self.status_for_async(backend).await;
             }
         }
-        if let Err(error) = ensure_agent_cli_ready(backend, &status) {
+        if let Err(error) = latest::ensure_agent_cli_ready(backend, &status) {
             self.runtime_errors.set(backend, format!("{error:#}"));
             return Err(error);
         }
@@ -2364,10 +2354,18 @@ impl AcpPool {
             AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
                 let status = self.status_for_async(backend).await;
                 if !status.installed {
+                    let detail = if status.update_required {
+                        format!(
+                            "当前版本 {} 低于官方最新版 {}，请先升级",
+                            status.version.as_deref().unwrap_or("未知版本"),
+                            status.latest_version.as_deref().unwrap_or("未知版本")
+                        )
+                    } else {
+                        setup_hint_message(status.setup_hint).to_string()
+                    };
                     Err(anyhow::anyhow!(
-                        "{} ACP 尚未就绪。{}",
-                        backend.display_name(),
-                        setup_hint_message(status.setup_hint)
+                        "{} ACP 尚未就绪。{detail}",
+                        backend.display_name()
                     ))
                 } else {
                     Ok(())
@@ -3812,32 +3810,6 @@ fn codex_version_changed(previous: Option<&str>, current: Option<&str>) -> bool 
     current.is_some() && current != previous
 }
 
-/// 升级完成后校验 CLI 版本门禁：仍不合规说明包管理器源没有提供更新版本。
-fn ensure_agent_cli_ready(backend: AgentBackend, status: &CodexAcpStatus) -> Result<()> {
-    let ready = match backend {
-        // Codex 的安装动作只负责 CLI；Bridge 缺失由独立状态处理，不能把它误报成
-        // CLI 安装失败。动态升级门禁则必须保持失败，直到实际版本发生变化。
-        AgentBackend::CodexAcp => status.codex_available && !status.update_required,
-        _ => status.installed,
-    };
-    if ready {
-        return Ok(());
-    }
-    if backend == AgentBackend::CodexAcp && status.update_required {
-        bail!(
-            "Codex 升级流程已完成，但检测到的版本 {} 未发生变化，仍无法支持所选模型；请确认官方或包管理器已提供更新版本",
-            status.codex_version.as_deref().unwrap_or("未知版本")
-        );
-    }
-    bail!(
-        "{} 升级流程已完成，但检测到的版本 {} 仍低于最低要求 {}；\
-         请检查包管理器源，或按官方文档手动升级",
-        backend.display_name(),
-        status.codex_version.as_deref().unwrap_or("未知版本"),
-        status.min_version
-    )
-}
-
 /// 裸 semver（`0.31.1`）：claude/kimi 的版本门禁都要求完整三段数字，
 /// 旧 Python 版 kimi-cli 等非标准输出一律判不合规。
 fn is_bare_semver(version: &str) -> bool {
@@ -4766,7 +4738,9 @@ max_context_size = 262144
             agent_id: "codex",
             agent_name: "Codex",
             version: Some("0.146.0".to_string()),
+            latest_version: Some("0.147.0".to_string()),
             installed: false,
+            update_available: true,
             update_required: true,
             bridge_ready: false,
             adapter_path: None,
@@ -4795,23 +4769,36 @@ max_context_size = 262144
         };
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
         assert_eq!(value["version"], json!("0.146.0"));
+        assert_eq!(value["latest_version"], json!("0.147.0"));
         assert_eq!(value["min_codex_version"], json!(MIN_CODEX_VERSION));
         assert_eq!(value["min_version"], json!(MIN_CODEX_VERSION));
         assert_eq!(value["install_action"], json!("official_script"));
         assert_eq!(value["install_source"], json!("npm"));
+        assert_eq!(value["update_available"], json!(true));
         assert_eq!(value["update_required"], json!(true));
         assert_eq!(value["brew_available"], json!(false));
         assert_eq!(value["system_codex_incompatible"], json!(true));
 
         let mut cli_ready_without_bridge = status.clone();
         cli_ready_without_bridge.codex_available = true;
+        cli_ready_without_bridge.update_available = false;
         cli_ready_without_bridge.update_required = false;
         assert!(
-            ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge).is_ok(),
+            latest::ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge)
+                .is_ok(),
             "Codex CLI installation must not fail solely because its bundled bridge is unavailable"
         );
         cli_ready_without_bridge.update_required = true;
-        assert!(ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge).is_err());
+        assert!(
+            latest::ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge)
+                .is_err()
+        );
+        cli_ready_without_bridge.update_required = false;
+        cli_ready_without_bridge.update_available = true;
+        assert!(
+            latest::ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge)
+                .is_err()
+        );
     }
 
     #[test]

@@ -673,6 +673,7 @@ function RuntimeNotice({
   onOpenLogin,
   onSubmitLoginCode,
   onRefresh,
+  resetKey,
   copy,
 }) {
   const [authorizationCode, setAuthorizationCode] = useState('');
@@ -682,8 +683,8 @@ function RuntimeNotice({
   }, [status?.agent_id, status?.login_in_progress]);
   useEffect(() => {
     setDeclinedUpgrade(false);
-  }, [status?.agent_id, status?.installed]);
-  const noticeMode = runtimeNoticeMode(status);
+  }, [resetKey, status?.agent_id, status?.installed, status?.latest_version]);
+  const noticeMode = runtimeNoticeMode(status, declinedUpgrade);
   if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
@@ -710,8 +711,9 @@ function RuntimeNotice({
   if (noticeMode === 'install') {
     const agentName = status.agent_name || 'Agent';
     const action = status.install_action || 'manual';
-    const isUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
-    const declinedBlocked = isUpgrade && declinedUpgrade;
+    const isPackageManagerUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
+    const canAutoUpgrade = (status.update_available || status.update_required || isPackageManagerUpgrade) && action !== 'manual' && action !== 'none';
+    const canDeferUpgrade = status.update_available && status.installed && !status.update_required;
     const installing = runtimeInstallInProgress(status, operation);
     const installHints = {
       official_script: copy.officialScriptHint(agentName),
@@ -719,11 +721,9 @@ function RuntimeNotice({
     const installButtons = {
       official_script: copy.confirmInstall,
     };
-    const hint = declinedBlocked
-      ? copy.declinedBlockedHint(agentName)
-      : isUpgrade && !declinedUpgrade
-        ? copy.packageManagerUpgradeHint(status.install_source)
-        : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
+    const hint = isPackageManagerUpgrade
+      ? copy.packageManagerUpgradeHint(status.install_source)
+      : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
     const busyLabel = copy.installing;
     return (
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
@@ -731,7 +731,9 @@ function RuntimeNotice({
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">
             {status.update_required
-              ? copy.cliUpdateRequired(agentName, status.version)
+              ? copy.cliUpdateRequired(agentName, status.version, status.latest_version)
+              : status.update_available
+                ? copy.cliUpdateAvailable(agentName, status.version, status.latest_version)
               : status.version
                 ? copy.cliOutdated(status.version, status.min_version)
                 : copy.cliMissing(agentName)}
@@ -739,20 +741,13 @@ function RuntimeNotice({
           <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
-        {declinedBlocked ? (
+        {canAutoUpgrade ? (
           <div className="flex shrink-0 items-center gap-2">
-            <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
-              {copy.recheck}
-            </button>
-            <button onClick={() => setDeclinedUpgrade(false)} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium">
-              {copy.backToUpgrade}
-            </button>
-          </div>
-        ) : isUpgrade && !declinedUpgrade ? (
-          <div className="flex shrink-0 items-center gap-2">
-            <button onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
-              {copy.declineUpgrade}
-            </button>
+            {canDeferUpgrade && (
+              <button onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
+                {copy.declineUpgrade}
+              </button>
+            )}
             <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
               {installing && <RefreshCw size={12} className="animate-spin" />}
               {installing ? busyLabel : copy.upgrade}
@@ -1797,6 +1792,7 @@ export function CodexAcpView({
                   onOpenLogin={openLogin}
                   onSubmitLoginCode={submitLoginCode}
                   onRefresh={() => refreshStatus(activeAgentId, true)}
+                  resetKey={draftEpoch}
                   copy={codexCopy}
                 />
                 {activeStatus?.authenticated && (

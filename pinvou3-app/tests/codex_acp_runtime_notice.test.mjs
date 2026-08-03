@@ -29,8 +29,40 @@ for (const agent_id of ['codex', 'claude', 'kimi']) {
     'install',
     `${agent_id} missing CLI must reach the install notice`,
   );
+  assert.equal(
+    runtimeNoticeMode({
+      ...ready,
+      agent_id,
+      update_available: true,
+      version: '1.0.0',
+      latest_version: '1.1.0',
+    }),
+    'install',
+    `${agent_id} below official latest must reach the upgrade notice`,
+  );
+  assert.equal(
+    runtimeNoticeMode({
+      ...ready,
+      agent_id,
+      update_available: true,
+      version: '1.0.0',
+      latest_version: '1.1.0',
+    }, true),
+    'ready',
+    `${agent_id} must remain usable after deferring an advisory upgrade`,
+  );
 }
 
+assert.equal(
+  runtimeNoticeMode({ ...ready, authenticated: false, update_available: true }, true),
+  'login',
+  'deferring an advisory upgrade must continue into the login flow',
+);
+assert.equal(
+  runtimeNoticeMode({ ...ready, installed: false, update_required: true }, true),
+  'install',
+  'a mandatory upgrade must not be deferrable',
+);
 assert.equal(runtimeNoticeMode({ ...ready, authenticated: false }), 'login');
 assert.equal(runtimeNoticeMode({ ...ready, error: 'failed' }), 'error');
 assert.equal(runtimeNoticeMode(ready), 'ready');
@@ -103,6 +135,27 @@ assert.match(
   /operation=\{activeRuntimeOperation\}/,
   'the runtime notice must only consume the active Agent operation',
 );
+assert.match(
+  view,
+  /copy\.cliUpdateRequired\(agentName, status\.version, status\.latest_version\)/,
+  'the mandatory upgrade notice must show the target version',
+);
+assert.match(
+  view,
+  /copy\.cliUpdateAvailable\(agentName, status\.version, status\.latest_version\)/,
+  'the advisory upgrade notice must show the official latest target version',
+);
+assert.match(
+  view,
+  /const canDeferUpgrade = status\.update_available && status\.installed && !status\.update_required/,
+  'only an advisory latest-version update may be deferred',
+);
+assert.match(
+  view,
+  /\[resetKey, status\?\.agent_id, status\?\.installed, status\?\.latest_version\]/,
+  'starting a new code draft or reselecting an Agent must show the advisory again',
+);
+assert.match(view, /resetKey=\{draftEpoch\}/);
 assert.doesNotMatch(
   view,
   /working \|\| waitingForLogin \? copy\.waitAuth/,
