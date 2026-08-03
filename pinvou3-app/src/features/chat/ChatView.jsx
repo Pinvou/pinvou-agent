@@ -29,7 +29,7 @@ import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx'
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
-import { AssistantMessageActions } from '../conversation/AssistantMessageActions.jsx';
+import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { copyClipboardText, fallbackCopyText, readClipboardText } from '../conversation/message-clipboard.js';
 import {
   createPinvouModeScopeKey,
@@ -1441,7 +1441,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                           onSend={sendChatMessage}
                           onOpenEditor={onOpenEditor}
                           isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
-                          allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                          allowScheduledTaskDraft={isScheduledTaskCreationChat} showAssistantActions={false}
                         />
                       );
                     }}
@@ -2462,7 +2462,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
+    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -2513,7 +2513,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
                 ref={assistantSelectionTargetRef}
-                className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                data-assistant-copy-source="true" className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
                 onClick={(e) => {
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
                   const a = e.target && e.target.closest && e.target.closest('a[href]');
@@ -2555,10 +2555,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: isDark ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
-              {item.time && !item.streaming && (
-                <div className={`text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</div>
-              )}
-              {!item.streaming && <AssistantMessageActions targetRef={assistantSelectionTargetRef} copy={t.uiConversation} />}
+              {showAssistantActions && !item.streaming && <AssistantMessageFooter>
+                <AssistantMessageActions targetRef={assistantSelectionTargetRef} copy={t.uiConversation} />
+                {item.time && <span className={`text-[11px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</span>}
+              </AssistantMessageFooter>}
             </div>
           </div>
         );

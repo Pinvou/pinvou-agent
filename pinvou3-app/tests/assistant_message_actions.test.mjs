@@ -20,6 +20,14 @@ assert.equal(
 );
 assert.equal(assistantMessageText(null), '', 'missing rendered content should not copy placeholder text');
 assert.equal(
+  assistantMessageText({
+    innerText: '状态和工具输出不应被复制',
+    querySelectorAll: () => [{ innerText: '第一段回复' }, { textContent: '第二段回复' }],
+  }),
+  '第一段回复\n\n第二段回复',
+  'timeline copy should include only marked rendered assistant content',
+);
+assert.equal(
   assistantResponseText({
     items: [
       { type: 'agent_message', phase: 'commentary', text: '处理中' },
@@ -47,11 +55,15 @@ const chatView = source('features/chat/ChatView.jsx');
 const timeline = source('features/conversation/ConversationTimeline.jsx');
 const codexView = source('features/codex/CodexAcpView.jsx');
 const actions = source('features/conversation/AssistantMessageActions.jsx');
-assert.match(chatView, /!item\.streaming && <AssistantMessageActions[^>]+targetRef=\{assistantSelectionTargetRef\}/);
+assert.match(chatView, /showAssistantActions && !item\.streaming && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions[^>]+targetRef=\{assistantSelectionTargetRef\}/);
+assert.match(chatView, /allowScheduledTaskDraft=\{isScheduledTaskCreationChat\} showAssistantActions=\{false\}/);
+assert.match(chatView, /data-assistant-copy-source="true"/);
+assert.match(actions, /data-testid="assistant-message-footer"/);
+assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
 assert.match(actions, /data-testid="assistant-message-actions"/);
 assert.match(actions, /copyClipboardText\(value\)/);
 assert.match(actions, /aria-live="polite"/);
-assert.match(timeline, /!running && assistantText && <AssistantMessageActions text=\{assistantText\} copy=\{c\}/);
-assert.match(codexView, /!running && assistantText && <AssistantMessageActions text=\{assistantText\} copy=\{copy\}/);
+assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions targetRef=\{assistantText \? undefined : assistantBodyRef\} text=\{assistantText \|\| undefined\} copy=\{c\}/);
+assert.match(codexView, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantText\} copy=\{copy\}/);
 
 console.log('assistant message actions tests passed');

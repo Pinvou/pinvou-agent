@@ -22,7 +22,7 @@ import {
   resolveAcpSessionControls,
 } from './acp-state.js';
 import { ConversationActivityIndicator, ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
-import { AssistantMessageActions } from '../conversation/AssistantMessageActions.jsx';
+import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseText } from '../conversation/message-clipboard.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
@@ -644,15 +644,15 @@ function Turn({
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
           ))}
-          {(turn.completedAt || turn.error) && (
-            <div className="flex items-center gap-2 pt-2">
+          {!running && (assistantText || turn.completedAt || turn.error) && <AssistantMessageFooter>
+            {assistantText && <AssistantMessageActions text={assistantText} copy={copy} />}
+            {(turn.completedAt || turn.error) && <>
               <StatusBadge status={turn.status} />
               <span className="text-[11px] text-gray-400">{duration}</span>
               {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
-            </div>
-          )}
-          {!running && assistantText && <AssistantMessageActions text={assistantText} copy={copy} />}
+            </>}
+          </AssistantMessageFooter>}
         </div>
       </div>
     </section>

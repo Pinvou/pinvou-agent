@@ -54,7 +54,12 @@ export function normalizeAssistantMessageText(value) {
 
 export function assistantMessageText(target) {
   if (!target) return '';
-  const rendered = typeof target.innerText === 'string' ? target.innerText : target.textContent;
+  const sources = typeof target.querySelectorAll === 'function'
+    ? Array.from(target.querySelectorAll('[data-assistant-copy-source="true"]'))
+    : [];
+  const rendered = sources.length
+    ? sources.map(source => typeof source.innerText === 'string' ? source.innerText : source.textContent).join('\n\n')
+    : typeof target.innerText === 'string' ? target.innerText : target.textContent;
   return normalizeAssistantMessageText(rendered);
 }
 

@@ -6,6 +6,14 @@ import {
   normalizeAssistantMessageText,
 } from './message-clipboard.js';
 
+export function AssistantMessageFooter({ children }) {
+  return (
+    <div data-testid="assistant-message-footer" className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2">
+      {children}
+    </div>
+  );
+}
+
 export function AssistantMessageActions({ targetRef, text, copy }) {
   const [status, setStatus] = useState('idle');
   const resetTimerRef = useRef(null);
@@ -37,7 +45,7 @@ export function AssistantMessageActions({ targetRef, text, copy }) {
   };
 
   return (
-    <div data-testid="assistant-message-actions" className="mt-2 flex min-h-8 items-center gap-1">
+    <div data-testid="assistant-message-actions" className="flex items-center gap-1">
       <button
         type="button"
         data-testid="assistant-message-copy"

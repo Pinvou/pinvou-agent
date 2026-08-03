@@ -701,6 +701,9 @@ async function expand(page) {
       .find(node => node.closest('[data-conversation-turn]')?.innerText.includes('已生成会议纪要'));
     const button = action?.querySelector('[data-testid="assistant-message-copy"]');
     if (!button) return { found: false };
+    const turn = action.closest('[data-conversation-turn]');
+    const footer = action.closest('[data-testid="assistant-message-footer"]');
+    const footerChildren = [...(footer?.children || [])];
     button.click();
     await new Promise(resolve => setTimeout(resolve, 50));
     return {
@@ -708,11 +711,19 @@ async function expand(page) {
       copied: window.__ASSISTANT_COPY_TEXT__ || '',
       feedback: button.textContent.trim(),
       title: button.getAttribute('title') || '',
+      singleAction: turn?.querySelectorAll('[data-testid="assistant-message-actions"]').length === 1,
+      sharedFooter: Boolean(footer),
+      sameRow: footerChildren.length === 1 || footerChildren.slice(0, 2).every((node) => {
+        const firstRect = footerChildren[0].getBoundingClientRect();
+        const rect = node.getBoundingClientRect();
+        return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;
+      }),
     };
   });
   rec('③a 每条完成态助手回复提供一键复制并显示成功反馈',
     assistantCopy.found && assistantCopy.copied.includes('已生成会议纪要。') &&
-    assistantCopy.feedback === '已复制' && assistantCopy.title === '已复制',
+    assistantCopy.feedback === '已复制' && assistantCopy.title === '已复制' &&
+    assistantCopy.singleAction && assistantCopy.sharedFooter && assistantCopy.sameRow,
     JSON.stringify(assistantCopy));
 
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
