@@ -98,6 +98,7 @@ fingerprints=(
   "APP|提交取消安全回滚回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn provisional_submission_scope_is_abandoned_when_guard_drops"
   "APP|Agent 子谱系归属回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn reliable_child_lineage_is_not_overwritten_by_the_current_turn"
   "APP|失败 Shell scope 有界保留回归      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn failed_scope_tombstones_are_bounded"
+  "APP|断流未绑定 scope 回收回归          |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn unbound_scope_is_reclaimed_when_the_stream_stops_before_turn_started"
 )
 
 for fp in "${fingerprints[@]}"; do

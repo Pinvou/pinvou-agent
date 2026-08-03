@@ -584,6 +584,19 @@ impl TurnShellTaskRegistry {
         self.finalize_scope(scope_id, interrupted).await
     }
 
+    /// Finalizes the still-unbound active scope. The event stream can stop
+    /// before `TurnStarted` bound the provisional submission scope; without
+    /// this path the stale active scope would block every later submission.
+    pub(crate) async fn finalize_active_scope(
+        &self,
+        interrupted: bool,
+    ) -> Result<ShellCleanupReport> {
+        let Some(scope_id) = self.active_scope_id() else {
+            return Ok(ShellCleanupReport::default());
+        };
+        self.finalize_scope(scope_id, interrupted).await
+    }
+
     pub(crate) async fn finalize_scope(
         &self,
         scope_id: ScopeId,
@@ -809,7 +822,9 @@ impl TurnShellTaskRegistry {
             remove_scope_locked(&mut state, scope_id);
         }
 
-        let failed = state
+        // Scope ids increase monotonically, so sorting makes eviction
+        // genuinely oldest-first instead of depending on HashMap order.
+        let mut failed = state
             .scopes
             .values()
             .filter(|scope| {
@@ -824,6 +839,7 @@ impl TurnShellTaskRegistry {
             })
             .map(|scope| scope.id)
             .collect::<Vec<_>>();
+        failed.sort_unstable();
         for scope_id in failed {
             if !state.failed_scope_order.contains(&scope_id) {
                 state.failed_scope_order.push_back(scope_id);
@@ -1254,12 +1270,20 @@ mod tests {
         assert_eq!(registry.request_cancel_active(), Some(scope_id));
         let late = start_background(&manager, None);
 
-        let report = registry
+        // The background supervisor started by `prepare_turn` may win the
+        // reclaim race against this explicit call, so only the terminal job
+        // status is authoritative here.
+        registry
             .cleanup_scope_with_retries(scope_id)
             .await
             .expect("clean unbound scope");
-
-        assert_eq!(report.killed.len(), 1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while status(&manager, &late) == ShellStatus::Running {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("cancelled unbound scope should reclaim its job");
         assert_eq!(status(&manager, &late), ShellStatus::Killed);
     }
 
@@ -1319,5 +1343,30 @@ mod tests {
             .expect("shell manager lock")
             .kill(&detached)
             .expect("cleanup detached job");
+    }
+
+    #[tokio::test]
+    async fn unbound_scope_is_reclaimed_when_the_stream_stops_before_turn_started() {
+        let manager = new_shared_shell_manager(std::env::temp_dir());
+        let registry = TurnShellTaskRegistry::new(manager.clone());
+        registry.prepare_turn().await.expect("prepare scope");
+        let job = start_background(&manager, None);
+
+        registry
+            .finalize_active_scope(true)
+            .await
+            .expect("finalize unbound scope");
+
+        assert_eq!(registry.active_scope_id(), None);
+        assert_eq!(status(&manager, &job), ShellStatus::Killed);
+        // A later submission must be able to open a fresh scope.
+        registry
+            .prepare_turn()
+            .await
+            .expect("prepare a scope after the stale one closed");
+        registry
+            .finalize_active_scope(false)
+            .await
+            .expect("close the fresh scope");
     }
 }

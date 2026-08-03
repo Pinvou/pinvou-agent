@@ -2757,15 +2757,22 @@ fn spawn_event_forwarder(
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
         let mut shell_cleanup_failed = false;
-        if let Some(turn_id) = current_turn_id.as_deref() {
-            match turn_shell_tasks.finalize_turn(turn_id, true).await {
+        {
+            // The stream can stop before `TurnStarted` bound the provisional
+            // submission scope; close the active scope too, otherwise the next
+            // `prepare_turn` keeps bailing on "scope already active".
+            let finalize = match current_turn_id.as_deref() {
+                Some(turn_id) => turn_shell_tasks.finalize_turn(turn_id, true).await,
+                None => turn_shell_tasks.finalize_active_scope(true).await,
+            };
+            match finalize {
                 Ok(report) => {
                     if let Some(error) = report.failure_summary() {
                         shell_cleanup_failed = true;
                         log::error!(
-                            "[pinvou3][chat] shell cleanup remained incomplete after event stream stop sid={} turn={}: {}",
+                            "[pinvou3][chat] shell cleanup remained incomplete after event stream stop sid={} turn={:?}: {}",
                             session_id,
-                            turn_id,
+                            current_turn_id,
                             error
                         );
                     }
@@ -2773,9 +2780,9 @@ fn spawn_event_forwarder(
                 Err(error) => {
                     shell_cleanup_failed = true;
                     log::error!(
-                        "[pinvou3][chat] failed to close shell task scope after event stream stop sid={} turn={}: {error:#}",
+                        "[pinvou3][chat] failed to close shell task scope after event stream stop sid={} turn={:?}: {error:#}",
                         session_id,
-                        turn_id
+                        current_turn_id
                     );
                 }
             }
