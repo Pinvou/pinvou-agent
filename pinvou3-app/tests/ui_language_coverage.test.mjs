@@ -61,8 +61,9 @@ assert.match(main, /<ToolStoreView[^>]*t=\{t\}/);
 assert.match(main, /<WebConnectionStatus[^>]*t=\{t\}/);
 assert.match(main, /<SettingsErrorBoundary[^>]*t=\{t\}/);
 assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
-assert.match(main, /accountCopy\.settingsLoadFailed/);
-assert.doesNotMatch(main, />设置页加载失败</);
+const settingsErrorBoundary = source('features/settings/SettingsErrorBoundary.jsx');
+assert.match(settingsErrorBoundary, /accountCopy\.settingsLoadFailed/);
+assert.doesNotMatch(settingsErrorBoundary, />设置页加载失败</);
 
 const petWindow = source('features/pet/PetWindow.jsx');
 assert.match(petWindow, /invokeTauri\(['"]get_settings['"]\)/);

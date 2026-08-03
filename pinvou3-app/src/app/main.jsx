@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
-import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PetPawIcon } from '../components/icons.jsx';
+import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PetPawIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
@@ -18,6 +18,7 @@ import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
+import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
@@ -53,6 +54,8 @@ import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
 import { SearchView } from '../features/search/SearchView.jsx';
+import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
+import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { DetachedShell } from './DetachedShell.jsx';
 import { TitleBar } from './DesktopTitleBar.jsx';
 
@@ -88,39 +91,6 @@ function workspaceDisplayName(path) {
   const parts = String(path || '').split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || String(path || '');
 }
-
-    /* ==========================================
-       MegaCube 本地大模型引导:进行中步骤指示 + 自跑计时
-       (后端 vllm-setup:phase 事件给 phase/attempt;秒数本组件自跑,pkexec 阻塞期也在涨)
-       ========================================== */
-    class SettingsErrorBoundary extends React.Component {
-      constructor(props) {
-        super(props);
-        this.state = { error: null };
-      }
-
-      static getDerivedStateFromError(error) {
-        return { error };
-      }
-
-      render() {
-        if (this.state.error) {
-          const isDark = this.props.theme === 'dark';
-          const accountCopy = this.props.t.uiAccount;
-          return (
-            <div className="flex-1 flex flex-col w-full h-full relative z-10 px-16 py-12">
-              <div className={`max-w-[800px] rounded-2xl border p-5 ${isDark ? 'bg-[#1F2023] border-[#333537] text-[#E8EAED]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F]'}`}>
-                <div className="text-[18px] font-semibold mb-2">{accountCopy.settingsLoadFailed}</div>
-                <div className={`text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                  {String((this.state.error && this.state.error.message) || this.state.error)}
-                </div>
-              </div>
-            </div>
-          );
-        }
-        return this.props.children;
-      }
-    }
 
     const App = () => {
       if (!appFirstRenderMarked) {
@@ -2289,238 +2259,6 @@ function workspaceDisplayName(path) {
         </div>
       );
     };
-
-    const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
-      const isDark = theme === 'dark';
-      const logic = window.UpdateNoticeLogic;
-      const isPreview = !bridge.available && logic.previewEnabled(window.location);
-      const updateInfo = logic.updateInfoFor(bs, { preview: isPreview });
-      const [closed, setClosed] = useState(false);
-
-      useEffect(() => { setClosed(false); }, [logic.versionKey(updateInfo)]);
-
-      if (!updateInfo || closed) return null;
-
-      const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion, {
-        downloadInstall: t.downloadInstall,
-        downloadInstallRestart: t.downloadInstallRestart,
-        downloading: t.downloading,
-        installing: t.installing,
-        restartNow: t.restartNow,
-        updateInstallerStarted: t.updateInstallerStarted,
-      });
-
-      const handleUpgrade = () => {
-        if (isPreview) {
-          return;
-        }
-        if (!bridge.available) return;
-        if (vm.action === 'restart') bridge.updater.restartApp();
-        else if (vm.action === 'download') bridge.updater.downloadAndInstallUpdate();
-      };
-
-      const handleShowChangelog = () => {
-        if (onShowChangelog) onShowChangelog();
-      };
-
-      return (
-        <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 ${
-          isDark
-            ? 'bg-[#1c1c21]/85 border-white/[0.06] text-gray-200 shadow-2xl'
-            : 'bg-white/85 border-gray-200/60 text-gray-800'
-        }`}>
-          <div className="flex items-center gap-3 mb-3">
-            <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 ${
-              isDark
-                ? 'bg-gradient-to-br from-[#2c2c35] to-[#1a1a20] border-white/[0.08]'
-                : 'bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80'
-            }`}>
-              <PinvouLogo className="h-6 w-6" />
-            </div>
-
-            <div className="flex flex-col justify-center flex-1 min-w-0">
-              <div className="flex items-center justify-between">
-                <span className={`text-[13px] font-semibold tracking-wide transition-colors duration-300 ${
-                  isDark ? 'text-gray-100' : 'text-gray-900'
-                }`}>{t.newVersionFound}</span>
-                <button
-                  type="button"
-                  onClick={() => setClosed(true)}
-                  className={`p-1 -mr-1 rounded-full transition-colors focus:outline-none ${
-                    isDark
-                      ? 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.08]'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={t.winClose}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-              <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 ${
-                isDark ? 'text-gray-400 bg-black/20' : 'text-gray-500 bg-gray-100'
-              }`}>PINVOU v{vm.version}</span>
-            </div>
-          </div>
-
-          {vm.error && (
-            <div className="mb-3 text-[11px] leading-relaxed text-[#EA4335] break-words">{vm.error}</div>
-          )}
-
-          <div className="flex gap-2 text-xs font-medium">
-            <button
-              type="button"
-              data-update-notes-button="true"
-              onClick={handleShowChangelog}
-              className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] ${
-                isDark
-                  ? 'bg-white/[0.06] hover:bg-white/[0.1] text-gray-200'
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-              }`}
-            >
-              {t.updateNotes}
-            </button>
-            <button
-              type="button"
-              onClick={handleUpgrade}
-              disabled={vm.disabled}
-              className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-[0.96] flex justify-center items-center gap-1.5 shadow-sm shadow-blue-900/20 disabled:opacity-80 disabled:cursor-not-allowed"
-            >
-              {vm.downloading ? <span className="w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> : <RefreshCw size={14} />}
-              <span>{vm.label}</span>
-            </button>
-          </div>
-        </div>
-      );
-    };
-
-    /* ==========================================
-       Helpers
-       ========================================== */
-    const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
-      const isDark = theme === 'dark';
-      const [query, setQuery] = useState('');
-      const inputRef = useRef(null);
-      const filtered = query
-        ? history.filter(h => String(h.title || '').toLowerCase().includes(query.toLowerCase()))
-        : history;
-
-      useEffect(() => {
-        const timer = window.setTimeout(() => inputRef.current && inputRef.current.focus(), 80);
-        const onKey = (e) => {
-          if (e.key === 'Escape') onClose();
-        };
-        window.addEventListener('keydown', onKey);
-        return () => {
-          window.clearTimeout(timer);
-          window.removeEventListener('keydown', onKey);
-        };
-      }, [onClose]);
-
-      return (
-        <div
-          role="presentation"
-          className="fixed inset-0 z-[180] flex items-start justify-center px-5 pt-[76px]"
-          style={{
-            background: isDark ? 'rgba(0,0,0,.34)' : 'rgba(255,255,255,.28)',
-            backdropFilter: 'blur(18px) saturate(150%)',
-            WebkitBackdropFilter: 'blur(18px) saturate(150%)',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif',
-          }}
-          onClick={onClose}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={t.searchChats}
-            className="w-full max-w-[680px] overflow-hidden rounded-[28px] border shadow-2xl"
-            style={{
-              background: isDark ? 'rgba(32,33,36,.86)' : 'rgba(255,255,255,.88)',
-              borderColor: isDark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.08)',
-              boxShadow: isDark ? '0 30px 90px rgba(0,0,0,.58)' : '0 30px 90px rgba(25,33,45,.20)',
-              color: isDark ? '#F2F2F7' : '#1F1F1F',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="p-3">
-              <div
-                className="flex h-12 items-center gap-3 rounded-full px-4"
-                style={{
-                  background: isDark ? 'rgba(255,255,255,.08)' : 'rgba(118,118,128,.12)',
-                }}
-              >
-                <Search size={20} className={isDark ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'} />
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  placeholder={t.searchPlaceholder}
-                  className={`min-w-0 flex-1 bg-transparent border-none outline-none text-[17px] leading-6 ${
-                    isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1D1D1F] placeholder:text-[#8A8A8E]'
-                  }`}
-                />
-                {query && (
-                  <button
-                    type="button"
-                    onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
-                    title={t.clearSearch}
-                    aria-label={t.clearSearch}
-                    className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors"
-                    style={{
-                      background: isDark ? 'rgba(255,255,255,.10)' : 'rgba(60,60,67,.18)',
-                      color: isDark ? '#C7C7CC' : '#6E6E73',
-                    }}
-                  >
-                    <X size={15} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={onClose}
-                  title={t.winClose}
-                  aria-label={t.winClose}
-                  className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors"
-                  style={{
-                    background: isDark ? 'rgba(255,255,255,.10)' : 'rgba(60,60,67,.18)',
-                    color: isDark ? '#C7C7CC' : '#6E6E73',
-                  }}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-            </div>
-
-            <div className="max-h-[min(620px,calc(100vh-180px))] overflow-y-auto custom-scrollbar px-2 pb-2">
-              <div className={`px-4 pb-2 pt-1 text-[13px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                {t.recent}
-              </div>
-              {filtered.length > 0 ? filtered.map(chat => (
-                <button
-                  key={chat.id}
-                  type="button"
-                  onClick={() => onSelect && onSelect(chat.id)}
-                  className={`w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors ${
-                    isDark ? 'hover:bg-white/[.08]' : 'hover:bg-black/[.05]'
-                  }`}
-                  style={{ color: isDark ? '#F2F2F7' : '#1D1D1F' }}
-                >
-                  <div className="flex min-w-0 items-center justify-between gap-4">
-                    <span className="min-w-0 truncate text-[16px] leading-6">{chat.title}</span>
-                    <span className={`shrink-0 text-[13px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{chat.date}</span>
-                  </div>
-                </button>
-              )) : (
-                <div className={`px-4 py-8 text-center text-[14px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                  {t.sidebarTaskEmpty}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-
 
     // ==========================================
     // 长按撕离:按住 ~350ms 不动 → onPickUp(info)(DOM avatar 浮起跟手 + begin_detach_drag 原生判落点);
