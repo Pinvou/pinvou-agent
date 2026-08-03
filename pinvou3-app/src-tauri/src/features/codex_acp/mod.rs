@@ -8,6 +8,7 @@ mod attachments;
 mod diagnostics;
 mod events;
 mod platform;
+pub(crate) mod reader_window;
 mod runtime;
 mod store;
 pub(crate) mod workspace;
@@ -3506,14 +3507,15 @@ mod tests {
                 ],
             },
         });
-        let temporary = Path::new("/tmp/pinvou-session-workspace");
-        let project = PathBuf::from("/tmp/pinvou-project");
+        // 用平台相关的绝对路径（/tmp 在 Windows 上不是绝对路径）。
+        let temporary = std::env::temp_dir().join("pinvou-session-workspace");
+        let project = std::env::temp_dir().join("pinvou-project");
         let recovered = acp_recovery_record(
             "pinvou-session",
             AgentBackend::KimiAcp,
             &state,
             project.clone(),
-            temporary,
+            &temporary,
         )
         .unwrap();
 
@@ -3532,8 +3534,8 @@ mod tests {
             "pinvou-session",
             AgentBackend::KimiAcp,
             &state,
-            temporary.to_path_buf(),
-            temporary,
+            temporary.clone(),
+            &temporary,
         )
         .unwrap();
         assert_eq!(

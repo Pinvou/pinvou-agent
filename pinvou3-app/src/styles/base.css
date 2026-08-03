@@ -137,7 +137,8 @@
     .light-code .msg-md,
     .msg-md.light-code,
     .persona-body.light-code,
-    .codex-markdown {
+    .codex-markdown,
+    .code-viewer-body {
       --pinvou-code-border:rgba(31,35,40,.14);
       --pinvou-code-divider:rgba(31,35,40,.10);
       --pinvou-code-label:#57606A;
@@ -163,7 +164,8 @@
     .dark-code .msg-md,
     .msg-md.dark-code,
     .persona-body.dark-code,
-    .dark .codex-markdown {
+    .dark .codex-markdown,
+    .dark .code-viewer-body {
       --pinvou-code-border:rgba(240,246,252,.16);
       --pinvou-code-divider:rgba(240,246,252,.12);
       --pinvou-code-label:#8B949E;

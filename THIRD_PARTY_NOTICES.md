@@ -17,6 +17,7 @@ Their original licenses remain in effect.
 | DOMPurify | 3.4.2 | Vendored browser script (`pinvou3-app/src/vendor/purify.min.js`, `remote-control-relay/web/purify.min.js`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
 | Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
+| Material Icon Theme (file/folder icon subset) | Upstream `main` snapshot downloaded 2026-07-30 | 43 SVG file/folder icons vendored in `pinvou3-app/src/file-icons/theme/` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 
 Vendored script attribution:
 
@@ -29,6 +30,12 @@ Vendored script attribution:
   were exported from the
   [Iconify Material Icon Theme collection](https://icon-sets.iconify.design/material-icon-theme/);
   Iconify is used only as the export source and is not a runtime dependency.
+- Material Icon Theme (file/folder icon subset): Copyright (c) 2025 Material
+  Extensions. The SVGs in `pinvou3-app/src/file-icons/theme/` were downloaded
+  from the upstream `icons/` directory (`csv.svg` is upstream `table.svg`);
+  `file.svg`, `folder.svg`, and `folder-open.svg` are build-time defaults the
+  upstream repository does not commit, reproduced verbatim from the upstream
+  generator source (`src/core/generator`, default color `#90a4ae`).
 
 Detailed license texts and upstream notices for bundled connectors are kept
 next to their resources under `pinvou3-app/src-tauri/resources/`.

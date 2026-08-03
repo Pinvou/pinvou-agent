@@ -655,6 +655,8 @@ pub fn run() {
             commands::codex::get_codex_workspace_diff,
             commands::codex::open_codex_workspace_file,
             commands::codex::reveal_codex_workspace_file,
+            commands::codex::open_code_reader,
+            commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
