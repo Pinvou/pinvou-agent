@@ -37,23 +37,8 @@ use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
-/// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
-///
-/// 后缀 `_256k` 由 fork B1 (`context_window_for_model` 的 `_Nk` hint) 识别,
-/// 让底座为本地 Qwen 派生 256K 窗口 → context_input_budget / capacity ratio /
-/// compaction 派生路径全部能算对。若改名为无后缀,底座立刻退化到 `None`,
-/// preflight + emergency recovery 默认不生效 (codex adversarial-review 抓到的
-/// 高优 finding)。回归测试 `bridge::tests::default_model_window_recognized`
-/// 锁住这个不变量。
-///
-/// ⚠️ ops 同步要求:vLLM 启动也要带
-/// `--served-model-name qwen36_35b_256k`,否则 OpenAI-compat API 报
-/// `model_not_found`。
-const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
-// 127.0.0.1 让 .deb 装到任何机器都默认连本机 vLLM(全量包 install.sh
-// 起 systemd 容器 --network host 绑 0.0.0.0:8000);vLLM 与应用同机,
-// 用 loopback 免疫 DHCP 换 IP,别再写具体内网 IP。
-const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
+// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）;`_256k` 后缀语义与
+// ops 同步要求见 `ModelPreset::default_model` 的 LocalVllm 注释（prefs/model.rs）。
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
@@ -529,23 +514,14 @@ impl Pinvou3Bridge {
         self.default_model_for_preset()
     }
 
-    /// 各厂商默认模型名。
+    /// 各厂商默认模型名（表在 prefs `ModelPreset::default_model`）。
     fn default_model_for_preset(&self) -> String {
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
-            ModelPreset::LocalVllm => LOCAL_VLLM_MODEL.into(),
-            ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
-            ModelPreset::Kimi => "kimi-k3".to_string(),
-            ModelPreset::OpenaiCompatible => "gpt-5.6-terra".to_string(),
-            ModelPreset::Qwen => "qwen3.8-max".to_string(),
-            ModelPreset::Doubao => "doubao-seed-evolving".to_string(),
-            ModelPreset::Minimax => "MiniMax-M3".to_string(),
-            ModelPreset::Glm => "glm-5.2".to_string(),
-            ModelPreset::Mimo => "mimo-v2.5-pro".to_string(),
-            ModelPreset::Openai => "gpt-5.6-terra".to_string(),
-            ModelPreset::Anthropic => "claude-sonnet-5".to_string(),
-            ModelPreset::Gemini => "gemini-3.6-flash".to_string(),
-            ModelPreset::Xai => "grok-4.3".to_string(),
-        }
+        self.prefs
+            .advanced
+            .model_preset
+            .unwrap_or_default()
+            .default_model()
+            .to_string()
     }
 
     /// 当前 active base_url（传给底座 `DtConfig.providers.*.base_url`）。
@@ -566,25 +542,14 @@ impl Pinvou3Bridge {
         self.provider() != "vllm" && !base_url_uses_loopback(&self.base_url())
     }
 
-    /// 各厂商默认 API base URL。
+    /// 各厂商默认 API base URL（表在 prefs `ModelPreset::default_base_url`）。
     fn default_base_url_for_preset(&self) -> String {
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
-            ModelPreset::LocalVllm => LOCAL_VLLM_BASE_URL.into(),
-            ModelPreset::Deepseek => "https://api.deepseek.com".to_string(),
-            ModelPreset::Kimi => "https://api.moonshot.cn/v1".to_string(),
-            ModelPreset::OpenaiCompatible => "https://api.openai.com/v1".to_string(),
-            ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-            ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3".to_string(),
-            ModelPreset::Minimax => "https://api.minimaxi.com/v1".to_string(),
-            ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4".to_string(),
-            ModelPreset::Mimo => "https://api.xiaomimimo.com/v1".to_string(),
-            ModelPreset::Openai => "https://api.openai.com/v1".to_string(),
-            ModelPreset::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            ModelPreset::Gemini => {
-                "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
-            }
-            ModelPreset::Xai => "https://api.x.ai/v1".to_string(),
-        }
+        self.prefs
+            .advanced
+            .model_preset
+            .unwrap_or_default()
+            .default_base_url()
+            .to_string()
     }
 
     /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
