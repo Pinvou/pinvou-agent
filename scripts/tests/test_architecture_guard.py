@@ -97,6 +97,63 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
         failures = self.guard.compare_baseline_ratchet(grown, initialized)
         self.assertEqual(1, len(failures))
 
+    def test_line_count_baseline_may_be_corrected_up_to_target_measurement(self):
+        previous = {
+            "schema_version": 1,
+            "rules": {
+                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 2161},
+            },
+            "rust_feature_cycles": [],
+        }
+        corrected = {
+            "schema_version": 1,
+            "rules": {
+                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 2196},
+            },
+            "rust_feature_cycles": [],
+        }
+        measured = {"pinvou3-app/src/app/main.jsx": 2196}
+        self.assertEqual(
+            [],
+            self.guard.compare_baseline_ratchet(
+                corrected, previous, measured_at_ref=measured.get
+            ),
+        )
+
+        grown = {
+            "schema_version": 1,
+            "rules": {
+                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 2197},
+            },
+            "rust_feature_cycles": [],
+        }
+        failures = self.guard.compare_baseline_ratchet(
+            grown, previous, measured_at_ref=measured.get
+        )
+        self.assertEqual(1, len(failures))
+
+        # Without a measurement for the file, the increase stays rejected.
+        failures = self.guard.compare_baseline_ratchet(
+            corrected, previous, measured_at_ref=lambda _: None
+        )
+        self.assertEqual(1, len(failures))
+
+        # Non line-count rules never consult the measurement.
+        other_previous = {
+            "schema_version": 1,
+            "rules": {"other_rule": {"old": 3}},
+            "rust_feature_cycles": [],
+        }
+        other_wider = {
+            "schema_version": 1,
+            "rules": {"other_rule": {"old": 4}},
+            "rust_feature_cycles": [],
+        }
+        failures = self.guard.compare_baseline_ratchet(
+            other_wider, other_previous, measured_at_ref=lambda _: 9999
+        )
+        self.assertEqual(1, len(failures))
+
     def test_frontend_scanner_rejects_feature_to_app_and_native_tauri(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
