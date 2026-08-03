@@ -6,6 +6,7 @@ import {
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
+import { runtimeNoticeMode } from './runtimeNoticeState.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
@@ -701,12 +702,13 @@ function RuntimeNotice({
   useEffect(() => {
     setDeclinedUpgrade(false);
   }, [status?.agent_id, status?.installed]);
-  if (!status) return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
+  const noticeMode = runtimeNoticeMode(status);
+  if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
     ? (copy.showRawErrors ? rawError : copy.operationFailed)
     : '';
-  if (!status.bridge_ready) {
+  if (noticeMode === 'bridge_unavailable') {
     const isCodex = status.agent_id === 'codex';
     return (
       <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-4 flex items-start gap-3">
@@ -724,44 +726,35 @@ function RuntimeNotice({
       </div>
     );
   }
-  if (!status.installed) {
-    const progress = status.download_progress;
+  if (noticeMode === 'install') {
     const agentName = status.agent_name || 'Agent';
     const action = status.install_action || 'manual';
     const isUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
-    // 用户暂不升级时：codex 且平台支持托管下载则改用托管；其余情况没有托管方案，保持不可用。
-    const declinedManaged = isUpgrade && declinedUpgrade && status.agent_id === 'codex' && status.managed_download_supported;
-    const declinedBlocked = isUpgrade && declinedUpgrade && !declinedManaged;
-    const effectiveAction = declinedManaged ? 'managed_download' : action;
+    const declinedBlocked = isUpgrade && declinedUpgrade;
     const installHints = {
-      managed_download: copy.managedDownloadHint(status.min_version),
       official_script: copy.officialScriptHint(agentName),
     };
     const installButtons = {
-      managed_download: copy.downloadManaged,
       official_script: copy.confirmInstall,
     };
     const hint = declinedBlocked
       ? copy.declinedBlockedHint(agentName)
       : isUpgrade && !declinedUpgrade
         ? copy.packageManagerUpgradeHint(status.install_source)
-        : installHints[effectiveAction] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
-    const busyLabel = effectiveAction === 'managed_download'
-      ? (progress == null ? copy.downloading : copy.downloadProgress(progress))
-      : copy.installing;
+        : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
+    const busyLabel = copy.installing;
     return (
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
         <Terminal size={19} className="text-blue-500 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">
-            {status.version ? copy.cliOutdated(status.version, status.min_version) : copy.cliMissing(agentName)}
+            {status.update_required
+              ? copy.cliUpdateRequired(agentName, status.version)
+              : status.version
+                ? copy.cliOutdated(status.version, status.min_version)
+                : copy.cliMissing(agentName)}
           </div>
           <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
-          {effectiveAction === 'managed_download' && working && progress != null && (
-            <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-blue-500/15">
-              <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} />
-            </div>
-          )}
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {declinedBlocked ? (
@@ -783,10 +776,10 @@ function RuntimeNotice({
               {working ? busyLabel : copy.upgrade}
             </button>
           </div>
-        ) : installButtons[effectiveAction] ? (
-          <button onClick={() => onInstall(declinedManaged ? 'managed_download' : undefined)} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
-            {working && effectiveAction !== 'managed_download' && <RefreshCw size={12} className="animate-spin" />}
-            {working ? busyLabel : installButtons[effectiveAction]}
+        ) : installButtons[action] ? (
+          <button onClick={() => onInstall()} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+            {working && <RefreshCw size={12} className="animate-spin" />}
+            {working ? busyLabel : installButtons[action]}
           </button>
         ) : (
           <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
@@ -796,7 +789,7 @@ function RuntimeNotice({
       </div>
     );
   }
-  if (!status.authenticated) {
+  if (noticeMode === 'login') {
     const waitingForLogin = Boolean(status.login_in_progress);
     const loginUrlReady = waitingForLogin && Boolean(status.login_url);
     const agentName = status.agent_name || 'Agent';
@@ -865,7 +858,7 @@ function RuntimeNotice({
       </div>
     );
   }
-  if (visibleError) return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
+  if (noticeMode === 'error') return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
   return null;
 }
 
@@ -1401,7 +1394,8 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
-    refreshStatus(activeAgentId).catch(showError);
+    // 用户主动切换 Agent 后必须绕过进程内探测缓存，立即反映 App 外的安装/卸载。
+    refreshStatus(activeAgentId, true).catch(showError);
   }, [activeAgentId]);
 
   useEffect(() => {

@@ -27,7 +27,7 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 `install_action` 提示用户，用户确认后调用 `install_acp_agent` 自动安装或升级，完成后
 重新探测。版本过旧时先判定安装来源（Homebrew / npm 全局 / 官方脚本），再决定升级
 方式，避免同一 CLI 多来源并存。来源判定以「实际被解析使用的那一份 CLI」的路径为准：
-先匹配脚本/托管安装目录，再要求 brew 前缀 / npm 全局根与包管理器安装记录双重命中；
+先匹配官方脚本安装目录，再要求 brew 前缀 / npm 全局根与包管理器安装记录双重命中；
 路径无法判定时才回退 `brew list` / `npm ls -g` 全局查询。探测结果有缓存（前端按秒
 轮询），安装/升级成功后自动失效；用户在 App 外手动安装或升级后，点击界面的
 「重新检测」会忽略缓存强制重新探测。
@@ -44,8 +44,7 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 
 | Agent | 方式 | 说明 |
 |---|---|---|
-| Codex | 托管下载 | 下载 npm 官方平台 tgz（固定 0.144.6，SHA-512 校验），装到 `~/.pinvou3/runtimes`；覆盖 macOS arm64/x64、Linux x64/arm64、Windows x64 |
-| Codex（Windows arm64） | 手动 | 无官方平台归档，提示用户自行安装 |
+| Codex | 官方脚本 | macOS/Linux：`curl -fsSL https://chatgpt.com/codex/install.sh \| sh`；Windows：`irm https://chatgpt.com/codex/install.ps1 \| iex`；默认安装官方 latest 到 `~/.local/bin`，Pinvou 使用绝对路径重新探测 |
 | Claude Code | 官方脚本 | macOS/Linux：`curl -fsSL https://claude.ai/install.sh \| bash`；Windows：`irm https://claude.ai/install.ps1 \| iex`；装到 `~/.local/bin` 等用户目录 |
 | Kimi | 官方脚本 | macOS/Linux：`curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash`；Windows：`irm https://code.kimi.com/kimi-code/install.ps1 \| iex`；装到 `~/.kimi-code/bin` |
 
@@ -57,30 +56,28 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 | npm 全局（三端） | CLI 路径位于 `npm prefix -g` 下且 `npm ls -g` 命中 `@openai/codex`、`@anthropic-ai/claude-code`、`@moonshot-ai/kimi-code` | `npm install -g <包名>@latest` |
 | 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`），优先于 brew/npm 判定 | 重新运行官方安装脚本 |
 
-Homebrew / npm 全局来源的旧版一律走对应包管理器升级，禁止使用官方脚本安装，避免同一
-CLI 多来源并存引发混乱；以上来源均未命中的旧版按全新安装矩阵处理。用户不同意升级时：
-Codex 回退为托管下载版本（`~/.pinvou3/runtimes`，与系统安装隔离，优先于旧版使用）；
-Claude Code / Kimi 暂无托管方案，保持不可用并在界面挂起升级提示、不允许使用，直到
-用户同意升级（托管方案待后续调查）。
+Homebrew / npm 全局来源的旧版一律走对应包管理器升级，避免同一 CLI 多来源并存；脚本来源
+或无法识别来源时重新运行官方脚本。用户暂不升级时保持该 Agent 不可用并挂起升级提示，
+不静默执行外部命令，也不创建 Pinvou 托管副本。
 
 状态契约：`get_acp_agent_status` / `list_acp_agents` 返回的每个 Agent 状态对象包含
 `installed: bool`（CLI 存在且版本合规）、`version: String`（可空，实际探测版本）、
 `min_version: String`（`"0.144.6"` / `"2.0.0"` / `"0.9.0"`）、
-`install_source: String`（`"brew"` / `"npm"` / `"script"` / `"managed"` / `null`，
+`install_source: String`（`"brew"` / `"npm"` / `"script"` / `null`，
 当前探测到 CLI 的安装来源，未安装时为 `null`）、
-`install_action: String`（`"none"` / `"managed_download"` / `"brew_upgrade"` /
-`"npm_upgrade"` / `"official_script"` / `"manual"`，已安装时为 `"none"`）、
-`managed_download_supported: bool`（当前平台是否支持 Codex 托管下载；前端据此决定
-用户拒绝包管理器升级后是否提供托管回退入口，Claude/Kimi 恒为 `false`）；
-`bridge_ready`、`authenticated`、`setup_hint` 等既有字段语义不变。
+`install_action: String`（`"none"` / `"brew_upgrade"` / `"npm_upgrade"` /
+`"official_script"` / `"manual"`，已安装时为 `"none"`）、
+`update_required: bool`（Agent 明确报告当前 CLI 必须升级时为 `true`）；
+`authenticated`、`setup_hint` 等既有字段语义不变。Codex/Claude 的
+`bridge_ready` 仍表示内置 Bridge 与 Node 是否就绪。
+Kimi 不经过独立 Bridge，因此 `bridge_ready` 恒为 `true`；CLI 缺失或版本过低
+由 `installed: false` 与 `install_action` 表达，以便前端进入安装或升级流程。
 `get_acp_agent_status(agent_id, recheck?)` 传 `recheck: true` 时忽略探测缓存强制
-重新探测（「重新检测」按钮）；默认读取缓存，供前端轮询使用。
+重新探测（「重新检测」按钮）；用户切换 Agent 时也强制重探测，默认状态轮询仍读取缓存。
 
 新增 Tauri 命令 `install_acp_agent(agent, action?)`：按 `install_action` 分派执行安装
-或升级（Codex 托管下载、Homebrew `brew upgrade`、npm 全局升级、Claude/Kimi 官方脚本），
-完成后重新探测并返回最新状态。可选 `action` 参数覆盖默认动作：用户拒绝包管理器升级时，
-前端对 Codex 传入 `"managed_download"` 改用托管下载版本。Codex 托管下载沿用现有进度
-事件；包管理器升级与官方脚本安装无进度，前端显示进行中 spinner。旧命令
+或升级（官方脚本、Homebrew `brew upgrade`、npm 全局升级），完成后重新探测并返回最新
+状态。官方脚本和包管理器升级没有统一进度协议，前端显示进行中 spinner。旧命令
 `prepare_codex_acp`、`install_codex_homebrew` 保留不删除（向后兼容），前端改用新命令。
 
 ## 架构边界

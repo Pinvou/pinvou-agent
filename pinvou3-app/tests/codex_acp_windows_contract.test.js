@@ -45,13 +45,6 @@ const windowsPath = read(
   "windows",
   "windows_path.rs",
 );
-const codexRuntime = read(
-  "src-tauri",
-  "src",
-  "features",
-  "codex_acp",
-  "runtime.rs",
-);
 const buildScript = read("scripts", "tauri", "build.js");
 const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
 const {
@@ -90,9 +83,9 @@ assert.match(
   "the installed Node Bridge must start without a visible Windows console",
 );
 assert.match(
-  codexAcpWindows,
-  /"x86_64"[\s\S]*?x86_64-pc-windows-msvc/,
-  "Windows x64 must have a managed Codex artifact",
+  codexAcp,
+  /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/,
+  "Windows Codex installation must use OpenAI's official installer",
 );
 assert.match(
   windowsPath,
@@ -120,9 +113,9 @@ assert.match(
   "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
 );
 assert.match(
-  codexRuntime,
-  /remove_existing_runtime_with_retry\(&target,\s*operation_id\)\.await/,
-  "Windows managed runtime replacement must retry removal of a locked old runtime",
+  codexAcp,
+  /fn resolve_codex_cli\([\s\S]*?"codex\.exe"[\s\S]*?join\("\.local"\)[\s\S]*?join\("bin"\)/,
+  "Windows must discover the official installer path without relying on a restarted PATH",
 );
 assert.equal(
   windowsBridgeOverlay().bundle.resources["target/windows-runtime/codex-bridge/"],

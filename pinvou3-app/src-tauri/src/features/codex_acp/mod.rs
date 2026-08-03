@@ -49,8 +49,8 @@ use deepseek_tui::session_manager::SessionMetadata;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use runtime::{
-    install_managed_codex, is_managed_newer_than, resolve_codex_path, system_codex_incompatible,
-    version_at_least, ResolvedCodex, MANAGED_CODEX_VERSION, MIN_CODEX_VERSION,
+    resolve_codex_path, system_codex_incompatible, version_at_least, ResolvedCodex,
+    MIN_CODEX_VERSION,
 };
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
@@ -69,6 +69,8 @@ const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 const MIN_CLAUDE_VERSION: &str = "2.0.0";
 /// Kimi ACP 要求的最低 kimi CLI 版本（裸 semver；旧 Python 版 kimi-cli 已废弃）。
 const MIN_KIMI_VERSION: &str = "0.9.0";
+const CODEX_INSTALL_SCRIPT_UNIX: &str = "https://chatgpt.com/codex/install.sh";
+const CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https://chatgpt.com/codex/install.ps1";
 const CLAUDE_INSTALL_SCRIPT_UNIX: &str = "https://claude.ai/install.sh";
 const CLAUDE_INSTALL_SCRIPT_WINDOWS: &str = "https://claude.ai/install.ps1";
 const KIMI_INSTALL_SCRIPT_UNIX: &str = "https://code.kimi.com/kimi-code/install.sh";
@@ -283,6 +285,8 @@ pub struct CodexAcpStatus {
     pub version: Option<String>,
     /// CLI 存在且版本满足 min_version 门禁。
     pub installed: bool,
+    /// Agent 明确报告当前 CLI 需要升级；即使满足静态最低版本也进入升级流程。
+    pub update_required: bool,
     pub bridge_ready: bool,
     pub adapter_path: Option<String>,
     pub node_available: bool,
@@ -293,34 +297,22 @@ pub struct CodexAcpStatus {
     pub codex_path: Option<String>,
     pub codex_version: Option<String>,
     pub runtime_source: Option<&'static str>,
-    pub managed_codex_version: &'static str,
     /// codex-acp 验证过的最低 Codex CLI 版本（所有运行时来源统一强制）。
     pub min_codex_version: &'static str,
     /// 该 Agent CLI 的最低版本要求（"0.144.6" / "2.0.0" / "0.9.0"）。
     pub min_version: &'static str,
-    /// 当前平台的 Codex 安装方式：
-    /// "managed_download"（linux/windows）/ "homebrew"（macOS）/ "manual"（其他）。
-    pub install_method: &'static str,
     /// installed=false 时前端应提供的安装动作：
-    /// "none"（已合规）/ "managed_download"（codex 托管下载）/ "brew_upgrade"
-    /// （macOS brew 升级）/ "npm_upgrade"（npm 全局升级）/
-    /// "official_script"（claude/kimi 官方脚本）/ "manual"。
+    /// "none"（已合规）/ "brew_upgrade"（macOS brew 升级）/
+    /// "npm_upgrade"（npm 全局升级）/ "official_script"（官方脚本）/ "manual"。
     pub install_action: &'static str,
     /// 已探测到 CLI 的安装来源："brew" / "npm" / "script"（官方脚本目录）/
-    /// "managed"（codex 托管目录）/ null（无 CLI 或来源未知）。
+    /// null（无 CLI 或来源未知）。
     pub install_source: Option<String>,
-    /// 当前平台是否支持 codex 托管下载；前端据此决定「暂不升级」后是否提供
-    /// 托管回退入口（claude/kimi 与 codex 不支持托管的平台恒 false）。
-    pub managed_download_supported: bool,
     /// 仅 macOS 探测 Homebrew；其他平台恒 false。
     pub brew_available: bool,
     /// 系统 PATH 里找到了 codex 但版本低于 min_codex_version，
     /// 用于 UI 区分「版本过低」与「未安装」。
     pub system_codex_incompatible: bool,
-    pub download_required: bool,
-    pub downloaded_bytes: u64,
-    pub download_total_bytes: u64,
-    pub download_progress: Option<u8>,
     pub authenticated: bool,
     pub login_in_progress: bool,
     pub login_url: Option<String>,
@@ -585,8 +577,7 @@ pub struct AcpPool {
     installing: Arc<AtomicBool>,
     login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
     login_inputs: Arc<Mutex<HashMap<AgentBackend, ChildStdin>>>,
-    downloaded_bytes: Arc<AtomicU64>,
-    download_total_bytes: Arc<AtomicU64>,
+    codex_upgrade_required: Arc<AtomicBool>,
     last_error: Arc<parking_lot::RwLock<Option<String>>>,
     runtime_probe: Arc<parking_lot::RwLock<RuntimeProbeCache>>,
     runtime_probe_gate: Arc<Mutex<()>>,
@@ -602,7 +593,7 @@ struct RuntimeProbeCache {
     node_version: Option<String>,
     codex: Option<ResolvedCodex>,
     brew_available: bool,
-    /// 已解析或 PATH 中过旧 codex 的安装来源（"brew"/"npm"/"managed"），
+    /// 已解析或 PATH/官方目录中版本过旧 codex 的安装来源（"brew"/"npm"/"script"），
     /// 供版本过旧时按来源分派 brew/npm 升级。
     codex_install_source: Option<&'static str>,
     system_codex_incompatible: bool,
@@ -734,8 +725,7 @@ impl AcpPool {
             installing: Arc::new(AtomicBool::new(false)),
             login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             login_inputs: Arc::new(Mutex::new(HashMap::new())),
-            downloaded_bytes: Arc::new(AtomicU64::new(0)),
-            download_total_bytes: Arc::new(AtomicU64::new(0)),
+            codex_upgrade_required: Arc::new(AtomicBool::new(false)),
             last_error: Arc::new(parking_lot::RwLock::new(None)),
             runtime_probe: Arc::new(parking_lot::RwLock::new(RuntimeProbeCache::default())),
             runtime_probe_gate: Arc::new(Mutex::new(())),
@@ -896,7 +886,29 @@ impl AcpPool {
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent_id}");
         }
+        let previous_codex_version = (backend == AgentBackend::CodexAcp
+            && self.codex_upgrade_required.load(Ordering::Acquire))
+        .then(|| {
+            self.runtime_probe
+                .read()
+                .codex
+                .as_ref()
+                .map(|resolved| resolved.version.clone())
+        })
+        .flatten();
         self.refresh_agent_cli_probe(backend).await;
+        if backend == AgentBackend::CodexAcp
+            && previous_codex_version.is_some()
+            && self
+                .runtime_probe
+                .read()
+                .codex
+                .as_ref()
+                .is_some_and(|resolved| Some(&resolved.version) != previous_codex_version.as_ref())
+        {
+            self.codex_upgrade_required.store(false, Ordering::Release);
+            *self.last_error.write() = None;
+        }
         Ok(self.status_for_async(backend).await)
     }
 
@@ -940,7 +952,10 @@ impl AcpPool {
                 agent_name: "Kimi",
                 version: kimi_version.clone(),
                 installed,
-                bridge_ready: installed,
+                update_required: false,
+                // Kimi 直接运行原生 CLI，不依赖独立 Bridge。CLI 是否可用由
+                // installed 单独表达，避免未安装时被前端 Bridge 错误分支截断。
+                bridge_ready: true,
                 adapter_path: kimi_path.clone(),
                 // Kimi 不经 Node bridge，Node 字段不适用；node_supported 视为无门槛满足。
                 node_available: false,
@@ -951,10 +966,8 @@ impl AcpPool {
                 codex_path: kimi_path,
                 codex_version: kimi_version,
                 runtime_source: kimi.as_ref().map(|_| "system"),
-                managed_codex_version: "",
                 min_codex_version: "",
                 min_version: MIN_KIMI_VERSION,
-                install_method: "manual",
                 install_action: if installed {
                     "none"
                 } else {
@@ -963,17 +976,11 @@ impl AcpPool {
                         kimi.as_ref().and_then(|cli| cli.install_source),
                         npm_executable().is_some(),
                         official_script_supported(backend),
-                        false,
                     )
                 },
                 install_source,
-                managed_download_supported: false,
                 brew_available: false,
                 system_codex_incompatible: false,
-                download_required: false,
-                downloaded_bytes: 0,
-                download_total_bytes: 0,
-                download_progress: None,
                 authenticated,
                 login_in_progress: login.in_progress,
                 login_url: login.url,
@@ -1029,34 +1036,27 @@ impl AcpPool {
             AgentBackend::ClaudeAcp => claude.as_ref().and_then(|cli| cli.version.clone()),
             AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
         };
-        let downloaded_bytes = self.downloaded_bytes.load(Ordering::Acquire);
-        let download_total_bytes = self.download_total_bytes.load(Ordering::Acquire);
-        let download_progress = (download_total_bytes > 0).then(|| {
-            ((downloaded_bytes.saturating_mul(100) / download_total_bytes).min(100)) as u8
-        });
         let bridge_ready = adapter.is_some() && node_supported;
         let codex_available = provider_available;
+        let codex_upgrade_required = backend == AgentBackend::CodexAcp
+            && self.codex_upgrade_required.load(Ordering::Acquire);
         let installed = match backend {
-            AgentBackend::CodexAcp => bridge_ready && codex_available,
+            AgentBackend::CodexAcp => bridge_ready && codex_available && !codex_upgrade_required,
             AgentBackend::ClaudeAcp => provider_available,
             AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
         };
-        let managed_download_supported = backend == AgentBackend::CodexAcp
-            && platform::install_method() == "managed_download"
-            && platform::managed_artifact(std::env::consts::ARCH).is_ok();
         let install_action = match backend {
             AgentBackend::CodexAcp => {
-                if codex.is_some() {
+                if codex.is_some() && !codex_upgrade_required {
                     "none"
                 } else {
-                    // 过旧 CLI 按安装来源分派 brew/npm 升级；无 CLI 或来源未知
-                    // 维持托管下载 / manual。
+                    // 过旧 CLI 按安装来源分派 brew/npm 升级；无 CLI、脚本来源或
+                    // 来源未知时统一运行官方安装脚本。
                     install_action_for(
                         backend,
                         probe.as_ref().and_then(|probe| probe.codex_install_source),
                         npm_executable().is_some(),
-                        false,
-                        managed_download_supported,
+                        official_script_supported(backend),
                     )
                 }
             }
@@ -1069,7 +1069,6 @@ impl AcpPool {
                         claude.as_ref().and_then(|cli| cli.install_source),
                         npm_executable().is_some(),
                         official_script_supported(backend),
-                        false,
                     )
                 }
             }
@@ -1092,6 +1091,7 @@ impl AcpPool {
             agent_name,
             version: provider_version.clone(),
             installed,
+            update_required: codex_upgrade_required,
             bridge_ready,
             adapter_path: adapter
                 .as_ref()
@@ -1123,20 +1123,10 @@ impl AcpPool {
                     }
                 })
             },
-            managed_codex_version: if backend == AgentBackend::CodexAcp {
-                MANAGED_CODEX_VERSION
-            } else {
-                ""
-            },
             min_codex_version: if backend == AgentBackend::CodexAcp {
                 MIN_CODEX_VERSION
             } else {
                 ""
-            },
-            install_method: if backend == AgentBackend::CodexAcp {
-                platform::install_method()
-            } else {
-                "manual"
             },
             min_version: match backend {
                 AgentBackend::CodexAcp => MIN_CODEX_VERSION,
@@ -1155,33 +1145,22 @@ impl AcpPool {
                     .map(str::to_string),
                 AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
             },
-            managed_download_supported,
             brew_available: probe.as_ref().is_some_and(|probe| probe.brew_available),
             system_codex_incompatible: probe
                 .as_ref()
                 .is_some_and(|probe| probe.system_codex_incompatible),
-            download_required: backend == AgentBackend::CodexAcp
-                && bridge_ready
-                && !codex_available,
-            downloaded_bytes,
-            download_total_bytes,
-            download_progress,
             authenticated,
             login_in_progress: login.in_progress,
             login_url: login.url,
             login_code: login.code,
             login_input_required: login.input_required,
-            // installing 标志由三条安装路径（托管/brew/npm/脚本）共享，三端统一上报。
+            // installing 标志由三条安装路径（brew/npm/官方脚本）共享，三端统一上报。
             installing: self.installing.load(Ordering::Acquire),
-            error: if authenticated {
-                None
-            } else {
-                login.error.or_else(|| {
-                    (backend == AgentBackend::CodexAcp)
-                        .then(|| self.last_error.read().clone())
-                        .flatten()
-                })
-            },
+            error: login.error.or_else(|| {
+                (backend == AgentBackend::CodexAcp)
+                    .then(|| self.last_error.read().clone())
+                    .flatten()
+            }),
             // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示；
             // Claude Code 不再随包内置，缺少 claude CLI 或版本过旧时引导用户安装。
             setup_hint: if backend == AgentBackend::ClaudeAcp && !installed {
@@ -1214,13 +1193,13 @@ impl AcpPool {
         let node = adapter
             .as_deref()
             .and_then(|adapter| self.resolve_node(adapter));
-        let system_codex = find_in_path(platform::system_codex_name());
+        let system_codex = resolve_codex_cli();
         let legacy_codex = adapter.as_deref().and_then(codex_path_for_adapter);
         diagnostics::write(
             &operation_id,
             "probe:start",
             format!(
-                "force={force} node_path={} system_codex_path={} managed_version={MANAGED_CODEX_VERSION}",
+                "force={force} node_path={} system_codex_path={}",
                 node.as_deref()
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "none".to_string()),
@@ -1295,80 +1274,20 @@ impl AcpPool {
         }
     }
 
-    pub async fn ensure_installed(&self) -> Result<CodexAcpStatus> {
-        let operation_id = diagnostics::operation_id("prepare");
+    /// 验证 Codex Bridge 与 CLI 已就绪；不会隐式安装或执行外部脚本。
+    async fn ensure_codex_ready(&self) -> Result<CodexAcpStatus> {
         self.refresh_runtime_probe(false).await;
         let status = self.status_async().await;
-        diagnostics::write(
-            &operation_id,
-            "prepare:start",
-            format!(
-                "bridge_ready={} codex_available={} installing={} runtime_source={} log_path={}",
-                status.bridge_ready,
-                status.codex_available,
-                status.installing,
-                status.runtime_source.unwrap_or("none"),
-                diagnostics::log_path().display()
-            ),
-        );
         if !status.bridge_ready {
-            diagnostics::write(
-                &operation_id,
-                "prepare:bridge_unavailable",
-                format!(
-                    "adapter_path={} node_available={} node_supported={} node_version={}",
-                    status.adapter_path.as_deref().unwrap_or("none"),
-                    status.node_available,
-                    status.node_supported,
-                    status.node_version.as_deref().unwrap_or("none")
-                ),
-            );
             bail!("Pinvou 安装包缺少可用的 Codex ACP Bridge，请重新安装或重新生成 Bridge Runtime");
         }
-        if status.codex_available {
-            diagnostics::write(&operation_id, "prepare:already_available", "result=success");
-            return Ok(status);
+        if status.update_required {
+            bail!("当前 Codex CLI 已无法支持所选模型，请先升级到官方最新版后重试");
         }
-        if platform::install_method() != "managed_download" {
-            diagnostics::write(
-                &operation_id,
-                "prepare:managed_download_unsupported",
-                format!("install_method={}", platform::install_method()),
-            );
-            bail!("当前平台不支持下载托管 Codex，请手动安装 Codex CLI 后重试");
+        if !status.codex_available {
+            bail!("未检测到兼容的 Codex CLI，请先通过 Pinvou 运行官方安装或升级后重试");
         }
-        if self.installing.swap(true, Ordering::AcqRel) {
-            diagnostics::write(
-                &operation_id,
-                "prepare:already_installing",
-                "result=rejected",
-            );
-            bail!("托管 Codex 正在下载，请稍候");
-        }
-        let result = install_managed_codex(
-            self.downloaded_bytes.clone(),
-            self.download_total_bytes.clone(),
-            &operation_id,
-        )
-        .await;
-        self.installing.store(false, Ordering::Release);
-        match result {
-            Ok(_) => {
-                self.refresh_runtime_probe(true).await;
-                *self.last_error.write() = None;
-                diagnostics::write(&operation_id, "prepare:complete", "result=success");
-                Ok(self.status_async().await)
-            }
-            Err(error) => {
-                let detail = format!("{error:#}");
-                diagnostics::write(&operation_id, "prepare:failed", &detail);
-                *self.last_error.write() = Some(format!(
-                    "{detail}（诊断编号：{operation_id}；日志：{}）",
-                    diagnostics::log_path().display()
-                ));
-                Err(error)
-            }
-        }
+        Ok(status)
     }
 
     /// macOS 上通过 Homebrew 安装系统 Codex（cask 名 codex）。
@@ -1439,6 +1358,9 @@ impl AcpPool {
         match result.context("等待 Homebrew 安装任务失败")? {
             Ok(()) => {
                 self.refresh_agent_cli_probe(backend).await;
+                if backend == AgentBackend::CodexAcp {
+                    self.codex_upgrade_required.store(false, Ordering::Release);
+                }
                 *self.last_error.write() = None;
                 diagnostics::write(&operation_id, "homebrew:complete", "result=success");
                 let status = self.status_for_async(backend).await;
@@ -1458,8 +1380,7 @@ impl AcpPool {
     }
 
     /// `install_acp_agent` 命令入口：按 status.install_action 分派安装，
-    /// 完成后强制重新探测并返回最新状态。action 提供时（前端用户选择，
-    /// 如 codex 拒绝包管理器升级后改选 managed_download）经校验后优先。
+    /// 完成后强制重新探测并返回最新状态。action 提供时经校验后优先。
     pub async fn install_agent(
         &self,
         agent_id: &str,
@@ -1478,12 +1399,6 @@ impl AcpPool {
         };
         match action {
             "none" => Ok(status),
-            "managed_download" => {
-                if backend != AgentBackend::CodexAcp {
-                    bail!("{} 不支持托管下载安装", backend.display_name());
-                }
-                self.ensure_installed().await
-            }
             "brew_upgrade" => self.upgrade_via_homebrew(backend).await,
             "npm_upgrade" => self.upgrade_via_npm(backend).await,
             "official_script" => self.install_via_official_script(backend).await,
@@ -1526,6 +1441,10 @@ impl AcpPool {
         match result {
             Ok(()) => {
                 diagnostics::write(&operation_id, "npm:complete", "result=success");
+                if backend == AgentBackend::CodexAcp {
+                    self.codex_upgrade_required.store(false, Ordering::Release);
+                }
+                *self.last_error.write() = None;
                 let status = self.status_for_async(backend).await;
                 ensure_agent_cli_ready(backend, &status)?;
                 Ok(status)
@@ -1538,7 +1457,7 @@ impl AcpPool {
         }
     }
 
-    /// 通过官方安装脚本安装 Claude Code / Kimi Code CLI（免管理员）。
+    /// 通过各 Agent 官方安装脚本安装 CLI（免管理员）。
     /// 脚本无进度输出约定，前端以进行中 spinner 呈现；输出写入诊断日志。
     async fn install_via_official_script(&self, backend: AgentBackend) -> Result<CodexAcpStatus> {
         let operation_id = diagnostics::operation_id("script-install");
@@ -1564,11 +1483,16 @@ impl AcpPool {
         );
         let result = run_official_install_script(backend, &operation_id).await;
         self.installing.store(false, Ordering::Release);
-        // 无论成败都强制重新探测：脚本可能部分完成（如已写入二进制但 PATH 更新失败）。
-        self.invalidate_cli_probe();
+        // 无论成败都按 Agent 强制重新探测：脚本可能部分完成（如已写入二进制但
+        // PATH 更新失败）；Codex 还需立即检查 ~/.local/bin 的官方安装绝对路径。
+        self.refresh_agent_cli_probe(backend).await;
         match result {
             Ok(()) => {
                 diagnostics::write(&operation_id, "script:complete", "result=success");
+                if backend == AgentBackend::CodexAcp {
+                    self.codex_upgrade_required.store(false, Ordering::Release);
+                }
+                *self.last_error.write() = None;
                 let status = self.status_for_async(backend).await;
                 ensure_agent_cli_ready(backend, &status)?;
                 Ok(status)
@@ -1607,7 +1531,7 @@ impl AcpPool {
             bail!("Agent 不是 ACP 后端: {agent_id}");
         }
         if backend == AgentBackend::CodexAcp {
-            self.ensure_installed().await?;
+            self.ensure_codex_ready().await?;
         }
         let executable = self
             .login_executable(backend)
@@ -1902,7 +1826,7 @@ impl AcpPool {
             &operation_id,
             "upgrade_required:detected",
             format!(
-                "session_id={session_id} current_source={} current_version={} managed_version={MANAGED_CODEX_VERSION}",
+                "session_id={session_id} current_source={} current_version={}",
                 current
                     .as_ref()
                     .map(|resolved| resolved.source.as_str())
@@ -1913,56 +1837,20 @@ impl AcpPool {
                     .unwrap_or("none")
             ),
         );
-
-        let can_switch_to_managed = current
-            .as_ref()
-            .is_some_and(|resolved| is_managed_newer_than(&resolved.version));
-        if !can_switch_to_managed {
-            *self.last_error.write() = Some(format!(
-                "当前 Codex {} 已无法支持所选模型，且内置托管版本 {MANAGED_CODEX_VERSION} 不更新。请升级 Pinvou 后重试。",
-                current
-                    .as_ref()
-                    .map(|resolved| resolved.version.as_str())
-                    .unwrap_or("未知版本")
-            ));
-            diagnostics::write(
-                &operation_id,
-                "upgrade_required:app_update_needed",
-                "managed_runtime_not_newer",
-            );
-            return;
-        }
-
-        *self.last_error.write() = Some(format!(
-            "当前系统 Codex 版本过旧，正在切换到托管 Codex {MANAGED_CODEX_VERSION}；完成后请重试。"
-        ));
         self.evict(session_id).await;
-        *self.runtime_probe.write() = RuntimeProbeCache::default();
-        match self.ensure_installed().await {
-            Ok(status) => {
-                *self.last_error.write() = Some(format!(
-                    "已切换到 Codex {}，请重新发送刚才的消息。",
-                    status
-                        .codex_version
-                        .as_deref()
-                        .unwrap_or(MANAGED_CODEX_VERSION)
-                ));
-                diagnostics::write(
-                    &operation_id,
-                    "upgrade_required:managed_ready",
-                    format!(
-                        "runtime_source={} version={}",
-                        status.runtime_source.unwrap_or("none"),
-                        status.codex_version.as_deref().unwrap_or("none")
-                    ),
-                );
-            }
-            Err(error) => {
-                let detail = format!("切换托管 Codex 失败: {error:#}");
-                *self.last_error.write() = Some(detail.clone());
-                diagnostics::write(&operation_id, "upgrade_required:managed_failed", detail);
-            }
-        }
+        self.codex_upgrade_required.store(true, Ordering::Release);
+        *self.last_error.write() = Some(format!(
+            "当前 Codex {} 已无法支持所选模型，请通过官方安装方式升级到最新版后重试。",
+            current
+                .as_ref()
+                .map(|resolved| resolved.version.as_str())
+                .unwrap_or("未知版本")
+        ));
+        diagnostics::write(
+            &operation_id,
+            "upgrade_required:user_confirmation_needed",
+            "official_upgrade_required",
+        );
     }
 
     pub async fn cancel(&self, session_id: &str) {
@@ -2371,7 +2259,7 @@ impl AcpPool {
         // acp_record 处得到明确报错，而不是误导性的「当前会话不是 ACP 会话」。
         let backend = self.backend(session_id);
         let readiness = match backend {
-            AgentBackend::CodexAcp => self.ensure_installed().await.map(|_| ()),
+            AgentBackend::CodexAcp => self.ensure_codex_ready().await.map(|_| ()),
             AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
                 let status = self.status_for_async(backend).await;
                 if !status.installed {
@@ -2842,7 +2730,7 @@ impl AcpPool {
     fn configure_codex_path(&self, command: &mut Command, adapter: &Path) -> Result<()> {
         let codex = self
             .resolve_codex(adapter)
-            .context("未检测到可用 Codex；请下载托管 Codex")?;
+            .context("未检测到可用 Codex；请通过官方方式安装或升级 Codex")?;
         command.env(
             "CODEX_PATH",
             crate::platform::os::external_application_path(&codex.path),
@@ -3375,6 +3263,28 @@ fn resolve_claude_adapter_from(bundled: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
+fn resolve_codex_cli() -> Option<PathBuf> {
+    let binary = if crate::platform::capabilities::is_windows() {
+        "codex.exe"
+    } else {
+        "codex"
+    };
+    // OpenAI 官方脚本默认安装到 ~/.local/bin。优先检查绝对路径，使脚本安装完成后
+    // 无需重启桌面应用或依赖其启动时继承的 PATH。
+    let script_installed = crate::platform::os::user_home_dir()
+        .join(".local")
+        .join("bin")
+        .join(binary);
+    if nonempty_file(&script_installed) {
+        return Some(script_installed);
+    }
+    find_in_path(platform::system_codex_name()).or_else(|| {
+        crate::platform::capabilities::is_windows()
+            .then(|| find_in_path(binary))
+            .flatten()
+    })
+}
+
 fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PINVOU3_CLAUDE_CLI_PATH").map(PathBuf::from) {
         if nonempty_file(&path) {
@@ -3575,7 +3485,7 @@ fn npm_global_installed(package: &str) -> bool {
 
 /// 判定已解析 CLI 的安装来源。多份并存（如同机同时有 brew cask 与官方脚本版）
 /// 时必须按「实际被解析使用的那一份」判定，否则升级会打到包管理器管理的另一份，
-/// 正在使用的旧版原地不动。顺序：脚本/托管目录前缀 → brew 前缀+brew 已装 →
+/// 正在使用的旧版原地不动。顺序：官方脚本目录前缀 → brew 前缀+brew 已装 →
 /// npm 全局根+npm 已装 → 路径无法判定时回退 brew/npm 全局查询（维持原行为）。
 fn detect_install_source(backend: AgentBackend, path: &Path) -> Option<&'static str> {
     if let Some(source) = path_install_source(backend, path) {
@@ -3655,21 +3565,17 @@ fn path_in_npm_global(path: &Path, root: &Path, windows: bool) -> bool {
     path.starts_with(bin)
 }
 
-/// 按路径前缀判定官方脚本（claude ~/.local/bin、kimi ~/.kimi-code/bin）与
-/// codex 托管（~/.pinvou3/runtimes）来源。
+/// 按路径前缀判定官方脚本来源（codex/claude ~/.local/bin、kimi ~/.kimi-code/bin）。
 fn path_install_source(backend: AgentBackend, path: &Path) -> Option<&'static str> {
     let home = crate::platform::os::user_home_dir();
     match backend {
-        AgentBackend::ClaudeAcp if path.starts_with(home.join(".local").join("bin")) => {
+        AgentBackend::CodexAcp | AgentBackend::ClaudeAcp
+            if path.starts_with(home.join(".local").join("bin")) =>
+        {
             Some("script")
         }
         AgentBackend::KimiAcp if path.starts_with(home.join(".kimi-code").join("bin")) => {
             Some("script")
-        }
-        AgentBackend::CodexAcp
-            if path.starts_with(crate::platform::paths::pinvou3_home().join("runtimes")) =>
-        {
-            Some("managed")
         }
         _ => None,
     }
@@ -3678,45 +3584,29 @@ fn path_install_source(backend: AgentBackend, path: &Path) -> Option<&'static st
 /// installed=false 时的安装动作：探测到过旧 CLI 且来源可识别时优先包管理器
 /// 升级（brew/npm），其余来源或无 CLI 时维持各 Agent 的默认安装方式。
 fn install_action_for(
-    backend: AgentBackend,
+    _backend: AgentBackend,
     install_source: Option<&'static str>,
     npm_available: bool,
     official_script_supported: bool,
-    managed_download_supported: bool,
 ) -> &'static str {
     match install_source {
         Some("brew") => "brew_upgrade",
         Some("npm") if npm_available => "npm_upgrade",
-        _ => match backend {
-            AgentBackend::CodexAcp => {
-                if managed_download_supported {
-                    "managed_download"
-                } else {
-                    "manual"
-                }
-            }
-            _ => {
-                if official_script_supported {
-                    "official_script"
-                } else {
-                    "manual"
-                }
-            }
-        },
+        _ if official_script_supported => "official_script",
+        _ => "manual",
     }
 }
 
-/// install_acp_agent 可选 action override 校验：合法值即五种安装动作加 "none"。
+/// install_acp_agent 可选 action override 校验。
 fn parse_install_action(action: &str) -> Result<&'static str> {
     match action {
         "none" => Ok("none"),
-        "managed_download" => Ok("managed_download"),
         "brew_upgrade" => Ok("brew_upgrade"),
         "npm_upgrade" => Ok("npm_upgrade"),
         "official_script" => Ok("official_script"),
         "manual" => Ok("manual"),
         other => bail!(
-            "非法安装动作: {other}（可选值: none / managed_download / brew_upgrade / npm_upgrade / official_script / manual）"
+            "非法安装动作: {other}（可选值: none / brew_upgrade / npm_upgrade / official_script / manual）"
         ),
     }
 }
@@ -3805,6 +3695,9 @@ fn official_script_supported(backend: AgentBackend) -> bool {
         crate::platform::capabilities::is_musl(),
     );
     match backend {
+        AgentBackend::CodexAcp => {
+            matches!(os, "macos" | "linux" | "windows") && matches!(arch, "x86_64" | "aarch64")
+        }
         AgentBackend::ClaudeAcp => claude_native_runtime(os, arch, musl).is_some(),
         AgentBackend::KimiAcp => {
             matches!(arch, "x86_64" | "aarch64")
@@ -3818,11 +3711,16 @@ fn official_script_supported(backend: AgentBackend) -> bool {
 /// 10 分钟超时，输出尾部写入诊断日志。
 async fn run_official_install_script(backend: AgentBackend, operation_id: &str) -> Result<()> {
     let (unix_url, windows_url) = match backend {
+        AgentBackend::CodexAcp => (CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS),
         AgentBackend::ClaudeAcp => (CLAUDE_INSTALL_SCRIPT_UNIX, CLAUDE_INSTALL_SCRIPT_WINDOWS),
         AgentBackend::KimiAcp => (KIMI_INSTALL_SCRIPT_UNIX, KIMI_INSTALL_SCRIPT_WINDOWS),
         _ => bail!("{} 不支持官方脚本安装", backend.display_name()),
     };
     let mut command = crate::platform::process::install_script_command(unix_url, windows_url);
+    if backend == AgentBackend::CodexAcp {
+        // OpenAI 官方脚本默认安装 latest；非交互模式避免桌面应用后台等待 PATH 冲突确认。
+        command.env("CODEX_NON_INTERACTIVE", "1");
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4566,6 +4464,7 @@ mod tests {
             agent_name: "Codex",
             version: Some("0.146.0".to_string()),
             installed: false,
+            update_required: true,
             bridge_ready: false,
             adapter_path: None,
             node_available: false,
@@ -4576,19 +4475,12 @@ mod tests {
             codex_path: None,
             codex_version: None,
             runtime_source: None,
-            managed_codex_version: MANAGED_CODEX_VERSION,
             min_codex_version: MIN_CODEX_VERSION,
             min_version: MIN_CODEX_VERSION,
-            install_method: platform::install_method(),
-            install_action: "managed_download",
+            install_action: "official_script",
             install_source: Some("npm".to_string()),
-            managed_download_supported: false,
             brew_available: false,
             system_codex_incompatible: true,
-            download_required: false,
-            downloaded_bytes: 0,
-            download_total_bytes: 0,
-            download_progress: None,
             authenticated: false,
             login_in_progress: false,
             login_url: None,
@@ -4602,10 +4494,9 @@ mod tests {
         assert_eq!(value["version"], json!("0.146.0"));
         assert_eq!(value["min_codex_version"], json!(MIN_CODEX_VERSION));
         assert_eq!(value["min_version"], json!(MIN_CODEX_VERSION));
-        assert_eq!(value["install_method"], json!(platform::install_method()));
-        assert_eq!(value["install_action"], json!("managed_download"));
+        assert_eq!(value["install_action"], json!("official_script"));
         assert_eq!(value["install_source"], json!("npm"));
-        assert_eq!(value["managed_download_supported"], json!(false));
+        assert_eq!(value["update_required"], json!(true));
         assert_eq!(value["brew_available"], json!(false));
         assert_eq!(value["system_codex_incompatible"], json!(true));
     }
@@ -4684,46 +4575,34 @@ mod tests {
             AgentBackend::KimiAcp,
         ] {
             assert_eq!(
-                install_action_for(backend, Some("brew"), false, true, true),
+                install_action_for(backend, Some("brew"), false, true),
                 "brew_upgrade"
             );
             // npm 来源且 npm 可执行时 npm_upgrade。
             assert_eq!(
-                install_action_for(backend, Some("npm"), true, true, true),
+                install_action_for(backend, Some("npm"), true, true),
                 "npm_upgrade"
             );
         }
-        // codex：npm 不可执行或其余来源按原逻辑回落托管下载 / manual。
-        assert_eq!(
-            install_action_for(AgentBackend::CodexAcp, Some("npm"), false, false, true),
-            "managed_download"
-        );
-        assert_eq!(
-            install_action_for(AgentBackend::CodexAcp, Some("script"), false, false, true),
-            "managed_download"
-        );
-        assert_eq!(
-            install_action_for(AgentBackend::CodexAcp, None, false, false, false),
-            "manual"
-        );
-        // claude/kimi：script 或未知来源、无 CLI 都维持官方脚本（不支持则 manual）。
-        for backend in [AgentBackend::ClaudeAcp, AgentBackend::KimiAcp] {
+        // 三 Agent 的 script、未知来源和 npm 不可用场景都回到官方脚本。
+        for backend in [
+            AgentBackend::CodexAcp,
+            AgentBackend::ClaudeAcp,
+            AgentBackend::KimiAcp,
+        ] {
             assert_eq!(
-                install_action_for(backend, Some("script"), false, true, false),
+                install_action_for(backend, Some("script"), false, true),
                 "official_script"
             );
             assert_eq!(
-                install_action_for(backend, None, false, true, false),
+                install_action_for(backend, None, false, true),
                 "official_script"
             );
             assert_eq!(
-                install_action_for(backend, Some("npm"), false, true, false),
+                install_action_for(backend, Some("npm"), false, true),
                 "official_script"
             );
-            assert_eq!(
-                install_action_for(backend, None, false, false, false),
-                "manual"
-            );
+            assert_eq!(install_action_for(backend, None, false, false), "manual");
         }
     }
 
@@ -4731,7 +4610,6 @@ mod tests {
     fn install_action_override_accepts_only_known_actions() {
         for action in [
             "none",
-            "managed_download",
             "brew_upgrade",
             "npm_upgrade",
             "official_script",
@@ -4742,6 +4620,7 @@ mod tests {
         assert!(parse_install_action("brew").is_err());
         assert!(parse_install_action("").is_err());
         assert!(parse_install_action("managed").is_err());
+        assert!(parse_install_action(concat!("managed_", "download")).is_err());
     }
 
     #[test]
@@ -4806,8 +4685,12 @@ mod tests {
     }
 
     #[test]
-    fn path_install_source_recognizes_script_and_managed_dirs() {
+    fn path_install_source_recognizes_official_script_dirs() {
         let home = crate::platform::os::user_home_dir();
+        assert_eq!(
+            path_install_source(AgentBackend::CodexAcp, &home.join(".local/bin/codex")),
+            Some("script")
+        );
         assert_eq!(
             path_install_source(AgentBackend::ClaudeAcp, &home.join(".local/bin/claude")),
             Some("script")
@@ -4816,14 +4699,14 @@ mod tests {
             path_install_source(AgentBackend::KimiAcp, &home.join(".kimi-code/bin/kimi")),
             Some("script")
         );
-        let managed = crate::platform::paths::pinvou3_home()
+        let legacy_managed = crate::platform::paths::pinvou3_home()
             .join("runtimes")
             .join("codex")
             .join("codex-0.144.6-macos-aarch64")
             .join("codex");
         assert_eq!(
-            path_install_source(AgentBackend::CodexAcp, &managed),
-            Some("managed")
+            path_install_source(AgentBackend::CodexAcp, &legacy_managed),
+            None
         );
         // 其他路径与其他 Agent 组合一律未知来源。
         assert_eq!(
@@ -4849,15 +4732,5 @@ mod tests {
         assert!(!kimi_version_supported("kimi-cli 0.31.1"));
         assert!(!kimi_version_supported("0.31"));
         assert!(!kimi_version_supported("native"));
-    }
-
-    #[test]
-    fn install_method_matches_platform_contract() {
-        // 具体取值由各平台适配实现保证（platform/ 下的 INSTALL_METHOD），
-        // 这里只校验契约允许值，避免在适配层之外出现平台 cfg。
-        assert!(matches!(
-            platform::install_method(),
-            "homebrew" | "managed_download" | "manual"
-        ));
     }
 }

@@ -84,8 +84,14 @@ pub async fn get_acp_agent_status(
 
 #[tauri::command]
 pub async fn prepare_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpStatus, String> {
+    let status = acp_pool.refresh_status().await;
+    if !status.bridge_ready {
+        return Err(
+            "准备 Codex 运行环境失败: Pinvou 安装包缺少可用的 Codex ACP Bridge".to_string(),
+        );
+    }
     acp_pool
-        .ensure_installed()
+        .install_agent("codex", None)
         .await
         .map_err(|error| format!("准备 Codex 运行环境失败: {error:#}"))
 }
@@ -100,10 +106,8 @@ pub async fn install_codex_homebrew(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// 统一的 ACP Agent 安装入口：按 status.install_action 分派（codex 托管下载 /
-/// brew、npm 升级 / claude、kimi 官方脚本），完成后返回最新状态。
-/// action 提供时经合法性校验后优先于计算的 install_action（前端用于
-/// codex 用户拒绝包管理器升级后改选 managed_download）。
+/// 统一的 ACP Agent 安装入口：按 status.install_action 分派（官方脚本或原来源
+/// brew/npm 升级），完成后返回最新状态。action 提供时经合法性校验后优先。
 #[tauri::command]
 pub async fn install_acp_agent(
     agent: String,

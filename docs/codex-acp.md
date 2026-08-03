@@ -27,15 +27,12 @@ CodeWhale。
    - **最近项目**：复用近期选择过的项目目录。
    同一个项目可以创建多个独立会话；会话开始后不能更换目录，需要切换项目时新建会话。
 4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，经用户确认后
-   下载固定版本（0.144.6）的托管 Codex 到 `~/.pinvou3/runtimes/codex/`，覆盖 macOS
-   arm64/x64、Linux x64/arm64 和 Windows x64；Windows arm64 无官方归档，提示手动安装。
-   版本过旧时先判定安装来源：macOS Homebrew cask 安装的旧版改用
+   执行 OpenAI 官方安装脚本安装当时的 latest；安装后直接探测 `~/.local/bin/codex`
+   的绝对路径，不要求重启 App 或依赖桌面进程的 PATH。版本过旧时先判定安装来源：
+   macOS Homebrew cask 安装的旧版改用
    `brew upgrade --cask codex`，npm 全局（`@openai/codex`）安装的旧版改用
-   `npm install -g @openai/codex@latest`，均不使用官方脚本，避免多来源并存；用户拒绝
-   升级时回退为托管下载版本，与系统旧版隔离并存、优先使用。托管下载使用 OpenAI 发布的
-   固定平台归档，官方 registry 不可达时允许使用镜像，但 Pinvou 代码内置版本、URL 和
-   SHA-512；托管下载本身不执行系统 npm，也不会把依赖写进系统环境。ACP Bridge 版本固定为
-   `1.1.5`。
+   `npm install -g @openai/codex@latest`；官方脚本来源或无法识别来源时重新运行官方脚本。
+   用户拒绝升级时保持 Codex 不可用，不静默安装第二份副本。ACP Bridge 版本固定为 `1.1.5`。
 5. 输入消息即可使用流式回答、思考、工具步骤、计划、权限选择、停止生成和会话恢复。
 
 ## 会话与权限状态
@@ -102,10 +99,10 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 
 脚本会把当前 Linux 架构的应用隔离 Node 与精简 `codex-acp` Bridge 放到
 `resources/platforms/linux/codex-bridge/`。项目统一构建入口也会自动准备该目录。
-生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含大体积 Codex 平台
-二进制。正式 Linux x64 / arm64 包不依赖系统 Node/npm，系统 Codex 缺失时由应用
-下载固定、带完整性校验的托管版本；npm 全局来源的旧版经用户确认后用
-`npm install -g @openai/codex@latest` 升级，用户拒绝升级时回退托管版本。
+生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含 Codex CLI。正式包不依赖
+系统 Node/npm 来运行 ACP Bridge；系统 Codex 缺失时由应用经用户确认运行 OpenAI 官方
+安装脚本。npm 全局来源的旧版经用户确认后用 `npm install -g @openai/codex@latest`
+升级，其他来源按官方脚本升级。
 
 ## 边界
 

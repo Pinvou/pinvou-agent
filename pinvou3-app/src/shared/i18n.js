@@ -79,8 +79,7 @@ const codexZh = {
   checking:'正在检查 ACP Agent…', bridgeUnavailable:'Codex ACP Bridge 不可用',
   bridgeRepair:'请修复或重新安装 Pinvou。开发环境可运行 npm run prepare:codex-bridge。',
   cliMissing:agent=>`未检测到 ${agent} CLI`, cliOutdated:(version,minVersion)=>`检测到旧版本 ${version}（需要 ≥ ${minVersion}）`,
-  managedDownloadHint:version=>`下载 Pinvou 托管 Codex ${version}，不改动系统环境`,
-  downloading:'正在下载…', downloadProgress:progress=>`下载 ${progress}%`, downloadManaged:'下载托管 Codex',
+  cliUpdateRequired:(agent,version)=>`${agent}${version ? ` ${version}` : ''} 需要升级到官方最新版`,
   packageManagerUpgradeHint:source=>source==='brew'?'该版本通过 Homebrew 安装，将使用对应包管理器升级，不会引入第二份安装':source==='npm'?'该版本通过 npm 安装，将使用对应包管理器升级，不会引入第二份安装':'将使用对应包管理器升级，不会引入第二份安装',
   upgrade:'升级', declineUpgrade:'暂不升级', backToUpgrade:'返回升级选项',
   declinedBlockedHint:agent=>`已暂缓升级，${agent} 暂时不可用，升级后方可使用`,
@@ -110,7 +109,7 @@ const codexZh = {
   accountRecoveryHint:'当前账号可能已到期或额度不足。切换账号后即可继续，已有会话和消息不会丢失。',
   serviceRecoveryHint:'请重新检测服务状态；如果问题持续，可以稍后重试或切换账号。',
   errorDetails:'查看错误详情', dismissNotice:'关闭提示',
-  runtimeSources:{ system:'系统 CLI', managed:'托管 Codex', override:'自定义 CLI', bundled:'内置 Bridge', legacy_bundled:'内置 Codex' },
+  runtimeSources:{ system:'系统 CLI', override:'自定义 CLI', bundled:'内置 Bridge', legacy_bundled:'内置 Codex' },
 };
 const codexEn = {
   unknownDirectory:'Unknown directory', temporaryWorkspace:'Temporary workspace', projectMissing:'Original project directory no longer exists',
@@ -132,8 +131,7 @@ const codexEn = {
   checking:'Checking ACP Agents…', bridgeUnavailable:'Codex ACP Bridge unavailable',
   bridgeRepair:'Repair or reinstall Pinvou. In development, run npm run prepare:codex-bridge.',
   cliMissing:agent=>`${agent} CLI not detected`, cliOutdated:(version,minVersion)=>`Detected old version ${version} (requires ≥ ${minVersion})`,
-  managedDownloadHint:version=>`Download Pinvou-managed Codex ${version} without changing the system environment`,
-  downloading:'Downloading…', downloadProgress:progress=>`Downloading ${progress}%`, downloadManaged:'Download managed Codex',
+  cliUpdateRequired:(agent,version)=>`${agent}${version ? ` ${version}` : ''} must be upgraded to the latest official version`,
   packageManagerUpgradeHint:source=>source==='brew'?'This version was installed via Homebrew and will be upgraded with the same package manager—no second copy will be installed':source==='npm'?'This version was installed via npm and will be upgraded with the same package manager—no second copy will be installed':'It will be upgraded with the corresponding package manager, without installing a second copy',
   upgrade:'Upgrade', declineUpgrade:'Not now', backToUpgrade:'Back to upgrade options',
   declinedBlockedHint:agent=>`Upgrade postponed. ${agent} is unavailable until you upgrade`,
@@ -163,7 +161,7 @@ const codexEn = {
   accountRecoveryHint:'This account may be expired or out of quota. Switch accounts to continue; existing sessions and messages are preserved.',
   serviceRecoveryHint:'Check the service again. If the issue continues, retry later or switch accounts.',
   errorDetails:'View error details', dismissNotice:'Dismiss',
-  runtimeSources:{ system:'System CLI', managed:'Managed Codex', override:'Custom CLI', bundled:'Bundled bridge', legacy_bundled:'Bundled Codex' },
+  runtimeSources:{ system:'System CLI', override:'Custom CLI', bundled:'Bundled bridge', legacy_bundled:'Bundled Codex' },
 };
 const codexJa = {
   unknownDirectory:'不明なディレクトリ', temporaryWorkspace:'一時ワークスペース', projectMissing:'元のプロジェクトディレクトリが存在しません',
@@ -185,8 +183,7 @@ const codexJa = {
   checking:'ACP Agent を確認中…', bridgeUnavailable:'Codex ACP Bridge を利用できません',
   bridgeRepair:'Pinvou を修復または再インストールしてください。開発環境では npm run prepare:codex-bridge を実行できます。',
   cliMissing:agent=>`${agent} CLI が見つかりません`, cliOutdated:(version,minVersion)=>`古いバージョン ${version} を検出しました（${minVersion} 以上が必要です）`,
-  managedDownloadHint:version=>`システム環境を変更せず、Pinvou 管理の Codex ${version} をダウンロードします`,
-  downloading:'ダウンロード中…', downloadProgress:progress=>`ダウンロード ${progress}%`, downloadManaged:'管理対象 Codex をダウンロード',
+  cliUpdateRequired:(agent,version)=>`${agent}${version ? ` ${version}` : ''} は公式の最新バージョンへの更新が必要です`,
   packageManagerUpgradeHint:source=>source==='brew'?'このバージョンは Homebrew でインストールされています。同じパッケージマネージャーでアップグレードするため、二重インストールにはなりません':source==='npm'?'このバージョンは npm でインストールされています。同じパッケージマネージャーでアップグレードするため、二重インストールにはなりません':'対応するパッケージマネージャーでアップグレードします。二重インストールにはなりません',
   upgrade:'アップグレード', declineUpgrade:'今はしない', backToUpgrade:'アップグレードに戻る',
   declinedBlockedHint:agent=>`アップグレードを保留しました。${agent} はアップグレードするまで利用できません`,
@@ -216,7 +213,7 @@ const codexJa = {
   accountRecoveryHint:'現在のアカウントは期限切れ、または利用枠不足の可能性があります。アカウントを切り替えても既存のセッションとメッセージは保持されます。',
   serviceRecoveryHint:'サービス状態を再確認してください。問題が続く場合は、後でもう一度試すかアカウントを切り替えてください。',
   errorDetails:'エラー詳細を表示', dismissNotice:'閉じる',
-  runtimeSources:{ system:'システム CLI', managed:'管理対象 Codex', override:'カスタム CLI', bundled:'内蔵 Bridge', legacy_bundled:'内蔵 Codex' },
+  runtimeSources:{ system:'システム CLI', override:'カスタム CLI', bundled:'内蔵 Bridge', legacy_bundled:'内蔵 Codex' },
 };
 
 const dict = {
