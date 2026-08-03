@@ -577,9 +577,13 @@ fn review_reasoning_dialect(
             ReviewReasoningDialect::ThinkingDisabled
         }
         ModelPreset::Minimax => ReviewReasoningDialect::Minimax,
-        ModelPreset::OpenaiCompatible | ModelPreset::LocalVllm | ModelPreset::Deepseek => {
-            review_reasoning_dialect_from_base_url(base_url, model)
-        }
+        ModelPreset::OpenaiCompatible
+        | ModelPreset::LocalVllm
+        | ModelPreset::Deepseek
+        | ModelPreset::Openai
+        | ModelPreset::Anthropic
+        | ModelPreset::Gemini
+        | ModelPreset::Xai => review_reasoning_dialect_from_base_url(base_url, model),
     }
 }
 

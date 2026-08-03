@@ -629,6 +629,10 @@ pub async fn test_model_connection(
             ));
         }
     };
+    // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
+    let is_anthropic = parsed_url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"));
     let mut req = client.get(parsed_url);
     let provided_key = api_key.trim().to_string();
     let key = if provided_key.is_empty() {
@@ -648,7 +652,13 @@ pub async fn test_model_connection(
         provided_key
     };
     if !key.trim().is_empty() {
-        req = req.bearer_auth(key.trim());
+        if is_anthropic {
+            req = req
+                .header("x-api-key", key.trim())
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            req = req.bearer_auth(key.trim());
+        }
     }
     match req.send().await {
         Ok(resp) => Ok(model_connection_http_result(resp.status())),

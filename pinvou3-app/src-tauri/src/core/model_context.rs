@@ -45,6 +45,9 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
         ("qwen3.7-plus", 1_000_000),
         ("qwen3.7-max", 1_000_000),
         ("qwen3.7-flash", 1_000_000),
+        // qwen3.8-max 已 GA；3.8 系列公开口径上下文 ~984K(preview 与 GA 未分别标注),
+        // `-preview` 后缀由 model_name_matches 容忍。
+        ("qwen3.8-max", 984_000),
         // 底座当前只覆盖带 `qwen/` 前缀的 qwen3.6-flash。
         ("qwen3.6-flash", 1_000_000),
         // 2026-07 火山引擎公告：doubao-seed-evolving 升为 1M 上下文。
@@ -71,6 +74,8 @@ mod tests {
             ("qwen3.7-max", 1_000_000),
             ("qwen3.7-flash", 1_000_000),
             ("qwen3.6-flash", 1_000_000),
+            ("qwen3.8-max", 984_000),
+            ("qwen3.8-max-preview", 984_000),
             ("doubao-seed-evolving", 1_048_576),
             ("glm-4.7", 204_800),
         ] {

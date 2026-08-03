@@ -1048,6 +1048,11 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
         ModelPreset::Minimax => Some(204_800),
         ModelPreset::Glm => Some(131_072),
         ModelPreset::Mimo => Some(1_000_000),
+        ModelPreset::Openai => Some(131_072),
+        ModelPreset::Anthropic => Some(200_000),
+        // Gemini 全系标称 1M。
+        ModelPreset::Gemini => Some(1_048_576),
+        ModelPreset::Xai => Some(131_072),
     }
 }
 

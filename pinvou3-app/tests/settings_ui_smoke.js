@@ -498,6 +498,10 @@ async function modalWidth(page, headingText) {
     return {
       hasSections: text.includes('Coding Plan') && text.includes('官方 API') && text.includes('自定义兼容接口'),
       hasProviders: text.includes('智谱 Coding Plan / GLM Coding Plan') && text.includes('Kimi Coding Plan') && text.includes('深度求索 / DeepSeek') && text.includes('MiniMax 中国版 / MiniMax China'),
+      hasOverseas: text.includes('OpenAI') && text.includes('Anthropic Claude') && text.includes('Google Gemini') && text.includes('xAI Grok'),
+      hasIntlNodes: text.includes('Kimi 国际版 / Kimi Global') && text.includes('智谱国际版 / GLM API (z.ai)')
+        && text.includes('MiniMax 国际版 / MiniMax Global') && text.includes('通义千问国际版 / Qwen International'),
+      hasNewModels: text.includes('通义千问 Token Plan'),
       providerFirst: !text.includes('deepseek-v4-pro') && !text.includes('kimi-k3'),
       noStale: stale.every(name => !text.includes(name)),
     };

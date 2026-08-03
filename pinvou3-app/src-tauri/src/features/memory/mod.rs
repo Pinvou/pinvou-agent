@@ -2548,9 +2548,13 @@ fn memory_review_reasoning_dialect(
                 MemoryReviewReasoningDialect::None
             }
         }
-        ModelPreset::OpenaiCompatible | ModelPreset::LocalVllm | ModelPreset::Deepseek => {
-            memory_review_reasoning_dialect_from_base_url(base_url, model)
-        }
+        ModelPreset::OpenaiCompatible
+        | ModelPreset::LocalVllm
+        | ModelPreset::Deepseek
+        | ModelPreset::Openai
+        | ModelPreset::Anthropic
+        | ModelPreset::Gemini
+        | ModelPreset::Xai => memory_review_reasoning_dialect_from_base_url(base_url, model),
     }
 }
 
