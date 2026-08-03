@@ -593,7 +593,6 @@ impl AcpSession {
 }
 
 /// “代码”模块原生（品悟 Engine）会话的工作区信息。
-/// “代码”模块原生（品悟 Engine）会话的工作区信息。
 ///
 /// 临时会话执行目录与 ACP 临时会话一样由 `SessionStore::execution_workspace` 推导；
 /// 项目会话返回绑定的项目目录，available 语义与 ACP 项目分支一致（目录存在即可用）。

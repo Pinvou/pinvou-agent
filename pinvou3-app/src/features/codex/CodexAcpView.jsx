@@ -1102,11 +1102,16 @@ export function CodexAcpView({
   const [nativeLaneTick, setNativeLaneTick] = useState(0);
   const nativeSessionIdsRef = useRef(new Set());
   useEffect(() => {
-    nativeSessionIdsRef.current = new Set(
+    const ids = new Set(
       sessions
         .filter(session => session && session.agent_id === 'pinvou')
         .map(session => session.id),
     );
+    nativeSessionIdsRef.current = ids;
+    // 清理已删除会话的 lane，避免 nativeLanesRef 无界增长（只 set 不 delete）。
+    for (const id of nativeLanesRef.current.keys()) {
+      if (!ids.has(id)) nativeLanesRef.current.delete(id);
+    }
   }, [sessions]);
 
   // 原生车道才加载知识库集合与 embedding 安装态；embedding 明确未装时选择器禁用。
