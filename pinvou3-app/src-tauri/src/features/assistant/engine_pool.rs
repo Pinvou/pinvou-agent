@@ -26,9 +26,7 @@ use anyhow::{bail, Context, Result};
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
-use deepseek_tui::tools::shell::{
-    new_shared_shell_manager, SharedShellManager, ShellJobSnapshot, ShellResult,
-};
+use deepseek_tui::tools::shell::{ShellJobSnapshot, ShellResult};
 use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
@@ -46,7 +44,7 @@ use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
 };
-use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
+use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -112,56 +110,6 @@ impl SessionTurnLifecycles {
 
     fn remove(&self, session_id: &str) {
         self.states.lock().remove(session_id);
-    }
-}
-
-#[derive(Clone, Default)]
-struct SessionShellManagers {
-    managers: Arc<SyncMutex<HashMap<String, SharedShellManager>>>,
-}
-
-impl SessionShellManagers {
-    fn for_session(&self, session_id: &str, workspace: std::path::PathBuf) -> SharedShellManager {
-        let mut managers = self.managers.lock();
-        managers
-            .entry(session_id.to_string())
-            .or_insert_with(|| new_shared_shell_manager(workspace))
-            .clone()
-    }
-
-    fn get(&self, session_id: &str) -> Option<SharedShellManager> {
-        self.managers.lock().get(session_id).cloned()
-    }
-
-    fn remove(&self, session_id: &str) {
-        self.managers.lock().remove(session_id);
-    }
-}
-
-#[derive(Clone, Default)]
-struct SessionTurnShellTasks {
-    registries: Arc<SyncMutex<HashMap<String, TurnShellTaskRegistry>>>,
-}
-
-impl SessionTurnShellTasks {
-    fn for_session(
-        &self,
-        session_id: &str,
-        shell_manager: SharedShellManager,
-    ) -> TurnShellTaskRegistry {
-        let mut registries = self.registries.lock();
-        registries
-            .entry(session_id.to_string())
-            .or_insert_with(|| TurnShellTaskRegistry::new(shell_manager))
-            .clone()
-    }
-
-    fn get(&self, session_id: &str) -> Option<TurnShellTaskRegistry> {
-        self.registries.lock().get(session_id).cloned()
-    }
-
-    fn remove(&self, session_id: &str) {
-        self.registries.lock().remove(session_id);
     }
 }
 
@@ -658,40 +606,13 @@ impl EnginePool {
         let EngineEntry {
             engine, forwarder, ..
         } = entry;
-        let turn_shell_tasks = self.turn_shell_tasks.get(session_id);
-        let active_scope_id = turn_shell_tasks
-            .as_ref()
-            .and_then(TurnShellTaskRegistry::active_scope_id);
-        if let (Some(registry), Some(scope_id)) = (turn_shell_tasks.as_ref(), active_scope_id) {
-            registry.request_cancel_scope(scope_id);
-        }
-        let registry_for_drain = turn_shell_tasks.clone();
-        let shell_cleanup_failed = Arc::new(AtomicBool::new(false));
-        let cleanup_failed_for_drain = shell_cleanup_failed.clone();
-        let cleanup_failed_for_terminal = shell_cleanup_failed.clone();
+        let shell_reclaim = self.turn_shell_tasks.begin_reclaim(session_id);
+        let shell_reclaim_for_drain = shell_reclaim.clone();
+        let shell_reclaim_for_terminal = shell_reclaim.clone();
         let reclaimed = quiesce_engine_before_reclaim(
             || engine.cancel_current(),
             || async move {
-                if let (Some(registry), Some(scope_id)) =
-                    (registry_for_drain.as_ref(), active_scope_id)
-                {
-                    match registry.finalize_scope(scope_id, true).await {
-                        Ok(report) => {
-                            if let Some(error) = report.failure_summary() {
-                                cleanup_failed_for_drain.store(true, Ordering::Release);
-                                log::error!(
-                                    "[engine_pool] shell cleanup remained incomplete before reclaim scope={scope_id}: {error}"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            cleanup_failed_for_drain.store(true, Ordering::Release);
-                            log::error!(
-                                "[engine_pool] failed to finalize shell tasks before reclaim scope={scope_id}: {error:#}"
-                            );
-                        }
-                    }
-                }
+                shell_reclaim_for_drain.finalize().await;
                 forwarder.abort();
                 let _ = forwarder.await;
             },
@@ -700,7 +621,7 @@ impl EnginePool {
                     &self.app,
                     &self.store,
                     session_id,
-                    cleanup_failed_for_terminal.load(Ordering::Acquire),
+                    shell_reclaim_for_terminal.cleanup_failed(),
                 )
             },
         )
@@ -965,39 +886,14 @@ impl EnginePool {
     pub async fn cancel(&self, session_id: &str) {
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
-        let turn_shell_tasks = self.turn_shell_tasks.get(session_id);
-        let active_scope_id = turn_shell_tasks
-            .as_ref()
-            .and_then(TurnShellTaskRegistry::request_cancel_active);
+        let shell_cancellation = self.turn_shell_tasks.request_cancel(session_id);
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             lifecycle.invalidate_unsubmitted_reservation();
         }
-        if let (Some(registry), Some(scope_id)) = (turn_shell_tasks, active_scope_id) {
-            match registry.cleanup_scope_with_retries(scope_id).await {
-                Ok(report) if !report.killed.is_empty() => log::info!(
-                    "[pinvou3][chat] canceled {} shell task(s) for sid={} turn={}",
-                    report.killed.len(),
-                    session_id,
-                    scope_id
-                ),
-                Ok(report) => {
-                    if let Some(error) = report.failure_summary() {
-                        log::error!(
-                            "[pinvou3][chat] shell cleanup remains pending sid={} scope={}: {}",
-                            session_id,
-                            scope_id,
-                            error
-                        );
-                    }
-                }
-                Err(error) => log::error!(
-                    "[pinvou3][chat] failed to cancel shell tasks sid={} scope={}: {error:#}",
-                    session_id,
-                    scope_id
-                ),
-            }
+        if let Some(cancellation) = shell_cancellation {
+            cancellation.cleanup().await;
         }
     }
 

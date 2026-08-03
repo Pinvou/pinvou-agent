@@ -6,12 +6,15 @@
 //! generic detached-task contract.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use deepseek_tui::tools::shell::{SharedShellManager, ShellResult, ShellStatus};
+use deepseek_tui::tools::shell::{
+    new_shared_shell_manager, SharedShellManager, ShellResult, ShellStatus,
+};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
@@ -22,6 +25,29 @@ const MAX_FAILED_SCOPE_TOMBSTONES: usize = 16;
 
 pub(crate) type TurnShellScopeId = u64;
 type ScopeId = TurnShellScopeId;
+
+#[derive(Clone, Default)]
+pub(crate) struct SessionShellManagers {
+    managers: Arc<Mutex<HashMap<String, SharedShellManager>>>,
+}
+
+impl SessionShellManagers {
+    pub(crate) fn for_session(&self, session_id: &str, workspace: PathBuf) -> SharedShellManager {
+        let mut managers = self.managers.lock();
+        managers
+            .entry(session_id.to_string())
+            .or_insert_with(|| new_shared_shell_manager(workspace))
+            .clone()
+    }
+
+    pub(crate) fn get(&self, session_id: &str) -> Option<SharedShellManager> {
+        self.managers.lock().get(session_id).cloned()
+    }
+
+    pub(crate) fn remove(&self, session_id: &str) {
+        self.managers.lock().remove(session_id);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct PendingKill {
@@ -109,6 +135,127 @@ struct RegistryInner {
 #[derive(Clone)]
 pub(crate) struct TurnShellTaskRegistry {
     inner: Arc<RegistryInner>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SessionTurnShellTasks {
+    registries: Arc<Mutex<HashMap<String, TurnShellTaskRegistry>>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ShellReclaim {
+    registry: Option<TurnShellTaskRegistry>,
+    scope_id: Option<ScopeId>,
+    cleanup_failed: Arc<AtomicBool>,
+}
+
+pub(crate) struct TurnShellCancellation {
+    session_id: String,
+    registry: TurnShellTaskRegistry,
+    scope_id: ScopeId,
+}
+
+impl SessionTurnShellTasks {
+    pub(crate) fn for_session(
+        &self,
+        session_id: &str,
+        shell_manager: SharedShellManager,
+    ) -> TurnShellTaskRegistry {
+        let mut registries = self.registries.lock();
+        registries
+            .entry(session_id.to_string())
+            .or_insert_with(|| TurnShellTaskRegistry::new(shell_manager))
+            .clone()
+    }
+
+    pub(crate) fn remove(&self, session_id: &str) {
+        self.registries.lock().remove(session_id);
+    }
+
+    pub(crate) fn begin_reclaim(&self, session_id: &str) -> ShellReclaim {
+        let registry = self.registries.lock().get(session_id).cloned();
+        let scope_id = registry
+            .as_ref()
+            .and_then(TurnShellTaskRegistry::active_scope_id);
+        if let (Some(registry), Some(scope_id)) = (registry.as_ref(), scope_id) {
+            registry.request_cancel_scope(scope_id);
+        }
+        ShellReclaim {
+            registry,
+            scope_id,
+            cleanup_failed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn request_cancel(&self, session_id: &str) -> Option<TurnShellCancellation> {
+        let registry = self.registries.lock().get(session_id).cloned()?;
+        let scope_id = registry.request_cancel_active()?;
+        Some(TurnShellCancellation {
+            session_id: session_id.to_string(),
+            registry,
+            scope_id,
+        })
+    }
+}
+
+impl ShellReclaim {
+    pub(crate) async fn finalize(&self) {
+        let (Some(registry), Some(scope_id)) = (self.registry.as_ref(), self.scope_id) else {
+            return;
+        };
+        match registry.finalize_scope(scope_id, true).await {
+            Ok(report) => {
+                if let Some(error) = report.failure_summary() {
+                    self.cleanup_failed.store(true, Ordering::Release);
+                    log::error!(
+                        "[engine_pool] shell cleanup remained incomplete before reclaim scope={scope_id}: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                self.cleanup_failed.store(true, Ordering::Release);
+                log::error!(
+                    "[engine_pool] failed to finalize shell tasks before reclaim scope={scope_id}: {error:#}"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn cleanup_failed(&self) -> bool {
+        self.cleanup_failed.load(Ordering::Acquire)
+    }
+}
+
+impl TurnShellCancellation {
+    pub(crate) async fn cleanup(self) {
+        match self
+            .registry
+            .cleanup_scope_with_retries(self.scope_id)
+            .await
+        {
+            Ok(report) if !report.killed.is_empty() => log::info!(
+                "[pinvou3][chat] canceled {} shell task(s) for sid={} turn={}",
+                report.killed.len(),
+                self.session_id,
+                self.scope_id
+            ),
+            Ok(report) => {
+                if let Some(error) = report.failure_summary() {
+                    log::error!(
+                        "[pinvou3][chat] shell cleanup remains pending sid={} scope={}: {}",
+                        self.session_id,
+                        self.scope_id,
+                        error
+                    );
+                }
+            }
+            Err(error) => log::error!(
+                "[pinvou3][chat] failed to cancel shell tasks sid={} scope={}: {error:#}",
+                self.session_id,
+                self.scope_id
+            ),
+        }
+    }
 }
 
 /// Cancellation-safe ownership of a provisional submission scope.

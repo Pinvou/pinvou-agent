@@ -84,7 +84,7 @@ fingerprints=(
   "APP|前端终端跨分片 UI 回归             |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
   "APP|后台终态输出 tail 对账             |pinvou3-app/src/platform/tauri/bridge/terminal.js|function reconcileBackgroundTerminalOutput(previous, payload)"
   "APP|后台终态 stdout/stderr UI 回归      |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
-  "APP|session 级 ShellManager 复用        |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|struct SessionShellManagers"
+  "APP|session 级 ShellManager 复用        |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|struct SessionShellManagers"
   "APP|ShellManager 非消费式输出观察器     |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|struct ShellOutputMonitor"
   "APP|Shell 输出拥塞合并无丢失回归        |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn assigns_new_job_by_command_and_coalesces_all_unseen_output"
   "APP|Shell 中文跨快照边界回归            |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn holds_incomplete_utf8_replacement_until_a_stable_snapshot"
