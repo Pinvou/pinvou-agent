@@ -11,6 +11,7 @@ const platform = read(...featureRoot, "platform", "mod.rs");
 const windows = read(...featureRoot, "platform", "windows.rs");
 const linux = read(...featureRoot, "platform", "linux.rs");
 const macos = read(...featureRoot, "platform", "macos.rs");
+const processRuntime = read("src-tauri", "src", "platform", "process.rs");
 const prepareBridge = read("scripts", "prepare-codex-bridge-runtime.sh");
 const runDev = read("run-dev.sh");
 
@@ -32,8 +33,9 @@ assert.doesNotMatch(runtime, /Managed|managed_codex|registry\.npmjs|registry\.np
 assert.match(windows, /SYSTEM_CODEX_NAME: &str = "codex\.cmd"/);
 assert.match(windows, /external_application_path\(adapter\)/);
 assert.match(windows, /HiddenTokioCommand::new\("cmd"\)/);
-assert.match(feature, /fn command_version[\s\S]*?HiddenCommand::new/);
-assert.match(feature, /fn cli_status_success[\s\S]*?HiddenCommand::new\("cmd"\)/);
+assert.match(feature, /fn command_version[\s\S]*?external_command/);
+assert.match(feature, /fn cli_status_success[\s\S]*?external_command/);
+assert.match(processRuntime, /fn external_command_for[\s\S]*?HiddenCommand::new\("cmd"\)/);
 assert.match(feature, /"windows" => "win32"/);
 assert.match(feature, /format!\("claude-agent-sdk-\{platform\}-\{arch\}\{libc\}"\)/);
 assert.match(feature, /binary = if os == "windows"[\s\S]*?"claude\.exe"/);
@@ -86,7 +88,7 @@ assert.match(feature, /CODEX_INSTALL_SCRIPT_UNIX: &str = "https:\/\/chatgpt\.com
 assert.match(feature, /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/);
 assert.match(feature, /AgentBackend::CodexAcp => \(CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS\)/);
 assert.match(feature, /command\.env\("CODEX_NON_INTERACTIVE", "1"\)/);
-assert.match(feature, /fn resolve_codex_cli\([\s\S]*?join\("\.local"\)[\s\S]*?join\("bin"\)/);
+assert.match(feature, /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/);
 assert.doesNotMatch(feature, /managed_download|MANAGED_CODEX_VERSION|install_managed_codex/);
 assert.doesNotMatch(
   `${windows}\n${linux}\n${macos}`,

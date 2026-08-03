@@ -47,6 +47,12 @@ pub(super) fn bridge_node_relative_path() -> PathBuf {
     current::bridge_node_relative_path()
 }
 
+/// OpenAI 官方安装器默认写入的 Codex 可执行文件绝对路径。
+/// GUI 进程不会继承安装子进程刚写入的用户 PATH，安装后必须直接探测这里。
+pub(super) fn codex_official_install_path() -> PathBuf {
+    current::codex_official_install_path()
+}
+
 pub(super) fn adapter_needs_node(adapter: &Path) -> bool {
     current::adapter_needs_node(adapter)
 }

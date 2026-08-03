@@ -20,6 +20,24 @@ pub(super) fn bridge_node_relative_path() -> PathBuf {
     PathBuf::from("node").join("bin").join(NODE_EXECUTABLE_NAME)
 }
 
+pub(super) fn codex_official_install_path() -> PathBuf {
+    // OpenAI install.ps1 默认使用
+    // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe；用户可在安装脚本中
+    // 通过 CODEX_INSTALL_DIR 改写，但 Pinvou 未设置该变量，因此按默认路径探测。
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            crate::platform::os::user_home_dir()
+                .join("AppData")
+                .join("Local")
+        })
+        .join("Programs")
+        .join("OpenAI")
+        .join("Codex")
+        .join("bin")
+        .join("codex.exe")
+}
+
 pub(super) fn adapter_needs_node(_adapter: &Path) -> bool {
     true
 }

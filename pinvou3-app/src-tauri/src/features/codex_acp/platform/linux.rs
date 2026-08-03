@@ -20,6 +20,13 @@ pub(super) fn bridge_node_relative_path() -> PathBuf {
     PathBuf::from("node").join("bin").join(NODE_EXECUTABLE_NAME)
 }
 
+pub(super) fn codex_official_install_path() -> PathBuf {
+    crate::platform::os::user_home_dir()
+        .join(".local")
+        .join("bin")
+        .join(SYSTEM_CODEX_NAME)
+}
+
 pub(super) fn adapter_needs_node(adapter: &Path) -> bool {
     adapter.extension().and_then(|value| value.to_str()) == Some("js")
 }

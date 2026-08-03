@@ -44,7 +44,7 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 
 | Agent | 方式 | 说明 |
 |---|---|---|
-| Codex | 官方脚本 | macOS/Linux：`curl -fsSL https://chatgpt.com/codex/install.sh \| sh`；Windows：`irm https://chatgpt.com/codex/install.ps1 \| iex`；默认安装官方 latest 到 `~/.local/bin`，Pinvou 使用绝对路径重新探测 |
+| Codex | 官方脚本 | macOS/Linux：`curl -fsSL https://chatgpt.com/codex/install.sh \| sh`，默认写入 `~/.local/bin`；Windows：`irm https://chatgpt.com/codex/install.ps1 \| iex`，默认写入 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`；Pinvou 使用平台绝对路径重新探测 |
 | Claude Code | 官方脚本 | macOS/Linux：`curl -fsSL https://claude.ai/install.sh \| bash`；Windows：`irm https://claude.ai/install.ps1 \| iex`；装到 `~/.local/bin` 等用户目录 |
 | Kimi | 官方脚本 | macOS/Linux：`curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash`；Windows：`irm https://code.kimi.com/kimi-code/install.ps1 \| iex`；装到 `~/.kimi-code/bin` |
 
@@ -53,8 +53,8 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 | 来源 | 判定 | 升级方式 |
 |---|---|---|
 | Homebrew（macOS） | CLI 路径位于 brew 前缀下且 `brew list` 命中；kimi-code 为 formula，codex / claude-code 为 cask | `brew upgrade` 对应 formula/cask |
-| npm 全局（三端） | CLI 路径位于 `npm prefix -g` 下且 `npm ls -g` 命中 `@openai/codex`、`@anthropic-ai/claude-code`、`@moonshot-ai/kimi-code` | `npm install -g <包名>@latest` |
-| 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`），优先于 brew/npm 判定 | 重新运行官方安装脚本 |
+| npm 全局（三端） | CLI 路径位于 `npm prefix -g` 下且 `npm ls -g` 命中 `@openai/codex`、`@anthropic-ai/claude-code`、`@moonshot-ai/kimi-code`；Windows 同时识别 npm 生成的 `.cmd` shim | `npm install -g <包名>@latest` |
+| 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`、Windows Codex 的 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`），优先于 brew/npm 判定 | 重新运行官方安装脚本 |
 
 Homebrew / npm 全局来源的旧版一律走对应包管理器升级，避免同一 CLI 多来源并存；脚本来源
 或无法识别来源时重新运行官方脚本。用户暂不升级时保持该 Agent 不可用并挂起升级提示，
@@ -77,7 +77,10 @@ Kimi 不经过独立 Bridge，因此 `bridge_ready` 恒为 `true`；CLI 缺失�
 
 新增 Tauri 命令 `install_acp_agent(agent, action?)`：按 `install_action` 分派执行安装
 或升级（官方脚本、Homebrew `brew upgrade`、npm 全局升级），完成后重新探测并返回最新
-状态。官方脚本和包管理器升级没有统一进度协议，前端显示进行中 spinner。旧命令
+状态。Codex 被服务端标记 `update_required` 后，只有重新探测到的实际版本发生变化才
+解除升级门禁；包管理器返回“已是最新版”但版本未变时仍保持不可用。安装、升级及运行时
+错误也按 Agent 独立保存，不会跨 Agent 展示或互相清除。官方脚本和包管理器升级没有统一
+进度协议，前端显示进行中 spinner。旧命令
 `prepare_codex_acp`、`install_codex_homebrew` 保留不删除（向后兼容），前端改用新命令。
 
 ## 架构边界

@@ -45,6 +45,7 @@ const windowsPath = read(
   "windows",
   "windows_path.rs",
 );
+const processRuntime = read("src-tauri", "src", "platform", "process.rs");
 const buildScript = read("scripts", "tauri", "build.js");
 const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
 const {
@@ -88,6 +89,11 @@ assert.match(
   "Windows Codex installation must use OpenAI's official installer",
 );
 assert.match(
+  codexAcpWindows,
+  /var_os\("LOCALAPPDATA"\)[\s\S]*?join\("Programs"\)[\s\S]*?join\("OpenAI"\)[\s\S]*?join\("Codex"\)[\s\S]*?join\("bin"\)[\s\S]*?join\("codex\.exe"\)/,
+  "Windows must probe the default path used by OpenAI install.ps1",
+);
+assert.match(
   windowsPath,
   /fn platform_compat_path[\s\S]*?strip_prefix\(r"\\\\\?\\UNC\\"\)[\s\S]*?strip_prefix\(r"\\\\\?\\"\)/,
   "Windows OS paths must remove verbatim prefixes before external-process launch",
@@ -114,8 +120,20 @@ assert.match(
 );
 assert.match(
   codexAcp,
-  /fn resolve_codex_cli\([\s\S]*?"codex\.exe"[\s\S]*?join\("\.local"\)[\s\S]*?join\("bin"\)/,
+  /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/,
   "Windows must discover the official installer path without relying on a restarted PATH",
+);
+assert.match(codexAcp, /\["claude\.exe", "claude\.cmd"\]/);
+assert.match(codexAcp, /\["kimi\.exe", "kimi\.cmd"\]/);
+assert.match(
+  codexAcp,
+  /AgentBackend::KimiAcp => \{[\s\S]*?external_tokio_command\(&executable\)[\s\S]*?command\.arg\("acp"\)/,
+  "Kimi npm command shims must start ACP through the shared external-command adapter",
+);
+assert.match(
+  processRuntime,
+  /fn external_tokio_command_for\([\s\S]*?HiddenTokioCommand::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
+  "Windows npm command shims must run through cmd /D /S /C",
 );
 assert.equal(
   windowsBridgeOverlay().bundle.resources["target/windows-runtime/codex-bridge/"],
