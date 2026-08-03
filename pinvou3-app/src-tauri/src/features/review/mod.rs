@@ -460,6 +460,7 @@ async fn model_review(
     // 直接用会 404 model_not_found。探测失败回退配置值；云端 provider 不探测。
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
+    ensure_review_provider_supported(preset)?;
     let model_name = if provider == "vllm" {
         crate::features::monitor::probe_vllm_model_info(&base_url)
             .await
@@ -515,6 +516,18 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
         .effective_model_owned()
         .map(|m| m.preset)
         .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
+}
+
+/// 品悟直连 OpenAI 格式 `POST {base}/chat/completions` + Bearer。Anthropic 官方端点
+/// 是 Messages API（x-api-key），直连必然 404/401 静默失败，故在发起请求前明确报错；
+/// Gemini/xAI/OpenAI 等 OpenAI 兼容 preset 不受影响。
+fn ensure_review_provider_supported(preset: ModelPreset) -> Result<()> {
+    if preset == ModelPreset::Anthropic {
+        anyhow::bail!(
+            "pinvou review unsupported for Anthropic preset: api.anthropic.com is not OpenAI chat/completions compatible"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -820,6 +833,22 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_preset_is_rejected_before_request() {
+        let err = ensure_review_provider_supported(ModelPreset::Anthropic)
+            .expect_err("Anthropic preset must be rejected before any HTTP request");
+        assert!(err.to_string().contains("unsupported"));
+        // OpenAI 兼容路径（Gemini/xAI/OpenAI 官方 openai 兼容端点）不受影响
+        for preset in [
+            ModelPreset::Openai,
+            ModelPreset::Gemini,
+            ModelPreset::Xai,
+            ModelPreset::OpenaiCompatible,
+        ] {
+            assert!(ensure_review_provider_supported(preset).is_ok());
+        }
+    }
 
     #[test]
     fn review_reasoning_controls_match_provider() {

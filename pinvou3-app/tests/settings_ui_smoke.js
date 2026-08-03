@@ -501,7 +501,7 @@ async function modalWidth(page, headingText) {
       hasOverseas: text.includes('OpenAI') && text.includes('Anthropic Claude') && text.includes('Google Gemini') && text.includes('xAI Grok'),
       hasIntlNodes: text.includes('Kimi 国际版 / Kimi Global') && text.includes('智谱国际版 / GLM API (z.ai)')
         && text.includes('MiniMax 国际版 / MiniMax Global') && text.includes('通义千问国际版 / Qwen International'),
-      hasNewModels: text.includes('通义千问 Token Plan'),
+      hasTokenPlan: text.includes('通义千问 Token Plan'),
       providerFirst: !text.includes('deepseek-v4-pro') && !text.includes('kimi-k3'),
       noStale: stale.every(name => !text.includes(name)),
     };
@@ -517,6 +517,43 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.1 添加模型默认展示云端 tab 且保留本地 tab 入口', Object.values(addPickerDefault).every(Boolean), JSON.stringify(addPickerDefault));
+
+  await clickExact(page, '通义千问 Token Plan');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  const tokenPlanModels = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const lines = (root ? root.innerText : '').split('\n').map(line => line.trim());
+    return {
+      hasGa: lines.includes('qwen3.8-max'),
+      hasPreview: lines.includes('qwen3.8-max-preview'),
+    };
+  });
+  rec('⑥.1d Token Plan 条目同时列出 qwen3.8-max 正式版与预览版', Object.values(tokenPlanModels).every(Boolean), JSON.stringify(tokenPlanModels));
+  await clickExact(page, '取消');
+  await sleep(300);
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  const doubaoModels = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    return {
+      hasCanonicalId: text.includes('doubao-seed-2-1-pro-260628'),
+      noLegacyId: !text.includes('doubao-seed-2.1-pro'),
+    };
+  });
+  rec('⑥.1e 豆包条目使用火山方舟规范模型 ID', Object.values(doubaoModels).every(Boolean), JSON.stringify(doubaoModels));
+  await clickExact(page, '取消');
+  await sleep(300);
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
 
   await clickExact(page, '智谱 Coding Plan / GLM Coding Plan');
   await sleep(300);

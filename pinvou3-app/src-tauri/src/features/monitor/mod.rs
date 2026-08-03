@@ -544,17 +544,17 @@ async fn snapshot_for_model_config(
     };
     let metrics_applicable = target_kind == "local";
 
-    // 1) /v1/models 健康
-    // upstream 通常已带 `/v1` 后缀（DEEPSEEK_BASE_URL=http://...:8000/v1），
-    // 所以直接拼 `/models`；不带的话补 `/v1/models`。
-    let models_url = if upstream.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", upstream.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", upstream.trim_end_matches('/'))
-    };
+    // 1) /models 健康
+    let models_url = models_probe_url(upstream);
     let mut request = client.get(models_url);
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
-        request = request.bearer_auth(key);
+        if is_anthropic_endpoint(upstream) {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            request = request.bearer_auth(key);
+        }
     }
     let should_probe_models =
         target_kind == "local" || api_key.map(str::trim).is_some_and(|key| !key.is_empty());
@@ -1048,11 +1048,30 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
         ModelPreset::Minimax => Some(204_800),
         ModelPreset::Glm => Some(131_072),
         ModelPreset::Mimo => Some(1_000_000),
-        ModelPreset::Openai => Some(131_072),
-        ModelPreset::Anthropic => Some(200_000),
+        // OpenAI 官方口径：gpt-5.4-mini / gpt-5.3-codex 为 400K，其余现役旗舰 1.05M。
+        ModelPreset::Openai => match model.map(str::to_ascii_lowercase) {
+            Some(m) if m.contains("gpt-5.4-mini") || m.contains("gpt-5.3-codex") => {
+                Some(400_000)
+            }
+            _ => Some(1_050_000),
+        },
+        // Anthropic 官方口径：haiku 200K，opus/sonnet/fable 1M
+        // （claude-opus-5 由 model_context 的 PINVOU_OVERRIDES 先行覆盖，此处兜
+        // 底只承接底座不认识的命名）。
+        ModelPreset::Anthropic => match model.map(str::to_ascii_lowercase) {
+            Some(m) if m.contains("haiku") => Some(200_000),
+            _ => Some(1_000_000),
+        },
         // Gemini 全系标称 1M。
         ModelPreset::Gemini => Some(1_048_576),
-        ModelPreset::Xai => Some(131_072),
+        // xAI 官方口径：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 500K、grok-build 256K。
+        ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
+            Some(m) if m.contains("grok-4.20") => Some(2_000_000),
+            Some(m) if m.contains("grok-4.3") => Some(1_000_000),
+            Some(m) if m.contains("grok-4.5") => Some(500_000),
+            Some(m) if m.contains("grok-build") => Some(256_000),
+            _ => Some(256_000),
+        },
     }
 }
 
@@ -1151,6 +1170,22 @@ fn strip_v1_suffix(url: &str) -> Option<String> {
             .map(String::from)
             .unwrap_or_else(|| trimmed.to_string()),
     )
+}
+
+/// 模型列表探测地址：upstream 带 `/v1` 后缀时直接拼 `/models`；不带也拼 `/models`
+/// 而非补一层 `/v1`——glm `/paas/v4`、火山方舟 `/api/v3`、gemini `/v1beta/openai`
+/// 的 `/models` 端点均存在，补 `/v1` 会拼成不存在的地址永远 404。
+fn models_probe_url(upstream: &str) -> String {
+    format!("{}/models", upstream.trim_end_matches('/'))
+}
+
+/// Anthropic 官方端点用 x-api-key + anthropic-version 鉴权，不接受 Bearer。
+/// 与 app/commands/settings.rs test_model_connection 同款判定。
+fn is_anthropic_endpoint(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(String::from))
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
 }
 
 /// 轻量探测本地 vLLM:一次 `/v1/models` 拿两样——实际 served 模型名 + `max_model_len`
@@ -1567,6 +1602,21 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
+            // OpenAI 预设兜底：gpt-5.4-mini / gpt-5.3-codex 400K，其余 1.05M
+            (ModelPreset::Openai, "gpt-5.4-mini", 400_000),
+            (ModelPreset::Openai, "gpt-5.3-codex", 400_000),
+            (ModelPreset::Openai, "gpt-5.6-sol", 1_050_000),
+            // Anthropic：haiku 200K（底座 catalog 已知）；claude-opus-5 经
+            // model_context 的 PINVOU_OVERRIDES 覆盖底座 200K 通配兜底为 1M；
+            // 底座不认识的非 claude 命名模型走预设兜底 1M
+            (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
+            (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
+            (ModelPreset::Anthropic, "anthropic-future-model", 1_000_000),
+            // xAI 预设兜底：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 500K、grok-build 256K
+            (ModelPreset::Xai, "grok-4.20-0309-reasoning", 2_000_000),
+            (ModelPreset::Xai, "grok-4.3", 1_000_000),
+            (ModelPreset::Xai, "grok-4.5", 500_000),
+            (ModelPreset::Xai, "grok-build-0.1", 256_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
@@ -1600,5 +1650,59 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         );
         // 无模型名 → 预设兜底
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
+        // Openai/Anthropic/Xai 臂的无模型名缺省
+        assert_eq!(infer_context_window(ModelPreset::Openai, None), Some(1_050_000));
+        assert_eq!(
+            infer_context_window(ModelPreset::Anthropic, None),
+            Some(1_000_000)
+        );
+        assert_eq!(infer_context_window(ModelPreset::Xai, None), Some(256_000));
+        // Xai 臂不认识的未来型号 → 缺省 256K
+        assert_eq!(
+            infer_context_window(ModelPreset::Xai, Some("grok-future-x")),
+            Some(256_000)
+        );
+    }
+
+    /// 模型探测地址：带 `/v1` 结尾保持既有行为；不带时不补 `/v1`，直接拼 `/models`
+    /// （glm `/paas/v4`、火山方舟 `/api/v3`、gemini `/v1beta/openai` 的 `/models` 均存在）。
+    #[test]
+    fn models_probe_url_appends_models_without_extra_v1() {
+        assert_eq!(
+            models_probe_url("http://127.0.0.1:8000/v1"),
+            "http://127.0.0.1:8000/v1/models"
+        );
+        assert_eq!(
+            models_probe_url("http://127.0.0.1:8000/v1/"),
+            "http://127.0.0.1:8000/v1/models"
+        );
+        assert_eq!(
+            models_probe_url("https://open.bigmodel.cn/api/paas/v4"),
+            "https://open.bigmodel.cn/api/paas/v4/models"
+        );
+        assert_eq!(
+            models_probe_url("https://ark.cn-beijing.volces.com/api/v3"),
+            "https://ark.cn-beijing.volces.com/api/v3/models"
+        );
+        assert_eq!(
+            models_probe_url("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        );
+        assert_eq!(
+            models_probe_url("https://api.anthropic.com"),
+            "https://api.anthropic.com/models"
+        );
+    }
+
+    /// Anthropic 官方端点判定：仅 api.anthropic.com 主机走 x-api-key 鉴权。
+    #[test]
+    fn is_anthropic_endpoint_matches_only_official_host() {
+        assert!(is_anthropic_endpoint("https://api.anthropic.com"));
+        assert!(is_anthropic_endpoint("https://api.anthropic.com/v1"));
+        assert!(is_anthropic_endpoint("https://API.ANTHROPIC.COM"));
+        assert!(!is_anthropic_endpoint("https://api.openai.com/v1"));
+        assert!(!is_anthropic_endpoint("https://anthropic.example.com"));
+        assert!(!is_anthropic_endpoint("http://127.0.0.1:8000/v1"));
+        assert!(!is_anthropic_endpoint("not a url"));
     }
 }

@@ -17,9 +17,17 @@ fn explicit_one_million_hint(lower: &str) -> Option<u32> {
     lower.contains("1m").then_some(1_048_576)
 }
 
+/// pinvou3 对底座的定向覆盖：底座已收录但数值落后于官方口径的模型。
+/// 优先于底座 catalog 生效；上游修复后应移除对应条目。
+const PINVOU_OVERRIDES: &[(&str, u32)] = &[
+    // 底座对未知名 claude 一律兜底 200K，且未收录 claude-opus-5；
+    // 官方口径 Claude 5 系（除 haiku 外）均为 1M 上下文。
+    ("claude-opus-5", 1_000_000),
+];
+
 /// 解析 pinvou3 已知模型的上下文窗口。
 ///
-/// 顺序为：显式 `1m` → CodeWhale 模型 catalog/`Nk` 启发式 → pinvou3 补充表。
+/// 顺序为：显式 `1m` → pinvou3 定向覆盖 → CodeWhale 模型 catalog/`Nk` 启发式 → pinvou3 补充表。
 #[must_use]
 pub fn resolved_context_window(model: &str) -> Option<u32> {
     let lower = model.trim().to_ascii_lowercase();
@@ -28,6 +36,12 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
     }
     if let Some(window) = explicit_one_million_hint(&lower) {
         return Some(window);
+    }
+    if let Some((_, window)) = PINVOU_OVERRIDES
+        .iter()
+        .find(|(name, _)| model_name_matches(&lower, name))
+    {
+        return Some(*window);
     }
     if let Some(window) = deepseek_tui::models::context_window_for_model(&lower) {
         return Some(window);
@@ -45,9 +59,9 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
         ("qwen3.7-plus", 1_000_000),
         ("qwen3.7-max", 1_000_000),
         ("qwen3.7-flash", 1_000_000),
-        // qwen3.8-max 已 GA；3.8 系列公开口径上下文 ~984K(preview 与 GA 未分别标注),
+        // qwen3.8-max 已 GA：官方口径上下文 1M（983,616 为思考模式最大输入，非上下文窗口），
         // `-preview` 后缀由 model_name_matches 容忍。
-        ("qwen3.8-max", 984_000),
+        ("qwen3.8-max", 1_000_000),
         // 底座当前只覆盖带 `qwen/` 前缀的 qwen3.6-flash。
         ("qwen3.6-flash", 1_000_000),
         // 2026-07 火山引擎公告：doubao-seed-evolving 升为 1M 上下文。
@@ -74,13 +88,22 @@ mod tests {
             ("qwen3.7-max", 1_000_000),
             ("qwen3.7-flash", 1_000_000),
             ("qwen3.6-flash", 1_000_000),
-            ("qwen3.8-max", 984_000),
-            ("qwen3.8-max-preview", 984_000),
+            ("qwen3.8-max", 1_000_000),
+            ("qwen3.8-max-preview", 1_000_000),
             ("doubao-seed-evolving", 1_048_576),
             ("glm-4.7", 204_800),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
         }
+    }
+
+    #[test]
+    fn pinvou_overrides_take_precedence_over_codewhale_catalog() {
+        // 底座 claude 通配兜底 200K 落后于官方口径（opus-5 为 1M），覆盖须先生效。
+        assert_eq!(resolved_context_window("claude-opus-5"), Some(1_000_000));
+        // 底座已收录且口径正确的模型不受影响。
+        assert_eq!(resolved_context_window("claude-haiku-4-5"), Some(200_000));
+        assert_eq!(resolved_context_window("claude-sonnet-5"), Some(1_000_000));
     }
 
     #[test]

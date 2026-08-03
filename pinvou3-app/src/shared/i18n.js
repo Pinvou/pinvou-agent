@@ -1253,7 +1253,8 @@ const dict = {
       '官方已转 Legacy，兼容高速':'Officially legacy; high-speed compatibility',
       '最新旗舰':'Latest flagship', '上代旗舰推理':'Previous-generation flagship reasoning',
       '均衡性价比':'Balanced and cost-effective', '快速高性价比':'Fast and cost-effective',
-      '2.4T 旗舰预览，Token Plan 专属':'2.4T flagship preview, Token Plan only',
+      '正式旗舰，夜间五折':'GA flagship, 50% off at night',
+      '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换':'2.4T flagship preview, Token Plan only; will be retired or replaced after the preview',
       '旗舰推理与编码':'Flagship reasoning and coding', '均衡智能与成本':'Balanced intelligence and cost',
       '低成本高并发':'Low cost, high volume', '上代旗舰':'Previous-generation flagship',
       '快速经济':'Fast and economical', '最强旗舰，长程 Agent':'Most capable flagship for long-running agents',
@@ -1261,7 +1262,7 @@ const dict = {
       '最快，接近旗舰':'Fastest, near-frontier', '最新 Flash，均衡高性价比':'Latest Flash, balanced and cost-effective',
       '均衡':'Balanced', '旗舰推理（预览）':'Flagship reasoning (preview)',
       '4.20 推理':'4.20 reasoning', '4.20 非推理':'4.20 non-reasoning',
-      '旗舰推理（欧盟区暂不可用）':'Flagship reasoning (unavailable in the EU)',
+      '旗舰编码与 Agent':'Flagship coding and agent model',
       '通用推理，默认推荐':'General-purpose reasoning, recommended default', '代码 Agent':'Coding agent',
     });
     Object.assign(dict.ja.uiSettingsDetail.modelDescriptions, {
@@ -1276,7 +1277,8 @@ const dict = {
       '官方已转 Legacy，兼容高速':'公式レガシー化済み。高速互換',
       '最新旗舰':'最新フラッグシップ', '上代旗舰推理':'前世代フラッグシップ推論',
       '均衡性价比':'バランス型で高コストパフォーマンス', '快速高性价比':'高速で高コストパフォーマンス',
-      '2.4T 旗舰预览，Token Plan 专属':'2.4T フラッグシッププレビュー、Token Plan 専用',
+      '正式旗舰，夜间五折':'正式版フラッグシップ、夜間半額',
+      '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换':'2.4T フラッグシッププレビュー、Token Plan 専用。プレビュー終了後は廃止または差し替え',
       '旗舰推理与编码':'フラッグシップ推論とコーディング', '均衡智能与成本':'知能とコストのバランス',
       '低成本高并发':'低コスト・高スループット', '上代旗舰':'前世代フラッグシップ',
       '快速经济':'高速で経済的', '最强旗舰，长程 Agent':'最強フラッグシップ、長時間エージェント向け',
@@ -1284,7 +1286,7 @@ const dict = {
       '最快，接近旗舰':'最速、フラッグシップに近い', '最新 Flash，均衡高性价比':'最新 Flash、バランス型で高コストパフォーマンス',
       '均衡':'バランス型', '旗舰推理（预览）':'フラッグシップ推論（プレビュー）',
       '4.20 推理':'4.20 推論', '4.20 非推理':'4.20 非推論',
-      '旗舰推理（欧盟区暂不可用）':'フラッグシップ推論（EU では利用不可）',
+      '旗舰编码与 Agent':'フラッグシップコーディング・Agent モデル',
       '通用推理，默认推荐':'汎用推論、デフォルト推奨', '代码 Agent':'コーディングエージェント',
     });
     // 自定义项标题/描述的逐供应商口径（与 i18n 化前硬编码目录一致）；未列出的供应商回退 customModelTitle。
