@@ -3,9 +3,6 @@
 > “代码”模式现已在同一 ACP 链路上支持 Codex、Claude Code 和 Kimi；多 Agent
 > 结构、运行时来源和登录边界见 [`multi-agent-acp.md`](./multi-agent-acp.md)。
 
-> 完整架构决策和评审项见 [`Codex-ACP-整体架构决策.md`](./Codex-ACP-整体架构决策.md)；
-> 无系统 Node/Codex 时的安装、登录和修复方案见
-> [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md)。
 > 本文说明当前 MVP 的使用、验证和发布方式。
 
 pinvou3 在主页输入区提供“工作 / 代码”两种模式：“工作”保持原有品悟输入框，
