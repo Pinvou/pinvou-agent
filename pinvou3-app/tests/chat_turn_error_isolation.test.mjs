@@ -12,7 +12,9 @@ const chatSource = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
 const chatEventsSource = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
 const desktopBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 const webBridgeSource = read('src', 'platform', 'web', 'bridge.js');
+const webTurnTerminalSource = read('src', 'platform', 'web', 'bridge', 'turn-terminal.js');
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
+const bridgeMessagesSource = read('src', 'shared', 'bridge-messages.js');
 const { conversationItemsForMode } = await import(
   '../src/features/conversation/deepseek-conversation.js'
 );
@@ -20,6 +22,41 @@ const { conversationItemsForMode } = await import(
 const sandbox = { window: {} };
 vm.runInNewContext(chatSource, sandbox, { filename: 'chat.js' });
 const installChat = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
+
+const messageSandbox = { window: {} };
+vm.runInNewContext(bridgeMessagesSource, messageSandbox, { filename: 'bridge-messages.js' });
+const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
+const addCleanupItem = (text, metadata) => cleanupState.chatItems.push({ text, ...metadata });
+messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
+  { shell_cleanup_failed: true },
+  cleanupState,
+  addCleanupItem,
+);
+assert.equal(cleanupState.chatItems.length, 1);
+assert.match(cleanupState.chatItems[0].text, /バックグラウンドタスク/);
+messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
+  { shell_cleanup_failed: true },
+  cleanupState,
+  addCleanupItem,
+);
+assert.equal(cleanupState.chatItems.length, 1, 'cleanup warning must be deduplicated');
+assert.equal(cleanupState.chatItems[0].legacyConversationOnly, true);
+
+const terminalSandbox = { window: {}, Date };
+vm.runInNewContext(webTurnTerminalSource, terminalSandbox, { filename: 'turn-terminal.js' });
+const timelineState = {
+  activeTurnTimelineId: 'turn-1',
+  turnTimeline: [{ turn_id: 'turn-1', event: 'user_start', ui_turn_index: 2 }],
+};
+terminalSandbox.window.PinvouWebTurnTerminal.recordCompleted(
+  timelineState,
+  timelineState.turnTimeline[0],
+  { status: 'Interrupted' },
+);
+assert.equal(timelineState.activeTurnTimelineId, null);
+assert.equal(timelineState.turnTimeline[1].event, 'assistant_done');
+assert.equal(timelineState.turnTimeline[1].status, 'Interrupted');
+assert.equal(timelineState.turnTimeline[1].ui_turn_index, 2);
 
 const state = {
   activeSessionId: 'session-1',
@@ -114,6 +151,8 @@ const doneSection = chatEventsSource.slice(
   chatEventsSource.indexOf('listen("chat:usage"'),
 );
 assert.match(doneSection, /legacyConversationOnly: true/);
+assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
+assert.match(doneSection, /PinvouBridgeMessages\.showShellCleanupFailure/);
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
 assert.match(chatEventsSource, /addSystemItem\(notice, \{ turnErrorNotice: true \}\)/);
 assert.match(
@@ -133,6 +172,13 @@ assert.match(
     webBridgeSource.indexOf('listen("chat:usage"'),
   ),
   /legacyConversationOnly: true/,
+);
+assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
+assert.match(webBridgeSource, /PinvouBridgeMessages\.showShellCleanupFailure/);
+assert.equal(
+  (bridgeMessagesSource.match(/^    (zh|en|ja):/gm) || []).length,
+  3,
+  'Shell cleanup warning must provide zh/en/ja translations',
 );
 
 console.log('chat turn error isolation: ok');

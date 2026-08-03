@@ -16,6 +16,7 @@ const staticScripts = new Set([
   'platform/web/bridge.js',
   'platform/web/host-file-picker.js',
   'platform/web/access-policy.json',
+  'shared/bridge-messages.js',
   'vendor/marked.min.js',
   'vendor/purify.min.js',
   'vendor/tailwind.js',

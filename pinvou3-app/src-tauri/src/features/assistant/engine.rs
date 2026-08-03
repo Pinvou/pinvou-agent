@@ -17,22 +17,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
-use deepseek_tui::core::ops::{Op, UserInputProvenance};
+use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
-use deepseek_tui::tui::approval::ApprovalMode;
 use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
 use crate::core::mode_state::{SerializableMode, SessionModeState};
+pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
+use crate::features::assistant::engine_support::{
+    apply_scheduled_turn_policy, maybe_notify_task_completed, persist_successful_tool_artifact,
+    scheduled_tool_should_auto_approve, TurnCompletionTracker,
+};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
     transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
     ScheduledTokenAccounting, SessionStore,
@@ -57,6 +62,7 @@ pub struct AppEngine {
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
+    turn_shell_tasks: Option<TurnShellTaskRegistry>,
     scheduled_disallowed_tools: Vec<String>,
 }
 
@@ -321,11 +327,13 @@ pub(crate) fn emit_chat_terminal(
     session_id: &str,
     status: TurnOutcomeStatus,
     error: Option<String>,
+    shell_cleanup_failed: bool,
 ) {
     let payload = json!({
         "session_id": session_id,
         "status": format!("{status:?}"),
         "error": error,
+        "shell_cleanup_failed": shell_cleanup_failed,
     });
     let _ = app.emit("chat:done", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
@@ -737,6 +745,7 @@ async fn finish_reclaimed_lifecycle_turn(
     session_id: &str,
     status: TurnOutcomeStatus,
     error: Option<String>,
+    shell_cleanup_failed: bool,
 ) -> Option<EmittedTerminal> {
     let transition = lifecycle.claim_reclaimed_with_admission(app, session_id)?;
     let mut terminal_status = status;
@@ -788,7 +797,13 @@ async fn finish_reclaimed_lifecycle_turn(
             }
         }
     }
-    emit_chat_terminal(app, session_id, terminal_status, terminal_error);
+    emit_chat_terminal(
+        app,
+        session_id,
+        terminal_status,
+        terminal_error,
+        shell_cleanup_failed,
+    );
     lifecycle.finish_terminal_emission();
     Some(transition.terminal)
 }
@@ -813,6 +828,7 @@ impl AppEngine {
         disallowed: Vec<String>,
         turn_lifecycle: Arc<TurnLifecycle>,
         shell_manager: SharedShellManager,
+        turn_shell_tasks: TurnShellTaskRegistry,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
@@ -881,6 +897,7 @@ impl AppEngine {
             scheduled_unattended.clone(),
             turn_lifecycle.clone(),
             shell_manager,
+            turn_shell_tasks.clone(),
         );
 
         Ok((
@@ -891,6 +908,7 @@ impl AppEngine {
                 turn_events,
                 scheduled_unattended,
                 turn_lifecycle,
+                turn_shell_tasks: Some(turn_shell_tasks),
                 scheduled_disallowed_tools,
             },
             forwarder,
@@ -921,6 +939,7 @@ impl AppEngine {
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
+            turn_shell_tasks: None,
             scheduled_disallowed_tools,
         })
     }
@@ -1003,11 +1022,28 @@ impl AppEngine {
         if !activated {
             anyhow::bail!("session_turn_in_progress");
         }
-        let result = self.handle.send(op).await;
-        if result.is_err() {
-            self.turn_lifecycle.on_submission_failed(activated);
+        let shell_scope = match self.turn_shell_tasks.as_ref() {
+            Some(registry) => match registry.prepare_submission().await {
+                Ok(scope) => Some(scope),
+                Err(error) => {
+                    self.turn_lifecycle.on_submission_failed(activated);
+                    return Err(error).context("prepare root-turn shell scope");
+                }
+            },
+            None => None,
+        };
+        match self.handle.send(op).await {
+            Ok(()) => {
+                if let Some(scope) = shell_scope {
+                    scope.commit();
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.turn_lifecycle.on_submission_failed(activated);
+                Err(error)
+            }
         }
-        result
     }
 
     async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {
@@ -1021,8 +1057,20 @@ impl AppEngine {
             _ => anyhow::bail!("reserved turn requires a user-message operation"),
         };
         reservation.prepare_actual_user_content(actual_user_content)?;
+        let shell_scope = match self.turn_shell_tasks.as_ref() {
+            Some(registry) => Some(
+                registry
+                    .prepare_submission()
+                    .await
+                    .context("prepare reserved root-turn shell scope")?,
+            ),
+            None => None,
+        };
         match self.handle.send(op).await {
             Ok(()) => {
+                if let Some(scope) = shell_scope {
+                    scope.commit();
+                }
                 reservation.mark_submitted();
                 Ok(())
             }
@@ -1035,6 +1083,7 @@ impl AppEngine {
         app: &AppHandle,
         store: &SessionStore,
         session_id: &str,
+        shell_cleanup_failed: bool,
     ) -> bool {
         match finish_reclaimed_lifecycle_turn(
             &self.turn_lifecycle,
@@ -1043,6 +1092,7 @@ impl AppEngine {
             session_id,
             TurnOutcomeStatus::Interrupted,
             None,
+            shell_cleanup_failed,
         )
         .await
         {
@@ -1441,6 +1491,7 @@ fn spawn_event_forwarder(
     scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
+    turn_shell_tasks: TurnShellTaskRegistry,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -1491,6 +1542,13 @@ fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
+                    if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
+                        log::error!(
+                            "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
+                            session_id,
+                            turn_id
+                        );
+                    }
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
@@ -1574,6 +1632,18 @@ fn spawn_event_forwarder(
                         } else {
                             None
                         };
+                    if let (Some(turn_id), Some(task_id)) =
+                        (current_turn_id.as_deref(), background_task_id.as_deref())
+                    {
+                        if !turn_shell_tasks.register_task(turn_id, task_id) {
+                            log::warn!(
+                                "[pinvou3][chat] shell task has no root-turn scope sid={} turn={} task={}",
+                                session_id,
+                                turn_id,
+                                task_id
+                            );
+                        }
+                    }
                     shell_output.tool_completed(&id, background_task_id.as_deref());
                     let tracked_input = tool_inputs
                         .remove(&id)
@@ -1854,6 +1924,24 @@ fn spawn_event_forwarder(
                     use deepseek_tui::tools::subagent::MailboxMessage as MM;
                     let ws = execution_workspace.clone();
                     match message {
+                        MM::Started { agent_id, .. } => {
+                            if let Some(turn_id) = current_turn_id.as_deref() {
+                                turn_shell_tasks.register_agent(turn_id, &agent_id);
+                            }
+                        }
+                        MM::ChildSpawned {
+                            parent_id,
+                            child_id,
+                        } => {
+                            if !turn_shell_tasks.register_child_agent(&parent_id, &child_id) {
+                                log::warn!(
+                                    "[pinvou3][chat] child agent has no parent shell scope sid={} parent={} child={}",
+                                    session_id,
+                                    parent_id,
+                                    child_id
+                                );
+                            }
+                        }
                         MM::TokenUsage {
                             agent_id,
                             model,
@@ -1913,6 +2001,7 @@ fn spawn_event_forwarder(
                             );
                         }
                         MM::Completed { agent_id, summary } => {
+                            turn_shell_tasks.complete_agent(&agent_id);
                             let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
                             crate::features::assistant::audit::append(
                                 &ws,
@@ -1925,6 +2014,7 @@ fn spawn_event_forwarder(
                             );
                         }
                         MM::Failed { agent_id, error } => {
+                            turn_shell_tasks.complete_agent(&agent_id);
                             let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
                             crate::features::assistant::audit::append(
                                 &ws,
@@ -1935,6 +2025,14 @@ fn spawn_event_forwarder(
                                     "error": crate::features::assistant::audit::clip(&error),
                                 }),
                             );
+                        }
+                        MM::Cancelled { agent_id } => {
+                            turn_shell_tasks.complete_agent(&agent_id);
+                        }
+                        MM::Interrupted { agent_id, .. } => {
+                            // CodeWhale 当前不保留可原位恢复的 live task；中断后只能基于
+                            // checkpoint 重新派发，因此它对本轮 Shell scope 同样是终态。
+                            turn_shell_tasks.complete_agent(&agent_id);
                         }
                         _ => {}
                     }
@@ -2189,6 +2287,9 @@ fn spawn_event_forwarder(
                     // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
                     ..
                 } => {
+                    let shell_turn_id = current_turn_id.clone();
+                    let shell_interrupted = status == TurnOutcomeStatus::Interrupted;
+                    let mut shell_cleanup_failed = false;
                     let mut terminal_status = status;
                     let mut terminal_error = error;
                     if let Some(base_total_tokens) = scheduled_base_total_tokens {
@@ -2291,6 +2392,45 @@ fn spawn_event_forwarder(
                             });
                         }
                     }
+                    // Keep the shell scope cancellable throughout persistence.
+                    // Final cleanup runs before terminal admission is claimed;
+                    // Engine reclaim can therefore still win an await race and
+                    // close the same scope without leaving the UI permanently
+                    // busy. The cleanup itself executes on blocking workers.
+                    if let Some(turn_id) = shell_turn_id.as_deref() {
+                        match turn_shell_tasks
+                            .finalize_turn(turn_id, shell_interrupted)
+                            .await
+                        {
+                            Ok(report) => {
+                                if !report.killed.is_empty() {
+                                    log::info!(
+                                        "[pinvou3][chat] finalized {} interrupted shell task(s) sid={} turn={}",
+                                        report.killed.len(),
+                                        session_id,
+                                        turn_id
+                                    );
+                                }
+                                if let Some(cleanup_error) = report.failure_summary() {
+                                    shell_cleanup_failed = true;
+                                    log::error!(
+                                        "[pinvou3][chat] shell cleanup remained incomplete sid={} turn={}: {}",
+                                        session_id,
+                                        turn_id,
+                                        cleanup_error
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "[pinvou3][chat] failed to finalize shell task scope sid={} turn={}: {error:#}",
+                                    session_id,
+                                    turn_id
+                                );
+                                shell_cleanup_failed = true;
+                            }
+                        }
+                    }
                     // Persistence above can change the authoritative outcome and
                     // may await. Claim only after that result is known, but before
                     // every completion-only side effect below. If reclaim won
@@ -2372,6 +2512,7 @@ fn spawn_event_forwarder(
                             &session_id,
                             terminal_status,
                             terminal_error.clone(),
+                            shell_cleanup_failed,
                         );
                         turn_lifecycle.finish_terminal_emission();
 
@@ -2615,6 +2756,37 @@ fn spawn_event_forwarder(
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
+        let mut shell_cleanup_failed = false;
+        {
+            // The stream can stop before `TurnStarted` bound the provisional
+            // submission scope; close the active scope too, otherwise the next
+            // `prepare_turn` keeps bailing on "scope already active".
+            let finalize = match current_turn_id.as_deref() {
+                Some(turn_id) => turn_shell_tasks.finalize_turn(turn_id, true).await,
+                None => turn_shell_tasks.finalize_active_scope(true).await,
+            };
+            match finalize {
+                Ok(report) => {
+                    if let Some(error) = report.failure_summary() {
+                        shell_cleanup_failed = true;
+                        log::error!(
+                            "[pinvou3][chat] shell cleanup remained incomplete after event stream stop sid={} turn={:?}: {}",
+                            session_id,
+                            current_turn_id,
+                            error
+                        );
+                    }
+                }
+                Err(error) => {
+                    shell_cleanup_failed = true;
+                    log::error!(
+                        "[pinvou3][chat] failed to close shell task scope after event stream stop sid={} turn={:?}: {error:#}",
+                        session_id,
+                        current_turn_id
+                    );
+                }
+            }
+        }
         match finish_reclaimed_lifecycle_turn(
             &turn_lifecycle,
             &app,
@@ -2622,6 +2794,7 @@ fn spawn_event_forwarder(
             &session_id,
             TurnOutcomeStatus::Failed,
             Some(stopped_error.clone()),
+            shell_cleanup_failed,
         )
         .await
         {
@@ -2646,96 +2819,9 @@ fn spawn_event_forwarder(
     })
 }
 
-fn maybe_notify_task_completed(
-    app: &AppHandle,
-    store: &SessionStore,
-    session_id: &str,
-    turn_id: Option<String>,
-    status: TurnOutcomeStatus,
-    error: Option<&str>,
-) {
-    if status != TurnOutcomeStatus::Completed || error.is_some() {
-        return;
-    }
-    if store.mode_state(session_id).active_skill.is_some() {
-        return;
-    }
-    if !crate::platform::notifications::task_completion_enabled() {
-        return;
-    }
-    let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
-    let notify_key = format!("{session_id}:{key}");
-    if app
-        .try_state::<crate::platform::notifications::NotificationState>()
-        .map(|state| state.should_notify(notify_key))
-        .unwrap_or(true)
-    {
-        crate::platform::notifications::notify_task_completed(app);
-    }
-}
-
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。
 pub fn _force_link() -> Arc<()> {
     Arc::new(())
-}
-
-fn persist_successful_tool_artifact(
-    store: &SessionStore,
-    session_id: &str,
-    workspace: &std::path::Path,
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-    output: &str,
-) -> Result<Option<PathBuf>> {
-    if store.scheduled_profile(session_id).is_none() {
-        return Ok(None);
-    }
-    let output_path = artifact_path_from_tool_output(output);
-    let input_path = if is_file_artifact_tool(tool_name) {
-        artifact_path_from_value(tool_input)
-    } else {
-        None
-    };
-    let Some(raw_path) = output_path.or(input_path) else {
-        return Ok(None);
-    };
-    let resolved =
-        crate::platform::path_policy::resolve_artifact_path_in_workspace(&raw_path, workspace);
-    let path = crate::platform::path_policy::validate_user_path(&resolved)
-        .map_err(|error| anyhow::anyhow!(error))?;
-    if !path.is_file() {
-        anyhow::bail!("tool artifact is not an existing file: {}", path.display());
-    }
-    store.append_scheduled_artifact_path(session_id, path.clone())?;
-    Ok(Some(path))
-}
-
-fn is_file_artifact_tool(name: &str) -> bool {
-    ["write_file", "append_file", "edit_file"]
-        .iter()
-        .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
-}
-
-fn artifact_path_from_tool_output(output: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(output).ok()?;
-    let payload = value
-        .get("content")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|item| item.get("text"))
-        .and_then(serde_json::Value::as_str)
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-        .unwrap_or(value);
-    artifact_path_from_value(&payload)
-}
-
-fn artifact_path_from_value(value: &serde_json::Value) -> Option<String> {
-    ["abs_path", "path", "file_path", "local_path", "filename"]
-        .iter()
-        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -2750,109 +2836,6 @@ mod token_ledger_tests {
         assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
         assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
     }
-}
-
-/// Lifecycle signal emitted by the single authoritative engine event consumer.
-/// Scheduled-task execution subscribes to this channel instead of competing for
-/// `EngineHandle::rx_event` with the UI forwarder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EngineTurnSignal {
-    Started {
-        turn_id: String,
-    },
-    Terminal {
-        turn_id: String,
-        status: TurnOutcomeStatus,
-        error: Option<String>,
-    },
-    ForwarderStopped {
-        error: String,
-    },
-}
-
-/// Correlates terminal events with the currently running turn. A fatal
-/// `Event::Error` is advisory until the engine emits its authoritative
-/// `Event::TurnComplete`; the cached error fills a missing terminal error.
-#[derive(Debug, Default)]
-struct TurnCompletionTracker {
-    active_turn_id: Option<String>,
-    pending_fatal_error: Option<String>,
-}
-
-impl TurnCompletionTracker {
-    fn on_started(&mut self, turn_id: String) -> EngineTurnSignal {
-        self.active_turn_id = Some(turn_id.clone());
-        self.pending_fatal_error = None;
-        EngineTurnSignal::Started { turn_id }
-    }
-
-    fn on_fatal_error(&mut self, error: String) {
-        self.pending_fatal_error = Some(error);
-    }
-
-    fn on_terminal(
-        &mut self,
-        status: TurnOutcomeStatus,
-        error: Option<String>,
-    ) -> Option<EngineTurnSignal> {
-        let error = error.or_else(|| self.pending_fatal_error.take());
-        self.active_turn_id
-            .take()
-            .map(|turn_id| EngineTurnSignal::Terminal {
-                turn_id,
-                status,
-                error,
-            })
-    }
-}
-
-/// Apply the persisted automation policy to the normal bridge-built operation.
-/// The bridge remains the source of hooks, tool restrictions, and provider
-/// details; scheduled execution only overrides fields explicitly owned by the
-/// automation record.
-fn apply_scheduled_turn_policy(
-    op: &mut Op,
-    profile: &ScheduledRunProfile,
-    resolved_route: deepseek_tui::route_runtime::ResolvedRuntimeRoute,
-    compaction_config: deepseek_tui::compaction::CompactionConfig,
-) -> Result<()> {
-    let Op::SendMessage {
-        mode,
-        route,
-        compaction,
-        auto_model,
-        allow_shell,
-        trust_mode,
-        auto_approve,
-        approval_mode,
-        provenance,
-        ..
-    } = op
-    else {
-        anyhow::bail!("scheduled turn requires a SendMessage operation");
-    };
-
-    *mode = profile.execution_mode().to_app_mode();
-    **route = resolved_route;
-    **compaction = compaction_config;
-    *auto_model = false;
-    *allow_shell = profile.allow_shell;
-    *trust_mode = profile.trust_mode;
-    *auto_approve = profile.auto_approve;
-    *approval_mode = if profile.auto_approve {
-        ApprovalMode::Auto
-    } else {
-        ApprovalMode::Never
-    };
-    *provenance = UserInputProvenance::ExternalUser;
-    Ok(())
-}
-
-fn scheduled_tool_should_auto_approve(
-    profile: Option<&ScheduledRunProfile>,
-    approval_force_prompt: bool,
-) -> bool {
-    profile.is_none_or(|profile| profile.auto_approve && !approval_force_prompt)
 }
 
 #[cfg(test)]

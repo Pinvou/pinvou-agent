@@ -4635,26 +4635,6 @@
     }]);
   }
 
-  function recordTurnCompleted(payload) {
-    var openStart = latestOpenTimelineStart();
-    var turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
-    if (!turnId) return;
-    var timestamp = Date.now();
-    var start = openStart || (state.turnTimeline || []).find(function (event) {
-      return event && event.turn_id === turnId && event.event === "user_start";
-    });
-    state.turnTimeline = (state.turnTimeline || []).concat([{
-      turn_id: turnId,
-      event: "assistant_done",
-      timestamp: timestamp,
-      ts: new Date(timestamp).toISOString(),
-      status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
-      error: payload && payload.error || null,
-      ui_turn_index: start && start.ui_turn_index,
-    }]);
-    state.activeTurnTimelineId = null;
-  }
-
   function preserveInterruptedAssistantPresentation() {
     var userItemIndex = -1;
     var afterMessageIndex = -1;
@@ -5081,7 +5061,11 @@
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
-      recordTurnCompleted(e.payload || {});
+      window.PinvouWebTurnTerminal.recordCompleted(
+        state,
+        latestOpenTimelineStart(),
+        e.payload || {}
+      );
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
@@ -5099,6 +5083,7 @@
           });
         }
       }
+      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
       var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       var interrupted = terminalStatus === "interrupted" ||
         terminalStatus === "cancelled" || terminalStatus === "canceled";

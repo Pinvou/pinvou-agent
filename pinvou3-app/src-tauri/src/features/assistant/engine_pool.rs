@@ -26,9 +26,7 @@ use anyhow::{bail, Context, Result};
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
-use deepseek_tui::tools::shell::{
-    new_shared_shell_manager, SharedShellManager, ShellJobSnapshot, ShellResult,
-};
+use deepseek_tui::tools::shell::{ShellJobSnapshot, ShellResult};
 use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
@@ -46,6 +44,7 @@ use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
 };
+use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -111,29 +110,6 @@ impl SessionTurnLifecycles {
 
     fn remove(&self, session_id: &str) {
         self.states.lock().remove(session_id);
-    }
-}
-
-#[derive(Clone, Default)]
-struct SessionShellManagers {
-    managers: Arc<SyncMutex<HashMap<String, SharedShellManager>>>,
-}
-
-impl SessionShellManagers {
-    fn for_session(&self, session_id: &str, workspace: std::path::PathBuf) -> SharedShellManager {
-        let mut managers = self.managers.lock();
-        managers
-            .entry(session_id.to_string())
-            .or_insert_with(|| new_shared_shell_manager(workspace))
-            .clone()
-    }
-
-    fn get(&self, session_id: &str) -> Option<SharedShellManager> {
-        self.managers.lock().get(session_id).cloned()
-    }
-
-    fn remove(&self, session_id: &str) {
-        self.managers.lock().remove(session_id);
     }
 }
 
@@ -282,6 +258,7 @@ pub struct EnginePool {
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
+    turn_shell_tasks: SessionTurnShellTasks,
     app: AppHandle,
     store: SessionStore,
     tool_factory: EngineToolFactory,
@@ -334,6 +311,7 @@ impl EnginePool {
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
+            turn_shell_tasks: SessionTurnShellTasks::default(),
             app,
             store,
             tool_factory,
@@ -504,6 +482,9 @@ impl EnginePool {
             .map(|profile| profile.workspace)
             .unwrap_or_else(|| bridge.session_workspace(session_id));
         let shell_manager = self.shell_managers.for_session(session_id, shell_workspace);
+        let turn_shell_tasks = self
+            .turn_shell_tasks
+            .for_session(session_id, shell_manager.clone());
         let mut extra_tools = (self.tool_factory)(&self.app, session_id);
         extra_tools.push(Arc::new(
             crate::features::connectors::ima::ImaOpenApiTool::new(),
@@ -517,6 +498,7 @@ impl EnginePool {
             self.compute_disallowed_tools(),
             self.turn_lifecycles.for_session(session_id),
             shell_manager,
+            turn_shell_tasks,
         )
         .await?;
 
@@ -624,13 +606,24 @@ impl EnginePool {
         let EngineEntry {
             engine, forwarder, ..
         } = entry;
+        let shell_reclaim = self.turn_shell_tasks.begin_reclaim(session_id);
+        let shell_reclaim_for_drain = shell_reclaim.clone();
+        let shell_reclaim_for_terminal = shell_reclaim.clone();
         let reclaimed = quiesce_engine_before_reclaim(
             || engine.cancel_current(),
             || async move {
+                shell_reclaim_for_drain.finalize().await;
                 forwarder.abort();
                 let _ = forwarder.await;
             },
-            || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
+            || {
+                engine.finish_reclaimed_turn(
+                    &self.app,
+                    &self.store,
+                    session_id,
+                    shell_reclaim_for_terminal.cleanup_failed(),
+                )
+            },
         )
         .await;
         if reclaimed {
@@ -660,6 +653,7 @@ impl EnginePool {
 
     pub(crate) fn forget_session(&self, session_id: &str) {
         self.turn_lifecycles.remove(session_id);
+        self.turn_shell_tasks.remove(session_id);
         self.shell_managers.remove(session_id);
     }
 
@@ -892,10 +886,14 @@ impl EnginePool {
     pub async fn cancel(&self, session_id: &str) {
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
+        let shell_cancellation = self.turn_shell_tasks.request_cancel(session_id);
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             lifecycle.invalidate_unsubmitted_reservation();
+        }
+        if let Some(cancellation) = shell_cancellation {
+            cancellation.cleanup().await;
         }
     }
 

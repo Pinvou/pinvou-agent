@@ -1,6 +1,6 @@
 # pinvou3 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-07-30（公开发布基线 `pinvou-v0.9.0-r2@cb93e0f4`）
+> 最后更新：2026-08-03（公开发布基线 `pinvou-v0.9.0-r3@9a31dcdf`）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -8,8 +8,8 @@
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f`。
 - 公开 fork：`https://github.com/Pinvou/CodeWhale`。
-- 维护分支：`pinvou3-clean`，当前 head `cb93e0f4466d60e306252ed08bbbe214f2def752`。
-- 父仓固定标签：`pinvou-v0.9.0-r2`，解引用后必须是上述 commit；`.gitmodules` 不配置浮动 `branch`。
+- 维护分支：`pinvou3-clean`，当前 head `9a31dcdfad71172ab4fdf00a4d8bd106cfaa47da`。
+- 父仓固定标签：`pinvou-v0.9.0-r3`，解引用后必须是上述 commit；`.gitmodules` 不配置浮动 `branch`。
 - fork 不再按历史 C1–C12 / W1–W13 批量编号维护，当前只保留 **6 个长期主题**：
 
   1. 宿主 library facade
@@ -39,7 +39,7 @@ Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands、MCP client、
 - 总 drift 软上限：1500 行。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须在 `fork-modifications.md` 记录：为什么不能放 app/skill/MCP、哪些已 harvest、后续减量顺序。
-- 当前公开基线相对 v0.9.0 为 `+4045/-550，57 文件`，已经完成强制评估；结论见修改清单 §0。
+- 当前公开基线相对 v0.9.0 为 `+4632/-611，58 文件`，已经完成强制评估；结论见修改清单 §0。
 
 ### 1.3 主题提交
 

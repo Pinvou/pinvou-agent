@@ -96,6 +96,14 @@ assert.throws(() => api.state.get('unknown'), /Unknown Tauri bridge state slice/
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 assert.ok(
+  indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/web/bridge.js'),
+  'shared bridge messages must load before the web bridge',
+);
+assert.ok(
+  indexSource.indexOf('platform/web/bridge/turn-terminal.js') < indexSource.indexOf('platform/web/bridge.js'),
+  'web turn terminal support must load before the web bridge',
+);
+assert.ok(
   indexSource.indexOf('platform/web/bridge.js') < indexSource.indexOf('platform/web/bridge/domain-adapter.js'),
   'Web domain adapter must load after the flat transport',
 );

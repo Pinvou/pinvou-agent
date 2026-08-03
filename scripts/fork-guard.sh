@@ -54,6 +54,12 @@ fingerprints=(
   "T5|文件产出失败保留工具错误           |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_missing_file_output_reports_last_tool_error"
   "T5|宿主取消全部后台 agent             |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T5|批量取消行为回归                   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
+  "T5|Agent mailbox 可靠父子谱系         |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_wires_lineage_and_exactly_once_terminal_mail"
+  "T5|Agent 显式取消可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_explicit_cancel_publishes_reliable_terminal_mail"
+  "T5|Agent 手工中断可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_manual_interrupt_publishes_reliable_terminal_mail"
+  "T5|Agent 自动回收可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cleanup_auto_cancels_stale_running_agent_and_releases_slot"
+  "T5|Agent 协作取消终态去重             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cooperative_cancel_publishes_exactly_one_cancelled_terminal_mail"
+  "T5|Agent 非法 Running 终态归一        |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn running_task_result_is_normalized_before_mailbox_and_manager_commit"
   "T5|OAuth 登录可取消                   |CodeWhale/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
 
   "T6|opaque runtime route 对宿主公开    |CodeWhale/crates/tui/src/route_runtime.rs|pub struct ResolvedRuntimeRoute"
@@ -63,7 +69,7 @@ fingerprints=(
   "T6|automation reconcile shared API    |CodeWhale/crates/tui/src/automation_manager.rs|pub async fn reconcile_run_statuses_shared("
 
   "CI|公开 fork 全目标编译门禁           |CodeWhale/.github/workflows/pinvou-fork-ci.yml|cargo check --workspace --all-targets --locked"
-  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r2\""
+  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r3\""
 
   "APP|消息携带 resolved route            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|resolve_runtime_route_for_model"
   "APP|部署级 route profile               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn route_limits_for_model("
@@ -78,13 +84,21 @@ fingerprints=(
   "APP|前端终端跨分片 UI 回归             |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
   "APP|后台终态输出 tail 对账             |pinvou3-app/src/platform/tauri/bridge/terminal.js|function reconcileBackgroundTerminalOutput(previous, payload)"
   "APP|后台终态 stdout/stderr UI 回归      |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
-  "APP|session 级 ShellManager 复用        |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|struct SessionShellManagers"
+  "APP|session 级 ShellManager 复用        |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|struct SessionShellManagers"
   "APP|ShellManager 非消费式输出观察器     |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|struct ShellOutputMonitor"
   "APP|Shell 输出拥塞合并无丢失回归        |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn assigns_new_job_by_command_and_coalesces_all_unseen_output"
   "APP|Shell 中文跨快照边界回归            |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn holds_incomplete_utf8_replacement_until_a_stable_snapshot"
   "APP|Shell 后台终态持续观察回归          |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn reports_detached_completion_after_the_engine_tool_has_returned"
   "APP|turn 权威终态抢占门                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|pub(crate) fn claim_terminal"
   "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|finish_reclaimed_lifecycle_turn"
+  "APP|主停止级联当前 turn 后台 Shell      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|pub(crate) fn request_cancel"
+  "APP|中断轮次 Shell 基线差集回归         |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn forkguard_interrupted_turn_preserves_preexisting_and_old_agent_jobs"
+  "APP|停止与后台 task id 登记竞态回归     |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn task_registered_after_stop_is_reclaimed_by_supervisor"
+  "APP|提交前 Shell scope 生命周期回归    |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn cancellation_before_turn_binding_still_kills_the_scope_job"
+  "APP|提交取消安全回滚回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn provisional_submission_scope_is_abandoned_when_guard_drops"
+  "APP|Agent 子谱系归属回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn reliable_child_lineage_is_not_overwritten_by_the_current_turn"
+  "APP|失败 Shell scope 有界保留回归      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn failed_scope_tombstones_are_bounded"
+  "APP|断流未绑定 scope 回收回归          |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn unbound_scope_is_reclaimed_when_the_stream_stops_before_turn_started"
 )
 
 for fp in "${fingerprints[@]}"; do

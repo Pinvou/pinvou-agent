@@ -1,8 +1,10 @@
 pub(crate) mod audit;
 pub mod engine;
 pub(crate) mod engine_pool;
+mod engine_support;
 pub(crate) mod harness;
 pub mod platform;
 pub(crate) mod runtime_model;
 pub(crate) mod shell_output;
 pub(crate) mod timing;
+pub(crate) mod turn_shell_tasks;

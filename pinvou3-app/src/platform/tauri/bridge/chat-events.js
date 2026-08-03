@@ -664,6 +664,7 @@
           });
         }
       }
+      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
       var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       var interrupted = terminalStatus === "interrupted" ||
         terminalStatus === "cancelled" || terminalStatus === "canceled";

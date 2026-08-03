@@ -4,15 +4,15 @@
 > 基线、主题边界、守护指纹和每次 sync 结论都以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-07-30 · v0.9.0）
+## 0. 当前状态（2026-08-03 · v0.9.0）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| 公开固定基线 | tag `pinvou-v0.9.0-r2`，commit `cb93e0f4466d60e306252ed08bbbe214f2def752` |
-| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `cb93e0f4466d` |
-| 组织方式 | **6 个长期主题 commit + 4 个行为补充/维护 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
-| drift | 对 `v0.9.0`：**+4045 / -550，57 文件** |
+| 公开固定基线 | tag `pinvou-v0.9.0-r3`，commit `9a31dcdfad71172ab4fdf00a4d8bd106cfaa47da` |
+| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `9a31dcdfad71` |
+| 组织方式 | **6 个长期主题 commit + 8 个行为补充/维护 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
+| drift | 对 `v0.9.0`：**+4632 / -611，58 文件** |
 | 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译；macOS 适配保留在父仓平台抽象中，不增加 fork drift |
 
@@ -93,7 +93,7 @@
   - `Custom` 工作流子 Agent 的显式工具白名单同时恢复父级允许的粗粒度能力；声明 `write_file`/`append_file` 后可以真实落盘，未声明工具仍由白名单拒绝，且只读父级不能被越权提升。
   - 合成 `submit_output` 工具；递归校验有限 JSON schema，只允许声明的安全相对路径落盘；最多 3 次催交后 fail-closed。
   - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成；重试耗尽时把最后一次工具错误带入失败信封，宿主日志无需读取私有转录即可显示具体原因。
-  - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent。
+  - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent；可靠 mailbox 在嵌套 Agent 的 `Started` 前发送 `ChildSpawned`，并在显式取消、超时自动回收、协作取消和中断路径于 abort/退出前发送一次与真实结果一致的终态。子任务若异常返回非终态 `Running`，会在发布任何终态之前统一归一为 `Failed`，确保 mailbox、manager 和 worker ledger 一致。中断会保留可重新派发的 checkpoint，但不保留原位恢复的 live task；宿主无需依赖可丢弃 UI 事件即可恢复父子谱系并收敛资源归属。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
   - standalone exec 路径显式补齐 `tool_whitelist`、`reasoning_effort`、`extra_tools`，保证 fork 作为独立项目时全目标可编译。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
@@ -116,7 +116,7 @@
 - `23d4c9b5 docs(fork): 记录 Pinvou 公开基线`
 - `070f4413 chore(fork): 清理内部项目注释`
 
-这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。`cb93e0f44` 是 T2 的行为补充，不新增长期主题。父仓只固定到稳定标签 `pinvou-v0.9.0-r2`，不跟随维护分支漂移。
+这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。`cb93e0f44` 是 T2 的行为补充，`749cafc9e` 至 `9a31dcdfa` 是 T5 的可靠 mailbox 生命周期补充，均不新增长期主题。父仓只固定到稳定标签 `pinvou-v0.9.0-r3`，不跟随维护分支漂移。
 
 ### T7 macOS 平台目标支持 (2026-07)
 
@@ -165,6 +165,7 @@ pinvou3-app 在父仓内通过 `pinvou3-app/src-tauri/src/os/macos/` 实现平�
 - app 的 `ShellOutputMonitor` 复用 session 级共享 `ShellManager`：按命令和工具调用绑定新任务，以非消费式完整快照计算 stdout/stderr 增量，合并慢轮询期间的全部未发送内容，并在后台终态补齐去重后的输出尾部。
 - `ShellOutputMonitor` 对运行中快照尾部的临时 `U+FFFD` 延迟一轮发送，避免 UTF-8 中文字符跨 reader chunk 时被永久写成替换符；底座的权限、安全分析、执行与 wait 游标保持原实现。
 - `EnginePool` 以 session 级生命周期记录协调自然完成、异常断流、主动回收和缺失 Engine 的取消路径，确保同一 turn 只产生一次权威终态。
+- app 层 `TurnShellTaskRegistry` 在 Engine 提交前以 RAII guard 建立 root-turn scope，并在权威 `TurnStarted` 到达后绑定真实 turn id；工具 task id 与可靠 mailbox 的 Agent 父子谱系共同记录归属，基线差集只兜底 ownerless root job，避免把旧 detached Agent 延迟创建的任务误判为当前 turn。`Completed`、`Failed`、`Cancelled` 和不保留 live task 的 `Interrupted` 都会结束 Agent 对 scope 的占用。主停止先把 scope 标记为取消，再取消模型生成；独立 blocking worker 清理当前及后续到达的所属任务，失败项有限重试并以有界 tombstone 留存。Shell 清理失败通过结构化终态标志交给前端三语展示，不覆盖 Engine 的 Interrupted 语义。正常完成和后台任务卡的单任务取消语义保持不变。
 
 ## 4. 守护与验收
 
@@ -197,6 +198,13 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 本地 `/tmp` 空间不足时，显式把 `TMPDIR` 和 `CARGO_TARGET_DIR` 指到项目盘；不要用清理用户目录解决构建问题。
 
 ## 5. Sync 历史
+
+### v0.9.0 r3 Agent mailbox 生命周期（2026-08-03）
+
+- `Pinvou/CodeWhale#6` 以 rebase merge 合入 `pinvou3-clean`，发布不可变标签 `pinvou-v0.9.0-r3@9a31dcdf`。
+- 嵌套 Agent 在实际 `Started` 前可靠发布父子谱系；取消、中断、超时回收和自然完成只发布一次与权威结果一致的终态，并释放 manager 持有的 mailbox/task handle。
+- 合入前修复了排队 Agent 被提前及重复标记 `Started` 的问题：创建路径只发布 `ChildSpawned`，执行路径在取得 launch permit 后发布唯一 `Started`。
+- 验证：CodeWhale workspace 全目标检查、Pinvou fork 回归、40 项 `forkguard_`、终态/超时/竞态/launch-gate 定向测试、clippy、DCO、Gitleaks 与 contribution gate。
 
 ### LLM-facing 提示词文本审查修复（2026-08-02）
 
