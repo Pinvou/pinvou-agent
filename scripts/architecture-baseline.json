@@ -5,7 +5,7 @@
     "common_platform_binaries": {},
     "frontend_feature_imports_app": {},
     "frontend_large_file_lines": {
-      "pinvou3-app/src/app/main.jsx": 3117,
+      "pinvou3-app/src/app/main.jsx": 2539,
       "pinvou3-app/src/features/chat/ChatView.jsx": 2764,
       "pinvou3-app/src/features/codex/CodexAcpView.jsx": 2196,
       "pinvou3-app/src/features/knowledge/KnowledgeView.jsx": 1363,
