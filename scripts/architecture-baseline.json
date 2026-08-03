@@ -32,7 +32,7 @@
       "pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs": 1575,
       "pinvou3-app/src-tauri/src/features/assistant/harness.rs": 3054,
       "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs": 3080,
-      "pinvou3-app/src-tauri/src/features/codex_acp/mod.rs": 5106,
+      "pinvou3-app/src-tauri/src/features/codex_acp/mod.rs": 5101,
       "pinvou3-app/src-tauri/src/features/files/file_ingest.rs": 3419,
       "pinvou3-app/src-tauri/src/features/marketplace/mod.rs": 2654,
       "pinvou3-app/src-tauri/src/features/memory/mod.rs": 4734,
