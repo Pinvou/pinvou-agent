@@ -3,6 +3,7 @@ pub mod engine;
 pub(crate) mod engine_pool;
 mod engine_support;
 pub(crate) mod harness;
+pub(crate) mod pending_user_input;
 pub mod platform;
 pub(crate) mod runtime_model;
 pub(crate) mod shell_output;

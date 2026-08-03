@@ -73,6 +73,21 @@ pub(crate) async fn chat_with_reservation(
     if message.trim().is_empty() && attachments.as_ref().is_none_or(|a| a.is_empty()) {
         return Err("empty message".to_string());
     }
+    // 默认标题会话用首条消息自动命名（原生代码会话与 ACP 同一语义）。
+    // 命名失败不阻断发送——标题是展示层信息，正文投递才是关键路径。
+    let title_source = if message.trim().is_empty() {
+        attachments
+            .as_deref()
+            .unwrap_or_default()
+            .first()
+            .map(|attachment| attachment.basename.clone())
+            .unwrap_or_default()
+    } else {
+        message.trim().to_string()
+    };
+    if let Err(error) = super::sessions::apply_default_session_title(store, &sid, &title_source) {
+        log::warn!("[pinvou3][chat] auto title failed for {sid}: {error}");
+    }
     let chat_started_at = std::time::Instant::now();
     let message_len = message.len();
     let attachment_count = attachments.as_ref().map_or(0, Vec::len);
@@ -114,11 +129,19 @@ pub(crate) async fn chat_with_reservation(
     let display_content =
         display_chat_message(&message, attachments.as_deref().unwrap_or_default());
     let raw_message = message.clone();
+    // 原生代码会话绑项目目录时，落盘根（会话私有目录）与引擎 cwd（项目目录）
+    // 不同根，附件引用必须绝对路径；其余会话两根一致，维持相对路径引用。
+    // 经 app.state 判定以保持本函数签名稳定（web access 也经此入口）。
+    let reference_absolute = app
+        .try_state::<crate::features::codex_acp::AcpPool>()
+        .map(|acp_pool| acp_pool.agents().code_project_workspace(&sid).is_some())
+        .unwrap_or(false);
     let mut full = build_message_with_attachments_in_dir(
         message,
         attachments.unwrap_or_default(),
         &execution_workspace,
         &attachment_dir,
+        reference_absolute,
     );
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
     // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,

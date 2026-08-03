@@ -213,24 +213,16 @@ pub async fn codex_acp_prompt(
     if !acp_pool.is_acp(&session_id) {
         return Err("当前会话不是 ACP 会话".to_string());
     }
-    let session = store
-        .load(&session_id)
-        .map_err(|error| format!("读取 ACP 会话失败: {error:#}"))?;
-    if session.metadata.title == "新对话" {
-        let title_source = if message.is_empty() {
-            attachments
-                .first()
-                .map(|attachment| attachment.basename.as_str())
-                .or_else(|| workspace_references.first().map(String::as_str))
-                .unwrap_or("附件")
-        } else {
-            &message
-        };
-        let title = title_source.chars().take(28).collect::<String>();
-        store
-            .set_title(&session_id, title)
-            .map_err(|error| format!("更新 ACP 会话标题失败: {error:#}"))?;
-    }
+    let title_source = if message.is_empty() {
+        attachments
+            .first()
+            .map(|attachment| attachment.basename.as_str())
+            .or_else(|| workspace_references.first().map(String::as_str))
+            .unwrap_or("附件")
+    } else {
+        message.as_str()
+    };
+    super::sessions::apply_default_session_title(&store, &session_id, title_source)?;
     crate::features::assistant::timing::start_turn(&session_id);
     acp_pool
         .send_message(&session_id, message, attachments, workspace_references)
@@ -253,7 +245,8 @@ fn codex_workspace_root(
     acp_pool: &AcpPool,
 ) -> Result<std::path::PathBuf, String> {
     if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
-        if !acp_pool.is_acp(session_id) {
+        // 原生代码会话与 ACP 会话一样可以在会话内浏览工作区（workspace_info 已支持）。
+        if !acp_pool.is_acp(session_id) && !acp_pool.agents().is_code_session(session_id) {
             return Err("当前会话不是 ACP 会话".to_string());
         }
         let info = acp_pool
@@ -518,6 +511,11 @@ pub async fn respond_codex_acp_elicitation(
         .map_err(|error| format!("回复 Codex ACP 输入请求失败: {error:#}"))
 }
 
+/// 列表项的 agent_id：ACP 后端使用各自 id；原生（品悟）代码会话固定为 "pinvou"。
+fn code_session_agent_id(backend: AgentBackend) -> String {
+    backend.agent_id().unwrap_or("pinvou").to_string()
+}
+
 /// 返回 Codex 会话，供主页左侧统一会话列表与代码模式共同消费。
 #[tauri::command]
 pub async fn list_codex_acp_sessions(
@@ -529,22 +527,23 @@ pub async fn list_codex_acp_sessions(
         .map_err(|error| format!("list_codex_acp_sessions: {error:?}"))?;
     metas.retain(|metadata| {
         matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
-            && acp_pool.is_acp_metadata(metadata)
+            && (acp_pool.is_acp_metadata(metadata)
+                || acp_pool.agents().is_code_session(&metadata.id))
             && !store.is_hidden(&metadata.id)
     });
     metas
         .into_iter()
         .map(|metadata| {
             let backend = acp_pool.backend(&metadata.id);
-            let workspace = acp_pool.workspace_info(&metadata.id).map_err(|error| {
-                format!("读取 ACP 会话 {} 工作目录失败: {error:#}", metadata.id)
-            })?;
+            let workspace = acp_pool
+                .workspace_info(&metadata.id)
+                .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
-                agent_id: backend.agent_id().unwrap_or("codex").to_string(),
+                agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
         })
@@ -562,7 +561,7 @@ pub async fn create_codex_acp_session(
     let backend = AgentBackend::parse(agent_id.as_deref().or(Some("codex")))
         .map_err(|error| format!("{error:#}"))?;
     if !backend.is_acp() {
-        return Err("代码会话必须选择 ACP Agent".to_string());
+        return create_code_native_session(workspace_path, &pool, &store, &acp_pool).await;
     }
     let project_workspace = workspace_path
         .as_deref()
@@ -620,9 +619,94 @@ pub async fn create_codex_acp_session(
     Ok(session.metadata)
 }
 
+/// 创建“代码”模块原生（品悟 Engine）会话。
+///
+/// 临时会话执行目录与 ACP 临时会话共用 `SessionStore::execution_workspace`；
+/// 项目会话绑定调用方选定的目录（经 `validate_codex_project_workspace` 校验），
+/// 执行根由 bridge 的 resolver 在 engine/shell 启动时解析，发消息走现有 `chat` 命令。
+async fn create_code_native_session(
+    workspace_path: Option<String>,
+    pool: &EnginePool,
+    store: &SessionStore,
+    acp_pool: &AcpPool,
+) -> Result<SessionMetadata, String> {
+    let project_workspace = workspace_path
+        .as_deref()
+        .map(|path| validate_codex_project_workspace(std::path::Path::new(path)))
+        .transpose()
+        .map_err(|error| format!("{error:#}"))?;
+    let kind = if project_workspace.is_some() {
+        CodexWorkspaceKind::Project
+    } else {
+        CodexWorkspaceKind::Temporary
+    };
+    let metadata_workspace = project_workspace
+        .clone()
+        .unwrap_or_else(|| pool.bridge.workspace.clone());
+    let session = store
+        .create_new(
+            format!("{} (代码)", AgentBackend::Deepseek.display_name()),
+            None,
+            metadata_workspace,
+        )
+        .map_err(|error| format!("create_codex_acp_session: {error:?}"))?;
+    if let Err(error) = acp_pool.agents().bind_code_native_session(
+        &session.metadata.id,
+        kind,
+        project_workspace.clone(),
+    ) {
+        let _ = store.delete(&session.metadata.id);
+        return Err(format!("保存原生代码会话标记失败: {error:#}"));
+    }
+    // 基线根：项目会话用项目目录（capture_baseline 对 git 仓库只指纹 dirty 文件，
+    // 与 ACP 项目会话一致）；临时会话先确保私有目录存在。
+    let baseline_root = match kind {
+        CodexWorkspaceKind::Project => project_workspace.expect("项目会话必有工作目录"),
+        CodexWorkspaceKind::Temporary => {
+            let temporary_workspace = match store.execution_workspace(&session.metadata.id) {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = acp_pool.agents().remove(&session.metadata.id);
+                    let _ = store.delete(&session.metadata.id);
+                    return Err(format!("解析原生代码会话临时工作目录失败: {error:#}"));
+                }
+            };
+            if let Err(error) =
+                ensure_codex_workspace_root(CodexWorkspaceKind::Temporary, &temporary_workspace)
+            {
+                let _ = acp_pool.agents().remove(&session.metadata.id);
+                let _ = store.delete(&session.metadata.id);
+                return Err(format!("{error:#}"));
+            }
+            temporary_workspace
+        }
+    };
+    let baseline_session_id = session.metadata.id.clone();
+    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+        workspace::capture_baseline(&baseline_session_id, &baseline_root)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("工作区基线任务失败: {error}"))
+    .and_then(|result| result)
+    {
+        let _ = acp_pool.agents().remove(&session.metadata.id);
+        let _ = store.delete(&session.metadata.id);
+        return Err(format!("创建代码工作区基线失败: {error:#}"));
+    }
+    Ok(session.metadata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_session_agent_id_maps_native_backend_to_pinvou() {
+        assert_eq!(code_session_agent_id(AgentBackend::Deepseek), "pinvou");
+        assert_eq!(code_session_agent_id(AgentBackend::CodexAcp), "codex");
+        assert_eq!(code_session_agent_id(AgentBackend::ClaudeAcp), "claude");
+        assert_eq!(code_session_agent_id(AgentBackend::KimiAcp), "kimi");
+    }
 
     #[test]
     fn temporary_workspace_exists_before_baseline_capture() {

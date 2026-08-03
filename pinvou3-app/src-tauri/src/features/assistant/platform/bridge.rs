@@ -32,7 +32,7 @@ use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 use deepseek_tui::tui::approval::ApprovalMode;
 
-use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
+use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
@@ -93,7 +93,15 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
+/// 代码模块原生（品悟 Engine）会话的执行根解析器：绑定了项目目录的原生代码会话
+/// 返回 `Some(项目目录)`；其余会话返回 `None`，调用方回退到会话私有目录。
+///
+/// 用闭包而非直接依赖 `codex_acp::SessionAgentStore`：`assistant` 与 `codex_acp`
+/// 两个 feature 互相引用会成环，解析器由 app 组合根（lib.rs）注入并共享 AcpPool
+/// 持有的同一份 store（clone 共享 Arc，运行时读到最新绑定）。
+pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
     pub bundle: Pinvou3Bundle,
@@ -108,6 +116,36 @@ pub struct Pinvou3Bridge {
     /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
     /// active_route_limits，并与 output profile 一起推导压缩阈值。
     pub probed_context_tokens: Option<u32>,
+    /// 原生代码会话的执行根（engine cwd / shell 目录）解析器；None = 无代码会话
+    /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
+    /// 仍由 `SessionStore::execution_workspace` 统一决定。
+    pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
+    /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
+    /// 共用 AcpPool 那份 SessionAgentStore 注入。
+    pub code_session_predicate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Pinvou3Bridge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Pinvou3Bridge")
+            .field("prefs", &self.prefs)
+            .field("bundle", &self.bundle)
+            .field("workspace", &self.workspace)
+            .field("session_model", &self.session_model)
+            .field("runtime_model_credential", &self.runtime_model_credential)
+            .field("probed_context_tokens", &self.probed_context_tokens)
+            .field(
+                "execution_root_resolver",
+                &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "code_session_predicate",
+                &self.code_session_predicate.as_ref().map(|_| "Some(..)"),
+            )
+            .finish()
+    }
 }
 
 impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
@@ -186,6 +224,8 @@ impl Pinvou3Bridge {
             session_model: None,
             runtime_model_credential: None,
             probed_context_tokens: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
         };
         this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
@@ -280,12 +320,32 @@ impl Pinvou3Bridge {
 
     /// Render the session-scoped inline instructions. Workspace is deliberately
     /// absent from this static prompt and is supplied through per-turn metadata.
-    pub fn build_session_system_prompt(&self, _session_id: &str) -> String {
+    pub fn build_session_system_prompt(&self, session_id: &str) -> String {
         // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
         // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
         // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
-        let mut rendered = INSTRUCTIONS_MD
+        // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
+        // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
+        let base = if self.is_code_session(session_id) {
+            let workspace_hint = self
+                .execution_root_resolver
+                .as_ref()
+                .and_then(|resolver| resolver(session_id))
+                .map(|root| {
+                    format!(
+                        "你正在用户的项目目录 `{}` 中工作,相对路径即相对项目根;",
+                        root.display()
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "你在本会话专属工作目录中工作,相对路径即相对该目录;".to_string()
+                });
+            instructions_code_md(&workspace_hint)
+        } else {
+            instructions_md().to_string()
+        };
+        let mut rendered = base
             .replace("{{PINVOU3_MODEL}}", &self.model())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
@@ -308,9 +368,64 @@ impl Pinvou3Bridge {
         rendered
     }
 
-    /// 当前 active session 的 workspace 目录。
+    /// 当前 active session 的执行根目录：原生代码会话绑定了项目目录时返回项目目录
+    /// （engine cwd 与 shell 执行目录由此同源），其余会话返回会话私有目录。
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
+        if let Some(resolver) = &self.execution_root_resolver {
+            if let Some(root) = resolver(session_id) {
+                return root;
+            }
+        }
         paths::session_workspace_dir(session_id)
+    }
+
+    /// 注入原生代码会话的执行根解析器；由 app 组合根在 AcpPool 就绪后调用一次。
+    pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
+        self.execution_root_resolver = Some(resolver);
+    }
+
+    /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
+    pub fn set_code_session_predicate(
+        &mut self,
+        predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) {
+        self.code_session_predicate = Some(predicate);
+    }
+
+    /// 该 session 是否为原生（品悟 Engine）代码会话（含临时与绑项目两种）。
+    pub fn is_code_session(&self, session_id: &str) -> bool {
+        self.code_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id))
+    }
+
+    /// 会话级工具整形：原生代码会话没有产出物面板/成品卡语义（提示词也不再提及），
+    /// 隐藏 present_artifact；其他会话原样返回。spawn 初值与全局热刷都经此整形。
+    pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
+        const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
+        if self.is_code_session(session_id) && !tools.iter().any(|tool| tool == PRESENT_ARTIFACT) {
+            tools.push(PRESENT_ARTIFACT.to_string());
+        }
+        tools
+    }
+
+    /// 应用账本根：审计等应用自有文件的落盘根。绑了项目目录的原生代码会话恒为
+    /// 会话私有目录（不污染用户项目）；其余会话与传入的执行根相同——普通会话两
+    /// 根本来一致，scheduled 会话继续写其项目目录，行为逐字节不变。
+    pub fn audit_workspace(
+        &self,
+        session_id: &str,
+        execution_workspace: &std::path::Path,
+    ) -> std::path::PathBuf {
+        if self
+            .execution_root_resolver
+            .as_ref()
+            .is_some_and(|resolver| resolver(session_id).is_some())
+        {
+            paths::session_workspace_dir(session_id)
+        } else {
+            execution_workspace.to_path_buf()
+        }
     }
 
     /// session 专属 `EngineConfig.instructions` 注入:
@@ -745,13 +860,13 @@ impl Pinvou3Bridge {
         threshold.clamp(4_096, (window * 3 / 4).max(4_096))
     }
 
-    /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
-    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 INSTRUCTIONS_MD 原文
+    /// legacy 单引擎路径(headless harness 用):走 instructions inline + 用户自定义。
+    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 work 渲染原文
     /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
-            content: INSTRUCTIONS_MD.to_string(),
+            content: instructions_md().to_string(),
         }];
         let user = paths::user_instructions();
         if user.is_file() {
@@ -1454,7 +1569,81 @@ mod tests {
             session_model: None,
             runtime_model_credential: None,
             probed_context_tokens: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
         }
+    }
+
+    #[test]
+    fn execution_root_resolver_overrides_session_workspace_only_when_hit() {
+        let mut bridge = fixture_bridge();
+        let private = crate::platform::paths::session_workspace_dir("sess-plain");
+        // 未注入 resolver：所有会话都用会话私有目录（现状不变）。
+        assert_eq!(bridge.session_workspace("sess-plain"), private);
+
+        let project = std::env::temp_dir().join("pinvou3-resolver-test-project");
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        // 命中：绑了项目目录的原生代码会话解析到项目目录（engine 与 shell 同源）。
+        assert_eq!(bridge.session_workspace("sess-code-project"), project);
+        // 未命中：普通会话与临时代码会话仍回退会话私有目录。
+        assert_eq!(bridge.session_workspace("sess-plain"), private);
+        assert_eq!(
+            bridge.session_workspace("sess-code-temp"),
+            crate::platform::paths::session_workspace_dir("sess-code-temp"),
+        );
+
+        // 账本根：仅绑项目的代码会话改用会话私有目录，其余会话与执行根相同。
+        let execution = std::env::temp_dir().join("pinvou3-resolver-test-execution");
+        assert_eq!(
+            bridge.audit_workspace("sess-code-project", &execution),
+            crate::platform::paths::session_workspace_dir("sess-code-project"),
+        );
+        assert_eq!(bridge.audit_workspace("sess-plain", &execution), execution);
+        assert_eq!(
+            bridge.audit_workspace("sess-code-temp", &execution),
+            execution
+        );
+    }
+
+    #[test]
+    fn code_session_tool_shaping_hides_present_artifact_only_for_code_sessions() {
+        let mut bridge = fixture_bridge();
+        // 未注入 predicate：一律按非代码会话处理。
+        let plain = vec!["kb_search".to_string()];
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", plain.clone()),
+            plain
+        );
+
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-temp" || session_id == "sess-code-project"
+        }));
+        assert!(bridge.is_code_session("sess-code-temp"));
+        assert!(bridge.is_code_session("sess-code-project"));
+        assert!(!bridge.is_code_session("sess-plain"));
+
+        // 临时与绑项目的代码会话都隐藏成品卡工具；普通会话不受影响。
+        for sid in ["sess-code-temp", "sess-code-project"] {
+            let shaped = bridge.shape_disallowed_tools(sid, plain.clone());
+            assert!(shaped.contains(&"mcp_pinvou3_present_artifact".to_string()));
+            assert!(shaped.contains(&"kb_search".to_string()));
+            // 幂等：不重复追加。
+            let twice = bridge.shape_disallowed_tools(sid, shaped);
+            assert_eq!(
+                twice
+                    .iter()
+                    .filter(|tool| *tool == "mcp_pinvou3_present_artifact")
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", plain.clone()),
+            plain
+        );
     }
 
     #[test]

@@ -495,7 +495,8 @@ impl EnginePool {
             bridge,
             session_id,
             extra_tools,
-            self.compute_disallowed_tools(),
+            self.bridge
+                .shape_disallowed_tools(session_id, self.compute_disallowed_tools()),
             self.turn_lifecycles.for_session(session_id),
             shell_manager,
             turn_shell_tasks,
@@ -724,6 +725,13 @@ impl EnginePool {
         Ok(reservation)
     }
 
+    /// 该 session 当前是否有进行中的 turn（供前端 remount 后恢复 busy 展示）。
+    pub fn is_turn_active(&self, session_id: &str) -> bool {
+        self.turn_lifecycles
+            .get(session_id)
+            .is_some_and(|lifecycle| lifecycle.is_active())
+    }
+
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
     #[allow(dead_code)]
     pub async fn send_user_message(
@@ -904,11 +912,12 @@ impl EnginePool {
     pub async fn set_disallowed_all(&self, tools: Vec<String>) {
         let entries = self.entries.lock().await;
         for (sid, entry) in entries.iter() {
+            // 全局热刷同样按会话整形（代码会话保留 present_artifact 隐藏）。
             if let Err(e) = entry
                 .engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: tools.clone(),
+                    tools: self.bridge.shape_disallowed_tools(sid, tools.clone()),
                 })
                 .await
             {

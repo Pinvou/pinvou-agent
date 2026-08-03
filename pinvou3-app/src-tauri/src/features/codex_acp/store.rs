@@ -26,7 +26,7 @@ pub enum AgentBackend {
 impl AgentBackend {
     pub fn parse(value: Option<&str>) -> Result<Self> {
         match value.unwrap_or("deepseek") {
-            "deepseek" => Ok(Self::Deepseek),
+            "deepseek" | "pinvou" => Ok(Self::Deepseek),
             "codex-acp" | "codex" => Ok(Self::CodexAcp),
             "claude-acp" | "claude" => Ok(Self::ClaudeAcp),
             "kimi-acp" | "kimi" => Ok(Self::KimiAcp),
@@ -99,6 +99,13 @@ pub struct SessionAgentRecord {
     /// 项目会话保存创建时选定的绝对目录；临时会话目录由 session id 推导。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
+    /// “代码”模块原生（品悟 Engine）会话标记。旧记录没有该字段时按普通会话兼容。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub code_session: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -227,6 +234,61 @@ impl SessionAgentStore {
             record.workspace_path = workspace_path;
         }
         self.persist()
+    }
+
+    /// 绑定“代码”模块的原生（品悟 Engine）会话。临时会话目录由 session id 推导；
+    /// 项目会话保存创建时选定的绝对目录（调用前须经 `validate_codex_project_workspace`
+    /// 校验）。与 ACP 会话同样遵循“会话开始后不可换 Agent 或工作目录”。
+    pub fn bind_code_native_session(
+        &self,
+        session_id: &str,
+        kind: CodexWorkspaceKind,
+        workspace_path: Option<PathBuf>,
+    ) -> Result<()> {
+        if kind == CodexWorkspaceKind::Project && workspace_path.is_none() {
+            anyhow::bail!("项目会话缺少工作目录");
+        }
+        if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
+            anyhow::bail!("临时会话不能保存项目工作目录");
+        }
+        {
+            let mut records = self.records.write();
+            let record = records.entry(session_id.to_string()).or_default();
+            if record.acp_session_id.is_some() && record.backend.is_acp() {
+                anyhow::bail!("ACP 会话已开始，不能更换 Agent；请新建会话");
+            }
+            // 已绑定的原生代码会话不允许改绑到其他工作区（同值重复绑定幂等放行）。
+            if record.code_session
+                && (record.workspace_kind != kind || record.workspace_path != workspace_path)
+            {
+                anyhow::bail!("代码会话已开始，不能更换工作目录；请新建会话");
+            }
+            record.backend = AgentBackend::Deepseek;
+            record.workspace_kind = kind;
+            record.workspace_path = workspace_path;
+            record.code_session = true;
+        }
+        self.persist()
+    }
+
+    /// 是否为“代码”模块的原生（品悟 Engine）会话。
+    pub fn is_code_session(&self, session_id: &str) -> bool {
+        self.records
+            .read()
+            .get(session_id)
+            .is_some_and(|record| record.code_session)
+    }
+
+    /// 原生代码会话绑定的项目目录；非代码会话或临时会话返回 None。
+    /// 这是“两个根”的唯一判定入口：执行根（engine/shell）命中它时解析到项目目录，
+    /// 账本根（附件/审计/产物）命中它时必须改用会话私有目录。
+    pub fn code_project_workspace(&self, session_id: &str) -> Option<PathBuf> {
+        let record = self.get(session_id);
+        if record.code_session && record.workspace_kind == CodexWorkspaceKind::Project {
+            record.workspace_path
+        } else {
+            None
+        }
     }
 
     pub fn set_acp_session(
@@ -499,6 +561,10 @@ mod tests {
     fn backend_aliases_are_stable() {
         assert_eq!(AgentBackend::parse(None).unwrap(), AgentBackend::Deepseek);
         assert_eq!(
+            AgentBackend::parse(Some("pinvou")).unwrap(),
+            AgentBackend::Deepseek
+        );
+        assert_eq!(
             AgentBackend::parse(Some("codex")).unwrap(),
             AgentBackend::CodexAcp
         );
@@ -534,6 +600,7 @@ mod tests {
         assert_eq!(record.workspace_path, None);
         assert_eq!(record.acp_mode_id, None);
         assert!(record.acp_config_values.is_empty());
+        assert!(!record.code_session);
     }
 
     #[test]
@@ -608,6 +675,128 @@ mod tests {
     }
 
     #[test]
+    fn code_native_binding_marks_temporary_deepseek_session() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-store-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let store = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        assert!(!store.is_code_session("session-1"));
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+
+        let record = store.get("session-1");
+        assert_eq!(record.backend, AgentBackend::Deepseek);
+        assert_eq!(record.workspace_kind, CodexWorkspaceKind::Temporary);
+        assert_eq!(record.workspace_path, None);
+        assert!(record.code_session);
+        assert!(store.is_code_session("session-1"));
+        // 原生绑定不需要 Agent 上下文，同值重复绑定保持幂等。
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        assert!(store.is_code_session("session-1"));
+
+        let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let record = persisted.sessions.get("session-1").unwrap();
+        assert!(record.code_session);
+        assert_eq!(record.backend, AgentBackend::Deepseek);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn started_acp_session_cannot_be_rebound_to_code_native() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-rebind-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .unwrap();
+        store
+            .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
+            .unwrap();
+        assert!(store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .is_err());
+        let record = store.get("session-1");
+        assert_eq!(record.backend, AgentBackend::CodexAcp);
+        assert!(!record.code_session);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn code_native_project_binding_validates_kind_and_path() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-project-bind-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        // kind 与 path 必须配套。
+        assert!(store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, None)
+            .is_err());
+        assert!(store
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Temporary,
+                Some(root.clone()),
+            )
+            .is_err());
+        assert!(!store.is_code_session("session-1"));
+
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        let record = store.get("session-1");
+        assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
+        assert!(record.code_session);
+
+        // 已绑定的代码会话不可改绑工作区；同值重复绑定幂等。
+        assert!(store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .is_err());
+        assert!(store
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.join("other")),
+            )
+            .is_err());
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        let record = store.get("session-1");
+        assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn recovered_acp_record_is_persisted_atomically() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-codex-recovery-store-test-{}",
@@ -634,6 +823,7 @@ mod tests {
                     )]),
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(root.clone()),
+                    code_session: false,
                 },
             )
             .unwrap();
