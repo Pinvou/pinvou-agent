@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AppWindow, Check, Copy, ExternalLink, FolderOpen, Link, X,
@@ -60,6 +60,7 @@ export function CodeViewerModal({
   name,
   relativePath,
   preview,
+  diff,
   loading = false,
   error = '',
   onClose,
@@ -76,7 +77,16 @@ export function CodeViewerModal({
 
   const fileName = preview?.name || name || String(relativePath || '').split('/').pop() || '';
 
-  const highlighted = useCodeHighlight(preview, fileName);
+  // diff 模式：把 WorkspaceDiff 适配为文本预览对象，复用 CodeViewerContent 的文本分支
+  // （空文本保留旧 PreviewPane 的 noDiff 兜底，diff 为虚拟视图、无文件可定位/打开）。
+  const renderPreview = useMemo(
+    () => diff
+      ? { kind: 'text', text: diff.text || copy.noDiff, truncated: diff.truncated, name: fileName }
+      : preview,
+    [diff, preview, fileName, copy],
+  );
+
+  const highlighted = useCodeHighlight(renderPreview, fileName, diff ? 'diff' : undefined);
   const fontBounds = viewerFontSizeBounds();
 
   // Esc 关闭 + 打开期间锁定页面滚动。
@@ -220,8 +230,8 @@ export function CodeViewerModal({
           </button>
           <button
             type="button"
-            onClick={() => copyText('content', preview?.kind === 'text' ? preview.text : '')}
-            disabled={preview?.kind !== 'text'}
+            onClick={() => copyText('content', renderPreview?.kind === 'text' ? renderPreview.text : '')}
+            disabled={renderPreview?.kind !== 'text'}
             className={iconButton}
             title={copied === 'content' ? copy.copied : copy.copyContent}
           >
@@ -235,12 +245,16 @@ export function CodeViewerModal({
           >
             {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
           </button>
-          <button type="button" onClick={onReveal} className={iconButton} title={copy.reveal}>
-            <FolderOpen size={13} />
-          </button>
-          <button type="button" onClick={onOpen} className={iconButton} title={copy.open}>
-            <ExternalLink size={13} />
-          </button>
+          {!diff && (
+            <>
+              <button type="button" onClick={onReveal} className={iconButton} title={copy.reveal}>
+                <FolderOpen size={13} />
+              </button>
+              <button type="button" onClick={onOpen} className={iconButton} title={copy.open}>
+                <ExternalLink size={13} />
+              </button>
+            </>
+          )}
           {onOpenInNewWindow && (
             <button
               type="button"
@@ -259,7 +273,7 @@ export function CodeViewerModal({
         </div>
 
         <CodeViewerContent
-          preview={preview}
+          preview={renderPreview}
           loading={loading}
           error={error}
           fontSize={fontSize}

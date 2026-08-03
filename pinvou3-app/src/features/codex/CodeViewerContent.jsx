@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { RefreshCw } from '../../components/icons.jsx';
-import { highlightCode } from '../../shared/syntax-highlighter.js';
+import { highlightCode, highlightDiffCode } from '../../shared/syntax-highlighter.js';
 
 // 代码查看内容区：CodeViewerModal（弹窗）与 ReaderApp（独立阅读器窗口）共用，
 // 保持两处的高亮、截断、图片、错误态行为一致。字号持久化也在这里共享。
@@ -43,11 +43,12 @@ function languageHintForFile(name) {
   return base.toLowerCase();
 }
 
-export function useCodeHighlight(preview, fileName) {
+export function useCodeHighlight(preview, fileName, languageHint) {
   return useMemo(() => {
     if (preview?.kind !== 'text' || typeof preview.text !== 'string') return null;
-    return highlightCode(preview.text, languageHintForFile(preview.name || fileName));
-  }, [preview, fileName]);
+    if (languageHint === 'diff') return highlightDiffCode(preview.text);
+    return highlightCode(preview.text, languageHint || languageHintForFile(preview.name || fileName));
+  }, [preview, fileName, languageHint]);
 }
 
 export function CodeViewerContent({

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AppWindow, ArrowLeft, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileText,
-  FolderOpen, Link, Plus, RefreshCw, Search, X,
+  AppWindow, Check, ChevronDown, ChevronRight, ExternalLink, FileText,
+  Link, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
@@ -180,61 +180,6 @@ function WorkspaceTree({
   });
 }
 
-function PreviewPane({ diff, loading, onBack, onAddReference, referenced, onOpen, onReveal, copy }) {
-  if (!diff) return null;
-  const path = diff.relativePath;
-  return (
-    <div className="h-full min-h-0 flex flex-col">
-      <div className="h-11 shrink-0 px-2 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
-        <button type="button" onClick={onBack} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label={copy.back}>
-          <ArrowLeft size={14} />
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-medium" title={path}>{path}</div>
-        </div>
-        <button type="button" onClick={() => navigator.clipboard?.writeText(path)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.copyPath}>
-          <Copy size={13} />
-        </button>
-        <button type="button" onClick={onReveal} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.reveal}>
-          <FolderOpen size={13} />
-        </button>
-        <button type="button" onClick={onOpen} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" title={copy.open}>
-          <ExternalLink size={13} />
-        </button>
-      </div>
-      {loading ? (
-        <div className="flex-1 flex items-center justify-center text-[11px] text-gray-400">
-          <RefreshCw size={14} className="mr-2 animate-spin" />{copy.reading}
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar">
-          <pre className="min-w-max p-3 text-[11px] leading-[18px] font-mono whitespace-pre">
-            {diff.text || copy.noDiff}
-          </pre>
-          {diff.truncated && (
-            <div className="sticky bottom-0 px-3 py-2 text-[10px] text-amber-600 dark:text-amber-300 bg-amber-50/95 dark:bg-amber-950/80">
-              {copy.truncated}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="shrink-0 p-2 border-t border-black/[0.05] dark:border-white/[0.06]">
-        <button
-          type="button"
-          onClick={() => onAddReference(path)}
-          className={`w-full h-8 rounded-lg inline-flex items-center justify-center gap-1.5 text-[11px] font-medium ${
-            referenced
-              ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-              : 'bg-[#007AFF] text-white hover:bg-[#006EE6]'
-          }`}
-        >
-          <Plus size={13} />{referenced ? copy.added : copy.add}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function CodexWorkspacePanel({
   session,
   workspacePath = '',
@@ -259,9 +204,7 @@ export function CodexWorkspacePanel({
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [changes, setChanges] = useState(null);
-  const [diff, setDiff] = useState(null);
   const [viewer, setViewer] = useState(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState('');
   const previewRequestRef = useRef(0);
   const showError = (nextError) => {
@@ -389,7 +332,6 @@ export function CodexWorkspacePanel({
     setSearchResults([]);
     setChanges(null);
     setViewer(null);
-    setDiff(null);
     setError('');
     if (browsable) {
       loadDirectory('', { force: true });
@@ -449,7 +391,6 @@ export function CodexWorkspacePanel({
   async function showFile(entry) {
     // 请求序号防竞态：只应用最后一次点击的响应，慢响应（旧文件/旧工作区）直接丢弃。
     const requestId = ++previewRequestRef.current;
-    setDiff(null);
     setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
     try {
       const preview = await invoke('preview_codex_workspace_file', {
@@ -472,26 +413,38 @@ export function CodexWorkspacePanel({
     }
   }
 
+  // 变更项 → 弹窗 diff 视图；与 showFile 共用 viewer 弹窗（diff 字段驱动 diff 模式），
+  // 同样用请求序号防竞态。
   async function showDiff(change) {
-    setDiff({ relativePath: change.relativePath, text: '' });
-    setPreviewLoading(true);
+    const name = String(change.relativePath).split('/').pop() || change.relativePath;
+    const requestId = ++previewRequestRef.current;
+    setViewer({ name, relativePath: change.relativePath, preview: null, diff: null, loading: true, error: '' });
     try {
-      setDiff(await invoke('get_codex_workspace_diff', {
+      const diff = await invoke('get_codex_workspace_diff', {
         sessionId,
         relativePath: change.relativePath,
-      }));
+      });
+      if (requestId !== previewRequestRef.current) return;
+      setViewer({ name, relativePath: change.relativePath, preview: null, diff, loading: false, error: '' });
       setError('');
     } catch (nextError) {
-      showError(nextError);
-    } finally {
-      setPreviewLoading(false);
+      if (requestId !== previewRequestRef.current) return;
+      console.error('Codex workspace diff failed:', nextError);
+      setViewer({
+        name,
+        relativePath: change.relativePath,
+        preview: null,
+        diff: null,
+        loading: false,
+        error: copy.showRawErrors ? String(nextError) : copy.operationFailed,
+      });
     }
   }
 
-  async function openWorkspacePath(command, relativePath) {
+  async function openWorkspacePath(command, relativePath, extra = {}) {
     if (!relativePath || !browsable) return false;
     try {
-      await invoke(command, { ...scopePayload(), relativePath });
+      await invoke(command, { ...scopePayload(), relativePath, ...extra });
       return true;
     } catch (nextError) {
       showError(nextError);
@@ -539,21 +492,7 @@ export function CodexWorkspacePanel({
         </button>
       </div>
 
-      {diff ? (
-        <div className="flex-1 min-h-0">
-          <PreviewPane
-            diff={diff}
-            loading={previewLoading}
-            onBack={() => setDiff(null)}
-            onAddReference={onAddReference}
-            referenced={referencedPaths.has(diff.relativePath)}
-            onOpen={() => openWorkspacePath('open_codex_workspace_file', diff.relativePath)}
-            onReveal={() => openWorkspacePath('reveal_codex_workspace_file', diff.relativePath)}
-            copy={copy}
-          />
-        </div>
-      ) : (
-        <>
+      <>
           <div className="shrink-0 px-3 pt-2">
             <div className="grid grid-cols-2 rounded-lg bg-black/[0.035] dark:bg-white/[0.055] p-0.5">
               <button type="button" onClick={() => setTab('files')} className={`h-7 rounded-md text-[11px] ${tab === 'files' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
@@ -628,21 +567,34 @@ export function CodexWorkspacePanel({
                   )}
                   {changes?.branch && <div className="px-2 pb-2 text-[10px] text-gray-400">{copy.branch} · {changes.branch}</div>}
                   {(changes?.changes || []).map(change => (
-                    <button
+                    <div
                       key={`${change.status}:${change.relativePath}`}
-                      type="button"
-                      onClick={() => showDiff(change)}
-                      className="w-full min-h-11 px-2 py-1.5 rounded-lg flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                      className="group min-h-11 px-2 py-1.5 flex items-center gap-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
                     >
-                      <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
-                        {changeLabel(change.status, copy)}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[11px]" title={change.relativePath}>{change.relativePath}</span>
-                        <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin, copy)}{change.staged ? ` · ${copy.staged}` : ''}</span>
-                      </span>
-                      <ChevronRight size={12} className="shrink-0 text-gray-400" />
-                    </button>
+                      <button type="button" onClick={() => showDiff(change)} className="min-w-0 flex-1 flex items-center gap-2 text-left" title={change.relativePath}>
+                        <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
+                          {changeLabel(change.status, copy)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[11px]" title={change.relativePath}>{change.relativePath}</span>
+                          <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin, copy)}{change.staged ? ` · ${copy.staged}` : ''}</span>
+                        </span>
+                        <ChevronRight size={12} className="shrink-0 text-gray-400" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={referencedPaths.has(change.relativePath) ? copy.addedPath(change.relativePath) : copy.addPath(change.relativePath)}
+                        title={referencedPaths.has(change.relativePath) ? copy.added : copy.add}
+                        onClick={() => onAddReference(change.relativePath)}
+                        className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
+                          referencedPaths.has(change.relativePath)
+                            ? 'text-blue-500 bg-blue-500/10'
+                            : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
+                        }`}
+                      >
+                        <Plus size={13} />
+                      </button>
+                    </div>
                   ))}
                   {changes && changes.changes.length === 0 && (
                     <div className="py-12 text-center text-[11px] text-gray-400">{copy.noChanges}</div>
@@ -651,20 +603,23 @@ export function CodexWorkspacePanel({
               )}
             </div>
           )}
-        </>
-      )}
+      </>
       {viewer && (
         <CodeViewerModal
           name={viewer.name}
           relativePath={viewer.relativePath}
           preview={viewer.preview}
+          diff={viewer.diff}
           loading={viewer.loading}
           error={viewer.error}
           onClose={() => setViewer(null)}
           onOpen={() => openWorkspacePath('open_codex_workspace_file', viewer.relativePath)}
           onReveal={() => openWorkspacePath('reveal_codex_workspace_file', viewer.relativePath)}
           onOpenInNewWindow={async () => {
-            if (await openWorkspacePath('open_code_reader', viewer.relativePath)) setViewer(null);
+            const opened = viewer.diff
+              ? await openWorkspacePath('open_code_reader', viewer.relativePath, { kind: 'diff' })
+              : await openWorkspacePath('open_code_reader', viewer.relativePath);
+            if (opened) setViewer(null);
           }}
           copy={copy}
         />

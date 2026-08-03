@@ -341,7 +341,7 @@ pub async fn get_codex_workspace_diff(
 ) -> Result<WorkspaceDiff, String> {
     let root = codex_workspace_root(Some(&session_id), None, &acp_pool)?;
     tauri::async_runtime::spawn_blocking(move || {
-        workspace::workspace_diff(&root, &relative_path)
+        workspace::workspace_diff(&session_id, &root, &relative_path)
             .map_err(|error| format!("读取 Codex 文件差异失败: {error:#}"))
     })
     .await
@@ -384,23 +384,34 @@ pub async fn reveal_codex_workspace_file(
 }
 
 // 代码弹窗「新窗口打开」：校验工作区可读且目标文件存在，再交给单例阅读器窗口（tab 复用见 reader_window）。
+// `kind="diff"` 时打开工作区变更差异（依赖会话基线，需 sessionId；文件可能已删除，放宽存在性校验）。
 #[tauri::command]
 pub async fn open_code_reader(
     session_id: Option<String>,
     workspace_path: Option<String>,
     relative_path: String,
+    kind: Option<String>,
     app: tauri::AppHandle,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
     let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
-    workspace::resolve_workspace_file(&root, &relative_path)
-        .map_err(|error| format!("打开代码阅读器失败: {error:#}"))?;
+    if kind.as_deref() == Some("diff") {
+        if session_id.is_none() {
+            return Err("打开代码阅读器失败: 差异预览需要会话。".to_string());
+        }
+        workspace::validate_workspace_relative_path(&root, &relative_path)
+            .map_err(|error| format!("打开代码阅读器失败: {error:#}"))?;
+    } else {
+        workspace::resolve_workspace_file(&root, &relative_path)
+            .map_err(|error| format!("打开代码阅读器失败: {error:#}"))?;
+    }
     reader_window::open_code_reader(
         &app,
         ReaderOpenRequest {
             session_id,
             workspace_path,
             relative_path,
+            kind,
         },
     )
 }
