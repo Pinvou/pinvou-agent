@@ -86,9 +86,9 @@ fingerprints=(
   "APP|turn 权威终态抢占门                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|pub(crate) fn claim_terminal"
   "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|finish_reclaimed_lifecycle_turn"
   "APP|主停止级联当前 turn 后台 Shell      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|pub(crate) fn request_cancel"
-  "APP|中断轮次 Shell 基线差集回归         |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn forkguard_interrupted_turn_fallback_preserves_preexisting_jobs"
-  "APP|停止与后台 task id 登记竞态回归     |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn task_registered_after_stop_is_killed_immediately"
-  "APP|active turn id 生命周期回归         |pinvou3-app/src-tauri/src/features/assistant/engine.rs|fn forkguard_active_turn_id_is_available_only_while_the_turn_is_running"
+  "APP|中断轮次 Shell 基线差集回归         |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn forkguard_interrupted_turn_preserves_preexisting_and_old_agent_jobs"
+  "APP|停止与后台 task id 登记竞态回归     |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn task_registered_after_stop_is_reclaimed_by_supervisor"
+  "APP|提交前 Shell scope 生命周期回归    |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn cancellation_before_turn_binding_still_kills_the_scope_job"
 )
 
 for fp in "${fingerprints[@]}"; do

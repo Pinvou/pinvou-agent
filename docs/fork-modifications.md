@@ -165,7 +165,7 @@ pinvou3-app 在父仓内通过 `pinvou3-app/src-tauri/src/os/macos/` 实现平�
 - app 的 `ShellOutputMonitor` 复用 session 级共享 `ShellManager`：按命令和工具调用绑定新任务，以非消费式完整快照计算 stdout/stderr 增量，合并慢轮询期间的全部未发送内容，并在后台终态补齐去重后的输出尾部。
 - `ShellOutputMonitor` 对运行中快照尾部的临时 `U+FFFD` 延迟一轮发送，避免 UTF-8 中文字符跨 reader chunk 时被永久写成替换符；底座的权限、安全分析、执行与 wait 游标保持原实现。
 - `EnginePool` 以 session 级生命周期记录协调自然完成、异常断流、主动回收和缺失 Engine 的取消路径，确保同一 turn 只产生一次权威终态。
-- app 层 `TurnShellTaskRegistry` 在权威 `TurnStarted` 时记录 session 既有 Shell 基线，并登记工具返回的精确后台 task id。主停止链路先标记当前 turn 已取消，再取消模型生成；延迟到达的 task id 会立即自清理，`TurnComplete(Interrupted)` 以基线差集做最终兜底，因此只终止本轮新任务并保留此前后台任务。正常完成和后台任务卡的单任务取消语义保持不变，CodeWhale 的 detached Shell 通用生命周期无需修改。
+- app 层 `TurnShellTaskRegistry` 在 Engine 提交前建立 root-turn scope，并在权威 `TurnStarted` 到达后绑定真实 turn id；工具 task id 与 `owner_agent_id` 共同记录归属，基线差集只兜底 ownerless root job，避免把旧 detached Agent 延迟创建的任务误判为当前 turn。主停止先把 scope 标记为取消，再取消模型生成；独立 blocking worker 清理当前及后续到达的所属任务，失败项保留并有限重试，scope 直到 root 终态、关联 Agent 和清理状态全部收敛后才回收。正常完成和后台任务卡的单任务取消语义保持不变，CodeWhale 的 detached Shell 通用生命周期无需修改。
 
 ## 4. 守护与验收
 
