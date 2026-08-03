@@ -16,7 +16,7 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 SCHEMA_VERSION = 1
@@ -28,6 +28,10 @@ INITIALIZABLE_BASELINE_RULES = {
     "frontend_large_file_lines",
     "rust_large_file_lines",
 }
+# Rules whose entries record measured file line counts. Only these may be
+# corrected upward up to the target branch's own measurement (see
+# compare_baseline_ratchet).
+LINE_COUNT_BASELINE_RULES = INITIALIZABLE_BASELINE_RULES
 
 
 def normalize(path: Path, root: Path) -> str:
@@ -87,6 +91,24 @@ def baseline_from_git(root: Path, ref: str, relative_path: Path) -> dict | None:
         return json.loads(content)
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid baseline at {ref}:{git_path}: {error}") from error
+
+
+def measured_lines_from_git(root: Path, ref: str) -> Callable[[str], int | None]:
+    """Resolve the line count of a file at a Git ref, or None when unavailable."""
+
+    def measure(relative_path: str) -> int | None:
+        try:
+            content = subprocess.check_output(
+                ["git", "show", f"{ref}:{relative_path}"],
+                cwd=root,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return len(content.splitlines())
+
+    return measure
 
 
 def rust_aliases(root: Path) -> dict[str, tuple[str, str]]:
@@ -506,8 +528,19 @@ def should_fail(failures: list[str], baseline_updates: list[str]) -> bool:
     return bool(failures or baseline_updates)
 
 
-def compare_baseline_ratchet(candidate: dict, previous: dict) -> list[str]:
-    """Reject baseline increases relative to the PR target branch."""
+def compare_baseline_ratchet(
+    candidate: dict,
+    previous: dict,
+    measured_at_ref: Callable[[str], int | None] | None = None,
+) -> list[str]:
+    """Reject baseline increases relative to the PR target branch.
+
+    Line-count entries may be corrected upward up to the target branch's own
+    measured reality: a stale (too low) baseline on the target branch would
+    otherwise reject every PR. The candidate-side comparison still pins each
+    entry to the candidate tree's exact measurement, so this correction cannot
+    admit growth beyond what the target branch measures.
+    """
     failures: list[str] = []
     if previous.get("schema_version") != candidate.get("schema_version"):
         failures.append(
@@ -526,6 +559,13 @@ def compare_baseline_ratchet(candidate: dict, previous: dict) -> list[str]:
         for key, count in candidate_counts.items():
             old_count = previous_counts.get(key, 0)
             if count > old_count:
+                measured = measured_at_ref(key) if measured_at_ref else None
+                if (
+                    rule in LINE_COUNT_BASELINE_RULES
+                    and measured is not None
+                    and count <= measured
+                ):
+                    continue
                 failures.append(
                     f"baseline ratchet: {rule}: {key}: candidate allows {count}, "
                     f"target branch allows {old_count}"
@@ -599,7 +639,13 @@ def main() -> int:
                 f"INFO: {args.base_ref} has no architecture baseline; accepting initial baseline"
             )
         else:
-            failures.extend(compare_baseline_ratchet(baseline, previous_baseline))
+            failures.extend(
+                compare_baseline_ratchet(
+                    baseline,
+                    previous_baseline,
+                    measured_at_ref=measured_lines_from_git(root, args.base_ref),
+                )
+            )
     for message in warnings:
         print(f"WARNING: {message}")
     if should_fail(failures, progress):
