@@ -93,7 +93,7 @@
   - `Custom` 工作流子 Agent 的显式工具白名单同时恢复父级允许的粗粒度能力；声明 `write_file`/`append_file` 后可以真实落盘，未声明工具仍由白名单拒绝，且只读父级不能被越权提升。
   - 合成 `submit_output` 工具；递归校验有限 JSON schema，只允许声明的安全相对路径落盘；最多 3 次催交后 fail-closed。
   - 文件产出型角色必须有成功的 `write_file` / `append_file` 才能完成；重试耗尽时把最后一次工具错误带入失败信封，宿主日志无需读取私有转录即可显示具体原因。
-  - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent；可靠 mailbox 在嵌套 Agent 的 `Started` 前发送 `ChildSpawned`，显式取消在 abort 前发送一次 `Cancelled`，宿主无需依赖可丢弃 UI 事件即可恢复父子谱系及终态。
+  - `AgentComplete` 携带 role/failed；宿主可 `CancelSubAgents`，批量取消所有 live agent；可靠 mailbox 在嵌套 Agent 的 `Started` 前发送 `ChildSpawned`，并在显式取消、超时自动回收、协作取消和中断路径于 abort/退出前发送一次与真实结果一致的终态。中断会保留可重新派发的 checkpoint，但不保留原位恢复的 live task；宿主无需依赖可丢弃 UI 事件即可恢复父子谱系并收敛资源归属。
   - OAuth 登录支持 CancellationToken，返回前先 drop in-flight flow 和回调监听。
   - standalone exec 路径显式补齐 `tool_whitelist`、`reasoning_effort`、`extra_tools`，保证 fork 作为独立项目时全目标可编译。
 - **为什么留 fork**：这些是宿主工作流的真实完成/取消语义，app 仅观察事件无法无竞态重建。
@@ -165,7 +165,7 @@ pinvou3-app 在父仓内通过 `pinvou3-app/src-tauri/src/os/macos/` 实现平�
 - app 的 `ShellOutputMonitor` 复用 session 级共享 `ShellManager`：按命令和工具调用绑定新任务，以非消费式完整快照计算 stdout/stderr 增量，合并慢轮询期间的全部未发送内容，并在后台终态补齐去重后的输出尾部。
 - `ShellOutputMonitor` 对运行中快照尾部的临时 `U+FFFD` 延迟一轮发送，避免 UTF-8 中文字符跨 reader chunk 时被永久写成替换符；底座的权限、安全分析、执行与 wait 游标保持原实现。
 - `EnginePool` 以 session 级生命周期记录协调自然完成、异常断流、主动回收和缺失 Engine 的取消路径，确保同一 turn 只产生一次权威终态。
-- app 层 `TurnShellTaskRegistry` 在 Engine 提交前以 RAII guard 建立 root-turn scope，并在权威 `TurnStarted` 到达后绑定真实 turn id；工具 task id 与可靠 mailbox 的 Agent 父子谱系共同记录归属，基线差集只兜底 ownerless root job，避免把旧 detached Agent 延迟创建的任务误判为当前 turn。主停止先把 scope 标记为取消，再取消模型生成；独立 blocking worker 清理当前及后续到达的所属任务，失败项有限重试并以有界 tombstone 留存。Shell 清理失败通过结构化终态标志交给前端三语展示，不覆盖 Engine 的 Interrupted 语义。正常完成和后台任务卡的单任务取消语义保持不变。
+- app 层 `TurnShellTaskRegistry` 在 Engine 提交前以 RAII guard 建立 root-turn scope，并在权威 `TurnStarted` 到达后绑定真实 turn id；工具 task id 与可靠 mailbox 的 Agent 父子谱系共同记录归属，基线差集只兜底 ownerless root job，避免把旧 detached Agent 延迟创建的任务误判为当前 turn。`Completed`、`Failed`、`Cancelled` 和不保留 live task 的 `Interrupted` 都会结束 Agent 对 scope 的占用。主停止先把 scope 标记为取消，再取消模型生成；独立 blocking worker 清理当前及后续到达的所属任务，失败项有限重试并以有界 tombstone 留存。Shell 清理失败通过结构化终态标志交给前端三语展示，不覆盖 Engine 的 Interrupted 语义。正常完成和后台任务卡的单任务取消语义保持不变。
 
 ## 4. 守护与验收
 

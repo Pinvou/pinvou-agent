@@ -2025,6 +2025,11 @@ fn spawn_event_forwarder(
                         MM::Cancelled { agent_id } => {
                             turn_shell_tasks.complete_agent(&agent_id);
                         }
+                        MM::Interrupted { agent_id, .. } => {
+                            // CodeWhale 当前不保留可原位恢复的 live task；中断后只能基于
+                            // checkpoint 重新派发，因此它对本轮 Shell scope 同样是终态。
+                            turn_shell_tasks.complete_agent(&agent_id);
+                        }
                         _ => {}
                     }
                 }
