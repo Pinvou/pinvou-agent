@@ -4,15 +4,15 @@
 > 基线、主题边界、守护指纹和每次 sync 结论都以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-07-30 · v0.9.0）
+## 0. 当前状态（2026-08-03 · v0.9.0）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| 公开固定基线 | tag `pinvou-v0.9.0-r2`，commit `cb93e0f4466d60e306252ed08bbbe214f2def752` |
-| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `cb93e0f4466d` |
-| 组织方式 | **6 个长期主题 commit + 4 个行为补充/维护 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
-| drift | 对 `v0.9.0`：**+4045 / -550，57 文件** |
+| 公开固定基线 | tag `pinvou-v0.9.0-r3`，commit `9a31dcdfad71172ab4fdf00a4d8bd106cfaa47da` |
+| fork 分支 | `Pinvou/CodeWhale` 的 `pinvou3-clean`，当前 head `9a31dcdfad71` |
+| 组织方式 | **6 个长期主题 commit + 8 个行为补充/维护 commit + 3 个公开基线/安全维护 commit**；公开历史从上游 `v0.9.0` 重放，不复用私有 fork SHA |
+| drift | 对 `v0.9.0`：**+4632 / -611，58 文件** |
 | 守护 | `scripts/fork-guard.sh`：v0.9 主题指纹 + 宿主 ShellManager 观察器与生命周期指纹 + submodule/app `forkguard_` 行为测试 |
 | app 状态 | `pinvou3-tauri` 主库编译通过，lib test target 可完整编译；macOS 适配保留在父仓平台抽象中，不增加 fork drift |
 
@@ -116,7 +116,7 @@
 - `23d4c9b5 docs(fork): 记录 Pinvou 公开基线`
 - `070f4413 chore(fork): 清理内部项目注释`
 
-这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。`cb93e0f44` 是 T2 的行为补充，不新增长期主题。父仓只固定到稳定标签 `pinvou-v0.9.0-r2`，不跟随维护分支漂移。
+这三个提交只增加公开 fork 的说明、全历史 Gitleaks 门禁与精确测试夹具白名单，并移除一处内部项目代号注释；不改变 T1–T6 的产品行为。`cb93e0f44` 是 T2 的行为补充，`749cafc9e` 至 `9a31dcdfa` 是 T5 的可靠 mailbox 生命周期补充，均不新增长期主题。父仓只固定到稳定标签 `pinvou-v0.9.0-r3`，不跟随维护分支漂移。
 
 ### T7 macOS 平台目标支持 (2026-07)
 
@@ -198,6 +198,13 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 本地 `/tmp` 空间不足时，显式把 `TMPDIR` 和 `CARGO_TARGET_DIR` 指到项目盘；不要用清理用户目录解决构建问题。
 
 ## 5. Sync 历史
+
+### v0.9.0 r3 Agent mailbox 生命周期（2026-08-03）
+
+- `Pinvou/CodeWhale#6` 以 rebase merge 合入 `pinvou3-clean`，发布不可变标签 `pinvou-v0.9.0-r3@9a31dcdf`。
+- 嵌套 Agent 在实际 `Started` 前可靠发布父子谱系；取消、中断、超时回收和自然完成只发布一次与权威结果一致的终态，并释放 manager 持有的 mailbox/task handle。
+- 合入前修复了排队 Agent 被提前及重复标记 `Started` 的问题：创建路径只发布 `ChildSpawned`，执行路径在取得 launch permit 后发布唯一 `Started`。
+- 验证：CodeWhale workspace 全目标检查、Pinvou fork 回归、40 项 `forkguard_`、终态/超时/竞态/launch-gate 定向测试、clippy、DCO、Gitleaks 与 contribution gate。
 
 ### LLM-facing 提示词文本审查修复（2026-08-02）
 
