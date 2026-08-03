@@ -109,17 +109,17 @@ pub const INSTRUCTIONS_MD: &str =
 const VISUAL_DESIGN_SKILL_MD: &str =
     include_str!("../../../../resources/common/bundle/skills/visual-design/SKILL.md");
 
-/// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
-/// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
-/// `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,CodeWhale submodule 的
-/// base.md 回退上游原文（fork drift 归零）。
+/// pinvou3 版 base prompt，编译期内嵌。通过底座 `prompts::set_base_prompt_override`
+/// 注入，替换底座的上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,
+/// CodeWhale submodule 的 base.md 回退上游原文（fork drift 归零）。
+/// 注：base.md 已折叠为自述空壳，实际静态文案由本文件的 composer（见下）输出，
+/// 工具纪律与语言要求分别由 instructions.md 与 `LOCALE_PREAMBLE_*` 承载。
 pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
 /// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
-/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言已由
-/// base.md §Language("match the latest user message")管,这里只补
-/// "判断不了时的默认语言"。closer 同理。
+/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言由
+/// 用户消息驱动,这里只补"判断不了时的默认语言"。closer 同理。
 pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 pinvou3 界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
 代码、路径、工具名、URL 保持原样。";

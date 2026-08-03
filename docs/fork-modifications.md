@@ -198,6 +198,15 @@ diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
 
 ## 5. Sync 历史
 
+### LLM-facing 提示词文本审查修复（2026-08-02）
+
+- fork 侧改动经 `Pinvou/CodeWhale#4`（分支 `fix/prompt-text-audit`，基线 `pinvou-v0.9.0-r2`）提交；合入发布新标签后，父仓再更新 gitlink 对齐。
+- 纯提示词文本变更，零代码行为变化；fork 指纹锚点全部保留，`forkguard_blocklist_golden` 等结果式 golden 不受影响；两处既有测试断言随文本修正同步更新（`rlm.rs` 的错误示例 `SOURCE`→`content`、`prompts.rs` 的 edit_file 不再引用被 pinvou3 工具面隐藏的 apply_patch）。
+- fork-distinct 文件中的文本修复（shell.rs T2、automation.rs T4、subagent T5、skills/mod.rs T3、tool_catalog.rs T2）只校正描述与既有实现的一致性，不新增 fork 语义，无需新增指纹。
+- 生产层改动限于 bundle 内 wecomcli-doc / wecomcli-smartsheet / lark-task 三个 SKILL.md 的自相矛盾与笔误修复，以及 `runtime_bundle/platform/mod.rs` 两条过时注释；instructions.md、base.md、kb_tool.rs、ima.rs 审查后无需改动。
+- 上游通用的文本-实现漂移（如 grep_files 虚假的 `.gitignore` 声明、agents/message 虚构的 "natural resume"、delegate 技能错误的 model_strength 默认值、wecomcli-doc 矛盾）已列入回馈上游候选。
+- 验证：`cargo check -p codewhale-tui`、`cargo test -p codewhale-tui forkguard_ --lib` 及 tools/prompts/skills 模块测试、`cargo check`（pinvou3-tauri lib）、`./scripts/fork-guard.sh --fast`。
+
 ### v0.9.0 r2 append_file inline diff（2026-07-30）
 
 - `Pinvou/CodeWhale#2` 以 squash commit `cb93e0f4466d60e306252ed08bbbe214f2def752` 合入 `pinvou3-clean`，并发布不可变标签 `pinvou-v0.9.0-r2`。
