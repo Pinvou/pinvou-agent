@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
-use crate::features::remote_control::manager;
+use crate::features::remote_control::{file_access, manager, MAX_TRANSFER_CHUNK_BYTES};
 use crate::features::remote_control::{
     RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
 };
@@ -132,8 +132,8 @@ pub fn web_access_publish_event(
 #[tauri::command]
 pub fn web_access_list_host_files(
     path: Option<String>,
-) -> Result<manager::HostFileListing, String> {
-    manager::list_host_files(path)
+) -> Result<file_access::HostFileListing, String> {
+    file_access::list_host_files(path)
 }
 
 /// WebUI navigation owns an independent selected Session. These wrappers
@@ -292,7 +292,7 @@ pub async fn web_access_upload_attachment_chunk(
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_base64)
         .map_err(|error| format!("decode attachment upload chunk: {error}"))?;
-    if data.len() > manager::MAX_ARTIFACT_CHUNK_BYTES {
+    if data.len() > MAX_TRANSFER_CHUNK_BYTES {
         return Err("attachment upload chunk exceeds 256 KiB".into());
     }
     let Some((file_name, bytes)) = manager
@@ -365,7 +365,7 @@ pub async fn web_access_read_conversation_attachment_chunk(
     offset: u64,
     limit: Option<usize>,
     store: State<'_, SessionStore>,
-) -> Result<manager::ArtifactChunk, String> {
+) -> Result<file_access::ArtifactChunk, String> {
     let path = super::files::resolve_conversation_attachment_path(
         &store,
         &session_id,
@@ -374,7 +374,7 @@ pub async fn web_access_read_conversation_attachment_chunk(
         &basename,
         &display_text,
     )?;
-    manager::read_resolved_file_chunk(&path, offset, limit)
+    file_access::read_resolved_file_chunk(&path, offset, limit)
 }
 
 /// Materialize a draft Web conversation and admit its first turn as one
@@ -584,7 +584,7 @@ pub async fn web_access_save_session_messages_chunk(
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_base64)
         .map_err(|error| format!("decode Session upload chunk: {error}"))?;
-    if data.len() > manager::MAX_ARTIFACT_CHUNK_BYTES {
+    if data.len() > MAX_TRANSFER_CHUNK_BYTES {
         return Err("Session upload chunk exceeds 256 KiB".into());
     }
     let completed = manager.append_web_session_upload(
@@ -668,8 +668,8 @@ pub fn web_access_read_artifact_chunk(
     offset: u64,
     limit: Option<usize>,
     store: State<'_, SessionStore>,
-) -> Result<manager::ArtifactChunk, String> {
-    manager::read_artifact_chunk(&store, &path, &session_id, offset, limit)
+) -> Result<file_access::ArtifactChunk, String> {
+    file_access::read_artifact_chunk(&store, &path, &session_id, offset, limit)
 }
 
 /// Merge only settings that remain visible and meaningful in WebUI. Hidden
@@ -687,7 +687,7 @@ fn scoped_artifact_path(
     session_id: &str,
     path: &str,
 ) -> Result<String, String> {
-    manager::resolve_session_artifact_path(store, session_id, path)
+    file_access::resolve_session_artifact_path(store, session_id, path)
         .map(|resolved| resolved.to_string_lossy().into_owned())
 }
 
