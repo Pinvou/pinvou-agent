@@ -436,7 +436,9 @@ impl Pinvou3Bridge {
             ModelPreset::Anthropic => "anthropic".to_string(),
             ModelPreset::Xai => "xai".to_string(),
             // Gemini 走官方 OpenAI 兼容端点，复用 openai wire route。
-            ModelPreset::OpenaiCompatible | ModelPreset::Qwen | ModelPreset::Openai
+            ModelPreset::OpenaiCompatible
+            | ModelPreset::Qwen
+            | ModelPreset::Openai
             | ModelPreset::Gemini => "openai".to_string(),
         }
     }

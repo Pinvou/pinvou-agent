@@ -1050,9 +1050,7 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
         ModelPreset::Mimo => Some(1_000_000),
         // OpenAI 官方口径：gpt-5.4-mini / gpt-5.3-codex 为 400K，其余现役旗舰 1.05M。
         ModelPreset::Openai => match model.map(str::to_ascii_lowercase) {
-            Some(m) if m.contains("gpt-5.4-mini") || m.contains("gpt-5.3-codex") => {
-                Some(400_000)
-            }
+            Some(m) if m.contains("gpt-5.4-mini") || m.contains("gpt-5.3-codex") => Some(400_000),
             _ => Some(1_050_000),
         },
         // Anthropic 官方口径：haiku 200K，opus/sonnet/fable 1M
@@ -1651,7 +1649,10 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         // 无模型名 → 预设兜底
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
         // Openai/Anthropic/Xai 臂的无模型名缺省
-        assert_eq!(infer_context_window(ModelPreset::Openai, None), Some(1_050_000));
+        assert_eq!(
+            infer_context_window(ModelPreset::Openai, None),
+            Some(1_050_000)
+        );
         assert_eq!(
             infer_context_window(ModelPreset::Anthropic, None),
             Some(1_000_000)
