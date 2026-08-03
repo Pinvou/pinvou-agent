@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -21,12 +22,6 @@ use macos as current;
 use unsupported as current;
 #[cfg(target_os = "windows")]
 use windows as current;
-
-pub(super) struct ManagedCodexArtifact {
-    pub(super) urls: &'static [&'static str],
-    pub(super) integrity: &'static str,
-    pub(super) vendor_triple: &'static str,
-}
 
 pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
     current::development_bridge_root(manifest_dir)
@@ -52,8 +47,10 @@ pub(super) fn bridge_node_relative_path() -> PathBuf {
     current::bridge_node_relative_path()
 }
 
-pub(super) fn managed_codex_executable_name() -> &'static str {
-    current::MANAGED_CODEX_EXECUTABLE_NAME
+/// OpenAI 官方安装器默认写入的 Codex 可执行文件绝对路径。
+/// GUI 进程不会继承安装子进程刚写入的用户 PATH，安装后必须直接探测这里。
+pub(super) fn codex_official_install_path() -> PathBuf {
+    current::codex_official_install_path()
 }
 
 pub(super) fn adapter_needs_node(adapter: &Path) -> bool {
@@ -68,16 +65,6 @@ pub(super) fn codex_login_command(codex: &Path) -> Command {
     current::codex_login_command(codex)
 }
 
-pub(super) fn managed_artifact(architecture: &str) -> Result<ManagedCodexArtifact> {
-    current::managed_artifact(architecture)
-}
-
-/// 当前平台的 Codex 安装方式（status.install_method 契约字段）：
-/// "managed_download"（linux/windows）/ "homebrew"（macOS）/ "manual"（其他）。
-pub(super) fn install_method() -> &'static str {
-    current::INSTALL_METHOD
-}
-
 #[cfg(target_os = "macos")]
 pub(super) fn brew_bin() -> &'static str {
     current::brew_bin()
@@ -90,6 +77,17 @@ pub(super) fn brew_bin() -> &'static str {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn brew_prefix() -> Option<std::path::PathBuf> {
+    current::brew_prefix()
+}
+
+/// Homebrew 仅 macOS 使用；其他平台恒 None。
+#[cfg(not(target_os = "macos"))]
+pub(super) fn brew_prefix() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn brew_available() -> bool {
     current::brew_available()
 }
@@ -98,10 +96,6 @@ pub(super) fn brew_available() -> bool {
 #[cfg(not(target_os = "macos"))]
 pub(super) fn brew_available() -> bool {
     false
-}
-
-pub(super) fn should_retry_file_lock(error: &io::Error) -> bool {
-    current::should_retry_file_lock(error)
 }
 
 /// 测试辅助：当前平台是否类 Unix（假 codex 脚本依赖可执行位）。

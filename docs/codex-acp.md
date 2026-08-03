@@ -15,8 +15,9 @@ CodeWhale。
 
 1. 开发源码首次运行前执行 `./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`；
    正式安装包会自带该 Bridge，不要求系统安装 Node/npm。
-2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 会优先检测系统 Codex；没有检测到时可在
-   “代码”模式下载固定版本的托管 Codex。
+2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 会优先检测系统 Codex：存在且版本不低于
+   0.144.6 时直接使用，不提示升级；缺失或版本过旧时，经用户确认后按
+   [`multi-agent-acp.md`](./multi-agent-acp.md) 的安装与升级矩阵自动安装或升级。
 3. 在主页选择“代码”，输入框下方默认选择“临时会话”；直接发送首条消息时才创建
    Codex 会话，避免只切换模式就产生空记录。也可以在发送前切换工作目录：
    - **选择项目目录**：Codex 的进程 cwd、`session/new` 和 `session/load`
@@ -25,11 +26,13 @@ CodeWhale。
      `~/.pinvou3/sessions/<id>/workspace/` 隔离目录。
    - **最近项目**：复用近期选择过的项目目录。
    同一个项目可以创建多个独立会话；会话开始后不能更换目录，需要切换项目时新建会话。
-4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，点击下载会把
-   固定版本托管 Codex 放到 `~/.pinvou3/runtimes/codex/`；ACP Bridge 版本固定为
-   `1.1.5`。当前 Linux MVP 下载 OpenAI 发布的固定平台归档，官方 registry 不可达时
-   允许使用镜像，但 Pinvou 代码内置版本、URL 和 SHA-512；不会执行系统 npm，也不会
-   把依赖写进系统环境。
+4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，经用户确认后
+   执行 OpenAI 官方安装脚本安装当时的 latest；安装后直接探测 `~/.local/bin/codex`
+   的绝对路径，不要求重启 App 或依赖桌面进程的 PATH。版本过旧时先判定安装来源：
+   macOS Homebrew cask 安装的旧版改用
+   `brew upgrade --cask codex`，npm 全局（`@openai/codex`）安装的旧版改用
+   `npm install -g @openai/codex@latest`；官方脚本来源或无法识别来源时重新运行官方脚本。
+   用户拒绝升级时保持 Codex 不可用，不静默安装第二份副本。ACP Bridge 版本固定为 `1.1.5`。
 5. 输入消息即可使用流式回答、思考、工具步骤、计划、权限选择、停止生成和会话恢复。
 
 ## 会话与权限状态
@@ -96,9 +99,10 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 
 脚本会把当前 Linux 架构的应用隔离 Node 与精简 `codex-acp` Bridge 放到
 `resources/platforms/linux/codex-bridge/`。项目统一构建入口也会自动准备该目录。
-生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含大体积 Codex 平台
-二进制。正式 Linux x64 / arm64 包不依赖系统 Node/npm，系统 Codex 缺失时由应用下载
-固定、带完整性校验的托管版本。
+生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含 Codex CLI。正式包不依赖
+系统 Node/npm 来运行 ACP Bridge；系统 Codex 缺失时由应用经用户确认运行 OpenAI 官方
+安装脚本。npm 全局来源的旧版经用户确认后用 `npm install -g @openai/codex@latest`
+升级，其他来源按官方脚本升级。
 
 ## 边界
 

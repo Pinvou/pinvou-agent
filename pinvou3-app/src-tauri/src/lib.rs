@@ -629,6 +629,7 @@ pub fn run() {
             commands::codex::get_acp_agent_status,
             commands::codex::prepare_codex_acp,
             commands::codex::install_codex_homebrew,
+            commands::codex::install_acp_agent,
             commands::codex::login_codex_acp,
             commands::codex::login_acp_agent,
             commands::codex::switch_acp_agent_account,

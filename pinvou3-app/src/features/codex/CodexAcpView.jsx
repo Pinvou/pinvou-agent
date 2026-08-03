@@ -6,6 +6,14 @@ import {
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
+import {
+  classifyAcpServiceFailure,
+  isAcpAuthenticationFailure,
+  runtimeInstallInProgress,
+  runtimeLoginInProgress,
+  runtimeNoticeMode,
+  runtimeOperationFor,
+} from './runtimeNoticeState.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
@@ -106,33 +114,6 @@ function rememberDraftControls(agentId, info) {
     // 缓存写不进去时仅影响下次草稿预展示，本次会话不受影响。
   }
   return snapshot;
-}
-
-function isAcpAuthenticationFailure(envelope) {
-  if (envelope?.event?.type !== 'turn_completed') return false;
-  const error = String(envelope.event?.data?.error || '');
-  return /authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(error);
-}
-
-function classifyAcpServiceFailure(envelope) {
-  if (envelope?.event?.type !== 'turn_completed') return null;
-  const detail = String(envelope.event?.data?.error || '').trim();
-  if (!detail) return null;
-  let kind = 'service';
-  if (/HTTP\s*402|会员.{0,12}(权益|额度|到期|失效)|订阅.{0,12}(到期|失效)|payment required/i.test(detail)) {
-    kind = 'entitlement';
-  } else if (/HTTP\s*429|rate.?limit|quota|额度.{0,12}(不足|用尽)|用量.{0,12}(超出|耗尽)/i.test(detail)) {
-    kind = 'quota';
-  } else if (/HTTP\s*401|authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(detail)) {
-    kind = 'authentication';
-  } else if (/network|connection|timeout|timed out|网络|连接.{0,8}(失败|超时)/i.test(detail)) {
-    kind = 'network';
-  }
-  return {
-    kind,
-    detail,
-    key: `${envelope.seq || ''}:${envelope.timestamp || ''}:${detail}`,
-  };
 }
 
 function configChoices(option) {
@@ -685,9 +666,9 @@ function setupHintText(copy, hint) {
 function RuntimeNotice({
   status,
   working,
+  operation,
   error,
-  onPrepare,
-  onBrewInstall,
+  onInstall,
   onLogin,
   onOpenLogin,
   onSubmitLoginCode,
@@ -695,15 +676,20 @@ function RuntimeNotice({
   copy,
 }) {
   const [authorizationCode, setAuthorizationCode] = useState('');
+  const [declinedUpgrade, setDeclinedUpgrade] = useState(false);
   useEffect(() => {
     setAuthorizationCode('');
   }, [status?.agent_id, status?.login_in_progress]);
-  if (!status) return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
+  useEffect(() => {
+    setDeclinedUpgrade(false);
+  }, [status?.agent_id, status?.installed]);
+  const noticeMode = runtimeNoticeMode(status);
+  if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
     ? (copy.showRawErrors ? rawError : copy.operationFailed)
     : '';
-  if (!status.bridge_ready) {
+  if (noticeMode === 'bridge_unavailable') {
     const isCodex = status.agent_id === 'codex';
     return (
       <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-4 flex items-start gap-3">
@@ -721,57 +707,72 @@ function RuntimeNotice({
       </div>
     );
   }
-  if (!status.codex_available) {
-    const progress = status.download_progress;
-    const isCodex = status.agent_id === 'codex';
-    const installMethod = status.install_method;
-    if (isCodex && (installMethod === 'homebrew' || installMethod === 'manual')) {
-      const incompatible = Boolean(status.system_codex_incompatible);
-      const brewInstallable = installMethod === 'homebrew' && status.brew_available;
-      return (
-        <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
-          <Terminal size={19} className="text-blue-500 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-semibold">{incompatible ? copy.codexIncompatible : copy.codexMissing}</div>
-            <div className="text-[12px] text-gray-500">
-              {incompatible
-                ? copy.codexIncompatibleHint(status.min_codex_version)
-                : installMethod === 'manual'
-                  ? copy.manualInstallHint
-                  : status.brew_available
-                    ? copy.brewInstallHint
-                    : copy.brewMissingHint}
-            </div>
-            {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
-          </div>
-          {brewInstallable && (
-            <button onClick={onBrewInstall} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
-              {working ? copy.brewInstalling : copy.brewInstall}
-            </button>
-          )}
-        </div>
-      );
-    }
+  if (noticeMode === 'install') {
+    const agentName = status.agent_name || 'Agent';
+    const action = status.install_action || 'manual';
+    const isUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
+    const declinedBlocked = isUpgrade && declinedUpgrade;
+    const installing = runtimeInstallInProgress(status, operation);
+    const installHints = {
+      official_script: copy.officialScriptHint(agentName),
+    };
+    const installButtons = {
+      official_script: copy.confirmInstall,
+    };
+    const hint = declinedBlocked
+      ? copy.declinedBlockedHint(agentName)
+      : isUpgrade && !declinedUpgrade
+        ? copy.packageManagerUpgradeHint(status.install_source)
+        : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
+    const busyLabel = copy.installing;
     return (
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
         <Terminal size={19} className="text-blue-500 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{isCodex ? copy.codexMissing : copy.setupRequired}</div>
-          <div className="text-[12px] text-gray-500">
-            {isCodex ? copy.managedAvailable(status.managed_codex_version) : setupHintText(copy, status.setup_hint)}
+          <div className="text-[13px] font-semibold">
+            {status.update_required
+              ? copy.cliUpdateRequired(agentName, status.version)
+              : status.version
+                ? copy.cliOutdated(status.version, status.min_version)
+                : copy.cliMissing(agentName)}
           </div>
+          <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
-        <button onClick={isCodex ? onPrepare : onRefresh} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50">
-          {isCodex
-            ? (working ? (progress == null ? copy.downloading : copy.downloadProgress(progress)) : copy.downloadManaged)
-            : copy.recheck}
-        </button>
+        {declinedBlocked ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
+              {copy.recheck}
+            </button>
+            <button onClick={() => setDeclinedUpgrade(false)} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium">
+              {copy.backToUpgrade}
+            </button>
+          </div>
+        ) : isUpgrade && !declinedUpgrade ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <button onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
+              {copy.declineUpgrade}
+            </button>
+            <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+              {installing && <RefreshCw size={12} className="animate-spin" />}
+              {installing ? busyLabel : copy.upgrade}
+            </button>
+          </div>
+        ) : installButtons[action] ? (
+          <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+            {installing && <RefreshCw size={12} className="animate-spin" />}
+            {installing ? busyLabel : installButtons[action]}
+          </button>
+        ) : (
+          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
+            {copy.recheck}
+          </button>
+        )}
       </div>
     );
   }
-  if (!status.authenticated) {
-    const waitingForLogin = Boolean(status.login_in_progress);
+  if (noticeMode === 'login') {
+    const waitingForLogin = runtimeLoginInProgress(status, operation);
     const loginUrlReady = waitingForLogin && Boolean(status.login_url);
     const agentName = status.agent_name || 'Agent';
     const waitingTitle = copy.waitingAgentLogin
@@ -834,12 +835,12 @@ function RuntimeNotice({
           </button>
         )}
         <button onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
-          {working || waitingForLogin ? copy.waitAuth : copy.authorize}
+          {waitingForLogin ? copy.waitAuth : copy.authorize}
         </button>
       </div>
     );
   }
-  if (visibleError) return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
+  if (noticeMode === 'error') return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
   return null;
 }
 
@@ -934,6 +935,8 @@ export function CodexAcpView({
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [configApplying, setConfigApplying] = useState('');
   const [working, setWorking] = useState(false);
+  const [runtimeOperations, setRuntimeOperations] = useState({});
+  const [runtimeErrors, setRuntimeErrors] = useState({});
   const [error, setError] = useState('');
   const showError = (nextError) => {
     console.error('Codex operation failed:', nextError);
@@ -1012,6 +1015,9 @@ export function CodexAcpView({
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
+  const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
+  const activeRuntimeBusy = Boolean(activeRuntimeOperation);
+  const activeRuntimeError = runtimeErrors[activeAgentId] || '';
   const serviceFailure = useMemo(() => {
     const latestCompleted = [...events]
       .reverse()
@@ -1118,8 +1124,9 @@ export function CodexAcpView({
     return list;
   }
 
-  async function refreshStatus(agentId = activeAgentId) {
-    const next = await invoke('get_acp_agent_status', { agentId });
+  async function refreshStatus(agentId = activeAgentId, recheck = false) {
+    // recheck=true 强制后端忽略缓存重新探测（「重新检测」按钮）；轮询不传，保持读缓存。
+    const next = await invoke('get_acp_agent_status', recheck ? { agentId, recheck: true } : { agentId });
     if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     return next;
   }
@@ -1374,7 +1381,8 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
-    refreshStatus(activeAgentId).catch(showError);
+    // 用户主动切换 Agent 后必须绕过进程内探测缓存，立即反映 App 外的安装/卸载。
+    refreshStatus(activeAgentId, true).catch(showError);
   }, [activeAgentId]);
 
   useEffect(() => {
@@ -1484,63 +1492,88 @@ export function CodexAcpView({
     element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
   }
 
-  async function prepare() {
-    setWorking(true); setError('');
-    const poll = window.setInterval(() => refreshStatus(activeAgentId).catch(() => {}), 500);
-    try {
-      const next = await invoke('prepare_codex_acp');
-      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
-    }
-    catch (err) { showError(err); }
-    finally { window.clearInterval(poll); await refreshStatus(activeAgentId).catch(() => {}); setWorking(false); }
+  function beginRuntimeOperation(agentId, operation) {
+    setRuntimeOperations(current => ({ ...current, [agentId]: operation }));
+    setRuntimeErrors(current => ({ ...current, [agentId]: '' }));
   }
 
-  async function brewInstall() {
-    setWorking(true); setError('');
-    const poll = window.setInterval(() => refreshStatus().catch(() => {}), 500);
-    try { setStatus(await invoke('install_codex_homebrew')); }
-    catch (err) { showError(err); }
-    finally { window.clearInterval(poll); await refreshStatus().catch(() => {}); setWorking(false); }
+  function finishRuntimeOperation(agentId, operation) {
+    setRuntimeOperations(current => {
+      if (current[agentId] !== operation) return current;
+      const next = { ...current };
+      delete next[agentId];
+      return next;
+    });
+  }
+
+  function showRuntimeError(agentId, nextError) {
+    console.error(`${agentId} runtime operation failed:`, nextError);
+    const message = codexCopy.showRawErrors ? String(nextError) : codexCopy.operationFailed;
+    setRuntimeErrors(current => ({ ...current, [agentId]: message }));
+  }
+
+  async function install(actionOverride = null) {
+    const agentId = activeAgentId;
+    beginRuntimeOperation(agentId, 'install');
+    setError('');
+    const poll = window.setInterval(() => refreshStatus(agentId).catch(() => {}), 500);
+    try {
+      const payload = { agent: agentId };
+      if (typeof actionOverride === 'string' && actionOverride) payload.action = actionOverride;
+      const next = await invoke('install_acp_agent', payload);
+      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+    }
+    catch (err) { showRuntimeError(agentId, err); }
+    finally {
+      window.clearInterval(poll);
+      await refreshStatus(agentId).catch(() => {});
+      finishRuntimeOperation(agentId, 'install');
+    }
   }
 
   async function login() {
-    setWorking(true); setError('');
+    const agentId = activeAgentId;
+    beginRuntimeOperation(agentId, 'login');
+    setError('');
     try {
-      const next = await invoke('login_acp_agent', { agentId: activeAgentId });
+      const next = await invoke('login_acp_agent', { agentId });
       if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     }
-    catch (err) { showError(err); }
-    finally { setWorking(false); }
+    catch (err) { showRuntimeError(agentId, err); }
+    finally { finishRuntimeOperation(agentId, 'login'); }
   }
 
   async function switchAccount() {
+    const agentId = activeAgentId;
     setAccountMenuOpen(false);
     if (serviceFailure?.key) setDismissedFailureKey(serviceFailure.key);
-    setWorking(true);
+    beginRuntimeOperation(agentId, 'switch-account');
     setError('');
     try {
-      const next = await invoke('switch_acp_agent_account', { agentId: activeAgentId });
+      const next = await invoke('switch_acp_agent_account', { agentId });
       if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     } catch (err) {
-      showError(err);
+      showRuntimeError(agentId, err);
     } finally {
-      setWorking(false);
+      finishRuntimeOperation(agentId, 'switch-account');
     }
   }
 
   async function openLogin() {
-    setError('');
-    try { await invoke('open_acp_agent_login_url', { agentId: activeAgentId }); }
-    catch (err) { showError(err); }
+    const agentId = activeAgentId;
+    setRuntimeErrors(current => ({ ...current, [agentId]: '' }));
+    try { await invoke('open_acp_agent_login_url', { agentId }); }
+    catch (err) { showRuntimeError(agentId, err); }
   }
 
   async function submitLoginCode(code) {
-    setError('');
+    const agentId = activeAgentId;
+    setRuntimeErrors(current => ({ ...current, [agentId]: '' }));
     try {
-      await invoke('submit_acp_agent_login_code', { agentId: activeAgentId, code });
-      await refreshStatus(activeAgentId);
+      await invoke('submit_acp_agent_login_code', { agentId, code });
+      await refreshStatus(agentId);
     } catch (err) {
-      showError(err);
+      showRuntimeError(agentId, err);
     }
   }
 
@@ -1549,7 +1582,8 @@ export function CodexAcpView({
     const readyAttachments = attachments.filter(attachment => (
       attachment.status === 'ready' && attachment.result
     ));
-    if ((!message && !readyAttachments.length && !workspaceReferences.length) || busy || working) return;
+    if ((!message && !readyAttachments.length && !workspaceReferences.length)
+      || busy || working || activeRuntimeBusy) return;
     if (!activeStatus?.authenticated) {
       setError(codexCopy.loginRequiredBeforeSend);
       return;
@@ -1640,7 +1674,7 @@ export function CodexAcpView({
   }
 
   async function changeModel(modelId) {
-    if (!modelId) return;
+    if (!modelId || activeRuntimeBusy) return;
     if (!activeId) {
       stageDraftConfigSelection({ model: modelId });
       return;
@@ -1652,6 +1686,7 @@ export function CodexAcpView({
   }
 
   async function changeConfig(configId, valueId) {
+    if (activeRuntimeBusy) return;
     if (!activeId) {
       stageDraftConfigSelection({ configs: { [configId]: valueId } });
       return;
@@ -1666,7 +1701,7 @@ export function CodexAcpView({
   }
 
   async function changeMode(modeId) {
-    if (!modeId) return;
+    if (!modeId || activeRuntimeBusy) return;
     if (!activeId) {
       stageDraftConfigSelection({ mode: modeId });
       return;
@@ -1754,21 +1789,21 @@ export function CodexAcpView({
               <>
                 <RuntimeNotice
                   status={activeStatus}
-                  working={working}
-                  error={error}
-                  onPrepare={prepare}
-                  onBrewInstall={brewInstall}
+                  working={working || activeRuntimeBusy}
+                  operation={activeRuntimeOperation}
+                  error={activeRuntimeError || error}
+                  onInstall={install}
                   onLogin={login}
                   onOpenLogin={openLogin}
                   onSubmitLoginCode={submitLoginCode}
-                  onRefresh={() => refreshStatus(activeAgentId)}
+                  onRefresh={() => refreshStatus(activeAgentId, true)}
                   copy={codexCopy}
                 />
                 {activeStatus?.authenticated && (
                   <AgentServiceFailureNotice
                     failure={visibleServiceFailure}
                     agentName={activeAgentName}
-                    working={working}
+                    working={working || activeRuntimeBusy}
                     onSwitchAccount={switchAccount}
                     onDismiss={() => setDismissedFailureKey(serviceFailure?.key || '')}
                     copy={codexCopy}
@@ -2057,7 +2092,7 @@ export function CodexAcpView({
                             <button
                               type="button"
                               onClick={switchAccount}
-                              disabled={working || activeStatus?.login_in_progress}
+                              disabled={working || activeRuntimeBusy || activeStatus?.login_in_progress}
                               className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
                             >
                               <User size={15} className="text-blue-500" />
@@ -2070,7 +2105,7 @@ export function CodexAcpView({
                               type="button"
                               onClick={() => {
                                 setAccountMenuOpen(false);
-                                refreshStatus(activeAgentId).catch(showError);
+                                refreshStatus(activeAgentId, true).catch(showError);
                               }}
                               className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                             >
@@ -2094,7 +2129,7 @@ export function CodexAcpView({
                             name: model.name || model.id,
                           }))}
                           onChange={changeModel}
-                          disabled={busy || working}
+                          disabled={busy || working || activeRuntimeBusy}
                           unsetLabel={codexCopy.notSet}
                         />
                       )}
@@ -2108,7 +2143,7 @@ export function CodexAcpView({
                             name: item.name || item.id,
                           }))}
                           onChange={changeMode}
-                          disabled={busy || working}
+                          disabled={busy || working || activeRuntimeBusy}
                           title={codexCopy.sessionModeTitle}
                           unsetLabel={codexCopy.notSet}
                         />
@@ -2121,7 +2156,7 @@ export function CodexAcpView({
                           value={composerConfigOptionValue(option)}
                           choices={configChoices(option)}
                           onChange={value => changeConfig(option.id, value)}
-                          disabled={busy || working}
+                          disabled={busy || working || activeRuntimeBusy}
                           title={option.description || option.name}
                           unsetLabel={codexCopy.notSet}
                         />
@@ -2132,7 +2167,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !activeStatus || !activeStatus.installed || !activeStatus.authenticated}
+                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || !activeStatus || !activeStatus.installed || !activeStatus.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>

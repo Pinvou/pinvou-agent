@@ -11,6 +11,7 @@ const platform = read(...featureRoot, "platform", "mod.rs");
 const windows = read(...featureRoot, "platform", "windows.rs");
 const linux = read(...featureRoot, "platform", "linux.rs");
 const macos = read(...featureRoot, "platform", "macos.rs");
+const processRuntime = read("src-tauri", "src", "platform", "process.rs");
 const prepareBridge = read("scripts", "prepare-codex-bridge-runtime.sh");
 const runDev = read("run-dev.sh");
 
@@ -25,29 +26,23 @@ for (const os of ["windows", "linux", "macos"]) {
 assert.ok(
   !runtime.includes("capabilities::is_windows()")
     && !runtime.includes("managed_artifact_for("),
-  "shared runtime management must delegate OS behavior to the Codex platform adapter",
+  "shared Codex probing must remain platform-neutral",
 );
-assert.match(runtime, /platform::managed_artifact\(std::env::consts::ARCH\)/);
-assert.match(runtime, /platform::should_retry_file_lock\(&error\)/);
+assert.doesNotMatch(runtime, /Managed|managed_codex|registry\.npmjs|registry\.npmmirror/);
 
 assert.match(windows, /SYSTEM_CODEX_NAME: &str = "codex\.cmd"/);
-assert.match(windows, /MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex\.exe"/);
 assert.match(windows, /external_application_path\(adapter\)/);
 assert.match(windows, /HiddenTokioCommand::new\("cmd"\)/);
-assert.match(windows, /x86_64-pc-windows-msvc/);
-assert.match(feature, /fn command_version[\s\S]*?HiddenCommand::new/);
-assert.match(feature, /fn cli_status_success[\s\S]*?HiddenCommand::new\("cmd"\)/);
+assert.match(feature, /fn command_version[\s\S]*?external_command/);
+assert.match(feature, /fn cli_status_success[\s\S]*?external_command/);
+assert.match(processRuntime, /fn external_command_for[\s\S]*?HiddenCommand::new\("cmd"\)/);
 assert.match(feature, /"windows" => "win32"/);
 assert.match(feature, /format!\("claude-agent-sdk-\{platform\}-\{arch\}\{libc\}"\)/);
 assert.match(feature, /binary = if os == "windows"[\s\S]*?"claude\.exe"/);
 
 assert.match(linux, /SYSTEM_CODEX_NAME: &str = "codex"/);
-assert.match(linux, /x86_64-unknown-linux-musl/);
-assert.match(linux, /aarch64-unknown-linux-musl/);
 assert.ok(!linux.includes('Command::new("cmd")'));
 
-assert.match(macos, /当前托管 Codex 下载不支持平台: macos-/);
-assert.match(macos, /should_retry_file_lock\(_error: &io::Error\) -> bool \{\s*false/);
 assert.match(macos, /"aarch64" => "darwin-arm64"/);
 assert.match(macos, /join\("darwin-x64"\)|_ => "darwin-x64"/);
 assert.doesNotMatch(prepareBridge, /--os=linux/);
@@ -70,8 +65,43 @@ assert.doesNotMatch(
   /BRIDGE_(?:NODE|ENTRY)=/,
   "dev startup must not duplicate a partial Bridge readiness check",
 );
-assert.match(feature, /run_brew\(&\["install", "--cask", "codex"\]\)/);
-assert.match(feature, /run_brew\(&\["upgrade", "--cask", "codex"\]\)/);
+assert.match(feature, /vec!\["install", "--cask", "codex"\]/);
+assert.match(feature, /vec!\["upgrade", "--cask", "codex"\]/);
+// brew 升级已泛化到三个 Agent：claude-code 是 cask，kimi-code 是 formula（无 --cask）。
+assert.match(feature, /vec!\["upgrade", "--cask", "claude-code"\]/);
+assert.match(feature, /vec!\["upgrade", "kimi-code"\]/);
+assert.match(feature, /&\["list", "--cask", "codex"\]/);
+assert.match(feature, /&\["list", "--cask", "claude-code"\]/);
+assert.match(feature, /&\["list", "kimi-code"\]/);
 assert.doesNotMatch(feature, /brew (?:install|upgrade) codex/);
+// npm 全局来源探测与升级：Windows 用 npm.cmd，包名固定，升级参数 install -g <pkg>@latest。
+assert.match(feature, /find_in_path\("npm\.cmd"\)/);
+assert.match(feature, /@openai\/codex/);
+assert.match(feature, /@anthropic-ai\/claude-code/);
+assert.match(feature, /@moonshot-ai\/kimi-code/);
+assert.match(feature, /"ls", "-g", package, "--depth=0"/);
+assert.match(feature, /format!\("\{\}@latest", npm_package\(backend\)\?\)/);
+assert.match(feature, /"npm_upgrade" => self\.upgrade_via_npm\(backend\)/);
+// 三 Agent 未安装均走官方脚本；Codex 官方脚本默认 latest，且安装后从 ~/.local/bin
+// 直接解析绝对路径，不依赖桌面进程启动时继承的 PATH。
+assert.match(feature, /CODEX_INSTALL_SCRIPT_UNIX: &str = "https:\/\/chatgpt\.com\/codex\/install\.sh"/);
+assert.match(feature, /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/);
+assert.match(feature, /AgentBackend::CodexAcp => \(CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS\)/);
+assert.match(feature, /command\.env\("CODEX_NON_INTERACTIVE", "1"\)/);
+assert.match(feature, /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/);
+assert.doesNotMatch(feature, /managed_download|MANAGED_CODEX_VERSION|install_managed_codex/);
+assert.doesNotMatch(
+  `${windows}\n${linux}\n${macos}`,
+  /managed_artifact|should_retry_file_lock|registry\.npmjs|registry\.npmmirror/,
+);
+
+// Kimi 不经过独立 Bridge；CLI 缺失时必须继续进入 installed=false 的安装分支，
+// 不能被前端 !bridge_ready 的错误提示提前截断。
+const kimiStatus = feature.match(
+  /if backend == AgentBackend::KimiAcp \{([\s\S]*?)\n        \}\n\n        let \(agent_id/,
+);
+assert.ok(kimiStatus, "Kimi status branch must remain explicit");
+assert.match(kimiStatus[1], /bridge_ready: true/);
+assert.match(kimiStatus[1], /install_action: if installed/);
 
 console.log("✓ Codex ACP compile-time platform contract passed");

@@ -6027,6 +6027,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "toml 0.8.23",
  "wait-timeout",
  "walkdir",
  "webkit2gtk",

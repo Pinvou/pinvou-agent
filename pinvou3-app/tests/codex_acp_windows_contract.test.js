@@ -45,13 +45,7 @@ const windowsPath = read(
   "windows",
   "windows_path.rs",
 );
-const codexRuntime = read(
-  "src-tauri",
-  "src",
-  "features",
-  "codex_acp",
-  "runtime.rs",
-);
+const processRuntime = read("src-tauri", "src", "platform", "process.rs");
 const buildScript = read("scripts", "tauri", "build.js");
 const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
 const {
@@ -90,9 +84,14 @@ assert.match(
   "the installed Node Bridge must start without a visible Windows console",
 );
 assert.match(
+  codexAcp,
+  /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/,
+  "Windows Codex installation must use OpenAI's official installer",
+);
+assert.match(
   codexAcpWindows,
-  /"x86_64"[\s\S]*?x86_64-pc-windows-msvc/,
-  "Windows x64 must have a managed Codex artifact",
+  /var_os\("LOCALAPPDATA"\)[\s\S]*?join\("Programs"\)[\s\S]*?join\("OpenAI"\)[\s\S]*?join\("Codex"\)[\s\S]*?join\("bin"\)[\s\S]*?join\("codex\.exe"\)/,
+  "Windows must probe the default path used by OpenAI install.ps1",
 );
 assert.match(
   windowsPath,
@@ -120,9 +119,21 @@ assert.match(
   "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
 );
 assert.match(
-  codexRuntime,
-  /remove_existing_runtime_with_retry\(&target,\s*operation_id\)\.await/,
-  "Windows managed runtime replacement must retry removal of a locked old runtime",
+  codexAcp,
+  /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/,
+  "Windows must discover the official installer path without relying on a restarted PATH",
+);
+assert.match(codexAcp, /\["claude\.exe", "claude\.cmd"\]/);
+assert.match(codexAcp, /\["kimi\.exe", "kimi\.cmd"\]/);
+assert.match(
+  codexAcp,
+  /AgentBackend::KimiAcp => \{[\s\S]*?external_tokio_command\(&executable\)[\s\S]*?command\.arg\("acp"\)/,
+  "Kimi npm command shims must start ACP through the shared external-command adapter",
+);
+assert.match(
+  processRuntime,
+  /fn external_tokio_command_for\([\s\S]*?HiddenTokioCommand::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
+  "Windows npm command shims must run through cmd /D /S /C",
 );
 assert.equal(
   windowsBridgeOverlay().bundle.resources["target/windows-runtime/codex-bridge/"],

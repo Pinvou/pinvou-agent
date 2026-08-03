@@ -1,18 +1,13 @@
-use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use tokio::process::Command;
-
-use super::ManagedCodexArtifact;
 use crate::platform::process::HiddenTokioCommand;
+use anyhow::{Context, Result};
+use tokio::process::Command;
 
 pub(super) const NODE_EXECUTABLE_NAME: &str = "node.exe";
 pub(super) const SYSTEM_CODEX_NAME: &str = "codex.cmd";
 pub(super) const MANAGED_ADAPTER_NAME: &str = "codex-acp.cmd";
 pub(super) const BUNDLED_ADAPTER_NAME: &str = "codex-acp.exe";
-pub(super) const MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex.exe";
-pub(super) const INSTALL_METHOD: &str = "managed_download";
 
 pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
     manifest_dir
@@ -23,6 +18,24 @@ pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
 
 pub(super) fn bridge_node_relative_path() -> PathBuf {
     PathBuf::from("node").join("bin").join(NODE_EXECUTABLE_NAME)
+}
+
+pub(super) fn codex_official_install_path() -> PathBuf {
+    // OpenAI install.ps1 默认使用
+    // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe；用户可在安装脚本中
+    // 通过 CODEX_INSTALL_DIR 改写，但 Pinvou 未设置该变量，因此按默认路径探测。
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            crate::platform::os::user_home_dir()
+                .join("AppData")
+                .join("Local")
+        })
+        .join("Programs")
+        .join("OpenAI")
+        .join("Codex")
+        .join("bin")
+        .join("codex.exe")
 }
 
 pub(super) fn adapter_needs_node(_adapter: &Path) -> bool {
@@ -57,24 +70,6 @@ pub(super) fn codex_login_command(codex: &Path) -> Command {
         command.arg("login");
         command
     }
-}
-
-pub(super) fn managed_artifact(architecture: &str) -> Result<ManagedCodexArtifact> {
-    match architecture {
-        "x86_64" => Ok(ManagedCodexArtifact {
-            urls: &[
-                "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-win32-x64.tgz",
-                "https://registry.npmmirror.com/@openai/codex/-/codex-0.144.6-win32-x64.tgz",
-            ],
-            integrity: "sha512-dN39VnjEthKz5io1RNWwZDtErdSn07nW3pGUgvlA6DMxgm/nuGaIAZO/sG/Hgxq/x5j9HteAENfrFgVkpZ0lFg==",
-            vendor_triple: "x86_64-pc-windows-msvc",
-        }),
-        _ => bail!("当前托管 Codex 下载不支持平台: windows-{architecture}"),
-    }
-}
-
-pub(super) fn should_retry_file_lock(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::PermissionDenied || matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 #[cfg(test)]
@@ -118,20 +113,5 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/D", "/S", "/C", r"C:\runtime\codex-acp.cmd"]
         );
-    }
-
-    #[test]
-    fn x64_managed_artifact_is_available() {
-        let artifact = managed_artifact("x86_64").expect("resolve Windows x64 Codex artifact");
-        assert_eq!(artifact.vendor_triple, "x86_64-pc-windows-msvc");
-        assert!(artifact.urls[0].starts_with("https://"));
-        assert!(artifact.integrity.starts_with("sha512-"));
-    }
-
-    #[test]
-    fn file_lock_errors_are_retryable() {
-        assert!(should_retry_file_lock(&io::Error::from_raw_os_error(5)));
-        assert!(should_retry_file_lock(&io::Error::from_raw_os_error(32)));
-        assert!(!should_retry_file_lock(&io::Error::from_raw_os_error(2)));
     }
 }

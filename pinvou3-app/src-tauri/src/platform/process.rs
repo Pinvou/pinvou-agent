@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,48 @@ impl HiddenCommand {
 
 pub(crate) fn python_command() -> Command {
     HiddenCommand::new(crate::platform::paths::python_command())
+}
+
+fn is_windows_command_script(executable: &Path) -> bool {
+    executable
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+fn external_command_for(executable: &Path, windows: bool) -> Command {
+    let executable = crate::platform::os::external_application_path(executable);
+    if windows && is_windows_command_script(&executable) {
+        let mut command = HiddenCommand::new("cmd");
+        command.args(["/D", "/S", "/C"]).arg(executable);
+        command
+    } else {
+        HiddenCommand::new(executable)
+    }
+}
+
+/// 构造隐藏窗口的外部 CLI 命令。Windows npm 生成的 `.cmd` / `.bat` shim
+/// 必须经 `cmd /D /S /C`，否则探测、登录或启动 Agent 时会被当成原生可执行文件。
+pub(crate) fn external_command(executable: &Path) -> Command {
+    external_command_for(executable, crate::platform::capabilities::is_windows())
+}
+
+fn external_tokio_command_for(executable: &Path, windows: bool) -> tokio::process::Command {
+    let executable = crate::platform::os::external_application_path(executable);
+    if windows && is_windows_command_script(&executable) {
+        let mut command = HiddenTokioCommand::new("cmd");
+        command.args(["/D", "/S", "/C"]).arg(executable);
+        command
+    } else {
+        HiddenTokioCommand::new(executable)
+    }
+}
+
+/// `external_command` 的 Tokio 版本。
+pub(crate) fn external_tokio_command(executable: &Path) -> tokio::process::Command {
+    external_tokio_command_for(executable, crate::platform::capabilities::is_windows())
 }
 
 /// Capture a subprocess without pipe deadlocks and enforce a wall-clock timeout.
@@ -97,14 +140,27 @@ fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
     detail.chars().take(4000).collect()
 }
 
-// HiddenTokioCommand 为 Windows 隐藏控制台窗口的异步子进程创建预留,当前各平台
-// 均未接入调用方,故在 lib 视角下被误报为 dead code;new 返回 Command 而非 Self
-// 是有意设计(构造器语义)。
-#[allow(dead_code)]
+/// 构造执行远程安装脚本的异步子进程命令：Windows 用 PowerShell
+/// `irm <url> | iex`，其他平台用 `sh -c "curl -fsSL <url> | bash"`。
+pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio::process::Command {
+    if crate::platform::capabilities::is_windows() {
+        let mut command = HiddenTokioCommand::new("powershell");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!("irm {windows_url} | iex"));
+        command
+    } else {
+        let mut command = HiddenTokioCommand::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("curl -fsSL {unix_url} | bash"));
+        command
+    }
+}
+
 pub(crate) struct HiddenTokioCommand;
 
 impl HiddenTokioCommand {
-    #[allow(dead_code)]
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new<S: AsRef<OsStr>>(program: S) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(program);
@@ -133,3 +189,39 @@ pub(crate) fn hide_tokio_console(command: &mut tokio::process::Command) {
 #[cfg(not(target_os = "windows"))]
 #[allow(dead_code)]
 pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_command_shims_use_command_interpreter() {
+        let command = external_command_for(Path::new(r"C:\Users\u\npm\kimi.cmd"), true);
+        assert_eq!(command.get_program(), "cmd");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["/D", "/S", "/C", r"C:\Users\u\npm\kimi.cmd"]
+        );
+
+        let command = external_tokio_command_for(Path::new(r"C:\Users\u\npm\claude.cmd"), true);
+        assert_eq!(command.as_std().get_program(), "cmd");
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["/D", "/S", "/C", r"C:\Users\u\npm\claude.cmd"]
+        );
+    }
+
+    #[test]
+    fn native_executables_do_not_use_command_interpreter() {
+        let command = external_command_for(Path::new(r"C:\tools\kimi.exe"), true);
+        assert_eq!(command.get_program(), r"C:\tools\kimi.exe");
+        assert!(command.get_args().next().is_none());
+    }
+}
