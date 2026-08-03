@@ -23,14 +23,23 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 ## CLI 探测与安装
 
 三个 Agent 走同一套流程：先探测本机 CLI（`PATH`、常见安装位置及以上环境变量覆盖），
-存在且版本不低于最低要求时直接使用，不提示升级或重装；缺失或版本过旧时，前端按
-`install_action` 提示用户，用户确认后调用 `install_acp_agent` 自动安装或升级，完成后
-重新探测。版本过旧时先判定安装来源（Homebrew / npm 全局 / 官方脚本），再决定升级
+再查询各自官方安装器使用的 latest 来源。CLI 缺失或低于最低要求时进入强制安装/升级
+引导；低于官方最新版时显示可暂缓的升级提醒。用户确认后调用 `install_acp_agent`
+自动安装或升级，
+完成后重新探测。版本过旧时先判定安装来源（Homebrew / npm 全局 / 官方脚本），再决定升级
 方式，避免同一 CLI 多来源并存。来源判定以「实际被解析使用的那一份 CLI」的路径为准：
 先匹配官方脚本安装目录，再要求 brew 前缀 / npm 全局根与包管理器安装记录双重命中；
 路径无法判定时才回退 `brew list` / `npm ls -g` 全局查询。探测结果有缓存（前端按秒
 轮询），安装/升级成功后自动失效；用户在 App 外手动安装或升级后，点击界面的
 「重新检测」会忽略缓存强制重新探测。
+
+官方最新版来源固定为 Codex `https://releases.openai.com/codex/channels/latest`（同时竞速
+`https://github.com/openai/codex/releases/latest` 官方回退源）、Claude Code
+`https://downloads.claude.ai/claude-code-releases/latest`、Kimi
+`https://code.kimi.com/kimi-code/latest`。查询使用独立的异步网络请求，成功与失败结果均缓存
+5 分钟，并限制连接/总超时与响应大小；三个 Agent 可并行查询，不阻塞本地 CLI 子进程探测。
+离线、超时、非成功 HTTP 状态或响应格式异常时只记录诊断日志，继续按最低兼容版本放行，
+避免厂商 latest 接口异常导致已经可用的 Agent 被锁死。
 
 最低版本与 `--version` 输出格式：
 
@@ -57,17 +66,23 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 | 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`、Windows Codex 的 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`），优先于 brew/npm 判定 | 重新运行官方安装脚本 |
 
 Homebrew / npm 全局来源的旧版一律走对应包管理器升级，避免同一 CLI 多来源并存；脚本来源
-或无法识别来源时重新运行官方脚本。用户暂不升级时保持该 Agent 不可用并挂起升级提示，
+或无法识别来源时重新运行官方脚本。可暂缓的最新版提醒只在代码首页选择 Agent 时显示，
+不在已有 Session 内重复出现。用户暂不升级时只放行本次进入，CLI 仍可正常使用；该决定
+不持久化，离开代码界面后再次从主界面选择对应 Agent 时重新提示。低于最低兼容版本，
+或 Agent 明确报告必须升级时，已有 Session 内仍显示阻断提示且不提供暂缓入口。
 不静默执行外部命令，也不创建 Pinvou 托管副本。
 
 状态契约：`get_acp_agent_status` / `list_acp_agents` 返回的每个 Agent 状态对象包含
-`installed: bool`（CLI 存在且版本合规）、`version: String`（可空，实际探测版本）、
+`installed: bool`（CLI 存在且满足最低兼容版本）、
+`version: String`（可空，实际探测版本）、`latest_version: String`（可空；检测到官方新版本时
+给出升级目标，否则为 `null`）、
 `min_version: String`（`"0.144.6"` / `"2.0.0"` / `"0.9.0"`）、
 `install_source: String`（`"brew"` / `"npm"` / `"script"` / `null`，
 当前探测到 CLI 的安装来源，未安装时为 `null`）、
 `install_action: String`（`"none"` / `"brew_upgrade"` / `"npm_upgrade"` /
-`"official_script"` / `"manual"`，已安装时为 `"none"`）、
-`update_required: bool`（Agent 明确报告当前 CLI 必须升级时为 `true`）；
+`"official_script"` / `"manual"`，无需安装或升级时为 `"none"`）、
+`update_available: bool`（当前版本低于官方最新版时为 `true`，可暂缓）、
+`update_required: bool`（Agent 明确报告必须升级时为 `true`，不可暂缓）；
 `authenticated`、`setup_hint` 等既有字段语义不变。Codex/Claude 的
 `bridge_ready` 仍表示内置 Bridge 与 Node 是否就绪。
 Kimi 不经过独立 Bridge，因此 `bridge_ready` 恒为 `true`；CLI 缺失或版本过低

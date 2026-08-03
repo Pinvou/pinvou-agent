@@ -50,11 +50,7 @@ pub async fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> Result<CodexA
 
 #[tauri::command]
 pub async fn list_acp_agents(acp_pool: State<'_, AcpPool>) -> Result<Vec<CodexAcpStatus>, String> {
-    acp_pool.refresh_status().await;
-    let pool = acp_pool.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || pool.agent_statuses())
-        .await
-        .map_err(|error| format!("读取 ACP Agent 列表失败: {error}"))
+    Ok(acp_pool.agent_statuses().await)
 }
 
 #[tauri::command]
@@ -72,13 +68,9 @@ pub async fn get_acp_agent_status(
             .await
             .map_err(|error| format!("重新检测 ACP Agent 状态失败: {error:#}"));
     }
-    if agent_id == "codex" {
-        return Ok(acp_pool.refresh_status().await);
-    }
     let pool = acp_pool.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || pool.status_for_agent(&agent_id))
+    pool.status_for_agent(&agent_id)
         .await
-        .map_err(|error| format!("读取 ACP Agent 状态任务失败: {error}"))?
         .map_err(|error| format!("读取 ACP Agent 状态失败: {error:#}"))
 }
 
