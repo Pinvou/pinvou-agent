@@ -664,6 +664,20 @@
           });
         }
       }
+      if (e.payload && e.payload.shell_cleanup_failed) {
+        var cleanupNotice = bt("shellCleanupFailed");
+        var cleanupNoticeItem = state.chatItems.find(function (item) {
+          return item && item.turnErrorNotice && item.text === cleanupNotice;
+        });
+        if (cleanupNoticeItem) {
+          cleanupNoticeItem.legacyConversationOnly = true;
+        } else {
+          addSystemItem(cleanupNotice, {
+            turnErrorNotice: true,
+            legacyConversationOnly: true,
+          });
+        }
+      }
       var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       var interrupted = terminalStatus === "interrupted" ||
         terminalStatus === "cancelled" || terminalStatus === "canceled";

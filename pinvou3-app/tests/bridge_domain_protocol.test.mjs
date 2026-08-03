@@ -81,7 +81,7 @@ const protocolSources = {
 const expectedProtocolHashes = {
   orchestration: '6d8e2a818ea4edbae35035903c5322a500ff4ede75158b8038cd2a172755c853',
   artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
-  chat: 'de4ca48e73761c074620c9b14c7bdca210dc9d6b3e7dc95b33c319c092c7029c',
+  chat: '664498f3914da544c88118f4444ffd1e953c7f925bbd941af21e959b3ac96d37',
   dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
   knowledge: 'f1e6bf2e21474ba5573e9411e5c5e32d63ecdb0517b42320232ccd0940a59b69',

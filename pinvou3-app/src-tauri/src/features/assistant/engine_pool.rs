@@ -666,6 +666,9 @@ impl EnginePool {
             registry.request_cancel_scope(scope_id);
         }
         let registry_for_drain = turn_shell_tasks.clone();
+        let shell_cleanup_failed = Arc::new(AtomicBool::new(false));
+        let cleanup_failed_for_drain = shell_cleanup_failed.clone();
+        let cleanup_failed_for_terminal = shell_cleanup_failed.clone();
         let reclaimed = quiesce_engine_before_reclaim(
             || engine.cancel_current(),
             || async move {
@@ -675,20 +678,31 @@ impl EnginePool {
                     match registry.finalize_scope(scope_id, true).await {
                         Ok(report) => {
                             if let Some(error) = report.failure_summary() {
+                                cleanup_failed_for_drain.store(true, Ordering::Release);
                                 log::error!(
                                     "[engine_pool] shell cleanup remained incomplete before reclaim scope={scope_id}: {error}"
                                 );
                             }
                         }
-                        Err(error) => log::error!(
-                            "[engine_pool] failed to finalize shell tasks before reclaim scope={scope_id}: {error:#}"
-                        ),
+                        Err(error) => {
+                            cleanup_failed_for_drain.store(true, Ordering::Release);
+                            log::error!(
+                                "[engine_pool] failed to finalize shell tasks before reclaim scope={scope_id}: {error:#}"
+                            );
+                        }
                     }
                 }
                 forwarder.abort();
                 let _ = forwarder.await;
             },
-            || engine.finish_reclaimed_turn(&self.app, &self.store, session_id),
+            || {
+                engine.finish_reclaimed_turn(
+                    &self.app,
+                    &self.store,
+                    session_id,
+                    cleanup_failed_for_terminal.load(Ordering::Acquire),
+                )
+            },
         )
         .await;
         if reclaimed {

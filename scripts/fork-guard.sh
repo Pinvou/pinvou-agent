@@ -54,6 +54,8 @@ fingerprints=(
   "T5|文件产出失败保留工具错误           |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_missing_file_output_reports_last_tool_error"
   "T5|宿主取消全部后台 agent             |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T5|批量取消行为回归                   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
+  "T5|Agent mailbox 可靠父子谱系         |CodeWhale/crates/tui/src/tools/subagent/mailbox.rs|fn forkguard_nested_agent_announces_parent_before_started"
+  "T5|Agent 显式取消可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_explicit_cancel_publishes_reliable_terminal_mail"
   "T5|OAuth 登录可取消                   |CodeWhale/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
 
   "T6|opaque runtime route 对宿主公开    |CodeWhale/crates/tui/src/route_runtime.rs|pub struct ResolvedRuntimeRoute"
@@ -89,6 +91,9 @@ fingerprints=(
   "APP|中断轮次 Shell 基线差集回归         |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn forkguard_interrupted_turn_preserves_preexisting_and_old_agent_jobs"
   "APP|停止与后台 task id 登记竞态回归     |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn task_registered_after_stop_is_reclaimed_by_supervisor"
   "APP|提交前 Shell scope 生命周期回归    |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn cancellation_before_turn_binding_still_kills_the_scope_job"
+  "APP|提交取消安全回滚回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn provisional_submission_scope_is_abandoned_when_guard_drops"
+  "APP|Agent 子谱系归属回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn reliable_child_lineage_is_not_overwritten_by_the_current_turn"
+  "APP|失败 Shell scope 有界保留回归      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn failed_scope_tombstones_are_bounded"
 )
 
 for fp in "${fingerprints[@]}"; do

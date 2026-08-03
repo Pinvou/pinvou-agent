@@ -5,7 +5,7 @@
 //! shell jobs owned by the interrupted root turn without changing CodeWhale's
 //! generic detached-task contract.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 const CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CLEANUP_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(200)];
 const MAX_KILL_ATTEMPTS: u8 = 3;
+const MAX_FAILED_SCOPE_TOMBSTONES: usize = 16;
 
 pub(crate) type TurnShellScopeId = u64;
 type ScopeId = TurnShellScopeId;
@@ -55,6 +56,7 @@ struct RegistryState {
     turn_scopes: HashMap<String, ScopeId>,
     agent_scopes: HashMap<String, ScopeId>,
     task_scopes: HashMap<String, ScopeId>,
+    failed_scope_order: VecDeque<ScopeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +111,36 @@ pub(crate) struct TurnShellTaskRegistry {
     inner: Arc<RegistryInner>,
 }
 
+/// Cancellation-safe ownership of a provisional submission scope.
+///
+/// Dropping the send future before the Engine accepts the operation abandons
+/// only an unbound scope. Once the operation is accepted, `commit` transfers
+/// lifecycle ownership to the event forwarder.
+pub(crate) struct PreparedTurnShellScope {
+    registry: TurnShellTaskRegistry,
+    scope_id: ScopeId,
+    committed: bool,
+}
+
+impl PreparedTurnShellScope {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+
+    #[cfg(test)]
+    fn scope_id(&self) -> ScopeId {
+        self.scope_id
+    }
+}
+
+impl Drop for PreparedTurnShellScope {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.registry.abandon_unbound_scope(self.scope_id);
+        }
+    }
+}
+
 impl TurnShellTaskRegistry {
     pub(crate) fn new(shell_manager: SharedShellManager) -> Self {
         Self {
@@ -160,6 +192,15 @@ impl TurnShellTaskRegistry {
         );
         state.active_scope_id = Some(scope_id);
         Ok(scope_id)
+    }
+
+    pub(crate) async fn prepare_submission(&self) -> Result<PreparedTurnShellScope> {
+        let scope_id = self.prepare_turn().await?;
+        Ok(PreparedTurnShellScope {
+            registry: self.clone(),
+            scope_id,
+            committed: false,
+        })
     }
 
     /// Binds the authoritative Engine turn id to the provisional submission
@@ -270,6 +311,9 @@ impl TurnShellTaskRegistry {
         let Some(scope_id) = state.turn_scopes.get(turn_id).copied() else {
             return false;
         };
+        if let Some(existing_scope_id) = state.agent_scopes.get(agent_id).copied() {
+            return existing_scope_id == scope_id;
+        }
         let Some(scope) = state.scopes.get_mut(&scope_id) else {
             return false;
         };
@@ -278,6 +322,44 @@ impl TurnShellTaskRegistry {
         }
         scope.live_agent_ids.insert(agent_id.to_string());
         state.agent_scopes.insert(agent_id.to_string(), scope_id);
+        true
+    }
+
+    /// Inherits a nested agent's scope from its authoritative mailbox parent.
+    /// This remains valid after the root turn is terminal because detached
+    /// parents may continue spawning children until their own terminal event.
+    pub(crate) fn register_child_agent(&self, parent_id: &str, child_id: &str) -> bool {
+        let should_notify = {
+            let mut state = self.inner.state.lock();
+            let Some(scope_id) = state.agent_scopes.get(parent_id).copied() else {
+                return false;
+            };
+            if !state.scopes.contains_key(&scope_id) {
+                return false;
+            }
+            if let Some(previous_scope_id) =
+                state.agent_scopes.insert(child_id.to_string(), scope_id)
+            {
+                if previous_scope_id != scope_id {
+                    if let Some(previous_scope) = state.scopes.get_mut(&previous_scope_id) {
+                        previous_scope.live_agent_ids.remove(child_id);
+                    }
+                }
+            }
+            let scope = state
+                .scopes
+                .get_mut(&scope_id)
+                .expect("agent scope checked above");
+            scope.live_agent_ids.insert(child_id.to_string());
+            if scope.cancel_requested {
+                scope.cleanup_settled = false;
+            }
+            scope.cancel_requested
+        };
+        if should_notify {
+            self.inner.cleanup_notify.notify_one();
+        }
+        self.retire_settled_scopes();
         true
     }
 
@@ -579,6 +661,32 @@ impl TurnShellTaskRegistry {
         for scope_id in retired {
             remove_scope_locked(&mut state, scope_id);
         }
+
+        let failed = state
+            .scopes
+            .values()
+            .filter(|scope| {
+                scope.root_terminal
+                    && scope.live_agent_ids.is_empty()
+                    && ((scope.cleanup_error.is_some()
+                        && scope.cleanup_error_attempts >= MAX_KILL_ATTEMPTS)
+                        || scope
+                            .pending_kills
+                            .values()
+                            .any(|pending| pending.attempts >= MAX_KILL_ATTEMPTS))
+            })
+            .map(|scope| scope.id)
+            .collect::<Vec<_>>();
+        for scope_id in failed {
+            if !state.failed_scope_order.contains(&scope_id) {
+                state.failed_scope_order.push_back(scope_id);
+            }
+        }
+        while state.failed_scope_order.len() > MAX_FAILED_SCOPE_TOMBSTONES {
+            if let Some(scope_id) = state.failed_scope_order.pop_front() {
+                remove_scope_locked(&mut state, scope_id);
+            }
+        }
     }
 }
 
@@ -715,6 +823,9 @@ fn remove_scope_locked(state: &mut RegistryState, scope_id: ScopeId) {
     state
         .task_scopes
         .retain(|_, owner_scope| *owner_scope != scope_id);
+    state
+        .failed_scope_order
+        .retain(|failed_scope_id| *failed_scope_id != scope_id);
 }
 
 #[cfg(test)]
@@ -852,6 +963,97 @@ mod tests {
                 error: "access denied".to_string(),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn provisional_submission_scope_is_abandoned_when_guard_drops() {
+        let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
+        let guard = registry.prepare_submission().await.expect("prepare guard");
+        let scope_id = guard.scope_id();
+
+        drop(guard);
+
+        let state = registry.inner.state.lock();
+        assert_eq!(state.active_scope_id, None);
+        assert!(!state.scopes.contains_key(&scope_id));
+    }
+
+    #[tokio::test]
+    async fn reliable_child_lineage_is_not_overwritten_by_the_current_turn() {
+        let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
+        let older_scope = registry.prepare_turn().await.expect("older scope");
+        registry
+            .bind_active_turn("turn-older")
+            .expect("bind older turn");
+        assert!(registry.register_agent("turn-older", "agent-parent"));
+        registry
+            .finalize_scope(older_scope, false)
+            .await
+            .expect("finish older root");
+
+        let current_scope = registry.prepare_turn().await.expect("current scope");
+        registry
+            .bind_active_turn("turn-current")
+            .expect("bind current turn");
+        assert!(registry.register_child_agent("agent-parent", "agent-child"));
+        assert!(!registry.register_agent("turn-current", "agent-child"));
+
+        let state = registry.inner.state.lock();
+        assert_eq!(state.agent_scopes.get("agent-child"), Some(&older_scope));
+        assert!(state
+            .scopes
+            .get(&older_scope)
+            .is_some_and(|scope| scope.live_agent_ids.contains("agent-child")));
+        assert_eq!(state.active_scope_id, Some(current_scope));
+    }
+
+    #[test]
+    fn failed_scope_tombstones_are_bounded() {
+        let registry = TurnShellTaskRegistry::new(new_shared_shell_manager(std::env::temp_dir()));
+        {
+            let mut state = registry.inner.state.lock();
+            for scope_id in 1..=(MAX_FAILED_SCOPE_TOMBSTONES as u64 + 1) {
+                let task_id = format!("task-{scope_id}");
+                state
+                    .turn_scopes
+                    .insert(format!("turn-{scope_id}"), scope_id);
+                state.task_scopes.insert(task_id.clone(), scope_id);
+                state.scopes.insert(
+                    scope_id,
+                    TurnShellScope {
+                        id: scope_id,
+                        turn_id: Some(format!("turn-{scope_id}")),
+                        baseline_task_ids: HashSet::new(),
+                        registered_task_ids: HashSet::from([task_id.clone()]),
+                        live_agent_ids: HashSet::new(),
+                        pending_kills: HashMap::from([(
+                            task_id,
+                            PendingKill {
+                                attempts: MAX_KILL_ATTEMPTS,
+                                last_error: "access denied".to_string(),
+                            },
+                        )]),
+                        cancel_requested: true,
+                        root_terminal: true,
+                        allow_unowned_fallback: false,
+                        cleanup_settled: false,
+                        cleanup_error: None,
+                        cleanup_error_attempts: 0,
+                    },
+                );
+            }
+        }
+
+        registry.retire_settled_scopes();
+
+        let state = registry.inner.state.lock();
+        assert_eq!(state.failed_scope_order.len(), MAX_FAILED_SCOPE_TOMBSTONES);
+        assert!(!state.scopes.contains_key(&1));
+        assert!(!state.turn_scopes.contains_key("turn-1"));
+        assert!(!state.task_scopes.contains_key("task-1"));
+        assert!(state
+            .scopes
+            .contains_key(&(MAX_FAILED_SCOPE_TOMBSTONES as u64 + 1)));
     }
 
     #[tokio::test]

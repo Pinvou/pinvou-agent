@@ -335,6 +335,7 @@
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
+      shellCleanupFailed: "⚠️ Some background tasks could not be stopped. You can stop them individually from the background task list.",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
@@ -446,6 +447,7 @@
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
+      shellCleanupFailed: "⚠️ 一部のバックグラウンドタスクを停止できませんでした。バックグラウンドタスク一覧から個別に停止できます。",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
@@ -557,6 +559,7 @@
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
+      shellCleanupFailed: "⚠️ 部分后台任务未能停止，可在后台任务列表中逐个停止。",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
@@ -5094,6 +5097,20 @@
           finalNoticeItem.legacyConversationOnly = true;
         } else {
           addSystemItem(finalNotice, {
+            turnErrorNotice: true,
+            legacyConversationOnly: true,
+          });
+        }
+      }
+      if (e.payload && e.payload.shell_cleanup_failed) {
+        var cleanupNotice = bt("shellCleanupFailed");
+        var cleanupNoticeItem = state.chatItems.find(function (item) {
+          return item && item.turnErrorNotice && item.text === cleanupNotice;
+        });
+        if (cleanupNoticeItem) {
+          cleanupNoticeItem.legacyConversationOnly = true;
+        } else {
+          addSystemItem(cleanupNotice, {
             turnErrorNotice: true,
             legacyConversationOnly: true,
           });

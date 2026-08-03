@@ -13,6 +13,7 @@ const chatEventsSource = read('src', 'platform', 'tauri', 'bridge', 'chat-events
 const desktopBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 const webBridgeSource = read('src', 'platform', 'web', 'bridge.js');
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
+const i18nSource = read('src', 'shared', 'i18n.js');
 const { conversationItemsForMode } = await import(
   '../src/features/conversation/deepseek-conversation.js'
 );
@@ -114,6 +115,8 @@ const doneSection = chatEventsSource.slice(
   chatEventsSource.indexOf('listen("chat:usage"'),
 );
 assert.match(doneSection, /legacyConversationOnly: true/);
+assert.match(doneSection, /e\.payload\.shell_cleanup_failed/);
+assert.match(doneSection, /bt\("shellCleanupFailed"\)/);
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
 assert.match(chatEventsSource, /addSystemItem\(notice, \{ turnErrorNotice: true \}\)/);
 assert.match(
@@ -133,6 +136,13 @@ assert.match(
     webBridgeSource.indexOf('listen("chat:usage"'),
   ),
   /legacyConversationOnly: true/,
+);
+assert.match(webBridgeSource, /e\.payload\.shell_cleanup_failed/);
+assert.match(webBridgeSource, /bt\("shellCleanupFailed"\)/);
+assert.equal(
+  (i18nSource.match(/shellCleanupFailed:/g) || []).length,
+  3,
+  'Shell cleanup warning must provide zh/en/ja translations',
 );
 
 console.log('chat turn error isolation: ok');
