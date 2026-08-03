@@ -54,11 +54,12 @@ fingerprints=(
   "T5|文件产出失败保留工具错误           |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_missing_file_output_reports_last_tool_error"
   "T5|宿主取消全部后台 agent             |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T5|批量取消行为回归                   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
-  "T5|Agent mailbox 可靠父子谱系         |CodeWhale/crates/tui/src/tools/subagent/mailbox.rs|fn forkguard_nested_agent_announces_parent_before_started"
+  "T5|Agent mailbox 可靠父子谱系         |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_wires_lineage_and_exactly_once_terminal_mail"
   "T5|Agent 显式取消可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_explicit_cancel_publishes_reliable_terminal_mail"
   "T5|Agent 手工中断可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_manual_interrupt_publishes_reliable_terminal_mail"
   "T5|Agent 自动回收可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cleanup_auto_cancels_stale_running_agent_and_releases_slot"
   "T5|Agent 协作取消终态去重             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cooperative_cancel_publishes_exactly_one_cancelled_terminal_mail"
+  "T5|Agent 非法 Running 终态归一        |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn running_task_result_is_normalized_before_mailbox_and_manager_commit"
   "T5|OAuth 登录可取消                   |CodeWhale/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
 
   "T6|opaque runtime route 对宿主公开    |CodeWhale/crates/tui/src/route_runtime.rs|pub struct ResolvedRuntimeRoute"
