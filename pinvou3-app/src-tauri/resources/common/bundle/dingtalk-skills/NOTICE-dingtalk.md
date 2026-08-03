@@ -2,6 +2,7 @@
 
 - npm package: dingtalk-workspace-cli
 - bundled version: 1.0.51
+- 各平台 dws 二进制 SHA-256 见 `resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`
 - Linux ARM64 dws SHA-256: db012e54393ae0d1b78d74d0606e084823ab8e5540991deb6d31e68abd01883b
 - license: Apache-2.0
 

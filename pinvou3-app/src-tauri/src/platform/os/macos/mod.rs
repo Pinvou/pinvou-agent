@@ -11,7 +11,9 @@ mod macos_path;
 mod macos_permission;
 mod macos_system;
 
-pub use macos_path::{platform_compat_path, user_home_dir};
+pub use macos_path::{
+    apply_user_npm_prefix, connector_cli_command, platform_compat_path, user_home_dir,
+};
 pub use macos_permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
     super_permission_turn_reminder,

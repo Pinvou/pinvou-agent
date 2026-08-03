@@ -60,10 +60,20 @@ pub fn bundle_connector_bin_dir() -> Option<PathBuf> {
     bundle_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 pub fn bundle_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
-    if os == "linux" && arch == "aarch64" {
-        Some(bundle_connectors_dir().join("linux-arm64").join("bin"))
-    } else {
-        None
+    connector_platform_dir(os, arch)
+        .map(|platform| bundle_connectors_dir().join(platform).join("bin"))
+}
+
+/// 有内置连接器 CLI 二进制的平台目录名(厂家官方 release,构建期抓取,
+/// 见 scripts/fetch-connectors.sh)。其余平台返回 None,走 npm 全局安装兜底。
+pub fn connector_platform_dir(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("windows", "x86_64") => Some("windows-x64"),
+        _ => None,
     }
 }
 /// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
@@ -457,22 +467,42 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn connector_bin_dir_is_linux_arm64_only() {
+    fn connector_bin_dir_covers_all_bundled_platforms() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
         let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
-        assert_eq!(
-            bundle_connector_bin_dir_for("linux", "aarch64"),
+        let expected = |platform: &str| {
             Some(
                 root.join("bundle")
                     .join("connectors")
-                    .join("linux-arm64")
-                    .join("bin")
+                    .join(platform)
+                    .join("bin"),
             )
+        };
+        assert_eq!(
+            bundle_connector_bin_dir_for("linux", "aarch64"),
+            expected("linux-arm64")
         );
-        assert_eq!(bundle_connector_bin_dir_for("windows", "x86_64"), None);
-        assert_eq!(bundle_connector_bin_dir_for("linux", "x86_64"), None);
+        assert_eq!(
+            bundle_connector_bin_dir_for("linux", "x86_64"),
+            expected("linux-x64")
+        );
+        assert_eq!(
+            bundle_connector_bin_dir_for("macos", "aarch64"),
+            expected("darwin-arm64")
+        );
+        assert_eq!(
+            bundle_connector_bin_dir_for("macos", "x86_64"),
+            expected("darwin-x64")
+        );
+        assert_eq!(
+            bundle_connector_bin_dir_for("windows", "x86_64"),
+            expected("windows-x64")
+        );
+        // 无内置二进制的平台组合仍返回 None(走 npm 全局安装兜底)。
+        assert_eq!(bundle_connector_bin_dir_for("windows", "aarch64"), None);
+        assert_eq!(bundle_connector_bin_dir_for("freebsd", "x86_64"), None);
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),

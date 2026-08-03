@@ -51,9 +51,25 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
+/// 连接器官方 CLI 二进制(厂家 release,构建期由 scripts/fetch-connectors.sh
+/// 按 connectors.lock.json 钉版本 + sha256 抓取,bin/ 不入 Git)。
+/// 每个目标平台内嵌自己平台的 connectors 目录;无内置的平台编译期不带此静态,
+/// 运行时走 npm 全局安装兜底。
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 static CONNECTOR_CLI_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/connectors");
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+static CONNECTOR_CLI_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/x86_64/bundle/connectors");
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+static CONNECTOR_CLI_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/macos/aarch64/bundle/connectors");
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+static CONNECTOR_CLI_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/macos/x86_64/bundle/connectors");
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+static CONNECTOR_CLI_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/windows/x86_64/bundle/connectors");
 
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
@@ -89,8 +105,10 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
 /// 0.16: 接入腾讯会议官方 tmeet CLI skill
 /// 0.17: 接入腾讯 ima OpenAPI Skill（原生受控工具）
+/// 0.18: 内置连接器 CLI 从 linux-arm64 扩展到 macOS arm64/x64、Windows x64、
+///       Linux x64(均为厂家 release 二进制,构建期 fetch-connectors.sh 抓取)
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.17-",
+    "0.18-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -515,31 +533,49 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 解包内置连接器 CLI 到 `~/.pinvou3/bundle/connectors/<platform>/bin/`。
+    /// 有内置的平台见 `paths::connector_platform_dir`;其余平台编译期无
+    /// `CONNECTOR_CLI_DIR`,运行时走 npm 全局安装兜底。
     fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+        ))]
         {
+            let platform =
+                paths::connector_platform_dir(std::env::consts::OS, std::env::consts::ARCH)
+                    .expect("cfg 覆盖的平台必须有连接器目录映射");
             let root = paths::bundle_connectors_dir();
-            let bin = root.join("linux-arm64").join("bin");
-            if force
-                || !bin.join("lark-cli").is_file()
-                || !bin.join("wecom-cli").is_file()
-                || !bin.join("dws").is_file()
-            {
+            let bin = root.join(platform).join("bin");
+            let exe = if cfg!(windows) { ".exe" } else { "" };
+            let cli_missing = ["lark-cli", "wecom-cli", "dws"]
+                .iter()
+                .any(|name| !bin.join(format!("{name}{exe}")).is_file());
+            if force || cli_missing {
                 Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
             }
-            use std::os::unix::fs::PermissionsExt;
-            for rel in [
-                "linux-arm64/bin/lark-cli",
-                "linux-arm64/bin/wecom-cli",
-                "linux-arm64/bin/dws",
-            ] {
-                let p = root.join(rel);
-                if p.is_file() {
-                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                for name in ["lark-cli", "wecom-cli", "dws"] {
+                    let p = bin.join(name);
+                    if p.is_file() {
+                        let _ =
+                            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                    }
                 }
             }
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+        )))]
         let _ = force;
         Ok(())
     }

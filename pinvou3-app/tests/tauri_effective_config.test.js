@@ -11,7 +11,7 @@ const {
 const {
   configSpecs,
   prepareCodexBridge,
-  prepareLinuxArm64Connectors,
+  prepareConnectorClis,
   prepareWindowsCodexBridge,
   prepareTauriArgs,
   runTauri,
@@ -57,6 +57,31 @@ assert.equal(
   false,
   "Linux 不应准备 Windows Codex Bridge",
 );
+
+const connectorFetchCalls = [];
+const recordConnectorFetch = (command, args) => {
+  connectorFetchCalls.push(args);
+  return { status: 0 };
+};
+const connectorPlatforms = () => connectorFetchCalls.map((args) => args.slice(-2));
+prepareConnectorClis({ platform: "darwin", architecture: "arm64", spawn: recordConnectorFetch });
+assert.deepEqual(
+  connectorPlatforms(),
+  [
+    ["--platform", "darwin-arm64"],
+    ["--platform", "darwin-x64"],
+  ],
+  "macOS 构建必须同时抓取双架构连接器 CLI(universal 构建需要)",
+);
+connectorFetchCalls.length = 0;
+prepareConnectorClis({ platform: "linux", architecture: "x64", spawn: recordConnectorFetch });
+assert.deepEqual(connectorPlatforms(), [["--platform", "linux-x64"]]);
+connectorFetchCalls.length = 0;
+prepareConnectorClis({ platform: "win32", architecture: "x64", spawn: recordConnectorFetch });
+assert.deepEqual(connectorPlatforms(), [["--platform", "windows-x64"]]);
+connectorFetchCalls.length = 0;
+prepareConnectorClis({ platform: "linux", architecture: "riscv64", spawn: recordConnectorFetch });
+assert.deepEqual(connectorPlatforms(), [], "无内置二进制的平台不应抓取连接器 CLI");
 
 assert.throws(() => requireWrapper({}), /禁止绕过平台 overlay/);
 assert.doesNotThrow(() => requireWrapper({ [WRAPPER_ENV]: "1" }));

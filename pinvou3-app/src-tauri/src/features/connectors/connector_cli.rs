@@ -78,9 +78,9 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 
 /// 跑一个命令、收集 `(success, stdout, stderr)`。在 `spawn_blocking` 里调。
 pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
-    let out = cmd
-        .output()
-        .map_err(|e| format!("启动失败: {e}(需要对应 CLI；Linux ARM64 会优先使用内置 CLI)"))?;
+    let out = cmd.output().map_err(|e| {
+        format!("启动失败: {e}(需要对应 CLI；支持的平台会优先使用随包内置 CLI,其余走 npm 全局安装)")
+    })?;
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),

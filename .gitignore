@@ -63,6 +63,10 @@ build-logs/
 
 # 第三方预编译产物由固定版本下载脚本在构建时生成，不进入 Git。
 /pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/bin/
+/pinvou3-app/src-tauri/resources/platforms/linux/x86_64/bundle/connectors/linux-x64/bin/
+/pinvou3-app/src-tauri/resources/platforms/macos/aarch64/bundle/connectors/darwin-arm64/bin/
+/pinvou3-app/src-tauri/resources/platforms/macos/x86_64/bundle/connectors/darwin-x64/bin/
+/pinvou3-app/src-tauri/resources/platforms/windows/x86_64/bundle/connectors/windows-x64/bin/
 /pinvou3-app/src-tauri/resources/platforms/linux/asr/sense-voice-main
 
 # 图标中间产物(由 icons/ 生成, 不入库)

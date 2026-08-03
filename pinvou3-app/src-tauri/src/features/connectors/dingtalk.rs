@@ -246,7 +246,8 @@ fn install_dws_cli() -> Result<bool, String> {
     result
 }
 
-/// 引导:确保 dws 装好。Linux ARM64 优先使用内置二进制;Windows 走 npm 全局 shim。
+/// 引导:确保 dws 装好。有内置的平台(linux-arm64/x64、darwin-arm64/x64、
+/// windows-x64)优先使用内置二进制;其余走 npm 全局安装/shim。
 pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if dws_cli_present() {
@@ -306,7 +307,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| {
-        format!("dws auth login 启动失败: {e}(需要 dws；Linux ARM64 会优先使用内置 CLI)")
+        format!("dws auth login 启动失败: {e}(需要 dws；支持的平台会优先使用随包内置 CLI,其余走 npm 全局安装)")
     })?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));

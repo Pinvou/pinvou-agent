@@ -170,7 +170,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| {
-        format!("config init --new 启动失败: {e}(需要 lark-cli；Linux ARM64 会优先使用内置 CLI)")
+        format!("config init --new 启动失败: {e}(需要 lark-cli；支持的平台会优先使用随包内置 CLI,其余走 npm 全局安装)")
     })?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
