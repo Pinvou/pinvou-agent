@@ -827,7 +827,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             { model: 'gpt-5.6-luna', title: 'gpt-5.6-luna', desc: '低成本高并发' },
             { model: 'gpt-5.5', title: 'gpt-5.5', desc: '上代旗舰' },
             { model: 'gpt-5.4-mini', title: 'gpt-5.4-mini', desc: '快速经济' },
-            { model: 'gpt-5.3-codex', title: 'gpt-5.3-codex', desc: '代码场景' },
             { model: '', title: '自定义 OpenAI 模型', desc: '手动填写模型 ID', custom: true },
           ],
         },
