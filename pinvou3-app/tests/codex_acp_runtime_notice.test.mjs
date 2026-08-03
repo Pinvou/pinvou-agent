@@ -5,6 +5,8 @@ const stateUrl = new URL('../src/features/codex/runtimeNoticeState.js', import.m
 const stateSource = await readFile(stateUrl, 'utf8');
 const stateModule = await import(`data:text/javascript;base64,${Buffer.from(stateSource).toString('base64')}`);
 const {
+  classifyAcpServiceFailure,
+  isAcpAuthenticationFailure,
   runtimeInstallInProgress,
   runtimeLoginInProgress,
   runtimeNoticeMode,
@@ -60,6 +62,27 @@ assert.equal(
   'Claude login must not mark Codex as logging in',
 );
 assert.equal(runtimeLoginInProgress({ ...ready, login_in_progress: true }), true);
+
+const kimiModelNotConfigured = {
+  seq: 7,
+  timestamp: '2026-08-03T04:00:00Z',
+  event: {
+    type: 'turn_completed',
+    data: {
+      error: 'Kimi Code 请求失败（model.not_configured）：LLM not set, send "/login" to login',
+    },
+  },
+};
+assert.equal(
+  isAcpAuthenticationFailure(kimiModelNotConfigured),
+  true,
+  'Kimi missing model configuration must refresh authentication status',
+);
+assert.equal(
+  classifyAcpServiceFailure(kimiModelNotConfigured)?.kind,
+  'authentication',
+  'Kimi missing model configuration must offer account recovery instead of generic downtime',
+);
 
 const view = await readFile(
   new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),

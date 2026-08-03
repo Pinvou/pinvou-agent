@@ -318,6 +318,10 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const runtimeNoticeState = readFileSync(
+    path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
+    'utf8',
+  );
   assert.ok(codexView.includes('copy.permissionRequest(agentName)')
     && codexView.includes('tool.title || copy.protectedOperation')
     && codexView.includes('label={copy.command}')
@@ -448,8 +452,8 @@ try {
     'running operation details must not interrupt the conversation by auto-expanding');
   assert.ok(!codexView.includes('if (running) setOpen(true)'),
     'running operation groups must remain compact by default');
-  assert.ok(codexView.includes("HTTP\\s*402")
-    && codexView.includes("kind = 'entitlement'")
+  assert.ok(runtimeNoticeState.includes("HTTP\\s*402")
+    && runtimeNoticeState.includes("kind = 'entitlement'")
     && codexView.includes('data-testid="acp-service-failure"'),
   'membership HTTP 402 failures must become a recoverable service card instead of a bare error');
   assert.ok(codexView.includes("invoke('switch_acp_agent_account'")

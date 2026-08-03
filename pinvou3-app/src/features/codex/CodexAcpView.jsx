@@ -7,6 +7,8 @@ import {
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import {
+  classifyAcpServiceFailure,
+  isAcpAuthenticationFailure,
   runtimeInstallInProgress,
   runtimeLoginInProgress,
   runtimeNoticeMode,
@@ -112,33 +114,6 @@ function rememberDraftControls(agentId, info) {
     // 缓存写不进去时仅影响下次草稿预展示，本次会话不受影响。
   }
   return snapshot;
-}
-
-function isAcpAuthenticationFailure(envelope) {
-  if (envelope?.event?.type !== 'turn_completed') return false;
-  const error = String(envelope.event?.data?.error || '');
-  return /authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(error);
-}
-
-function classifyAcpServiceFailure(envelope) {
-  if (envelope?.event?.type !== 'turn_completed') return null;
-  const detail = String(envelope.event?.data?.error || '').trim();
-  if (!detail) return null;
-  let kind = 'service';
-  if (/HTTP\s*402|会员.{0,12}(权益|额度|到期|失效)|订阅.{0,12}(到期|失效)|payment required/i.test(detail)) {
-    kind = 'entitlement';
-  } else if (/HTTP\s*429|rate.?limit|quota|额度.{0,12}(不足|用尽)|用量.{0,12}(超出|耗尽)/i.test(detail)) {
-    kind = 'quota';
-  } else if (/HTTP\s*401|authentication[_ ]failed|authentication required|failed to authenticate|oauth.{0,80}expired|not logged in/i.test(detail)) {
-    kind = 'authentication';
-  } else if (/network|connection|timeout|timed out|网络|连接.{0,8}(失败|超时)/i.test(detail)) {
-    kind = 'network';
-  }
-  return {
-    kind,
-    detail,
-    key: `${envelope.seq || ''}:${envelope.timestamp || ''}:${detail}`,
-  };
 }
 
 function configChoices(option) {

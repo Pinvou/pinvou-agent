@@ -1790,19 +1790,31 @@ impl AcpPool {
                 bail!("授权等待超时，请重新登录");
             }
         };
-        let _ = stdout_reader.await;
-        let _ = stderr_reader.await;
+        let stdout_output = stdout_reader.await.unwrap_or_default();
+        let stderr_output = stderr_reader.await.unwrap_or_default();
+        let failure_detail = (backend == AgentBackend::KimiAcp && !status.success())
+            .then(|| kimi_login_failure_detail(&stdout_output, &stderr_output))
+            .flatten();
 
         diagnostics::write(
             &operation_id,
             "login:process_exit",
-            format!("status={status}"),
+            match failure_detail.as_deref() {
+                Some(detail) => format!("status={status} detail={detail}"),
+                None => format!("status={status}"),
+            },
         );
 
         if !status.success() {
+            if let Some(detail) = failure_detail {
+                bail!("{} 登录进程失败：{detail}", backend.display_name());
+            }
             bail!("{} 登录进程退出: {status}", backend.display_name());
         }
         if !self.agent_authenticated_async(backend, &executable).await {
+            if backend == AgentBackend::KimiAcp {
+                bail!("Kimi 登录授权已完成，但未获取到可用模型，请重新登录并检查账号权益或网络");
+            }
             bail!(
                 "{} 登录进程已结束，但未检测到有效授权信息",
                 backend.display_name()
@@ -3146,7 +3158,8 @@ async fn capture_agent_login_output<R>(
     mut reader: R,
     backend: AgentBackend,
     states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
-) where
+) -> String
+where
     R: AsyncRead + Unpin,
 {
     let mut chunk = [0_u8; 2048];
@@ -3173,6 +3186,71 @@ async fn capture_agent_login_output<R>(
             }
         }
     }
+    output
+}
+
+/// Kimi 的登录流程会先落 OAuth 凭证，再请求模型列表并写入 config.toml。
+/// 后半段失败时 CLI 会以 `Login failed:` 输出可操作原因；只提取该明确前缀，
+/// 同时隐藏 URL 并拒绝可能包含凭证的内容，避免把设备码或令牌写入诊断日志/UI。
+fn kimi_login_failure_detail(stdout: &str, stderr: &str) -> Option<String> {
+    [stderr, stdout].into_iter().find_map(|output| {
+        output.lines().rev().find_map(|line| {
+            let (_, detail) = line.rsplit_once("Login failed:")?;
+            sanitize_kimi_login_failure_detail(detail)
+        })
+    })
+}
+
+fn sanitize_kimi_login_failure_detail(detail: &str) -> Option<String> {
+    let normalized = detail.to_ascii_lowercase();
+    if [
+        "access_token",
+        "refresh_token",
+        "authorization:",
+        "bearer ",
+        "api_key",
+        "api-key",
+        "secret=",
+        "cookie:",
+        "user_code=",
+        "device_code=",
+    ]
+    .into_iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        return None;
+    }
+
+    let mut sanitized = String::new();
+    for word in detail.split_whitespace() {
+        if !sanitized.is_empty() {
+            sanitized.push(' ');
+        }
+        if word.contains("https://") || word.contains("http://") || looks_like_device_code(word) {
+            sanitized.push_str("[敏感信息已隐藏]");
+        } else {
+            sanitized.extend(word.chars().filter(|character| !character.is_control()));
+        }
+        if sanitized.chars().count() >= 500 {
+            break;
+        }
+    }
+    let sanitized = sanitized.chars().take(500).collect::<String>();
+    (!sanitized.is_empty()).then_some(sanitized)
+}
+
+fn looks_like_device_code(word: &str) -> bool {
+    let candidate =
+        word.trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '-');
+    let Some((left, right)) = candidate.split_once('-') else {
+        return false;
+    };
+    [left, right].into_iter().all(|part| {
+        part.len() == 4
+            && part
+                .chars()
+                .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit())
+    })
 }
 
 fn extract_agent_login_url(backend: AgentBackend, output: &str) -> Option<String> {
@@ -3954,14 +4032,90 @@ fn claude_authenticated(claude: &Path) -> bool {
 }
 
 fn kimi_authenticated(_kimi: &Path) -> bool {
-    if nonempty_env("KIMI_API_KEY") {
+    // Kimi Code 0.31+ 不读取裸 KIMI_API_KEY；只有成对的 KIMI_MODEL_* 覆盖
+    // 会在内存中合成 provider/model。
+    if nonempty_env("KIMI_MODEL_NAME") && nonempty_env("KIMI_MODEL_API_KEY") {
         return true;
     }
     let root = kimi_data_root();
-    let Ok(raw) = std::fs::read_to_string(root.join("credentials").join("kimi-code.json")) else {
+    let oauth_credentials_valid =
+        std::fs::read_to_string(root.join("credentials").join("kimi-code.json"))
+            .is_ok_and(|raw| kimi_credentials_valid(&raw));
+    let Ok(config) = std::fs::read_to_string(root.join("config.toml")) else {
         return false;
     };
-    kimi_credentials_valid(&raw)
+    kimi_runtime_config_ready(&config, oauth_credentials_valid)
+}
+
+/// 仅有 OAuth 凭证并不代表 Kimi 已可用：官方登录还必须把 `/models` 返回结果
+/// 写为默认模型及其 provider。要求默认模型能解析到现有 provider，避免登录后半段
+/// 失败时把“凭证已写入”误报成“已登录”。
+fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool) -> bool {
+    let Ok(config) = raw.parse::<toml::Value>() else {
+        return false;
+    };
+    let Some(default_model) = config
+        .get("default_model")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let Some(model) = config
+        .get("models")
+        .and_then(|models| models.get(default_model))
+        .and_then(toml::Value::as_table)
+    else {
+        return false;
+    };
+    let Some(provider) = model
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let model_ready = model
+        .get("model")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && model
+            .get("max_context_size")
+            .and_then(toml::Value::as_integer)
+            .is_some_and(|value| value > 0);
+    if !model_ready {
+        return false;
+    }
+    let Some(provider) = config
+        .get("providers")
+        .and_then(|providers| providers.get(provider))
+        .and_then(toml::Value::as_table)
+    else {
+        return false;
+    };
+    if !provider
+        .get("type")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return false;
+    }
+    let direct_api_key = provider
+        .get("api_key")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let configured_env_api_key = provider
+        .get("env")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|env| {
+            env.iter().any(|(name, value)| {
+                name.ends_with("_API_KEY")
+                    && value.as_str().is_some_and(|value| !value.trim().is_empty())
+            })
+        });
+    let oauth_ready =
+        provider.get("oauth").is_some_and(toml::Value::is_table) && oauth_credentials_valid;
+    direct_api_key || configured_env_api_key || oauth_ready
 }
 
 fn kimi_data_root() -> PathBuf {
@@ -4085,6 +4239,12 @@ fn format_kimi_provider_error(code: &str, message: &str) -> String {
     if normalized.contains("402") && normalized.contains("membership benefits") {
         return "Kimi Code 会员权益校验失败（HTTP 402）：请确认当前登录账号已开通且会员仍有效"
             .to_string();
+    }
+    if code.eq_ignore_ascii_case("model.not_configured")
+        || normalized.contains("llm not set")
+        || normalized.contains("send \"/login\"")
+    {
+        return "Kimi Code 尚未完成模型配置（model.not_configured），请重新登录".to_string();
     }
     if code.contains("auth") || normalized.contains("authentication") || normalized.contains("401")
     {
@@ -4436,6 +4596,73 @@ mod tests {
     }
 
     #[test]
+    fn kimi_runtime_config_requires_resolvable_default_model() {
+        let ready = r#"
+default_model = "kimi-code/kimi-k2"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
+[models."kimi-code/kimi-k2"]
+provider = "managed:kimi-code"
+model = "kimi-k2"
+max_context_size = 262144
+"#;
+        assert!(kimi_runtime_config_ready(ready, true));
+        assert!(!kimi_runtime_config_ready(ready, false));
+        let api_key_ready = r#"
+default_model = "custom/kimi-k2"
+
+[providers.custom]
+type = "kimi"
+api_key = "configured-in-file"
+
+[models."custom/kimi-k2"]
+provider = "custom"
+model = "kimi-k2"
+max_context_size = 262144
+"#;
+        assert!(kimi_runtime_config_ready(api_key_ready, false));
+        assert!(!kimi_runtime_config_ready(
+            "# Login will populate managed Kimi provider and model entries.",
+            true
+        ));
+        assert!(!kimi_runtime_config_ready(
+            "default_model = \"kimi-code/missing\"\n[providers.\"managed:kimi-code\"]\ntype = \"kimi\"",
+            true
+        ));
+        assert!(!kimi_runtime_config_ready("not = [valid", true));
+    }
+
+    #[test]
+    fn captures_safe_kimi_login_failure_without_urls_or_credentials() {
+        assert_eq!(
+            kimi_login_failure_detail(
+                "",
+                "Login failed: Kimi Code models endpoint https://api.kimi.com/coding/v1 rejected OAuth credentials: HTTP 402 membership required\n",
+            )
+            .as_deref(),
+            Some("Kimi Code models endpoint [敏感信息已隐藏] rejected OAuth credentials: HTTP 402 membership required")
+        );
+        assert_eq!(
+            kimi_login_failure_detail("", "Login failed: access_token=private-value\n"),
+            None
+        );
+        assert_eq!(
+            kimi_login_failure_detail("device code: ABCD-EFGH", ""),
+            None
+        );
+        assert_eq!(
+            sanitize_kimi_login_failure_detail("device code ABCD-EFGH expired").as_deref(),
+            Some("device code [敏感信息已隐藏] expired")
+        );
+    }
+
+    #[test]
     fn parses_kimi_provider_failure_from_session_log() {
         let log = concat!(
             "2026-07-27T08:18:51Z INFO llm request\n",
@@ -4452,6 +4679,13 @@ mod tests {
 
     #[test]
     fn maps_kimi_auth_and_quota_failures_to_actionable_messages() {
+        assert_eq!(
+            format_kimi_provider_error(
+                "model.not_configured",
+                "LLM not set, send \"/login\" to login"
+            ),
+            "Kimi Code 尚未完成模型配置（model.not_configured），请重新登录"
+        );
         assert_eq!(
             format_kimi_provider_error("provider.auth_failed", "401 unauthorized"),
             "Kimi Code 登录已失效（HTTP 401），请重新登录"
