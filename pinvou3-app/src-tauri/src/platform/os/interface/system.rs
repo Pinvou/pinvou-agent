@@ -111,6 +111,11 @@ pub fn pdf_dependency_packages() -> &'static str {
     super::super::platform::pdf_dependency_packages()
 }
 
+/// 多智能体并行隔离（git worktree）的一键安装包名；macOS 走系统 CLT 引导返回空。
+pub fn git_dependency_packages() -> &'static str {
+    super::super::platform::git_dependency_packages()
+}
+
 pub fn ocr_dependency_packages() -> &'static str {
     super::super::platform::ocr_dependency_packages()
 }

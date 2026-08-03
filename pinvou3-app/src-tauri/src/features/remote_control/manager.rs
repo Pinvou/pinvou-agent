@@ -1391,17 +1391,22 @@ impl RemoteControlManager {
             if inner.bridge_generation.as_deref() != Some(generation) {
                 return Err("stale WebView bridge generation".to_string());
             }
-            let (lease_id, fingerprint) = match inner.rpc_cache.get(request_id) {
+            let (lease_id, fingerprint, command) = match inner.rpc_cache.get(request_id) {
                 Some(RpcCacheEntry::Pending(pending)) => {
                     if pending.acknowledged_generation.as_deref() != Some(generation) {
                         return Err("Web RPC completion arrived before its begin ACK".to_string());
                     }
-                    (pending.lease_id.clone(), pending.fingerprint.clone())
+                    (
+                        pending.lease_id.clone(),
+                        pending.fingerprint.clone(),
+                        pending.command.clone(),
+                    )
                 }
                 Some(RpcCacheEntry::Complete { .. }) => return Ok(()),
                 None => return Err(format!("unknown Web RPC request: {request_id}")),
             };
-            let completion = bounded_rpc_completion(ok, result, error);
+            let completion =
+                bounded_rpc_completion(ok, sanitize_web_rpc_result(&command, result), error);
             inner.rpc_cache.insert(
                 request_id.to_string(),
                 RpcCacheEntry::Complete {
@@ -2296,6 +2301,9 @@ impl RemoteControlManager {
         if !self.policy.events.contains(event) {
             return Err(format!("远程控制不允许发送该事件：{event}"));
         }
+        if is_desktop_only_workflow_event(event, &payload) {
+            return Ok(());
+        }
         // The engine/file watcher already call `forward_app_event` directly.
         // The desktop WebView proxy also sees the corresponding Tauri event;
         // ignore that second source to keep sequence semantics exact.
@@ -3112,9 +3120,9 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "web_access_load_session_chunk"
         | "web_access_save_session_messages_chunk" => Required("id"),
 
-        // Omitting this one deliberately means "create a fresh workflow
-        // Session"; it never consults the desktop active pointer.
-        "start_workflow" => Optional("sessionId"),
+        // Omitting these deliberately uses the global/default behavior without
+        // consulting the desktop active pointer.
+        "get_effective_model_config" | "start_workflow" => Optional("sessionId"),
         _ => return None,
     };
     Some(scope)
@@ -3127,6 +3135,111 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
 // web_access_save_session_messages_chunk 读/写）。暂不封堵的原因：该组命令与普通
 // 会话共用同一条会话读写通道，封堵策略（显式拒绝还是远程端正式支持代码会话）待审阅
 // 者确认；正式登记文字见 .luzeyang/code-plain-decoupling/code-native-agent-安全审查问题清单.md（已归档）。
+fn sanitize_web_rpc_result(command: &str, result: Option<Value>) -> Option<Value> {
+    let mut result = result?;
+    match command {
+        "list_sessions" | "list_archived_sessions" => {
+            retain_non_workflow_items(&mut result, "id");
+        }
+        "list_deliverable_index" => {
+            retain_non_workflow_items(&mut result, "sessionId");
+        }
+        "get_monitor_snapshot" => {
+            let last_event = result
+                .pointer("/self_perf_debug/last_event")
+                .and_then(Value::as_str);
+            if last_event.is_some_and(debug_event_mentions_workflow_session) {
+                if let Some(debug) = result
+                    .get_mut("self_perf_debug")
+                    .and_then(Value::as_object_mut)
+                {
+                    debug.insert("last_event".to_string(), Value::Null);
+                }
+            }
+        }
+        _ => {}
+    }
+    Some(result)
+}
+
+fn retain_non_workflow_items(result: &mut Value, session_id_field: &str) {
+    if let Value::Array(items) = result {
+        items.retain(|item| {
+            !item
+                .get(session_id_field)
+                .and_then(Value::as_str)
+                .is_some_and(crate::features::sessions::is_workflow_session_id)
+        });
+    }
+}
+
+fn debug_event_mentions_workflow_session(event: &str) -> bool {
+    event.split_ascii_whitespace().any(|part| {
+        part.strip_prefix("session=")
+            .is_some_and(crate::features::sessions::is_workflow_session_id)
+    })
+}
+
+fn is_desktop_only_workflow_event(event: &str, payload: &Value) -> bool {
+    let session_id = payload
+        .get("session_id")
+        .or_else(|| payload.get("sessionId"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .starts_with("session:")
+                .then(|| payload.get("id").and_then(Value::as_str))
+                .flatten()
+        });
+    session_id.is_some_and(crate::features::sessions::is_workflow_session_id)
+}
+
+fn validate_workflow_session_web_scope(command: &str, session_id: &str) -> Result<(), String> {
+    if crate::features::sessions::is_workflow_session_id(session_id) {
+        return Err(format!(
+            "{command} is not available for desktop-only multi-agent Sessions over Web"
+        ));
+    }
+    Ok(())
+}
+
+/// 新形态多智能体会话（普通 id + 开关标志）在 Web 上是只读的（ADR-0006，
+/// 桌面专属）：查看/列表照常放行（只读横幅要能取数），一切会触发新一轮
+/// 模型执行的入口统一拦截——此前只拦了输入框，编辑重发/计划裁决/澄清
+/// 提交都能绕过（复核 P1）。桌面端不经本漏斗，不受影响。
+const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
+    "accept_plan",
+    "cancel_user_input",
+    "compact_now",
+    "discard_plan",
+    "edit_last_turn",
+    "exit_plan_to_yolo",
+    "submit_user_input",
+    "summon_pinvou",
+    "web_access_chat",
+];
+
+fn validate_multi_agent_session_web_scope(
+    app: &AppHandle,
+    command: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
+        return Ok(());
+    }
+    let is_multi_agent = {
+        use tauri::Manager as _;
+        app.state::<crate::features::sessions::SessionStore>()
+            .mode_state(session_id)
+            .multi_agent
+    };
+    if is_multi_agent {
+        return Err(format!(
+            "{command} is not available for desktop-only multi-agent Sessions over Web"
+        ));
+    }
+    Ok(())
+}
 fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Result<(), String> {
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
@@ -3149,6 +3262,8 @@ fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Resul
     };
     crate::features::sessions::validate_session_id(session_id)
         .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
+    validate_workflow_session_web_scope(command, session_id)?;
+    validate_multi_agent_session_web_scope(app, command, session_id)?;
     if (command == "web_access_load_session_chunk"
         && args
             .get("downloadId")
@@ -4525,6 +4640,113 @@ mod tests {
     }
 
     #[test]
+    fn workflow_sessions_reject_every_existing_web_session_command() {
+        let scoped_commands = [
+            ("get_session_timeline", "sessionId"),
+            ("web_access_load_session_chunk", "id"),
+            ("web_access_artifact_info", "sessionId"),
+            ("web_access_list_deliverables", "sessionId"),
+            ("web_access_read_artifact_chunk", "sessionId"),
+            ("web_access_read_artifact_image_b64", "sessionId"),
+            ("web_access_read_artifact_text", "sessionId"),
+            ("web_access_read_artifact_thumbnail", "sessionId"),
+            ("edit_last_turn", "sessionId"),
+            ("accept_plan", "sessionId"),
+            ("discard_plan", "sessionId"),
+            ("set_plan_mode_next", "sessionId"),
+            ("submit_user_input", "sessionId"),
+            ("cancel_user_input", "sessionId"),
+            ("cancel_generation", "sessionId"),
+            ("web_access_chat", "sessionId"),
+            ("delete_session", "id"),
+            ("rename_session", "id"),
+            ("set_session_model", "sessionId"),
+            ("set_session_archived", "id"),
+            ("set_session_pinned", "id"),
+            ("save_session_artifacts", "id"),
+            ("web_access_save_session_messages_chunk", "id"),
+            ("web_access_write_artifact_text", "sessionId"),
+            ("web_access_render_artifact_visual", "sessionId"),
+        ];
+
+        for (command, field) in scoped_commands {
+            assert_eq!(
+                web_session_scope(command),
+                Some(WebSessionScope::Required(field)),
+                "{command} must pass through the central Session scope validator"
+            );
+            assert!(
+                validate_workflow_session_web_scope(command, "wf-test-run").is_err(),
+                "{command} must not access a desktop-only multi-agent Session"
+            );
+        }
+
+        // 这层门只收紧多智能体会话；普通会话仍由既有命令白名单与 scope 校验。
+        assert!(validate_workflow_session_web_scope("edit_last_turn", "chat-session").is_ok());
+        assert_eq!(
+            web_session_scope("get_effective_model_config"),
+            Some(WebSessionScope::Optional("sessionId"))
+        );
+        assert!(
+            validate_workflow_session_web_scope("get_effective_model_config", "wf-test-run")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn workflow_session_data_never_crosses_generic_web_responses_or_events() {
+        for (command, field) in [
+            ("list_sessions", "id"),
+            ("list_archived_sessions", "id"),
+            ("list_deliverable_index", "sessionId"),
+        ] {
+            let filtered = sanitize_web_rpc_result(
+                command,
+                Some(json!([
+                    {(field): "chat-test", "title": "chat"},
+                    {(field): "wf-test-run", "title": "workflow"}
+                ])),
+            )
+            .expect("filtered list");
+            assert_eq!(
+                filtered,
+                json!([{(field): "chat-test", "title": "chat"}]),
+                "{command} must hide desktop-only Workflow sessions"
+            );
+        }
+        let monitor = sanitize_web_rpc_result(
+            "get_monitor_snapshot",
+            Some(json!({
+                "self_perf_debug": {
+                    "last_event": "turn_complete session=wf-test-run input=1"
+                }
+            })),
+        )
+        .expect("sanitized monitor");
+        assert_eq!(
+            monitor.pointer("/self_perf_debug/last_event"),
+            Some(&Value::Null)
+        );
+
+        assert!(is_desktop_only_workflow_event(
+            "chat:delta",
+            &json!({"session_id": "wf-test-run", "delta": "secret"})
+        ));
+        assert!(is_desktop_only_workflow_event(
+            "chat:done",
+            &json!({"sessionId": "wf-test-run"})
+        ));
+        assert!(is_desktop_only_workflow_event(
+            "session:list_changed",
+            &json!({"id": "wf-test-run", "action": "created"})
+        ));
+        assert!(!is_desktop_only_workflow_event(
+            "chat:delta",
+            &json!({"session_id": "chat-test", "id": "wf-tool-call"})
+        ));
+    }
+
+    #[test]
     fn oversized_rpc_results_become_small_structured_errors() {
         let completion = bounded_rpc_completion(
             true,
@@ -4559,6 +4781,37 @@ mod tests {
             rpc_fingerprint("chat", &json!({ "a": 1, "b": { "x": 2, "y": 3 } })).unwrap(),
             rpc_fingerprint("chat", &json!({ "b": { "y": 3, "x": 2 }, "a": 1 })).unwrap()
         );
+    }
+
+    /// Web 只读封禁表：执行型入口全在表内，查看型不在（只读横幅要取数）。
+    #[test]
+    fn multi_agent_web_denylist_blocks_execution_but_not_viewing() {
+        for command in [
+            "web_access_chat",
+            "edit_last_turn",
+            "accept_plan",
+            "discard_plan",
+            "exit_plan_to_yolo",
+            "submit_user_input",
+            "cancel_user_input",
+            "compact_now",
+            "summon_pinvou",
+        ] {
+            assert!(
+                super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
+                "执行入口 {command} 必须在 Web 只读封禁表内（复核 P1）"
+            );
+        }
+        for command in [
+            "get_session_timeline",
+            "get_mode_state",
+            "web_access_load_session_chunk",
+        ] {
+            assert!(
+                !super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
+                "只读查看 {command} 必须放行——Web 只读横幅要能取数"
+            );
+        }
     }
 
     #[test]

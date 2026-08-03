@@ -2477,8 +2477,8 @@
     var legacyCollection = results[4];
     var memory = results[5];
     state.modeState = mode.ok && mode.value
-      ? { mode: mode.value.mode || "yolo" }
-      : { mode: "yolo" };
+      ? { mode: mode.value.mode || "yolo", multiAgent: !!mode.value.multi_agent }
+      : { mode: "yolo", multiAgent: false };
     state.activePersona = persona.ok ? (persona.value || null) : null;
     if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
       applyMountedCollections(snapshot.value);
@@ -3178,14 +3178,19 @@
     return "";
   }
 
+  function isInternalUserMessageProvenance(provenance) {
+    return provenance === "runtime" || provenance === "subagent_handoff";
+  }
+
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
+  // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
   // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
   // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
-    if (userMessageInputProvenance(blocks) === "runtime") return "";
+    if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {
@@ -4567,7 +4572,10 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+        state.modeState = {
+          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
+          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
+        };
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn) {
@@ -6156,14 +6164,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo" };
+      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
     }
   }
 
@@ -6467,7 +6475,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo" };
+    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
   }
 
   function isActionablePlanCard(sid, itemId, planId) {

@@ -170,6 +170,11 @@ pub fn pdf_dependency_packages() -> &'static str {
     ""
 }
 
+/// winget 包表键名（features/dependencies/platform/windows.rs 的 WINGET_PACKAGES）。
+pub fn git_dependency_packages() -> &'static str {
+    "git"
+}
+
 pub fn pandoc_dependency_packages() -> &'static str {
     ""
 }

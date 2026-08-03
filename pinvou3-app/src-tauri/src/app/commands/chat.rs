@@ -213,8 +213,33 @@ pub(crate) async fn chat_with_reservation(
             );
         }
     }
-    // 取该 session 的 mode。
-    let mode = store.mode_state(&sid).mode;
+    // 取该 session 的 mode 状态（mode + 多智能体开关）。
+    let mode_state = store.mode_state(&sid);
+    // 多智能体模式（ADR-0006）：开着就每轮把主动委派提醒拼在用户消息前。
+    // 每轮重申而非首轮一次性教学——长上下文里开头信号的遵循率会衰减
+    // （skill phase marker 同款教训），关掉开关即停止注入。
+    if mode_state.multi_agent {
+        // worktree 隔离的子智能体只检出 HEAD：发送前把工作区现状快照进 git
+        // （幂等，无变化零成本），否则本轮新写入的输入文件在 worktree 里不可见。
+        // 快照失败**中止本轮**（复核 P2）：静默继续会让 worktree 子智能体
+        // 基于旧文件工作出"看似完整实则过期"的结果，比明确失败更糟。
+        // 同步 git 进程移出异步运行线程：留在 runtime worker 上会卡住同
+        // 线程其他会话的事件处理。
+        let snapshot_dir = execution_workspace.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::features::multiagent::platform::snapshot_workspace(&snapshot_dir)
+        })
+        .await
+        .unwrap_or_else(|join| Err(format!("快照任务失败: {join}")))
+        .map_err(|err| {
+            format!("多智能体工作区快照失败，本轮已中止（否则 worktree 子智能体会基于旧文件出结果）: {err}")
+        })?;
+        full = format!(
+            "{}\n\n---\n\n{full}",
+            super::multiagent::delegation_reminder()
+        );
+    }
+    let mode = mode_state.mode;
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
     log::info!(

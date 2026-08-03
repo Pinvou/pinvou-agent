@@ -291,6 +291,26 @@ pub fn workflow_project_dir(run_id: &str) -> PathBuf {
     workflow_run_dir(run_id).join("project")
 }
 
+/// `~/.pinvou3/agent-runs/` —— 多智能体工作流运行的根目录。
+///
+/// **刻意不与 `workflows/` 共用**：那个目录归既有 Python 调度器的台账所有
+/// （`workflow_runs::rebuild_index` 会扫它的 `*/run.json`），共用即产生 ADR-0004
+/// 明令禁止的数据交集。
+pub fn agent_runs_root() -> PathBuf {
+    pinvou3_home().join("agent-runs")
+}
+
+/// `~/.pinvou3/agent-runs/<run_id>/` —— 单次工作流运行的家（run.json + workspace/）。
+pub fn agent_run_dir(run_id: &str) -> PathBuf {
+    agent_runs_root().join(run_id)
+}
+
+/// `~/.pinvou3/agent-runs/<run_id>/workspace/` —— 该运行的 engine workspace，
+/// 角色名册（`.codewhale/agents/`）与产物都落在这里，删 run 即整体清理。
+pub fn agent_run_workspace_dir(run_id: &str) -> PathBuf {
+    agent_run_dir(run_id).join("workspace")
+}
+
 /// `~/.pinvou3/workflows/index.json` —— 台账。纯缓存可丢弃，决策读取须与 _state 互证。
 pub fn workflows_index_path() -> PathBuf {
     workflows_root().join("index.json")
