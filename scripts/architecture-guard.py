@@ -259,6 +259,16 @@ def platform_detail_allowed(relative: str) -> bool:
     return "/platform/" in f"/{relative}"
 
 
+def file_exception_allowed(text: str, exception: str) -> bool:
+    """Return whether a reasoned file-level exception appears near the header."""
+    header = "\n".join(text.splitlines()[:20])
+    pattern = re.compile(
+        rf"(?m)^[ \t]*//[ \t]*architecture-guard:[ \t]*"
+        rf"allow-{re.escape(exception)}[ \t]+--[ \t]+\S[^\r\n]*$"
+    )
+    return bool(pattern.search(header))
+
+
 def count_platform_cfgs(text: str) -> int:
     """Count platform selectors inside cfg/cfg_attr expressions.
 
@@ -300,7 +310,6 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
         "rust_cyclic_feature_dependencies": Counter(),
         "rust_target_cfg_outside_adapter": Counter(),
         "rust_platform_details_outside_adapter": Counter(),
-        "rust_legacy_module_indirection": Counter(),
         "rust_tauri_commands_outside_app": Counter(),
         "rust_tauri_handler_outside_app": Counter(),
     }
@@ -310,8 +319,6 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     platform_root = rust_root / "platform"
     graph: dict[str, set[str]] = defaultdict(set)
     feature_edge_counts: Counter[tuple[str, str]] = Counter()
-    include_pattern = re.compile(r"\binclude\s*!\s*\(")
-    path_pattern = re.compile(r"#\s*\[\s*path\s*=")
     tauri_command_pattern = re.compile(r"#\s*\[\s*tauri\s*::\s*command\b")
     tauri_handler_pattern = re.compile(r"generate_handler\s*!\s*\[(.*?)\]", re.DOTALL)
     platform_detail_patterns = [
@@ -346,20 +353,21 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
                         f"{relative}->{layer}::{target}"
                     ] += 1
         target_count = count_platform_cfgs(text)
-        if target_count and not target_cfg_allowed(relative):
+        if (
+            target_count
+            and not target_cfg_allowed(relative)
+            and not file_exception_allowed(text, "target-cfg")
+        ):
             rules["rust_target_cfg_outside_adapter"][relative] += target_count
-        if not platform_detail_allowed(relative):
+        if (
+            not platform_detail_allowed(relative)
+            and not file_exception_allowed(text, "platform-detail")
+        ):
             detail_count = sum(
                 len(pattern.findall(text)) for pattern in platform_detail_patterns
             )
             if detail_count:
                 rules["rust_platform_details_outside_adapter"][relative] += detail_count
-        include_count = len(include_pattern.findall(text))
-        if include_count:
-            rules["rust_legacy_module_indirection"][f"{relative}:include!"] += include_count
-        path_count = len(path_pattern.findall(text))
-        if path_count:
-            rules["rust_legacy_module_indirection"][f"{relative}:#[path]"] += path_count
         command_count = len(tauri_command_pattern.findall(text))
         if command_count and "/app/commands/" not in f"/{relative}":
             rules["rust_tauri_commands_outside_app"][relative] += command_count

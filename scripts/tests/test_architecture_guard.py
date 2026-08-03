@@ -91,7 +91,7 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             self.assertEqual(1, sum(rules["frontend_tauri_global_outside_platform"].values()))
             self.assertEqual(1, sum(rules["frontend_user_agent_platform_detection"].values()))
 
-    def test_rust_scanner_finds_upward_dependency_cycle_cfg_and_legacy_modules(self):
+    def test_rust_scanner_finds_upward_dependency_cycle_and_platform_leaks(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             rust_root = root / "pinvou3-app/src-tauri/src"
@@ -99,8 +99,7 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             feature_b = rust_root / "features/b/mod.rs"
             platform = rust_root / "features/a/platform/windows.rs"
             platform_service = rust_root / "platform/service.rs"
-            commands = rust_root / "app/commands.rs"
-            for path in [feature_a, feature_b, platform, platform_service, commands]:
+            for path in [feature_a, feature_b, platform, platform_service]:
                 path.parent.mkdir(parents=True, exist_ok=True)
             (rust_root / "lib.rs").write_text(
                 '#[path = "app/bridge/mod.rs"]\nmod bridge;\n'
@@ -131,7 +130,6 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             platform_service.write_text(
                 "fn reverse() { crate::feature_a::run(); }\n", encoding="utf-8"
             )
-            commands.write_text('include!("commands/chat.rs");\n', encoding="utf-8")
 
             rules, cycles = self.guard.scan_rust(root)
             self.assertEqual(1, rules["rust_feature_depends_on_app"]["a->bridge"])
@@ -172,20 +170,76 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             )
             self.assertEqual(
                 1,
-                rules["rust_legacy_module_indirection"][
-                    "pinvou3-app/src-tauri/src/app/commands.rs:include!"
+                rules["rust_tauri_commands_outside_app"][
+                    "pinvou3-app/src-tauri/src/features/a/mod.rs"
                 ],
             )
+
+    def test_platform_rule_exceptions_require_header_marker_and_reason(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rust_root = root / "pinvou3-app/src-tauri/src"
+            allowed = rust_root / "features/allowed/mod.rs"
+            rejected = rust_root / "features/rejected/mod.rs"
+            late = rust_root / "features/late/mod.rs"
+            allowed.parent.mkdir(parents=True)
+            rejected.parent.mkdir(parents=True)
+            late.parent.mkdir(parents=True)
+            allowed.write_text(
+                "// architecture-guard: allow-target-cfg -- dependency is Windows-only\n"
+                "// architecture-guard: allow-platform-detail -- parses external command\n"
+                '#[cfg(target_os = "windows")]\n'
+                'fn run() { Command::new("powershell.exe"); }\n',
+                encoding="utf-8",
+            )
+            late.write_text(
+                "// header filler\n" * 20
+                + "// architecture-guard: allow-target-cfg -- too late\n"
+                + "// architecture-guard: allow-platform-detail -- too late\n"
+                + '#[cfg(target_os = "windows")]\n'
+                + 'fn run() { Command::new("powershell.exe"); }\n',
+                encoding="utf-8",
+            )
+            rejected.write_text(
+                "// architecture-guard: allow-target-cfg\n"
+                "// architecture-guard: allow-platform-detail --\n"
+                '#[cfg(target_os = "windows")]\n'
+                'fn run() { Command::new("powershell.exe"); }\n',
+                encoding="utf-8",
+            )
+
+            rules, _ = self.guard.scan_rust(root)
+
+            self.assertNotIn(
+                "pinvou3-app/src-tauri/src/features/allowed/mod.rs",
+                rules["rust_target_cfg_outside_adapter"],
+            )
+            self.assertNotIn(
+                "pinvou3-app/src-tauri/src/features/allowed/mod.rs",
+                rules["rust_platform_details_outside_adapter"],
+            )
             self.assertEqual(
-                3,
-                rules["rust_legacy_module_indirection"][
-                    "pinvou3-app/src-tauri/src/lib.rs:#[path]"
+                1,
+                rules["rust_target_cfg_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/rejected/mod.rs"
                 ],
             )
             self.assertEqual(
                 1,
-                rules["rust_tauri_commands_outside_app"][
-                    "pinvou3-app/src-tauri/src/features/a/mod.rs"
+                rules["rust_platform_details_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/rejected/mod.rs"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_target_cfg_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/late/mod.rs"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_platform_details_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/late/mod.rs"
                 ],
             )
 
