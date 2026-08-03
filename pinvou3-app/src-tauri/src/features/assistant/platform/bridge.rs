@@ -1236,14 +1236,12 @@ impl Pinvou3Bridge {
             goal_status,
             // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
             // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
-            disallowed_tools: {
-                let n = crate::features::marketplace::disabled_tool_names();
-                if n.is_empty() {
-                    None
-                } else {
-                    Some(n)
-                }
-            },
+            //
+            // [多智能体] 不追加 `workflow` 禁令：主线上底座在 subagents_enabled 时
+            // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平（复核指出
+            // 全局禁用是能力回退）。委派提醒只教 agent 集群、不教 workflow；底座
+            // read_only 钳制与阶段结果不传递两处已知限制记录在 ADR-0006。
+            disallowed_tools: Some(crate::features::marketplace::disabled_tool_names()),
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
@@ -1289,6 +1287,33 @@ impl Pinvou3Bridge {
         let _ = std::fs::create_dir_all(&workspace);
         cfg.workspace = workspace;
         cfg.instructions = self.session_instructions(session_id);
+        cfg
+    }
+
+    /// 多智能体会话专用配置（ADR-0006）。
+    ///
+    /// 与普通会话的唯一区别是装配专家名册：专家池入册专家写进会话工作区
+    /// （`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
+    /// `agent` 的 `profile` 字段选人；专家池为空时名册即空，模型自拟任务
+    /// 说明裸派（用户决策：不内置兜底角色）。**工具面与普通会话完全一致**
+    /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
+    /// 提醒不教学不推荐）。
+    pub fn build_engine_config_for_multi_agent(
+        &self,
+        session_id: &str,
+        workspace: PathBuf,
+    ) -> EngineConfig {
+        let mut cfg = self.build_engine_config_for_session_at(session_id, workspace);
+        // spawn 路径不因名册写盘失败而拒绝起引擎（对话本身要能用）；开关
+        // 命令路径（interaction::set_multi_agent_mode）已把写盘失败挡在
+        // 开启之前，这里只兜底记录。
+        if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&cfg.workspace) {
+            eprintln!("[multiagent] {err}");
+        }
+        cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
+            &codewhale_config::FleetConfigToml::default(),
+            &cfg.workspace,
+        ));
         cfg
     }
 
@@ -1475,9 +1500,11 @@ impl Pinvou3Bridge {
     /// 强制特定状态行为。Qwen3.6 短期注意力强,放 message 顶端命中率高。
     /// 见决策文档 V2 §13.1。
     ///
-    /// 注：CodeWhale 当前的 `auto_approve` 字段不旁路 `await_tool_approval`
-    /// （上游 bug），所以 event forwarder 仍要监听 ApprovalRequired 并主动
-    /// 调 `approve_tool_call`。这条逻辑见 `engine.rs::spawn_event_forwarder`。
+    /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
+    /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
+    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
+    /// 因此多智能体工作流由 `engine.rs::apply_workflow_turn_policy` 同时收紧 mode、
+    /// trust 与审批字段，定时任务则按 profile。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -4032,5 +4059,101 @@ mod tests {
         );
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+    }
+
+    /// 工具面与主线持平：不得往基础配置里追加 `workflow` 禁令（复核指出
+    /// 全局禁用改变了主分支已有能力）。禁用列表只来自连接器开关。
+    #[test]
+    fn chat_engine_config_keeps_the_workflow_tool_available() {
+        let bridge = fixture_bridge();
+        let cfg = bridge.build_engine_config();
+        let disallowed = cfg.disallowed_tools.unwrap_or_default();
+        assert!(
+            !disallowed.iter().any(|name| name == "workflow"),
+            "不得禁用 workflow——与主线能力持平，实际: {disallowed:?}"
+        );
+    }
+
+    /// 多智能体配置只装配专家名册（不再播种内置角色，用户决策）；工具面
+    /// 与普通对话完全一致（workflow 也同样可用——不教不荐，但不禁用）。
+    #[test]
+    fn multi_agent_engine_config_only_seeds_roles() {
+        let bridge = fixture_bridge();
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou3-wf-roles-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", workspace.clone());
+
+        assert_eq!(
+            cfg.disallowed_tools,
+            bridge.build_engine_config().disallowed_tools,
+            "多智能体会话的禁用列表必须与普通对话一字不差"
+        );
+
+        // 名册只装配专家池（本测试环境为空）：不得再播种内置角色文件；
+        // 底座自带的内置成员（verifier 等）保持可用。
+        let agents_dir = workspace.join(deepseek_tui::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
+        let seeded: Vec<String> = std::fs::read_dir(&agents_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| !n.starts_with("exp-"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(seeded.is_empty(), "不得再播种内置角色文件: {seeded:?}");
+        assert!(
+            cfg.fleet_roster.get("verifier").is_some(),
+            "底座内置成员应保持可用"
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// 多智能体会话与普通对话共用同一条发送路径（ADR-0006）：不再收紧模式、
+    /// 不再限定单工具白名单、不再注入 `workflow → ask` Hook。会话选定的
+    /// Plan/Yolo 即最终审批语义。
+    #[test]
+    fn workflow_sessions_share_the_ordinary_send_path() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-flash",
+            "https://api.deepseek.com",
+            "k",
+        );
+        let op = bridge
+            .build_send_message_op("hi".into(), AppMode::Yolo, None, false)
+            .expect("build op");
+        let deepseek_tui::core::ops::Op::SendMessage {
+            mode,
+            allowed_tools,
+            hook_executor,
+            ..
+        } = op
+        else {
+            panic!("SendMessage op expected");
+        };
+        assert_eq!(mode, AppMode::Yolo, "会话模式原样透传，不被多智能体改写");
+        assert_eq!(
+            allowed_tools, None,
+            "完整工具面：不得再为多智能体收紧单工具白名单"
+        );
+        let hooks_have_forced_ask = hook_executor
+            .map(|executor| {
+                executor
+                    .config()
+                    .hooks
+                    .iter()
+                    .any(|hook| hook.name.as_deref() == Some("pinvou3-workflow-approval"))
+            })
+            .unwrap_or(false);
+        assert!(!hooks_have_forced_ask, "强制 ask Hook 已随每图必停协议退役");
     }
 }

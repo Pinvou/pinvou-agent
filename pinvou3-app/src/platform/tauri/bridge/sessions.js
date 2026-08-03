@@ -381,6 +381,8 @@
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
+    // 离开草稿（无论物化还是切去既有会话），未消费的开关寄存意图作废。
+    state.pendingDraftMultiAgent = false;
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = id;
     var buf = sessionStates[id];
@@ -415,6 +417,11 @@
     state.scheduledRunContext = null;
     state.draftEpoch++; // 每次点击都自增——含下面提前返回的「已在草稿态」分支,让前端能重置 welcomeToolId
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
+    // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
+    state.pendingDraftMultiAgent = false;
+    if (state.modeState && state.modeState.multiAgent) {
+      state.modeState = { mode: state.modeState.mode || "yolo", multiAgent: false };
+    }
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -441,11 +448,23 @@
       // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
       // 不能把 await 前的已发送文本带入新 session。
       var composerDraft = state.composerDraft || "";
+      // 草稿期开的多智能体开关此刻才落后端（开关本身不物化会话）。先取后
+      // 清：switchActiveTo 会把寄存意图当作已消费。
+      var pendingMultiAgent = state.pendingDraftMultiAgent === true;
+      state.pendingDraftMultiAgent = false;
       switchActiveTo(meta.id, { fresh: true });
       // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
       // 跟随迁移；这不是用户主动切换到另一个已有会话。
       state.composerDraft = composerDraft;
       sessionStates[meta.id].composerDraft = composerDraft;
+      if (pendingMultiAgent) {
+        // 失败如实提示；随后的 syncModeState 会把开关行拉回真实状态。
+        try {
+          await invoke("set_multi_agent_mode", { sessionId: meta.id, enabled: true });
+        } catch (toggleError) {
+          addSystemItem(bt("switchModeFailed") + toggleError);
+        }
+      }
       await refreshHistoryList();
       await syncModeState();
       await syncActivePersona();

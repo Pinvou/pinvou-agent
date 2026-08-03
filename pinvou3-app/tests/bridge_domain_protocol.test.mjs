@@ -76,9 +76,11 @@ const protocolSources = {
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
   workflow: ['bridge/workflow-runtime.js', 'bridge/workflow.js'],
+  multiAgent: ['bridge/multiagent.js'],
 };
 
 const expectedProtocolHashes = {
+  multiAgent: '7a744ec3318b16337a4a15cfb5668cc640013527a9b3ee8efc3e2a74ea51d9a1',
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
   chat: 'c7a67396349fe88ae96b56344d31d96e34d5428201005247478d32012704ceba',
@@ -90,7 +92,7 @@ const expectedProtocolHashes = {
   personas: '51ad533c7ce6147b7e66e73e41def066df1113a72001c7037be694c975900630',
   remoteControl: '3e8d54d1051d1f59d5b9f41440b73444b82594391e47f4cbce56904afd72fb81',
   scheduled: '239292d75c308973053cc0091e0ac9437191bf2375fd5fd8181ea26f4f749900',
-  sessions: 'a62bd0a08a586a019b14755a61aaa63229442e3ce300f4461028db0d48c68621',
+  sessions: '3a6b62d432b393b9abdab17039b8a34f1a0b0dda1c04e0b7a99064f8f6d6cd1f',
   settings: '624810915759a0b46f3524e1b401f65b13d44368639e1bc2887fea4168a0e16d',
   updater: '53562c8fe6547a6c422d112d34769d3ac79abeec27633c32b5658605072c9fe2',
   voice: '2e6789eca3969f27e8e0fd9f034bd82e0b0e1f302152efc65c5714839fbf5b72',

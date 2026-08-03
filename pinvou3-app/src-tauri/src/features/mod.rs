@@ -9,6 +9,7 @@ pub(crate) mod local_llm;
 pub mod marketplace;
 pub mod memory;
 pub(crate) mod monitor;
+pub mod multiagent;
 pub mod personas;
 pub(crate) mod pet;
 pub(crate) mod remote_control;

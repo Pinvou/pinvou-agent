@@ -92,6 +92,10 @@ pub fn pandoc_dependency_packages() -> &'static str {
     ""
 }
 
+pub fn git_dependency_packages() -> &'static str {
+    ""
+}
+
 pub fn archive_dependency_packages() -> &'static str {
     ""
 }
