@@ -4,7 +4,12 @@ import { readFile } from 'node:fs/promises';
 const stateUrl = new URL('../src/features/codex/runtimeNoticeState.js', import.meta.url);
 const stateSource = await readFile(stateUrl, 'utf8');
 const stateModule = await import(`data:text/javascript;base64,${Buffer.from(stateSource).toString('base64')}`);
-const { runtimeNoticeMode } = stateModule;
+const {
+  runtimeInstallInProgress,
+  runtimeLoginInProgress,
+  runtimeNoticeMode,
+  runtimeOperationFor,
+} = stateModule;
 
 const ready = {
   bridge_ready: true,
@@ -28,6 +33,34 @@ assert.equal(runtimeNoticeMode({ ...ready, authenticated: false }), 'login');
 assert.equal(runtimeNoticeMode({ ...ready, error: 'failed' }), 'error');
 assert.equal(runtimeNoticeMode(ready), 'ready');
 
+const installingClaude = { claude: 'install' };
+assert.equal(runtimeOperationFor(installingClaude, 'claude'), 'install');
+assert.equal(runtimeOperationFor(installingClaude, 'codex'), '');
+assert.equal(runtimeOperationFor(installingClaude, 'kimi'), '');
+assert.equal(
+  runtimeInstallInProgress(ready, runtimeOperationFor(installingClaude, 'claude')),
+  true,
+  'Claude installation must only mark Claude as installing',
+);
+assert.equal(
+  runtimeInstallInProgress(ready, runtimeOperationFor(installingClaude, 'codex')),
+  false,
+  'Claude installation must not mark Codex as installing',
+);
+
+const loggingInClaude = { claude: 'login' };
+assert.equal(
+  runtimeLoginInProgress(ready, runtimeOperationFor(loggingInClaude, 'claude')),
+  true,
+  'Claude login must only mark Claude as logging in',
+);
+assert.equal(
+  runtimeLoginInProgress(ready, runtimeOperationFor(loggingInClaude, 'codex')),
+  false,
+  'Claude login must not mark Codex as logging in',
+);
+assert.equal(runtimeLoginInProgress({ ...ready, login_in_progress: true }), true);
+
 const view = await readFile(
   new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),
   'utf8',
@@ -36,6 +69,21 @@ assert.match(
   view,
   /refreshStatus\(activeAgentId, true\)\.catch\(showError\)/,
   'switching the active agent must force a fresh CLI probe',
+);
+assert.match(
+  view,
+  /beginRuntimeOperation\(agentId, 'install'\)/,
+  'runtime operations must be recorded for the target Agent',
+);
+assert.match(
+  view,
+  /operation=\{activeRuntimeOperation\}/,
+  'the runtime notice must only consume the active Agent operation',
+);
+assert.doesNotMatch(
+  view,
+  /working \|\| waitingForLogin \? copy\.waitAuth/,
+  'unrelated work must not render the active Agent as logging in',
 );
 assert.doesNotMatch(view, /managed_download|managedDownload|downloadManaged/);
 

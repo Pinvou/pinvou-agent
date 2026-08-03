@@ -574,7 +574,7 @@ pub struct AcpPool {
     config_defaults: AcpConfigDefaultsStore,
     acp_metadata_backends: Arc<parking_lot::RwLock<HashMap<String, AgentBackend>>>,
     session_store: SessionStore,
-    installing: Arc<AtomicBool>,
+    installing_agents: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
     login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
     login_inputs: Arc<Mutex<HashMap<AgentBackend, ChildStdin>>>,
     codex_upgrade_required: Arc<AtomicBool>,
@@ -585,6 +585,35 @@ pub struct AcpPool {
     bundled_adapter: Option<PathBuf>,
     bundled_claude_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
+}
+
+/// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
+/// guard 在外部命令完成后显式 drop，使随后返回的 status 已恢复 installing=false；
+/// 提前返回或 panic 时 Drop 仍会兜底清理。
+struct AgentInstallGuard {
+    installing_agents: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
+    backend: AgentBackend,
+}
+
+impl AgentInstallGuard {
+    fn try_start(
+        installing_agents: &Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
+        backend: AgentBackend,
+    ) -> Option<Self> {
+        if !installing_agents.write().insert(backend) {
+            return None;
+        }
+        Some(Self {
+            installing_agents: installing_agents.clone(),
+            backend,
+        })
+    }
+}
+
+impl Drop for AgentInstallGuard {
+    fn drop(&mut self) {
+        self.installing_agents.write().remove(&self.backend);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -722,7 +751,7 @@ impl AcpPool {
             config_defaults,
             acp_metadata_backends: Arc::new(parking_lot::RwLock::new(acp_metadata_backends)),
             session_store,
-            installing: Arc::new(AtomicBool::new(false)),
+            installing_agents: Arc::new(parking_lot::RwLock::new(HashSet::new())),
             login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             login_inputs: Arc::new(Mutex::new(HashMap::new())),
             codex_upgrade_required: Arc::new(AtomicBool::new(false)),
@@ -986,7 +1015,7 @@ impl AcpPool {
                 login_url: login.url,
                 login_code: login.code,
                 login_input_required: false,
-                installing: self.installing.load(Ordering::Acquire),
+                installing: self.installing_agents.read().contains(&backend),
                 error: (!authenticated).then_some(login.error).flatten(),
                 setup_hint: if !installed {
                     Some("kimi_cli_missing")
@@ -1154,8 +1183,8 @@ impl AcpPool {
             login_url: login.url,
             login_code: login.code,
             login_input_required: login.input_required,
-            // installing 标志由三条安装路径（brew/npm/官方脚本）共享，三端统一上报。
-            installing: self.installing.load(Ordering::Acquire),
+            // 安装状态按 Agent 隔离；Claude/Kimi 的任务不会污染 Codex 状态，反之亦然。
+            installing: self.installing_agents.read().contains(&backend),
             error: login.error.or_else(|| {
                 (backend == AgentBackend::CodexAcp)
                     .then(|| self.last_error.read().clone())
@@ -1309,14 +1338,15 @@ impl AcpPool {
                 backend.display_name()
             );
         }
-        if self.installing.swap(true, Ordering::AcqRel) {
+        let Some(install_guard) = AgentInstallGuard::try_start(&self.installing_agents, backend)
+        else {
             diagnostics::write(
                 &operation_id,
                 "homebrew:already_installing",
                 "result=rejected",
             );
             bail!("{} 正在通过 Homebrew 安装，请稍候", backend.display_name());
-        }
+        };
         diagnostics::write(
             &operation_id,
             "homebrew:start",
@@ -1354,7 +1384,7 @@ impl AcpPool {
             );
         })
         .await;
-        self.installing.store(false, Ordering::Release);
+        drop(install_guard);
         match result.context("等待 Homebrew 安装任务失败")? {
             Ok(()) => {
                 self.refresh_agent_cli_probe(backend).await;
@@ -1425,17 +1455,18 @@ impl AcpPool {
             diagnostics::write(&operation_id, "npm:unsupported", "result=rejected");
             bail!("{} 不支持 npm 全局升级", backend.display_name());
         }
-        if self.installing.swap(true, Ordering::AcqRel) {
+        let Some(install_guard) = AgentInstallGuard::try_start(&self.installing_agents, backend)
+        else {
             diagnostics::write(&operation_id, "npm:already_installing", "result=rejected");
             bail!("{} 正在升级，请稍候", backend.display_name());
-        }
+        };
         diagnostics::write(
             &operation_id,
             "npm:start",
             format!("agent={}", backend.agent_id().unwrap_or("unknown")),
         );
         let result = run_npm_global_upgrade(backend, &operation_id).await;
-        self.installing.store(false, Ordering::Release);
+        drop(install_guard);
         // 无论成败都强制重新探测：npm 可能部分完成（已写入二进制但链接失败）。
         self.refresh_agent_cli_probe(backend).await;
         match result {
@@ -1468,21 +1499,22 @@ impl AcpPool {
                 backend.display_name()
             );
         }
-        if self.installing.swap(true, Ordering::AcqRel) {
+        let Some(install_guard) = AgentInstallGuard::try_start(&self.installing_agents, backend)
+        else {
             diagnostics::write(
                 &operation_id,
                 "script:already_installing",
                 "result=rejected",
             );
             bail!("{} 正在安装，请稍候", backend.display_name());
-        }
+        };
         diagnostics::write(
             &operation_id,
             "script:start",
             format!("agent={}", backend.agent_id().unwrap_or("unknown")),
         );
         let result = run_official_install_script(backend, &operation_id).await;
-        self.installing.store(false, Ordering::Release);
+        drop(install_guard);
         // 无论成败都按 Agent 强制重新探测：脚本可能部分完成（如已写入二进制但
         // PATH 更新失败）；Codex 还需立即检查 ~/.local/bin 的官方安装绝对路径。
         self.refresh_agent_cli_probe(backend).await;
@@ -4621,6 +4653,31 @@ mod tests {
         assert!(parse_install_action("").is_err());
         assert!(parse_install_action("managed").is_err());
         assert!(parse_install_action(concat!("managed_", "download")).is_err());
+    }
+
+    #[test]
+    fn installing_state_is_isolated_per_agent() {
+        let installing_agents = Arc::new(parking_lot::RwLock::new(HashSet::new()));
+        let claude = AgentInstallGuard::try_start(&installing_agents, AgentBackend::ClaudeAcp)
+            .expect("Claude install should start");
+
+        assert!(installing_agents.read().contains(&AgentBackend::ClaudeAcp));
+        assert!(!installing_agents.read().contains(&AgentBackend::CodexAcp));
+        assert!(!installing_agents.read().contains(&AgentBackend::KimiAcp));
+        assert!(
+            AgentInstallGuard::try_start(&installing_agents, AgentBackend::ClaudeAcp).is_none(),
+            "the same Agent must remain mutually exclusive"
+        );
+
+        let codex = AgentInstallGuard::try_start(&installing_agents, AgentBackend::CodexAcp)
+            .expect("a different Agent should not share Claude's install lock");
+        assert!(installing_agents.read().contains(&AgentBackend::CodexAcp));
+
+        drop(claude);
+        assert!(!installing_agents.read().contains(&AgentBackend::ClaudeAcp));
+        assert!(installing_agents.read().contains(&AgentBackend::CodexAcp));
+        drop(codex);
+        assert!(installing_agents.read().is_empty());
     }
 
     #[test]

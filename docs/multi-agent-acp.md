@@ -121,13 +121,13 @@ Windows 与 macOS 还会在各自原生 CI runner 上生成实际安装包 Runti
 Claude ACP 完成 `initialize`。macOS Runtime 包含 arm64/x64 两套 Node，供 universal
 app 在两种架构上选择；Bridge 只携带 JS 适配器，Claude Code 与 Codex 的平台原生
 二进制均不随包发布（单个 claude 二进制约 245MB，随包会让 universal dmg 多出约
-140MB）。运行时优先解析系统安装；Codex 缺失时托管下载到
-`~/.pinvou3/runtimes`，Claude 缺失时由官方脚本安装到用户目录；版本过旧则按安装
-来源经用户确认后用对应包管理器或官方脚本升级，用户拒绝升级时 Codex 回退托管版本，
-Claude Code / Kimi 保持不可用并挂起升级提示。
+140MB）。运行时优先解析系统安装；Codex、Claude Code 或 Kimi 缺失时，由各自官方
+脚本安装到用户目录；版本过旧则按安装来源经用户确认后用对应包管理器或官方脚本升级，
+用户拒绝升级时保持当前状态并挂起升级提示。
 最终都通过 `CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE` 注入。
 
-Pinvou 对三种 Agent 复用同一套登录状态机：启动官方 CLI 登录子进程、只接收授权
-URL/设备码等非敏感状态，并在登录完成后重新调用各 CLI 的状态检查。Claude 的
+Pinvou 对三种 Agent 复用同一套登录流程，但安装任务、安装状态、登录任务和登录状态
+均按 Agent 隔离：启动官方 CLI 登录子进程、只接收授权 URL/设备码等非敏感状态，
+并在登录完成后重新调用各 CLI 的状态检查。Claude 的
 `claude auth status` 是权威状态，不能以凭证文件存在代替；Kimi 的设备码仍由官方
 `kimi login` 生成并轮询，Pinvou 不代管或复制 OAuth token。

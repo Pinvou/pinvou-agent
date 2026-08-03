@@ -6,7 +6,12 @@ import {
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
-import { runtimeNoticeMode } from './runtimeNoticeState.js';
+import {
+  runtimeInstallInProgress,
+  runtimeLoginInProgress,
+  runtimeNoticeMode,
+  runtimeOperationFor,
+} from './runtimeNoticeState.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
@@ -686,6 +691,7 @@ function setupHintText(copy, hint) {
 function RuntimeNotice({
   status,
   working,
+  operation,
   error,
   onInstall,
   onLogin,
@@ -731,6 +737,7 @@ function RuntimeNotice({
     const action = status.install_action || 'manual';
     const isUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
     const declinedBlocked = isUpgrade && declinedUpgrade;
+    const installing = runtimeInstallInProgress(status, operation);
     const installHints = {
       official_script: copy.officialScriptHint(agentName),
     };
@@ -768,18 +775,18 @@ function RuntimeNotice({
           </div>
         ) : isUpgrade && !declinedUpgrade ? (
           <div className="flex shrink-0 items-center gap-2">
-            <button onClick={() => setDeclinedUpgrade(true)} disabled={working} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
+            <button onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
               {copy.declineUpgrade}
             </button>
-            <button onClick={() => onInstall()} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
-              {working && <RefreshCw size={12} className="animate-spin" />}
-              {working ? busyLabel : copy.upgrade}
+            <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+              {installing && <RefreshCw size={12} className="animate-spin" />}
+              {installing ? busyLabel : copy.upgrade}
             </button>
           </div>
         ) : installButtons[action] ? (
-          <button onClick={() => onInstall()} disabled={working} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
-            {working && <RefreshCw size={12} className="animate-spin" />}
-            {working ? busyLabel : installButtons[action]}
+          <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+            {installing && <RefreshCw size={12} className="animate-spin" />}
+            {installing ? busyLabel : installButtons[action]}
           </button>
         ) : (
           <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
@@ -790,7 +797,7 @@ function RuntimeNotice({
     );
   }
   if (noticeMode === 'login') {
-    const waitingForLogin = Boolean(status.login_in_progress);
+    const waitingForLogin = runtimeLoginInProgress(status, operation);
     const loginUrlReady = waitingForLogin && Boolean(status.login_url);
     const agentName = status.agent_name || 'Agent';
     const waitingTitle = copy.waitingAgentLogin
@@ -853,7 +860,7 @@ function RuntimeNotice({
           </button>
         )}
         <button onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
-          {working || waitingForLogin ? copy.waitAuth : copy.authorize}
+          {waitingForLogin ? copy.waitAuth : copy.authorize}
         </button>
       </div>
     );
@@ -953,6 +960,8 @@ export function CodexAcpView({
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [configApplying, setConfigApplying] = useState('');
   const [working, setWorking] = useState(false);
+  const [runtimeOperations, setRuntimeOperations] = useState({});
+  const [runtimeErrors, setRuntimeErrors] = useState({});
   const [error, setError] = useState('');
   const showError = (nextError) => {
     console.error('Codex operation failed:', nextError);
@@ -1031,6 +1040,9 @@ export function CodexAcpView({
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
+  const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
+  const activeRuntimeBusy = Boolean(activeRuntimeOperation);
+  const activeRuntimeError = runtimeErrors[activeAgentId] || '';
   const serviceFailure = useMemo(() => {
     const latestCompleted = [...events]
       .reverse()
@@ -1505,57 +1517,88 @@ export function CodexAcpView({
     element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
   }
 
+  function beginRuntimeOperation(agentId, operation) {
+    setRuntimeOperations(current => ({ ...current, [agentId]: operation }));
+    setRuntimeErrors(current => ({ ...current, [agentId]: '' }));
+  }
+
+  function finishRuntimeOperation(agentId, operation) {
+    setRuntimeOperations(current => {
+      if (current[agentId] !== operation) return current;
+      const next = { ...current };
+      delete next[agentId];
+      return next;
+    });
+  }
+
+  function showRuntimeError(agentId, nextError) {
+    console.error(`${agentId} runtime operation failed:`, nextError);
+    const message = codexCopy.showRawErrors ? String(nextError) : codexCopy.operationFailed;
+    setRuntimeErrors(current => ({ ...current, [agentId]: message }));
+  }
+
   async function install(actionOverride = null) {
-    setWorking(true); setError('');
-    const poll = window.setInterval(() => refreshStatus(activeAgentId).catch(() => {}), 500);
+    const agentId = activeAgentId;
+    beginRuntimeOperation(agentId, 'install');
+    setError('');
+    const poll = window.setInterval(() => refreshStatus(agentId).catch(() => {}), 500);
     try {
-      const payload = { agent: activeAgentId };
+      const payload = { agent: agentId };
       if (typeof actionOverride === 'string' && actionOverride) payload.action = actionOverride;
       const next = await invoke('install_acp_agent', payload);
       if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     }
-    catch (err) { showError(err); }
-    finally { window.clearInterval(poll); await refreshStatus(activeAgentId).catch(() => {}); setWorking(false); }
+    catch (err) { showRuntimeError(agentId, err); }
+    finally {
+      window.clearInterval(poll);
+      await refreshStatus(agentId).catch(() => {});
+      finishRuntimeOperation(agentId, 'install');
+    }
   }
 
   async function login() {
-    setWorking(true); setError('');
+    const agentId = activeAgentId;
+    beginRuntimeOperation(agentId, 'login');
+    setError('');
     try {
-      const next = await invoke('login_acp_agent', { agentId: activeAgentId });
+      const next = await invoke('login_acp_agent', { agentId });
       if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     }
-    catch (err) { showError(err); }
-    finally { setWorking(false); }
+    catch (err) { showRuntimeError(agentId, err); }
+    finally { finishRuntimeOperation(agentId, 'login'); }
   }
 
   async function switchAccount() {
+    const agentId = activeAgentId;
     setAccountMenuOpen(false);
     if (serviceFailure?.key) setDismissedFailureKey(serviceFailure.key);
-    setWorking(true);
+    beginRuntimeOperation(agentId, 'switch-account');
     setError('');
     try {
-      const next = await invoke('switch_acp_agent_account', { agentId: activeAgentId });
+      const next = await invoke('switch_acp_agent_account', { agentId });
       if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
     } catch (err) {
-      showError(err);
+      showRuntimeError(agentId, err);
     } finally {
-      setWorking(false);
+      finishRuntimeOperation(agentId, 'switch-account');
     }
   }
 
   async function openLogin() {
-    setError('');
-    try { await invoke('open_acp_agent_login_url', { agentId: activeAgentId }); }
-    catch (err) { showError(err); }
+    const agentId = activeAgentId;
+    setRuntimeErrors(current => ({ ...current, [agentId]: '' }));
+    try { await invoke('open_acp_agent_login_url', { agentId }); }
+    catch (err) { showRuntimeError(agentId, err); }
   }
 
   async function submitLoginCode(code) {
-    setError('');
+    const agentId = activeAgentId;
+    setRuntimeErrors(current => ({ ...current, [agentId]: '' }));
     try {
-      await invoke('submit_acp_agent_login_code', { agentId: activeAgentId, code });
-      await refreshStatus(activeAgentId);
+      await invoke('submit_acp_agent_login_code', { agentId, code });
+      await refreshStatus(agentId);
     } catch (err) {
-      showError(err);
+      showRuntimeError(agentId, err);
     }
   }
 
@@ -1564,7 +1607,8 @@ export function CodexAcpView({
     const readyAttachments = attachments.filter(attachment => (
       attachment.status === 'ready' && attachment.result
     ));
-    if ((!message && !readyAttachments.length && !workspaceReferences.length) || busy || working) return;
+    if ((!message && !readyAttachments.length && !workspaceReferences.length)
+      || busy || working || activeRuntimeBusy) return;
     if (!activeStatus?.authenticated) {
       setError(codexCopy.loginRequiredBeforeSend);
       return;
@@ -1655,7 +1699,7 @@ export function CodexAcpView({
   }
 
   async function changeModel(modelId) {
-    if (!modelId) return;
+    if (!modelId || activeRuntimeBusy) return;
     if (!activeId) {
       stageDraftConfigSelection({ model: modelId });
       return;
@@ -1667,6 +1711,7 @@ export function CodexAcpView({
   }
 
   async function changeConfig(configId, valueId) {
+    if (activeRuntimeBusy) return;
     if (!activeId) {
       stageDraftConfigSelection({ configs: { [configId]: valueId } });
       return;
@@ -1681,7 +1726,7 @@ export function CodexAcpView({
   }
 
   async function changeMode(modeId) {
-    if (!modeId) return;
+    if (!modeId || activeRuntimeBusy) return;
     if (!activeId) {
       stageDraftConfigSelection({ mode: modeId });
       return;
@@ -1769,8 +1814,9 @@ export function CodexAcpView({
               <>
                 <RuntimeNotice
                   status={activeStatus}
-                  working={working}
-                  error={error}
+                  working={working || activeRuntimeBusy}
+                  operation={activeRuntimeOperation}
+                  error={activeRuntimeError || error}
                   onInstall={install}
                   onLogin={login}
                   onOpenLogin={openLogin}
@@ -1782,7 +1828,7 @@ export function CodexAcpView({
                   <AgentServiceFailureNotice
                     failure={visibleServiceFailure}
                     agentName={activeAgentName}
-                    working={working}
+                    working={working || activeRuntimeBusy}
                     onSwitchAccount={switchAccount}
                     onDismiss={() => setDismissedFailureKey(serviceFailure?.key || '')}
                     copy={codexCopy}
@@ -2071,7 +2117,7 @@ export function CodexAcpView({
                             <button
                               type="button"
                               onClick={switchAccount}
-                              disabled={working || activeStatus?.login_in_progress}
+                              disabled={working || activeRuntimeBusy || activeStatus?.login_in_progress}
                               className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
                             >
                               <User size={15} className="text-blue-500" />
@@ -2108,7 +2154,7 @@ export function CodexAcpView({
                             name: model.name || model.id,
                           }))}
                           onChange={changeModel}
-                          disabled={busy || working}
+                          disabled={busy || working || activeRuntimeBusy}
                           unsetLabel={codexCopy.notSet}
                         />
                       )}
@@ -2122,7 +2168,7 @@ export function CodexAcpView({
                             name: item.name || item.id,
                           }))}
                           onChange={changeMode}
-                          disabled={busy || working}
+                          disabled={busy || working || activeRuntimeBusy}
                           title={codexCopy.sessionModeTitle}
                           unsetLabel={codexCopy.notSet}
                         />
@@ -2135,7 +2181,7 @@ export function CodexAcpView({
                           value={composerConfigOptionValue(option)}
                           choices={configChoices(option)}
                           onChange={value => changeConfig(option.id, value)}
-                          disabled={busy || working}
+                          disabled={busy || working || activeRuntimeBusy}
                           title={option.description || option.name}
                           unsetLabel={codexCopy.notSet}
                         />
@@ -2146,7 +2192,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || !activeStatus || !activeStatus.installed || !activeStatus.authenticated}
+                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || !activeStatus || !activeStatus.installed || !activeStatus.authenticated}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>
