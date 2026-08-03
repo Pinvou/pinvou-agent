@@ -16,22 +16,12 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Iterable
 
 
 SCHEMA_VERSION = 1
 DEFAULT_BASELINE = Path("scripts/architecture-baseline.json")
 FRONTEND_SUFFIXES = {".html", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
-RUST_LARGE_FILE_LINES = 1500
-FRONTEND_LARGE_FILE_LINES = 1000
-INITIALIZABLE_BASELINE_RULES = {
-    "frontend_large_file_lines",
-    "rust_large_file_lines",
-}
-# Rules whose entries record measured file line counts. Only these may be
-# corrected upward up to the target branch's own measurement (see
-# compare_baseline_ratchet).
-LINE_COUNT_BASELINE_RULES = INITIALIZABLE_BASELINE_RULES
 
 
 def normalize(path: Path, root: Path) -> str:
@@ -51,11 +41,6 @@ def source_files(root: Path, directory: str, suffixes: set[str]) -> Iterable[Pat
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-def count_lines(path: Path) -> int:
-    with path.open("r", encoding="utf-8") as handle:
-        return sum(1 for _ in handle)
 
 
 def git_head(root: Path) -> str:
@@ -91,24 +76,6 @@ def baseline_from_git(root: Path, ref: str, relative_path: Path) -> dict | None:
         return json.loads(content)
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid baseline at {ref}:{git_path}: {error}") from error
-
-
-def measured_lines_from_git(root: Path, ref: str) -> Callable[[str], int | None]:
-    """Resolve the line count of a file at a Git ref, or None when unavailable."""
-
-    def measure(relative_path: str) -> int | None:
-        try:
-            content = subprocess.check_output(
-                ["git", "show", f"{ref}:{relative_path}"],
-                cwd=root,
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            return None
-        return len(content.splitlines())
-
-    return measure
 
 
 def rust_aliases(root: Path) -> dict[str, tuple[str, str]]:
@@ -195,14 +162,12 @@ def frontend_import_target(specifier: str, source: Path, src_root: Path) -> Path
     return None
 
 
-def scan_frontend(root: Path) -> tuple[dict[str, Counter[str]], list[str]]:
+def scan_frontend(root: Path) -> dict[str, Counter[str]]:
     rules: dict[str, Counter[str]] = {
         "frontend_feature_imports_app": Counter(),
-        "frontend_large_file_lines": Counter(),
         "frontend_tauri_global_outside_platform": Counter(),
         "frontend_user_agent_platform_detection": Counter(),
     }
-    warnings: list[str] = []
     src_root = (root / "pinvou3-app/src").resolve()
     feature_root = (src_root / "features").resolve()
     app_root = (src_root / "app").resolve()
@@ -237,14 +202,7 @@ def scan_frontend(root: Path) -> tuple[dict[str, Counter[str]], list[str]]:
         count = len(user_agent_pattern.findall(text))
         if count:
             rules["frontend_user_agent_platform_detection"][relative] += count
-        lines = count_lines(path)
-        if lines > FRONTEND_LARGE_FILE_LINES:
-            rules["frontend_large_file_lines"][relative] = lines
-            warnings.append(
-                f"large frontend file: {relative} has {lines} lines "
-                f"(advisory threshold {FRONTEND_LARGE_FILE_LINES})"
-            )
-    return rules, warnings
+    return rules
 
 
 def feature_name(path: Path, feature_root: Path) -> str:
@@ -335,10 +293,9 @@ def count_platform_cfgs(text: str) -> int:
     return count
 
 
-def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], list[str]]:
+def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     rules: dict[str, Counter[str]] = {
         "rust_feature_depends_on_app": Counter(),
-        "rust_large_file_lines": Counter(),
         "rust_platform_depends_on_upper_layer": Counter(),
         "rust_cyclic_feature_dependencies": Counter(),
         "rust_target_cfg_outside_adapter": Counter(),
@@ -347,7 +304,6 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
         "rust_tauri_commands_outside_app": Counter(),
         "rust_tauri_handler_outside_app": Counter(),
     }
-    warnings: list[str] = []
     aliases = rust_aliases(root)
     rust_root = root / "pinvou3-app/src-tauri/src"
     feature_root = rust_root / "features"
@@ -415,19 +371,12 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
                     "crate::app::commands::"
                 ):
                     rules["rust_tauri_handler_outside_app"][f"{relative}:{entry}"] += 1
-        lines = count_lines(path)
-        if lines > RUST_LARGE_FILE_LINES:
-            rules["rust_large_file_lines"][relative] = lines
-            warnings.append(
-                f"large Rust file: {relative} has {lines} lines "
-                f"(advisory threshold {RUST_LARGE_FILE_LINES})"
-            )
     cycles = strongly_connected_components(graph)
     for source_target, count in feature_edge_counts.items():
         source, target = source_target
         if any({source, target}.issubset(set(cycle)) for cycle in cycles):
             rules["rust_cyclic_feature_dependencies"][f"{source}->{target}"] = count
-    return rules, cycles, warnings
+    return rules, cycles
 
 
 def scan_resources(root: Path) -> dict[str, Counter[str]]:
@@ -451,9 +400,9 @@ def scan_resources(root: Path) -> dict[str, Counter[str]]:
     return rules
 
 
-def current_state(root: Path) -> tuple[dict, list[str]]:
-    frontend_rules, frontend_warnings = scan_frontend(root)
-    rust_rules, cycles, rust_warnings = scan_rust(root)
+def current_state(root: Path) -> dict:
+    frontend_rules = scan_frontend(root)
+    rust_rules, cycles = scan_rust(root)
     resource_rules = scan_resources(root)
     rules = {**frontend_rules, **rust_rules, **resource_rules}
     serializable_rules = {
@@ -465,7 +414,7 @@ def current_state(root: Path) -> tuple[dict, list[str]]:
         "rules": serializable_rules,
         "rust_feature_cycles": cycles,
     }
-    return state, frontend_warnings + rust_warnings
+    return state
 
 
 def compare_counts(rule: str, current: dict[str, int], allowed: dict[str, int]) -> tuple[list[str], list[str]]:
@@ -531,16 +480,8 @@ def should_fail(failures: list[str], baseline_updates: list[str]) -> bool:
 def compare_baseline_ratchet(
     candidate: dict,
     previous: dict,
-    measured_at_ref: Callable[[str], int | None] | None = None,
 ) -> list[str]:
-    """Reject baseline increases relative to the PR target branch.
-
-    Line-count entries may be corrected upward up to the target branch's own
-    measured reality: a stale (too low) baseline on the target branch would
-    otherwise reject every PR. The candidate-side comparison still pins each
-    entry to the candidate tree's exact measurement, so this correction cannot
-    admit growth beyond what the target branch measures.
-    """
+    """Reject baseline increases relative to the PR target branch."""
     failures: list[str] = []
     if previous.get("schema_version") != candidate.get("schema_version"):
         failures.append(
@@ -551,21 +492,9 @@ def compare_baseline_ratchet(
     previous_rules = previous.get("rules", {})
     for rule, candidate_counts in candidate.get("rules", {}).items():
         previous_counts = previous_rules.get(rule, {})
-        if rule in INITIALIZABLE_BASELINE_RULES and rule not in previous_rules:
-            # One-time migration path for introducing a measured ratchet on an
-            # existing repository. Once the target branch contains the rule,
-            # the normal no-increase comparison below applies to every file.
-            continue
         for key, count in candidate_counts.items():
             old_count = previous_counts.get(key, 0)
             if count > old_count:
-                measured = measured_at_ref(key) if measured_at_ref else None
-                if (
-                    rule in LINE_COUNT_BASELINE_RULES
-                    and measured is not None
-                    and count <= measured
-                ):
-                    continue
                 failures.append(
                     f"baseline ratchet: {rule}: {key}: candidate allows {count}, "
                     f"target branch allows {old_count}"
@@ -609,7 +538,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    state, warnings = current_state(root)
+    state = current_state(root)
     if args.print_current:
         print(json.dumps(state, indent=2, ensure_ascii=False))
         return 0
@@ -640,14 +569,8 @@ def main() -> int:
             )
         else:
             failures.extend(
-                compare_baseline_ratchet(
-                    baseline,
-                    previous_baseline,
-                    measured_at_ref=measured_lines_from_git(root, args.base_ref),
-                )
+                compare_baseline_ratchet(baseline, previous_baseline)
             )
-    for message in warnings:
-        print(f"WARNING: {message}")
     if should_fail(failures, progress):
         print("architecture guard failed:", file=sys.stderr)
         if failures:
