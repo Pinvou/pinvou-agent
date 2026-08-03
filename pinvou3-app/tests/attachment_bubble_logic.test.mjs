@@ -208,6 +208,16 @@ assert.match(mainSource, /sessionTitlePresentation\(s\.title, s\.title_attachmen
 assert.match(mainSource, /<SessionAttachmentTitle presentation=\{titlePresentation\}/);
 assert.match(
   mainSource,
+  /import \{ SearchView \} from '\.\.\/features\/search\/SearchView\.jsx';/,
+  'the app shell must delegate conversation management rendering to the search feature',
+);
+
+const searchViewSource = await readFile(
+  new URL('../src/features/search/SearchView.jsx', import.meta.url),
+  'utf8',
+);
+assert.match(
+  searchViewSource,
   /sessionTitlePresentation\(s\.title \|\| t\.newChat, s\.title_attachment_names\)/,
   'archived session titles must use the same attachment presentation adapter',
 );
