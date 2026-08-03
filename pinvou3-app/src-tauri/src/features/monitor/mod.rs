@@ -882,16 +882,17 @@ fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInf
     (!models.is_empty()).then_some(models)
 }
 
+/// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
+/// （`models_probe_url`）：upstream 不带 `/v1` 也不补——glm `/paas/v4`、火山方舟
+/// `/api/v3`、gemini `/v1beta/openai` 的 `/models` 端点均存在，补 `/v1` 会拼成
+/// 不存在的地址永远 404。本地候选（vLLM/Ollama/LM Studio）由 discover 统一
+/// 归一成 `/v1` 结尾后传入，行为不变。
 pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
-    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", base_url.trim_end_matches('/'))
-    };
+    let url = models_probe_url(base_url);
     let resp = client.get(url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;

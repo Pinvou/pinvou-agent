@@ -2126,7 +2126,6 @@ async fn request_llm_memory_review(
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let provider = bridge.memory_provider();
     let preset = bridge.memory_model_preset();
-    ensure_memory_review_provider_supported(preset)?;
     let model_name = if provider == "vllm" {
         crate::features::monitor::probe_vllm_model_info(&base_url)
             .await
@@ -2173,6 +2172,21 @@ async fn request_llm_memory_review(
         "never_memory": never,
     })
     .to_string();
+    // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
+    // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
+    if preset == ModelPreset::Anthropic {
+        let content = crate::core::model_endpoint::post_anthropic_messages(
+            &client,
+            &base_url,
+            &bridge.memory_api_key(),
+            &model_name,
+            LLM_REVIEW_PROMPT,
+            &user_content,
+            900,
+        )
+        .await?;
+        return parse_llm_memory_review(&content);
+    }
     let mut body = json!({
         "model": model_name,
         "messages": [
@@ -2497,18 +2511,6 @@ enum MemoryReviewReasoningDialect {
     QwenEnableThinking,
     VllmChatTemplate,
     Minimax,
-}
-
-/// 记忆回顾直连 OpenAI 格式 `POST {base}/chat/completions` + Bearer。Anthropic 官方端点
-/// 是 Messages API（x-api-key），直连必然 404/401 静默失败，故在发起请求前明确报错；
-/// Gemini/xAI/OpenAI 等 OpenAI 兼容 preset 不受影响。
-fn ensure_memory_review_provider_supported(preset: ModelPreset) -> Result<()> {
-    if preset == ModelPreset::Anthropic {
-        anyhow::bail!(
-            "memory review unsupported for Anthropic preset: api.anthropic.com is not OpenAI chat/completions compatible"
-        );
-    }
-    Ok(())
 }
 
 fn apply_memory_review_reasoning_controls(
@@ -4002,22 +4004,6 @@ mod tests {
         assert!(!content.contains("assistant_response"));
         assert!(fs::metadata(&path).unwrap().len() < MEMORY_REVIEW_LOG_MAX_BYTES);
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn anthropic_preset_is_rejected_before_request() {
-        let err = ensure_memory_review_provider_supported(ModelPreset::Anthropic)
-            .expect_err("Anthropic preset must be rejected before any HTTP request");
-        assert!(err.to_string().contains("unsupported"));
-        // OpenAI 兼容路径（Gemini/xAI/OpenAI 官方 openai 兼容端点）不受影响
-        for preset in [
-            ModelPreset::Openai,
-            ModelPreset::Gemini,
-            ModelPreset::Xai,
-            ModelPreset::OpenaiCompatible,
-        ] {
-            assert!(ensure_memory_review_provider_supported(preset).is_ok());
-        }
     }
 
     #[test]
