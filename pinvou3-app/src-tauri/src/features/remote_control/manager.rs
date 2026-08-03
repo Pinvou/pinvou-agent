@@ -12,6 +12,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
+use super::event_stream::{
+    snapshot_message, stream_reset_message, try_enqueue_message_batch, EventStreamState,
+    ReplayMessageContext, StreamRecordError, LEASE_ID_WIRE_PLACEHOLDER,
+};
 use super::platform;
 use super::protocol::{
     WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
@@ -25,12 +29,6 @@ use crate::platform::paths;
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:8787/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "ws://127.0.0.1:8787/pinvou3/remote/ws";
 const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
-const JOURNAL_CAPACITY: usize = 1_024;
-const JOURNAL_BYTES_CAPACITY: usize = 16 * 1024 * 1024;
-// Relay-issued lease IDs are `lease_` plus 24 base64url characters. Use an
-// equal-length placeholder while no browser is connected so a journaled
-// event's complete replay envelope is still sized conservatively.
-const LEASE_ID_WIRE_PLACEHOLDER: &str = "lease_000000000000000000000000";
 const RPC_CACHE_CAPACITY: usize = 512;
 const RPC_CACHE_BYTES_CAPACITY: usize = 32 * 1024 * 1024;
 const MAX_RPC_IN_FLIGHT: usize = 32;
@@ -105,8 +103,7 @@ struct Inner {
     endpoint: Option<ActiveEndpoint>,
     idle_status: WebAccessStatusKind,
     idle_error: Option<String>,
-    stream: StreamState,
-    subscriptions: HashSet<String>,
+    event_stream: EventStreamState,
     bridge_generation: Option<String>,
     rpc_ledger: RpcLedger,
     rpc_cache: HashMap<String, RpcCacheEntry>,
@@ -130,8 +127,7 @@ impl Default for Inner {
             endpoint: None,
             idle_status: WebAccessStatusKind::Idle,
             idle_error: None,
-            stream: StreamState::new(),
-            subscriptions: HashSet::new(),
+            event_stream: EventStreamState::new(),
             bridge_generation: None,
             rpc_ledger: RpcLedger::default(),
             rpc_cache: HashMap::new(),
@@ -411,142 +407,6 @@ impl RpcLedger {
     }
 }
 
-#[derive(Debug, Clone)]
-struct StreamEvent {
-    seq: u64,
-    event: String,
-    payload: Value,
-    wire_bytes: usize,
-}
-
-#[derive(Debug)]
-struct StreamState {
-    epoch: String,
-    seq: u64,
-    journal: VecDeque<StreamEvent>,
-    journal_bytes: usize,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum StreamRecordError {
-    Serialize(String),
-    Oversized { wire_bytes: usize, limit: usize },
-}
-
-impl std::fmt::Display for StreamRecordError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Serialize(error) => write!(formatter, "序列化远程控制事件帧失败：{error}"),
-            Self::Oversized { wire_bytes, limit } => write!(
-                formatter,
-                "远程控制事件帧过大（{wire_bytes} 字节；上限 {limit}）"
-            ),
-        }
-    }
-}
-
-impl StreamState {
-    fn new() -> Self {
-        Self {
-            epoch: new_stream_epoch(),
-            seq: 0,
-            journal: VecDeque::new(),
-            journal_bytes: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.epoch = new_stream_epoch();
-        self.seq = 0;
-        self.journal.clear();
-        self.journal_bytes = 0;
-    }
-
-    fn record(
-        &mut self,
-        endpoint_id: &str,
-        lease_id: &str,
-        event: String,
-        payload: Value,
-    ) -> Result<Value, StreamRecordError> {
-        self.record_with_limits(
-            endpoint_id,
-            lease_id,
-            event,
-            payload,
-            relay_client::MAX_RELAY_FRAME_BYTES,
-            JOURNAL_CAPACITY,
-            JOURNAL_BYTES_CAPACITY,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn record_with_limits(
-        &mut self,
-        endpoint_id: &str,
-        lease_id: &str,
-        event: String,
-        payload: Value,
-        max_wire_bytes: usize,
-        journal_capacity: usize,
-        journal_bytes_capacity: usize,
-    ) -> Result<Value, StreamRecordError> {
-        let mut recorded = StreamEvent {
-            seq: self.seq.saturating_add(1),
-            event,
-            payload,
-            wire_bytes: 0,
-        };
-        let message = event_message(endpoint_id, lease_id, &self.epoch, &recorded);
-        let wire_bytes = serde_json::to_vec(&message)
-            .map_err(|error| StreamRecordError::Serialize(error.to_string()))?
-            .len();
-        if wire_bytes > max_wire_bytes {
-            // The rejected event never advances seq or enters the journal. A
-            // fresh epoch makes every existing browser cursor explicitly
-            // invalid instead of leaving a permanent, unreplayable hole.
-            self.reset();
-            return Err(StreamRecordError::Oversized {
-                wire_bytes,
-                limit: max_wire_bytes,
-            });
-        }
-
-        recorded.wire_bytes = wire_bytes;
-        self.seq = recorded.seq;
-        self.journal_bytes = self.journal_bytes.saturating_add(wire_bytes);
-        self.journal.push_back(recorded);
-        while self.journal.len() > journal_capacity || self.journal_bytes > journal_bytes_capacity {
-            let Some(evicted) = self.journal.pop_front() else {
-                break;
-            };
-            self.journal_bytes = self.journal_bytes.saturating_sub(evicted.wire_bytes);
-        }
-        Ok(message)
-    }
-
-    /// `None` means the cursor cannot be satisfied from the bounded journal.
-    fn replay_after(&self, after_seq: u64) -> Option<Vec<StreamEvent>> {
-        if after_seq > self.seq {
-            return None;
-        }
-        if after_seq == self.seq {
-            return Some(Vec::new());
-        }
-        let oldest = self.journal.front()?.seq;
-        if after_seq.saturating_add(1) < oldest {
-            return None;
-        }
-        Some(
-            self.journal
-                .iter()
-                .filter(|entry| entry.seq > after_seq)
-                .cloned()
-                .collect(),
-        )
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct EmbeddedPolicy {
     protocol_version: u8,
@@ -708,12 +568,12 @@ impl RemoteControlManager {
         persist_config(&config)?;
         let previous = {
             let mut inner = self.inner.lock();
-            inner.subscriptions.clear();
+            inner.event_stream.clear_subscriptions();
             inner.rpc_ledger = RpcLedger::default();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
-            inner.stream.reset();
+            inner.event_stream.reset();
             inner.endpoint.take()
         };
         if let Some(previous) = previous {
@@ -780,12 +640,12 @@ impl RemoteControlManager {
         remove_config()?;
         let endpoint = {
             let mut inner = self.inner.lock();
-            inner.subscriptions.clear();
+            inner.event_stream.clear_subscriptions();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
             inner.rpc_ledger = RpcLedger::default();
-            inner.stream.reset();
+            inner.event_stream.reset();
             inner.idle_status = WebAccessStatusKind::Stopped;
             inner.idle_error = None;
             inner.endpoint.take()
@@ -1398,7 +1258,7 @@ impl RemoteControlManager {
         let (actions, subscriptions) = {
             let mut inner = self.inner.lock();
             let actions = prepare_bridge_generation(&mut inner, &generation);
-            let subscriptions = inner.subscriptions.iter().cloned().collect::<Vec<_>>();
+            let subscriptions = inner.event_stream.subscription_names();
             (actions, subscriptions)
         };
         let mut first_error = None;
@@ -1683,7 +1543,7 @@ impl RemoteControlManager {
                     .and_then(|endpoint| endpoint.last_lease_id.as_ref())
                     != lease_id.as_ref();
             if lease_changed {
-                inner.subscriptions.clear();
+                inner.event_stream.clear_subscriptions();
                 clear_web_attachments(&mut inner);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
@@ -1723,7 +1583,7 @@ impl RemoteControlManager {
                 .get("stream_epoch")
                 .and_then(Value::as_str)
                 .is_none_or(str::is_empty);
-            let fresh_baseline_seq = fresh_client.then_some(inner.stream.seq);
+            let fresh_baseline_seq = fresh_client.then_some(inner.event_stream.seq());
             let lease_changed = inner
                 .endpoint
                 .as_ref()
@@ -1734,7 +1594,7 @@ impl RemoteControlManager {
                 // reload must rebuild them before `client_ready` requests a
                 // replay, otherwise old subscriptions can advance the new
                 // client's event cursor before it is ready.
-                inner.subscriptions.clear();
+                inner.event_stream.clear_subscriptions();
                 clear_web_attachments(&mut inner);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
@@ -1789,12 +1649,12 @@ impl RemoteControlManager {
                 return;
             }
             let revoked = inner.endpoint.take();
-            inner.subscriptions.clear();
+            inner.event_stream.clear_subscriptions();
             inner.rpc_ledger = RpcLedger::default();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
-            inner.stream.reset();
+            inner.event_stream.reset();
             inner.idle_status = WebAccessStatusKind::Revoked;
             inner.idle_error = None;
             revoked
@@ -1829,7 +1689,7 @@ impl RemoteControlManager {
                 "this endpoint is active in another desktop process; rotate Web access to take a new endpoint"
                     .to_string(),
             );
-            inner.subscriptions.clear();
+            inner.event_stream.clear_subscriptions();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
@@ -1846,11 +1706,7 @@ impl RemoteControlManager {
         }
         let changed = {
             let mut inner = self.inner.lock();
-            if subscribe {
-                inner.subscriptions.insert(event.to_string())
-            } else {
-                inner.subscriptions.remove(event)
-            }
+            inner.event_stream.set_subscription(event, subscribe)
         };
         if changed {
             let bridge_event = if subscribe {
@@ -2252,12 +2108,14 @@ impl RemoteControlManager {
             let sender = endpoint.sender.clone();
             let fresh_baseline_seq = endpoint.fresh_baseline_seq;
             let epoch_matches = requested_epoch
-                .map(|epoch| epoch == inner.stream.epoch)
+                .map(|epoch| epoch == inner.event_stream.epoch())
                 .unwrap_or(false);
             if !state_ready {
-                if requested_epoch.is_some() && (!epoch_matches || after_seq > inner.stream.seq) {
-                    inner.stream.reset();
-                    let stream_epoch = inner.stream.epoch.clone();
+                if requested_epoch.is_some()
+                    && (!epoch_matches || after_seq > inner.event_stream.seq())
+                {
+                    inner.event_stream.reset();
+                    let stream_epoch = inner.event_stream.epoch().to_string();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2274,21 +2132,21 @@ impl RemoteControlManager {
                     return;
                 }
                 let baseline = if requested_epoch.is_none() {
-                    fresh_baseline_seq.unwrap_or(inner.stream.seq)
+                    fresh_baseline_seq.unwrap_or(inner.event_stream.seq())
                 } else {
                     after_seq
                 };
                 let snapshot = snapshot_message(
                     &endpoint_id,
                     lease_id,
-                    &inner.stream.epoch,
+                    inner.event_stream.epoch(),
                     baseline,
                     &capability_commands,
                     &capability_events,
                 );
                 if sender.try_send(RelayOutbound::Message(snapshot)).is_err() {
-                    inner.stream.reset();
-                    let stream_epoch = inner.stream.epoch.clone();
+                    inner.event_stream.reset();
+                    let stream_epoch = inner.event_stream.epoch().to_string();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2310,51 +2168,42 @@ impl RemoteControlManager {
             // the current head so historical interactive events are never
             // replayed as if they had just happened.
             let fresh_client = requested_epoch.is_none();
+            let stream_epoch = inner.event_stream.epoch().to_string();
+            let replay_context = ReplayMessageContext {
+                endpoint_id: &endpoint_id,
+                lease_id,
+                stream_epoch: &stream_epoch,
+                capability_commands: &capability_commands,
+                capability_events: &capability_events,
+            };
             let replay = if fresh_client {
-                inner
-                    .stream
-                    .replay_after(fresh_baseline_seq.unwrap_or(inner.stream.seq))
+                inner.event_stream.replay_messages_after(
+                    fresh_baseline_seq.unwrap_or(inner.event_stream.seq()),
+                    replay_context,
+                )
             } else if epoch_matches {
-                inner.stream.replay_after(after_seq)
+                inner
+                    .event_stream
+                    .replay_messages_after(after_seq, replay_context)
             } else {
                 None
             };
 
             let mut messages = match replay {
-                Some(events) if fresh_client => {
-                    let baseline = fresh_baseline_seq.unwrap_or(inner.stream.seq);
+                Some(replay_messages) if fresh_client => {
+                    let baseline = fresh_baseline_seq.unwrap_or(inner.event_stream.seq());
                     let mut messages = vec![snapshot_message(
                         &endpoint_id,
                         lease_id,
-                        &inner.stream.epoch,
+                        inner.event_stream.epoch(),
                         baseline,
                         &capability_commands,
                         &capability_events,
                     )];
-                    messages.extend(subscription_filtered_replay_messages(
-                        events,
-                        &inner.subscriptions,
-                        ReplayMessageContext {
-                            endpoint_id: &endpoint_id,
-                            lease_id,
-                            stream_epoch: &inner.stream.epoch,
-                            capability_commands: &capability_commands,
-                            capability_events: &capability_events,
-                        },
-                    ));
+                    messages.extend(replay_messages);
                     messages
                 }
-                Some(events) => subscription_filtered_replay_messages(
-                    events,
-                    &inner.subscriptions,
-                    ReplayMessageContext {
-                        endpoint_id: &endpoint_id,
-                        lease_id,
-                        stream_epoch: &inner.stream.epoch,
-                        capability_commands: &capability_commands,
-                        capability_events: &capability_events,
-                    },
-                ),
+                Some(messages) => messages,
                 None => {
                     // The browser reload behavior deliberately persists the new
                     // epoch with cursor zero. Resetting the journal here makes
@@ -2364,8 +2213,8 @@ impl RemoteControlManager {
                     } else {
                         "epoch_changed"
                     };
-                    inner.stream.reset();
-                    let stream_epoch = inner.stream.epoch.clone();
+                    inner.event_stream.reset();
+                    let stream_epoch = inner.event_stream.epoch().to_string();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2383,8 +2232,8 @@ impl RemoteControlManager {
                 messages.push(snapshot_message(
                     &endpoint_id,
                     lease_id,
-                    &inner.stream.epoch,
-                    inner.stream.seq,
+                    inner.event_stream.epoch(),
+                    inner.event_stream.seq(),
                     &capability_commands,
                     &capability_events,
                 ));
@@ -2397,8 +2246,8 @@ impl RemoteControlManager {
             }) {
                 // A partially enqueued suffix is always followed by a reset;
                 // never advertise readiness after silently losing its tail.
-                inner.stream.reset();
-                let stream_epoch = inner.stream.epoch.clone();
+                inner.event_stream.reset();
+                let stream_epoch = inner.event_stream.epoch().to_string();
                 if let Some(endpoint) = inner.endpoint.as_mut() {
                     endpoint.client_ready = false;
                     endpoint.fresh_baseline_seq = None;
@@ -2448,43 +2297,44 @@ impl RemoteControlManager {
             let lease_id = endpoint.lease_id.clone();
             let client_ready = endpoint.client_ready;
             let sender = endpoint.sender.clone();
-            let subscribed = is_event_subscribed(&inner.subscriptions, event);
+            let subscribed = inner.event_stream.is_subscribed(event);
             // Journal every allowlisted event independently of the current
             // lease's subscribe handshake. A reconnect can otherwise lose
             // deltas emitted between `web_client_connected` and the browser's
             // subscribe/client_ready messages without leaving a sequence gap.
             let sizing_lease_id = lease_id.as_deref().unwrap_or(LEASE_ID_WIRE_PLACEHOLDER);
-            let message =
-                match inner
-                    .stream
-                    .record(&endpoint_id, sizing_lease_id, event.to_string(), payload)
-                {
-                    Ok(message) => message,
-                    Err(error @ StreamRecordError::Oversized { .. }) => {
-                        // `record` already rotated the epoch and cleared the
-                        // journal atomically. Stop live delivery until the WebUI
-                        // reloads and negotiates that new epoch, so no later event
-                        // can overtake this recovery barrier.
-                        let stream_epoch = inner.stream.epoch.clone();
-                        if let Some(endpoint) = inner.endpoint.as_mut() {
-                            endpoint.client_ready = false;
-                            endpoint.fresh_baseline_seq = None;
-                        }
-                        if let Some(lease_id) = lease_id.as_deref() {
-                            enqueue_stream_reset(
-                                sender,
-                                stream_reset_message(
-                                    &endpoint_id,
-                                    lease_id,
-                                    &stream_epoch,
-                                    "event_too_large",
-                                ),
-                            );
-                        }
-                        return Err(error.to_string());
+            let message = match inner.event_stream.record(
+                &endpoint_id,
+                sizing_lease_id,
+                event.to_string(),
+                payload,
+            ) {
+                Ok(message) => message,
+                Err(error @ StreamRecordError::Oversized { .. }) => {
+                    // `record` already rotated the epoch and cleared the
+                    // journal atomically. Stop live delivery until the WebUI
+                    // reloads and negotiates that new epoch, so no later event
+                    // can overtake this recovery barrier.
+                    let stream_epoch = inner.event_stream.epoch().to_string();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.client_ready = false;
+                        endpoint.fresh_baseline_seq = None;
                     }
-                    Err(error) => return Err(error.to_string()),
-                };
+                    if let Some(lease_id) = lease_id.as_deref() {
+                        enqueue_stream_reset(
+                            sender,
+                            stream_reset_message(
+                                &endpoint_id,
+                                lease_id,
+                                &stream_epoch,
+                                "event_too_large",
+                            ),
+                        );
+                    }
+                    return Err(error.to_string());
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             let Some(lease_id) = lease_id.as_deref() else {
                 // Keep the event in the journal for a reconnecting subscribed
                 // browser, but there is no valid destination at this instant.
@@ -2512,20 +2362,8 @@ impl RemoteControlManager {
                     // a full relay queue cannot strand a final `done` or
                     // `user_input_required` with no later gap to trigger a
                     // reconnect.
-                    let failed_event = inner
-                        .stream
-                        .journal
-                        .back()
-                        .cloned()
-                        .ok_or_else(|| "远程控制事件流末尾数据丢失".to_string())?;
-                    inner.stream.reset();
-                    let rebase_result = inner.stream.record(
-                        &endpoint_id,
-                        lease_id,
-                        failed_event.event,
-                        failed_event.payload,
-                    );
-                    let stream_epoch = inner.stream.epoch.clone();
+                    let rebase_result = inner.event_stream.rebase_tail(&endpoint_id, lease_id);
+                    let stream_epoch = inner.event_stream.epoch().to_string();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2581,10 +2419,6 @@ impl RemoteControlManager {
 enum EventSource {
     Rust,
     Frontend,
-}
-
-fn is_event_subscribed(subscriptions: &HashSet<String>, event: &str) -> bool {
-    subscriptions.contains(event)
 }
 
 fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {
@@ -3301,135 +3135,12 @@ fn validate_rpc_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn event_message(
-    endpoint_id: &str,
-    lease_id: &str,
-    stream_epoch: &str,
-    event: &StreamEvent,
-) -> Value {
-    json!({
-        "v": PROTOCOL_VERSION,
-        "type": "event",
-        "endpoint_id": endpoint_id,
-        "lease_id": lease_id,
-        "stream_epoch": stream_epoch,
-        "seq": event.seq,
-        "event": event.event,
-        "payload": event.payload,
-    })
-}
-
-#[derive(Clone, Copy)]
-struct ReplayMessageContext<'a> {
-    endpoint_id: &'a str,
-    lease_id: &'a str,
-    stream_epoch: &'a str,
-    capability_commands: &'a [String],
-    capability_events: &'a [String],
-}
-
-fn subscription_filtered_replay_messages(
-    events: Vec<StreamEvent>,
-    subscriptions: &HashSet<String>,
-    context: ReplayMessageContext<'_>,
-) -> Vec<Value> {
-    let mut messages = Vec::with_capacity(events.len());
-    let mut skipped_through = None;
-    for event in events {
-        if is_event_subscribed(subscriptions, &event.event) {
-            if let Some(seq) = skipped_through.take() {
-                messages.push(snapshot_message(
-                    context.endpoint_id,
-                    context.lease_id,
-                    context.stream_epoch,
-                    seq,
-                    context.capability_commands,
-                    context.capability_events,
-                ));
-            }
-            messages.push(event_message(
-                context.endpoint_id,
-                context.lease_id,
-                context.stream_epoch,
-                &event,
-            ));
-        } else {
-            skipped_through = Some(event.seq);
-        }
-    }
-    if let Some(seq) = skipped_through {
-        messages.push(snapshot_message(
-            context.endpoint_id,
-            context.lease_id,
-            context.stream_epoch,
-            seq,
-            context.capability_commands,
-            context.capability_events,
-        ));
-    }
-    messages
-}
-
-fn stream_reset_message(
-    endpoint_id: &str,
-    lease_id: &str,
-    stream_epoch: &str,
-    reason: &str,
-) -> Value {
-    json!({
-        "v": PROTOCOL_VERSION,
-        "type": "stream_reset",
-        "endpoint_id": endpoint_id,
-        "lease_id": lease_id,
-        "stream_epoch": stream_epoch,
-        "seq": 0,
-        "reason": reason,
-    })
-}
-
-fn try_enqueue_message_batch(messages: Vec<Value>, mut enqueue: impl FnMut(Value) -> bool) -> bool {
-    for message in messages {
-        if !enqueue(message) {
-            return false;
-        }
-    }
-    true
-}
-
 fn enqueue_stream_reset(sender: RelaySender, message: Value) {
     // RelaySender owns a single bounded waiter and coalesces repeated recovery
     // barriers to the latest lease/epoch while the data channel is saturated.
     if sender.enqueue_stream_reset(message).is_err() {
         eprintln!("[web-access] stream reset could not reach the relay task");
     }
-}
-
-fn snapshot_message(
-    endpoint_id: &str,
-    lease_id: &str,
-    epoch: &str,
-    seq: u64,
-    commands: &[String],
-    events: &[String],
-) -> Value {
-    json!({
-        "v": PROTOCOL_VERSION,
-        "type": "desktop_snapshot",
-        "endpoint_id": endpoint_id,
-        "lease_id": lease_id,
-        "stream_epoch": epoch,
-        "seq": seq,
-        "snapshot": {
-            "desktop_connected": true,
-            "server_time": chrono::Utc::now().to_rfc3339(),
-            "backend_version": env!("CARGO_PKG_VERSION"),
-            "capabilities": {
-                "protocol_version": PROTOCOL_VERSION,
-                "commands": commands,
-                "events": events,
-            },
-        },
-    })
 }
 
 fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
@@ -4026,59 +3737,9 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-fn new_stream_epoch() -> String {
-    format!("epoch_{}", crate::features::remote_control::short_token(24))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TEST_ENDPOINT_ID: &str = "ep_test";
-    const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
-
-    #[test]
-    fn event_delivery_requires_current_web_subscription() {
-        let mut subscriptions = HashSet::new();
-        subscriptions.insert("session:deleted".to_string());
-
-        assert!(is_event_subscribed(&subscriptions, "session:deleted"));
-        assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
-    }
-
-    #[test]
-    fn replay_skips_unsubscribed_events_without_creating_sequence_gaps() {
-        let mut stream = StreamState::new();
-        record_stream_event(&mut stream, "session:deleted", json!({ "id": "one" }));
-        record_stream_event(&mut stream, "session:list_changed", json!({}));
-        record_stream_event(&mut stream, "chat:done", json!({ "id": "one" }));
-        let events = stream.replay_after(0).expect("replay");
-        let subscriptions = HashSet::from(["session:deleted".to_string(), "chat:done".to_string()]);
-        let commands = Vec::new();
-        let capabilities = Vec::new();
-
-        let messages = subscription_filtered_replay_messages(
-            events,
-            &subscriptions,
-            ReplayMessageContext {
-                endpoint_id: TEST_ENDPOINT_ID,
-                lease_id: TEST_LEASE_ID,
-                stream_epoch: &stream.epoch,
-                capability_commands: &commands,
-                capability_events: &capabilities,
-            },
-        );
-
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0]["type"], "event");
-        assert_eq!(messages[0]["seq"], 1);
-        assert_eq!(messages[0]["event"], "session:deleted");
-        assert_eq!(messages[1]["type"], "desktop_snapshot");
-        assert_eq!(messages[1]["seq"], 2);
-        assert_eq!(messages[2]["type"], "event");
-        assert_eq!(messages[2]["seq"], 3);
-        assert_eq!(messages[2]["event"], "chat:done");
-    }
 
     #[test]
     fn stalled_in_flight_rpc_expires_after_ttl_only() {
@@ -4445,12 +4106,6 @@ mod tests {
                 "should reject {input:?}"
             );
         }
-    }
-
-    fn record_stream_event(stream: &mut StreamState, event: &str, payload: Value) {
-        stream
-            .record(TEST_ENDPOINT_ID, TEST_LEASE_ID, event.to_string(), payload)
-            .expect("record stream event");
     }
 
     #[test]
@@ -4841,188 +4496,6 @@ mod tests {
             rpc_fingerprint("chat", &json!({ "a": 1, "b": { "x": 2, "y": 3 } })).unwrap(),
             rpc_fingerprint("chat", &json!({ "b": { "y": 3, "x": 2 }, "a": 1 })).unwrap()
         );
-    }
-
-    #[test]
-    fn stream_replays_an_exact_contiguous_suffix() {
-        let mut stream = StreamState::new();
-        record_stream_event(&mut stream, "chat:delta", json!({ "text": "a" }));
-        record_stream_event(&mut stream, "chat:delta", json!({ "text": "b" }));
-        let replay = stream.replay_after(1).expect("replay");
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].seq, 2);
-        assert_eq!(replay[0].payload["text"], "b");
-        assert!(stream.replay_after(3).is_none());
-    }
-
-    #[test]
-    fn fresh_client_baseline_skips_history_but_keeps_ready_window_events() {
-        let mut stream = StreamState::new();
-        record_stream_event(&mut stream, "chat:done", json!({ "turn": "historical" }));
-        let baseline_at_join = stream.seq;
-        record_stream_event(&mut stream, "chat:turn_started", json!({ "turn": "live" }));
-
-        let replay = stream.replay_after(baseline_at_join).expect("fresh replay");
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].event, "chat:turn_started");
-        assert_eq!(replay[0].payload["turn"], "live");
-    }
-
-    #[test]
-    fn bounded_stream_rejects_a_cursor_older_than_the_journal() {
-        let mut stream = StreamState::new();
-        for seq in 0..=JOURNAL_CAPACITY {
-            record_stream_event(&mut stream, "chat:delta", json!(seq));
-        }
-        assert!(stream.replay_after(0).is_none());
-        assert!(stream.replay_after(1).is_some());
-    }
-
-    #[test]
-    fn oversized_complete_event_frame_rotates_epoch_without_recording_the_event() {
-        let mut stream = StreamState::new();
-        record_stream_event(&mut stream, "chat:delta", json!({ "text": "safe" }));
-        let previous_epoch = stream.epoch.clone();
-        let oversized_payload = json!({ "text": "x".repeat(400) });
-        let test_wire_limit = 512;
-        assert!(serde_json::to_vec(&oversized_payload).unwrap().len() < test_wire_limit);
-
-        let error = stream
-            .record_with_limits(
-                TEST_ENDPOINT_ID,
-                TEST_LEASE_ID,
-                "chat:delta".into(),
-                oversized_payload,
-                test_wire_limit,
-                JOURNAL_CAPACITY,
-                JOURNAL_BYTES_CAPACITY,
-            )
-            .expect_err("the complete envelope, not just payload, must be bounded");
-        assert!(matches!(
-            error,
-            StreamRecordError::Oversized {
-                wire_bytes,
-                limit: 512
-            } if wire_bytes > 512
-        ));
-        assert_ne!(stream.epoch, previous_epoch);
-        assert_eq!(stream.seq, 0);
-        assert!(stream.journal.is_empty());
-        assert_eq!(stream.journal_bytes, 0);
-        assert!(stream
-            .replay_after(0)
-            .is_some_and(|events| events.is_empty()));
-
-        stream
-            .record_with_limits(
-                TEST_ENDPOINT_ID,
-                TEST_LEASE_ID,
-                "chat:done".into(),
-                json!({ "status": "failed" }),
-                test_wire_limit,
-                JOURNAL_CAPACITY,
-                JOURNAL_BYTES_CAPACITY,
-            )
-            .expect("new epoch remains usable");
-        let replay = stream.replay_after(0).expect("reconnect replay");
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].seq, 1);
-        assert_eq!(replay[0].event, "chat:done");
-    }
-
-    #[test]
-    fn stream_journal_evicts_oldest_complete_frames_by_total_bytes() {
-        let mut stream = StreamState::new();
-        stream
-            .record_with_limits(
-                TEST_ENDPOINT_ID,
-                TEST_LEASE_ID,
-                "chat:delta".into(),
-                json!({ "text": "same-size" }),
-                4 * 1024,
-                JOURNAL_CAPACITY,
-                usize::MAX,
-            )
-            .unwrap();
-        let frame_bytes = stream.journal.back().unwrap().wire_bytes;
-        let byte_capacity = frame_bytes * 2;
-        for _ in 0..2 {
-            stream
-                .record_with_limits(
-                    TEST_ENDPOINT_ID,
-                    TEST_LEASE_ID,
-                    "chat:delta".into(),
-                    json!({ "text": "same-size" }),
-                    4 * 1024,
-                    JOURNAL_CAPACITY,
-                    byte_capacity,
-                )
-                .unwrap();
-        }
-
-        assert_eq!(stream.seq, 3);
-        assert_eq!(stream.journal.len(), 2);
-        assert_eq!(stream.journal.front().map(|event| event.seq), Some(2));
-        assert!(stream.journal_bytes <= byte_capacity);
-        assert!(stream.replay_after(0).is_none());
-        assert_eq!(stream.replay_after(1).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn failed_live_enqueue_can_rebase_the_critical_tail_for_reconnect() {
-        let mut stream = StreamState::new();
-        record_stream_event(&mut stream, "chat:delta", json!({ "text": "prefix" }));
-        record_stream_event(
-            &mut stream,
-            "chat:user_input_required",
-            json!({ "request_id": "request-1" }),
-        );
-        let failed_event = stream.journal.back().unwrap().clone();
-        let previous_epoch = stream.epoch.clone();
-
-        stream.reset();
-        stream
-            .record(
-                TEST_ENDPOINT_ID,
-                TEST_LEASE_ID,
-                failed_event.event,
-                failed_event.payload,
-            )
-            .unwrap();
-
-        assert_ne!(stream.epoch, previous_epoch);
-        assert_eq!(stream.seq, 1);
-        let replay = stream.replay_after(0).unwrap();
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].event, "chat:user_input_required");
-        assert_eq!(replay[0].payload["request_id"], "request-1");
-    }
-
-    #[test]
-    fn replay_batch_failure_stops_at_the_gap_instead_of_claiming_the_tail() {
-        let messages = vec![
-            json!({ "seq": 1 }),
-            json!({ "seq": 2 }),
-            json!({ "seq": 3 }),
-        ];
-        let mut attempted = Vec::new();
-        let complete = try_enqueue_message_batch(messages, |message| {
-            let seq = message["seq"].as_u64().unwrap();
-            attempted.push(seq);
-            seq != 2
-        });
-
-        assert!(!complete);
-        assert_eq!(attempted, vec![1, 2]);
-        let reset = stream_reset_message(
-            TEST_ENDPOINT_ID,
-            TEST_LEASE_ID,
-            "epoch_recovered",
-            "replay_enqueue_failed",
-        );
-        assert_eq!(reset["seq"], 0);
-        assert_eq!(reset["reason"], "replay_enqueue_failed");
-        assert!(serde_json::to_vec(&reset).unwrap().len() < relay_client::MAX_RELAY_FRAME_BYTES);
     }
 
     #[test]
