@@ -75,12 +75,31 @@ impl PersonaInput {
     }
 }
 
+/// 专家池变更后的名册联动。**不改写卡操作的结果**：卡本体已成功落盘，把
+/// 联动失败当命令失败返回，前端会不刷新卡池——用户看到"保存失败"、重试
+/// 再造一张重复卡（复核点名的假失败）。失败改走
+/// `multiagent:roster_sync_failed` 警示事件，桥转成系统消息如实提示。
+async fn sync_expert_rosters(app: &AppHandle, pool: &EnginePool) {
+    if let Err(error) = pool.refresh_multi_agent_rosters_after_expert_change().await {
+        eprintln!("[personas] roster sync after expert change failed: {error}");
+        let _ = app.emit(
+            "multiagent:roster_sync_failed",
+            serde_json::json!({ "error": error }),
+        );
+    }
+}
+
 /// 新建自制卡 → 写 `~/.pinvou3/user/personas/<id>.json`,返回摘要(含生成的 id)。
+/// 用户卡即专家名册成员：变更后联动刷新所有开着多智能体开关的会话名册。
 #[tauri::command]
 pub async fn create_persona(
     input: PersonaInput,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
 ) -> Result<crate::features::personas::PersonaSummary, String> {
-    crate::features::personas::create_user_persona(input.into_card(String::new()))
+    let summary = crate::features::personas::create_user_persona(input.into_card(String::new()))?;
+    sync_expert_rosters(&app, &pool).await;
+    Ok(summary)
 }
 
 /// 编辑自制卡(persona_id 必须是 user- 前缀)。
@@ -88,14 +107,24 @@ pub async fn create_persona(
 pub async fn update_persona(
     persona_id: String,
     input: PersonaInput,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
 ) -> Result<crate::features::personas::PersonaSummary, String> {
-    crate::features::personas::update_user_persona(input.into_card(persona_id))
+    let summary = crate::features::personas::update_user_persona(input.into_card(persona_id))?;
+    sync_expert_rosters(&app, &pool).await;
+    Ok(summary)
 }
 
 /// 删除自制卡。
 #[tauri::command]
-pub async fn delete_persona(persona_id: String) -> Result<(), String> {
-    crate::features::personas::delete_user_persona(&persona_id)
+pub async fn delete_persona(
+    persona_id: String,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    crate::features::personas::delete_user_persona(&persona_id)?;
+    sync_expert_rosters(&app, &pool).await;
+    Ok(())
 }
 
 /// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。

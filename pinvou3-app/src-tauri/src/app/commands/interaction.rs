@@ -77,6 +77,72 @@ pub async fn exit_plan_to_yolo(
     Ok(store.mode_state(&session_id))
 }
 
+// ===================== 多智能体模式开关（ADR-0006） =====================
+
+/// 模型列表下方的会话级开关。开启：装配专家名册到会话工作区、工作区 git 化
+/// （并行子智能体 worktree 依赖）、名册整册即时推给在跑引擎
+/// （`Op::SetFleetRoster`，下一轮生效）；关闭：仅停止每轮委派提醒注入，
+/// 在跑的子智能体不打断。工具面不随开关变化——与主线完全一致：`workflow`
+/// 保持可用（委派提醒不教学不推荐），裸 `agent` 本就对所有会话可用。
+#[tauri::command]
+pub async fn set_multi_agent_mode(
+    session_id: String,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<SessionModeState, String> {
+    // 任何副作用（建目录、git init、写角色文件）之前先过两道门：id 形状
+    // 校验（paths::session_workspace_dir 只是 join，`../` 会把副作用落到
+    // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
+    crate::features::sessions::validate_session_id(&session_id)
+        .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
+    // 存量 `wf-` 会话（旧入口遗留形态）在引擎侧恒为开启，且工作区在专属
+    // 运行目录——这里若放行会把名册/git 化落到错误目录。前端同样隐藏开关行。
+    if crate::features::sessions::is_workflow_session_id(&session_id) {
+        return Err(format!(
+            "set_multi_agent_mode({session_id}): 旧多智能体会话恒为开启，不支持切换"
+        ));
+    }
+    store
+        .load(&session_id)
+        .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
+    if enabled {
+        // 副作用先行，全部成功才落开关——工作区不是仓库时，worktree 隔离
+        // 的并行派发会被底座整批拒绝（非 worktree 裸派不受影响）；提前
+        // git 化保证模型随时可用 worktree，"开着却用不了"比开启失败更糟。
+        // git 与文件都是阻塞调用，移出异步运行线程（复核 P2）。
+        let workspace = crate::platform::paths::session_workspace_dir(&session_id);
+        let sid = session_id.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            std::fs::create_dir_all(&workspace)
+                .map_err(|e| format!("set_multi_agent_mode({sid}): 建工作区失败: {e}"))?;
+            crate::features::multiagent::platform::ensure_git_repository(&workspace)
+                .map_err(|e| format!("set_multi_agent_mode({sid}): 工作区 git 化失败: {e}"))?;
+            crate::features::multiagent::roster::enroll_expert_roles(&workspace)
+                .map_err(|e| format!("set_multi_agent_mode({sid}): {e}"))
+        })
+        .await
+        .map_err(|join| format!("set_multi_agent_mode({session_id}): 后台任务失败: {join}"))??;
+    }
+    store
+        .set_multi_agent(&session_id, enabled)
+        .map_err(|error| format!("set_multi_agent_mode({session_id}): {error:#}"))?;
+    if enabled {
+        // 名册即时推给在跑引擎；推送失败回滚开关并报错——界面显示已启用、
+        // 在跑引擎却用旧名单，是复核点名的谎报成功。关闭无需引擎操作
+        // （工具面不随开关变化，停止注入由 chat 发送链按 mode_state 判断）。
+        if let Err(error) = pool.refresh_multi_agent_roster(&session_id).await {
+            if let Err(rollback) = store.set_multi_agent(&session_id, false) {
+                return Err(format!(
+                    "set_multi_agent_mode({session_id}): {error}；回滚开关亦失败: {rollback:#}"
+                ));
+            }
+            return Err(format!("set_multi_agent_mode({session_id}): {error}"));
+        }
+    }
+    Ok(store.mode_state(&session_id))
+}
+
 /// `accept_plan` 切 Yolo 后注入的执行指令文本。抽成函数供单测钉契约:
 /// 必须裹住方案全文 + 带明确"立即执行"信号,否则切了 Yolo 但 AI 收到空指令不知道干嘛。
 pub(super) fn accept_plan_instruction(plan_markdown: &str) -> String {

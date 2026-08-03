@@ -253,6 +253,8 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
+    // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
+    pendingDraftMultiAgent: false,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -291,6 +293,15 @@
         cards: [],           // 底部交互卡片队列 [{ cardId, kind:'user_input'|'gate'|'system', resolved, ... }]
         selectedRole: null,  // 右抽屉选中的角色
       },
+    },
+    // 多智能体工作流运行（建在底座 Workflow + Fleet 之上，见 docs/adr/0004-*）。
+    // 与上方 workflow.run 无关：那是既有 Python 调度器的看板态，本域只跟踪
+    // 「工作流运行」——发起中、可派角色、以及每条运行的状态。
+    multiAgent: {
+      starting: false,
+      error: null,
+      activeRunId: null,
+      runs: [],         // [{ runId, brief, status, error }]
     },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
@@ -1211,6 +1222,7 @@
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     personas: ["activePersona", "personaEvents", "personaPool"],
     workflow: ["workflow"],
+    multiAgent: ["multiAgent"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
@@ -1442,14 +1454,19 @@
     return "";
   }
 
+  function isInternalUserMessageProvenance(provenance) {
+    return provenance === "runtime" || provenance === "subagent_handoff";
+  }
+
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
+  // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
   // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
   // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
-    if (userMessageInputProvenance(blocks) === "runtime") return "";
+    if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {
@@ -1899,6 +1916,7 @@
   var discardPlan = interactionFeature.discardPlan;
   var exitPlanToYolo = interactionFeature.exitPlanToYolo;
   var setPlanModeNext = interactionFeature.setPlanModeNext;
+  var setMultiAgentMode = interactionFeature.setMultiAgentMode;
   var planStuckReplan = interactionFeature.planStuckReplan;
   var planStuckGo = interactionFeature.planStuckGo;
   var submitUserInput = interactionFeature.submitUserInput;
@@ -1943,7 +1961,7 @@
   var resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   var openConversationAttachment = artifactsFeature.openConversationAttachment;
   var revealConversationAttachment = artifactsFeature.revealConversationAttachment;
-  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, isDefaultChatTitle: isDefaultChatTitle, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
+  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt, isDefaultChatTitle: isDefaultChatTitle, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
   var loadPersonas = personasFeature.loadPersonas;
   var getPersonas = personasFeature.getPersonas;
   var createPersona = personasFeature.createPersona;
@@ -1999,6 +2017,9 @@
   var downloadKbModel = knowledgeModelFeature.downloadKbModel;
   var cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
+  var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
+  var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
+  var readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
   var workflowFeature = installBridgeFeature("workflow", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, resetPendingAssistant: resetPendingAssistant, syncModeState: syncModeState, refreshHistoryList: refreshHistoryList, markWorkflowRunStopped: markWorkflowRunStopped, refreshRunState: refreshRunState, resolveRunCard: resolveRunCard, resolveRunCardsForRole: resolveRunCardsForRole });
   var setCurrentPhase = workflowFeature.setCurrentPhase;
   var loadSkills = workflowFeature.loadSkills;
@@ -2200,6 +2221,7 @@
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
     setPlanModeNext: setPlanModeNext,
+    setMultiAgentMode: setMultiAgentMode,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
     // 用户交互
@@ -2253,6 +2275,10 @@
       revealConversationAttachment: revealConversationAttachment,
     },
     resolutions: { markResolved: markResolved },
+    multiAgent: {
+      listSubagentTranscripts: listMultiAgentSubagents,
+      readSubagentTranscript: readMultiAgentSubagent,
+    },
     workflow: {
       loadSkills: loadSkills,
       activateSkill: activateSkill,

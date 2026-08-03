@@ -845,6 +845,7 @@ pub fn run() {
             commands::interaction::confirm_code_yolo,
             commands::interaction::set_plan_mode_next,
             commands::interaction::exit_plan_to_yolo,
+            commands::interaction::set_multi_agent_mode,
             commands::interaction::accept_plan,
             commands::interaction::discard_plan,
             commands::interaction::read_skill_body,
@@ -870,6 +871,9 @@ pub fn run() {
             commands::workflows::find_resumable_run,
             commands::workflows::get_session_active_skill,
             commands::workflows::list_session_skill_bindings,
+            // 多智能体执行记录投影（与上方既有调度器无数据交集，见 docs/adr/0006-*）
+            commands::multiagent::list_subagent_transcripts,
+            commands::multiagent::read_subagent_transcript,
             commands::interaction::submit_user_input,
             commands::interaction::add_run_materials,
             commands::interaction::cancel_user_input,

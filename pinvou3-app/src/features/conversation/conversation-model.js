@@ -4,6 +4,23 @@ const C1_CSI = String.fromCharCode(0x9b);
 const OSC_SEQUENCE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g');
 const CSI_SEQUENCE = new RegExp(`(?:${ESC}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g');
 const SINGLE_ESCAPE_SEQUENCE = new RegExp(`${ESC}[()][0-2A-Z]`, 'g');
+/**
+ * 底座 `agent` 工具的 spawn 判定（与协调操作区分）。
+ *
+ * schema：`action ∈ {start,status,peek,wait,cancel}`，缺省 start；spawn 必带
+ * 任务正文（prompt/message/objective/items 之一，底座 parse_text_or_items
+ * 同源）。status/wait/cancel 只是对既有子智能体的协调操作，不代表一次新
+ * 委派——把它们也画成专家卡会虚增"派出人数"。
+ * 定义在 conversation 层（自包含，无跨域 import）：折叠豁免与专家卡渲染
+ * 都要用它，而本文件会被单独拷进 Codex ACP 时间线测试沙箱。
+ */
+export function isExpertDelegationCall(name, args) {
+  if (name !== 'agent') return false;
+  const input = args && typeof args === 'object' ? args : {};
+  if (String(input.action || 'start') !== 'start') return false;
+  return Boolean(input.prompt || input.message || input.objective || input.items);
+}
+
 const OPERATION_ITEM_TYPES = new Set(['command_execution', 'file_change', 'tool']);
 const SEARCH_TOOL_NAMES = new Set([
   'web_search',
@@ -24,6 +41,28 @@ export function externalMarkdownUrl(value) {
 export function isNearConversationBottom(element, threshold = 96) {
   if (!element) return true;
   return (element.scrollHeight - element.scrollTop - element.clientHeight) < threshold;
+}
+
+/**
+ * 侧栏开合会改变聊天列宽并触发全文重排。保存距底部距离，布局完成后恢复，
+ * 这样贴底的流式会话仍贴底，浏览历史时也不会因换行增多而跳到更早内容。
+ */
+export function captureConversationScrollPosition(element, stickToBottom = false) {
+  if (!element) return null;
+  return {
+    stickToBottom: Boolean(stickToBottom),
+    bottomGap: Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight),
+  };
+}
+
+export function restoreConversationScrollPosition(element, snapshot) {
+  if (!element || !snapshot) return null;
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  const bottomGap = Math.max(0, Number(snapshot.bottomGap) || 0);
+  element.scrollTop = snapshot.stickToBottom
+    ? maxScrollTop
+    : Math.max(0, maxScrollTop - bottomGap);
+  return element.scrollTop;
 }
 
 /**
@@ -184,6 +223,16 @@ export function presentConversationItems(items) {
   const result = [];
   for (const item of items || []) {
     if (OPERATION_ITEM_TYPES.has(item.type)) {
+      // 专家卡是一等公民：spawn 型 `agent` 调用不折进工具组——历史加载时
+      // 工具组默认折叠，会把整场委派藏没。status/wait 等协调操作照常归组。
+      // legacyItem 仅存在于聊天投影，Codex ACP 的同名外部工具不受影响。
+      if (
+        item.legacyItem && item.tool
+        && isExpertDelegationCall(item.tool.name, item.legacyItem.args)
+      ) {
+        result.push(item);
+        continue;
+      }
       const previous = result[result.length - 1];
       if (previous && previous.type === 'tool_group') {
         previous.items.push(item);

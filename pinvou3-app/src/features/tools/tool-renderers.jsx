@@ -1,6 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { can } from '../../shared/platform.js';
+import { isExpertDelegationCall } from '../conversation/conversation-model.js';
+import {
+  extractSubagentId,
+  resolveSubagentIdentity,
+  splitSubagentTitle,
+  subagentOrdinalLabel,
+  subagentRoleOrdinals,
+} from '../multiagent/subagent-conversation.mjs';
+import { AppIcon } from '../personas/Personas.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, QUIET_TOOLS, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
@@ -12,6 +22,219 @@ const isShellExecutionTool = name => [
   'task_shell_wait',
   'shell',
 ].includes(name);
+
+// P1-C：专家卡是桌面能力。Web 构建没有 multiAgent bridge（capability 关闭），
+// 强行渲染专家卡会吞掉原生 agent 工具的输出、点开只得空面板——capability
+// 关闭时走回通用工具卡。模块级常量：对一次构建恒定，不破坏 Hook 数量稳定。
+const EXPERT_CARD_ENABLED = can('multiAgent');
+
+/** worker ledger 的英文状态 token（agent_worker_status_name）。这些必须映射
+ * i18n 文案；不在此列的 status 是实时进展短语（模型侧输出），原样展示。 */
+const LEDGER_STATUS_TOKENS = new Set([
+  'running', 'queued', 'pending', 'starting',
+  'completed', 'failed', 'cancelled', 'canceled', 'stopped', 'interrupted',
+]);
+
+// Web 端的多智能体会话是只读的（桌面专属，ADR-0006）：计划裁决/受阻兜底
+// 这类会触发新一轮模型执行的卡片操作，与输入框一同置灰。权威拦截在后端
+// remote_control 漏斗（复核 P1），前端只是如实反馈。桌面端恒 false。
+const multiAgentWebReadOnly = () => {
+  if (can('multiAgent')) return false;
+  const chat = (bridge.state && bridge.state.get && bridge.state.get('chat')) || {};
+  return !!(chat.modeState && chat.modeState.multiAgent);
+};
+
+// ── 行内专家卡的权威状态兜底轮询（模块级共享，P1-3） ──
+// 实时 DOM 事件可能丢（事件通道拥塞/进程重启后加载历史/主对话停止级联取消），
+// 只靠它卡片会永久停在"工作中"。有未终态卡挂载时按 2s 轮询底座落盘投影
+// （worker ledger 权威，含 blocked/interrupted），把快照经同一
+// `pinvou:subagent-update` DOM 事件广播给全部卡；全部终态即停表，新卡再启。
+const expertCardWatch = new Map();
+let expertPollTimer = null;
+
+function stopExpertPoll() {
+  if (expertPollTimer != null) {
+    clearTimeout(expertPollTimer);
+    expertPollTimer = null;
+  }
+}
+
+function kickExpertPoll() {
+  if (expertPollTimer != null || typeof window === 'undefined') return;
+  expertPollTimer = setTimeout(async () => {
+    expertPollTimer = null;
+    try {
+      if (!bridge.available || !bridge.state || !bridge.multiAgent) return;
+      const sid = (bridge.state.get('sessions') || {}).activeSessionId;
+      if (!sid) return;
+      const list = (await bridge.multiAgent.listSubagentTranscripts(sid)) || [];
+      const ordinals = subagentRoleOrdinals(list);
+      for (const summary of list) {
+        if (!summary || !summary.agent_id || !expertCardWatch.has(summary.agent_id)) continue;
+        if (summary.done) expertCardWatch.set(summary.agent_id, true);
+        const ordinal = ordinals.get(summary.agent_id) || null;
+        window.dispatchEvent(new CustomEvent('pinvou:subagent-update', {
+          detail: {
+            sessionId: sid,
+            agentId: summary.agent_id,
+            role: summary.role || null,
+            status: summary.status || null,
+            done: !!summary.done,
+            failed: !!summary.failed,
+            blocked: !!summary.blocked,
+            seq: ordinal ? ordinal.seq : null,
+            roleCount: ordinal ? ordinal.count : null,
+          },
+        }));
+      }
+    } catch (_) {
+      // 单次轮询失败不致命，下一轮重试。
+    } finally {
+      if ([...expertCardWatch.values()].some(done => !done)) kickExpertPoll();
+    }
+  }, 2000);
+}
+
+function watchExpertCard(agentId) {
+  expertCardWatch.set(agentId, expertCardWatch.get(agentId) === true);
+  kickExpertPoll();
+  return () => {
+    expertCardWatch.delete(agentId);
+    if (!expertCardWatch.size) stopExpertPoll();
+  };
+}
+
+/**
+ * 行内专家卡（ADR-0006）：spawn 型 `agent` 工具调用在消息流里渲染成
+ * 「头像 · 专家名 · 任务摘要 · 状态」，不展示工具 JSON。
+ * 状态自订阅 `pinvou:subagent-update`（bridge 转发的实时事件 + 模块级
+ * 轮询广播的落盘权威快照，终态 ratchet 保证落盘赢），点击整卡派发
+ * `pinvou:open-subagent`，由 ChatView 打开只读执行记录面板。
+ * status/wait/cancel 等协调操作渲染成安静的单行，不冒充新委派。
+ */
+const ExpertAgentCard = ({ item, theme, t }) => {
+  const isDark = theme === 'dark';
+  const copy = t.uiMultiAgent;
+  const args = item.args || {};
+  const agentId = extractSubagentId(item.output);
+  // 承担者以底座正式契约字段 `profile` 为准（role 会被底座当内置类型别名
+  // 截走）；读 role 只为兼容旧记录的展示。头像按实例散列（agentId 维度）。
+  const identity = resolveSubagentIdentity(
+    args.profile || args.role,
+    bridge.available && bridge.personas ? bridge.personas.getPersonas() : [],
+    agentId,
+  );
+  // 模型起的「」名（任务说明第一行）优先于角色映射名；专家卡名仍最高。
+  const spawnText = String(args.prompt || args.message || args.objective || args.description || '');
+  const title = splitSubagentTitle(spawnText);
+  const usesCustomTitle = identity.kind !== 'expert' && !!title.name;
+  const baseName = identity.kind === 'expert'
+    ? identity.personaName
+    : usesCustomTitle
+      ? title.name
+      : identity.kind === 'custom'
+        ? identity.name
+        : (copy.roleCards[identity.roleKey] || copy.roleCards.general);
+  const task = title.rest.split(/\r?\n/)[0];
+
+  // Hook 全部无条件运行（协调行分支在 Hook 之后），实例 Hook 数量恒定。
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    if (!agentId || typeof window === 'undefined') return undefined;
+    const onUpdate = event => {
+      const detail = event && event.detail;
+      if (!detail || detail.agentId !== agentId) return;
+      setLive(prev => {
+        // 终态 ratchet：落盘终态是权威，迟到的非终态实时事件不得翻回"工作中"。
+        if (prev && prev.done && !detail.done) return prev;
+        // 字段合并：实时事件不带 seq/roleCount/blocked，不能把轮询补的字段冲掉。
+        return { ...(prev || {}), ...detail };
+      });
+    };
+    window.addEventListener('pinvou:subagent-update', onUpdate);
+    const unwatch = watchExpertCard(agentId);
+    return () => {
+      window.removeEventListener('pinvou:subagent-update', onUpdate);
+      unwatch();
+    };
+  }, [agentId]);
+
+  if (!isExpertDelegationCall(item.name, args)) {
+    const action = String(args.action || 'start');
+    return (
+      <div
+        data-testid="agent-coordination-row"
+        className="my-1 flex items-center gap-2 px-1 text-[11.5px] text-[#8E8E93]"
+      >
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-50" />
+        <span className="truncate">{copy.coordinationRow(action)}{args.agent_id ? ` · ${args.agent_id}` : ''}</span>
+      </div>
+    );
+  }
+
+  // 起了名的实例天然可区分，不再叠序号；未起名的沿用角色名+序号兜底。
+  const name = baseName + (usesCustomTitle
+    ? ''
+    : subagentOrdinalLabel(live && live.roleCount ? { seq: live.seq, count: live.roleCount } : null));
+  const failedSpawn = item.state === 'failed';
+  const blocked = !!(live && live.done && !live.failed && live.blocked);
+  const interrupted = !!(live && live.done && live.failed && live.status === 'interrupted');
+  const statusText = failedSpawn
+    ? copy.agentCard.spawnFailed
+    : blocked
+      ? copy.blockedTag
+      : interrupted
+        ? copy.agentCard.interrupted
+        : live && live.done
+          ? (live.failed ? copy.agentCard.failed : copy.agentCard.completed)
+          : live
+            ? (live.status && !LEDGER_STATUS_TOKENS.has(String(live.status).toLowerCase())
+              ? live.status
+              : copy.agentCard.working)
+            : item.state === 'running'
+              ? copy.agentCard.spawning
+              : copy.agentCard.working;
+  const dotColor = failedSpawn || (live && live.done && live.failed)
+    ? '#C5221F'
+    : blocked
+      ? '#F9AB00'
+      : live && live.done
+        ? '#137333'
+        : '#F9AB00';
+
+  return (
+    <button
+      type="button"
+      data-testid="expert-agent-card"
+      onClick={() => {
+        if (typeof window === 'undefined') return;
+        window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
+          detail: { agentId: agentId || null },
+        }));
+      }}
+      className={`my-1 flex w-full max-w-[520px] items-center gap-2.5 rounded-[12px] border px-3 py-2 text-left ${
+        isDark
+          ? 'border-[#38383A] bg-[#1C1C1E] hover:bg-[#2C2C2E]'
+          : 'border-[#E5E5EA] bg-white hover:bg-[#F2F2F7]'
+      }`}
+    >
+      <AppIcon
+        card={{ id: identity.avatarKey, name, dept: identity.personaDept }}
+        isDark={isDark}
+        cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
+        fb={14}
+      />
+      <span className={`shrink-0 text-[12.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+        {name}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[12px] text-[#8E8E93]">{task}</span>
+      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-[#8E8E93]">
+        <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: dotColor }} />
+        {statusText}
+      </span>
+    </button>
+  );
+};
 
 const ToolOutput = ({ item, isDark, t }) => {
       const out = item.output;
@@ -85,6 +308,12 @@ const ToolOutput = ({ item, isDark, t }) => {
     };
 
     const ToolCard = ({ item, theme, t, variant = 'legacy' }) => {
+      // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
+      // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
+      // 因此每个实例的 Hook 数量恒定，不触犯 Hook 规则。
+      if (EXPERT_CARD_ENABLED && item.name === 'agent') {
+        return <ExpertAgentCard item={item} theme={theme} t={t} />;
+      }
       const isDark = theme === 'dark';
       const isTimeline = variant === 'timeline';
       const isRunning = item.state === 'running';
@@ -495,6 +724,7 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     const PlanCard = ({ item, theme, t, onPrefill }) => {
       const isDark = theme === 'dark';
+      const webReadOnly = multiAgentWebReadOnly();
       const active = item.cardState === 'active' && !item.resolved && !!item.planId;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
@@ -509,9 +739,9 @@ const ToolOutput = ({ item, isDark, t }) => {
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planNext}</span>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
+              <button className={cardBtnCls(isDark, 'primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
+              <button className={cardBtnCls(isDark) + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
+              <button className={cardBtnCls(isDark) + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
             </div>
           ) : (
             <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{item.statusLabel}</div>
@@ -525,6 +755,7 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     const PlanStuckCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
+      const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
@@ -535,8 +766,8 @@ const ToolOutput = ({ item, isDark, t }) => {
             <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark)} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
+              <button className={cardBtnCls(isDark) + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button className={cardBtnCls(isDark, 'primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>

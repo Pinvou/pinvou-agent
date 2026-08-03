@@ -17,6 +17,7 @@ const DEFAULT_DESKTOP_CAPABILITIES = Object.freeze({
   sessionModelSwitch: true,
   modelManagement: true,
   toolStoreMutations: true,
+  multiAgent: true,
   // 桌面端的系统选择器本就选择"本机"文件,无需浏览器上传通道;显式关闭
   // 让附件按钮在桌面保持原有单入口行为。
   deviceFileUpload: false,

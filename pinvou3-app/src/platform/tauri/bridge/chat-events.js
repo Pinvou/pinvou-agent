@@ -226,7 +226,10 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+        state.modeState = {
+          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
+          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
+        };
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn) {
@@ -951,7 +954,7 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo" };
+    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo", multiAgent: !!readyMode.multi_agent };
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;

@@ -179,6 +179,11 @@ pub fn pdf_dependency_packages() -> &'static str {
     "poppler-utils"
 }
 
+/// apt 包名（features/dependencies/platform/linux_packages.rs 白名单同名）。
+pub fn git_dependency_packages() -> &'static str {
+    "git"
+}
+
 pub fn ocr_dependency_packages() -> &'static str {
     "tesseract-ocr tesseract-ocr-chi-sim poppler-utils"
 }
