@@ -93,9 +93,70 @@ pub const BUNDLE_VERSION: &str = concat!(
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
 );
 
-/// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
-pub const INSTRUCTIONS_MD: &str =
-    include_str!("../../../../resources/common/bundle/instructions.md");
+/// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
+/// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
+/// `{{PINVOU3_MODE_ENV_SECTION}}`（§工作环境 位）与
+/// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§工具与事实 的成品条位）。
+/// 拆分说明：work 专属的 §工作环境(L10-13) 与 present_artifact 条(L18) 在原文中
+/// 不连续，纯 concat 无法逐字节复原，故骨架留占位行、按模式替换拼装。
+pub const INSTRUCTIONS_SHARED_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-shared.md");
+
+/// work 模式层：§工作环境（产出物面板语义与 tmp/ 规则）+ §工具与事实 的
+/// present_artifact 成品条。两段以空行分隔，供 [`work_layer_sections`] 切分。
+pub const INSTRUCTIONS_WORK_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-work.md");
+
+/// work 层两段：§工作环境 整节（无尾换行）与成品条（含尾换行）。
+fn work_layer_sections() -> (&'static str, &'static str) {
+    INSTRUCTIONS_WORK_MD
+        .split_once("\n\n")
+        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + 成品条段")
+}
+
+/// work 模式完整 instructions（共享骨架 + work 层占位替换）。
+/// 与拆分前 instructions.md 逐字节相等（golden 测试 `work_instructions_render_byte_identical_to_legacy` 锁定）。
+pub fn instructions_md() -> &'static str {
+    static RENDERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RENDERED.get_or_init(|| {
+        let (env_section, artifact_rule) = work_layer_sections();
+        INSTRUCTIONS_SHARED_MD
+            // §工作环境 位：work 段无尾换行，补回占位行换行形成节间空行。
+            .replace("{{PINVOU3_MODE_ENV_SECTION}}", &format!("{env_section}\n"))
+            // 成品条位：占位行整体（含换行）替换为成品条原文 + 补回节间空行。
+            .replace(
+                "{{PINVOU3_MODE_ARTIFACT_RULE}}\n",
+                &format!("{artifact_rule}\n"),
+            )
+    })
+}
+
+/// 代码模式层（品悟原生代码会话）：§工作环境（代码模式身份 + `{{PINVOU3_WORKSPACE_HINT}}`
+/// 工作区占位）+ ## 代码场景纪律 增量段，两段以空行分隔。
+/// 底座 `CORE_EXECUTION_PROFILE_PROMPT` 不复制进文件，由 [`instructions_code_md`]
+/// 在渲染层原样拼接——上游更新自动跟随。
+pub const INSTRUCTIONS_CODE_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-code.md");
+
+/// 代码模式完整 instructions（共享骨架 + 代码层）：
+/// 骨架的 §工作环境 位填代码版环境段（workspace_hint 已按绑定情况渲染），
+/// 成品条位整行删除（代码会话无产出物/成品卡语义）；尾部依次拼接底座
+/// core_execution 执行循环与 ## 代码场景纪律。
+pub fn instructions_code_md(workspace_hint: &str) -> String {
+    let (env_section, discipline) = INSTRUCTIONS_CODE_MD
+        .split_once("\n\n")
+        .expect("instructions-code.md 必须是 §工作环境 段 + 空行 + ## 代码场景纪律 段");
+    let env_section = env_section.replace("{{PINVOU3_WORKSPACE_HINT}}", workspace_hint);
+    let mut out = INSTRUCTIONS_SHARED_MD
+        .replace("{{PINVOU3_MODE_ENV_SECTION}}", &format!("{env_section}\n"))
+        .replace("{{PINVOU3_MODE_ARTIFACT_RULE}}\n", "");
+    out.push_str("\n\n");
+    out.push_str(deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim());
+    out.push_str("\n\n");
+    out.push_str(discipline.trim_end());
+    out.push('\n');
+    out
+}
 
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
@@ -385,7 +446,7 @@ impl Pinvou3Bundle {
         // 首次解包按当前 sudoers 状态填 PINVOU3_SUDO_INSTRUCTION,避免占位符原文
         // 漏到 LLM 看到的 system prompt(engine boot 时是从 disk 读的)。
         // 用户切换开关时 set_super_permission 会 sync_session 重写。
-        let rendered = INSTRUCTIONS_MD
+        let rendered = instructions_md()
             .replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
@@ -784,6 +845,69 @@ impl Pinvou3Bundle {
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    /// 拆分前 instructions.md 原文快照（2026-08，33 行）。
+    /// golden：work 渲染必须与原文逐字节相等——骨架占位行替换的任何手滑
+    /// （换行/空行/节序/分段锚错位）都会让本测试变红。
+    const LEGACY_INSTRUCTIONS_MD: &str = "# pinvou3 运行守则\n\n> 你是 {{PINVOU3_MODEL}},运行在 pinvou3(本地桌面 GUI 助手)中。运行时态(Plan / Yolo 模式、超级权限开关)走每轮 `<system-reminder>`,以那里为准。禁 `read_file` `.pinvou3/bundle/` 下任何文件。\n\n## 底线\n- **真相优先**:不编造工具结果 / 路径 / 数字;声称做完前先验证(跑检查 / 读回关键处)或如实说明为何没验。\n- **权威顺序**:用户当前指令 > 既定规则 > 你的记忆;实时工具输出与文件内容 > 你的记忆,冲突时重读、信工具。\n- 语气平实,少感叹号与最高级。\n\n## 工作环境\n- workspace = `$HOME`,但**这不是项目目录** —— 你是桌面 GUI 助手。产出用**相对路径**写(如 `write_file(\"report.html\", …)`),自动落到本会话专属工作目录;别用 `~` 或绝对路径。\n- **工作目录根 = 用户看到的「产出物」面板**:只有**最终成品**才直接写到根。所有**中间 / 临时文件**(命令行入参、API 响应、分步数据等)一律写到 `tmp/` 子目录(相对路径,如 `tmp/params.json`)—— 子目录里的文件不进产出物列表,免得一堆过程文件污染面板。能用 stdin / 内存不落文件就别落。\n- 用户文件常在 `~/Documents` `~/Desktop` `~/Downloads` `~/桌面` `~/下载` `~/文档`;找文件用 `file_search`,别 `list_dir ~/` 或 `find ~/` 扫整个家目录。\n\n## 工具与事实\n- **只调你工具列表里实际出现的工具**;没出现的就是没有,别编工具名(算术 / 跑脚本用 `exec_shell python3 -c '...'`,git log 用 `exec_shell git log`)。\n- **不知道的当前信息必须调工具、禁止凭记忆编**:算术 / 精确当前时间 / 系统状态 / 库最新版本 / 文件内容与行数。\n- 给客户看的**单文件成品**(html / markdown / 图)写完,立刻调 `mcp_pinvou3_present_artifact`(绝对 `path` + 一眼看懂的 `title`,**title 用{{PINVOU3_TITLE_LANG}}、与你的回复同语种**);迭代重写后再调一次。\n\n## 怎么干\n- **说做就做,别光宣布**:一旦说要用工具做某事(写文件 / 搜索 / 读取 / 展示成品),就在**同一条回复里立刻发出该工具调用**;严禁只回「我来写 / 现在开始 / 让我…」之类就停下、把回合交还用户。前言一两句够了,别长篇铺垫策略。\n- 缺信息当轮就用工具补,别硬编;读多文件 / 多关键词搜索**并行**发起。\n- 遇到**影响结果走向的岔路**(选哪个方案 / 往哪个方向做),主动用 `request_user_input` 给 2-3 个选项让用户拍板,别自己闷头猜;纯执行细节有合理默认就直接做。不复述过程,做完给结果 + 关键决策。\n- 复杂任务(≥5 步)先 `checklist_write` 列清单再做(列完同轮就动手);**及时收手**,信息够答好就交付,别拿到 80% 还抠细节。\n\n## 红线(任何模式、任何请求都不破)\n- **密钥凭证禁读禁写**:`~/.ssh`、含 `id_rsa` / `credentials` / `.env` / `token` 的路径、`/etc/shadow`;被要求时给终端替代方案。\n- 不 `rm -rf` 用户文件 / 目录、不 `git reset --hard` / 批量清理,**除非用户精确点名**那个操作。\n- 写 `/etc` `/usr` `/var` 需超级权限:关闭态禁写,引导用户去【设置 → 系统权限】。\n\n## 输出\nGUI 富文本,代码块 / 列表 / 表格随便用。\n{{PINVOU3_SUDO_INSTRUCTION}}\n";
+
+    #[test]
+    fn work_instructions_render_byte_identical_to_legacy() {
+        assert_eq!(instructions_md(), LEGACY_INSTRUCTIONS_MD);
+    }
+
+    #[test]
+    fn shared_skeleton_keeps_mode_placeholder_rows_in_place() {
+        // 骨架占位行必须仍在原位：§底线 与 §工具与事实 之间、§工具与事实 与 §怎么干 之间。
+        let env_at = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MODE_ENV_SECTION}}")
+            .expect("env placeholder");
+        let artifact_at = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MODE_ARTIFACT_RULE}}")
+            .expect("artifact placeholder");
+        let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
+        let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
+        assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
+    }
+
+    #[test]
+    fn code_instructions_render_project_hint_and_drop_artifact_semantics() {
+        let rendered =
+            instructions_code_md("你正在用户的项目目录 `/repo/demo` 中工作,相对路径即相对项目根;");
+        // 工作区占位渲染正确。
+        assert!(rendered.contains("你正在用户的项目目录 `/repo/demo` 中工作"));
+        assert!(!rendered.contains("{{PINVOU3_WORKSPACE_HINT}}"));
+        // 底座执行循环原样引用（上游常量内容的一个稳定锚点）。
+        let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
+        let anchor = core.lines().next().expect("core_execution 非空");
+        assert!(rendered.contains(anchor));
+        assert!(rendered.contains(core));
+        // 无产出物/成品卡语义：work 层的面板与落盘规则不出现（增量段的否定式
+        // 提及“没有产出物面板/不建 tmp/”是刻意保留的行为指引）。
+        assert!(!rendered.contains("mcp_pinvou3_present_artifact"));
+        assert!(!rendered.contains("只有**最终成品**"));
+        assert!(!rendered.contains("自动落到本会话专属工作目录"));
+        assert!(!rendered.contains("产出用**相对路径**写"));
+        // 代码场景纪律与共享红线都在。
+        assert!(rendered.contains("## 代码场景纪律"));
+        assert!(rendered.contains("不主动执行 git 写操作"));
+        assert!(rendered.contains("## 红线"));
+        // 占位行无残留。
+        assert!(!rendered.contains("{{PINVOU3_MODE_ENV_SECTION}}"));
+        assert!(!rendered.contains("{{PINVOU3_MODE_ARTIFACT_RULE}}"));
+        // 骨架结构保持：代码环境段位于 §底线 与 §工具与事实 之间。
+        let bottom = rendered.find("## 底线").unwrap();
+        let env = rendered.find("## 工作环境").unwrap();
+        let tools = rendered.find("## 工具与事实").unwrap();
+        assert!(bottom < env && env < tools);
+    }
+
+    #[test]
+    fn code_instructions_render_temporary_hint() {
+        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+        assert!(rendered.contains("你在本会话专属工作目录中工作"));
+        assert!(!rendered.contains("项目目录"));
+    }
 
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
     /// 借 paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
