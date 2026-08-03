@@ -96,8 +96,13 @@ impl LatestVersionProbe {
             status.npm_available,
             official_script_supported(backend),
         );
-        // CLI 已满足最低门禁，setup_hint 不能再误报为缺失或认证问题。
-        status.setup_hint = None;
+        // CLI 已满足最低门禁，missing 类提示不能再误报；认证类提示仍然有效。
+        if status
+            .setup_hint
+            .is_some_and(|hint| hint.ends_with("_cli_missing"))
+        {
+            status.setup_hint = None;
+        }
     }
 
     pub(super) async fn refresh(&self, backend: AgentBackend, force: bool) -> Option<String> {
@@ -211,34 +216,20 @@ impl AcpPool {
     }
 }
 
-fn ensure_latest_upgrade_complete(backend: AgentBackend, status: &CodexAcpStatus) -> Result<()> {
-    if status.update_available {
-        if let Some(latest) = status.latest_version.as_deref() {
-            bail!(
-                "{} 升级流程已完成，但检测到的版本 {} 仍低于官方最新版 {}；请确认官方安装脚本或包管理器已提供该版本",
-                backend.display_name(),
-                status.codex_version.as_deref().unwrap_or("未知版本"),
-                latest
-            );
-        }
-    }
-    Ok(())
-}
-
 /// 升级完成后校验 CLI 版本门禁：仍不合规说明包管理器源没有提供更新版本。
+/// 官方 latest 提醒是可暂缓的 advisory：包管理器源滞后于官网发布是常态，
+/// 升级后仍低于 latest 不算失败（前端会继续显示升级提醒），不能写入
+/// sticky runtime error 把可用的 Agent 标成错误状态。
 pub(super) fn ensure_agent_cli_ready(backend: AgentBackend, status: &CodexAcpStatus) -> Result<()> {
     let ready = match backend {
         // Codex 的安装动作只负责 CLI；Bridge 缺失由独立状态处理，不能把它误报成
         // CLI 安装失败。动态升级门禁则必须保持失败，直到实际版本发生变化。
-        AgentBackend::CodexAcp => {
-            status.codex_available && !status.update_required && !status.update_available
-        }
-        _ => status.installed && !status.update_available,
+        AgentBackend::CodexAcp => status.codex_available && !status.update_required,
+        _ => status.installed,
     };
     if ready {
         return Ok(());
     }
-    ensure_latest_upgrade_complete(backend, status)?;
     if backend == AgentBackend::CodexAcp && status.update_required {
         bail!(
             "Codex 升级流程已完成，但检测到的版本 {} 未发生变化，仍无法支持所选模型；请确认官方或包管理器已提供更新版本",
@@ -541,6 +532,40 @@ mod tests {
         assert!(!mandatory.installed);
         assert!(mandatory.update_available);
         assert!(mandatory.update_required);
+    }
+
+    #[test]
+    fn advisory_update_keeps_auth_hint_but_clears_missing_hint() {
+        let probe = LatestVersionProbe::new().unwrap();
+        let mut unauthenticated = ready_codex_status();
+        unauthenticated.setup_hint = Some("claude_auth_required");
+        probe.apply_to_status(AgentBackend::ClaudeAcp, &mut unauthenticated);
+        assert!(
+            !unauthenticated.update_available,
+            "latest 未探测时不应改动提示"
+        );
+        probe.entries.write().insert(
+            AgentBackend::ClaudeAcp,
+            LatestVersionEntry {
+                checked_at: Instant::now(),
+                version: Some("9.9.9".to_string()),
+            },
+        );
+        probe.apply_to_status(AgentBackend::ClaudeAcp, &mut unauthenticated);
+        assert!(unauthenticated.update_available);
+        assert_eq!(
+            unauthenticated.setup_hint,
+            Some("claude_auth_required"),
+            "认证提示在 latest 提醒下必须保留"
+        );
+
+        let mut missing = ready_codex_status();
+        missing.setup_hint = Some("claude_cli_missing");
+        probe.apply_to_status(AgentBackend::ClaudeAcp, &mut missing);
+        assert_eq!(
+            missing.setup_hint, None,
+            "CLI 已满足最低门禁时 missing 提示必须清除"
+        );
     }
 
     #[test]

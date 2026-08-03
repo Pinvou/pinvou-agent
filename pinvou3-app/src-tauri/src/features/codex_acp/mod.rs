@@ -2353,19 +2353,13 @@ impl AcpPool {
             AgentBackend::CodexAcp => self.ensure_codex_ready().await.map(|_| ()),
             AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
                 let status = self.status_for_async(backend).await;
+                // update_required 仅 Codex 动态门禁会置真；此处的 !installed 一律表示
+                // 低于最低兼容版本，按 setup_hint 引导即可。
                 if !status.installed {
-                    let detail = if status.update_required {
-                        format!(
-                            "当前版本 {} 低于官方最新版 {}，请先升级",
-                            status.version.as_deref().unwrap_or("未知版本"),
-                            status.latest_version.as_deref().unwrap_or("未知版本")
-                        )
-                    } else {
-                        setup_hint_message(status.setup_hint).to_string()
-                    };
                     Err(anyhow::anyhow!(
-                        "{} ACP 尚未就绪。{detail}",
-                        backend.display_name()
+                        "{} ACP 尚未就绪。{}",
+                        backend.display_name(),
+                        setup_hint_message(status.setup_hint)
                     ))
                 } else {
                     Ok(())
@@ -4797,7 +4791,8 @@ max_context_size = 262144
         cli_ready_without_bridge.update_available = true;
         assert!(
             latest::ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge)
-                .is_err()
+                .is_ok(),
+            "advisory latest upgrade must not fail the install when the package manager lags behind"
         );
     }
 
