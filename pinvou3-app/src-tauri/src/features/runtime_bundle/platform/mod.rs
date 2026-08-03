@@ -51,10 +51,6 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-static CONNECTOR_CLI_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/connectors");
-
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
     "wecomcli-msg",
@@ -89,13 +85,12 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
 /// 0.16: 接入腾讯会议官方 tmeet CLI skill
 /// 0.17: 接入腾讯 ima OpenAPI Skill（原生受控工具）
+/// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.17-",
+    "0.18-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
-    "-",
-    env!("BUNDLE_CONNECTOR_CLI_HASH"),
 );
 
 /// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
@@ -304,9 +299,9 @@ impl Pinvou3Bundle {
         crate::platform::startup::mark("bundle_extract:write_workflows:start");
         self.write_workflows()?;
         crate::platform::startup::mark("bundle_extract:write_workflows:done");
-        crate::platform::startup::mark("bundle_extract:write_connector_clis:start");
-        self.write_connector_clis(bundle_changed)?;
-        crate::platform::startup::mark("bundle_extract:write_connector_clis:done");
+        // PR #132 早期构建曾把 CLI 解包进 immutable bundle；统一在线安装后清掉该
+        // app 自有旧目录，避免旧二进制掩盖按需安装与 hash 校验。
+        let _ = std::fs::remove_dir_all(paths::bundle_root().join("connectors"));
         // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
@@ -512,35 +507,6 @@ impl Pinvou3Bundle {
         // sansheng-liubu
         let dest = workflow_root.join("sansheng-liubu");
         Self::extract_dir(&SANSHENG_LIUBU_DIR, &dest)?;
-        Ok(())
-    }
-
-    fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        {
-            let root = paths::bundle_connectors_dir();
-            let bin = root.join("linux-arm64").join("bin");
-            if force
-                || !bin.join("lark-cli").is_file()
-                || !bin.join("wecom-cli").is_file()
-                || !bin.join("dws").is_file()
-            {
-                Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
-            }
-            use std::os::unix::fs::PermissionsExt;
-            for rel in [
-                "linux-arm64/bin/lark-cli",
-                "linux-arm64/bin/wecom-cli",
-                "linux-arm64/bin/dws",
-            ] {
-                let p = root.join(rel);
-                if p.is_file() {
-                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
-                }
-            }
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-        let _ = force;
         Ok(())
     }
 

@@ -107,6 +107,13 @@ fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
     }
 
     if !cli_bin.is_empty() && program == cli_bin {
+        // 应用按需下载并校验的连接器 CLI 优先,缺失时回退已有 npm 全局 shim。
+        if let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() {
+            let bundled = bin_dir.join(format!("{cli_bin}.exe"));
+            if bundled.is_file() {
+                return bundled.into_os_string();
+            }
+        }
         return windows_npm_shim(program);
     }
 

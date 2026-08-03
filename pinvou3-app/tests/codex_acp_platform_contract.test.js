@@ -69,6 +69,8 @@ assert.match(macos, /join\("darwin-x64"\)|_ => "darwin-x64"/);
 assert.doesNotMatch(prepareBridge, /--os=linux/);
 assert.match(prepareBridge, /NODE_TARGETS=\("darwin-arm64" "darwin-x64"\)/);
 assert.match(prepareBridge, /npm_ci_for_target "\$ACP_ROOT" "\$NODE_OS" "\$NODE_CPU"/);
+assert.match(prepareBridge, /node\/lib\/node_modules\/npm\/bin\/npm-cli\.js/);
+assert.match(prepareBridge, /cp -R \$DD "\$NODE_DIST_ROOT\/lib\/node_modules\/npm"/);
 assert.doesNotMatch(prepareBridge, /ACP_X64_ROOT/);
 // Claude Code 与 Codex/Kimi 一致走系统安装，Bridge 不得携带 claude 平台原生二进制。
 assert.match(prepareBridge, /claude-agent-sdk-\{darwin,linux,win32\}-\*/);

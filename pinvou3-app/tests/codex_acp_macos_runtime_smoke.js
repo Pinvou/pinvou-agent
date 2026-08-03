@@ -21,6 +21,7 @@ const nodes = {
   arm64: path.join(runtimeRoot, "node", "darwin-arm64", "bin", "node"),
   x64: path.join(runtimeRoot, "node", "darwin-x64", "bin", "node"),
 };
+const npmCli = path.join(runtimeRoot, "node", "lib", "node_modules", "npm", "bin", "npm-cli.js");
 const anthropicScope = path.join(runtimeRoot, "acp", "node_modules", "@anthropic-ai");
 const codexBridgeEntrypoint = path.join(
   runtimeRoot,
@@ -41,9 +42,11 @@ const claudeBridgeEntrypoint = path.join(
   "index.js",
 );
 
-assert.equal(manifest.schema_version, 2);
+assert.equal(manifest.schema_version, 3);
 assert.equal(manifest.platform, "darwin");
 assert.equal(manifest.arch, "universal");
+assert.equal(manifest.npm, "node/lib/node_modules/npm/bin/npm-cli.js");
+assert.ok(fs.statSync(npmCli).size > 0, "连接器首次安装所需 npm CLI 必须随包存在");
 for (const [arch, executable] of Object.entries(nodes)) {
   assert.ok(fs.statSync(executable).size > 0, `${arch} Node Runtime 必须存在且非空`);
   const lipoArch = arch === "x64" ? "x86_64" : "arm64";
@@ -68,6 +71,12 @@ const nodeVersion = spawnSync(hostNode, ["--version"], {
 });
 assert.equal(nodeVersion.status, 0, nodeVersion.stderr);
 assert.equal(nodeVersion.stdout.trim(), `v${manifest.node_version}`);
+const npmVersion = spawnSync(hostNode, [npmCli, "--version"], {
+  encoding: "utf8",
+  timeout: 10_000,
+});
+assert.equal(npmVersion.status, 0, npmVersion.stderr);
+assert.match(npmVersion.stdout.trim(), /^\d+\.\d+\.\d+$/);
 const codexVersion = spawnSync(hostNode, [codexBridgeEntrypoint, "--version"], {
   encoding: "utf8",
   timeout: 10_000,

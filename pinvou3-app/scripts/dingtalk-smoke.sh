@@ -13,12 +13,15 @@ ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
 no(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
 
-# --- 定位 dws(Windows npm 全局 shim / Linux ARM64 bundle / PATH) ---
+# --- 定位 dws(应用首次使用后管理的 bin / PATH / 兼容旧 npm shim) ---
 CLI="$(command -v dws 2>/dev/null || true)"
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/dws.cmd" ] && CLI="$APPDATA/npm/dws.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/dws.cmd" ] && CLI="$HOME/AppData/Roaming/npm/dws.cmd"
-[ -z "$CLI" ] && [ -f "$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/dws" ] && CLI="$HOME/.pinvou3/bundle/connectors/linux-arm64/bin/dws"
-if [ -z "$CLI" ]; then echo "找不到 dws(先 npm i -g dingtalk-workspace-cli 或用 Pinvou3 工具面板连接)"; exit 2; fi
+for plat in linux-arm64 linux-x64 darwin-arm64 darwin-x64; do
+  [ -z "$CLI" ] && [ -f "$HOME/.pinvou3/connectors/$plat/bin/dws" ] && CLI="$HOME/.pinvou3/connectors/$plat/bin/dws"
+done
+[ -z "$CLI" ] && [ -f "$HOME/.pinvou3/connectors/windows-x64/bin/dws.exe" ] && CLI="$HOME/.pinvou3/connectors/windows-x64/bin/dws.exe"
+if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉，应用会在线下载并校验)"; exit 2; fi
 echo "dws = $CLI"
 echo
 

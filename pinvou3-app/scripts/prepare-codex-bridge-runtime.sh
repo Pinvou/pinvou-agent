@@ -48,6 +48,7 @@ bridge_runtime_valid() {
   local claude_entry="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
   local package_json="$root/acp/node_modules/@agentclientprotocol/codex-acp/package.json"
   local claude_package_json="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/package.json"
+  local npm_cli="$root/node/lib/node_modules/npm/bin/npm-cli.js"
   local version_output
   case "$OS_NAME-$(uname -m)" in
     Linux-x86_64|Linux-aarch64|Linux-arm64)
@@ -69,7 +70,7 @@ bridge_runtime_valid() {
       return 1
       ;;
   esac
-  [ -x "$node" ] && [ -s "$entry" ] && [ -s "$package_json" ] \
+  [ -x "$node" ] && [ -s "$npm_cli" ] && [ -s "$entry" ] && [ -s "$package_json" ] \
     && [ -s "$claude_entry" ] && [ -s "$claude_package_json" ] || return 1
   version_output="$(
     env CODEX_PATH="$(command -v codex || true)" \
@@ -244,6 +245,10 @@ else
   install -m 0644 "$NODE_DIST_ROOT/LICENSE" "$READY_DIR/node/LICENSE"
   READY_NODE="$READY_DIR/node/bin/node"
 fi
+# 连接器首次使用时由随包 Node 运行 npm；保留 Node 官方发行包自带的纯 JS npm，
+# Linux/macOS 均不再依赖用户机器预装 npm。
+mkdir -p "$READY_DIR/node/lib/node_modules"
+cp -R $DD "$NODE_DIST_ROOT/lib/node_modules/npm" "$READY_DIR/node/lib/node_modules/npm"
 mv $DD "$ACP_ROOT/node_modules" "$READY_DIR/acp/node_modules"
 
 "$READY_NODE" -e '
@@ -259,7 +264,7 @@ const nodes = platform === "darwin"
     }
   : { [runtimeArch]: "node/bin/node" };
 const manifest = {
-  schema_version: 2,
+  schema_version: 3,
   node_version: process.argv[2],
   codex_acp_version: process.argv[3],
   claude_acp_version: process.argv[4],
@@ -268,6 +273,7 @@ const manifest = {
   arch: platform === "darwin" ? "universal" : runtimeArch,
   node: nodes[runtimeArch],
   nodes,
+  npm: "node/lib/node_modules/npm/bin/npm-cli.js",
   entrypoints: {
     codex: "acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
     claude: "acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"

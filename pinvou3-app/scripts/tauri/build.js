@@ -89,22 +89,6 @@ function prepareTauriArgs(
   return prepared;
 }
 
-function prepareLinuxArm64Connectors({
-  platform = process.platform,
-  architecture = process.arch,
-} = {}) {
-  if (platform !== "linux" || architecture !== "arm64") return;
-  const script = path.resolve(APP_ROOT, "..", "scripts", "fetch-linux-arm64-connectors.sh");
-  const result = spawnSync("bash", [script], {
-    cwd: path.resolve(APP_ROOT, ".."),
-    stdio: "inherit",
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Linux ARM64 连接器准备失败（退出码 ${result.status ?? "unknown"}）`);
-  }
-}
-
 function runTauri(preparedArgs, spawn = spawnSync) {
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
   const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
@@ -145,7 +129,6 @@ function main() {
     prepareWindowsCodexBridge();
   }
   if (hasTauriBuildCommand) {
-    prepareLinuxArm64Connectors();
     prepareWebTemplate();
     prepareCodexBridge();
     prepareWindowsCodexBridge(windowsBridgeOptions);
@@ -181,7 +164,6 @@ if (require.main === module) {
 module.exports = {
   configSpecs,
   main,
-  prepareLinuxArm64Connectors,
   prepareCodexBridge,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,

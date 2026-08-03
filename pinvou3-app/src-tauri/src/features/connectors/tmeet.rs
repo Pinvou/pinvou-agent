@@ -1,4 +1,4 @@
-//! 腾讯会议(`@tencentcloud/tmeet`) CLI 连接器 —— npm 安装 + OAuth 授权。
+//! 腾讯会议(`@tencentcloud/tmeet`) CLI 连接器 —— 随包 Node/npm 在线安装 + OAuth 授权。
 //!
 //! 路线同钉钉 / 企微:官方 CLI + 官方 skill,不要求用户填写 API Key。
 //! 连接:`tmeet auth login --no-browser` 长驻 → 抓腾讯会议授权 URL → 用户扫码 / 浏览器授权 →
@@ -145,7 +145,7 @@ pub async fn tmeet_ensure_cli() -> Result<Value, String> {
             return Err("腾讯会议 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string());
         }
         if !tmeet_cli_present() {
-            return Err("腾讯会议 CLI 安装完成但无法执行，请重试或检查 npm 全局目录".to_string());
+            return Err("腾讯会议 CLI 安装完成但无法执行，请重试或修复应用运行时".to_string());
         }
         Ok::<Value, String>(json!({ "ok": true, "already": false }))
     })

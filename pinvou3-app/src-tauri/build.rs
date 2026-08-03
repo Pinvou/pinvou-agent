@@ -33,14 +33,6 @@ fn main() {
     let sansheng_workflow_hash =
         hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
     println!("cargo:rustc-env=BUNDLE_WORKFLOW_HASH_SANSHENG={sansheng_workflow_hash:016x}");
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("target OS is set by Cargo");
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("target arch is set by Cargo");
-    let platform_bundle = PathBuf::from("resources/platforms")
-        .join(target_os)
-        .join(target_arch)
-        .join("bundle");
-    let connector_cli_hash = hash_dir(&platform_bundle.join("connectors"));
-    println!("cargo:rustc-env=BUNDLE_CONNECTOR_CLI_HASH={connector_cli_hash:016x}");
     tauri_build::build();
 }
 
