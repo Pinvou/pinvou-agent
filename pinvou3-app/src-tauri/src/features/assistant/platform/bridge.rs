@@ -403,10 +403,15 @@ impl Pinvou3Bridge {
                 "minimax" => Some("minimax"),
                 "mimo" | "xiaomi" | "xiaomi-mimo" => Some("xiaomi-mimo"),
                 "doubao" | "volcengine" => Some("volcengine"),
-                // DashScope 和腾讯 Coding Plan 暂无对应内建 provider，
-                // 保留 OpenAI Chat Completions wire route，另由下方显式
-                // reasoning_stream_style 保留独立思考字段。
-                "qwen" | "tencent" | "openai" => Some("openai"),
+                // Anthropic 走底座内建 anthropic provider(Messages 原生协议,
+                // x-api-key 鉴权),不能落入 OpenAI Chat Completions 路由。
+                "anthropic" | "claude" => Some("anthropic"),
+                "xai" | "grok" => Some("xai"),
+                // DashScope、腾讯 Coding Plan 和 Gemini 暂无对应内建 provider,
+                // 保留 OpenAI Chat Completions wire route(Gemini 官方提供
+                // OpenAI 兼容端点),另由下方显式 reasoning_stream_style 保留
+                // 独立思考字段。
+                "qwen" | "tencent" | "openai" | "gemini" | "google" => Some("openai"),
                 _ => None,
             };
             if let Some(provider) = provider {
@@ -428,7 +433,13 @@ impl Pinvou3Bridge {
             ModelPreset::Minimax => "minimax".to_string(),
             ModelPreset::Glm => "zai".to_string(),
             ModelPreset::Mimo => "xiaomi-mimo".to_string(),
-            ModelPreset::OpenaiCompatible | ModelPreset::Qwen => "openai".to_string(),
+            ModelPreset::Anthropic => "anthropic".to_string(),
+            ModelPreset::Xai => "xai".to_string(),
+            // Gemini 走官方 OpenAI 兼容端点，复用 openai wire route。
+            ModelPreset::OpenaiCompatible
+            | ModelPreset::Qwen
+            | ModelPreset::Openai
+            | ModelPreset::Gemini => "openai".to_string(),
         }
     }
 
@@ -525,11 +536,15 @@ impl Pinvou3Bridge {
             ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
             ModelPreset::Kimi => "kimi-k3".to_string(),
             ModelPreset::OpenaiCompatible => "gpt-5.6-terra".to_string(),
-            ModelPreset::Qwen => "qwen3.7-plus".to_string(),
+            ModelPreset::Qwen => "qwen3.8-max".to_string(),
             ModelPreset::Doubao => "doubao-seed-evolving".to_string(),
             ModelPreset::Minimax => "MiniMax-M3".to_string(),
             ModelPreset::Glm => "glm-5.2".to_string(),
             ModelPreset::Mimo => "mimo-v2.5-pro".to_string(),
+            ModelPreset::Openai => "gpt-5.6-terra".to_string(),
+            ModelPreset::Anthropic => "claude-sonnet-5".to_string(),
+            ModelPreset::Gemini => "gemini-3.6-flash".to_string(),
+            ModelPreset::Xai => "grok-4.3".to_string(),
         }
     }
 
@@ -563,6 +578,12 @@ impl Pinvou3Bridge {
             ModelPreset::Minimax => "https://api.minimaxi.com/v1".to_string(),
             ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4".to_string(),
             ModelPreset::Mimo => "https://api.xiaomimimo.com/v1".to_string(),
+            ModelPreset::Openai => "https://api.openai.com/v1".to_string(),
+            ModelPreset::Anthropic => "https://api.anthropic.com/v1".to_string(),
+            ModelPreset::Gemini => {
+                "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+            }
+            ModelPreset::Xai => "https://api.x.ai/v1".to_string(),
         }
     }
 
@@ -1154,6 +1175,20 @@ impl Pinvou3Bridge {
             ),
             "xiaomi-mimo" => configure_provider(
                 &mut providers.xiaomi_mimo,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "anthropic" => configure_provider(
+                &mut providers.anthropic,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "xai" => configure_provider(
+                &mut providers.xai,
                 &base_url,
                 &api_key,
                 &model,
@@ -3042,7 +3077,7 @@ mod tests {
             "",
         );
         assert_eq!(bridge.provider(), "openai");
-        assert_eq!(bridge.model(), "qwen3.7-plus");
+        assert_eq!(bridge.model(), "qwen3.8-max");
         assert_eq!(
             bridge.base_url(),
             "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -3053,6 +3088,96 @@ mod tests {
                 .as_ref()
                 .and_then(|providers| providers.openai.reasoning_stream_style.as_deref()),
             Some(SEPARATE_REASONING_FIELD)
+        );
+    }
+
+    /// Anthropic 模型必须走底座内建 anthropic provider(Messages 原生协议),
+    /// 凭证与地址写入 providers.anthropic,不得落入 openai/vllm 表。
+    #[test]
+    fn anthropic_preset_routes_to_native_messages_provider() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Anthropic,
+            ModelPreset::Anthropic.default_model(),
+            ModelPreset::Anthropic.default_base_url(),
+            "sk-ant",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("claude".to_string());
+
+        assert_eq!(bridge.provider(), "anthropic");
+        assert_eq!(bridge.model(), "claude-sonnet-5");
+        assert_eq!(bridge.base_url(), "https://api.anthropic.com/v1");
+        assert_eq!(bridge.api_key(), "sk-ant");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Anthropic
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.anthropic.base_url.as_deref(),
+            Some("https://api.anthropic.com/v1")
+        );
+        assert_eq!(providers.anthropic.api_key.as_deref(), Some("sk-ant"));
+        assert_eq!(providers.openai.base_url.as_deref(), None);
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
+        // Anthropic 的思考为原生 thinking block,不注入 OpenAI 系 reasoning 字段。
+        assert_eq!(providers.anthropic.reasoning_stream_style.as_deref(), None);
+    }
+
+    /// xAI 走内建 xai provider;Gemini 无内建 provider,经官方 OpenAI
+    /// 兼容端点复用 openai wire route。
+    #[test]
+    fn xai_and_gemini_routing() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Xai,
+            ModelPreset::Xai.default_model(),
+            ModelPreset::Xai.default_base_url(),
+            "xai-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("grok".to_string());
+
+        assert_eq!(bridge.provider(), "xai");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Xai);
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.xai.base_url.as_deref(),
+            Some("https://api.x.ai/v1")
+        );
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Gemini,
+            ModelPreset::Gemini.default_model(),
+            ModelPreset::Gemini.default_base_url(),
+            "gemini-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("gemini".to_string());
+
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.model(), "gemini-3.6-flash");
+        let cfg = bridge.build_dt_config();
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.openai.base_url.as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai")
         );
     }
 

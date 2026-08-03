@@ -473,6 +473,21 @@ async fn model_review(
         Some(suffix) => format!("{prompt}{suffix}"),
         None => prompt.to_string(),
     };
+    // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
+    // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
+    if preset == ModelPreset::Anthropic {
+        let content = crate::core::model_endpoint::post_anthropic_messages(
+            &client,
+            &base_url,
+            &bridge.api_key(),
+            &model_name,
+            &prompt,
+            user_content,
+            1600,
+        )
+        .await?;
+        return parse_model_review(&content).context("parse Pinvou review");
+    }
     let mut body = json!({
         "model": model_name,
         "messages": [
@@ -577,9 +592,13 @@ fn review_reasoning_dialect(
             ReviewReasoningDialect::ThinkingDisabled
         }
         ModelPreset::Minimax => ReviewReasoningDialect::Minimax,
-        ModelPreset::OpenaiCompatible | ModelPreset::LocalVllm | ModelPreset::Deepseek => {
-            review_reasoning_dialect_from_base_url(base_url, model)
-        }
+        ModelPreset::OpenaiCompatible
+        | ModelPreset::LocalVllm
+        | ModelPreset::Deepseek
+        | ModelPreset::Openai
+        | ModelPreset::Anthropic
+        | ModelPreset::Gemini
+        | ModelPreset::Xai => review_reasoning_dialect_from_base_url(base_url, model),
     }
 }
 
