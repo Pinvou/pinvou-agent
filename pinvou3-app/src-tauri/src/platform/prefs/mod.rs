@@ -117,162 +117,138 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelPreset {
-    /// 默认本地 vLLM：qwen36_35b_256k @ 127.0.0.1:8000/v1
-    LocalVllm,
-    /// DeepSeek 官方 API
-    Deepseek,
-    /// Kimi (Moonshot)
-    Kimi,
-    /// OpenAI 兼容 API（自托管 / 代理 / 其他 OpenAI 兼容厂商；OpenAI 官方请用 Openai）
-    OpenaiCompatible,
-    /// 通义千问 (Qwen)
-    Qwen,
-    /// 豆包 (火山方舟)
-    Doubao,
-    /// MiniMax
-    Minimax,
-    /// 智谱 GLM
-    Glm,
-    /// 小米 MiMo
-    Mimo,
-    /// OpenAI 官方 API
-    Openai,
-    /// Anthropic Claude（Messages 原生协议，底座内建 anthropic provider）
-    Anthropic,
-    /// Google Gemini（OpenAI 兼容端点）
-    Gemini,
-    /// xAI Grok
-    Xai,
+mod model;
+use model::{
+    identify_coding_plan_endpoint, migrated_minimax_base_url, strip_chat_completions_suffix,
+};
+pub use model::{
+    ModelPreset, MODEL_PROVIDER_KIND_CODING_PLAN, MODEL_PROVIDER_KIND_CUSTOM,
+    MODEL_PROVIDER_KIND_OFFICIAL_API,
+};
+
+/// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
+/// `id` 稳定(前端生成),被 `active_model_id` / session `model_id` 引用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SavedModel {
+    pub id: String,
+    /// 用户起的显示名("本地 Qwen"/"DeepSeek 线上")。
+    pub name: String,
+    /// 决定 provider 路由 + 模板,复用现有 9 预设枚举。
+    pub preset: ModelPreset,
+    /// 该具体部署允许的 context window；与发给服务端的 `model` wire name 解耦。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u32>,
+    /// Pinvou 对该 route 声明的单轮 output 上限；最终仍受进程级请求上限约束。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    pub model: String,
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_mode: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CredentialReference>,
+    #[serde(default)]
+    pub credential_state: CredentialState,
+    #[serde(default)]
+    pub has_secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_action: Option<CredentialEditAction>,
 }
 
-pub const MODEL_PROVIDER_KIND_CODING_PLAN: &str = "coding_plan";
-pub const MODEL_PROVIDER_KIND_OFFICIAL_API: &str = "official_api";
-pub const MODEL_PROVIDER_KIND_CUSTOM: &str = "custom";
-
-fn trim_url_tail(value: &str) -> String {
-    value.trim().trim_end_matches('/').to_string()
-}
-
-fn strip_chat_completions_suffix(value: &str) -> String {
-    let trimmed = trim_url_tail(value);
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.ends_with("/chat/completions") {
-        trimmed[..trimmed.len() - "/chat/completions".len()].to_string()
-    } else {
-        trimmed
+impl SavedModel {
+    fn normalize_route_limits(&mut self) {
+        self.context_window_tokens = self.context_window_tokens.filter(|tokens| *tokens > 0);
+        self.max_output_tokens = self.max_output_tokens.filter(|tokens| *tokens > 0);
+        if self.preset == ModelPreset::LocalVllm {
+            if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
+                self.context_window_tokens = Some(262_144);
+            }
+            if self.max_output_tokens.is_none() {
+                self.max_output_tokens = Some(24_576);
+            }
+        }
     }
-}
 
-fn migrated_minimax_base_url(value: &str) -> Option<String> {
-    const LEGACY_ORIGIN: &str = "https://api.minimax.chat";
-    const CURRENT_ORIGIN: &str = "https://api.minimaxi.com";
-
-    let trimmed = value.trim().trim_end_matches('/');
-    let lower = trimmed.to_ascii_lowercase();
-    if lower == LEGACY_ORIGIN {
-        return Some(CURRENT_ORIGIN.to_string());
-    }
-    lower.strip_prefix(LEGACY_ORIGIN).and_then(|suffix| {
-        suffix
-            .starts_with('/')
-            .then(|| format!("{CURRENT_ORIGIN}{}", &trimmed[LEGACY_ORIGIN.len()..]))
-    })
-}
-
-fn identify_coding_plan_endpoint(base_url: &str) -> Option<(&'static str, &'static str)> {
-    let base = strip_chat_completions_suffix(base_url);
-    let normalized = base.to_ascii_lowercase();
-    match normalized.as_str() {
-        "https://open.bigmodel.cn/api/coding/paas/v4" => {
-            Some(("glm", "https://open.bigmodel.cn/api/coding/paas/v4"))
+    fn normalize_provider_metadata(&mut self) {
+        self.base_url = strip_chat_completions_suffix(&self.base_url);
+        // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
+        // 存量配置在 load 时一次性改写,避免继续打已下线域名。
+        if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
+            self.base_url = migrated;
         }
-        "https://api.z.ai/api/coding/paas/v4" => {
-            Some(("glm", "https://api.z.ai/api/coding/paas/v4"))
+        if let Some((vendor, canonical_base_url)) = identify_coding_plan_endpoint(&self.base_url) {
+            self.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.to_string());
+            self.vendor = Some(vendor.to_string());
+            self.base_url = canonical_base_url.to_string();
+            if self.endpoint_mode.as_deref() == Some("full_chat_completions") {
+                self.endpoint_mode = None;
+            }
+            return;
         }
-        "https://api.kimi.com/coding/v1" => Some(("kimi", "https://api.kimi.com/coding/v1")),
-        "https://api.lkeap.cloud.tencent.com/coding/v3" => {
-            Some(("tencent", "https://api.lkeap.cloud.tencent.com/coding/v3"))
+        if self.provider_kind.as_deref() == Some(MODEL_PROVIDER_KIND_CODING_PLAN) {
+            self.provider_kind = None;
         }
-        "https://api.lkeap.cloud.tencent.com/plan/v3" => {
-            Some(("tencent", "https://api.lkeap.cloud.tencent.com/plan/v3"))
+        if self.provider_kind.is_none() {
+            self.provider_kind = Some(
+                if self.preset == ModelPreset::OpenaiCompatible {
+                    MODEL_PROVIDER_KIND_CUSTOM
+                } else {
+                    MODEL_PROVIDER_KIND_OFFICIAL_API
+                }
+                .to_string(),
+            );
         }
-        _ => None,
-    }
-}
-
-impl Default for ModelPreset {
-    /// 平台感知默认预设:macOS/Windows 无本地 vLLM 支持(相关后端命令已 cfg 掉),
-    /// 默认到 DeepSeek 远程 API,否则新用户首启即落在 127.0.0.1:8000 永远连不上。
-    /// Linux 保持 LocalVllm(麒麟环境默认有本地大模型)。
-    fn default() -> Self {
-        #[cfg(target_os = "linux")]
+        if self
+            .vendor
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
         {
-            ModelPreset::LocalVllm
+            self.vendor = None;
         }
-        #[cfg(not(target_os = "linux"))]
+        if self
+            .endpoint_mode
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
         {
-            ModelPreset::Deepseek
+            self.endpoint_mode = None;
         }
     }
-}
-impl ModelPreset {
-    /// 与前端 preset key、settings.json 序列化值一致的稳定串(snake_case)。
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ModelPreset::LocalVllm => "local_vllm",
-            ModelPreset::Deepseek => "deepseek",
-            ModelPreset::Kimi => "kimi",
-            ModelPreset::OpenaiCompatible => "openai_compatible",
-            ModelPreset::Qwen => "qwen",
-            ModelPreset::Doubao => "doubao",
-            ModelPreset::Minimax => "minimax",
-            ModelPreset::Glm => "glm",
-            ModelPreset::Mimo => "mimo",
-            ModelPreset::Openai => "openai",
-            ModelPreset::Anthropic => "anthropic",
-            ModelPreset::Gemini => "gemini",
-            ModelPreset::Xai => "xai",
-        }
+
+    pub fn credential_reference(&self) -> CredentialReference {
+        self.credential_ref
+            .clone()
+            .unwrap_or_else(|| CredentialReference::for_model(&self.id))
     }
-    /// 各预设默认 base_url(与 bridge `default_base_url_for_preset` 对齐;迁移/添加模型模板兜底)。
-    pub fn default_base_url(&self) -> &'static str {
-        match self {
-            ModelPreset::LocalVllm => "http://127.0.0.1:8000/v1",
-            ModelPreset::Deepseek => "https://api.deepseek.com",
-            ModelPreset::Kimi => "https://api.moonshot.cn/v1",
-            ModelPreset::OpenaiCompatible => "https://api.openai.com/v1",
-            ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3",
-            ModelPreset::Minimax => "https://api.minimaxi.com/v1",
-            ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4",
-            ModelPreset::Mimo => "https://api.xiaomimimo.com/v1",
-            ModelPreset::Openai => "https://api.openai.com/v1",
-            ModelPreset::Anthropic => "https://api.anthropic.com/v1",
-            ModelPreset::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
-            ModelPreset::Xai => "https://api.x.ai/v1",
-        }
+
+    pub fn clear_plaintext_key(&mut self) {
+        self.api_key.clear();
+        self.credential_action = None;
     }
-    /// 各预设默认模型名(与 bridge `default_model_for_preset` 对齐)。
-    /// LocalVllm 的 `qwen36_35b_256k` 后缀语义见 bridge `LOCAL_VLLM_MODEL`。
-    pub fn default_model(&self) -> &'static str {
-        match self {
-            ModelPreset::LocalVllm => "qwen36_35b_256k",
-            ModelPreset::Deepseek => "deepseek-v4-pro",
-            ModelPreset::Kimi => "kimi-k3",
-            ModelPreset::OpenaiCompatible => "gpt-5.6-terra",
-            ModelPreset::Qwen => "qwen3.8-max",
-            ModelPreset::Doubao => "doubao-seed-evolving",
-            ModelPreset::Minimax => "MiniMax-M3",
-            ModelPreset::Glm => "glm-5.2",
-            ModelPreset::Mimo => "mimo-v2.5-pro",
-            ModelPreset::Openai => "gpt-5.6-terra",
-            ModelPreset::Anthropic => "claude-sonnet-5",
-            ModelPreset::Gemini => "gemini-3.6-flash",
-            ModelPreset::Xai => "grok-4.3",
-        }
+
+    pub fn mark_configured(&mut self, reference: CredentialReference) {
+        self.credential_ref = Some(reference);
+        self.credential_state = CredentialState::Configured;
+        self.has_secret = true;
+        self.clear_plaintext_key();
+    }
+
+    pub fn mark_missing(&mut self) {
+        self.credential_ref = None;
+        self.credential_state = CredentialState::Missing;
+        self.has_secret = false;
+        self.clear_plaintext_key();
+    }
+
+    pub fn mark_unavailable(&mut self) {
+        self.credential_state = CredentialState::Unavailable;
+        self.has_secret = self.credential_ref.is_some();
+        self.clear_plaintext_key();
     }
 }
 
@@ -427,132 +403,6 @@ impl SearchPrefs {
         for credential in self.credentials.values_mut() {
             credential.clear_plaintext_key();
         }
-    }
-}
-
-/// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
-/// `id` 稳定(前端生成),被 `active_model_id` / session `model_id` 引用。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SavedModel {
-    pub id: String,
-    /// 用户起的显示名("本地 Qwen"/"DeepSeek 线上")。
-    pub name: String,
-    /// 决定 provider 路由 + 模板,复用现有 9 预设枚举。
-    pub preset: ModelPreset,
-    /// 该具体部署允许的 context window；与发给服务端的 `model` wire name 解耦。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window_tokens: Option<u32>,
-    /// Pinvou 对该 route 声明的单轮 output 上限；最终仍受进程级请求上限约束。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<u32>,
-    pub model: String,
-    pub base_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vendor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint_mode: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub api_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_ref: Option<CredentialReference>,
-    #[serde(default)]
-    pub credential_state: CredentialState,
-    #[serde(default)]
-    pub has_secret: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_action: Option<CredentialEditAction>,
-}
-
-impl SavedModel {
-    fn normalize_route_limits(&mut self) {
-        self.context_window_tokens = self.context_window_tokens.filter(|tokens| *tokens > 0);
-        self.max_output_tokens = self.max_output_tokens.filter(|tokens| *tokens > 0);
-        if self.preset == ModelPreset::LocalVllm {
-            if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
-                self.context_window_tokens = Some(262_144);
-            }
-            if self.max_output_tokens.is_none() {
-                self.max_output_tokens = Some(24_576);
-            }
-        }
-    }
-
-    fn normalize_provider_metadata(&mut self) {
-        self.base_url = strip_chat_completions_suffix(&self.base_url);
-        // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
-        // 存量配置在 load 时一次性改写,避免继续打已下线域名。
-        if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
-            self.base_url = migrated;
-        }
-        if let Some((vendor, canonical_base_url)) = identify_coding_plan_endpoint(&self.base_url) {
-            self.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.to_string());
-            self.vendor = Some(vendor.to_string());
-            self.base_url = canonical_base_url.to_string();
-            if self.endpoint_mode.as_deref() == Some("full_chat_completions") {
-                self.endpoint_mode = None;
-            }
-            return;
-        }
-        if self.provider_kind.as_deref() == Some(MODEL_PROVIDER_KIND_CODING_PLAN) {
-            self.provider_kind = None;
-        }
-        if self.provider_kind.is_none() {
-            self.provider_kind = Some(
-                if self.preset == ModelPreset::OpenaiCompatible {
-                    MODEL_PROVIDER_KIND_CUSTOM
-                } else {
-                    MODEL_PROVIDER_KIND_OFFICIAL_API
-                }
-                .to_string(),
-            );
-        }
-        if self
-            .vendor
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-        {
-            self.vendor = None;
-        }
-        if self
-            .endpoint_mode
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-        {
-            self.endpoint_mode = None;
-        }
-    }
-
-    pub fn credential_reference(&self) -> CredentialReference {
-        self.credential_ref
-            .clone()
-            .unwrap_or_else(|| CredentialReference::for_model(&self.id))
-    }
-
-    pub fn clear_plaintext_key(&mut self) {
-        self.api_key.clear();
-        self.credential_action = None;
-    }
-
-    pub fn mark_configured(&mut self, reference: CredentialReference) {
-        self.credential_ref = Some(reference);
-        self.credential_state = CredentialState::Configured;
-        self.has_secret = true;
-        self.clear_plaintext_key();
-    }
-
-    pub fn mark_missing(&mut self) {
-        self.credential_ref = None;
-        self.credential_state = CredentialState::Missing;
-        self.has_secret = false;
-        self.clear_plaintext_key();
-    }
-
-    pub fn mark_unavailable(&mut self) {
-        self.credential_state = CredentialState::Unavailable;
-        self.has_secret = self.credential_ref.is_some();
-        self.clear_plaintext_key();
     }
 }
 

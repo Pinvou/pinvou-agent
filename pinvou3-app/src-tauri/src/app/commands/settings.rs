@@ -594,12 +594,6 @@ fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestRes
     )
 }
 
-/// Anthropic 官方端点判定：仅 api.anthropic.com 主机走 x-api-key 鉴权，其余一律 Bearer。
-fn is_anthropic_api_url(url: &reqwest::Url) -> bool {
-    url.host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
-}
-
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
 #[tauri::command]
 pub async fn test_model_connection(
@@ -607,7 +601,7 @@ pub async fn test_model_connection(
     api_key: String,
     model_id: Option<String>,
 ) -> Result<ModelConnectionTestResult, String> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let url = crate::core::model_endpoint::models_probe_url(&base_url);
     let parsed_url = match reqwest::Url::parse(&url) {
         Ok(url) => url,
         Err(e) => {
@@ -636,7 +630,7 @@ pub async fn test_model_connection(
         }
     };
     // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
-    let is_anthropic = is_anthropic_api_url(&parsed_url);
+    let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let mut req = client.get(parsed_url);
     let provided_key = api_key.trim().to_string();
     let key = if provided_key.is_empty() {
@@ -801,29 +795,6 @@ use super::prelude::*;
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
-
-    /// Anthropic 地址走 x-api-key + anthropic-version，非 Anthropic 地址走 Bearer。
-    #[test]
-    fn anthropic_auth_branch_matches_only_official_host() {
-        assert!(is_anthropic_api_url(
-            &reqwest::Url::parse("https://api.anthropic.com/models").unwrap()
-        ));
-        assert!(is_anthropic_api_url(
-            &reqwest::Url::parse("https://api.anthropic.com/v1/models").unwrap()
-        ));
-        assert!(is_anthropic_api_url(
-            &reqwest::Url::parse("https://API.ANTHROPIC.COM/models").unwrap()
-        ));
-        assert!(!is_anthropic_api_url(
-            &reqwest::Url::parse("https://api.openai.com/v1/models").unwrap()
-        ));
-        assert!(!is_anthropic_api_url(
-            &reqwest::Url::parse("https://anthropic.example.com/models").unwrap()
-        ));
-        assert!(!is_anthropic_api_url(
-            &reqwest::Url::parse("http://127.0.0.1:8000/v1/models").unwrap()
-        ));
-    }
 
     #[test]
     fn general_settings_patch_preserves_unmentioned_and_specialized_domains() {
