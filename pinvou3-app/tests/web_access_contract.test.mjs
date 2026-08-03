@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
 const webBridge = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const webDomainAdapter = fs.readFileSync(
+  path.join(root, 'src', 'platform', 'web', 'bridge', 'domain-adapter.js'),
+  'utf8',
+);
 const attachmentDropController = fs.readFileSync(
   path.join(root, 'src', 'features', 'attachments', 'attachment-drop-controller.js'),
   'utf8',
@@ -27,6 +31,7 @@ const desktopBridgeSources = [
 ];
 const bridge = [
   webBridge,
+  webDomainAdapter,
   ...desktopBridgeSources,
 ].join('\n');
 const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
@@ -170,7 +175,7 @@ assert.match(commands, /app\.emit\(event, payload\.clone\(\)\)/);
 assert.match(commands, /forward_app_event\(app, event, payload\)/);
 assert.match(webBridge, /composerDraft: ""/,
   'WebUI must keep a per-session in-memory composer draft');
-assert.match(webBridge, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
+assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
   'WebUI domain facade must expose the same composer draft API as desktop');
 assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');

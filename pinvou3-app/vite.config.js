@@ -20,7 +20,7 @@ const staticScripts = new Set([
   'vendor/purify.min.js',
   'vendor/tailwind.js',
 ]);
-const staticScriptPrefixes = ['platform/tauri/bridge/'];
+const staticScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
 
 function normalizeWebBasePath(value) {
   let raw = String(value || '/pinvou3/remote').trim();

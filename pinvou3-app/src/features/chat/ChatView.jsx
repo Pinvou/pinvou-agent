@@ -1645,7 +1645,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {voiceAsrSetup.open && !canInstallLocalAsr && (
               <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
                 <span>{chatCopy.asrUnavailable}</span>
-                <button onClick={() => bridge.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{chatCopy.gotIt}</button>
+                <button onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
             {voiceAsrSetup.open && canInstallLocalAsr && (() => {

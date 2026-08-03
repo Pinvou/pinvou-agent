@@ -24,6 +24,10 @@ DEFAULT_BASELINE = Path("scripts/architecture-baseline.json")
 FRONTEND_SUFFIXES = {".html", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 RUST_LARGE_FILE_LINES = 1500
 FRONTEND_LARGE_FILE_LINES = 1000
+INITIALIZABLE_BASELINE_RULES = {
+    "frontend_large_file_lines",
+    "rust_large_file_lines",
+}
 
 
 def normalize(path: Path, root: Path) -> str:
@@ -172,6 +176,7 @@ def frontend_import_target(specifier: str, source: Path, src_root: Path) -> Path
 def scan_frontend(root: Path) -> tuple[dict[str, Counter[str]], list[str]]:
     rules: dict[str, Counter[str]] = {
         "frontend_feature_imports_app": Counter(),
+        "frontend_large_file_lines": Counter(),
         "frontend_tauri_global_outside_platform": Counter(),
         "frontend_user_agent_platform_detection": Counter(),
     }
@@ -212,6 +217,7 @@ def scan_frontend(root: Path) -> tuple[dict[str, Counter[str]], list[str]]:
             rules["frontend_user_agent_platform_detection"][relative] += count
         lines = count_lines(path)
         if lines > FRONTEND_LARGE_FILE_LINES:
+            rules["frontend_large_file_lines"][relative] = lines
             warnings.append(
                 f"large frontend file: {relative} has {lines} lines "
                 f"(advisory threshold {FRONTEND_LARGE_FILE_LINES})"
@@ -310,6 +316,7 @@ def count_platform_cfgs(text: str) -> int:
 def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], list[str]]:
     rules: dict[str, Counter[str]] = {
         "rust_feature_depends_on_app": Counter(),
+        "rust_large_file_lines": Counter(),
         "rust_platform_depends_on_upper_layer": Counter(),
         "rust_cyclic_feature_dependencies": Counter(),
         "rust_target_cfg_outside_adapter": Counter(),
@@ -388,6 +395,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
                     rules["rust_tauri_handler_outside_app"][f"{relative}:{entry}"] += 1
         lines = count_lines(path)
         if lines > RUST_LARGE_FILE_LINES:
+            rules["rust_large_file_lines"][relative] = lines
             warnings.append(
                 f"large Rust file: {relative} has {lines} lines "
                 f"(advisory threshold {RUST_LARGE_FILE_LINES})"
@@ -510,6 +518,11 @@ def compare_baseline_ratchet(candidate: dict, previous: dict) -> list[str]:
     previous_rules = previous.get("rules", {})
     for rule, candidate_counts in candidate.get("rules", {}).items():
         previous_counts = previous_rules.get(rule, {})
+        if rule in INITIALIZABLE_BASELINE_RULES and rule not in previous_rules:
+            # One-time migration path for introducing a measured ratchet on an
+            # existing repository. Once the target branch contains the rule,
+            # the normal no-increase comparison below applies to every file.
+            continue
         for key, count in candidate_counts.items():
             old_count = previous_counts.get(key, 0)
             if count > old_count:

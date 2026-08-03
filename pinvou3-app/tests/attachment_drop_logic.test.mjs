@@ -17,8 +17,8 @@ const tauriAttachmentBridgeSource = await readFile(
   new URL('../src/platform/tauri/bridge/artifacts.js', import.meta.url),
   'utf8',
 );
-const webBridgeSource = await readFile(
-  new URL('../src/platform/web/bridge.js', import.meta.url),
+const webDomainAdapterSource = await readFile(
+  new URL('../src/platform/web/bridge/domain-adapter.js', import.meta.url),
   'utf8',
 );
 const tauriConfigSource = await readFile(
@@ -69,7 +69,7 @@ assert.doesNotMatch(
 );
 for (const [name, bridgeSource] of [
   ['Tauri', tauriBridgeSource],
-  ['Web', webBridgeSource],
+  ['Web', webDomainAdapterSource],
 ]) {
   assert.match(
     bridgeSource,

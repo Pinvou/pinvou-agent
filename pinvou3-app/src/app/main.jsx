@@ -30,7 +30,6 @@ import {
   sessionTitlePresentation,
 } from '../features/attachments/attachment-message.js';
 import {
-  emitTauri,
   invokeTauri,
   isTauriAvailable,
   tauriCommands,
@@ -54,6 +53,7 @@ import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
+import { DetachedShell } from './DetachedShell.jsx';
 
 installGlobalMarkdownRenderer(window);
 window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
@@ -3101,86 +3101,6 @@ function workspaceDisplayName(path) {
 
 
     // ==========================================
-    // Knowledge View — 本地知识 L0：全系统秒搜 + 去重
-    // 后端 kb_* 命令（src-tauri/src/knowledge）。纯 L0 元数据，不过模型。
-    // ==========================================
-    // KnowledgeView 用 currentView 条件渲染:切 tab 会卸载、丢 state,回来重新加载 → 每次闪
-    // 一下"还没建立索引"空状态再加载。模块级缓存上次拉到的 L0/L1 数据:remount 时初始 state
-    // 直接用缓存(切回秒显),后台 refresh 更新。loaded=false 时显示加载中而非误判空状态。
-    const useDetachedBase = () => {
-      const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'settings', 'workflow']);
-      const [language, setLanguage] = useState('zh');
-      const [activeTheme, setActiveTheme] = useState('dark');
-      const initRef = useRef(false);
-      // 一次性从落盘 settings 恢复语言/主题(镜像 App 的恢复逻辑,但自包含,不动 App)。
-      useEffect(() => {
-        if (initRef.current || !bs || !bs.settings) return;
-        const lang = TAG_TO_LANG[bs.settings.language];
-        if (lang) setLanguage(lang);
-        setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
-        initRef.current = true;
-      }, [bs]);
-      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
-      return { bs, activeTheme, t: dict[language] };
-    };
-
-    // 撕离窗口的面板错误边界:某个 View 抛错时不白屏,退化为提示,保留标题栏可关窗。
-    class DetachedErrorBoundary extends React.Component {
-      constructor(p) { super(p); this.state = { err: null }; }
-      static getDerivedStateFromError(err) { return { err }; }
-      render() {
-        if (this.state.err) {
-          return <div className="p-6 text-sm opacity-70">{this.props.t.uiMainApp.panelLoadFailed(String(this.state.err && this.state.err.message || this.state.err))}</div>;
-        }
-        return this.props.children;
-      }
-    }
-
-    // kind → 撕离窗口该挂载的面板。复用主窗口同款 View 组件(见主渲染区 currentView 分支);
-    // 跨视图导航类 handler 在撕离窗口里是 no-op(单视图,无处可跳)。
-    const DETACHED_VIEWS = {
-      session:   ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={()=>{}} onOpenEditor={()=>{}} justInstalledTool={null} setJustInstalledTool={()=>{}} onGotoSettings={()=>{}} onGotoTools={()=>{}} />,
-      workflow:  ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
-      monitor:   ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
-      cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
-      toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} t={t} onNewChat={()=>{}} />,
-      knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
-      outputs:   ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} mode="outputs" />,
-    };
-
-    const DetachedShell = ({ kind, id }) => {
-      const { bs, activeTheme, t } = useDetachedBase();
-      // session 窗口:boot 时把该 session 切为 active,让 ChatView 显示它。
-      useEffect(() => {
-        if (kind === 'session' && id && bridge.available && bridge.sessions.switchToSession) bridge.sessions.switchToSession(id);
-      }, [kind, id]);
-      useEffect(() => {
-        if (kind !== 'monitor' || !bridge.available) return;
-        bridge.monitor.startMonitorPolling();
-        return () => { if (bridge.monitor.stopMonitorPolling) bridge.monitor.stopMonitorPolling(); };
-      }, [kind]);
-      // 关闭时通知主窗口回坞(去角标)。
-      useEffect(() => {
-        const key = kind + ':' + (id || '');
-        const onUnload = () => { if (isTauriAvailable()) void emitTauri('detach:closed', key).catch(() => {}); };
-        window.addEventListener('beforeunload', onUnload);
-        return () => window.removeEventListener('beforeunload', onUnload);
-      }, [kind, id]);
-      const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
-      const isDark = activeTheme === 'dark';
-      return (
-        <div className={`h-screen w-screen flex flex-col ${isDark ? 'bg-[#1B1C1D] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
-          <div data-tauri-drag-region className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"
-               style={{ borderBottom: '1px solid rgba(128,128,128,.2)' }}>
-            <span data-tauri-drag-region className="pointer-events-none">{t.tearoffTitle} · {kind}</span>
-          </div>
-          <div className="flex-1 min-h-0 overflow-auto">
-            {bs ? <DetachedErrorBoundary t={t}><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}
-          </div>
-        </div>
-      );
-    };
-
     // 长按撕离:按住 ~350ms 不动 → onPickUp(info)(DOM avatar 浮起跟手 + begin_detach_drag 原生判落点);
     // 长按达成前移动 >10px = 视为滚动/取消;长按达成后吞掉随之而来的 click(避免又切视图);
     // 按在内部按钮/输入框上不起手(让它们自理)。按下即禁选,防止长按选中下方文字。
