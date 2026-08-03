@@ -11,7 +11,6 @@ const {
 const {
   configSpecs,
   prepareCodexBridge,
-  prepareLinuxArm64Connectors,
   prepareWindowsCodexBridge,
   prepareTauriArgs,
   runTauri,

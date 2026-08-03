@@ -8,9 +8,9 @@ Their original licenses remain in effect.
 | Component | Version or baseline | Included form | License | Upstream |
 |---|---|---|---|---|
 | CodeWhale | `pinvou-v0.9.0-r1` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
-| DingTalk Workspace CLI (`dws`) and skills | 1.0.51 | Apache-2.0 skill sources; Linux ARM64 CLI downloaded during build | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
-| Lark CLI and skills | 1.0.65 | MIT skill sources; Linux ARM64 CLI downloaded during build | MIT | https://github.com/larksuite/cli |
-| WeCom CLI and skills | 0.1.9 | MIT skill sources; Linux ARM64 CLI downloaded during build | MIT | https://github.com/WecomTeam/wecom-cli |
+| DingTalk Workspace CLI (`dws`) and skills | 1.0.51 | Apache-2.0 skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
+| Lark CLI and skills | 1.0.65 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
+| WeCom CLI and skills | 0.1.9 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |
 | agency-agents-zh | bundle schema `agency-1.0`, 201-role snapshot imported 2026-06-03 | Normalized Chinese persona data and retained upstream license | MIT | https://github.com/jnMetaCode/agency-agents-zh |
 | SenseVoice.cpp | Source pinned by setup script | Built on user setup; no executable stored in Git | MIT | https://github.com/lovemefan/SenseVoice.cpp |
 | marked | 13.0.3 | Vendored browser script | MIT | https://github.com/markedjs/marked |
@@ -40,8 +40,11 @@ Vendored script attribution:
 Detailed license texts and upstream notices for bundled connectors are kept
 next to their resources under `pinvou3-app/src-tauri/resources/`.
 
-The exact connector URLs and SHA-256 checksums are recorded in
-`pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/connectors.lock.json`.
+The exact connector URLs and SHA-256 checksums are recorded in the per-platform
+`connectors.lock.json` manifests under
+`pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/`
+(linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64), and are
+fetched on first use by the app itself; `scripts/fetch-connectors.sh` is the CI/reviewer helper that materializes the same artifacts for verification.
 
 ## Package dependencies and SBOM
 

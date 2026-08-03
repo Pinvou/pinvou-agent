@@ -67,12 +67,20 @@ else
     echo "  ⚠ python3 未安装(brew install python@3.13)"
 fi
 
-echo "=== 4. connector CLI 探测(npm 全局,Mac 与 Windows 同路径) ==="
+echo "=== 4. connector CLI 探测(首次使用后由应用管理) ==="
+CONNECTOR_ARCH="$(uname -m)"
+case "$CONNECTOR_ARCH" in
+    arm64)  CONNECTOR_ARCH="aarch64"; CONNECTOR_PLATFORM="darwin-arm64" ;;
+    x86_64) CONNECTOR_PLATFORM="darwin-x64" ;;
+esac
+CONNECTOR_BIN="$HOME/.pinvou3/connectors/$CONNECTOR_PLATFORM/bin"
 for cli in lark-cli wecom-cli dws; do
-    if command -v "$cli" >/dev/null 2>&1; then
-        echo "  ✓ $cli"
+    if [ -x "$CONNECTOR_BIN/$cli" ]; then
+        echo "  ✓ $cli(应用管理 $CONNECTOR_BIN)"
+    elif command -v "$cli" >/dev/null 2>&1; then
+        echo "  ✓ $cli(PATH)"
     else
-        echo "  ⚠ $cli 未安装(npm i -g @larksuite/cli @wecom/cli dingtalk-workspace-cli)"
+        echo "  ⚠ $cli 尚未安装(首次在 Pinvou Agent 工具面板连接时会在线下载并校验)"
     fi
 done
 

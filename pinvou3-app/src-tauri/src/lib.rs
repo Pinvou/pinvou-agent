@@ -125,7 +125,7 @@ fn ensure_release_env() {
     {
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = Vec::new();
-            if let Some(connector_bin) = crate::platform::paths::bundle_connector_bin_dir() {
+            if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
                 dirs.push(connector_bin);
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
@@ -307,6 +307,9 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                crate::platform::paths::set_runtime_resource_dir(resource_dir);
+            }
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {

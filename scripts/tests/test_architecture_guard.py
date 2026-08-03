@@ -68,92 +68,6 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
         failures = self.guard.compare_baseline_ratchet(wider, previous)
         self.assertEqual(3, len(failures))
 
-    def test_large_file_ratchet_can_be_initialized_once_then_cannot_grow(self):
-        previous = {
-            "schema_version": 1,
-            "rules": {},
-            "rust_feature_cycles": [],
-        }
-        initialized = {
-            "schema_version": 1,
-            "rules": {
-                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 1200},
-                "rust_large_file_lines": {"pinvou3-app/src-tauri/src/lib.rs": 1600},
-            },
-            "rust_feature_cycles": [],
-        }
-        self.assertEqual(
-            [], self.guard.compare_baseline_ratchet(initialized, previous)
-        )
-
-        grown = {
-            "schema_version": 1,
-            "rules": {
-                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 1201},
-                "rust_large_file_lines": {"pinvou3-app/src-tauri/src/lib.rs": 1600},
-            },
-            "rust_feature_cycles": [],
-        }
-        failures = self.guard.compare_baseline_ratchet(grown, initialized)
-        self.assertEqual(1, len(failures))
-
-    def test_line_count_baseline_may_be_corrected_up_to_target_measurement(self):
-        previous = {
-            "schema_version": 1,
-            "rules": {
-                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 2161},
-            },
-            "rust_feature_cycles": [],
-        }
-        corrected = {
-            "schema_version": 1,
-            "rules": {
-                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 2196},
-            },
-            "rust_feature_cycles": [],
-        }
-        measured = {"pinvou3-app/src/app/main.jsx": 2196}
-        self.assertEqual(
-            [],
-            self.guard.compare_baseline_ratchet(
-                corrected, previous, measured_at_ref=measured.get
-            ),
-        )
-
-        grown = {
-            "schema_version": 1,
-            "rules": {
-                "frontend_large_file_lines": {"pinvou3-app/src/app/main.jsx": 2197},
-            },
-            "rust_feature_cycles": [],
-        }
-        failures = self.guard.compare_baseline_ratchet(
-            grown, previous, measured_at_ref=measured.get
-        )
-        self.assertEqual(1, len(failures))
-
-        # Without a measurement for the file, the increase stays rejected.
-        failures = self.guard.compare_baseline_ratchet(
-            corrected, previous, measured_at_ref=lambda _: None
-        )
-        self.assertEqual(1, len(failures))
-
-        # Non line-count rules never consult the measurement.
-        other_previous = {
-            "schema_version": 1,
-            "rules": {"other_rule": {"old": 3}},
-            "rust_feature_cycles": [],
-        }
-        other_wider = {
-            "schema_version": 1,
-            "rules": {"other_rule": {"old": 4}},
-            "rust_feature_cycles": [],
-        }
-        failures = self.guard.compare_baseline_ratchet(
-            other_wider, other_previous, measured_at_ref=lambda _: 9999
-        )
-        self.assertEqual(1, len(failures))
-
     def test_frontend_scanner_rejects_feature_to_app_and_native_tauri(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -172,31 +86,20 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             app.write_text("export default {};\n", encoding="utf-8")
             platform.write_text("window.__TAURI__.core.invoke('allowed');\n", encoding="utf-8")
 
-            rules, _ = self.guard.scan_frontend(root)
+            rules = self.guard.scan_frontend(root)
             self.assertEqual(1, sum(rules["frontend_feature_imports_app"].values()))
             self.assertEqual(1, sum(rules["frontend_tauri_global_outside_platform"].values()))
             self.assertEqual(1, sum(rules["frontend_user_agent_platform_detection"].values()))
 
-            feature.write_text("\n".join(["const value = 1;"] * 1001), encoding="utf-8")
-            rules, _ = self.guard.scan_frontend(root)
-            self.assertEqual(
-                1001,
-                rules["frontend_large_file_lines"][
-                    "pinvou3-app/src/features/chat/view.jsx"
-                ],
-            )
-
-    def test_rust_scanner_finds_upward_dependency_cycle_cfg_and_legacy_modules(self):
+    def test_rust_scanner_finds_upward_dependency_cycle_and_platform_leaks(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             rust_root = root / "pinvou3-app/src-tauri/src"
             feature_a = rust_root / "features/a/mod.rs"
             feature_b = rust_root / "features/b/mod.rs"
             platform = rust_root / "features/a/platform/windows.rs"
-            large = rust_root / "features/large.rs"
             platform_service = rust_root / "platform/service.rs"
-            commands = rust_root / "app/commands.rs"
-            for path in [feature_a, feature_b, large, platform, platform_service, commands]:
+            for path in [feature_a, feature_b, platform, platform_service]:
                 path.parent.mkdir(parents=True, exist_ok=True)
             (rust_root / "lib.rs").write_text(
                 '#[path = "app/bridge/mod.rs"]\nmod bridge;\n'
@@ -219,7 +122,6 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             feature_b.write_text(
                 "fn backward() { crate::feature_a::run(); }\n", encoding="utf-8"
             )
-            large.write_text("\n".join(["fn value() {}"] * 1501), encoding="utf-8")
             platform.write_text(
                 '#[cfg(target_os = "windows")]\n'
                 'fn allowed() { Command::new("xdg-open"); }\n',
@@ -228,15 +130,8 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             platform_service.write_text(
                 "fn reverse() { crate::feature_a::run(); }\n", encoding="utf-8"
             )
-            commands.write_text('include!("commands/chat.rs");\n', encoding="utf-8")
 
-            rules, cycles, _ = self.guard.scan_rust(root)
-            self.assertEqual(
-                1501,
-                rules["rust_large_file_lines"][
-                    "pinvou3-app/src-tauri/src/features/large.rs"
-                ],
-            )
+            rules, cycles = self.guard.scan_rust(root)
             self.assertEqual(1, rules["rust_feature_depends_on_app"]["a->bridge"])
             self.assertEqual(
                 1,
@@ -275,22 +170,94 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             )
             self.assertEqual(
                 1,
-                rules["rust_legacy_module_indirection"][
-                    "pinvou3-app/src-tauri/src/app/commands.rs:include!"
-                ],
-            )
-            self.assertEqual(
-                3,
-                rules["rust_legacy_module_indirection"][
-                    "pinvou3-app/src-tauri/src/lib.rs:#[path]"
-                ],
-            )
-            self.assertEqual(
-                1,
                 rules["rust_tauri_commands_outside_app"][
                     "pinvou3-app/src-tauri/src/features/a/mod.rs"
                 ],
             )
+
+    def test_platform_rule_exceptions_require_header_marker_and_reason(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rust_root = root / "pinvou3-app/src-tauri/src"
+            allowed = rust_root / "features/allowed/mod.rs"
+            rejected = rust_root / "features/rejected/mod.rs"
+            late = rust_root / "features/late/mod.rs"
+            allowed.parent.mkdir(parents=True)
+            rejected.parent.mkdir(parents=True)
+            late.parent.mkdir(parents=True)
+            allowed.write_text(
+                "// architecture-guard: allow-target-cfg -- dependency is Windows-only\n"
+                "// architecture-guard: allow-platform-detail -- parses external command\n"
+                '#[cfg(target_os = "windows")]\n'
+                'fn run() { Command::new("powershell.exe"); }\n',
+                encoding="utf-8",
+            )
+            late.write_text(
+                "// header filler\n" * 20
+                + "// architecture-guard: allow-target-cfg -- too late\n"
+                + "// architecture-guard: allow-platform-detail -- too late\n"
+                + '#[cfg(target_os = "windows")]\n'
+                + 'fn run() { Command::new("powershell.exe"); }\n',
+                encoding="utf-8",
+            )
+            rejected.write_text(
+                "// architecture-guard: allow-target-cfg\n"
+                "// architecture-guard: allow-platform-detail --\n"
+                '#[cfg(target_os = "windows")]\n'
+                'fn run() { Command::new("powershell.exe"); }\n',
+                encoding="utf-8",
+            )
+
+            rules, _ = self.guard.scan_rust(root)
+
+            self.assertNotIn(
+                "pinvou3-app/src-tauri/src/features/allowed/mod.rs",
+                rules["rust_target_cfg_outside_adapter"],
+            )
+            self.assertNotIn(
+                "pinvou3-app/src-tauri/src/features/allowed/mod.rs",
+                rules["rust_platform_details_outside_adapter"],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_target_cfg_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/rejected/mod.rs"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_platform_details_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/rejected/mod.rs"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_target_cfg_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/late/mod.rs"
+                ],
+            )
+            self.assertEqual(
+                1,
+                rules["rust_platform_details_outside_adapter"][
+                    "pinvou3-app/src-tauri/src/features/late/mod.rs"
+                ],
+            )
+
+    def test_guard_does_not_track_file_line_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            frontend = root / "pinvou3-app/src/features/sample/view.jsx"
+            rust = root / "pinvou3-app/src-tauri/src/features/sample/mod.rs"
+            frontend.parent.mkdir(parents=True)
+            rust.parent.mkdir(parents=True)
+            frontend.write_text("const value = 1;\n" * 2000, encoding="utf-8")
+            rust.write_text("fn value() {}\n" * 2000, encoding="utf-8")
+
+            frontend_rules = self.guard.scan_frontend(root)
+            rust_rules, _ = self.guard.scan_rust(root)
+
+            self.assertFalse(any("line" in rule for rule in frontend_rules))
+            self.assertFalse(any("line" in rule for rule in rust_rules))
 
     def test_resource_scanner_rejects_platform_binaries_in_common(self):
         with tempfile.TemporaryDirectory() as temp_dir:

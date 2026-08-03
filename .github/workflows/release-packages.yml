@@ -230,8 +230,8 @@ jobs:
             : > "$d/$f"
           done
 
-      # arm64 原生构建:build.js 检测到 linux/arm64 会自动跑
-      # scripts/fetch-linux-arm64-connectors.sh 下载连接器二进制(gitignored)。
+      # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
+      # connectors.lock.json 在线下载、校验并安装到用户目录。
       # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
       - name: 构建 deb
         working-directory: pinvou3-app

@@ -1,7 +1,7 @@
-export function runtimeNoticeMode(status) {
+export function runtimeNoticeMode(status, latestUpgradeDeferred = false) {
   if (!status) return 'checking';
   if (!status.bridge_ready) return 'bridge_unavailable';
-  if (!status.installed) return 'install';
+  if (!status.installed || status.update_required || (status.update_available && !latestUpgradeDeferred)) return 'install';
   if (!status.authenticated) return 'login';
   if (status.error) return 'error';
   return 'ready';

@@ -7,6 +7,7 @@ const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), "utf8")
 const featureRoot = ["src-tauri", "src", "features", "codex_acp"];
 const feature = read(...featureRoot, "mod.rs");
 const runtime = read(...featureRoot, "runtime.rs");
+const latest = read(...featureRoot, "latest.rs");
 const platform = read(...featureRoot, "platform", "mod.rs");
 const windows = read(...featureRoot, "platform", "windows.rs");
 const linux = read(...featureRoot, "platform", "linux.rs");
@@ -29,6 +30,26 @@ assert.ok(
   "shared Codex probing must remain platform-neutral",
 );
 assert.doesNotMatch(runtime, /Managed|managed_codex|registry\.npmjs|registry\.npmmirror/);
+// latest 只查询三家官方安装器实际使用的固定 HTTPS 来源；不查询 npm registry，
+// 也不把厂商响应当下载地址执行。
+assert.match(latest, /https:\/\/releases\.openai\.com\/codex\/channels\/latest/);
+assert.match(latest, /https:\/\/github\.com\/openai\/codex\/releases\/latest/);
+assert.match(latest, /https:\/\/downloads\.claude\.ai\/claude-code-releases\/latest/);
+assert.match(latest, /https:\/\/code\.kimi\.com\/kimi-code\/latest/);
+assert.match(latest, /const CACHE_TTL: Duration = Duration::from_secs\(5 \* 60\)/);
+assert.match(latest, /const MAX_RESPONSE_BYTES: usize = 128 \* 1024/);
+assert.doesNotMatch(latest, /registry\.npmjs|registry\.npmmirror|api\.github\.com/);
+assert.doesNotMatch(
+  latest,
+  /status\.installed = false/,
+  'official latest detection must not make a minimum-compatible CLI unavailable',
+);
+assert.match(latest, /status\.update_available = true/);
+assert.match(
+  latest,
+  /if status\.codex_available \{[\s\S]*?latest_version_probe[\s\S]*?refresh\(backend, false\)\.await;[\s\S]*?\}/,
+  "missing or below-minimum CLIs must not wait for an unnecessary latest request",
+);
 
 assert.match(windows, /SYSTEM_CODEX_NAME: &str = "codex\.cmd"/);
 assert.match(windows, /external_application_path\(adapter\)/);
@@ -48,6 +69,8 @@ assert.match(macos, /join\("darwin-x64"\)|_ => "darwin-x64"/);
 assert.doesNotMatch(prepareBridge, /--os=linux/);
 assert.match(prepareBridge, /NODE_TARGETS=\("darwin-arm64" "darwin-x64"\)/);
 assert.match(prepareBridge, /npm_ci_for_target "\$ACP_ROOT" "\$NODE_OS" "\$NODE_CPU"/);
+assert.match(prepareBridge, /node\/lib\/node_modules\/npm\/bin\/npm-cli\.js/);
+assert.match(prepareBridge, /cp -R \$DD "\$NODE_DIST_ROOT\/lib\/node_modules\/npm"/);
 assert.doesNotMatch(prepareBridge, /ACP_X64_ROOT/);
 // Claude Code 与 Codex/Kimi 一致走系统安装，Bridge 不得携带 claude 平台原生二进制。
 assert.match(prepareBridge, /claude-agent-sdk-\{darwin,linux,win32\}-\*/);

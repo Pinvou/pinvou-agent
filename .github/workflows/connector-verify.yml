@@ -1,0 +1,103 @@
+name: connector CLI verify
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/connector-verify.yml"
+      - "scripts/fetch-connectors.sh"
+      - "pinvou3-app/src-tauri/resources/platforms/**/bundle/connectors/**"
+      - "pinvou3-app/src-tauri/src/platform/paths.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/native_installer.rs"
+      - "pinvou3-app/scripts/prepare-codex-bridge-runtime.sh"
+      - "pinvou3-app/src-tauri/src/platform/os/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/connector-verify.yml"
+      - "scripts/fetch-connectors.sh"
+      - "pinvou3-app/src-tauri/resources/platforms/**/bundle/connectors/**"
+      - "pinvou3-app/src-tauri/src/platform/paths.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/native_installer.rs"
+      - "pinvou3-app/scripts/prepare-codex-bridge-runtime.sh"
+      - "pinvou3-app/src-tauri/src/platform/os/**"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-connectors:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # can_run=false 的条目只做钉版抓取 + sha256 校验 + file 检查
+          # (交叉架构二进制无法在该 runner 上执行)。
+          - platform: linux-arm64
+            runs-on: ubuntu-24.04-arm
+            resources: linux/aarch64
+            suffix: ""
+            can_run: true
+          - platform: linux-x64
+            runs-on: ubuntu-24.04
+            resources: linux/x86_64
+            suffix: ""
+            can_run: true
+          - platform: darwin-arm64
+            runs-on: macos-15
+            resources: macos/aarch64
+            suffix: ""
+            can_run: true
+          - platform: darwin-x64
+            runs-on: macos-15
+            resources: macos/x86_64
+            suffix: ""
+            can_run: false
+          - platform: windows-x64
+            runs-on: windows-latest
+            resources: windows/x86_64
+            suffix: .exe
+            can_run: true
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download pinned connector binaries
+        # windows runner 默认 pwsh 无法直接执行 .sh,必须显式走 bash。
+        shell: bash
+        run: ./scripts/fetch-connectors.sh --platform ${{ matrix.platform }}
+
+      - name: Inspect prepared binaries
+        shell: bash
+        run: |
+          set -eux
+          ./scripts/fetch-connectors.sh --platform ${{ matrix.platform }} --check
+          BIN="pinvou3-app/src-tauri/resources/platforms/${{ matrix.resources }}/bundle/connectors/${{ matrix.platform }}/bin"
+          ls -la "$BIN"
+          file "$BIN/dws${{ matrix.suffix }}" "$BIN/lark-cli${{ matrix.suffix }}" "$BIN/wecom-cli${{ matrix.suffix }}" || true
+
+      - name: Simulate first-use managed install
+        shell: bash
+        run: |
+          set -eux
+          SRC="pinvou3-app/src-tauri/resources/platforms/${{ matrix.resources }}/bundle/connectors/${{ matrix.platform }}/bin"
+          DEST="$HOME/.pinvou3/connectors/${{ matrix.platform }}/bin"
+          mkdir -p "$DEST"
+          for cli in dws lark-cli wecom-cli; do
+            cp "$SRC/$cli${{ matrix.suffix }}" "$DEST/"
+            chmod 755 "$DEST/$cli${{ matrix.suffix }}" || true
+          done
+
+      - name: Run managed CLIs without system npm
+        if: matrix.can_run
+        shell: bash
+        run: |
+          set -eux
+          BIN="$HOME/.pinvou3/connectors/${{ matrix.platform }}/bin"
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/dws${{ matrix.suffix }}" version
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/lark-cli${{ matrix.suffix }}" --version
+          env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/wecom-cli${{ matrix.suffix }}" --version

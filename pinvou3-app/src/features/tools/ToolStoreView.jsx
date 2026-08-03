@@ -106,24 +106,23 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 };
 
 const FEISHU_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
       { key: 'cli', label: '安装连接组件', sub: 'lark-cli · 首次约 40 秒' },
       { key: 'connect', label: '连接并授权', sub: '创建应用身份' },
       { key: 'qr', label: '扫码登录', sub: '飞书 App 扫一扫' },
     ];
-    // 企业微信:纯扫码单段,无「创建应用身份」步骤(复用 runtime/cli/qr 的进度条逻辑)
     const WECOM_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
       { key: 'cli', label: '安装连接组件', sub: 'wecom-cli · 首次约 40 秒' },
       { key: 'qr', label: '扫码登录', sub: '企业微信 App 扫一扫' },
     ];
     const DINGTALK_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
       { key: 'cli', label: '安装连接组件', sub: 'dws · 首次约 40 秒' },
       { key: 'qr', label: '扫码登录', sub: '钉钉 App 扫一扫' },
     ];
     const TMEET_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '解压 Node 到 ~/.pinvou3' },
+      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
       { key: 'cli', label: '安装连接组件', sub: 'tmeet · 首次约 40 秒' },
       { key: 'qr', label: '扫码登录', sub: '腾讯会议授权页' },
     ];
@@ -140,7 +139,7 @@ const FEISHU_STEPS = [
     );
     const DEFAULT_FLOW_COPY = {
       incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
-      cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`,
+      cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…',
       browserOpened:'已打开浏览器登录页', browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开',
       qrAlt:name=>`${name}二维码`, authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
       scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
@@ -167,7 +166,7 @@ const FEISHU_STEPS = [
                   <div className="flex-1 min-w-0">
                     <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-900 dark:text-slate-100'}`}>{s.label}</div>
                     {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">{copy.extracting(Math.round(flow.pct || 0))}</div></>)}
-                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || 'npm: starting…'}</div><div className="text-[11px] text-slate-400 tabular-nums">{copy.elapsed(flow.sec || 0)}</div></div></>)}
+                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || copy.installStarting}</div><div className="text-[11px] text-slate-400 tabular-nums">{copy.elapsed(flow.sec || 0)}</div></div></>)}
                     {!active && <div className="text-[11.5px] text-slate-400">{s.sub}</div>}
                   </div>
                 </div>
@@ -1354,8 +1353,8 @@ const FEISHU_STEPS = [
         // 客户端秒表 + 爬行条：后端 feishu:progress 有真实 pct 时会覆盖；没有也不至于像卡死。
         feishuConn.startTick();
         try {
-          // ① 确保 CLI（B 方案下可能联网安装 ~40s，会 emit feishu:progress step=cli）
-          feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          // ① 确保 CLI（首次使用在线安装）
+          feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await invokeTauri('feishu_ensure_cli');
           feishuConn.setFlow(f => ({ ...(f || {}), active: 'connect', pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done', connect: 'active' } }));
           // ② 连接编排（后端 emit feishu:qr / connected / error）
@@ -1404,7 +1403,7 @@ const FEISHU_STEPS = [
         wecomConn.startTick();
         try {
           // ① 确保 CLI(首次联网装 wecom-cli ~40s)
-          wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await invokeTauri('wecom_ensure_cli');
           wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
           // ② 连接编排(后端 emit wecom:qr / connected / error)
@@ -1449,7 +1448,7 @@ const FEISHU_STEPS = [
         dingtalkConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         dingtalkConn.startTick();
         try {
-          dingtalkConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          dingtalkConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await invokeTauri('dingtalk_ensure_cli');
           dingtalkConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
           await invokeTauri('dingtalk_connect_begin');
@@ -1492,7 +1491,7 @@ const FEISHU_STEPS = [
         tmeetConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         tmeetConn.startTick();
         try {
-          tmeetConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: 'npm: starting…', steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          tmeetConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
           await invokeTauri('tmeet_ensure_cli');
           tmeetConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
           await invokeTauri('tmeet_connect_begin');
@@ -2021,10 +2020,11 @@ const FEISHU_STEPS = [
                     <div className="flex-1">
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
-                      <div className="flex items-center gap-4">
+                      <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
                           : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" copy={storeCopy} t={t} />; })()}
+                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
                   </div>
