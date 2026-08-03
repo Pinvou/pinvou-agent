@@ -29,6 +29,8 @@ import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx'
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import { AssistantMessageActions } from '../conversation/AssistantMessageActions.jsx';
+import { copyClipboardText, fallbackCopyText, readClipboardText } from '../conversation/message-clipboard.js';
 import {
   createPinvouModeScopeKey,
   loadPinvouModeState,
@@ -1919,48 +1921,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    function fallbackCopyText(tx) {
-      return new Promise(function (resolve) {
-        var ta = null;
-        try {
-          ta = document.createElement('textarea');
-          ta.value = String(tx || '');
-          ta.setAttribute('readonly', '');
-          ta.style.position = 'fixed';
-          ta.style.left = '-9999px';
-          ta.style.top = '-9999px';
-          ta.style.opacity = '0';
-          document.body.appendChild(ta);
-          ta.focus();
-          ta.select();
-          ta.setSelectionRange(0, ta.value.length);
-          resolve(!!document.execCommand('copy'));
-        } catch (e) {
-          resolve(false);
-        } finally {
-          if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
-        }
-      });
-    }
-
-    function copyClipboardText(tx) {
-      tx = String(tx || '');
-      if (!tx) return Promise.resolve(false);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(tx).then(function () { return true; }).catch(function () {
-          return fallbackCopyText(tx);
-        });
-      }
-      return fallbackCopyText(tx);
-    }
-
-    function readClipboardText() {
-      if (navigator.clipboard && navigator.clipboard.readText) {
-        return navigator.clipboard.readText().catch(function () { return ''; });
-      }
-      return Promise.resolve('');
-    }
-
     const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
       const isDark = theme === 'dark';
       const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
@@ -2598,6 +2558,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               {item.time && !item.streaming && (
                 <div className={`text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</div>
               )}
+              {!item.streaming && <AssistantMessageActions targetRef={assistantSelectionTargetRef} copy={t.uiConversation} />}
             </div>
           </div>
         );

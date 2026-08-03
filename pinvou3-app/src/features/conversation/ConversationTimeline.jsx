@@ -19,6 +19,8 @@ import {
   searchToolDetails,
   terminalStatus,
 } from './conversation-model.js';
+import { AssistantMessageActions } from './AssistantMessageActions.jsx';
+import { assistantResponseText } from './message-clipboard.js';
 
 const DEFAULT_COPY = {
   completed: '已完成',
@@ -90,6 +92,9 @@ const DEFAULT_COPY = {
   contextUsage: (used, size) => `上下文 ${used} / ${size}`,
   attachment: '附件',
   operations: (count, failedCount) => `执行 ${count} 项${failedCount ? ` · ${failedCount} 项失败` : ''}`,
+  copyReply: '复制回复',
+  copyReplySuccess: '已复制',
+  copyReplyFailed: '复制失败',
 };
 
 function conversationCopy(copy) {
@@ -685,6 +690,7 @@ export function ConversationTurn({
       ? c.contextUsage(Number(turnUsage.used || 0).toLocaleString(), Number(turnUsage.size || 0).toLocaleString())
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
+  const assistantText = assistantResponseText(turn);
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length)
@@ -760,6 +766,7 @@ export function ConversationTurn({
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
             </div>
           )}
+          {!running && assistantText && <AssistantMessageActions text={assistantText} copy={c} />}
         </div>
       </div>
     </section>

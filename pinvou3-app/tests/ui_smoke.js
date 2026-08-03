@@ -692,6 +692,29 @@ async function expand(page) {
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));
 
+  const assistantCopy = await page.evaluate(async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async text => { window.__ASSISTANT_COPY_TEXT__ = text; } },
+    });
+    const action = [...document.querySelectorAll('[data-testid="assistant-message-actions"]')]
+      .find(node => node.closest('[data-conversation-turn]')?.innerText.includes('已生成会议纪要'));
+    const button = action?.querySelector('[data-testid="assistant-message-copy"]');
+    if (!button) return { found: false };
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return {
+      found: true,
+      copied: window.__ASSISTANT_COPY_TEXT__ || '',
+      feedback: button.textContent.trim(),
+      title: button.getAttribute('title') || '',
+    };
+  });
+  rec('③a 每条完成态助手回复提供一键复制并显示成功反馈',
+    assistantCopy.found && assistantCopy.copied.includes('已生成会议纪要。') &&
+    assistantCopy.feedback === '已复制' && assistantCopy.title === '已复制',
+    JSON.stringify(assistantCopy));
+
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
   // 必须恢复未发送内容，不得因组件重建清空。
   const composerDraft = '这是尚未发送的 session 草稿';

@@ -21,11 +21,9 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
-import {
-  ConversationActivityIndicator,
-  ConversationMarkdown,
-  ConversationTurn,
-} from '../conversation/ConversationTimeline.jsx';
+import { ConversationActivityIndicator, ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
+import { AssistantMessageActions } from '../conversation/AssistantMessageActions.jsx';
+import { assistantResponseText } from '../conversation/message-clipboard.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -607,6 +605,7 @@ function Turn({
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
   const running = turn.status === 'running';
   const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const assistantText = assistantResponseText(turn);
   return (
     <section className="space-y-4">
       {(turn.userText || turn.userAttachments.length > 0) && (
@@ -653,6 +652,7 @@ function Turn({
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
             </div>
           )}
+          {!running && assistantText && <AssistantMessageActions text={assistantText} copy={copy} />}
         </div>
       </div>
     </section>
