@@ -50,12 +50,35 @@ pub fn obsidian_config_path() -> Option<PathBuf> {
 }
 
 pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
-    Command::new(connector_cli_program(cli_bin, program))
+    if program == "npm" {
+        if let (Some(node), Some(npm_cli)) = (
+            crate::platform::paths::bundled_connector_node(),
+            crate::platform::paths::bundled_connector_npm_cli(),
+        ) {
+            let mut command = Command::new(node);
+            command.arg(npm_cli);
+            return command;
+        }
+    }
+    let resolved = connector_cli_program(cli_bin, program);
+    // npm 的 Unix bin 是带 `#!/usr/bin/env node` 的 JS shim；GUI 环境不保证系统
+    // PATH 有 node，因此腾讯会议也显式交给随包 Node 执行。
+    if program == cli_bin && cli_bin == "tmeet" {
+        let script = PathBuf::from(&resolved);
+        if script.is_file() {
+            if let Some(node) = crate::platform::paths::bundled_connector_node() {
+                let mut command = Command::new(node);
+                command.arg(script);
+                return command;
+            }
+        }
+    }
+    Command::new(resolved)
 }
 
 fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
     if program == cli_bin {
-        if let Some(bin_dir) = crate::platform::paths::bundle_connector_bin_dir() {
+        if let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() {
             let bundled = bin_dir.join(cli_bin);
             if bundled.is_file() {
                 return bundled.into_os_string();

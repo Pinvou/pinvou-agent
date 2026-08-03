@@ -89,38 +89,6 @@ function prepareTauriArgs(
   return prepared;
 }
 
-/// 构建前按 connectors.lock.json 抓取内置连接器 CLI 二进制(厂家 release,
-/// gitignored)。macOS 固定抓双架构:universal-apple-darwin 构建会编译 aarch64 +
-/// x86_64 两份,include_dir 需要两个平台的资源目录都已物化(单架构构建走缓存
-/// 基本零成本)。无内置二进制的平台组合跳过,运行时走 npm 全局安装兜底。
-function prepareConnectorClis({
-  platform = process.platform,
-  architecture = process.arch,
-  spawn = spawnSync,
-} = {}) {
-  const script = path.resolve(APP_ROOT, "..", "scripts", "fetch-connectors.sh");
-  let platforms = [];
-  if (platform === "darwin") {
-    platforms = ["darwin-arm64", "darwin-x64"];
-  } else if (platform === "linux" && architecture === "arm64") {
-    platforms = ["linux-arm64"];
-  } else if (platform === "linux" && architecture === "x64") {
-    platforms = ["linux-x64"];
-  } else if (platform === "win32" && architecture === "x64") {
-    platforms = ["windows-x64"];
-  }
-  for (const connectorPlatform of platforms) {
-    const result = spawn("bash", [script, "--platform", connectorPlatform], {
-      cwd: path.resolve(APP_ROOT, ".."),
-      stdio: "inherit",
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      throw new Error(`连接器准备失败(${connectorPlatform},退出码 ${result.status ?? "unknown"})`);
-    }
-  }
-}
-
 function runTauri(preparedArgs, spawn = spawnSync) {
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
   const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
@@ -161,7 +129,6 @@ function main() {
     prepareWindowsCodexBridge();
   }
   if (hasTauriBuildCommand) {
-    prepareConnectorClis();
     prepareWebTemplate();
     prepareCodexBridge();
     prepareWindowsCodexBridge(windowsBridgeOptions);
@@ -197,7 +164,6 @@ if (require.main === module) {
 module.exports = {
   configSpecs,
   main,
-  prepareConnectorClis,
   prepareCodexBridge,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,

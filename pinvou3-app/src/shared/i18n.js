@@ -1246,7 +1246,7 @@ const dict = {
     };
     dict.zh.uiToolDetails.flow = {
       incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
-      cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, browserOpened:'已打开浏览器登录页',
+      cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…', browserOpened:'已打开浏览器登录页',
       browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
       authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
       scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
@@ -1254,7 +1254,7 @@ const dict = {
     };
     dict.en.uiToolDetails.flow = {
       incomplete:name=>`${name} connection incomplete`, connected:name=>`${name} connected`, connecting:name=>`Connecting ${name}`,
-      cancel:'Cancel', extracting:pct=>`Extracting ${pct}%`, elapsed:seconds=>`${seconds}s elapsed`, browserOpened:'Browser sign-in page opened',
+      cancel:'Cancel', extracting:pct=>`Extracting ${pct}%`, elapsed:seconds=>`${seconds}s elapsed`, installStarting:'Online install: starting…', browserOpened:'Browser sign-in page opened',
       browserHint:'Confirm the sign-in in your browser. Reopen the page if it did not appear.', reopen:'Reopen', qrAlt:name=>`${name} QR code`,
       authorizeStep:'Step 2 of 2: scan to authorize', registerStep:'Step 1 of 2: scan to register the app',
       scanLogin:name=>`Sign in to ${name}`, scanHint:name=>`Scan with the ${name} app and confirm`, userCode:'Verification code',
@@ -1262,7 +1262,7 @@ const dict = {
     };
     dict.ja.uiToolDetails.flow = {
       incomplete:name=>`${name} の接続が未完了`, connected:name=>`${name} に接続済み`, connecting:name=>`${name} に接続中`,
-      cancel:'キャンセル', extracting:pct=>`展開中 ${pct}%`, elapsed:seconds=>`${seconds}秒経過`, browserOpened:'ブラウザーのログインページを開きました',
+      cancel:'キャンセル', extracting:pct=>`展開中 ${pct}%`, elapsed:seconds=>`${seconds}秒経過`, installStarting:'オンラインインストール：開始中…', browserOpened:'ブラウザーのログインページを開きました',
       browserHint:'ブラウザーで QR コードを読み取り、確認してください。表示されない場合は再度開けます。', reopen:'再度開く', qrAlt:name=>`${name} QR コード`,
       authorizeStep:'2 / 2：QR コードで認証', registerStep:'1 / 2：QR コードでアプリを登録',
       scanLogin:name=>`${name} にログイン`, scanHint:name=>`${name} アプリで読み取り、確認`, userCode:'確認コード',
@@ -1271,9 +1271,9 @@ const dict = {
     dict.zh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'官方技能已启用，可新建对话直接用', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA OpenAPI Skill 已启用，可新建对话直接使用。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
     dict.en.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Official skill enabled; start a new conversation to use it', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials and enabling the Skill…', connectedIma:'Tencent ima connected', imaEnabled:'IMA OpenAPI Skill enabled; start a new conversation to use it.', imaFailed:'IMA connection failed', disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
     dict.ja.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しました', enabled:'公式 Skill を有効化しました。新しい会話で利用できます', disconnectedTmeet:'Tencent Meeting から切断しました', connectingIma:'Tencent ima に接続中', validatingIma:'OpenAPI 認証情報を確認し、Skill を有効化しています…', connectedIma:'Tencent ima に接続しました', imaEnabled:'IMA OpenAPI Skill を有効化しました。新しい会話で利用できます。', imaFailed:'IMA の接続に失敗しました', disconnectedIma:'Tencent ima から切断しました', operationFailed:'操作に失敗しました。再試行してください' };
-    dict.zh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'解压 Node 到 ~/.pinvou3'},{key:'cli',label:'安装连接组件',sub:'tmeet · 首次约 40 秒'},{key:'qr',label:'扫码登录',sub:'腾讯会议授权页'}];
-    dict.en.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Extract Node to ~/.pinvou3'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
-    dict.ja.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準備',sub:'Node を ~/.pinvou3 に展開'},{key:'cli',label:'接続コンポーネントをインストール',sub:'tmeet · 初回は約 40 秒'},{key:'qr',label:'ログイン',sub:'Tencent Meeting 認証ページ'}];
+    dict.zh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'使用应用自带 Node'},{key:'cli',label:'安装连接组件',sub:'tmeet · 首次约 40 秒'},{key:'qr',label:'扫码登录',sub:'腾讯会议授权页'}];
+    dict.en.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
+    dict.ja.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準備',sub:'アプリ同梱の Node を使用'},{key:'cli',label:'接続コンポーネントをインストール',sub:'tmeet · 初回は約 40 秒'},{key:'qr',label:'ログイン',sub:'Tencent Meeting 認証ページ'}];
     dict.zh.uiToolDetails.showRawErrors = true;
     dict.en.uiToolDetails.showRawErrors = false;
     dict.ja.uiToolDetails.showRawErrors = false;
@@ -2121,7 +2121,7 @@ Object.assign(dict.zh.uiToolStore, {
   toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
   connected:'已连接', installed:'已安装', builtin:'内置', skillLabel:'技能', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
-  installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具',
+  installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
   configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明', configHelpFeishu:'不会建应用？去飞书开放平台建一个 →',
   obsidianGuide:{
     not_installed:{ title:'需要先安装 Obsidian', body:'「Obsidian 知识库」需配合 Obsidian 使用。检测到你尚未安装，安装并创建一个库后即可连接。', primary:'下载 Obsidian', retry:'我已安装，重新检测' },
@@ -2147,18 +2147,18 @@ Object.assign(dict.zh.uiToolStore, {
   loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
   mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
   feishuSteps:[
-    { key:'runtime', label:'准备运行时', sub:'解压 Node 到 ~/.pinvou3' },
+    { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
     { key:'cli', label:'安装连接组件', sub:'lark-cli · 首次约 40 秒' },
     { key:'connect', label:'连接并授权', sub:'创建应用身份' },
     { key:'qr', label:'扫码登录', sub:'飞书 App 扫一扫' },
   ],
   wecomSteps:[
-    { key:'runtime', label:'准备运行时', sub:'解压 Node 到 ~/.pinvou3' },
+    { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
     { key:'cli', label:'安装连接组件', sub:'wecom-cli · 首次约 40 秒' },
     { key:'qr', label:'扫码登录', sub:'企业微信 App 扫一扫' },
   ],
   dingtalkSteps:[
-    { key:'runtime', label:'准备运行时', sub:'解压 Node 到 ~/.pinvou3' },
+    { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
     { key:'cli', label:'安装连接组件', sub:'dws · 首次约 40 秒' },
     { key:'qr', label:'扫码登录', sub:'钉钉 App 扫一扫' },
   ],
@@ -2178,7 +2178,7 @@ Object.assign(dict.en.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
   connected:'Connected', installed:'Installed', builtin:'Built-in', skillLabel:'Skill', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
-  installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool',
+  installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
   configTitle:name=>`Configure ${name}`, configConnect:'Connect', configInstall:'Install', configDocDefault:'View setup guide', configHelpFeishu:'No app yet? Create one on the Feishu Open Platform →',
   obsidianGuide:{
     not_installed:{ title:'Obsidian required', body:'"Obsidian Vault" works together with Obsidian. It is not installed yet—install Obsidian and create a vault to connect.', primary:'Download Obsidian', retry:'I have installed it—check again' },
@@ -2204,18 +2204,18 @@ Object.assign(dict.en.uiToolStore, {
   loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
   feishuSteps:[
-    { key:'runtime', label:'Prepare runtime', sub:'Extract Node to ~/.pinvou3' },
+    { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
     { key:'cli', label:'Install connector', sub:'lark-cli · about 40 seconds on first use' },
     { key:'connect', label:'Connect & authorize', sub:'Create app identity' },
     { key:'qr', label:'Scan to sign in', sub:'Scan with the Feishu app' },
   ],
   wecomSteps:[
-    { key:'runtime', label:'Prepare runtime', sub:'Extract Node to ~/.pinvou3' },
+    { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
     { key:'cli', label:'Install connector', sub:'wecom-cli · about 40 seconds on first use' },
     { key:'qr', label:'Scan to sign in', sub:'Scan with the WeCom app' },
   ],
   dingtalkSteps:[
-    { key:'runtime', label:'Prepare runtime', sub:'Extract Node to ~/.pinvou3' },
+    { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
     { key:'cli', label:'Install connector', sub:'dws · about 40 seconds on first use' },
     { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
@@ -2235,7 +2235,7 @@ Object.assign(dict.ja.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
   connected:'接続済み', installed:'インストール済み', builtin:'内蔵', skillLabel:'スキル', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
-  installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません',
+  installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
   configTitle:name=>`「${name}」の設定`, configConnect:'接続', configInstall:'インストール', configDocDefault:'設定ガイドを見る', configHelpFeishu:'アプリの作成方法が分からない場合は Feishu オープンプラットフォームで作成 →',
   obsidianGuide:{
     not_installed:{ title:'Obsidian のインストールが必要です', body:'「Obsidian ナレッジベース」は Obsidian と併用します。まだインストールされていません。インストールして保管庫を作成すると接続できます。', primary:'Obsidian をダウンロード', retry:'インストールしました。再検出' },
@@ -2261,18 +2261,18 @@ Object.assign(dict.ja.uiToolStore, {
   loginFrameTitle:name=>`${name} ログイン`, loginPageLoadFailed:'ログインページを読み込めませんでした。下のブラウザー認証をご利用ください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
   mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
   feishuSteps:[
-    { key:'runtime', label:'ランタイムを準備', sub:'Node を ~/.pinvou3 に展開' },
+    { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
     { key:'cli', label:'接続コンポーネントをインストール', sub:'lark-cli · 初回は約 40 秒' },
     { key:'connect', label:'接続して認証', sub:'アプリ ID を作成' },
     { key:'qr', label:'スキャンしてログイン', sub:'Feishu アプリでスキャン' },
   ],
   wecomSteps:[
-    { key:'runtime', label:'ランタイムを準備', sub:'Node を ~/.pinvou3 に展開' },
+    { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
     { key:'cli', label:'接続コンポーネントをインストール', sub:'wecom-cli · 初回は約 40 秒' },
     { key:'qr', label:'スキャンしてログイン', sub:'WeCom アプリでスキャン' },
   ],
   dingtalkSteps:[
-    { key:'runtime', label:'ランタイムを準備', sub:'Node を ~/.pinvou3 に展開' },
+    { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
     { key:'cli', label:'接続コンポーネントをインストール', sub:'dws · 初回は約 40 秒' },
     { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],

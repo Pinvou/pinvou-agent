@@ -59,8 +59,7 @@ fn is_user_ready() -> bool {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// 引导:确保 lark-cli 装好(全局 shim 在 PATH 上),幂等。
-/// `npx -y @larksuite/cli@latest install` —— 已装则跳过。需要 Node。
+/// 引导:首次使用时下载并校验锁定版本的 lark-cli，已装则秒返回。
 pub async fn feishu_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let t = std::time::Instant::now();
@@ -73,24 +72,11 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
         if present {
             return Ok::<Value, String>(json!({ "ok": true, "already": true }));
         }
-        // 未装才装,带 180s 超时防卡死(网络 / 代理)。
-        let mut c = FEISHU_CTX.base_cmd("npx");
-        cc::apply_user_npm_prefix(&mut c);
-        c.args(["-y", "@larksuite/cli@latest", "install"]);
-        let mut ok = cc::run_with_timeout(c, 180)?;
-        if ok && !lark_cli_present() {
-            // `lark-cli install` can report success when the npm package exists
-            // but the global bin shim is missing. A direct global install repairs
-            // the shim that later `config init --new` needs to spawn.
-            let mut fallback = FEISHU_CTX.base_cmd("npm");
-            cc::apply_user_npm_prefix(&mut fallback);
-            fallback.args(["install", "-g", "@larksuite/cli"]);
-            ok = cc::run_with_timeout(fallback, 180)?;
+        crate::features::connectors::native_installer::ensure_native_cli("lark-cli")?;
+        if !lark_cli_present() {
+            return Err("飞书 CLI 安装完成但无法执行，请重试".to_string());
         }
-        if ok && !lark_cli_present() {
-            ok = false;
-        }
-        Ok::<Value, String>(json!({ "ok": ok, "already": false }))
+        Ok::<Value, String>(json!({ "ok": true, "already": false }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
@@ -169,9 +155,9 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        format!("config init --new 启动失败: {e}(需要 lark-cli；支持的平台会优先使用随包内置 CLI,其余走 npm 全局安装)")
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("config init --new 启动失败: {e}(需要先完成飞书 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 

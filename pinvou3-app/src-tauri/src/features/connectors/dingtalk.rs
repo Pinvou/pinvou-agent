@@ -18,8 +18,6 @@ use tauri::{AppHandle, Manager};
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
 
 const ID: &str = "dingtalk";
-const DWS_NPM_SPEC: &str = "dingtalk-workspace-cli@1.0.51";
-
 const DINGTALK_CTX: CliCtx = CliCtx {
     cli_bin: "dws",
     envs: &[],
@@ -201,63 +199,15 @@ fn auth_status_message() -> String {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// 官方 npm 包的 postinstall 除了解压 CLI，还会把 dws skill 写进
-/// `~/.agents/.codex/.claude/...`。安装时给它一个隔离 HOME，避免绕过 Pinvou3 的
-/// “已连接且未停用才展示 skill”门控；CLI 本体仍安装到 npm 的用户级全局 prefix。
-fn isolated_npm_install_command() -> Result<(std::process::Command, std::path::PathBuf), String> {
-    let install_home = crate::platform::paths::pinvou3_home()
-        .join("tmp")
-        .join("dingtalk-npm-install-home");
-    if install_home.exists() {
-        std::fs::remove_dir_all(&install_home)
-            .map_err(|e| format!("清理钉钉 CLI 安装暂存目录失败: {e}"))?;
-    }
-    std::fs::create_dir_all(&install_home)
-        .map_err(|e| format!("创建钉钉 CLI 安装暂存目录失败: {e}"))?;
-
-    let mut command = DINGTALK_CTX.base_cmd("npm");
-    cc::apply_user_npm_prefix(&mut command);
-    // HOME 隔离后 npm 默认不再读取真实用户的 ~/.npmrc。显式保留 userconfig，
-    // 避免国内镜像 / 企业代理配置被静默丢掉；postinstall 的 os.homedir() 仍指向暂存目录。
-    if std::env::var_os("NPM_CONFIG_USERCONFIG").is_none()
-        && std::env::var_os("npm_config_userconfig").is_none()
-    {
-        let user_config = crate::platform::paths::user_home_dir().join(".npmrc");
-        if user_config.is_file() {
-            command.env("NPM_CONFIG_USERCONFIG", user_config);
-        }
-    }
-    command
-        .env("HOME", &install_home)
-        .env("USERPROFILE", &install_home)
-        .args(["install", "-g", DWS_NPM_SPEC]);
-    Ok((command, install_home))
-}
-
-fn install_dws_cli() -> Result<bool, String> {
-    let (command, install_home) = isolated_npm_install_command()?;
-    let result = cc::run_with_timeout(command, 180);
-    if let Err(err) = std::fs::remove_dir_all(&install_home) {
-        eprintln!(
-            "[dingtalk] cleanup isolated npm install home failed ({}): {err}",
-            install_home.display()
-        );
-    }
-    result
-}
-
-/// 引导:确保 dws 装好。有内置的平台(linux-arm64/x64、darwin-arm64/x64、
-/// windows-x64)优先使用内置二进制;其余走 npm 全局安装/shim。
+/// 引导:首次使用时下载并校验锁定版本的 dws，已装则秒返回。
 pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if dws_cli_present() {
             return Ok::<Value, String>(json!({ "ok": true, "already": true }));
         }
-        if !install_dws_cli()? {
-            return Err("钉钉 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string());
-        }
+        crate::features::connectors::native_installer::ensure_native_cli("dws")?;
         if !dws_cli_present() {
-            return Err("钉钉 CLI 安装完成但无法执行，请重试或检查 npm 全局目录".to_string());
+            return Err("钉钉 CLI 安装完成但无法执行，请重试".to_string());
         }
         Ok::<Value, String>(json!({ "ok": true, "already": false }))
     })
@@ -306,9 +256,9 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        format!("dws auth login 启动失败: {e}(需要 dws；支持的平台会优先使用随包内置 CLI,其余走 npm 全局安装)")
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("dws auth login 启动失败: {e}(需要先完成钉钉 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -581,53 +531,5 @@ mod tests {
             None => std::env::remove_var("PINVOU3_HOME"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn npm_install_uses_isolated_home_for_official_postinstall() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-dingtalk-npm-home-test-{}",
-            std::process::id()
-        ));
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        let _ = std::fs::remove_dir_all(&root);
-        std::env::set_var("PINVOU3_HOME", &root);
-
-        let (command, install_home) = isolated_npm_install_command().unwrap();
-        let envs = command
-            .get_envs()
-            .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
-            .collect::<std::collections::HashMap<_, _>>();
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(args, ["install", "-g", DWS_NPM_SPEC]);
-        assert_eq!(
-            envs.get(std::ffi::OsStr::new("HOME")),
-            Some(&install_home.clone().into_os_string())
-        );
-        assert_eq!(
-            envs.get(std::ffi::OsStr::new("USERPROFILE")),
-            Some(&install_home.clone().into_os_string())
-        );
-        let user_config = crate::platform::paths::user_home_dir().join(".npmrc");
-        if user_config.is_file()
-            && std::env::var_os("NPM_CONFIG_USERCONFIG").is_none()
-            && std::env::var_os("npm_config_userconfig").is_none()
-        {
-            assert_eq!(
-                envs.get(std::ffi::OsStr::new("NPM_CONFIG_USERCONFIG")),
-                Some(&user_config.into_os_string())
-            );
-        }
-        assert!(install_home.starts_with(&root));
-
-        match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -61,21 +61,17 @@ fn is_ready() -> bool {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// 引导:确保 wecom-cli 装好(全局 shim 在 PATH 上),幂等。已装则秒返回。
-/// 未装则 `npm install -g @wecom/cli`,带 180s 超时防卡死(网络 / 代理)。需要 Node。
+/// 引导:首次使用时下载并校验锁定版本的 wecom-cli，已装则秒返回。
 pub async fn wecom_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if wecom_cli_present() {
             return Ok::<Value, String>(json!({ "ok": true, "already": true }));
         }
-        let mut c = WECOM_CTX.base_cmd("npm");
-        cc::apply_user_npm_prefix(&mut c);
-        c.args(["install", "-g", "@wecom/cli"]);
-        let mut ok = cc::run_with_timeout(c, 180)?;
-        if ok && !wecom_cli_present() {
-            ok = false;
+        crate::features::connectors::native_installer::ensure_native_cli("wecom-cli")?;
+        if !wecom_cli_present() {
+            return Err("企微 CLI 安装完成但无法执行，请重试".to_string());
         }
-        Ok::<Value, String>(json!({ "ok": ok, "already": false }))
+        Ok::<Value, String>(json!({ "ok": true, "already": false }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
@@ -125,9 +121,9 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        format!("wecom-cli init 启动失败: {e}(需要 wecom-cli；支持的平台会优先使用随包内置 CLI,其余走 npm 全局安装)")
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("wecom-cli init 启动失败: {e}(需要先完成企微 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 

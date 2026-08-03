@@ -9,6 +9,9 @@ on:
       - "pinvou3-app/src-tauri/resources/platforms/**/bundle/connectors/**"
       - "pinvou3-app/src-tauri/src/platform/paths.rs"
       - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/native_installer.rs"
+      - "pinvou3-app/scripts/prepare-codex-bridge-runtime.sh"
+      - "pinvou3-app/src-tauri/src/platform/os/**"
   push:
     branches:
       - main
@@ -18,6 +21,9 @@ on:
       - "pinvou3-app/src-tauri/resources/platforms/**/bundle/connectors/**"
       - "pinvou3-app/src-tauri/src/platform/paths.rs"
       - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
+      - "pinvou3-app/src-tauri/src/features/connectors/native_installer.rs"
+      - "pinvou3-app/scripts/prepare-codex-bridge-runtime.sh"
+      - "pinvou3-app/src-tauri/src/platform/os/**"
 
 permissions:
   contents: read
@@ -74,24 +80,24 @@ jobs:
           ls -la "$BIN"
           file "$BIN/dws${{ matrix.suffix }}" "$BIN/lark-cli${{ matrix.suffix }}" "$BIN/wecom-cli${{ matrix.suffix }}" || true
 
-      - name: Simulate app extraction
+      - name: Simulate first-use managed install
         shell: bash
         run: |
           set -eux
           SRC="pinvou3-app/src-tauri/resources/platforms/${{ matrix.resources }}/bundle/connectors/${{ matrix.platform }}/bin"
-          DEST="$HOME/.pinvou3/bundle/connectors/${{ matrix.platform }}/bin"
+          DEST="$HOME/.pinvou3/connectors/${{ matrix.platform }}/bin"
           mkdir -p "$DEST"
           for cli in dws lark-cli wecom-cli; do
             cp "$SRC/$cli${{ matrix.suffix }}" "$DEST/"
             chmod 755 "$DEST/$cli${{ matrix.suffix }}" || true
           done
 
-      - name: Run bundled CLIs without npm
+      - name: Run managed CLIs without system npm
         if: matrix.can_run
         shell: bash
         run: |
           set -eux
-          BIN="$HOME/.pinvou3/bundle/connectors/${{ matrix.platform }}/bin"
+          BIN="$HOME/.pinvou3/connectors/${{ matrix.platform }}/bin"
           env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/dws${{ matrix.suffix }}" version
           env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/lark-cli${{ matrix.suffix }}" --version
           env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" "$BIN/wecom-cli${{ matrix.suffix }}" --version

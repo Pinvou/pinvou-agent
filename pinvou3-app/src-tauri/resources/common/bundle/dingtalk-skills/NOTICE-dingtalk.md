@@ -1,12 +1,12 @@
 钉钉内置技能来自钉钉官方 dingtalk-workspace-cli 的 dws-skills.zip mono 形态。
 
 - npm package: dingtalk-workspace-cli
-- bundled version: 1.0.51
+- skill/CLI version: 1.0.51
 - 各平台 dws 二进制 SHA-256 见 `resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`
 - Linux ARM64 dws SHA-256: db012e54393ae0d1b78d74d0606e084823ab8e5540991deb6d31e68abd01883b
 - license: Apache-2.0
 
-Pinvou3 仅负责随应用内置并按用户连接状态门控该 skill。dws CLI 凭证由官方 CLI 管理。
+Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
 
 ## Pinvou3 本地修改登记
 
