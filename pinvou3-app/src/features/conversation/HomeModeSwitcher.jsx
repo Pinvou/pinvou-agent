@@ -13,6 +13,7 @@ const HOME_MODE_OPTIONS = [
 ];
 
 const CODE_AGENT_OPTIONS = [
+  { key: 'pinvou', label: '品悟', enabled: true },
   { key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true },
   { key: 'claude', label: 'Claude Code', enabled: true },
   { key: 'kimi', label: 'Kimi', enabled: true },
