@@ -662,7 +662,6 @@ function Turn({
 function setupHintText(copy, hint) {
   return copy.setupHints?.[hint] || '';
 }
-
 function RuntimeNotice({
   status,
   working,
@@ -674,6 +673,7 @@ function RuntimeNotice({
   onSubmitLoginCode,
   onRefresh,
   resetKey,
+  suppressAdvisoryUpgrade = false,
   copy,
 }) {
   const [authorizationCode, setAuthorizationCode] = useState('');
@@ -684,7 +684,7 @@ function RuntimeNotice({
   useEffect(() => {
     setDeclinedUpgrade(false);
   }, [resetKey, status?.agent_id, status?.installed, status?.latest_version]);
-  const noticeMode = runtimeNoticeMode(status, declinedUpgrade);
+  const noticeMode = runtimeNoticeMode(status, declinedUpgrade || suppressAdvisoryUpgrade);
   if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
@@ -838,7 +838,6 @@ function RuntimeNotice({
   if (noticeMode === 'error') return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
   return null;
 }
-
 function runtimeSourceLabel(status, copy) {
   if (!status) return '';
   return copy?.runtimeSources?.[status.runtime_source] || '';
@@ -1793,6 +1792,7 @@ export function CodexAcpView({
                   onSubmitLoginCode={submitLoginCode}
                   onRefresh={() => refreshStatus(activeAgentId, true)}
                   resetKey={draftEpoch}
+                  suppressAdvisoryUpgrade={Boolean(activeId)}
                   copy={codexCopy}
                 />
                 {activeStatus?.authenticated && (

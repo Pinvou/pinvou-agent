@@ -66,10 +66,11 @@ Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附
 | 官方脚本 | 可执行文件位于脚本安装目录（`~/.local/bin`、`~/.kimi-code/bin`、Windows Codex 的 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`），优先于 brew/npm 判定 | 重新运行官方安装脚本 |
 
 Homebrew / npm 全局来源的旧版一律走对应包管理器升级，避免同一 CLI 多来源并存；脚本来源
-或无法识别来源时重新运行官方脚本。用户暂不升级时只放行本次进入，CLI 仍可正常使用；
-该决定不持久化，离开代码界面后再次从主界面选择对应 Agent 时重新提示。低于最低兼容版本，
-或 Agent 明确报告必须升级时，仍保持不可用且不提供暂缓入口。不静默执行外部命令，
-也不创建 Pinvou 托管副本。
+或无法识别来源时重新运行官方脚本。可暂缓的最新版提醒只在代码首页选择 Agent 时显示，
+不在已有 Session 内重复出现。用户暂不升级时只放行本次进入，CLI 仍可正常使用；该决定
+不持久化，离开代码界面后再次从主界面选择对应 Agent 时重新提示。低于最低兼容版本，
+或 Agent 明确报告必须升级时，已有 Session 内仍显示阻断提示且不提供暂缓入口。
+不静默执行外部命令，也不创建 Pinvou 托管副本。
 
 状态契约：`get_acp_agent_status` / `list_acp_agents` 返回的每个 Agent 状态对象包含
 `installed: bool`（CLI 存在且满足最低兼容版本）、

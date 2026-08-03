@@ -156,6 +156,16 @@ assert.match(
   'starting a new code draft or reselecting an Agent must show the advisory again',
 );
 assert.match(view, /resetKey=\{draftEpoch\}/);
+assert.match(
+  view,
+  /suppressAdvisoryUpgrade=\{Boolean\(activeId\)\}/,
+  'existing sessions must suppress the optional latest-version reminder',
+);
+assert.match(
+  view,
+  /runtimeNoticeMode\(status, declinedUpgrade \|\| suppressAdvisoryUpgrade\)/,
+  'session suppression must reuse advisory-only behavior without hiding mandatory gates',
+);
 assert.doesNotMatch(
   view,
   /working \|\| waitingForLogin \? copy\.waitAuth/,
