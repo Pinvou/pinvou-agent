@@ -217,15 +217,27 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
   在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
 - **注入范围**：仅对**绑定了项目目录的原生代码会话**（execution root resolver
-  命中且 `is_code_session`）注入 `AGENTS.md`，覆盖项目根 → 文件系统根路径上的
-  各层 `AGENTS.md`（支持 monorepo 根规则）；到达用户家目录即停止（家目录及
-  以上的 `~/.AGENTS.md` / 全局上下文不注入，避免泄露桌面/用户全局配置）。
+  命中且 `is_code_session`，双门控）注入 `AGENTS.md`。覆盖项目根逐级向上到
+  用户家目录为止（家目录本身不入链，`~/AGENTS.md` 不注入，避免泄露桌面/用户
+  全局配置）；项目根即家目录时一层都不注入；项目不在家目录之下时覆盖到文件
+  系统根（支持 monorepo 根规则）。
+- **边界比较**：project_root 与 home 均经 `canonicalize` + 去 `\\?\` verbatim
+  前缀归一化后比较（与绑定入口归一化同源），Windows 上家目录边界真实生效。
+  归一化失败时 fail-closed：项目根归一化失败 → 完全不注入；家目录归一化失败
+  → 只注入项目根本层、不上溯祖先。
+- **文件安全**：`AGENTS.md` 为 symlink 或非普通文件时跳过（`symlink_metadata`
+  拒读，对齐上游 `load_context_file` 防御范式），防恶意仓库 symlink 注入工作
+  区外敏感文件进提示词。
+- **注入顺序**：root→cwd（祖先层在前、项目根最后），与 codex/claude 的项目
+  规则叠加惯例一致。
 - 普通会话、临时代码会话（resolver 未命中）不注入，行为与之前一致。
 - 注入方式：`session_instructions` 中追加 `InstructionSource::File`，由底座
-  `render_instructions_block` 处理 100KB 截断与缺失文件跳过，文件不存在或
-  不可读时静默跳过。
+  `render_instructions_block` 处理 100KB 截断与缺失文件跳过。
+- **会话中途编辑不生效**：注入清单与内容在 spawn 时定型；会话进行中编辑
+  `AGENTS.md` 需重开会话才生效。
 - 取舍：AGENTS.md 内容计入每次请求的 token 成本；仅绑项目会话注入 + 家目录
-  边界，是「不引入全局上下文风险」与「项目规则可用」之间的折中。
+  边界 + symlink 拒读，是「不引入全局上下文风险」与「项目规则可用」之间的
+  折中。
 
 ## 9. 已知限制与遗留风险
 
@@ -233,7 +245,15 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - `chat:usage` 无 context 上限字段，用量 chip 不显示（`tokens.max` 恒 0）。
 - 项目规则注入（审阅建议③a）仅覆盖绑项目代码会话的 root→cwd 各层 `AGENTS.md`，
   不注入用户家目录/全局上下文；规则文件内容计入 token 成本（100KB 截断由底座
-  处理）。
+  处理）；symlink 拒读、家目录边界归一化比较与 fail-closed 语义见 §8.5。
+- 远程端 `web_access_*` RPC 面未封：事件流已按 §8.4 对原生代码会话不转发，但
+  远程端凭 session id 仍可读/写代码会话消息。远程正式支持代码会话前暂保留该
+  通道（事件面先封是主要泄露面），是否同步封 RPC 面需审阅者确认。
+- 代码会话 skill 侧路残留（过渡方案 D）：代码会话已整体禁用 `load_skill` 工具
+  + 代码页 skill 分组只读诚实化，但 `## Skills` catalogue 仍印在提示词中（含
+  skill 磁盘路径），被注入引导的模型可经 `read_file` 读取 SKILL.md。根治方案
+  见 `docs/code-native-agent-会话能力档案设计.md`（按会话能力档案过滤
+  catalogue，落地后方案 D 两组件退役）。
 - 确认卡/busy 恢复依赖进程内登记表，进程重启后挂起 input 随旧 engine 消亡（与 ACP orphaned turn 语义一致）。
 - 原生会话无模型 API key 前置 gate，未配置凭据时错误在对话流内联展示。
 - 回声去重为启发式（文本一致或 30 秒窗口），极端时序理论可能双气泡。
@@ -245,6 +265,13 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
    建议逐步上提为 `code_sessions` / `CodeView`，两条链路分别做 adapter/hook。
 2. CI 增强：正式 `rust-test` 目前 skipped（Windows 只 `--no-run`），建议加
    `ci:full-rust` 让完整测试成为该 head 的正式 check。
+3. 代码会话工具/技能 profile（审阅建议②，恢复登记）：代码会话当前继承全集
+   工具，已落地的隔离仅有——连接器工具按 scope 整形（§8.3）、隐藏
+   `present_artifact`、过渡方案 D 禁用 `load_skill`（§9 残留说明）。完整的
+   「代码专用工具 profile」未兑现：skill 维度由
+   `docs/code-native-agent-会话能力档案设计.md` 承接（按会话能力档案过滤
+   catalogue + `load_skill` 按档案判定），其余工具维度的 profile 化待该设计
+   评审后一并实施。
 
 ## 11. 过程产物
 
