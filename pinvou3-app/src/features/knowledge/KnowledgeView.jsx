@@ -904,7 +904,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     <div className="grid grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
                       {CATS.map((c) => { const col = CAT_COLOR[c.key] || '#8a8a9a'; const CatI = CAT_ICON[c.key] || FileText; return (
                         <div key={c.key} className={`flex items-center gap-3 p-3 rounded-xl ${panel}`} style={panelShadow}>
-                          <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div>
+                          <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 col) */}
                           <div className="min-w-0">
                             <div className={`text-[13px] font-bold truncate ${ink}`}>{c.label}</div>
                             <div className={`h-3 w-10 rounded mt-1.5 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
@@ -936,10 +936,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               const on = cat === c.key;
                               return (
                                 <button key={c.key} onClick={() => setCat(c.key)}
-                                  className="h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors"
-                                  style={on
-                                    ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
-                                    : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+                                  className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
                                   {c.label}
                                   <span className="ml-1.5 opacity-70">{catCount(c).toLocaleString()}</span>
                                 </button>
@@ -953,8 +950,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         ) : (
                           <div className="grid grid-cols-1">
                             <div
-                              className="hidden md:grid grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4 border-b pb-2 text-[12px] font-medium"
-                              style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)', color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}
+                              className="hidden md:grid grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4 border-b pb-2 text-[12px] font-medium border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A] text-[rgba(60,60,67,.55)] dark:text-[rgba(235,235,245,.5)]"
                             >
                               <span className="text-left">{t.kbColName}</span>
                               <span className="text-right">{t.kbColSize}</span>
@@ -970,14 +966,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
                               <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
-                                className="group py-4 border-b cursor-pointer"
-                                style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                                className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                                   <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
                                   <div className="flex min-w-0 items-center gap-4">
                                     <OutputFileIcon meta={{ color: extColor(e), label: extLabel(e) }} ext={e} />
                                     <div className="min-w-0">
                                       <h2 className={`text-[14px] font-semibold tracking-tight truncate mb-0.5 ${ink}`} title={f.name}>{f.name}</h2>
-                                      <p className="text-[12px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>
+                                      <p className="text-[12px] truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">
                                         {f.path}
                                       </p>
                                     </div>
@@ -1002,7 +997,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                         </>
                                       )}
                                   </div>
-                                  <div className="col-span-2 text-[12px] md:hidden" style={{ color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}>
+                                  <div className="col-span-2 text-[12px] md:hidden text-[rgba(60,60,67,.55)] dark:text-[rgba(235,235,245,.5)]">
                                     {fmtSize(f.size)} · {fmtDate(f.mtime)}
                                   </div>
                                 </div>
@@ -1077,10 +1072,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                             const on = outCat === c.key;
                             return (
                               <button key={c.key} onClick={() => setOutCat(c.key)}
-                                className="h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors"
-                                style={on
-                                  ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
-                                  : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+                                className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
                                 {c.label}
                                 <span className="ml-1.5 opacity-70">{outputCount(c.key)}</span>
                               </button>
@@ -1104,12 +1096,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   const meta = outCatMeta(o.category);
                                   return (
                                     <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
-                                      style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>
+                                      style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>{/* isDark dynamic-value: 保留 (multi-stop boxShadow) */}
                                       <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
                                       <div className="px-5 pb-4">
                                         <div className="flex items-start gap-3 pt-1">
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
-                                          <span className="h-6 min-w-[48px] px-2.5 rounded-full inline-flex items-center justify-center text-[11px] font-normal tracking-[0.02em] shrink-0" style={{ color: isDark ? '#8DB7FF' : '#0066CC', background: isDark ? 'rgba(10,132,255,.10)' : 'rgba(0,122,255,.08)' }}>{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
+                                          <span className="h-6 min-w-[48px] px-2.5 rounded-full inline-flex items-center justify-center text-[11px] font-normal tracking-[0.02em] shrink-0 text-[#0066CC] dark:text-[#8DB7FF] bg-[rgba(0,122,255,.08)] dark:bg-[rgba(10,132,255,.10)]">{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
                                         </div>
                                         <div className={`flex items-center gap-2 text-[13px] mt-2 text-[#6E6E73] dark:text-[#AEAEB2]`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
                                         <OutputActions o={o} />
@@ -1133,8 +1125,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                           {activeOutputs.length > 0 && (
                             <div className="grid grid-cols-1">
                               <div
-                                className="hidden md:grid grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4 border-b pb-2 text-[12px] font-medium"
-                                style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)', color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}
+                                className="hidden md:grid grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4 border-b pb-2 text-[12px] font-medium border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A] text-[rgba(60,60,67,.55)] dark:text-[rgba(235,235,245,.5)]"
                               >
                                 <span className="text-left">{t.kbColName}</span>
                                 <button
@@ -1153,19 +1144,18 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                 const meta = outCatMeta(o.category);
                                 return (
                                   <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
-                                    className="group py-4 border-b cursor-pointer"
-                                    style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                                    className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                                     <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
                                       <div className="flex min-w-0 items-center gap-4">
                                         <OutputFileIcon meta={meta} ext={o.ext} category={o.category} />
                                         <div className="min-w-0">
                                           <h2 className={`text-[14px] font-semibold tracking-tight truncate mb-0.5 ${ink}`} title={o.name}>{o.name}</h2>
-                                          <p className="text-[12px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>
+                                          <p className="text-[12px] truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">
                                             {o.source || t.kbSubOutput}
                                           </p>
                                         </div>
                                       </div>
-                                      <div className="hidden md:block text-[12px] font-medium tabular-nums" style={{ color: isDark ? 'rgba(235,235,245,.62)' : 'rgba(60,60,67,.62)' }}>
+                                      <div className="hidden md:block text-[12px] font-medium tabular-nums text-[rgba(60,60,67,.62)] dark:text-[rgba(235,235,245,.62)]">
                                         {fmtOutputDate(o.mtime)}
                                       </div>
                                       <div className="flex shrink-0 items-center justify-end gap-1">
@@ -1190,7 +1180,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                           </button>
                                         )}
                                       </div>
-                                      <div className="col-span-2 text-[12px] md:hidden" style={{ color: isDark ? 'rgba(235,235,245,.5)' : 'rgba(60,60,67,.55)' }}>
+                                      <div className="col-span-2 text-[12px] md:hidden text-[rgba(60,60,67,.55)] dark:text-[rgba(235,235,245,.5)]">
                                         {fmtOutputDate(o.mtime)}
                                       </div>
                                     </div>
@@ -1212,10 +1202,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             {sub === 'kb' && !modelUsable && (
               <div className="max-w-[560px] mx-auto text-center pt-8 pb-2">
                 <div className="w-[84px] h-[84px] mx-auto rounded-[24px] grid place-items-center relative"
-                  style={{ background: isDark ? 'linear-gradient(135deg,#2A2440,#1E2438)' : 'linear-gradient(135deg,#efeafe,#e3ecfb)' }}>
+                  style={{ background: isDark ? 'linear-gradient(135deg,#2A2440,#1E2438)' : 'linear-gradient(135deg,#efeafe,#e3ecfb)' }}>{/* isDark dynamic-value: 保留 (linear-gradient) */}
                   <Database size={40} className="text-[#6f5cf0]" />
                   <span className="absolute -right-1.5 -bottom-1.5 w-[30px] h-[30px] rounded-full grid place-items-center"
-                    style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', border: `3px solid ${isDark ? '#131314' : '#fff'}`, boxShadow: '0 4px 10px rgba(108,92,231,.35)' }}>
+                    style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', border: `3px solid ${isDark ? '#131314' : '#fff'}`, boxShadow: '0 4px 10px rgba(108,92,231,.35)' }}>{/* isDark dynamic-value: 保留 (border 模板字符串拼色) */}
                     <Download size={14} className="text-white" />
                   </span>
                 </div>
@@ -1224,14 +1214,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
                 <div className={`mt-5 mx-auto max-w-[480px] text-left rounded-2xl p-[18px] ${panel}`} style={panelShadow}>
                   <div className="flex items-center gap-3">
-                    <div className="w-[46px] h-[46px] rounded-xl grid place-items-center shrink-0"
-                      style={{ background: isDark ? '#2A2440' : '#f0eefb', color: '#6f5cf0' }}><Package size={23} /></div>
+                    <div className="w-[46px] h-[46px] rounded-xl grid place-items-center shrink-0 bg-[#f0eefb] dark:bg-[#2A2440]"
+                      style={{ color: '#6f5cf0' }}><Package size={23} /></div>
                     <div className="flex-1 min-w-0">
                       <div className={`text-[14.5px] font-extrabold ${ink}`}>{t.kbModelPkgName}</div>
                       <div className={`text-[12px] mt-0.5 ${muted}`}>{t.kbModelPkgSub}</div>
                     </div>
-                    <span className="text-[11.5px] font-bold px-2.5 py-1 rounded-lg shrink-0"
-                      style={{ color: '#6f5cf0', background: isDark ? '#2A2440' : '#efeafe' }}>{(kbModel && kbModel.version) || 'bge-m3'}</span>
+                    <span className="text-[11.5px] font-bold px-2.5 py-1 rounded-lg shrink-0 text-[#6f5cf0] bg-[#efeafe] dark:bg-[#2A2440]">{(kbModel && kbModel.version) || 'bge-m3'}</span>
                   </div>
                   <div className="flex flex-wrap gap-2 mt-3.5">
                     {[
@@ -1404,9 +1393,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         const isIdx = c.status === 'indexing' || prog != null;
                         return (
                         <div key={c.id} onClick={() => openColl(c)} className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
-                          style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>
+                          style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
-                            <div className="w-11 h-11 rounded-xl grid place-items-center shrink-0" style={{ background: collColor(c) + (isDark ? '33' : '1f'), color: collColor(c) }}><BookOpen size={20} /></div>
+                            <div className="w-11 h-11 rounded-xl grid place-items-center shrink-0" style={{ background: collColor(c) + (isDark ? '33' : '1f'), color: collColor(c) }}><BookOpen size={20} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 collColor) */}
                             <div className="flex-1 min-w-0">
                               <div className={`text-[15px] font-bold truncate ${ink}`}>{c.name}</div>
                               <div className={`text-[12px] ${muted}`}>{c.category || t.kbUncat}</div>
@@ -1416,10 +1405,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                           {c.description && <div className={`text-[12px] mt-3 line-clamp-2 ${muted}`}>{c.description}</div>}
                           {isIdx && (
                             <div className="mt-3">
-                              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: isDark ? '#2A2B2D' : '#edf0fa' }}>
+                              <div className="h-1.5 rounded-full overflow-hidden bg-[#edf0fa] dark:bg-[#2A2B2D]">
                                 <div className="h-full rounded-full transition-all" style={{ width: (prog != null ? prog : 40) + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
                               </div>
-                              {prog != null && <div className="text-[11px] mt-1" style={{ color: isDark ? '#A8C7FA' : '#0B57D0' }}>{t.kbIndexing} {prog}%</div>}
+                              {prog != null && <div className="text-[11px] mt-1 text-[#0B57D0] dark:text-[#A8C7FA]">{t.kbIndexing} {prog}%</div>}
                             </div>
                           )}
                           <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-400/15">
