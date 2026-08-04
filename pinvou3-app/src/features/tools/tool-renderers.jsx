@@ -5,9 +5,7 @@ import { can } from '../../shared/platform.js';
 import { expertDelegationText, isExpertDelegationCall } from '../conversation/conversation-model.js';
 import {
   extractSubagentId,
-  resolveSubagentIdentity,
-  splitSubagentTitle,
-  subagentOrdinalLabel,
+  resolveSubagentPresentation,
   subagentRoleOrdinals,
 } from '../multiagent/subagent-conversation.mjs';
 import { AppIcon } from '../personas/Personas.jsx';
@@ -117,25 +115,7 @@ const ExpertAgentCard = ({ item, theme, t }) => {
   const copy = t.uiMultiAgent;
   const args = item.args || {};
   const agentId = extractSubagentId(item.output);
-  // 承担者以底座正式契约字段 `profile` 为准（role 会被底座当内置类型别名
-  // 截走）；读 role 只为兼容旧记录的展示。头像按实例散列（agentId 维度）。
-  const identity = resolveSubagentIdentity(
-    args.profile || args.role,
-    bridge.available && bridge.personas ? bridge.personas.getPersonas() : [],
-    agentId,
-  );
-  // 模型起的「」名（任务说明第一行）优先于角色映射名；专家卡名仍最高。
   const spawnText = expertDelegationText(args);
-  const title = splitSubagentTitle(spawnText);
-  const usesCustomTitle = identity.kind !== 'expert' && !!title.name;
-  const baseName = identity.kind === 'expert'
-    ? identity.personaName
-    : usesCustomTitle
-      ? title.name
-      : identity.kind === 'custom'
-        ? identity.name
-        : (copy.roleCards[identity.roleKey] || copy.roleCards.general);
-  const task = title.rest.split(/\r?\n/)[0];
   const isDelegation = isExpertDelegationCall(item.name, args);
   const failedSpawn = item.state === 'failed';
 
@@ -174,10 +154,20 @@ const ExpertAgentCard = ({ item, theme, t }) => {
     );
   }
 
-  // 起了名的实例天然可区分，不再叠序号；未起名的沿用角色名+序号兜底。
-  const name = baseName + (usesCustomTitle
-    ? ''
-    : subagentOrdinalLabel(live && live.roleCount ? { seq: live.seq, count: live.roleCount } : null));
+  // 承担者以正式 profile 为准；普通对话常只传 name/type，统一决策函数保证
+  // 行内卡与右侧面板不会一个有名、一个又退回“通用执行者”。
+  const presentation = resolveSubagentPresentation({
+    role: args.profile || args.role,
+    agentType: args.type || args.agent_type || args.agent_name,
+    sessionName: args.name || args.session_name,
+    objective: spawnText,
+    personas: bridge.available && bridge.personas ? bridge.personas.getPersonas() : [],
+    agentId,
+    roleCards: copy.roleCards,
+    ordinal: live && live.roleCount ? { seq: live.seq, count: live.roleCount } : null,
+  });
+  const { identity, name } = presentation;
+  const task = presentation.task.split(/\r?\n/)[0];
   const blocked = !!(live && live.done && !live.failed && live.blocked);
   const interrupted = !!(live && live.done && live.failed && live.status === 'interrupted');
   const statusText = failedSpawn

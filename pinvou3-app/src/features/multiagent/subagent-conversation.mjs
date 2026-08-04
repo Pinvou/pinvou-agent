@@ -191,9 +191,33 @@ export function projectSubagentTranscript({ messages, agent }) {
  * slug 规则与 Rust 侧 roster::expert_role_slug 一致（仅展示用途的镜像：
  * 非 [a-z0-9._-] 折成 '-'，前缀 exp-）；对不上就回退，不会错认。
  */
-export function resolveSubagentIdentity(role, personas, agentId) {
-  const roleId = role ? String(role) : null;
-  const builtin = ['scout', 'manager', 'builder', 'reviewer'];
+const SUBAGENT_TYPE_ALIASES = new Set([
+  'general', 'general-purpose', 'general_purpose', 'worker', 'default',
+  'explore', 'exploration', 'explorer', 'scout',
+  'plan', 'planning', 'planner', 'awaiter', 'manager',
+  'implementer', 'implement', 'implementation', 'builder',
+  'review', 'code-review', 'code_review', 'reviewer',
+  'verifier', 'verify', 'verification', 'validator', 'tester',
+]);
+
+export function subagentRoleForType(agentType) {
+  const normalized = String(agentType || '').trim().toLowerCase();
+  if (['explore', 'exploration', 'explorer', 'scout'].includes(normalized)) return 'scout';
+  if (['plan', 'planning', 'planner', 'awaiter', 'manager'].includes(normalized)) return 'manager';
+  if (['implementer', 'implement', 'implementation', 'builder'].includes(normalized)) return 'builder';
+  if (
+    ['review', 'code-review', 'code_review', 'reviewer',
+      'verifier', 'verify', 'verification', 'validator', 'tester'].includes(normalized)
+  ) return 'reviewer';
+  return 'general';
+}
+
+export function resolveSubagentIdentity(role, personas, agentId, agentType) {
+  const rawRole = String(role || '').trim();
+  const roleId = rawRole
+    ? (SUBAGENT_TYPE_ALIASES.has(rawRole.toLowerCase()) ? subagentRoleForType(rawRole) : rawRole)
+    : subagentRoleForType(agentType);
+  const builtin = ['scout', 'manager', 'builder', 'reviewer', 'general'];
   // 通用角色卡没有"真人"人设：有 agentId 时头像按实例散列（AppIcon 按 id
   // 哈希 50 张本地头像），同角色派多个实例各有面孔——四个同貌"调研专家"
   // 无法区分（真机截图点名）。专家池成员是具体人设，头像保持人设卡不变。
@@ -236,7 +260,10 @@ export function subagentRoleOrdinals(summaries) {
   const assigned = new Map();
   for (const entry of summaries || []) {
     if (!entry || !entry.agent_id) continue;
-    const key = entry.role ? String(entry.role) : 'general';
+    const rawRole = String(entry.role || '').trim();
+    const key = rawRole
+      ? (SUBAGENT_TYPE_ALIASES.has(rawRole.toLowerCase()) ? subagentRoleForType(rawRole) : rawRole)
+      : subagentRoleForType(entry.agent_type);
     const seq = (counts.get(key) || 0) + 1;
     counts.set(key, seq);
     assigned.set(entry.agent_id, { key, seq });
@@ -267,6 +294,86 @@ export function splitSubagentTitle(text) {
   const match = raw.match(/^\s*「([^」\n]{1,24})」\s*[:：、\-—]?\s*/);
   if (!match || !match[1].trim()) return { name: null, rest: raw };
   return { name: match[1].trim(), rest: raw.slice(match[0].length) };
+}
+
+/**
+ * 模型没有填写 agent.name、也没有按「名称」约定写标题时，从它自己写出的
+ * objective 第一条有效任务语句提炼一个短名称。这里只做确定性的展示投影，
+ * 不另起一次模型调用；因此普通对话临时派出的裸 agent 也不会退回成三张
+ * 一模一样的“通用执行者”卡。
+ */
+export function subagentObjectiveName(text, maxLength = 24) {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+
+  const marker = /^(?:[-*#>]\s*)*(?:question|task|objective|goal|assignment|任务|目标|问题)\s*[:：]\s*(.+)$/i;
+  const marked = lines.map(line => line.match(marker)).find(Boolean);
+  let candidate = marked ? marked[1] : lines.find(line => {
+    const normalized = line.replace(/^(?:[-*#>]\s*)+/, '').trim();
+    return normalized
+      && !/^(?:assignment metadata|scope|already_known|effort|stop_condition|context)\s*[:：]?$/i.test(normalized)
+      && !/^<\/?codewhale:/i.test(normalized);
+  });
+  if (!candidate) return null;
+
+  candidate = candidate
+    .replace(/^(?:[-*#>]\s*)+/, '')
+    .replace(/^(?:question|task|objective|goal|assignment|任务|目标|问题)\s*[:：]\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!candidate) return null;
+  const characters = [...candidate];
+  return characters.length > maxLength
+    ? `${characters.slice(0, maxLength).join('')}…`
+    : candidate;
+}
+
+/**
+ * 行内专家卡与右侧面板共用的名称决策。
+ *
+ * 优先级：专家池真名 > 模型显式 name/session_name > 任务首行「名称」 >
+ * agent type 对应的本地化角色 > 通用角色。底座未显式起名时会把 agent_id
+ * 写入 session_name，这种占位值不能暴露给用户。
+ */
+export function resolveSubagentPresentation({
+  role,
+  agentType,
+  sessionName,
+  objective,
+  personas,
+  agentId,
+  roleCards,
+  ordinal,
+}) {
+  const identity = resolveSubagentIdentity(role, personas, agentId, agentType);
+  const title = splitSubagentTitle(objective || '');
+  const rawSessionName = String(sessionName || '').trim();
+  const modelName = rawSessionName && rawSessionName !== String(agentId || '')
+    ? rawSessionName
+    : null;
+  const explicitName = identity.kind === 'expert' ? null : (modelName || title.name);
+  const objectiveName = identity.kind === 'expert' || explicitName
+    ? null
+    : subagentObjectiveName(objective);
+  const baseName = identity.kind === 'expert'
+    ? identity.personaName
+    : explicitName
+      || objectiveName
+      || (identity.kind === 'custom'
+        ? identity.name
+        : ((roleCards && roleCards[identity.roleKey])
+          || (roleCards && roleCards.general)
+          || identity.roleKey));
+  return {
+    identity,
+    name: baseName + (explicitName ? '' : subagentOrdinalLabel(ordinal)),
+    task: (title.name ? title.rest : String(objective || '')).trim(),
+    explicitName,
+    objectiveName,
+  };
 }
 
 /**
