@@ -529,8 +529,8 @@ async fn web_access_chat_for_session(
 /// Web 端只能续写普通对话。多智能体会话（开关开启的普通 id，或旧 `wf-`
 /// 形态）一律拒绝：Web 界面没有专家卡/只读面板，放行会让浏览器启动它
 /// 看不到、也停不掉的子智能体。
-fn ensure_web_chat_session_supported(session_id: &str, multi_agent: bool) -> Result<(), String> {
-    if multi_agent || crate::features::sessions::is_workflow_session_id(session_id) {
+fn ensure_web_chat_session_supported(_session_id: &str, multi_agent: bool) -> Result<(), String> {
+    if multi_agent {
         return Err(
             "multi-agent sessions are desktop-only; continue them in the desktop app".to_string(),
         );

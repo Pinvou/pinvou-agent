@@ -331,12 +331,6 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           )}
           {/* 置顶标:常驻显示在标题前,倾斜小灰标,与「置顶优先」排序呼应 */}
           {chat.pinned && <PinIcon size={12} className={`shrink-0 mr-1.5 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
-          {/* 多智能体对话标识:一场工作流运行 = 一条会话(见 docs/multiagent/glossary.md) */}
-          {MULTI_AGENT_ENABLED && typeof chat.id === 'string' && chat.id.indexOf('wf-') === 0 && (
-            <span className={`mr-1.5 shrink-0 rounded px-1 text-[9px] font-medium leading-4 ${isDark ? 'bg-[#2A2F3A] text-[#8AB4F8]' : 'bg-[#E8F0FE] text-[#1967D2]'}`}>
-              {t.multiAgent}
-            </span>
-          )}
           <span className="min-w-0 flex-1 pr-2">
             <span className="block truncate whitespace-nowrap leading-5">{chat.titleContent || chat.title}</span>
             {chat.subtitle && (

@@ -172,16 +172,6 @@ where
     Ok(())
 }
 
-fn ensure_workflow_session_deletable(session_id: &str, turn_active: bool) -> Result<()> {
-    if !crate::features::sessions::is_workflow_session_id(session_id) {
-        bail!("Session '{session_id}' is not a Workflow session");
-    }
-    if turn_active {
-        bail!("会话仍在生成回复，请先等待完成或停止后再删除");
-    }
-    Ok(())
-}
-
 async fn quiesce_engine_before_reclaim<C, S, SFut, F, Fut, T>(
     cancel_current: C,
     stop_forwarder: S,
@@ -602,8 +592,8 @@ impl EnginePool {
             || self.forget_session(session_id),
         )
         .await?;
-        // 与 delete_workflow_session 同款竞态：裸 `agent` 对**所有**会话可用
-        // （不只多智能体开关开启的），底座取消子智能体后的后台 ledger 写
+        // 裸 `agent` 对**所有**会话可用（不只多智能体开关开启的），
+        // 底座取消子智能体后的后台 ledger 写
         // （write_json_atomic 重建父目录）可能复活刚删的 sessions/<id>/。
         // 目录不存在是常态零成本，Shutdown 处理完后不再有新写入，必然收敛。
         Self::schedule_late_sweep(
@@ -629,34 +619,6 @@ impl EnginePool {
                 }
             }
         });
-    }
-
-    /// 删除已停止的工作流宿主及其运行目录。
-    ///
-    /// 工作流执行和取消由 CodeWhale 管理；应用层不复制它的 shutdown 状态机。
-    /// 运行仍活跃时拒绝删除，终态后复用普通 session 的回收路径即可。
-    pub(crate) async fn delete_workflow_session(&self, session_id: &str) -> Result<()> {
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        let turn_active = self
-            .turn_lifecycles
-            .get(session_id)
-            .is_some_and(|lifecycle| lifecycle.is_active());
-        // 台账进程租约已随 ADR-0006 退役：活跃性只看宿主轮；后台子智能体在
-        // 回收路径上被级联取消（shutdown_cancel_cascade_ops），删除不拦截。
-        ensure_workflow_session_deletable(session_id, turn_active)?;
-
-        self.evict_locked(session_id).await;
-        crate::features::multiagent::delete(session_id)
-            .map_err(|error| anyhow::anyhow!("delete agent-run: {error}"))?;
-        self.store.delete(session_id)?;
-        self.forget_session(session_id);
-        // 旧 wf- 运行的专属目录同款竞态，见 schedule_late_sweep。
-        Self::schedule_late_sweep(
-            crate::platform::paths::agent_run_dir(session_id),
-            "late sweep of deleted run",
-        );
-        Ok(())
     }
 
     /// Atomically closes the live engine and removes a scheduled session under
@@ -1147,7 +1109,6 @@ impl EnginePool {
 
     /// 编辑/重发指定 session 最后一轮 user 消息。
     pub async fn edit_last_turn(&self, session_id: &str, new_message: String) -> Result<()> {
-        ensure_edit_last_turn_supported(session_id)?;
         let reservation = self.reserve_turn(session_id)?;
         let display_message = user_display_message(new_message.clone());
         self.edit_last_turn_reserved(session_id, new_message, display_message, reservation)
@@ -1161,7 +1122,6 @@ impl EnginePool {
         display_message: Message,
         mut reservation: TurnReservation,
     ) -> Result<()> {
-        ensure_edit_last_turn_supported(session_id)?;
         let baseline_revision = reservation
             .base_transcript_revision()
             .context("turn reservation has no base transcript revision")?
@@ -1235,13 +1195,6 @@ impl EnginePool {
              new state takes effect next turn via per-turn system-reminder"
         );
     }
-}
-
-fn ensure_edit_last_turn_supported(session_id: &str) -> Result<()> {
-    if crate::features::sessions::is_workflow_session_id(session_id) {
-        bail!("Workflow sessions do not support editing and resending the last turn");
-    }
-    Ok(())
 }
 
 pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
@@ -1416,7 +1369,6 @@ fn resolve_spawn_model(
 mod scheduled_model_tests {
     use super::{
         delete_chat_session_with_gate, delete_scheduled_run_with_gate,
-        ensure_edit_last_turn_supported, ensure_workflow_session_deletable,
         quiesce_engine_before_reclaim, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_sync_session, ModelUpdateRevisions,
         PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
@@ -1823,18 +1775,5 @@ mod scheduled_model_tests {
             locks.locks.lock().await.len() <= 1,
             "dead per-session turn gates must be reclaimed"
         );
-    }
-
-    #[test]
-    fn workflow_delete_only_accepts_inactive_workflow_sessions() {
-        assert!(ensure_workflow_session_deletable("wf-finished", false).is_ok());
-        assert!(ensure_workflow_session_deletable("wf-planning", true).is_err());
-        assert!(ensure_workflow_session_deletable("chat-session", false).is_err());
-    }
-
-    #[test]
-    fn workflow_edit_last_turn_is_rejected_before_dispatch() {
-        assert!(ensure_edit_last_turn_supported("wf-run").is_err());
-        assert!(ensure_edit_last_turn_supported("chat-session").is_ok());
     }
 }

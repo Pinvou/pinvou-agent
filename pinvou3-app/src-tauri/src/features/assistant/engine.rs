@@ -969,20 +969,12 @@ impl AppEngine {
         } else {
             None
         };
-        let is_workflow_run = crate::features::sessions::is_workflow_session_id(session_id);
-        // 多智能体开关（ADR-0006）：普通会话开着开关时同样解锁编排工具并装配
-        // 专家名册；wf- 前缀是旧入口的遗留形态，走同一套放行逻辑。
-        let multi_agent_enabled = is_workflow_run || store.mode_state(session_id).multi_agent;
-        // 执行根统一走主线 SessionStore 权威解析；仅旧 wf- 形态仍沿用其
-        // 独立 run workspace，避免历史工作流产物与角色名册换目录。
-        let workspace = if is_workflow_run {
-            crate::platform::paths::agent_run_workspace_dir(session_id)
-        } else {
-            store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .unwrap_or_else(|_| bridge.session_workspace(session_id))
-        };
+        // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
+        let multi_agent_enabled = store.mode_state(session_id).multi_agent;
+        let workspace = store
+            .session_roots(session_id)
+            .map(|roots| roots.execution)
+            .unwrap_or_else(|_| bridge.session_workspace(session_id));
         let mut engine_config = if multi_agent_enabled {
             // 多智能体面：只多一册专家名册（roster 落进本会话工作区）；
             // 工具面与普通会话完全一致。
@@ -1452,10 +1444,6 @@ pub(crate) fn emit_workflow_blocked(
             "warmup_report": warmup_report,
         }),
     );
-}
-
-fn legacy_harness_is_active(session_id: &str, has_active_skill: bool) -> bool {
-    has_active_skill && !crate::features::sessions::is_workflow_session_id(session_id)
 }
 
 fn tool_call_result_parts(
@@ -2271,7 +2259,7 @@ fn spawn_event_forwarder(
                     });
                     let _ = app.emit("workflow:agent_complete", payload);
                     let state = store.mode_state(&session_id);
-                    if legacy_harness_is_active(&session_id, state.active_skill.is_some()) {
+                    if state.active_skill.is_some() {
                         // [C2] 完成→节点关联完全用信封 role（SDAN Result.from）。
                         // harness_phase 已删,无 phase 兜底——正常 workflow subagent
                         // 派发必带 role(SubAgentAssignment.role)。
@@ -2728,34 +2716,33 @@ fn spawn_event_forwarder(
                         // harness 图执行器始终使用 engine 的实际执行工作区：普通会话是
                         // session 私有目录，定时会话是所属 automation 的专属工作间。
                         let harness_workspace = execution_workspace.clone();
-                        let harness_handled =
-                            if legacy_harness_is_active(&active_id, state.active_skill.is_some()) {
-                                // [C2] harness_phase 已删。工作流由 kick(命令)+ AgentComplete
-                                // 驱动;主 session 在工作流期间空闲,此处 TurnComplete 一般不参与
-                                // 推进。仍兜底走 step_fresh:由 scheduler 据 State 决策——有角色在
-                                // 跑则返回 role_running→NotApplicable(防重复派发),否则派下一个。
-                                let ws = harness_workspace.clone();
-                                let action = tokio::task::spawn_blocking(move || {
-                                    crate::features::assistant::harness::step_fresh(&ws)
-                                })
-                                .await
-                                .unwrap_or(
-                                    crate::features::assistant::harness::HarnessAction::Error(
-                                        "spawn_blocking panicked".into(),
-                                    ),
-                                );
+                        let harness_handled = if state.active_skill.is_some() {
+                            // [C2] harness_phase 已删。工作流由 kick(命令)+ AgentComplete
+                            // 驱动;主 session 在工作流期间空闲,此处 TurnComplete 一般不参与
+                            // 推进。仍兜底走 step_fresh:由 scheduler 据 State 决策——有角色在
+                            // 跑则返回 role_running→NotApplicable(防重复派发),否则派下一个。
+                            let ws = harness_workspace.clone();
+                            let action = tokio::task::spawn_blocking(move || {
+                                crate::features::assistant::harness::step_fresh(&ws)
+                            })
+                            .await
+                            .unwrap_or(
+                                crate::features::assistant::harness::HarnessAction::Error(
+                                    "spawn_blocking panicked".into(),
+                                ),
+                            );
 
-                                apply_harness_action(
-                                    action,
-                                    &app,
-                                    &execution_workspace,
-                                    &approve_handle,
-                                    &active_id,
-                                )
-                                .await
-                            } else {
-                                false
-                            };
+                            apply_harness_action(
+                                action,
+                                &app,
+                                &execution_workspace,
+                                &approve_handle,
+                                &active_id,
+                            )
+                            .await
+                        } else {
+                            false
+                        };
 
                         // ── H1b: harness 推进了 → 推送全量 agent 状态快照给前端 ──
                         if harness_handled {
@@ -2947,10 +2934,7 @@ fn spawn_event_forwarder(
                         // 致命错误(SubAgent 派发失败 / 内部 fatal)→ 可能收不到 AgentComplete
                         // = 死锁。兜底:emit blocked 通知前端,让用户看到中断可重开(宁可多
                         // 通知一次,不可无声卡死等永不到来的事件)。
-                        let was_active = legacy_harness_is_active(
-                            &session_id,
-                            store.mode_state(&session_id).active_skill.is_some(),
-                        );
+                        let was_active = store.mode_state(&session_id).active_skill.is_some();
                         if was_active {
                             let _ = app.emit(
                                 "workflow:blocked",
@@ -3050,21 +3034,8 @@ mod token_ledger_tests {
 }
 
 #[cfg(test)]
-mod legacy_harness_boundary_tests {
-    use super::{legacy_harness_is_active, tool_call_result_parts};
-
-    #[test]
-    fn workflow_sessions_never_enter_legacy_harness_with_stale_skill_binding() {
-        assert!(
-            legacy_harness_is_active("chat-session", true),
-            "ordinary legacy skill sessions retain harness behavior"
-        );
-        assert!(!legacy_harness_is_active("chat-session", false));
-        assert!(
-            !legacy_harness_is_active("wf-stale-binding", true),
-            "Workflow hosts must ignore even a stale active_skill binding"
-        );
-    }
+mod tool_result_projection_tests {
+    use super::tool_call_result_parts;
 
     #[test]
     fn unsuccessful_tool_result_is_not_promoted_to_success() {
