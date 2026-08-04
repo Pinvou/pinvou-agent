@@ -35,11 +35,15 @@ pub fn session_mount_collection(
         return Err("embedding 模型未就绪,知识库暂不可用".to_string());
     }
     store.set_mounted_collection(&session_id, Some(collection_id));
-    publish_kb_mount_change(&app, &session_id, &store.mounted_collections(&session_id));
+    publish_kb_mount_change(
+        &app,
+        &session_id,
+        &store.mounted_collections_snapshot(&session_id),
+    );
     Ok(())
 }
 
-/// 原子更新会话挂载的多个知识集。顺序由前端维护，并作为跨库同分结果的稳定排序依据。
+/// 兼容整列表替换接口。新客户端的单项操作使用下方原子命令，避免多端并发覆盖。
 #[tauri::command]
 pub fn session_set_mounted_collections(
     session_id: String,
@@ -72,9 +76,76 @@ pub fn session_set_mounted_collections(
         }
         normalized.push(collection);
     }
-    store.set_mounted_collections(&session_id, normalized.clone());
-    publish_kb_mount_change(&app, &session_id, &normalized);
-    Ok(normalized)
+    let snapshot = store.set_mounted_collections(&session_id, normalized);
+    publish_kb_mount_change(&app, &session_id, &snapshot);
+    Ok(snapshot.collections)
+}
+
+fn ensure_collection_mountable(
+    knowledge: &KnowledgeService,
+    collection_id: i64,
+) -> Result<(), String> {
+    if collection_id <= 0 {
+        return Err("知识集 id 无效".to_string());
+    }
+    if !knowledge.semantic_ready() {
+        return Err("embedding 模型未就绪,知识库暂不可用".to_string());
+    }
+    if knowledge
+        .l1()
+        .collection_name(collection_id)
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        return Err("知识集不存在或已删除".to_string());
+    }
+    Ok(())
+}
+
+/// 在 SessionStore 的同一写锁内追加或重新启用一个知识集，避免跨端 read-modify-write 丢更新。
+#[tauri::command]
+pub fn session_add_mounted_collection(
+    session_id: String,
+    collection_id: i64,
+    store: State<'_, SessionStore>,
+    knowledge: State<'_, KnowledgeService>,
+    app: AppHandle,
+) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+    ensure_collection_mountable(&knowledge, collection_id)?;
+    let snapshot = store.add_mounted_collection(&session_id, collection_id);
+    publish_kb_mount_change(&app, &session_id, &snapshot);
+    Ok(snapshot)
+}
+
+/// 原子切换单个知识集的启用状态。停用不依赖模型或知识集仍然存在，以便清理陈旧状态。
+#[tauri::command]
+pub fn session_set_mounted_collection_enabled(
+    session_id: String,
+    collection_id: i64,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    knowledge: State<'_, KnowledgeService>,
+    app: AppHandle,
+) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+    if enabled {
+        ensure_collection_mountable(&knowledge, collection_id)?;
+    }
+    let snapshot = store.set_mounted_collection_enabled(&session_id, collection_id, enabled);
+    publish_kb_mount_change(&app, &session_id, &snapshot);
+    Ok(snapshot)
+}
+
+/// 原子移除单个知识集；与其他端对不同知识集的并发操作可以安全合并。
+#[tauri::command]
+pub fn session_remove_mounted_collection(
+    session_id: String,
+    collection_id: i64,
+    store: State<'_, SessionStore>,
+    app: AppHandle,
+) -> crate::core::mode_state::MountedCollectionsSnapshot {
+    let snapshot = store.remove_mounted_collection(&session_id, collection_id);
+    publish_kb_mount_change(&app, &session_id, &snapshot);
+    snapshot
 }
 
 /// 摘下会话的知识集挂载。
@@ -83,24 +154,27 @@ pub fn session_unmount_collection(
     session_id: String,
     store: State<'_, SessionStore>,
     app: AppHandle,
-) {
-    store.set_mounted_collection(&session_id, None);
-    publish_kb_mount_change(&app, &session_id, &[]);
+) -> crate::core::mode_state::MountedCollectionsSnapshot {
+    let snapshot = store.set_mounted_collections(&session_id, Vec::new());
+    publish_kb_mount_change(&app, &session_id, &snapshot);
+    snapshot
 }
 
 fn publish_kb_mount_change(
     app: &AppHandle,
     session_id: &str,
-    collections: &[crate::core::mode_state::MountedCollection],
+    snapshot: &crate::core::mode_state::MountedCollectionsSnapshot,
 ) {
-    let collection_id = collections
+    let collection_id = snapshot
+        .collections
         .iter()
         .find(|collection| collection.enabled)
         .map(|collection| collection.collection_id);
     let payload = serde_json::json!({
         "session_id": session_id,
         "collection_id": collection_id,
-        "collections": collections,
+        "collections": &snapshot.collections,
+        "revision": snapshot.revision,
     });
     let _ = app.emit("remote_control:kb_mount_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
@@ -126,6 +200,15 @@ pub fn session_mounted_collections(
     store: State<'_, SessionStore>,
 ) -> Vec<crate::core::mode_state::MountedCollection> {
     store.mounted_collections(&session_id)
+}
+
+/// 带修订号读取挂载事实源，供多端拒绝乱序响应。
+#[tauri::command]
+pub fn session_mounted_collections_snapshot(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> crate::core::mode_state::MountedCollectionsSnapshot {
+    store.mounted_collections_snapshot(&session_id)
 }
 
 use crate::features::knowledge as knowledge_domain;

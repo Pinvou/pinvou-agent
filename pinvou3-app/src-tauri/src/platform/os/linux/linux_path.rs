@@ -28,6 +28,10 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
 }
 
+pub fn filesystem_path_identity_key(path: &str) -> String {
+    path.to_string()
+}
+
 pub fn python_command() -> String {
     if which_in_path("python3") {
         return "python3".to_string();

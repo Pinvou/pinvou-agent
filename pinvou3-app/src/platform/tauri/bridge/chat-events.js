@@ -389,6 +389,7 @@
     // Update the streaming chat item
     var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
+      item.text = context.currentStreamText;
       item.html = renderMarkdown(context.currentStreamText);
       item.streaming = true;
     } else {
@@ -397,6 +398,7 @@
       state.chatItems.push({
         id: context.currentStreamId,
         type: "assistant",
+        text: context.currentStreamText,
         html: renderMarkdown(context.currentStreamText),
         time: timeStr(),
         streaming: true,
@@ -863,11 +865,14 @@
   // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
   // 新 payload 带 collections；collection_id 保留给旧远程端兼容。
   // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
+  var kbMountSyncGeneration = 0;
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
     if (p.session_id !== state.activeSessionId) return;
-    var mounted = Array.isArray(p.collections)
+    var sessionId = p.session_id;
+    var generation = ++kbMountSyncGeneration;
+    var payloadMounted = Array.isArray(p.collections)
       ? p.collections.map(function (entry) {
           return {
             collectionId: entry.collectionId != null ? entry.collectionId : entry.collection_id,
@@ -875,10 +880,34 @@
           };
         })
       : (p.collection_id == null ? [] : [{ collectionId: p.collection_id, enabled: true }]);
-    state.mountedCollections = mounted;
-    var firstEnabled = mounted.find(function (entry) { return entry.enabled; });
-    state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
-    notify();
+    function normalizeSnapshot(value) {
+      if (value && !Array.isArray(value) && Array.isArray(value.collections)) {
+        return { revision: Number(value.revision || 0), collections: value.collections };
+      }
+      return { revision: 0, collections: Array.isArray(value) ? value : payloadMounted };
+    }
+    function commit(value) {
+      if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
+      var snapshot = normalizeSnapshot(value);
+      if (snapshot.revision < Number(state.mountedCollectionsRevision || 0)) return;
+      var mounted = snapshot.collections.map(function (entry) {
+        return {
+          collectionId: entry.collectionId != null ? entry.collectionId : entry.collection_id,
+          enabled: entry.enabled !== false,
+        };
+      });
+      state.mountedCollections = mounted;
+      state.mountedCollectionsRevision = snapshot.revision;
+      var firstEnabled = mounted.find(function (entry) { return entry.enabled; });
+      state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
+      notify();
+    }
+    // 事件可能由并发命令乱序发出；重新读取后端事实源，并以 generation 防止旧请求晚回覆盖。
+    invoke("session_mounted_collections_snapshot", { sessionId: sessionId })
+      .then(function (snapshot) { commit(snapshot); })
+      .catch(function () {
+        commit({ revision: Number(p.revision || 0), collections: payloadMounted });
+      });
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）

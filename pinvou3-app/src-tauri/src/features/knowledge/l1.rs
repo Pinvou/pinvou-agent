@@ -500,7 +500,7 @@ impl L1Store {
                  FROM chunks_fts JOIN chunks k ON k.id=chunks_fts.rowid \
                  JOIN documents d ON d.id=k.document_id \
                  WHERE k.collection_id=?1 AND chunks_fts MATCH ?2 \
-                 ORDER BY score LIMIT ?3",
+                 ORDER BY score, d.path, k.ord, d.id LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![collection_id, m, lim as i64], map)?;
             rows.collect()
@@ -509,7 +509,8 @@ impl L1Store {
             let mut stmt = c.prepare(
                 "SELECT d.id,k.text,0.0 AS score,d.name,d.path,k.ord \
                  FROM chunks k JOIN documents d ON d.id=k.document_id \
-                 WHERE k.collection_id=?1 AND k.text LIKE ?2 LIMIT ?3",
+                 WHERE k.collection_id=?1 AND k.text LIKE ?2 \
+                 ORDER BY d.path, k.ord, d.id LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![collection_id, like, lim as i64], map)?;
             rows.collect()
@@ -555,7 +556,13 @@ impl L1Store {
                 },
             ));
         }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.doc_path.cmp(&b.1.doc_path))
+                .then_with(|| a.1.ord.cmp(&b.1.ord))
+                .then_with(|| a.1.document_id.cmp(&b.1.document_id))
+        });
         Ok(scored.into_iter().take(lim).map(|(_, h)| h).collect())
     }
 
@@ -646,7 +653,7 @@ impl L1Store {
         let mut positions: HashMap<(String, i64, String), usize> = HashMap::new();
         for (_, _, _, collection_id, hit) in candidates {
             let source_key = (
-                hit.doc_path.replace('\\', "/").to_lowercase(),
+                dedupe_path_key(&hit.doc_path),
                 hit.ord,
                 hit.text.replace("\r\n", "\n").trim().to_string(),
             );
@@ -773,6 +780,9 @@ impl L1Store {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.doc_path.cmp(&b.doc_path))
+                .then_with(|| a.ord.cmp(&b.ord))
+                .then_with(|| a.document_id.cmp(&b.document_id))
         });
         Ok(out)
     }
@@ -780,6 +790,10 @@ impl L1Store {
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+fn dedupe_path_key(path: &str) -> String {
+    crate::platform::os::filesystem_path_identity_key(path)
 }
 
 /// 倒数排名融合(RRF)：两路结果按排名给分，按 (docPath#ord) 去重合并，取前 k。
@@ -808,6 +822,9 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.doc_path.cmp(&b.doc_path))
+            .then_with(|| a.ord.cmp(&b.ord))
+            .then_with(|| a.document_id.cmp(&b.document_id))
     });
     merged.into_iter().take(k).collect()
 }
@@ -1001,6 +1018,58 @@ mod tests {
         assert_eq!(hits[0].hit.doc_path, "/tmp/shared.md");
         assert_eq!(hits[1].collection_ids, vec![conflicting]);
         assert!(hits[1].hit.text.contains("conflicting"));
+    }
+
+    #[test]
+    fn rrf_equal_scores_use_stable_source_order() {
+        let hit = |document_id: i64, path: &str| ChunkHit {
+            document_id,
+            text: path.to_string(),
+            score: 0.0,
+            doc_name: path.to_string(),
+            doc_path: path.to_string(),
+            ord: 0,
+        };
+        // 两条分别只在一路排第一，RRF 分数完全相同；结果不能依赖 HashMap 随机种子。
+        let merged = rrf_merge(vec![hit(2, "/tmp/b.md")], vec![hit(1, "/tmp/a.md")], 2);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|item| item.doc_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/tmp/a.md", "/tmp/b.md"]
+        );
+    }
+
+    #[test]
+    fn equal_rank_inputs_use_stable_source_order() {
+        let l1 = mem();
+        let collection_id = l1.create_collection("stable", None, None).unwrap();
+        for path in ["/tmp/b.md", "/tmp/a.md"] {
+            let document_id = l1
+                .upsert_document(collection_id, path, path, Some("md"), 10, 0)
+                .unwrap();
+            l1.replace_doc_chunks(
+                document_id,
+                collection_id,
+                &["stable ranking term".to_string()],
+                Some(&[vec![1.0, 0.0]]),
+            )
+            .unwrap();
+        }
+
+        for hits in [
+            l1.search_fts(collection_id, "stable", 10).unwrap(),
+            l1.search_fts(collection_id, "st", 10).unwrap(),
+            l1.search_vec(collection_id, &[1.0, 0.0], 10).unwrap(),
+        ] {
+            assert_eq!(
+                hits.iter()
+                    .map(|hit| hit.doc_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["/tmp/a.md", "/tmp/b.md"]
+            );
+        }
     }
 
     /// 热加载槽:set_embedder 换值,L1Store clone 共享同一槽(下载完成后所有在跑线程见新);

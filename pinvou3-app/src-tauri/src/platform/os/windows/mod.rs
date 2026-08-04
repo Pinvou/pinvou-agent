@@ -3,9 +3,9 @@ mod windows_permission;
 mod windows_system;
 
 pub use windows_path::{
-    apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command, kill_pid_tree,
-    obsidian_config_path, path_component_eq, platform_compat_path, python_command, user_home_dir,
-    validate_upload_location,
+    apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
+    filesystem_path_identity_key, kill_pid_tree, obsidian_config_path, path_component_eq,
+    platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
 pub(crate) use windows_path::{asr_model_path, bundled_asr_backend_path, bundled_asr_tool_path};
 pub use windows_permission::{

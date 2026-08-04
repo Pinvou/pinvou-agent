@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::core::mode_state::{
-    ActiveSkillBinding, MountedCollection, SerializableMode, SessionModeState,
+    ActiveSkillBinding, MountedCollection, MountedCollectionsSnapshot, SerializableMode,
+    SessionModeState,
 };
 use crate::platform::paths;
 
@@ -1513,9 +1514,83 @@ impl SessionStore {
         self.set_mounted_collections(id, mounted);
     }
 
-    pub fn set_mounted_collections(&self, id: &str, collections: Vec<MountedCollection>) {
+    pub fn set_mounted_collections(
+        &self,
+        id: &str,
+        collections: Vec<MountedCollection>,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |_| collections)
+    }
+
+    pub fn add_mounted_collection(
+        &self,
+        id: &str,
+        collection_id: i64,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            if let Some(collection) = collections
+                .iter_mut()
+                .find(|collection| collection.collection_id == collection_id)
+            {
+                collection.enabled = true;
+            } else {
+                collections.push(MountedCollection {
+                    collection_id,
+                    enabled: true,
+                });
+            }
+            collections
+        })
+    }
+
+    pub fn set_mounted_collection_enabled(
+        &self,
+        id: &str,
+        collection_id: i64,
+        enabled: bool,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            if let Some(collection) = collections
+                .iter_mut()
+                .find(|collection| collection.collection_id == collection_id)
+            {
+                collection.enabled = enabled;
+            }
+            collections
+        })
+    }
+
+    pub fn remove_mounted_collection(
+        &self,
+        id: &str,
+        collection_id: i64,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            collections.retain(|collection| collection.collection_id != collection_id);
+            collections
+        })
+    }
+
+    fn update_mounted_collections<F>(&self, id: &str, update: F) -> MountedCollectionsSnapshot
+    where
+        F: FnOnce(Vec<MountedCollection>) -> Vec<MountedCollection>,
+    {
+        let mut states = self.mode_states.write();
+        let state = states.entry(id.to_string()).or_default();
+        let current = if state.mounted_collections.is_empty() {
+            state
+                .mounted_collection
+                .map(|collection_id| MountedCollection {
+                    collection_id,
+                    enabled: true,
+                })
+                .into_iter()
+                .collect()
+        } else {
+            state.mounted_collections.clone()
+        };
         let mut normalized = Vec::new();
-        for collection in collections {
+        for collection in update(current) {
             if collection.collection_id <= 0
                 || normalized.iter().any(|mounted: &MountedCollection| {
                     mounted.collection_id == collection.collection_id
@@ -1529,28 +1604,44 @@ impl SessionStore {
             .iter()
             .find(|collection| collection.enabled)
             .map(|collection| collection.collection_id);
-        let mut states = self.mode_states.write();
-        let state = states.entry(id.to_string()).or_default();
         state.mounted_collection = legacy;
-        state.mounted_collections = normalized;
+        state.mounted_collections = normalized.clone();
+        state.mounted_collections_revision =
+            state.mounted_collections_revision.wrapping_add(1).max(1);
+        MountedCollectionsSnapshot {
+            revision: state.mounted_collections_revision,
+            collections: normalized,
+        }
     }
 
     pub fn mounted_collections(&self, id: &str) -> Vec<MountedCollection> {
+        self.mounted_collections_snapshot(id).collections
+    }
+
+    pub fn mounted_collections_snapshot(&self, id: &str) -> MountedCollectionsSnapshot {
         let states = self.mode_states.read();
         let Some(state) = states.get(id) else {
-            return Vec::new();
+            return MountedCollectionsSnapshot {
+                revision: 0,
+                collections: Vec::new(),
+            };
         };
-        if !state.mounted_collections.is_empty() {
-            return state.mounted_collections.clone();
+        let collections = if !state.mounted_collections.is_empty() {
+            state.mounted_collections.clone()
+        } else {
+            state
+                .mounted_collection
+                .map(|collection_id| MountedCollection {
+                    collection_id,
+                    enabled: true,
+                })
+                .into_iter()
+                .collect()
+        };
+        MountedCollectionsSnapshot {
+            revision: state.mounted_collections_revision,
+            collections,
         }
-        state
-            .mounted_collection
-            .map(|collection_id| MountedCollection {
-                collection_id,
-                enabled: true,
-            })
-            .into_iter()
-            .collect()
     }
 
     pub fn mounted_collection_ids(&self, id: &str) -> Vec<i64> {
@@ -3696,6 +3787,45 @@ mod tests {
                 enabled: true,
             }]
         );
+    }
+
+    #[test]
+    fn mounted_collection_item_updates_merge_across_concurrent_clients() {
+        let (store, _g) = isolated_store();
+        let sid = "s-concurrent-multi-kb";
+        store.set_mounted_collection(sid, Some(7));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        let add_store = store.clone();
+        let add_barrier = barrier.clone();
+        let add = std::thread::spawn(move || {
+            add_barrier.wait();
+            add_store.add_mounted_collection(sid, 8);
+        });
+        let disable_store = store.clone();
+        let disable_barrier = barrier.clone();
+        let disable = std::thread::spawn(move || {
+            disable_barrier.wait();
+            disable_store.set_mounted_collection_enabled(sid, 7, false);
+        });
+        barrier.wait();
+        add.join().unwrap();
+        disable.join().unwrap();
+
+        assert_eq!(
+            store.mounted_collections(sid),
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: false,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: true,
+                },
+            ],
+        );
+        assert_eq!(store.mounted_collection(sid), Some(8));
     }
 
     #[test]

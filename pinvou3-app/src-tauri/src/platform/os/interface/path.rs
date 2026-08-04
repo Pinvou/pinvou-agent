@@ -18,6 +18,12 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     super::super::platform::path_component_eq(component, expected)
 }
 
+/// Stable identity key for paths already stored by the application. The platform adapter
+/// applies only equivalences guaranteed by that OS (for example Windows separators and case).
+pub fn filesystem_path_identity_key(path: &str) -> String {
+    super::super::platform::filesystem_path_identity_key(path)
+}
+
 pub fn python_command() -> String {
     super::super::platform::python_command()
 }
@@ -68,6 +74,25 @@ mod tests {
     fn platform_path_api_returns_pathbuf() {
         let p = platform_compat_path("/tmp/pinvou3-os-test");
         assert!(!p.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn path_identity_case_behavior_matches_component_comparison() {
+        assert_eq!(
+            filesystem_path_identity_key("A.md") == filesystem_path_identity_key("a.md"),
+            path_component_eq(OsStr::new("A"), "a"),
+        );
+        if std::path::MAIN_SEPARATOR == '\\' {
+            assert_eq!(
+                filesystem_path_identity_key(r"folder\file.md"),
+                filesystem_path_identity_key("folder/file.md"),
+            );
+        } else {
+            assert_ne!(
+                filesystem_path_identity_key(r"folder\file.md"),
+                filesystem_path_identity_key("folder/file.md"),
+            );
+        }
     }
 
     #[test]

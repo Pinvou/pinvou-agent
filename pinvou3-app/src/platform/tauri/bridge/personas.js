@@ -139,31 +139,32 @@
     }).filter(Boolean);
   }
   function applyMountedCollections(value) {
-    var normalized = normalizeMountedCollections(value);
+    var hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
+    var revision = hasSnapshot ? Number(value.revision || 0) : 0;
+    if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
+      return normalizeMountedCollections(state.mountedCollections);
+    }
+    var normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
     state.mountedCollections = normalized;
+    state.mountedCollectionsRevision = revision;
     var firstEnabled = normalized.find(function (entry) { return entry.enabled; });
     state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
     return normalized;
   }
   var mountedCollectionUpdate = Promise.resolve();
-  function updateMountedCollections(update) {
+  function updateMountedCollections(command, args) {
     var requestedSessionId = state.activeSessionId;
     mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
-      if (requestedSessionId && state.activeSessionId !== requestedSessionId) return null;
-      if (!state.activeSessionId) {
-        await ensureSession();
-        if (!state.activeSessionId) return null;
-      }
-      var sessionId = state.activeSessionId;
-      var next = normalizeMountedCollections(update(normalizeMountedCollections(state.mountedCollections)));
+      // Existing sessions are captured at click time so a later navigation cannot
+      // retarget a queued mutation. Draft materialization stays inside this queue,
+      // ensuring rapid multi-mount actions create exactly one session.
+      var sessionId = requestedSessionId || await ensureSession();
+      if (!sessionId) return null;
       try {
-        var saved = await invoke("session_set_mounted_collections", {
-          sessionId: sessionId,
-          collections: next,
-        });
-        var normalized = normalizeMountedCollections(saved);
+        var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
+        var normalized = normalizeMountedCollections(saved && saved.collections);
         if (state.activeSessionId === sessionId) {
-          applyMountedCollections(normalized);
+          applyMountedCollections(saved);
           notify();
         }
         return normalized;
@@ -177,35 +178,29 @@
   // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。
   async function mountCollection(collectionId) {
     if (collectionId == null) return null;
-    var saved = await updateMountedCollections(function (current) {
-      var existing = current.find(function (entry) { return entry.collectionId === collectionId; });
-      if (existing) existing.enabled = true;
-      else current.push({ collectionId: collectionId, enabled: true });
-      return current;
-    });
+    var saved = await updateMountedCollections("session_add_mounted_collection", { collectionId: collectionId });
     return saved ? collectionId : null;
   }
   async function setCollectionEnabled(collectionId, enabled) {
-    return updateMountedCollections(function (current) {
-      var existing = current.find(function (entry) { return entry.collectionId === collectionId; });
-      if (existing) existing.enabled = !!enabled;
-      return current;
+    return updateMountedCollections("session_set_mounted_collection_enabled", {
+      collectionId: collectionId,
+      enabled: !!enabled,
     });
   }
   async function removeCollection(collectionId) {
-    return updateMountedCollections(function (current) {
-      return current.filter(function (entry) { return entry.collectionId !== collectionId; });
-    });
+    return updateMountedCollections("session_remove_mounted_collection", { collectionId: collectionId });
   }
   // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); notify(); return; }
-    return updateMountedCollections(function () { return []; });
+    return updateMountedCollections("session_unmount_collection", null);
   }
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
   async function syncMountedCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); return; }
     try {
+      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: state.activeSessionId });
+      if (snapshot && Array.isArray(snapshot.collections)) { applyMountedCollections(snapshot); return; }
       var mounted = await invoke("session_mounted_collections", { sessionId: state.activeSessionId });
       if (Array.isArray(mounted)) { applyMountedCollections(mounted); return; }
       var legacy = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });

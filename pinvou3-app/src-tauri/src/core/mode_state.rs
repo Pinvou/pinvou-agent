@@ -37,6 +37,13 @@ pub struct MountedCollection {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedCollectionsSnapshot {
+    pub revision: u64,
+    pub collections: Vec<MountedCollection>,
+}
+
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
@@ -89,6 +96,9 @@ pub struct SessionModeState {
     /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。
     #[serde(default)]
     pub mounted_collections: Vec<MountedCollection>,
+    /// 仅驻内存的并发版本号；通过专用 snapshot 命令对外提供，不混入 mode_state 协议。
+    #[serde(skip)]
+    pub mounted_collections_revision: u64,
 }
 
 impl Default for SessionModeState {
@@ -103,6 +113,7 @@ impl Default for SessionModeState {
             pending_persona_body: None,
             mounted_collection: None,
             mounted_collections: Vec::new(),
+            mounted_collections_revision: 0,
         }
     }
 }
@@ -159,6 +170,7 @@ mod tests {
             pending_persona_body: None,
             mounted_collection: None,
             mounted_collections: Vec::new(),
+            mounted_collections_revision: 0,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

@@ -198,6 +198,7 @@
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
     mountedCollections: [],
+    mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -806,6 +807,7 @@
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
       mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
+      mountedCollectionsRevision: 0,
       scheduledTaskDraft: null,
       scheduledRunSession: false,
       scheduledInitialTurnPhase: null,
@@ -1017,6 +1019,7 @@
     buf.activePersona = state.activePersona;
     buf.mountedCollection = state.mountedCollection;
     buf.mountedCollections = state.mountedCollections;
+    buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
     buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
@@ -1044,6 +1047,7 @@
     state.mountedCollections = Array.isArray(buf.mountedCollections)
       ? buf.mountedCollections
       : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
+    state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
     state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
@@ -2448,6 +2452,7 @@
     var results = await Promise.all([
       invokeOutcome("get_mode_state", { sessionId: sessionId }),
       invokeOutcome("get_active_persona", { sessionId: sessionId }),
+      invokeOutcome("session_mounted_collections_snapshot", { sessionId: sessionId }),
       invokeOutcome("session_mounted_collections", { sessionId: sessionId }),
       invokeOutcome("session_mounted_collection", { sessionId: sessionId }),
       invokeOutcome("get_memory_overview", { sessionId: sessionId }),
@@ -2456,14 +2461,17 @@
 
     var mode = results[0];
     var persona = results[1];
-    var collections = results[2];
-    var legacyCollection = results[3];
-    var memory = results[4];
+    var snapshot = results[2];
+    var collections = results[3];
+    var legacyCollection = results[4];
+    var memory = results[5];
     state.modeState = mode.ok && mode.value
       ? { mode: mode.value.mode || "yolo" }
       : { mode: "yolo" };
     state.activePersona = persona.ok ? (persona.value || null) : null;
-    if (collections.ok && Array.isArray(collections.value)) {
+    if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
+      applyMountedCollections(snapshot.value);
+    } else if (collections.ok && Array.isArray(collections.value)) {
       applyMountedCollections(collections.value);
     } else {
       applyMountedCollections(legacyCollection.ok && legacyCollection.value != null ? [legacyCollection.value] : []);
@@ -3293,7 +3301,7 @@
           textBuf += b.text;
         } else if (b.type === "thinking") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           var reasoningText = String(b.thinking || b.text || "");
@@ -3305,7 +3313,7 @@
           }
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
@@ -3389,7 +3397,7 @@
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+        addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {
@@ -3842,7 +3850,7 @@
       currentStreamText = "";
       currentStreamId = ++itemIdSeq;
       submittedStreamId = currentStreamId;
-      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+      state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
@@ -4788,6 +4796,7 @@
     // Update the streaming chat item
     var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
+      item.text = currentStreamText;
       item.html = renderMarkdown(currentStreamText);
       item.streaming = true;
     } else {
@@ -4796,6 +4805,7 @@
       state.chatItems.push({
         id: currentStreamId,
         type: "assistant",
+        text: currentStreamText,
         html: renderMarkdown(currentStreamText),
         time: timeStr(),
         streaming: true,
@@ -6669,7 +6679,7 @@
     startThinking();
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
-    state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     if (editBuffer) saveWorkingSetTo(editBuffer);
     notify();
     turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
@@ -7295,31 +7305,32 @@
     }).filter(Boolean);
   }
   function applyMountedCollections(value) {
-    var normalized = normalizeMountedCollections(value);
+    var hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
+    var revision = hasSnapshot ? Number(value.revision || 0) : 0;
+    if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
+      return normalizeMountedCollections(state.mountedCollections);
+    }
+    var normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
     state.mountedCollections = normalized;
+    state.mountedCollectionsRevision = revision;
     var firstEnabled = normalized.find(function (entry) { return entry.enabled; });
     state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
     return normalized;
   }
   var mountedCollectionUpdate = Promise.resolve();
-  function updateMountedCollections(update) {
+  function updateMountedCollections(command, args) {
     var requestedSessionId = state.activeSessionId;
     mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
-      if (requestedSessionId && state.activeSessionId !== requestedSessionId) return null;
-      if (!state.activeSessionId) {
-        await ensureSession();
-        if (!state.activeSessionId) return null;
-      }
-      var sessionId = state.activeSessionId;
-      var next = normalizeMountedCollections(update(normalizeMountedCollections(state.mountedCollections)));
+      // Existing sessions are captured at click time so a later navigation cannot
+      // retarget a queued mutation. Draft materialization stays inside this queue,
+      // ensuring rapid multi-mount actions create exactly one session.
+      var sessionId = requestedSessionId || await ensureSession();
+      if (!sessionId) return null;
       try {
-        var saved = await invoke("session_set_mounted_collections", {
-          sessionId: sessionId,
-          collections: next,
-        });
-        var normalized = normalizeMountedCollections(saved);
+        var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
+        var normalized = normalizeMountedCollections(saved && saved.collections);
         if (state.activeSessionId === sessionId) {
-          applyMountedCollections(normalized);
+          applyMountedCollections(saved);
           notify();
         }
         return normalized;
@@ -7333,35 +7344,29 @@
   // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。
   async function mountCollection(collectionId) {
     if (collectionId == null) return null;
-    var saved = await updateMountedCollections(function (current) {
-      var existing = current.find(function (entry) { return entry.collectionId === collectionId; });
-      if (existing) existing.enabled = true;
-      else current.push({ collectionId: collectionId, enabled: true });
-      return current;
-    });
+    var saved = await updateMountedCollections("session_add_mounted_collection", { collectionId: collectionId });
     return saved ? collectionId : null;
   }
   async function setCollectionEnabled(collectionId, enabled) {
-    return updateMountedCollections(function (current) {
-      var existing = current.find(function (entry) { return entry.collectionId === collectionId; });
-      if (existing) existing.enabled = !!enabled;
-      return current;
+    return updateMountedCollections("session_set_mounted_collection_enabled", {
+      collectionId: collectionId,
+      enabled: !!enabled,
     });
   }
   async function removeCollection(collectionId) {
-    return updateMountedCollections(function (current) {
-      return current.filter(function (entry) { return entry.collectionId !== collectionId; });
-    });
+    return updateMountedCollections("session_remove_mounted_collection", { collectionId: collectionId });
   }
   // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); notify(); return; }
-    return updateMountedCollections(function () { return []; });
+    return updateMountedCollections("session_unmount_collection", null);
   }
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
   async function syncMountedCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); return; }
     try {
+      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: state.activeSessionId });
+      if (snapshot && Array.isArray(snapshot.collections)) { applyMountedCollections(snapshot); return; }
       var mounted = await invoke("session_mounted_collections", { sessionId: state.activeSessionId });
       if (Array.isArray(mounted)) { applyMountedCollections(mounted); return; }
       var legacy = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });

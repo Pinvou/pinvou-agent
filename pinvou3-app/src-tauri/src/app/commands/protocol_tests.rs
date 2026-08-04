@@ -162,9 +162,13 @@ command_protocol!(
     [
         "session_mount_collection",
         "session_set_mounted_collections",
+        "session_add_mounted_collection",
+        "session_set_mounted_collection_enabled",
+        "session_remove_mounted_collection",
         "session_unmount_collection",
         "session_mounted_collection",
         "session_mounted_collections",
+        "session_mounted_collections_snapshot",
         "kb_start_scan",
         "kb_scan_status",
         "kb_cancel_scan",

@@ -73,6 +73,10 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component.to_string_lossy().eq_ignore_ascii_case(expected)
 }
 
+pub fn filesystem_path_identity_key(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
+}
+
 pub fn python_command() -> String {
     if let Ok(p) = std::env::var("PINVOU3_PYTHON") {
         if !p.is_empty() && is_valid_python_candidate(Path::new(&p)) {
