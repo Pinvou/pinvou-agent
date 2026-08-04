@@ -4,6 +4,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -17,6 +18,10 @@ for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
     path.join(conversationDir, file),
   );
 }
+vm.runInThisContext(
+  readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
+  { filename: 'model-service-errors.js' },
+);
 
 try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
@@ -251,6 +256,25 @@ try {
   assert.equal(history.turns[2].error, '模型失败');
   assert.equal(history.turns[2].lifecycleKnown, true);
 
+  const billingHistory = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      {
+        turn_id: 'turn-live',
+        event: 'assistant_done',
+        timestamp: 125456,
+        ts: '1970-01-01T00:02:05Z',
+        status: 'Failed',
+        error: 'SSE stream request failed: HTTP 402 insufficient balance',
+      },
+    ],
+  });
+  assert.equal(billingHistory.turns[2].userError.kind, 'billing');
+  assert.match(billingHistory.turns[2].userError.title, /账户余额不足/);
+
   const paired = pairDeepSeekTimeline([
     { turn_id: 'not-admitted', event: 'user_start', timestamp: 1, ts: '1970-01-01T00:00:00Z' },
     { turn_id: 'not-admitted', event: 'assistant_done', timestamp: 2, ts: '1970-01-01T00:00:00Z', status: 'send_error' },
@@ -359,6 +383,10 @@ try {
   'the shared card must expose explicit radio/checkbox choices and an explicit submit action');
   assert.ok(conversationView.includes('查看原始数据'),
     'model-facing compacted payloads must be secondary diagnostic details');
+  assert.ok(conversationView.includes('turn.userError')
+    && conversationView.includes('technicalDetails')
+    && conversationView.includes('turn.userError.technicalDetail'),
+  'timeline terminal errors must render friendly model-service errors with optional technical details');
   assert.ok(conversationView.includes("closest('a[href]')")
     && conversationView.includes('event.preventDefault()')
     && conversationView.includes('onOpenExternal(external)'),
