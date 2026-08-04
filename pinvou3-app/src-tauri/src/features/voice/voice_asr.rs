@@ -9,7 +9,6 @@
 //! 编译目标下被 clippy 误报为 dead code,但删除会破坏 Windows/Linux 构建。
 #![allow(dead_code)]
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +21,6 @@ use crate::platform::paths;
 
 static ASR_INSTALLING: AtomicBool = AtomicBool::new(false);
 static ASR_CANCEL: AtomicBool = AtomicBool::new(false);
-const ASR_CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 static MODEL_VERIFICATION_CACHE: OnceLock<Mutex<Option<ModelVerificationCache>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -192,27 +190,55 @@ pub async fn download_asr_model(
             emit_download_cancelled(app);
             return Err("已取消".to_string());
         }
-        match download_model_from_url(app, &url, &tmp, &spec).await {
-            Ok(()) => {
-                if ASR_CANCEL.load(Ordering::Acquire) {
-                    let _ = std::fs::remove_file(&tmp);
-                    emit_download_cancelled(app);
-                    return Err("已取消".to_string());
-                }
-                let _ = app.emit(
+        // 校验阶段事件:helper 内部完成下载→sha256 校验→原子 rename。
+        let _ = app.emit(
+            "voice_asr:progress",
+            serde_json::json!({ "stage": "verify" }),
+        );
+        // 进度节流:每 1 MiB 或到达 total 才 emit(与原 download_model_from_url 一致)。
+        // helper 把真实 Content-Length(或缺失时回退到 max_bytes=expected_size)作为
+        // 进度 total 传入闭包,这里直接透传,不改写。helper 的 on_progress 是
+        // `Fn`(非 FnMut),节流用的 last_emit 状态用 Arc<Mutex> 承载以保持 `Fn`。
+        let app_clone = app.clone();
+        let model_id = spec.id;
+        let filename = spec.filename;
+        let last_emit_clone = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+        let on_progress: Box<dyn Fn(u64, u64) + Send> = Box::new(move |downloaded: u64, t: u64| {
+            let mut guard = match last_emit_clone.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if downloaded - *guard >= 1_048_576 || downloaded >= t {
+                *guard = downloaded;
+                drop(guard);
+                let _ = app_clone.emit(
                     "voice_asr:progress",
-                    serde_json::json!({ "stage": "verify" }),
+                    serde_json::json!({ "stage": "model", "modelId": model_id, "filename": filename, "downloaded": downloaded, "total": t }),
                 );
-                let result = verify_and_promote_model(&tmp, &dest, &spec);
-                match result {
-                    Ok(()) => return Ok(dest),
-                    Err(_) if ASR_CANCEL.load(Ordering::Acquire) => {
-                        let _ = std::fs::remove_file(&tmp);
-                        emit_download_cancelled(app);
-                        return Err("已取消".to_string());
-                    }
-                    Err(err) => return Err(err),
-                }
+            }
+        });
+        let is_cancelled = Box::new(|| ASR_CANCEL.load(Ordering::Acquire));
+        // 原实现无硬性 Content-Length 上限,靠下载后 expected_size+sha256 精确校验兜底。
+        // 这里给一个 generous 上限(预期大小的 2 倍,且不少于 16 MiB),仅挡离谱大文件,
+        // 不影响真实模型(expected_size 即其精确大小)。
+        let max_bytes = spec.expected_size.max(16 * 1024 * 1024) * 2;
+        let req = crate::platform::download::DownloadRequest {
+            url: &url,
+            dest: &dest,
+            part: &tmp,
+            expected_sha256: spec.sha256,
+            max_bytes,
+            is_cancelled,
+            on_progress,
+        };
+        match crate::platform::download::download_to_part_with_verify(req).await {
+            Ok(()) => {
+                remember_model_verification(&dest, &spec, true);
+                return Ok(dest);
+            }
+            Err(err) if err == "已取消" => {
+                emit_download_cancelled(app);
+                return Err(err);
             }
             Err(err) => {
                 let _ = std::fs::remove_file(&tmp);
@@ -240,70 +266,6 @@ fn model_download_urls(spec: &AsrModelSpec) -> Vec<String> {
     urls
 }
 
-async fn download_model_from_url(
-    app: &tauri::AppHandle,
-    url: &str,
-    tmp: &Path,
-    spec: &AsrModelSpec,
-) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .user_agent("pinvou3-asr/1.0")
-        .build()
-        .map_err(|e| format!("构建 ASR 模型下载客户端失败: {e}"))?;
-    let response = tokio::select! {
-        result = client.get(url).send() => {
-            result.map_err(|e| format!("连接 ASR 模型源失败: {e}"))?
-        }
-        _ = wait_for_asr_cancel() => {
-            let _ = std::fs::remove_file(tmp);
-            return Err("已取消".to_string());
-        }
-    };
-    let mut resp = response
-        .error_for_status()
-        .map_err(|e| format!("ASR 模型源响应异常: {e}"))?;
-    let total = resp
-        .content_length()
-        .filter(|n| *n > 0)
-        .unwrap_or(spec.expected_size);
-    let mut file = std::fs::File::create(tmp).map_err(|e| format!("创建 ASR 模型文件失败: {e}"))?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit: u64 = 0;
-    loop {
-        let chunk = tokio::select! {
-            result = resp.chunk() => {
-                result.map_err(|e| format!("ASR 模型下载中断: {e}"))?
-            }
-            _ = wait_for_asr_cancel() => {
-                drop(file);
-                let _ = std::fs::remove_file(tmp);
-                return Err("已取消".to_string());
-            }
-        };
-        let Some(chunk) = chunk else {
-            break;
-        };
-        file.write_all(&chunk)
-            .map_err(|e| format!("写入 ASR 模型失败: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if downloaded - last_emit >= 1_048_576 || downloaded >= total {
-            last_emit = downloaded;
-            let _ = app.emit(
-                "voice_asr:progress",
-                serde_json::json!({ "stage": "model", "modelId": spec.id, "filename": spec.filename, "downloaded": downloaded, "total": total }),
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn wait_for_asr_cancel() {
-    while !ASR_CANCEL.load(Ordering::Acquire) {
-        tokio::time::sleep(ASR_CANCEL_POLL_INTERVAL).await;
-    }
-}
-
 fn emit_download_cancelled(app: &tauri::AppHandle) {
     let _ = app.emit(
         "voice_asr:progress",
@@ -317,30 +279,6 @@ fn temp_model_path(dest: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("asr-model.gguf");
     dest.with_file_name(format!("{filename}.part"))
-}
-
-fn verify_and_promote_model(tmp: &Path, dest: &Path, spec: &AsrModelSpec) -> Result<(), String> {
-    if ASR_CANCEL.load(Ordering::Acquire) {
-        let _ = std::fs::remove_file(tmp);
-        return Err("已取消".to_string());
-    }
-    if !model_file_verified(tmp, spec) {
-        let _ = std::fs::remove_file(tmp);
-        return Err("ASR 模型校验失败，请重试下载。".to_string());
-    }
-    if ASR_CANCEL.load(Ordering::Acquire) {
-        let _ = std::fs::remove_file(tmp);
-        return Err("已取消".to_string());
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
-    }
-    if dest.exists() {
-        let _ = std::fs::remove_file(dest);
-    }
-    std::fs::rename(tmp, dest).map_err(|e| format!("保存 ASR 模型失败: {e}"))?;
-    remember_model_verification(dest, spec, true);
-    Ok(())
 }
 
 pub fn model_file_verified(path: &Path, spec: &AsrModelSpec) -> bool {
@@ -645,23 +583,6 @@ mod tests {
 
         std::fs::write(&file, b"abcd").unwrap();
         assert!(!model_file_verified(&file, &spec));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn failed_verification_removes_part_file() {
-        let root = std::env::temp_dir().join(format!("pinvou3-asr-promote-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&root);
-        let part = root.join("model.gguf.part");
-        let dest = root.join("model.gguf");
-        std::fs::write(&part, b"abc").unwrap();
-
-        let result = verify_and_promote_model(&part, &dest, &test_spec(3, "bad"));
-
-        assert!(result.is_err());
-        assert!(!part.exists());
-        assert!(!dest.exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }
