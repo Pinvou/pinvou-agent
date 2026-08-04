@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
@@ -7,6 +7,8 @@ import {
   extractSubagentId,
   resolveSubagentPresentation,
   subagentRoleOrdinals,
+  subagentTreeIsDone,
+  visibleSubagentDescendantRows,
 } from '../multiagent/subagent-conversation.mjs';
 import { AppIcon } from '../personas/Personas.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
@@ -46,9 +48,17 @@ const multiAgentWebReadOnly = () => {
 // 实时 DOM 事件可能丢（事件通道拥塞/进程重启后加载历史/主对话停止级联取消），
 // 只靠它卡片会永久停在"工作中"。有未终态卡挂载时按 2s 轮询底座落盘投影
 // （worker ledger 权威，含 blocked/interrupted），把快照经同一
-// `pinvou:subagent-update` DOM 事件广播给全部卡；全部终态即停表，新卡再启。
+// `pinvou:subagent-update` DOM 事件广播给全部卡；整份 ledger 另经
+// `pinvou:subagent-ledger-update` 广播一次，供直属卡投影自己的后代树。所有
+// 被展示的直属树终态即停表，新卡再启；无论卡片多少，每轮仍只做一次 IPC。
 const expertCardWatch = new Map();
 let expertPollTimer = null;
+let expertLedgerSnapshot = { sessionId: null, agents: [] };
+
+function activeExpertSessionId() {
+  if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return null;
+  return (bridge.state.get('sessions') || {}).activeSessionId || null;
+}
 
 function stopExpertPoll() {
   if (expertPollTimer != null) {
@@ -57,19 +67,24 @@ function stopExpertPoll() {
   }
 }
 
-function kickExpertPoll() {
+function kickExpertPoll(delay = 2000) {
   if (expertPollTimer != null || typeof window === 'undefined') return;
   expertPollTimer = setTimeout(async () => {
     expertPollTimer = null;
     try {
       if (!bridge.available || !bridge.state || !bridge.multiAgent) return;
-      const sid = (bridge.state.get('sessions') || {}).activeSessionId;
+      const sid = activeExpertSessionId();
       if (!sid) return;
-      const list = (await bridge.multiAgent.listSubagentTranscripts(sid)) || [];
+      const response = await bridge.multiAgent.listSubagentTranscripts(sid);
+      if (!Array.isArray(response)) return;
+      const list = response;
+      expertLedgerSnapshot = { sessionId: sid, agents: list };
+      window.dispatchEvent(new CustomEvent('pinvou:subagent-ledger-update', {
+        detail: expertLedgerSnapshot,
+      }));
       const ordinals = subagentRoleOrdinals(list);
       for (const summary of list) {
         if (!summary || !summary.agent_id || !expertCardWatch.has(summary.agent_id)) continue;
-        if (summary.done) expertCardWatch.set(summary.agent_id, true);
         const ordinal = ordinals.get(summary.agent_id) || null;
         window.dispatchEvent(new CustomEvent('pinvou:subagent-update', {
           detail: {
@@ -80,31 +95,85 @@ function kickExpertPoll() {
             done: !!summary.done,
             failed: !!summary.failed,
             blocked: !!summary.blocked,
+            has_transcript: !!summary.has_transcript,
             seq: ordinal ? ordinal.seq : null,
             roleCount: ordinal ? ordinal.count : null,
+            source: 'ledger',
           },
         }));
+      }
+      for (const agentId of expertCardWatch.keys()) {
+        expertCardWatch.set(agentId, subagentTreeIsDone(list, agentId));
       }
     } catch (_) {
       // 单次轮询失败不致命，下一轮重试。
     } finally {
-      if ([...expertCardWatch.values()].some(done => !done)) kickExpertPoll();
+      if ([...expertCardWatch.values()].some(done => !done)) kickExpertPoll(2000);
     }
-  }, 2000);
+  }, delay);
 }
 
 function watchExpertCard(agentId) {
   expertCardWatch.set(agentId, expertCardWatch.get(agentId) === true);
-  kickExpertPoll();
+  kickExpertPoll(0);
   return () => {
     expertCardWatch.delete(agentId);
     if (!expertCardWatch.size) stopExpertPoll();
   };
 }
 
+function openSubagentTranscript(agentId) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
+    detail: { agentId: agentId || null },
+  }));
+}
+
+function expertStatusPresentation({ summary, failedSpawn = false, itemState, copy }) {
+  const blocked = !!(summary && summary.done && !summary.failed && summary.blocked);
+  const statusToken = String(summary?.status || '').toLowerCase();
+  const pending = !!(
+    summary
+    && !summary.done
+    && (summary.has_transcript === false || ['queued', 'pending', 'starting'].includes(statusToken))
+  );
+  const interrupted = !!(
+    summary
+    && summary.done
+    && summary.failed
+    && summary.status === 'interrupted'
+  );
+  const text = failedSpawn
+    ? copy.agentCard.spawnFailed
+    : blocked
+      ? copy.blockedTag
+      : interrupted
+        ? copy.agentCard.interrupted
+        : summary && summary.done
+          ? (summary.failed ? copy.agentCard.failed : copy.agentCard.completed)
+          : pending
+            ? copy.pendingTag
+            : summary
+              ? (summary.status && !LEDGER_STATUS_TOKENS.has(String(summary.status).toLowerCase())
+                ? summary.status
+                : copy.agentCard.working)
+              : itemState === 'running'
+                ? copy.agentCard.spawning
+                : copy.agentCard.working;
+  const dotColor = failedSpawn || (summary && summary.done && summary.failed)
+    ? '#C5221F'
+    : blocked
+      ? '#F9AB00'
+      : summary && summary.done
+        ? '#137333'
+        : '#F9AB00';
+  return { text, dotColor };
+}
+
 /**
  * 行内专家卡（ADR-0006）：spawn 型 `agent` 工具调用在消息流里渲染成
- * 「头像 · 专家名 · 任务摘要 · 状态」，不展示工具 JSON。
+ * 「头像 · 专家名 · 任务摘要 · 状态」，不展示工具 JSON；若它继续派生了
+ * 子代，则在本卡下按 ledger 父链折叠展示，主对话也能看清委派层级。
  * 状态自订阅 `pinvou:subagent-update`（bridge 转发的实时事件 + 模块级
  * 轮询广播的落盘权威快照，终态 ratchet 保证落盘赢），点击整卡派发
  * `pinvou:open-subagent`，由 ChatView 打开只读执行记录面板。
@@ -118,14 +187,32 @@ const ExpertAgentCard = ({ item, theme, t }) => {
   const spawnText = expertDelegationText(args);
   const isDelegation = isExpertDelegationCall(item.name, args);
   const failedSpawn = item.state === 'failed';
+  const sessionId = activeExpertSessionId();
 
   // Hook 全部无条件运行（协调行分支在 Hook 之后），实例 Hook 数量恒定。
   const [live, setLive] = useState(null);
+  const [ledger, setLedger] = useState(() => (
+    expertLedgerSnapshot.sessionId === sessionId ? expertLedgerSnapshot.agents : []
+  ));
+  const [childrenExpanded, setChildrenExpanded] = useState(false);
+  const [expandedChildIds, setExpandedChildIds] = useState(() => new Set());
+  useEffect(() => {
+    setChildrenExpanded(false);
+    setExpandedChildIds(new Set());
+  }, [agentId]);
   useEffect(() => {
     if (!isDelegation || failedSpawn || !agentId || typeof window === 'undefined') return undefined;
     const onUpdate = event => {
       const detail = event && event.detail;
-      if (!detail || detail.agentId !== agentId) return;
+      if (!detail) return;
+      if (detail.sessionId && sessionId && detail.sessionId !== sessionId) return;
+      // 已停表后若父模型 followup 唤醒旧代理，或运行中代理新派后代，任一
+      // 非终态事件都要唤醒共享 ledger 轮询，重新取得完整父链和权威终态。
+      if (!detail.done && detail.source !== 'ledger') {
+        expertCardWatch.set(agentId, false);
+        kickExpertPoll(0);
+      }
+      if (detail.agentId !== agentId) return;
       setLive(prev => {
         // 终态 ratchet：落盘终态是权威，迟到的非终态实时事件不得翻回"工作中"。
         if (prev && prev.done && !detail.done) return prev;
@@ -133,13 +220,41 @@ const ExpertAgentCard = ({ item, theme, t }) => {
         return { ...(prev || {}), ...detail };
       });
     };
+    const onLedgerUpdate = event => {
+      const detail = event && event.detail;
+      if (!detail || detail.sessionId !== sessionId || !Array.isArray(detail.agents)) return;
+      setLedger(detail.agents);
+    };
+    setLedger(
+      expertLedgerSnapshot.sessionId === sessionId ? expertLedgerSnapshot.agents : [],
+    );
     window.addEventListener('pinvou:subagent-update', onUpdate);
+    window.addEventListener('pinvou:subagent-ledger-update', onLedgerUpdate);
     const unwatch = watchExpertCard(agentId);
     return () => {
       window.removeEventListener('pinvou:subagent-update', onUpdate);
+      window.removeEventListener('pinvou:subagent-ledger-update', onLedgerUpdate);
       unwatch();
     };
-  }, [agentId, failedSpawn, isDelegation]);
+  }, [agentId, failedSpawn, isDelegation, sessionId]);
+
+  const ledgerOrdinals = useMemo(() => subagentRoleOrdinals(ledger), [ledger]);
+  const descendantRows = useMemo(
+    () => visibleSubagentDescendantRows(ledger, agentId, expandedChildIds),
+    [agentId, expandedChildIds, ledger],
+  );
+  const directChildCount = useMemo(
+    () => descendantRows.filter(row => row.depth === 0).length,
+    [descendantRows],
+  );
+  const toggleChildBranch = childAgentId => {
+    setExpandedChildIds((current) => {
+      const next = new Set(current);
+      if (next.has(childAgentId)) next.delete(childAgentId);
+      else next.add(childAgentId);
+      return next;
+    });
+  };
 
   if (!isDelegation) {
     const action = String(args.action || 'start');
@@ -156,74 +271,155 @@ const ExpertAgentCard = ({ item, theme, t }) => {
 
   // 承担者以正式 profile 为准；普通对话常只传 name/type，统一决策函数保证
   // 行内卡与右侧面板不会一个有名、一个又退回“通用执行者”。
+  const personas = bridge.available && bridge.personas ? bridge.personas.getPersonas() : [];
+  const parentOrdinal = ledgerOrdinals.get(agentId)
+    || (live && live.roleCount ? { seq: live.seq, count: live.roleCount } : null);
   const presentation = resolveSubagentPresentation({
     role: args.profile || args.role,
     agentType: args.type || args.agent_type || args.agent_name,
     sessionName: args.name || args.session_name,
     objective: spawnText,
-    personas: bridge.available && bridge.personas ? bridge.personas.getPersonas() : [],
+    personas,
     agentId,
     roleCards: copy.roleCards,
-    ordinal: live && live.roleCount ? { seq: live.seq, count: live.roleCount } : null,
+    ordinal: parentOrdinal,
   });
   const { identity, name } = presentation;
   const task = presentation.task.split(/\r?\n/)[0];
-  const blocked = !!(live && live.done && !live.failed && live.blocked);
-  const interrupted = !!(live && live.done && live.failed && live.status === 'interrupted');
-  const statusText = failedSpawn
-    ? copy.agentCard.spawnFailed
-    : blocked
-      ? copy.blockedTag
-      : interrupted
-        ? copy.agentCard.interrupted
-        : live && live.done
-          ? (live.failed ? copy.agentCard.failed : copy.agentCard.completed)
-          : live
-            ? (live.status && !LEDGER_STATUS_TOKENS.has(String(live.status).toLowerCase())
-              ? live.status
-              : copy.agentCard.working)
-            : item.state === 'running'
-              ? copy.agentCard.spawning
-              : copy.agentCard.working;
-  const dotColor = failedSpawn || (live && live.done && live.failed)
-    ? '#C5221F'
-    : blocked
-      ? '#F9AB00'
-      : live && live.done
-        ? '#137333'
-        : '#F9AB00';
+  const status = expertStatusPresentation({
+    summary: live,
+    failedSpawn,
+    itemState: item.state,
+    copy,
+  });
 
   return (
-    <button
-      type="button"
-      data-testid="expert-agent-card"
-      onClick={() => {
-        if (typeof window === 'undefined') return;
-        window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
-          detail: { agentId: agentId || null },
-        }));
-      }}
-      className={`my-1 flex w-full max-w-[520px] items-center gap-2.5 rounded-[12px] border px-3 py-2 text-left ${
-        isDark
-          ? 'border-[#38383A] bg-[#1C1C1E] hover:bg-[#2C2C2E]'
-          : 'border-[#E5E5EA] bg-white hover:bg-[#F2F2F7]'
-      }`}
-    >
-      <AppIcon
-        card={{ id: identity.avatarKey, name, dept: identity.personaDept }}
-        isDark={isDark}
-        cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
-        fb={14}
-      />
-      <span className={`shrink-0 text-[12.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
-        {name}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-[12px] text-[#8E8E93]">{task}</span>
-      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-[#8E8E93]">
-        <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: dotColor }} />
-        {statusText}
-      </span>
-    </button>
+    <div data-testid="expert-agent-tree" className="my-1 w-full max-w-[520px]">
+      <div
+        data-testid="expert-agent-card"
+        className={`flex w-full items-center rounded-[12px] border px-2 py-1.5 transition-colors ${
+          isDark
+            ? 'border-[#38383A] bg-[#1C1C1E] hover:bg-[#2C2C2E]'
+            : 'border-[#E5E5EA] bg-white hover:bg-[#F2F2F7]'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => openSubagentTranscript(agentId)}
+          className="flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left"
+        >
+          <AppIcon
+            card={{ id: identity.avatarKey, name, dept: identity.personaDept }}
+            isDark={isDark}
+            cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
+            fb={14}
+          />
+          <span className={`shrink-0 text-[12.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+            {name}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12px] text-[#8E8E93]">{task}</span>
+          <span className="flex max-w-[112px] shrink-0 items-center gap-1.5 truncate text-[11px] text-[#8E8E93]">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: status.dotColor }} />
+            <span className="truncate">{status.text}</span>
+          </span>
+        </button>
+        {directChildCount > 0 && (
+          <button
+            type="button"
+            data-testid="expert-agent-children-toggle"
+            onClick={() => setChildrenExpanded(value => !value)}
+            className="ml-1 flex h-7 shrink-0 items-center gap-1 rounded-lg px-1.5 text-[9.5px] text-[#8E8E93] hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+            aria-label={childrenExpanded ? copy.collapseChildren(name) : copy.expandChildren(name)}
+            title={childrenExpanded ? copy.collapseChildren(name) : copy.expandChildren(name)}
+            aria-expanded={childrenExpanded}
+          >
+            <span>{copy.childAgentCount(directChildCount)}</span>
+            {childrenExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
+        )}
+      </div>
+      {childrenExpanded && directChildCount > 0 && (
+        <div
+          data-testid="expert-agent-children"
+          className="ml-5 mt-1 space-y-1 border-l border-black/[0.08] pl-2 dark:border-white/[0.09]"
+        >
+          {descendantRows.map(({ entry, depth, childCount }) => {
+            const childPresentation = resolveSubagentPresentation({
+              role: entry.role,
+              agentType: entry.agent_type,
+              sessionName: entry.session_name,
+              objective: entry.objective,
+              personas,
+              agentId: entry.agent_id,
+              roleCards: copy.roleCards,
+              ordinal: ledgerOrdinals.get(entry.agent_id),
+            });
+            const childStatus = expertStatusPresentation({ summary: entry, copy });
+            const branchExpanded = expandedChildIds.has(entry.agent_id);
+            return (
+              <div
+                key={entry.agent_id}
+                className="flex min-w-0 items-center"
+                style={{ marginLeft: `${Math.min(depth, 3) * 12}px` }}
+              >
+                {childCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleChildBranch(entry.agent_id)}
+                    className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-[#8E8E93] hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                    aria-label={branchExpanded
+                      ? copy.collapseChildren(childPresentation.name)
+                      : copy.expandChildren(childPresentation.name)}
+                    title={branchExpanded
+                      ? copy.collapseChildren(childPresentation.name)
+                      : copy.expandChildren(childPresentation.name)}
+                    aria-expanded={branchExpanded}
+                  >
+                    {branchExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </button>
+                ) : (
+                  <span className="w-6 shrink-0" />
+                )}
+                <button
+                  type="button"
+                  data-testid="expert-agent-child-card"
+                  onClick={() => openSubagentTranscript(entry.agent_id)}
+                  className={`flex min-w-0 flex-1 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left ${
+                    isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'
+                  }`}
+                >
+                  <AppIcon
+                    card={{
+                      id: childPresentation.identity.avatarKey,
+                      name: childPresentation.name,
+                      dept: childPresentation.identity.personaDept,
+                    }}
+                    isDark={isDark}
+                    cls="h-7 w-7 shrink-0 overflow-hidden rounded-[9px]"
+                    fb={13}
+                  />
+                  <span className={`shrink-0 text-[11.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+                    {childPresentation.name}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-[#8E8E93]">
+                    {childPresentation.task || entry.agent_id}
+                  </span>
+                  {childCount > 0 && (
+                    <span className="shrink-0 rounded-full bg-black/[0.035] px-1.5 py-px text-[9px] text-[#8E8E93] dark:bg-white/[0.06]">
+                      {copy.childAgentCount(childCount)}
+                    </span>
+                  )}
+                  <span className="flex max-w-[96px] shrink-0 items-center gap-1.5 truncate text-[10px] text-[#8E8E93]">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: childStatus.dotColor }} />
+                    <span className="truncate">{childStatus.text}</span>
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 };
 

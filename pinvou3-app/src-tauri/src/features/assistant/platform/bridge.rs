@@ -43,9 +43,10 @@ use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
-// 多智能体是“父会话协调的 agent 集群”，不是无界递归树。普通对话继续
-// 沿用 CodeWhale 原始上限；仅开启多智能体的会话收紧资源预算。
-const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 1;
+// 多智能体是“主会话总协调、复杂任务最多再拆一层”的 agent 集群，不是
+// 无界递归树。普通对话继续沿用 CodeWhale 原始上限；仅开启多智能体的
+// 会话收紧资源预算。
+const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
 const MULTI_AGENT_MAX_CONCURRENT: usize = 4;
 const MULTI_AGENT_MAX_ADMITTED: usize = 8;
 
@@ -1307,8 +1308,8 @@ impl Pinvou3Bridge {
     /// `agent` 的 `profile` 字段选人；专家池为空时名册即空，模型自拟任务
     /// 说明裸派（用户决策：不内置兜底角色）。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
-    /// 提醒不教学不推荐）。子智能体只允许一层直属实例，父模型负责分批协调；
-    /// 同时运行最多 4 个，排队 + 运行最多 8 个。
+    /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆
+    /// 一层，第二层不得继续派生。全树同时运行最多 4 个，排队 + 运行最多 8 个。
     pub fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
@@ -1321,8 +1322,9 @@ impl Pinvou3Bridge {
         if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&cfg.workspace) {
             eprintln!("[multiagent] {err}");
         }
-        // 父会话是唯一调度者：直属子智能体处于 depth=1，不再看到
-        // `agent` 工具。单次调用的深度覆盖由专用 hook 拦截，避免模型绕开。
+        // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
+        // depth=2；第二层不能继续。单次调用的正数深度覆盖由专用 hook
+        // 拦截，避免每一层重新抬高继承上限。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
         // 只做上限，不抬高用户原本更保守（包括 0 = 禁用）的配置。
         cfg.max_subagents = cfg.max_subagents.min(MULTI_AGENT_MAX_ADMITTED);
@@ -1511,10 +1513,10 @@ impl Pinvou3Bridge {
         ))
     }
 
-    /// 多智能体会话的资源护栏。`EngineConfig.max_spawn_depth = 1` 给出直属层
-    /// 上限；该 hook 同时拦住模型在 `agent` / `workflow` 调用中用正数
-    /// 深度覆盖参数把上限扩大，并要求 Workflow 文件调用改用可检查的 inline
-    /// 输入。普通对话不挂载此 hook。
+    /// 多智能体会话的资源护栏。`EngineConfig.max_spawn_depth = 2` 允许直属
+    /// 代理为复杂任务再拆一层；该 hook 同时拦住模型在 `agent` / `workflow`
+    /// 调用中用正数深度覆盖参数逐层扩大上限，并要求 Workflow 文件调用改用
+    /// 可检查的 inline 输入。普通对话不挂载此 hook。
     fn build_multi_agent_hook_executor(&self, workspace: &std::path::Path) -> Arc<HookExecutor> {
         #[cfg(windows)]
         let command = {

@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, X } from '../../components/icons.jsx';
-import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import { commandExecutionDetails, terminalStatus } from '../conversation/conversation-model.js';
@@ -19,8 +18,7 @@ import { startTranscriptPolling } from './runState.mjs';
  * 子智能体面板（Codex 式右侧列，ADR-0006）：**只读执行记录**，不是第二个
  * 聊天入口——与子智能体的一切互动都经父对话表达。
  *
- * 两级结构（CodexWorkspacePanel 同款）：列表（主对话是显式根节点，直属代理
- * 位于其下，历史后代继续折叠成树，
+ * 两级结构（CodexWorkspacePanel 同款）：列表（直属代理为根，历史后代折叠成树，
  * 含状态点/受阻标注）→ 详情（该实例的完整思考、工具与结果，共享对话时间线渲染）。
  * 数据全部来自底座落盘投影（transcripts::list / read），面板打开期间串行
  * 轮询刷新；App 不维护任何运行状态机。
@@ -180,10 +178,8 @@ export function SubagentTranscriptPanel({
 
   // 同角色多实例的序号（按 ledger 登记序），与行内卡的轮询广播同源一致。
   const roleOrdinals = useMemo(() => subagentRoleOrdinals(agents || []), [agents]);
-  const [rootExpanded, setRootExpanded] = useState(true);
   const [expandedAgentIds, setExpandedAgentIds] = useState(() => new Set());
   useEffect(() => {
-    setRootExpanded(true);
     setExpandedAgentIds(new Set());
   }, [sessionId]);
   useEffect(() => {
@@ -390,6 +386,11 @@ export function SubagentTranscriptPanel({
         ) : (
           <div className="min-w-0 flex flex-1 items-center gap-2">
             <span className="text-[13px] font-semibold">{copy.agentsListTitle}</span>
+            {Array.isArray(agents) && agents.length > 0 && (
+              <span className="truncate text-[10px] text-gray-400">
+                {copy.agentsListSummary(rootAgentCount, agents.length)}
+              </span>
+            )}
           </div>
         )}
         <button
@@ -436,50 +437,16 @@ export function SubagentTranscriptPanel({
         </div>
       ) : (
         <div className="custom-scrollbar flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-1.5">
-          <div
-            data-testid="main-conversation-node"
-            className="flex min-w-0 items-center"
-          >
-            {Array.isArray(agents) && agents.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => setRootExpanded((value) => !value)}
-                className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-                aria-label={rootExpanded ? copy.collapseMainConversation : copy.expandMainConversation}
-                title={rootExpanded ? copy.collapseMainConversation : copy.expandMainConversation}
-              >
-                {rootExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              </button>
-            ) : (
-              <span className="w-6 shrink-0" />
-            )}
-            <div className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] bg-[#0B57D0]/[0.055] px-2 py-2 dark:bg-[#A8C7FA]/[0.08]">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px] bg-white shadow-sm ring-1 ring-black/[0.04] dark:bg-white/90">
-                <PinvouLogo className="h-6 w-6" title={copy.mainConversation} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] font-semibold text-gray-800 dark:text-gray-100">
-                  {copy.mainConversation}
-                </span>
-                <span className="block truncate text-[10px] text-gray-400">
-                  {copy.coordinatorRole}
-                  {Array.isArray(agents) && agents.length > 0
-                    ? ` · ${copy.agentsListSummary(rootAgentCount, agents.length)}`
-                    : ''}
-                </span>
-              </span>
-            </div>
-          </div>
           {listReadFailed && (
-            <div className="ml-10 px-2 pb-1 text-[11px] text-amber-600 dark:text-amber-400">{copy.listReadFailed}</div>
+            <div className="px-2 pb-1 text-[11px] text-amber-600 dark:text-amber-400">{copy.listReadFailed}</div>
           )}
           {agents === null && !listReadFailed && (
-            <div className="ml-10 text-[12px] text-gray-400">{copy.loadingTranscript}</div>
+            <div className="text-[12px] text-gray-400">{copy.loadingTranscript}</div>
           )}
           {Array.isArray(agents) && agents.length === 0 && (
-            <div className="ml-10 text-[12px] text-gray-400">{copy.agentsEmpty}</div>
+            <div className="text-[12px] text-gray-400">{copy.agentsEmpty}</div>
           )}
-          {Array.isArray(agents) && rootExpanded && treeRows.map(({ entry, depth, childCount }) => {
+          {Array.isArray(agents) && treeRows.map(({ entry, depth, childCount }) => {
             const presentation = resolveSubagentPresentation({
               role: entry.role,
               agentType: entry.agent_type,
@@ -495,8 +462,8 @@ export function SubagentTranscriptPanel({
             return (
               <div
                 key={entry.agent_id}
-                className="flex min-w-0 items-center border-l border-black/[0.06] pl-1 dark:border-white/[0.08]"
-                style={{ marginLeft: `${Math.min(depth + 1, 5) * 14}px` }}
+                className="flex min-w-0 items-center"
+                style={{ marginLeft: `${Math.min(depth, 4) * 14}px` }}
               >
                 {childCount > 0 ? (
                   <button
