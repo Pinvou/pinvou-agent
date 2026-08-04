@@ -34,10 +34,20 @@ try {
   const {
     appendAcpEvent,
     commandExecutionDetails,
+    mergeAcpTimelineSnapshot,
     projectAcpTimeline,
     resolveAcpSessionControls,
     stripTerminalControlSequences,
+    updateAcpAttachmentDraft,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
+  const movedAttachment = { id: 'attachment-1', status: 'uploading' };
+  const movedDrafts = updateAcpAttachmentDraft(
+    { draft: [movedAttachment] },
+    movedAttachment.id,
+    attachment => ({ ...attachment, status: 'ready' }),
+  );
+  assert.equal(movedDrafts.draft[0].status, 'ready');
+  assert.equal(updateAcpAttachmentDraft(movedDrafts, 'missing', () => null), movedDrafts);
   const events = [
     event(1, 'user_message', {
       content: [{ type: 'text', text: '修改 README' }],
@@ -201,6 +211,16 @@ try {
 
   assert.equal(appendAcpEvent(events, events[0]).length, events.length, 'duplicate seq must be ignored');
   assert.equal(appendAcpEvent(events.slice(0, 2), events[2]).length, 3);
+  const liveAfterSnapshot = event(14, 'agent_message_chunk', {
+    update: { content: { type: 'text', text: '重连期间到达' } },
+  });
+  const otherSessionEvent = { ...event(99, 'turn_started', {}, 'other'), sessionId: 'session-2' };
+  assert.deepEqual(
+    mergeAcpTimelineSnapshot(events.slice(0, 2), [otherSessionEvent, liveAfterSnapshot], 'session-1')
+      .map(item => item.seq),
+    [1, 2, 14],
+    'a paged snapshot must merge live events without retaining another Session',
+  );
 
   const controls = resolveAcpSessionControls({
     models: [{ id: 'legacy-model' }],
@@ -233,10 +253,24 @@ try {
   assert.ok(!chatView.includes('sessionAgentBackend'), 'DeepSeek ChatView must not branch on Codex state');
 
   const main = readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+  const lazyCodexView = readFileSync(
+    path.join(root, 'src', 'features', 'codex', 'LazyCodexAcpView.jsx'),
+    'utf8',
+  );
   const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<CodexAcpView'));
+  assert.match(
+    lazyCodexView,
+    /lazy\(\(\) => import\('\.\/CodexAcpView\.jsx'\)/,
+    'the ACP workspace must stay out of the initial WebUI bundle',
+  );
+  assert.match(
+    lazyCodexView,
+    /<Suspense fallback=\{\([\s\S]*?<CodexAcpWorkspace/,
+    'the lazy ACP workspace must render a stable loading state',
+  );
   assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay platform capability-gated');
   assert.ok(main.includes(".concat(codexHistory)"),
     'Codex sessions must share the global recent-session list');
@@ -291,6 +325,10 @@ try {
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
+  const authProbe = readFileSync(
+    path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'auth_probe.rs'),
+    'utf8',
+  );
   assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
     'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('interrupt_orphaned_turns("application_restarted")')
@@ -311,8 +349,8 @@ try {
     && runtime.includes('command.arg("acp")')
     && runtime.includes('CLAUDE_ACP_PACKAGE'),
   'the shared ACP runtime must launch Claude through its adapter and Kimi through kimi acp');
-  assert.ok(runtime.includes('cli_status_success(claude, &["auth", "status"])')
-    && runtime.includes('kimi_authenticated')
+  assert.ok(authProbe.includes('cli_status_success(claude, &["auth", "status"])')
+    && authProbe.includes('fn kimi_authenticated')
     && runtime.includes('run_agent_login')
     && runtime.includes('capture_agent_login_output')
     && runtime.includes('submit_agent_login_code'),
@@ -320,6 +358,8 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const runtimeNotices = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpRuntimeNotices.jsx'), 'utf8');
+  const acpClient = readFileSync(path.join(root, 'src', 'platform', 'acp', 'client.js'), 'utf8');
   const runtimeNoticeState = readFileSync(
     path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
     'utf8',
@@ -335,6 +375,7 @@ try {
     && codexView.includes('copy.expired'),
   'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
+  const runtimeStatus = readFileSync(path.join(root, 'src', 'features', 'codex', 'runtimeStatus.js'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
   const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
@@ -362,7 +403,7 @@ try {
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
     && codexView.includes('onCodeAgentChange={selectDraftAgent}')
     && codexView.includes('agentId: draftAgentId')
-    && codexView.includes("invoke('list_acp_agents')"),
+    && runtimeStatus.includes('listAcpAgents()'),
   'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
   assert.ok(codexView.includes("const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection'")
     && codexView.includes("useState(loadAgentSelection() || 'pinvou')")
@@ -371,8 +412,9 @@ try {
   assert.ok(codexView.includes("invoke('login_acp_agent'")
     && codexView.includes("invoke('open_acp_agent_login_url'")
     && codexView.includes("invoke('submit_acp_agent_login_code'")
-    && codexView.includes('status.login_code')
-    && codexView.includes('status.login_input_required')
+    && runtimeNotices.includes('status.login_code')
+    && runtimeNotices.includes('status.login_input_required')
+    && !runtimeNotices.includes("status.agent_id === 'claude'")
     && codexView.includes('if (!isNativeAgent && !activeStatus?.authenticated)')
     && codexView.includes('isAcpAuthenticationFailure(latest)'),
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
@@ -427,18 +469,18 @@ try {
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
   assert.ok(homeModeSwitcher.includes("labelKey: 'work'") && homeModeSwitcher.includes("labelKey: 'code'")
-    && homeModeSwitcher.includes('Codex'),
+    && homeModeSwitcher.includes("selectedAgentId || 'codex'"),
   'the home composer must expose Work/Code modes and the current Codex code agent');
   assert.ok(homeModeSwitcher.includes("key: 'design'")
     && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = true'),
   'Design must share the real home mode entry with Work and Code');
-  assert.ok(homeModeSwitcher.includes("key: 'claude'")
-    && homeModeSwitcher.includes("key: 'kimi'")
-    && homeModeSwitcher.includes("key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true")
-    && homeModeSwitcher.includes("label: 'Claude Code', enabled: true")
-    && homeModeSwitcher.includes("label: 'Kimi', enabled: true")
-    && homeModeSwitcher.includes('onCodeAgentChange'),
-  'the code home must expose Codex, Claude, and Kimi through one ACP Agent selector');
+  assert.ok(homeModeSwitcher.includes('function normalizeCodeAgents(codeAgents, selectedAgentId)')
+    && homeModeSwitcher.includes("agent?.agent_id || agent?.id")
+    && homeModeSwitcher.includes("agent?.agent_name || agent?.display_name || agent?.name")
+    && homeModeSwitcher.includes('onCodeAgentChange ? codeAgents : undefined')
+    && codexView.includes('codeAgents={agents}')
+    && !homeModeSwitcher.includes('CODE_AGENT_OPTIONS'),
+  'the code home must derive its ACP Agent selector from the target desktop inventory without a frontend whitelist');
   assert.ok(homeModeSwitcher.includes('prominent')
     && iosControls.includes('if (compact)')
     && iosControls.includes("const heightClass = prominent ? 'h-10' : 'h-9'")
@@ -479,7 +521,7 @@ try {
     'running operation groups must remain compact by default');
   assert.ok(runtimeNoticeState.includes("HTTP\\s*402")
     && runtimeNoticeState.includes("kind = 'entitlement'")
-    && codexView.includes('data-testid="acp-service-failure"'),
+    && runtimeNotices.includes('data-testid="acp-service-failure"'),
   'membership HTTP 402 failures must become a recoverable service card instead of a bare error');
   assert.ok(codexView.includes("invoke('switch_acp_agent_account'")
     && codexView.includes('data-testid="acp-account-menu-trigger"')
@@ -495,9 +537,10 @@ try {
     && !codexView.includes('bottom-[106px]'),
   'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
-  assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
+  assert.ok(codexView.includes('await submitAcpPrompt({')
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
-    && codexView.includes('workspaceReferences'),
+    && codexView.includes('workspaceReferences')
+    && acpClient.includes("invokeTauri('web_access_codex_acp_prompt'"),
   'Codex prompts must keep external attachments and workspace references as separate inputs');
   assert.ok(!codexView.includes('if (activeId && !sessionInfo)')
     && !codexView.includes('throw new Error(codexCopy.sessionSyncing)')
@@ -525,7 +568,7 @@ try {
     'Codex request_user_input must have a first-class conversation item');
   assert.ok(codexView.includes('<QuestionChoiceCard'),
     'Codex and DeepSeek must share the same choice-card presentation');
-  assert.ok(codexView.includes("invoke('get_codex_acp_pending_elicitations'"),
+  assert.ok(codexView.includes('loadAcpPendingElicitations(id)'),
     'pending Codex input requests must recover when a session is reopened');
   assert.ok(codexView.includes("invoke('respond_codex_acp_elicitation'"),
     'Codex input answers must be returned through the ACP request');
@@ -544,11 +587,12 @@ try {
   'ACP session restoration must show a loading state and suppress sending without reporting a red error');
   assert.ok(codexView.includes('const activeStatus = status?.agent_id === activeAgentId ? status : null')
     && codexView.includes('status={activeStatus}')
-    && codexView.includes('next?.agent_id === activeAgentIdRef.current')
+    && runtimeStatus.includes('requestSeqRef.current[agentId] !== sequence')
+    && runtimeStatus.includes('agentId !== activeAgentIdRef.current')
     && codexView.includes('[activeAgentId, activeStatus?.login_in_progress]'),
   'switching ACP sessions must never render or keep polling the previous Agent status');
   assert.ok(codexView.includes('<ConversationMarkdown')
-    && codexView.includes("invoke('open_user_external_url', { url })"),
+    && codexView.includes('openAcpExternalUrl(url)'),
   'both unified and fallback Codex messages must route links through the host opener');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),
     'Codex unordered lists must retain bullets after Tailwind preflight');

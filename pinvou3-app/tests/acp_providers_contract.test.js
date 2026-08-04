@@ -14,6 +14,10 @@ const ROOT = path.resolve(__dirname, '..');
 const TAU = path.join(ROOT, 'src-tauri', 'src');
 const PROVIDERS = path.join(TAU, 'features', 'codex_acp', 'providers');
 const MOD = fs.readFileSync(path.join(TAU, 'features', 'codex_acp', 'mod.rs'), 'utf8');
+const AUTH_PROBE = fs.readFileSync(
+  path.join(TAU, 'features', 'codex_acp', 'auth_probe.rs'),
+  'utf8'
+);
 const PROVIDERS_MOD = fs.readFileSync(path.join(PROVIDERS, 'mod.rs'), 'utf8');
 const CLAUDE = fs.readFileSync(path.join(PROVIDERS, 'claude.rs'), 'utf8');
 const CODEX = fs.readFileSync(path.join(PROVIDERS, 'codex.rs'), 'utf8');
@@ -143,7 +147,7 @@ assert.ok(
   'codex 必须提供 relay env_key 判定（认证回退用）'
 );
 assert.ok(
-  MOD.includes('codex_config_relay_env_key_present(&raw)'),
+  AUTH_PROBE.includes('codex_config_relay_env_key_present(&raw)'),
   'codex_authenticated 必须接入 config.toml 回退'
 );
 
@@ -185,8 +189,8 @@ assert.ok(
   '切换/删除当前 Provider 后必须重启该 Agent 运行中会话'
 );
 assert.ok(
-  MOD.includes('invalidate_cli_probe()'),
-  '切换后必须刷新 CLI 探测缓存'
+  MOD.includes('invalidate_auth_cache(backend)'),
+  '切换后必须刷新当前 Agent 的认证缓存'
 );
 assert.ok(
   MOD.includes('configure_codex_provider_env') &&

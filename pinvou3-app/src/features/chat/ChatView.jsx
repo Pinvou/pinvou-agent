@@ -28,7 +28,7 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
-import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
+import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
@@ -578,7 +578,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
-      const attachmentDragActive = !!(bs && bs.attachmentDragActive);
       const formatAttachmentError = (error) => {
         const raw = String(error || '');
         if (/under sensitive system dir|crosses sensitive (dir|component)/i.test(raw)) {
@@ -1442,13 +1441,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return (
         <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
-            <AttachmentDropOverlay
-              active={attachmentDragActive}
+            <ComposerAttachmentDropOverlay
+              enabled={bridge.available && (!isWeb || can('deviceFileUpload'))}
+              onFiles={files => bridge.attachments.uploadDeviceFiles(files)}
               dark={theme === 'dark'}
               variant={isWeb ? 'web' : 'desktop'}
-              releaseLabel={t.uiAttachments.dropRelease}
-              webTitle={t.uiAttachments.dropWebTitle}
-              webHint={t.uiAttachments.dropWebHint}
+              copy={t.uiAttachments}
             />
 
           {/* Top Header (浮动) */}

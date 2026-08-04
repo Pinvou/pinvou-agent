@@ -601,14 +601,20 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /transition\.newly_active[\s\S]{0,400}emit_turn_started\(app, session_id\)/,
     '无 admission 的续跑轮（子智能体完成后的父汇总轮）必须发 turn_started——否则界面空闲、停止缺席、再发消息撞"已有运行中轮次"（复核 P1）',
   );
-  const managerSource = read('src-tauri', 'src', 'features', 'remote_control', 'manager.rs');
+  const sessionScopeSource = read(
+    'src-tauri',
+    'src',
+    'features',
+    'remote_control',
+    'session_scope.rs',
+  );
   assert.match(
-    managerSource,
+    sessionScopeSource,
     /MULTI_AGENT_WEB_EXECUTION_DENYLIST/,
     'Web 只读必须由后端统一封禁执行入口——编辑重发/计划裁决/澄清提交都曾绕过（复核 P1）',
   );
   assert.match(
-    managerSource,
+    sessionScopeSource,
     /validate_multi_agent_session_web_scope\(app, command, session_id\)/,
     '多智能体封禁必须挂在统一校验点，不散落各命令',
   );
