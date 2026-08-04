@@ -3493,6 +3493,34 @@ async function queuedKnowledgeMountKeepsOriginalSession() {
     "a late response for another session must not overwrite the active session view");
 }
 
+async function staleKnowledgeSnapshotDoesNotCrossSessions() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var staleSnapshot = deferred();
+  var staleReadStarted = deferred();
+  harness.handlers.session_mounted_collections_snapshot = function (args) {
+    if (args.sessionId === "chat-kb-stale") {
+      staleReadStarted.resolve();
+      return staleSnapshot.promise;
+    }
+    return { revision: 1, collections: [{ collectionId: 8, enabled: true }] };
+  };
+
+  var staleSwitch = bridge.sessions.switchToSession("chat-kb-stale");
+  await staleReadStarted.promise;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-current"), true);
+  staleSnapshot.resolve({ revision: 9, collections: [{ collectionId: 7, enabled: true }] });
+  assert.strictEqual(await staleSwitch, false);
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [{ collectionId: 8, enabled: true }],
+    "a late snapshot from the previous session must not overwrite the current session"
+  );
+  assert.strictEqual(mounted.mountedCollectionsRevision, 1);
+}
+
 async function draftKnowledgeMountsCreateOneSession() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -3527,6 +3555,7 @@ async function draftKnowledgeMountsCreateOneSession() {
 Promise.resolve()
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
+  .then(staleKnowledgeSnapshotDoesNotCrossSessions)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(scheduledRunViewExitBehavior)

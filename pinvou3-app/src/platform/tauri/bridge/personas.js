@@ -140,7 +140,7 @@
   }
   function applyMountedCollections(value) {
     var hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
-    var revision = hasSnapshot ? Number(value.revision || 0) : 0;
+    var revision = hasSnapshot ? Number(value.revision || 0) : Number(state.mountedCollectionsRevision || 0);
     if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
       return normalizeMountedCollections(state.mountedCollections);
     }
@@ -198,18 +198,23 @@
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
   async function syncMountedCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); return; }
+    var sessionId = state.activeSessionId;
     try {
-      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: state.activeSessionId });
+      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
       if (snapshot && Array.isArray(snapshot.collections)) { applyMountedCollections(snapshot); return; }
-      var mounted = await invoke("session_mounted_collections", { sessionId: state.activeSessionId });
+      var mounted = await invoke("session_mounted_collections", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
       if (Array.isArray(mounted)) { applyMountedCollections(mounted); return; }
-      var legacy = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
+      var legacy = await invoke("session_mounted_collection", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
       applyMountedCollections(legacy == null ? [] : [legacy]);
     } catch (e) {
       try {
-        var cid = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
+        var cid = await invoke("session_mounted_collection", { sessionId: sessionId });
+        if (state.activeSessionId !== sessionId) return;
         applyMountedCollections(cid == null ? [] : [cid]);
-      } catch (_) { applyMountedCollections([]); }
+      } catch (_) { if (state.activeSessionId === sessionId) applyMountedCollections([]); }
     }
   }
 
