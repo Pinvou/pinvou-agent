@@ -203,7 +203,7 @@ Session 索引后再发送 `state_ready=true`，桌面才重放初始化窗口�
   与 `web_access_discard_attachment`
   时才显示"从此设备上传"入口（`deviceFileUpload` 语义能力）；旧桌面实例自动回落为
   原有的单入口远程文件浏览；
-- 浏览器本机上传走分块 RPC：单块 ≤ 256 KiB（对齐 `MAX_ARTIFACT_CHUNK_BYTES`，base64
+- 浏览器本机上传走分块 RPC：单块 ≤ 256 KiB（对齐 `MAX_TRANSFER_CHUNK_BYTES`，base64
   后仍在 1 MiB RPC 请求上限内），单文件 ≤ `file_ingest::MAX_FILE_BYTES`（20 MiB，超限
   在传输前拒绝），桌面内存缓冲最多 4 个、总量 64 MiB、闲置 10 分钟过期，取消命令幂等。
   Relay 只转发分块帧，不保存任何内容。最后一块提交时字节落入
