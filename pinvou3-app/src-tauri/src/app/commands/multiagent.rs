@@ -27,6 +27,8 @@ use crate::features::multiagent;
 ///   任务说明；
 /// - 名单必须随消息带上：底座不会把自定义名册列给主 agent（真机验证过它
 ///   只认内置别名），不带的话专家角色等于隐身；专家池为空时名单省略。
+/// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
+///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
 pub(crate) fn delegation_reminder() -> String {
     // 名册只来自专家池（用户决策：不内置兜底角色）。空名册不渲染空列表，
     // 转而教模型自拟任务说明裸派。
@@ -43,20 +45,24 @@ pub(crate) fn delegation_reminder() -> String {
          说明写完整，交付物说清楚；\n\
          2. 多阶段任务（并行调研再汇总等）：并行的部分各派一个子智能体\
          （`agent` 后台并行），用 agents 协调工具等待并收取结果，由你亲自\
-         汇总；需要接力时把上游结果放进下一个子智能体的任务说明里；一律\
-         用默认共享工作区，**不要**传 `workspace_policy=worktree`（工作区\
-         未 git 化会被底座拒绝）——并行产出让各子智能体在最终回复里带回，\
-         由你亲自落盘；\n\
-         3. 很简单的事：不必委派，自己直接做；\n\
-         4. 承担者：专家池有合适人选就用 `profile` 字段指定{roster_block}；\
+         汇总；需要接力时把上游结果放进下一个子智能体的任务说明里；\n\
+         3. Git 与工作区策略由你按任务自主完成：只读或不会互相覆盖的任务可用\
+         默认共享工作区；同一 Git 仓库内有多个并行写入者、确需隔离时可传\
+         `workspace_policy=worktree`。采用 worktree 前自行确认 Git 可用并准备好\
+         目标仓库与有效基线；尚未拉取的仓库可先 clone，需要新建仓库时仅在\
+         执行权限和用户任务允许的目标项目目录内初始化；不得把 `.codewhale/`\
+         等运行时状态纳入版本控制。Git 不可用或准备失败时，说明原因并改用\
+         安全的共享/串行方案，不要让整批委派失败；\n\
+         4. 很简单的事：不必委派，自己直接做；\n\
+         5. 承担者：专家池有合适人选就用 `profile` 字段指定{roster_block}；\
          没有合适人选就不带 `profile` 直接派，此时给子智能体起个一目了然\
          的名字，写在任务说明**第一行**的「」里（如「调研专家-AI新闻」，\
          界面用它显示身份），再写角色定位、能力边界与要求——委派本质就是\
          写好提示词；不要用 `role` 字段选专家（那是底座内置类型别名，命中\
          不了专家名册）；\n\
-         5. 只读会话（Plan 档）下只派调研、审查类子智能体，不做写入；执行\
+         6. 只读会话（Plan 档）下只派调研、审查类子智能体，不做写入；执行\
          会话（Yolo 档）可派执行型子智能体产出交付物；\n\
-         6. 每个子任务的说明末尾写上：若因权限、环境或信息不可得而无法完成，\
+         7. 每个子任务的说明末尾写上：若因权限、环境或信息不可得而无法完成，\
          最终回复必须以 `[BLOCKED]` 开头并说明原因，不得把受阻说明伪装成完成。"
     )
 }
@@ -124,8 +130,24 @@ mod tests {
             "多阶段任务由父模型协调收束，结果经父上下文接力"
         );
         assert!(
-            msg.contains("workspace_policy=worktree") && msg.contains("不要"),
-            "必须教一律共享工作区：工作区不做 git 化，worktree 会被底座拒绝"
+            msg.contains("Git 与工作区策略由你按任务自主完成")
+                && msg.contains("`workspace_policy=worktree`")
+                && msg.contains("默认共享工作区"),
+            "Git 与 shared/worktree 策略必须交由模型按任务自主选择"
+        );
+        assert!(
+            msg.contains("Git 不可用或准备失败") && msg.contains("共享/串行方案"),
+            "worktree 前置条件不满足时必须教模型说明并安全降级"
+        );
+        assert!(
+            msg.contains("不得把 `.codewhale/`") && msg.contains("运行时状态"),
+            "模型自主维护 Git 时不得提交底座运行时状态"
+        );
+        assert!(
+            !msg.contains("不要`workspace_policy=worktree`")
+                && !msg.contains("不要传 `workspace_policy=worktree`")
+                && !msg.contains("一律用默认共享工作区"),
+            "不得再一刀切禁用底座 worktree 能力"
         );
         assert!(
             msg.contains("不必委派，自己直接做"),

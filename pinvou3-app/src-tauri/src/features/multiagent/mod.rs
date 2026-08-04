@@ -4,9 +4,9 @@
 //! - 委派实例（子智能体）的身份、任务摘要与状态由**底座自己的落盘记录**承载
 //!   （worker ledger + subagent transcripts），App 零新增持久化——读取投影见
 //!   [`transcripts`]；
-//! - 专家名册装配见 [`roster`]。**不做工作区 git 化**（2026-08-04 决策）：
-//!   新集群默认共享工作区，产出经最终回复回流、父模型亲自落盘；旧"并行
-//!   整批拒发"事故的根因是已删除的 workflow 方案在计划级强制 worktree；
+//! - 专家名册装配见 [`roster`]。App 不强制把会话工作区 git 化，也不禁用
+//!   底座 worktree：Git 准备及 shared/worktree 选择沿用普通对话语义，由父
+//!   模型按任务、权限与环境自主完成；
 //! - Workflow 专属运行台账（run.json 状态机、attempt tracker、进程租约、审批
 //!   落盘）已随"每图必停/唯一协议"的旧设计整体退役且未曾发布，无遗留数据。
 //!   `workflow` 工具保持主线原状（底座 subagents_enabled 连带注册，对所有
