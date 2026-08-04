@@ -83,7 +83,7 @@ const expectedProtocolHashes = {
   multiAgent: '7a744ec3318b16337a4a15cfb5668cc640013527a9b3ee8efc3e2a74ea51d9a1',
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
-  chat: 'c7a67396349fe88ae96b56344d31d96e34d5428201005247478d32012704ceba',
+  chat: '5920fd3ccf910d303250a8a96179d66fba8aac6f309984ba59434dd8bbce2fc8',
   dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
   knowledge: '3ae1fb7f8b4909601edb91ec1b2df83d37a3a6cc302911517c5913b557b716ca',

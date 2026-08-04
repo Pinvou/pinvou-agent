@@ -684,7 +684,6 @@ impl EnginePool {
                 "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                 session_id
             );
-            crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
         }
         // 先级联取消全部后台子智能体，再关闭引擎（ADR-0006）。两个 op 走同一条
         // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的
