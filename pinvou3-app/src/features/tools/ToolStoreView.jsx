@@ -89,7 +89,7 @@ const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallback
 
 const oauthUiTimeoutResult = (serverName) => ({
   status: 'timeout',
-  message: '未收到浏览器授权回调，请确认是否已完成授权，或稍后重新授权。',
+  message: '',
   server_name: serverName,
 });
 
