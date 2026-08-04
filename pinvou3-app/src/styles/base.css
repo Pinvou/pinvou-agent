@@ -245,6 +245,9 @@
     }
     code.language-diff .hljs-addition { background:var(--pinvou-hl-addition-bg); }
     code.language-diff .hljs-deletion { background:var(--pinvou-hl-deletion-bg); }
+    /* diff 文件头行（--- a/… / +++ b/…）：红/绿文字提示加减侧，无背景块（对齐 GitHub/VS Code）。 */
+    code.language-diff .hljs-diff-file-header.old { color:var(--pinvou-hl-deletion); }
+    code.language-diff .hljs-diff-file-header.new { color:var(--pinvou-hl-addition); }
 
     code.language-json .hljs-attr {
       color:var(--pinvou-hl-property);

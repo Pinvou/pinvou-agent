@@ -154,6 +154,15 @@ try {
   await page.click('[data-testid="reopen"]');
   await page.waitForFunction(() => document.querySelector('[data-testid="code-viewer-pre"]')?.style.fontSize === '14px');
 
+  // 深色模式：弹窗文字色跟随主题（此前 dialog 缺 text 色导致裸文本黑字黑底）。
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.waitForFunction(() => {
+    const pre = document.querySelector('[data-testid="code-viewer-modal"] pre.pinvou-code-block');
+    return pre && getComputedStyle(pre).color !== 'rgb(0, 0, 0)';
+  });
+  const darkPreColor = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="code-viewer-modal"] pre.pinvou-code-block')).color);
+  assert(darkPreColor !== 'rgb(0, 0, 0)', '深色模式下弹窗文字应为浅色', { darkPreColor });
+
   assert(pageErrors.length === 0, '浏览器运行时异常', pageErrors);
 
   console.log('code_viewer_modal_smoke: ok');

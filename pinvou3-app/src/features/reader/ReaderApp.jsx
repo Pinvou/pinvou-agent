@@ -19,8 +19,9 @@ import {
 // 窗口存活期间的后续请求经 code-reader:open 事件推送。
 const READER_OPEN_EVENT = 'code-reader:open';
 
+// kind 纳入 key：同一路径可同时存在文件 tab 与 diff tab，互不覆盖；旧载荷无 kind 时默认文件。
 function tabKey(request) {
-  return `${request.sessionId || ''}|${request.workspacePath || ''}|${request.relativePath || ''}`;
+  return `${request.kind || 'file'}|${request.sessionId || ''}|${request.workspacePath || ''}|${request.relativePath || ''}`;
 }
 
 function tabName(relativePath) {
@@ -28,7 +29,7 @@ function tabName(relativePath) {
 }
 
 function ReaderTabContent({ tab, state, fontSize, copy }) {
-  const highlighted = useCodeHighlight(state.preview, tab.name);
+  const highlighted = useCodeHighlight(state.preview, tab.name, tab.kind === 'diff' ? 'diff' : undefined);
   return (
     <CodeViewerContent
       preview={state.preview}
@@ -82,11 +83,27 @@ export function ReaderApp() {
   const loadPreview = useCallback((request) => {
     const key = tabKey(request);
     setPreviews(current => ({ ...current, [key]: { loading: true, error: '', preview: null } }));
-    invokeTauri('preview_codex_workspace_file', {
-      sessionId: request.sessionId || null,
-      workspacePath: request.workspacePath || null,
-      relativePath: request.relativePath,
-    }).then((preview) => {
+    // diff tab 调差异接口并把 WorkspaceDiff 适配为文本预览，与文件 tab 共用渲染/缓存路径。
+    const fetch = request.kind === 'diff'
+      ? invokeTauri('get_codex_workspace_diff', {
+          sessionId: request.sessionId || null,
+          relativePath: request.relativePath,
+        }).then(diff => ({
+          kind: 'text',
+          name: tabName(request.relativePath),
+          relativePath: request.relativePath,
+          size: 0,
+          modified: 0,
+          text: diff.text || copy.noDiff,
+          dataUrl: null,
+          truncated: diff.truncated,
+        }))
+      : invokeTauri('preview_codex_workspace_file', {
+          sessionId: request.sessionId || null,
+          workspacePath: request.workspacePath || null,
+          relativePath: request.relativePath,
+        });
+    fetch.then((preview) => {
       setPreviews(current => ({ ...current, [key]: { loading: false, error: '', preview } }));
     }).catch((nextError) => {
       console.error('code reader preview failed:', nextError);
@@ -108,6 +125,7 @@ export function ReaderApp() {
       if (current.some(tab => tab.key === key)) return current;
       return [...current, {
         key,
+        kind: request.kind === 'diff' ? 'diff' : 'file',
         sessionId: request.sessionId || '',
         workspacePath: request.workspacePath || '',
         relativePath: request.relativePath,
@@ -216,7 +234,7 @@ export function ReaderApp() {
               className="flex items-center gap-1.5 min-w-0"
             >
               <FileColoredIcon name={tab.name} size={14} />
-              <span className="truncate max-w-[180px] text-[12px]">{tab.name}</span>
+              <span className="truncate max-w-[180px] text-[12px]">{tab.name}{tab.kind === 'diff' ? copy.diffSuffix : ''}</span>
             </button>
             <button
               type="button"
@@ -274,12 +292,16 @@ export function ReaderApp() {
             >
               {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
             </button>
-            <button type="button" onClick={() => openActive('reveal_codex_workspace_file')} className={iconButton} title={copy.reveal}>
-              <FolderOpen size={13} />
-            </button>
-            <button type="button" onClick={() => openActive('open_codex_workspace_file')} className={iconButton} title={copy.open}>
-              <ExternalLink size={13} />
-            </button>
+            {activeTab.kind !== 'diff' && (
+              <>
+                <button type="button" onClick={() => openActive('reveal_codex_workspace_file')} className={iconButton} title={copy.reveal}>
+                  <FolderOpen size={13} />
+                </button>
+                <button type="button" onClick={() => openActive('open_codex_workspace_file')} className={iconButton} title={copy.open}>
+                  <ExternalLink size={13} />
+                </button>
+              </>
+            )}
           </div>
           <ReaderTabContent tab={activeTab} state={activeState} fontSize={fontSize} copy={copy} />
         </>

@@ -19,6 +19,9 @@ pub struct ReaderOpenRequest {
     pub session_id: Option<String>,
     pub workspace_path: Option<String>,
     pub relative_path: String,
+    /// 打开模式：`None`/`"file"` = 文件内容（preview），`"diff"` = 工作区变更差异。
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 static PENDING_OPEN: Mutex<Vec<ReaderOpenRequest>> = Mutex::new(Vec::new());
@@ -66,11 +69,13 @@ mod tests {
             session_id: None,
             workspace_path: Some("D:/proj".to_string()),
             relative_path: "src/main.rs".to_string(),
+            kind: None,
         };
         let second = ReaderOpenRequest {
             session_id: Some("session-1".to_string()),
             workspace_path: None,
             relative_path: "README.md".to_string(),
+            kind: Some("diff".to_string()),
         };
         pending_open().push(first.clone());
         pending_open().push(second.clone());
