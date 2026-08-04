@@ -143,6 +143,20 @@ assert.equal(
   'copy classification must reject fenced content that the UI parser does not treat as JSON',
 );
 
+const personaPayload = '{"name":"Reviewer","body":"hidden prompt","description":"Visible card"}';
+for (const [label, variant] of [
+  ['longer closing fence', `\`\`\`persona-card\n${personaPayload}\n\`\`\`\``],
+  ['indented fence with trailing spaces', `  \`\`\`persona-card\n  ${personaPayload}\n  \`\`\`   `],
+  ['unclosed fence', `\`\`\`persona-card\n${personaPayload}`],
+  ['tilde fence', `~~~persona-card\n${personaPayload}\n~~~~`],
+]) {
+  assert.equal(
+    assistantMarkdownCopyText(variant),
+    'Reviewer\n\nVisible card',
+    `${label} must use the same fenced-code semantics as the Markdown renderer`,
+  );
+}
+
 const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
 assert.equal(
   assistantItemCopyText({ text: injectedMarker }),

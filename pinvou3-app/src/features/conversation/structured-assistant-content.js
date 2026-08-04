@@ -1,3 +1,5 @@
+import { scanMarkdownFences } from '../../shared/markdown-fences.js';
+
 export function normalizeAssistantMessageText(value) {
   const lines = String(value || '')
     .replace(/\r\n?/g, '\n')
@@ -127,23 +129,21 @@ function structuredFenceSelections(blocks, { allowScheduledTaskDraft = false } =
 export function assistantMarkdownCopyText(value, options) {
   const markdown = normalizeAssistantMessageText(value);
   if (!markdown) return '';
-  const fencePattern = /(^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g;
-  const blocks = [];
-  let match;
-  while ((match = fencePattern.exec(markdown))) {
-    blocks.push({
-      index: blocks.length,
-      language: String(match[3] || '').trim().toLowerCase(),
-      payload: fencePayload(match[4]),
-    });
-  }
+  const fences = scanMarkdownFences(markdown);
+  const blocks = fences.map((fence, index) => ({
+    index,
+    language: String(fence.info || '').trim().toLowerCase(),
+    payload: fencePayload(fence.content),
+  }));
   const selections = structuredFenceSelections(blocks, options);
-  let blockIndex = 0;
-  fencePattern.lastIndex = 0;
-  const readable = markdown.replace(fencePattern, (fullMatch, prefix) => {
-    const structured = selections.get(blockIndex);
-    blockIndex += 1;
-    return structured ? `${prefix}${structured}` : fullMatch;
+  let cursor = 0;
+  const output = [];
+  fences.forEach((fence, index) => {
+    output.push(markdown.slice(cursor, fence.start));
+    output.push(selections.get(index) || markdown.slice(fence.start, fence.end));
+    cursor = fence.end;
   });
+  output.push(markdown.slice(cursor));
+  const readable = output.join('');
   return normalizeAssistantMessageText(readable);
 }

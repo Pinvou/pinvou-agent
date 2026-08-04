@@ -1,6 +1,7 @@
 import createDOMPurify from 'dompurify';
 import { Marked } from 'marked';
 import { escapeCodeHtml, highlightCode } from './syntax-highlighter.js';
+import { scanMarkdownFences } from './markdown-fences.js';
 
 const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/giu;
 const SANITIZE_OPTIONS = {
@@ -25,11 +26,8 @@ function neutralizeRawDangerousTags(html) {
 }
 
 function fencedCodeIsClosed(token) {
-  const opening = String(token.raw || '').match(/^\s*(`{3,}|~{3,})/u);
-  if (!opening) return true;
-  const fence = opening[1];
-  const closing = new RegExp(`(?:^|\\n)\\s*${fence[0]}{${fence.length},}\\s*$`, 'u');
-  return closing.test(String(token.raw || '').trimEnd());
+  const fences = scanMarkdownFences(token.raw);
+  return fences.length ? fences[0].closed : true;
 }
 
 const markdown = new Marked({

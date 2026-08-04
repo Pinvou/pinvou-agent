@@ -50,6 +50,10 @@ assert.match(python, /class="hljs language-python"/u);
 assert.match(python, /hljs-keyword">def</u);
 assert.match(python, /hljs-title function_">heap_sort</u);
 
+const commonMarkFence = renderMarkdownMarkup('  ```python\r\n  def greet():\r\n    return True\r\n  ````   ');
+assert.match(commonMarkFence, /data-language-id="python"/u);
+assert.match(commonMarkFence, /hljs-keyword">def</u);
+
 const tsx = renderMarkdownMarkup('```tsx\nconst App = () => <main>Hello</main>;\n```');
 assert.match(tsx, /data-language="TSX"/u);
 assert.match(tsx, /data-language-id="tsx"/u);

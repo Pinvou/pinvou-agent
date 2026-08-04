@@ -8,8 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
-const conversationDir = path.join(temp, 'conversation');
+const conversationDir = path.join(temp, 'features', 'conversation');
+const sharedDir = path.join(temp, 'shared');
 mkdirSync(conversationDir, { recursive: true });
+mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'structured-assistant-content.js']) {
   copyFileSync(
@@ -17,6 +19,10 @@ for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'struct
     path.join(conversationDir, file),
   );
 }
+copyFileSync(
+  path.join(root, 'src', 'shared', 'markdown-fences.js'),
+  path.join(sharedDir, 'markdown-fences.js'),
+);
 
 try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
