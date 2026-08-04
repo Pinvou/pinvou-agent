@@ -1052,14 +1052,32 @@ impl EnginePool {
         }
     }
 
-    /// 专家池增删改后的名册联动（ADR-0006）：对所有开着多智能体开关的会话
-    /// 重新入册专家（文件是下次 spawn 的装配来源），引擎在跑的再把新名册
-    /// 整册推过去——否则提示词名单更新了、引擎却报 "profile 不存在"。
+    /// 专家池增删改后的名册联动（ADR-0006）：刷新所有开着多智能体开关的
+    /// 会话，以及仍在运行且留有专家投影的已关闭会话。后者不能跳过：开关
+    /// 关闭不会重建引擎，若此时删卡，旧 roster 会让已删除专家继续可用。
     /// 返回聚合错误：调用方（专家池命令）要如实告知用户哪些会话没刷新成功，
     /// 而不是界面显示成功、子智能体却用旧名单。
     pub async fn refresh_multi_agent_rosters_after_expert_change(&self) -> Result<(), String> {
         let mut failures: Vec<String> = Vec::new();
-        for session_id in self.store.multi_agent_session_ids() {
+        let mut targets = self
+            .store
+            .multi_agent_session_ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let live_session_ids = self
+            .entries
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in live_session_ids {
+            let workspace = crate::platform::paths::session_workspace_dir(&session_id);
+            if crate::features::multiagent::roster::has_expert_role_projection(&workspace) {
+                targets.insert(session_id);
+            }
+        }
+        for session_id in targets {
             let workspace = crate::platform::paths::session_workspace_dir(&session_id);
             if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&workspace) {
                 failures.push(format!("{session_id}: {err}"));

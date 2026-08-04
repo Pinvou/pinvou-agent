@@ -26,14 +26,22 @@ test('多智能体第一阶段只在桌面宿主开放', () => {
   }
 });
 
-test('共享界面按 capability 订阅并阻止 Web 续写多智能体会话', () => {
+test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会话', () => {
   const main = read('src', 'app', 'main.jsx');
+  const detached = read('src', 'app', 'DetachedShell.jsx');
+  const tauriBridge = read('src', 'platform', 'tauri', 'bridge.js');
   const chat = read('src', 'features', 'chat', 'ChatView.jsx');
   const panel = read('src', 'features', 'multiagent', 'SubagentTranscriptPanel.jsx');
   const i18n = read('src', 'shared', 'i18n.js');
   const remoteCommands = read('src-tauri', 'src', 'app', 'commands', 'remote_control.rs');
 
-  assert.match(main, /\.\.\.\(MULTI_AGENT_ENABLED \? \['multiAgent'\] : \[\]\)/);
+  assert.doesNotMatch(
+    main,
+    /APP_BRIDGE_STATE_DOMAINS\s*=\s*\[[\s\S]{0,400}['"]multiAgent['"]/,
+    '多智能体投影由命令与 DOM 事件提供，不得订阅已退役的空运行态',
+  );
+  assert.doesNotMatch(detached, /useBridgeState\(\[[\s\S]{0,300}['"]multiAgent['"]/);
+  assert.doesNotMatch(tauriBridge, /activeRunId/, '旧 Workflow 运行台账状态不得残留');
   assert.match(
     chat,
     /const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED\s*&& !!\(bs && bs\.modeState && bs\.modeState\.multiAgent\)/,
@@ -46,7 +54,7 @@ test('共享界面按 capability 订阅并阻止 Web 续写多智能体会话', 
   assert.match(panel, /listSubagentTranscripts\(sessionId\)/);
   assert.match(
     remoteCommands,
-    /ensure_web_chat_session_supported\(&session_id, store\.mode_state\(&session_id\)\.multi_agent\)\?/,
+    /ensure_web_chat_session_supported\(store\.mode_state\(&session_id\)\.multi_agent\)\?/,
     'Web 续写必须校验多智能体开关（桌面专属）',
   );
   assert.equal((i18n.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');

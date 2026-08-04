@@ -64,11 +64,9 @@ window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
 
 let appFirstRenderMarked = false;
 
-const MULTI_AGENT_ENABLED = can('multiAgent');
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
-  ...(MULTI_AGENT_ENABLED ? ['multiAgent'] : []),
   'memory', 'remoteControl', 'updater', 'dependencies',
 ];
 

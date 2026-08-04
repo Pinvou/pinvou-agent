@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
-import { isExpertDelegationCall } from '../conversation/conversation-model.js';
+import { expertDelegationText, isExpertDelegationCall } from '../conversation/conversation-model.js';
 import {
   extractSubagentId,
   resolveSubagentIdentity,
@@ -125,7 +125,7 @@ const ExpertAgentCard = ({ item, theme, t }) => {
     agentId,
   );
   // 模型起的「」名（任务说明第一行）优先于角色映射名；专家卡名仍最高。
-  const spawnText = String(args.prompt || args.message || args.objective || args.description || '');
+  const spawnText = expertDelegationText(args);
   const title = splitSubagentTitle(spawnText);
   const usesCustomTitle = identity.kind !== 'expert' && !!title.name;
   const baseName = identity.kind === 'expert'
@@ -136,11 +136,13 @@ const ExpertAgentCard = ({ item, theme, t }) => {
         ? identity.name
         : (copy.roleCards[identity.roleKey] || copy.roleCards.general);
   const task = title.rest.split(/\r?\n/)[0];
+  const isDelegation = isExpertDelegationCall(item.name, args);
+  const failedSpawn = item.state === 'failed';
 
   // Hook 全部无条件运行（协调行分支在 Hook 之后），实例 Hook 数量恒定。
   const [live, setLive] = useState(null);
   useEffect(() => {
-    if (!agentId || typeof window === 'undefined') return undefined;
+    if (!isDelegation || failedSpawn || !agentId || typeof window === 'undefined') return undefined;
     const onUpdate = event => {
       const detail = event && event.detail;
       if (!detail || detail.agentId !== agentId) return;
@@ -157,9 +159,9 @@ const ExpertAgentCard = ({ item, theme, t }) => {
       window.removeEventListener('pinvou:subagent-update', onUpdate);
       unwatch();
     };
-  }, [agentId]);
+  }, [agentId, failedSpawn, isDelegation]);
 
-  if (!isExpertDelegationCall(item.name, args)) {
+  if (!isDelegation) {
     const action = String(args.action || 'start');
     return (
       <div
@@ -176,7 +178,6 @@ const ExpertAgentCard = ({ item, theme, t }) => {
   const name = baseName + (usesCustomTitle
     ? ''
     : subagentOrdinalLabel(live && live.roleCount ? { seq: live.seq, count: live.roleCount } : null));
-  const failedSpawn = item.state === 'failed';
   const blocked = !!(live && live.done && !live.failed && live.blocked);
   const interrupted = !!(live && live.done && live.failed && live.status === 'interrupted');
   const statusText = failedSpawn

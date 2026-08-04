@@ -90,7 +90,8 @@ async fn sync_expert_rosters(app: &AppHandle, pool: &EnginePool) {
 }
 
 /// 新建自制卡 → 写 `~/.pinvou3/user/personas/<id>.json`,返回摘要(含生成的 id)。
-/// 用户卡即专家名册成员：变更后联动刷新所有开着多智能体开关的会话名册。
+/// 用户卡即专家名册成员：变更后联动刷新开启中的会话，以及仍加载旧专家
+/// 投影的在跑会话。
 #[tauri::command]
 pub async fn create_persona(
     input: PersonaInput,

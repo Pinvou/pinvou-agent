@@ -72,7 +72,7 @@ pub async fn set_multi_agent_mode(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    // 任何副作用（建目录、git init、写角色文件）之前先过两道门：id 形状
+    // 任何副作用（建目录、写角色文件）之前先过两道门：id 形状
     // 校验（paths::session_workspace_dir 只是 join，`../` 会把副作用落到
     // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
     crate::features::sessions::validate_session_id(&session_id)

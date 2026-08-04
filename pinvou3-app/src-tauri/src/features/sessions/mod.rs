@@ -465,8 +465,8 @@ impl SessionStore {
             .context("list_sessions failed")?;
         // Scheduled conversations share the durable store so detail/history can
         // load them normally, but remain owned by the Scheduled Tasks surface.
-        // 多智能体对话（wf-）**进入**列表：会话即运行的入口与档案，历史、重开、
-        // 删除全部复用会话列表交互（见 docs/multiagent/glossary.md「工作流运行」）。
+        // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
+        // 会话，其余历史统一进入普通列表。
         out.retain(|metadata| !metadata.id.starts_with("sched-"));
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
