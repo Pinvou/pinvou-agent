@@ -32,7 +32,7 @@
 //! 可见。pub 面在本文件集中 re-export，保持外部调用路径不变。
 
 mod injections;
-mod mode_state;
+pub(crate) mod mode_state;
 mod retention;
 mod scheduled;
 mod sidecars;
