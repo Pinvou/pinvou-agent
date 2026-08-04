@@ -309,7 +309,7 @@ pub(crate) fn spawn_event_forwarder(
                         tokio::spawn(async move {
                             if let Err(error) = h.cancel_user_input(id).await {
                                 eprintln!(
-                                    "[pinvou3-app] cancel scheduled user input failed: {error:?}"
+                                    "[pinvou3-app] cancel scheduled user input failed: {error:#}"
                                 );
                             }
                         });
@@ -460,7 +460,7 @@ pub(crate) fn spawn_event_forwarder(
                             h.deny_tool_call(id_clone).await
                         };
                         if let Err(e) = result {
-                            eprintln!("[pinvou3-app] scheduled approval decision failed: {e:?}");
+                            eprintln!("[pinvou3-app] scheduled approval decision failed: {e:#}");
                         }
                     });
                     // 不重复 emit chat:tool_start —— 上游 ToolCallStarted（带完整 input）
@@ -726,7 +726,7 @@ pub(crate) fn spawn_event_forwarder(
                                                 expects_file_output: t.expects_file_output,
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
-                                                eprintln!("[harness] per_page {role} 空壳→重派 {rr} 失败: {e:?}");
+                                                eprintln!("[harness] per_page {role} 空壳→重派 {rr} 失败: {e:#}");
                                             } else {
                                                 eprintln!("[harness] per_page {role} 空壳→重派(第{n}/{maxr}次) {rr}");
                                                 crate::features::assistant::harness::fanout_mark(
@@ -798,7 +798,7 @@ pub(crate) fn spawn_event_forwarder(
                                                 expects_file_output: t.expects_file_output,
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
-                                                eprintln!("[harness] per_page 补派 {next_role} 失败: {e:?}");
+                                                eprintln!("[harness] per_page 补派 {next_role} 失败: {e:#}");
                                             } else {
                                                 eprintln!(
                                                     "[harness] per_page 补派下一页 {next_role}"

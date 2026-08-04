@@ -375,7 +375,7 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
                 }
             }
         }
-        return Err(format!("save pet.enabled failed: {error:?}"));
+        return Err(format!("save pet.enabled failed: {error:#}"));
     }
     if !enabled {
         if let Some(win) = app.get_webview_window(PET_LABEL) {

@@ -14,7 +14,7 @@ pub async fn get_session_timeline(
 ) -> Result<Vec<crate::features::assistant::timing::TimelineEvent>, String> {
     // 防路径穿越:timing reader 内部走 sessions_root().join(session_id),
     // 必须先校验 session_id 字符集(只允许 [A-Za-z0-9_-]),否则可构造 ../ 越界。
-    crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:?}"))?;
+    crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:#}"))?;
     tokio::task::spawn_blocking(move || {
         crate::features::assistant::timing::read_timeline(&session_id)
     })
@@ -31,7 +31,7 @@ pub async fn get_session_stats(
     session_id: String,
 ) -> Result<crate::features::assistant::timing::SessionTimelineStats, String> {
     // 同 get_session_timeline:校验 session_id 字符集防路径穿越。
-    crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:?}"))?;
+    crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:#}"))?;
     tokio::task::spawn_blocking(move || {
         crate::features::assistant::timing::compute_stats(&session_id)
     })

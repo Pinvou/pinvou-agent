@@ -231,7 +231,7 @@ pub async fn codex_acp_prompt(
             crate::features::assistant::timing::finish_turn(
                 &session_id,
                 "send_error",
-                Some(&format!("{error:?}")),
+                Some(&format!("{error:#}")),
             );
             format!("ACP Agent send failed: {error:#}")
         })
@@ -539,7 +539,7 @@ pub async fn list_codex_acp_sessions(
 ) -> Result<Vec<CodexAcpSessionListItem>, String> {
     let mut metas = store
         .list()
-        .map_err(|error| format!("list_codex_acp_sessions: {error:?}"))?;
+        .map_err(|error| format!("list_codex_acp_sessions: {error:#}"))?;
     metas.retain(|metadata| {
         matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
             && (acp_pool.is_acp_metadata(metadata)
@@ -592,7 +592,7 @@ pub async fn create_codex_acp_session(
             None,
             metadata_workspace,
         )
-        .map_err(|error| format!("create_codex_acp_session: {error:?}"))?;
+        .map_err(|error| format!("create_codex_acp_session: {error:#}"))?;
     let kind = if project_workspace.is_some() {
         CodexWorkspaceKind::Project
     } else {
