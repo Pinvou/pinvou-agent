@@ -2,8 +2,12 @@ import React from 'react';
 import claudeIcon from '../../brand-icons/claude.png';
 import kimiIcon from '../../brand-icons/kimi-code.png';
 import { CodexLogo } from '../../components/CodexLogo.jsx';
+import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 
 export function AcpAgentLogo({ agentId = 'codex', className = 'h-5 w-5', title }) {
+  if (agentId === 'pinvou') {
+    return <PinvouLogo className={className} title={title || '品悟'} />;
+  }
   if (agentId === 'codex') {
     return <CodexLogo className={className} title={title || 'Codex'} />;
   }

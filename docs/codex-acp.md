@@ -1,15 +1,22 @@
 # Codex ACP 接入
 
-> “代码”模式现已在同一 ACP 链路上支持 Codex、Claude Code 和 Kimi；多 Agent
+> “代码”模式现已在同一 ACP 链路上支持 Codex、Claude Code 和 Kimi，并额外提供
+> 品悟原生代码会话（进程内 CodeWhale Engine，非 ACP 子进程）；多 Agent
 > 结构、运行时来源和登录边界见 [`multi-agent-acp.md`](./multi-agent-acp.md)。
 
+> 品悟原生会话的设计决策、开发节点与改动说明见
+> [`code-native-agent.md`](./code-native-agent.md)。
 > 本文说明当前 MVP 的使用、验证和发布方式。
 
 pinvou3 在主页输入区提供“工作 / 代码”两种模式：“工作”保持原有品悟输入框，
-“代码”当前使用 Codex。两类会话按最近更新时间混排在左侧统一会话列表中，Codex
-会话以代码图标区分，不再占用单独的侧边栏入口。Codex 会话仍使用独立的 ACP
-事件、权限和持久化链路，不进入 CodeWhale `ChatView`；原有品悟对话继续固定使用
-CodeWhale。
+“代码”可选 Codex / Claude Code / Kimi（ACP）或品悟原生。两类会话按最近更新时间
+混排在左侧统一会话列表中，以各自 Agent 图标区分，不再占用单独的侧边栏入口。
+ACP 会话仍使用独立的 ACP 事件、权限和持久化链路，不进入 CodeWhale `ChatView`；
+品悟原生代码会话复用 CodeWhale Engine 与 `chat` 命令、`chat:*` 事件链路。
+原生会话遵循“两个根”：LLM 的执行根（engine cwd、shell 与文件工具）可以是用户
+绑定的项目目录，应用账本根（附件、审计、产物）永远在
+`~/.pinvou3/sessions/<id>/` 私有目录；系统提示词为编码专用（共享层 + 代码层，
+代码层引用底座 core_execution 并附代码场景纪律，无产出物/成品卡语义）。
 
 ## 开发环境使用
 
@@ -19,13 +26,15 @@ CodeWhale。
    0.144.6 时直接使用，不提示升级；缺失或版本过旧时，经用户确认后按
    [`multi-agent-acp.md`](./multi-agent-acp.md) 的安装与升级矩阵自动安装或升级。
 3. 在主页选择“代码”，输入框下方默认选择“临时会话”；直接发送首条消息时才创建
-   Codex 会话，避免只切换模式就产生空记录。也可以在发送前切换工作目录：
+   会话，避免只切换模式就产生空记录。也可以在发送前切换工作目录：
    - **选择项目目录**：Codex 的进程 cwd、`session/new` 和 `session/load`
      都使用该真实项目目录。
    - **临时会话**：Codex 使用
      `~/.pinvou3/sessions/<id>/workspace/` 隔离目录。
    - **最近项目**：复用近期选择过的项目目录。
    同一个项目可以创建多个独立会话；会话开始后不能更换目录，需要切换项目时新建会话。
+   品悟原生会话同样支持临时会话与项目目录两种工作区：绑项目后 LLM 直接在项目目录
+   中执行，而附件、审计等应用账本仍写入会话私有目录（“两个根”）。
 4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，经用户确认后
    执行 OpenAI 官方安装脚本安装当时的 latest；安装后直接探测 `~/.local/bin/codex`
    的绝对路径，不要求重启 App 或依赖桌面进程的 PATH。版本过旧时先判定安装来源：
@@ -76,7 +85,8 @@ Codex 自己上报的 `/skills`、`/mcp` 等命令可直接在输入框使用。
 ## 数据位置
 
 - `~/.pinvou3/session-agents.json`：pinvou 会话与 ACP session ID / model /
-  用户确认配置的轻量索引。
+  用户确认配置的轻量索引；品悟原生代码会话在其中以 `code_session: true` 标记，
+  后端凭该标记把会话纳入代码会话列表并解析临时工作区。
 - `~/.pinvou3/acp-agent-defaults.json`：每个 ACP Agent 的新会话默认配置。
 - `~/.pinvou3/sessions/<id>/acp-state.json`：Agent、capability、model、mode、config 和最后状态。
 - `~/.pinvou3/sessions/<id>/acp-timeline.jsonl`：按 `seq` 追加的完整 ACP 事件时间线。

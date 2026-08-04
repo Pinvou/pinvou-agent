@@ -196,6 +196,8 @@ pub async fn install_marketplace_tool(
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
             }
         }
+        // 代码会话的 code scope 已初始化时,新装的连接器默认仍关闭(显式开启)。
+        crate::features::marketplace::sync_code_scope_after_install(&tool_id);
         Ok(())
     })
     .await
@@ -423,6 +425,8 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
         }
     }
     mgr.uninstall(&tool_id)?;
+    // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
+    crate::features::marketplace::remove_connector_from_disabled_scopes(&tool_id);
     // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
     for sid in companions {
         let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()

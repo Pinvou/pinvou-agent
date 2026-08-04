@@ -965,6 +965,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         vec![crate::features::files::file_ingest::ingest(&source)],
         &locked,
         &staged_dir,
+        false,
     );
 
     let staged_relative = format!("{staged_dir}/source.png");
@@ -974,6 +975,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         vec![mk_attachment("text", "big.log", 9_000, 50_000)],
         &locked,
         &staged_dir,
+        false,
     );
     let report = workspace.join("report.md");
     std::fs::write(&report, "scheduled result").expect("scheduled workspace artifact");
@@ -1424,6 +1426,79 @@ fn mk_test_ws(tag: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&ws);
     std::fs::create_dir_all(&ws).expect("建 workspace");
     ws
+}
+
+#[test]
+fn project_bound_code_session_references_staged_attachments_by_absolute_path() {
+    // 原生代码会话绑项目目录后：附件仍落盘到账本根（会话私有目录），但消息里的
+    // 引用必须是绝对路径——引擎 cwd 是项目目录，相对路径会解析落空。
+    let ledger = mk_test_ws("absolute-ledger");
+    let prompt = build_message_with_attachments_in_dir(
+        "inspect all".to_string(),
+        vec![mk_attachment("xlsx", "big.xlsx", 9_000, 50_000)],
+        &ledger,
+        "attachments",
+        true,
+    );
+    let staged = ledger.join("attachments/big.csv");
+    assert!(
+        staged.exists(),
+        "附件必须落盘到账本根: {}",
+        staged.display()
+    );
+    let absolute = staged.to_string_lossy().into_owned();
+    assert!(prompt.contains(&absolute), "消息必须引用绝对路径");
+    assert!(!prompt.contains("路径: `attachments/big.csv`"));
+
+    // 普通会话（两根一致）维持相对路径引用，行为不变。
+    let relative_ledger = mk_test_ws("relative-ledger");
+    let relative_prompt = build_message_with_attachments_in_dir(
+        "inspect all".to_string(),
+        vec![mk_attachment("xlsx", "big.xlsx", 9_000, 50_000)],
+        &relative_ledger,
+        "attachments",
+        false,
+    );
+    assert!(relative_prompt.contains("`attachments/big.csv`"));
+    let _ = std::fs::remove_dir_all(&ledger);
+    let _ = std::fs::remove_dir_all(&relative_ledger);
+}
+
+#[test]
+fn remote_artifact_authorization_stays_on_private_ledger_root() {
+    // 红线回归：即使原生代码会话把执行根绑到用户项目目录，远程下载授权根也必须
+    // 是会话私有目录——resolve_session_artifact_path 的 workspace_root 来自
+    // SessionStore::execution_workspace（账本语义，M1 未改），项目内文件不可下载。
+    let _home = test_pinvou_home("pinvou3-remote-authz-test");
+    let store = SessionStore::boot().expect("session store");
+    let chat = store
+        .create_new("remote-authz-test".to_string(), None, std::env::temp_dir())
+        .expect("chat session");
+    let sid = chat.metadata.id.clone();
+    let ledger = store.execution_workspace(&sid).expect("ledger workspace");
+    std::fs::create_dir_all(&ledger).expect("ledger dir");
+    std::fs::write(ledger.join("ok.txt"), "ok").expect("ledger file");
+
+    let project = mk_test_ws("remote-authz-project");
+    let outside = project.join("secret.txt");
+    std::fs::write(&outside, "secret").expect("project file");
+
+    crate::features::remote_control::file_access::resolve_session_artifact_path(
+        &store, &sid, "ok.txt",
+    )
+    .expect("账本根内的文件必须可下载");
+    assert!(
+        crate::features::remote_control::file_access::resolve_session_artifact_path(
+            &store,
+            &sid,
+            outside.to_str().expect("utf8 path"),
+        )
+        .is_err(),
+        "项目目录（执行根）内的文件不得经远程通道下载"
+    );
+
+    let _ = store.delete(&sid);
+    let _ = std::fs::remove_dir_all(&project);
 }
 
 #[test]

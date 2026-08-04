@@ -355,13 +355,15 @@ try {
     && codexView.includes("invoke('submit_acp_agent_login_code'")
     && codexView.includes('status.login_code')
     && codexView.includes('status.login_input_required')
-    && codexView.includes('if (!activeStatus?.authenticated)')
+    && codexView.includes('if (!isNativeAgent && !activeStatus?.authenticated)')
     && codexView.includes('isAcpAuthenticationFailure(latest)'),
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
     && codexView.includes('const created = await createSession(draftWorkspacePath)'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
+  assert.ok(!codexView.includes('createSession(null)'),
+  'the native (pinvou) first-send path must also forward the selected draft workspace');
   assert.ok(codexView.includes('!activeId && (')
     && codexView.includes('data-testid="codex-workspace-selector"')
     && codexView.includes('codexCopy.recentProjects'),
@@ -385,7 +387,7 @@ try {
   assert.ok(accountTriggerIndex > composerFooterIndex
     && composerConfigsIndex > accountTriggerIndex,
   'Codex session controls must live in the composer footer right of the connection status');
-  assert.ok(codexView.includes('composerControlsVisible && (')
+  assert.ok(codexView.includes('composerControlsVisible && !isNativeAgent && (')
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
   'Codex controls must render from the session report or, in draft, the cached agent snapshot');
@@ -395,7 +397,7 @@ try {
     && codexView.includes('applyDraftConfigSelections(targetId, created.info)'),
   'the draft composer must prefill model, mode and config controls from the agent cache and apply staged choices on first send');
   assert.ok(codexView.includes('function CodexComposerConfigSelect')
-    && codexView.includes('data-testid={`codex-config-${id}`}')
+    && codexView.includes('data-testid={testId || `codex-config-${id}`}')
     && codexView.includes('<ComposerPopover')
     && codexView.includes('focus-within:ring-2 focus-within:ring-[#007AFF]/10'),
   'Codex session controls must use the unified visual selector with the app-styled ComposerPopover menu');
@@ -529,6 +531,61 @@ try {
     'Codex unordered lists must retain bullets after Tailwind preflight');
   assert.ok(baseStyles.includes('.codex-markdown ol { list-style:decimal outside; }'),
     'Codex ordered lists must retain numbering after Tailwind preflight');
+
+  // 原生（品悟）车道底栏四控件契约：仅 isNativeAgent 渲染、与 ACP 配置组同一套
+  // CodexComposerConfigSelect 视觉、直调 per-session 命令、绝不复用 bridge 聊天
+  // active 绑定方法。
+  const composerControls = readFileSync(path.join(root, 'src', 'features', 'chat', 'composer-controls.jsx'), 'utf8');
+  assert.ok(codexView.includes('data-testid="native-composer-controls"')
+    && codexView.includes('{isNativeAgent && (')
+    && codexView.includes('testId="native-mode"')
+    && codexView.includes('testId="native-model"')
+    && codexView.includes('testId="native-kb"')
+    && codexView.includes('triggerVariant="pill"')
+    && codexView.includes('triggerTestId="native-tools"')
+    && codexView.includes('label={codexCopy.model}')
+    && codexView.includes('label={codexCopy.permissionMode}')
+    && codexView.includes('label={t.kbMount}'),
+  'the native lane must mount the four composer controls as ACP-style config pills behind the native-agent gate');
+  assert.ok(!codexView.includes('<ComposerModeChip')
+    && !codexView.includes('<ComposerModelSelector')
+    && !codexView.includes('<ComposerKbSelector'),
+  'the code lane must not fall back to chat-style icon triggers for composer controls');
+  assert.ok(codexView.includes('function CodexComposerConfigSelect')
+    && codexView.includes('data-testid={testId || `codex-config-${id}`}'),
+  'the shared config select must keep its ACP testid contract while allowing native overrides');
+  assert.ok(codexView.includes("invoke('get_session_model_id'")
+    && codexView.includes("invoke('set_session_model'")
+    && codexView.includes("invoke('session_mount_collection'")
+    && codexView.includes("invoke('session_unmount_collection'")
+    && codexView.includes("invoke('session_mounted_collection'")
+    && codexView.includes("invoke('get_mode_state'")
+    && codexView.includes("invoke('set_plan_mode_next'")
+    && codexView.includes("invoke('exit_plan_to_yolo'")
+    && codexView.includes("invoke('cancel_generation'"),
+  'native composer controls must switch via per-session commands with an explicit sessionId');
+  assert.ok(!codexView.includes('bridge.models.')
+    && !codexView.includes('bridge.knowledge.')
+    && !codexView.includes('bridge.interaction.')
+    && !codexView.includes('bridge.chat.'),
+  'the code lane must never call bridge chat-active-bound methods for composer controls');
+  assert.ok(codexView.includes('nativeDraftControls')
+    && codexView.includes('applyNativeDraftControls'),
+  'draft-state control selections must be staged and applied after session creation');
+  assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
+  'session control state must be scoped to its owning session to avoid cross-session flashes');
+  assert.ok(chatView.includes("from './composer-controls.jsx'")
+    && !chatView.includes('const ComposerKbSelector = ')
+    && !chatView.includes('const ComposerModeChip = ')
+    && composerControls.includes('export { COMPOSER_ICON_BUTTON_CLASS, ComposerKbSelector, ComposerModeChip }'),
+  'ChatView must consume the extracted composer controls module');
+  assert.ok(composerControls.includes('mountedIdProp !== undefined')
+    && composerControls.includes('modeProp != null')
+    && composerControls.includes('busyProp !== undefined')
+    && composerControls.includes('if (onMount) { onMount(id); return; }')
+    && composerControls.includes('if (onUnmount) { onUnmount(); return; }')
+    && composerControls.includes('if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }'),
+  'extracted controls must support explicit session-driven props while keeping the bridge fallback');
 
   console.log('codex_acp_timeline: ok');
 } finally {

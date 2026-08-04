@@ -1,16 +1,25 @@
 # 多 Agent ACP 接入
 
 Pinvou 的“代码”模式复用同一套 ACP client、timeline、权限、附件、工作区和会话恢复
-链路接入外部代码 Agent。每个会话在创建时绑定一个 Agent，开始后不能切换 Agent 或
-工作目录；需要切换时新建会话。
+链路接入外部代码 Agent，并额外提供品悟原生代码会话。每个会话在创建时绑定一个
+Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效）；需要切换时新建会话。
 
 ## 当前 Agent
 
 | Agent | 启动方式 | 运行时来源 | 登录 |
 |---|---|---|---|
+| 品悟（原生） | 进程内 CodeWhale Engine（非 ACP 子进程） | 与“工作”模式相同的应用模型配置 | 无独立登录，沿用工作模式的模型凭据 |
 | Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 优先使用系统安装（≥ 0.144.6），缺失或过旧时经用户确认自动安装或升级（见下文安装与升级矩阵） | Pinvou 内完成 Codex OAuth；也支持 `OPENAI_API_KEY` |
 | Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge（仅 JS 适配器，版本固定为 `0.62.0`）；Claude Code CLI 使用系统安装（≥ 2.0.0），App 不内置 CLI，缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级（见下文安装与升级矩阵） | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
 | Kimi | `kimi acp` | 自动检测系统 `PATH` 中的官方 Kimi Code CLI（≥ 0.9.0），缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级 | 在 Pinvou 点击“授权登录”，按提示完成设备码授权；也支持成对设置 `KIMI_MODEL_NAME` 与 `KIMI_MODEL_API_KEY` |
+
+品悟原生会话不是 ACP 后端：它复用“工作”模式的 Engine，通过 `chat` 命令发消息、
+`chat:*` 事件推进展示，在 `session-agents.json` 中以 `code_session: true` 标记后
+与 ACP 会话共用同一个代码会话列表、工作区面板和时间线展示。原生会话支持临时
+工作区与项目目录绑定（“两个根”：LLM 在项目目录干活，应用账本永远在
+`~/.pinvou3/sessions/<id>/`）。原生会话使用编码专用系统提示词（共享层 + 代码层：
+代码层原样引用底座 core_execution 执行循环并附代码场景纪律，不含产出物/成品卡
+语义，成品卡工具同时对代码会话隐藏）。
 
 开发时可以用以下环境变量覆盖可执行文件：
 
@@ -104,8 +113,9 @@ Kimi 不经过独立 Bridge，因此 `bridge_ready` 恒为 `true`；CLI 缺失�
 - Agent 负责 system prompt、模型、工具循环、skills、MCP、登录态和自身配置。
 - 前端只消费 Agent 在 `initialize`、`session/new`、`session/load` 中实际上报的
   capability、model、mode、config option 和 command，不按 Agent 名称猜能力。
-- 三种 Agent 共用 `acp-timeline.jsonl` 和工作区安全边界，不复制三套 reducer 或文件
-  操作实现。
+- 三种 ACP Agent 共用 `acp-timeline.jsonl` 和工作区安全边界，不复制三套 reducer 或文件
+  操作实现；品悟原生会话不经过 ACP transport，历史与回合状态来自 SavedSession 与
+  `timing_events.jsonl`，展示层与 ACP 会话复用同一个 ConversationTimeline。
 - Kimi ACP 会把普通 provider failure 映射为 `end_turn`，仅在会话级
   `logs/kimi-code.log` 写入结构化失败原因。Pinvou 只读取当前回合新增日志中的明确
   `turn ended with failed reason` 记录，将其还原为失败事件；不会把普通空回复当成
