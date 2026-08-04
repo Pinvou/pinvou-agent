@@ -710,6 +710,19 @@ enum MemoryReviewReasoningDialect {
     Minimax,
 }
 
+impl From<crate::core::reasoning_dialect::ReasoningDialect> for MemoryReviewReasoningDialect {
+    fn from(d: crate::core::reasoning_dialect::ReasoningDialect) -> Self {
+        use crate::core::reasoning_dialect::ReasoningDialect as D;
+        match d {
+            D::None => MemoryReviewReasoningDialect::None,
+            D::ThinkingDisabled => MemoryReviewReasoningDialect::ThinkingDisabled,
+            D::QwenEnableThinking => MemoryReviewReasoningDialect::QwenEnableThinking,
+            D::VllmChatTemplate => MemoryReviewReasoningDialect::VllmChatTemplate,
+            D::Minimax => MemoryReviewReasoningDialect::Minimax,
+        }
+    }
+}
+
 fn apply_memory_review_reasoning_controls(
     body: &mut Value,
     preset: ModelPreset,
@@ -741,6 +754,9 @@ fn memory_review_reasoning_dialect(
     base_url: &str,
     model: &str,
 ) -> MemoryReviewReasoningDialect {
+    use crate::core::reasoning_dialect::{
+        kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
+    };
     if provider == "vllm" || preset == ModelPreset::LocalVllm {
         return MemoryReviewReasoningDialect::VllmChatTemplate;
     }
@@ -754,7 +770,10 @@ fn memory_review_reasoning_dialect(
         }
         ModelPreset::Minimax => MemoryReviewReasoningDialect::Minimax,
         ModelPreset::Kimi => {
-            if model.contains("k2.6") || model.contains("kimi-k2") {
+            // Wave 3 统一：使用共享的 kimi_supports_disabled_thinking（与 review 一致）。
+            // 原 memory 用 model.contains("k2.6")||model.contains("kimi-k2") 门控更宽，
+            // 统一后 kimi-k2.5 也被正确识别，k2.7/thinking 变体被正确排除。
+            if kimi_supports_disabled_thinking(model) {
                 MemoryReviewReasoningDialect::ThinkingDisabled
             } else {
                 MemoryReviewReasoningDialect::None
@@ -766,26 +785,7 @@ fn memory_review_reasoning_dialect(
         | ModelPreset::Openai
         | ModelPreset::Anthropic
         | ModelPreset::Gemini
-        | ModelPreset::Xai => memory_review_reasoning_dialect_from_base_url(base_url, model),
-    }
-}
-
-fn memory_review_reasoning_dialect_from_base_url(
-    base_url: &str,
-    model: &str,
-) -> MemoryReviewReasoningDialect {
-    let normalized = base_url
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches("/chat/completions")
-        .to_ascii_lowercase();
-    let model = model.to_ascii_lowercase();
-    if normalized.contains("dashscope.aliyuncs.com") || model.contains("qwen") {
-        MemoryReviewReasoningDialect::QwenEnableThinking
-    } else if normalized.contains("deepseek.com") || model.contains("deepseek") {
-        MemoryReviewReasoningDialect::ThinkingDisabled
-    } else {
-        MemoryReviewReasoningDialect::None
+        | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model).into(),
     }
 }
 
