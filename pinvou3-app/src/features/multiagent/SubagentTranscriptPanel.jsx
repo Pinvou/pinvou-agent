@@ -7,9 +7,7 @@ import { AppIcon } from '../personas/Personas.jsx';
 import {
   fileChangeStat,
   projectSubagentTranscript,
-  resolveSubagentIdentity,
-  splitSubagentTitle,
-  subagentOrdinalLabel,
+  resolveSubagentPresentation,
   subagentRoleOrdinals,
 } from './subagent-conversation.mjs';
 import { startTranscriptPolling } from './runState.mjs';
@@ -53,12 +51,6 @@ function rememberPanelWidth(width) {
   } catch {
     // localStorage 不可用时只保留当前窗口内的宽度。
   }
-}
-
-function identityDisplay(identity, copy) {
-  if (identity.kind === 'expert') return identity.personaName;
-  if (identity.kind === 'custom') return identity.name;
-  return copy.roleCards[identity.roleKey] || copy.roleCards.general;
 }
 
 /** Codex 式紧凑工具行：图标底 + 标题 + 一行 meta，点开看原始入出参。 */
@@ -291,15 +283,20 @@ export function SubagentTranscriptPanel({ sessionId, initialAgentId, t, theme, o
     rememberPanelWidth(nextWidth);
   }
 
-  const detailIdentity = agent
-    ? resolveSubagentIdentity(agent.role, personas, agent.agent_id)
+  const detailPresentation = agent
+    ? resolveSubagentPresentation({
+      role: agent.role,
+      agentType: agent.agent_type,
+      sessionName: agent.session_name,
+      objective: agent.objective,
+      personas,
+      agentId: agent.agent_id,
+      roleCards: copy.roleCards,
+      ordinal: roleOrdinals.get(agent.agent_id),
+    })
     : null;
-  const detailTitle = splitSubagentTitle(agent && agent.objective ? agent.objective : '');
-  const detailName = detailIdentity
-    ? (detailIdentity.kind !== 'expert' && detailTitle.name
-      ? detailTitle.name
-      : identityDisplay(detailIdentity, copy) + subagentOrdinalLabel(roleOrdinals.get(agent.agent_id)))
-    : selectedAgentId;
+  const detailIdentity = detailPresentation && detailPresentation.identity;
+  const detailName = detailPresentation ? detailPresentation.name : selectedAgentId;
 
   return (
     <aside
@@ -405,14 +402,17 @@ export function SubagentTranscriptPanel({ sessionId, initialAgentId, t, theme, o
             <div className="text-[12px] text-gray-400">{copy.agentsEmpty}</div>
           )}
           {Array.isArray(agents) && agents.map((entry) => {
-            const identity = resolveSubagentIdentity(entry.role, personas, entry.agent_id);
-            // 模型起的「」名优先；未起名回退角色映射名+序号。
-            const title = splitSubagentTitle(entry.objective || '');
-            const usesCustomTitle = identity.kind !== 'expert' && !!title.name;
-            const name = usesCustomTitle
-              ? title.name
-              : identityDisplay(identity, copy)
-                + subagentOrdinalLabel(roleOrdinals.get(entry.agent_id));
+            const presentation = resolveSubagentPresentation({
+              role: entry.role,
+              agentType: entry.agent_type,
+              sessionName: entry.session_name,
+              objective: entry.objective,
+              personas,
+              agentId: entry.agent_id,
+              roleCards: copy.roleCards,
+              ordinal: roleOrdinals.get(entry.agent_id),
+            });
+            const { identity, name } = presentation;
             return (
               <button
                 key={entry.agent_id}
@@ -428,7 +428,7 @@ export function SubagentTranscriptPanel({ sessionId, initialAgentId, t, theme, o
                 />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12.5px] font-semibold">{name}</span>
-                  <span className="block truncate text-[10px] text-gray-400">{(usesCustomTitle ? title.rest : entry.objective) || entry.agent_id}</span>
+                  <span className="block truncate text-[10px] text-gray-400">{presentation.task || entry.agent_id}</span>
                 </span>
                 {!entry.done && entry.has_transcript === false && (
                   <span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-px text-[9.5px] text-amber-600 dark:text-amber-300">
