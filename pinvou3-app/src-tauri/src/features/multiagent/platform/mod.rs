@@ -100,6 +100,11 @@ pub(crate) fn ensure_git_repository(dir: &Path) -> Result<(), String> {
 /// 多智能体会话每轮发送前调用：底座给 `worktree=true` 的子智能体检出的是
 /// HEAD，上一轮之后新增/修改的输入文件不快照就在 worktree 里不可见。目录
 /// 还不是仓库时顺带初始化（老会话在本修复之前开的开关也能自愈）。
+///
+/// 忽略语义沿用 git（有意为之，复核 P2 定策）：工作区是应用私有目录，
+/// 正常不存在项目级 ignore；用户**全局** gitignore 命中的文件（日志、
+/// 依赖目录等）不属于多智能体输入范围——强制收录会把 node_modules 类
+/// 巨物拖进每个 worktree。需要传给子智能体的输入放非忽略路径即可。
 pub(crate) fn snapshot_workspace(dir: &Path) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("工作区不存在或不是目录: {}", dir.display()));
