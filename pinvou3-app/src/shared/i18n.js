@@ -94,7 +94,7 @@ const codexZh = {
   packageManagerUpgradeHint:source=>source==='brew'?'该版本通过 Homebrew 安装，将使用对应包管理器升级，不会引入第二份安装':source==='npm'?'该版本通过 npm 安装，将使用对应包管理器升级，不会引入第二份安装':'将使用对应包管理器升级，不会引入第二份安装',
   upgrade:'升级', declineUpgrade:'暂不升级',
   officialScriptHint:agent=>`将运行 ${agent} 官方安装脚本（免管理员）`, confirmInstall:'确认安装', installing:'正在安装…',
-  manualInstallHint:agent=>`请手动安装 ${agent} CLI，完成后点击「重新检测」`,
+  manualInstallHint:agent=>`请手动安装 ${agent} CLI，完成后点击「重新检测」`, manageAgentOnDesktop:agent=>`请在目标桌面端完成 ${agent} 的安装、升级或账号授权，然后在这里重新检测`,
   waitingLogin:'等待 Codex 授权', notLoggedIn:'Codex 尚未登录',
   waitingAgentLogin:agent=>`等待 ${agent} 授权`, agentNotLoggedIn:agent=>`${agent} 尚未登录`,
   finishAgentAuth:agent=>`请在浏览器中完成 ${agent} 授权；完成后 Pinvou 会自动连接`,
@@ -156,7 +156,7 @@ const codexEn = {
   packageManagerUpgradeHint:source=>source==='brew'?'This version was installed via Homebrew and will be upgraded with the same package manager—no second copy will be installed':source==='npm'?'This version was installed via npm and will be upgraded with the same package manager—no second copy will be installed':'It will be upgraded with the corresponding package manager, without installing a second copy',
   upgrade:'Upgrade', declineUpgrade:'Not now',
   officialScriptHint:agent=>`Run the official ${agent} install script (no administrator rights required)`, confirmInstall:'Install', installing:'Installing…',
-  manualInstallHint:agent=>`Install the ${agent} CLI manually, then choose "Check again"`,
+  manualInstallHint:agent=>`Install the ${agent} CLI manually, then choose "Check again"`, manageAgentOnDesktop:agent=>`Install, upgrade, or authorize ${agent} on the target desktop, then check again here`,
   waitingLogin:'Waiting for Codex authorization', notLoggedIn:'Codex is not signed in',
   waitingAgentLogin:agent=>`Waiting for ${agent} authorization`, agentNotLoggedIn:agent=>`${agent} is not signed in`,
   finishAgentAuth:agent=>`Complete ${agent} authorization in the browser; Pinvou will connect automatically`,
@@ -218,7 +218,7 @@ const codexJa = {
   packageManagerUpgradeHint:source=>source==='brew'?'このバージョンは Homebrew でインストールされています。同じパッケージマネージャーでアップグレードするため、二重インストールにはなりません':source==='npm'?'このバージョンは npm でインストールされています。同じパッケージマネージャーでアップグレードするため、二重インストールにはなりません':'対応するパッケージマネージャーでアップグレードします。二重インストールにはなりません',
   upgrade:'アップグレード', declineUpgrade:'今はしない',
   officialScriptHint:agent=>`${agent} の公式インストールスクリプトを実行します（管理者権限は不要）`, confirmInstall:'インストール', installing:'インストール中…',
-  manualInstallHint:agent=>`${agent} CLI を手動でインストールし、「再確認」をクリックしてください`,
+  manualInstallHint:agent=>`${agent} CLI を手動でインストールし、「再確認」をクリックしてください`, manageAgentOnDesktop:agent=>`対象デスクトップで ${agent} のインストール、更新、または認証を完了してから、ここで再確認してください`,
   waitingLogin:'Codex の認証待ち', notLoggedIn:'Codex にログインしていません',
   waitingAgentLogin:agent=>`${agent} の認証待ち`, agentNotLoggedIn:agent=>`${agent} にログインしていません`,
   finishAgentAuth:agent=>`ブラウザーで ${agent} の認証を完了してください。完了後 Pinvou が自動接続します`,
@@ -2004,7 +2004,7 @@ dict.zh.uiArtifacts = {
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
 dict.zh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
-Object.assign(dict.zh.uiAttachments, { uploading:pct=>`上传中 ${pct}%` });
+Object.assign(dict.zh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限` });
 dict.en.uiArtifacts = {
   zoomFit:'Fit window', zoomActual:'Actual size', zoomCustom:'Custom', zoomOut:'Zoom out', zoomIn:'Zoom in',
   switchArtifact:'Switch artifact', currentMtime:time=>`Last modified ${time}`,
@@ -2045,7 +2045,7 @@ dict.en.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 dict.en.uiCodexView = { ended:'Finished', stepsFailed:'Steps include failures', processing:'Processing', codexTool:'Codex tool' };
-Object.assign(dict.en.uiAttachments, { uploading:pct=>`Uploading ${pct}%` });
+Object.assign(dict.en.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit` });
 dict.ja.uiArtifacts = {
   zoomFit:'ウィンドウに合わせる', zoomActual:'実際のサイズ', zoomCustom:'カスタム', zoomOut:'キャンバスを縮小', zoomIn:'キャンバスを拡大',
   switchArtifact:'成果物を切り替え', currentMtime:time=>`現在の更新日時 ${time}`,
@@ -2086,7 +2086,7 @@ dict.ja.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 dict.ja.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順', processing:'処理中', codexTool:'Codex ツール' };
-Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%` });
+Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています` });
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dict.zh.uiToolStore, {

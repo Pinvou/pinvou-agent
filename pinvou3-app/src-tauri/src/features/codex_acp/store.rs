@@ -26,6 +26,10 @@ pub enum AgentBackend {
 // 引用;保留以固定别名契约,后续接入后端切换时由业务代码消费。
 #[allow(dead_code)]
 impl AgentBackend {
+    /// ACP Agent 目录的单一注册表。新增后端时只需在这里登记，列表、状态与 UI
+    /// 都从同一顺序派生，避免某一端遗漏后只显示部分 Agent。
+    pub const ACP_BACKENDS: [Self; 3] = [Self::CodexAcp, Self::ClaudeAcp, Self::KimiAcp];
+
     pub fn parse(value: Option<&str>) -> Result<Self> {
         match value.unwrap_or("deepseek") {
             "deepseek" | "pinvou" => Ok(Self::Deepseek),

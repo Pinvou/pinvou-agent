@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { can, isWeb } from '../shared/platform.js';
 
 const bridge = window.TauriBridge || { available: false };
 
@@ -16,6 +17,22 @@ function useBridgeState(domains) {
     return bridge.state.subscribeMany(domains, setBridgeState);
   }, [domainKey]);
   return bridgeState;
+}
+
+function usePlatformCapability(capability) {
+  const [supported, setSupported] = useState(() => can(capability));
+  useEffect(() => {
+    if (!isWeb) return undefined;
+    const refresh = () => setSupported(can(capability));
+    window.addEventListener('pinvou:web-capabilities', refresh);
+    window.addEventListener('pinvou:web-connection', refresh);
+    refresh();
+    return () => {
+      window.removeEventListener('pinvou:web-capabilities', refresh);
+      window.removeEventListener('pinvou:web-connection', refresh);
+    };
+  }, [capability]);
+  return supported;
 }
 
     /* ==========================================
@@ -67,6 +84,7 @@ function shouldShowApiKeyGate(bs, currentView, bridgeAvailable) {
 export {
   bridge,
   useBridgeState,
+  usePlatformCapability,
   baseUrlIsLoopback,
   isLocalModel,
   activeModelIsLocal,

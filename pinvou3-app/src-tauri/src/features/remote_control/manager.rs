@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use super::event_stream::{
     snapshot_message, stream_reset_message, try_enqueue_message_batch, EventStreamState,
@@ -21,7 +21,7 @@ use super::protocol::{
     WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
-use crate::features::sessions::SessionStore;
+use super::session_scope::validate_web_rpc_scope;
 use crate::platform::paths;
 
 // 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
@@ -61,6 +61,7 @@ const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
 
 const RUST_FORWARDED_EVENTS: &[&str] = &[
+    "acp:event",
     "artifact:disk",
     "chat:compaction",
     "chat:delta",
@@ -3021,156 +3022,6 @@ fn canonicalize_json(value: &Value) -> Value {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WebSessionScope {
-    Required(&'static str),
-    Optional(&'static str),
-}
-
-fn web_session_scope(command: &str) -> Option<WebSessionScope> {
-    use WebSessionScope::{Optional, Required};
-    let scope = match command {
-        // Commands whose Rust API historically falls back to the desktop
-        // process-wide active Session must be explicit over WebUI.
-        "add_run_materials"
-        | "approve_workflow_gate"
-        | "archive_recent_work_memory"
-        | "cancel_generation"
-        | "cancel_user_input"
-        | "compact_now"
-        | "confirm_pending_memory"
-        | "delete_memory_preference"
-        | "delete_timed_memory"
-        | "delete_work_context_memory"
-        | "edit_last_turn"
-        | "get_memory_overview"
-        | "ignore_pending_memory"
-        | "kick_workflow"
-        | "never_pending_memory"
-        | "reject_workflow_gate"
-        | "retry_workflow_role"
-        | "stop_workflow"
-        | "submit_user_input"
-        | "summon_pinvou"
-        | "update_memory_profile"
-        | "update_memory_preference"
-        | "update_timed_memory"
-        | "update_work_context_memory" => Required("sessionId"),
-
-        "accept_plan"
-        | "cancel_shell_task"
-        | "discard_plan"
-        | "equip_persona"
-        | "exit_plan_to_yolo"
-        | "get_active_persona"
-        | "get_mode_state"
-        | "get_session_model_id"
-        | "get_session_persona_events"
-        | "get_session_pinvou_reviews"
-        | "get_session_pinvou_scene_events"
-        | "get_session_timeline"
-        | "get_workflow_state"
-        | "list_shell_tasks"
-        | "list_workspace_files"
-        | "save_session_persona_events"
-        | "save_session_pinvou_reviews"
-        | "save_session_pinvou_scene_events"
-        | "session_mount_collection"
-        | "session_add_mounted_collection"
-        | "session_mounted_collection"
-        | "session_mounted_collections"
-        | "session_mounted_collections_snapshot"
-        | "session_remove_mounted_collection"
-        | "session_set_mounted_collection_enabled"
-        | "session_set_mounted_collections"
-        | "session_unmount_collection"
-        | "set_plan_mode_next"
-        | "set_session_model"
-        | "unbind_session_skill"
-        | "unequip_persona"
-        | "web_access_artifact_info"
-        | "web_access_chat"
-        | "web_access_get_gate_report"
-        | "web_access_get_role_logs"
-        | "web_access_get_role_outputs"
-        | "web_access_get_role_prompt"
-        | "web_access_list_deliverables"
-        | "web_access_read_artifact_chunk"
-        | "web_access_read_artifact_image_b64"
-        | "web_access_read_artifact_text"
-        | "web_access_read_artifact_thumbnail"
-        | "web_access_render_artifact_visual"
-        | "web_access_read_conversation_attachment_chunk"
-        | "web_access_transcribe_voice_audio"
-        | "web_access_write_artifact_text" => Required("sessionId"),
-
-        "delete_session"
-        | "rename_session"
-        | "save_session_artifacts"
-        | "set_session_archived"
-        | "set_session_pinned"
-        | "web_access_load_session_chunk"
-        | "web_access_save_session_messages_chunk" => Required("id"),
-
-        // Omitting this one deliberately means "create a fresh workflow
-        // Session"; it never consults the desktop active pointer.
-        "start_workflow" => Optional("sessionId"),
-        _ => return None,
-    };
-    Some(scope)
-}
-
-// 已知残留面（安全审查清单 #11）：事件面已按 code_session_predicate 过滤品悟原生
-// 代码会话事件（见 publish_event_inner），但 web_access_* 这组 RPC 在此只校验会话
-// id 存在，不查 code_session_predicate——远程端凭代码会话 id 仍可读/写代码会话消息
-// （如 web_access_chat 写入、web_access_load_session_chunk /
-// web_access_save_session_messages_chunk 读/写）。暂不封堵的原因：该组命令与普通
-// 会话共用同一条会话读写通道，封堵策略（显式拒绝还是远程端正式支持代码会话）待审阅
-// 者确认；正式登记文字见 .luzeyang/code-plain-decoupling/code-native-agent-安全审查问题清单.md（已归档）。
-fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Result<(), String> {
-    let Some(scope) = web_session_scope(command) else {
-        return Ok(());
-    };
-    let (field, required) = match scope {
-        WebSessionScope::Required(field) => (field, true),
-        WebSessionScope::Optional(field) => (field, false),
-    };
-    let session_id = args
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let Some(session_id) = session_id else {
-        return if required {
-            Err(format!("{command} requires an explicit {field}"))
-        } else {
-            Ok(())
-        };
-    };
-    crate::features::sessions::validate_session_id(session_id)
-        .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
-    if (command == "web_access_load_session_chunk"
-        && args
-            .get("downloadId")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty()))
-        || (command == "web_access_save_session_messages_chunk"
-            && args.get("offset").and_then(Value::as_u64).unwrap_or(0) > 0)
-    {
-        // The opaque transfer token is already bound to the validated
-        // Session id in RemoteControlManager; avoid re-reading a large Session
-        // file for every 256 KiB chunk.
-        return Ok(());
-    }
-    let store = app
-        .try_state::<SessionStore>()
-        .ok_or_else(|| "Session store is not ready".to_string())?;
-    store
-        .load(session_id)
-        .map_err(|error| format!("远程控制会话 {session_id} 不存在：{error:#}"))?;
-    Ok(())
-}
-
 fn validate_bridge_generation(generation: &str) -> Result<(), String> {
     let generation = generation.trim();
     if generation.len() < 8 || generation.len() > 256 {
@@ -4207,6 +4058,21 @@ mod tests {
             "web_access_bridge_ready",
             "web_access_rpc_begin",
             "web_access_rpc_respond",
+            "codex_acp_prompt",
+            "get_codex_acp_timeline",
+            "get_codex_acp_session_info",
+            "get_codex_acp_pending_permissions",
+            "get_codex_acp_pending_elicitations",
+            "list_acp_agents",
+            "get_acp_agent_status",
+            "set_codex_acp_model",
+            "set_codex_acp_mode",
+            "set_codex_acp_config_option",
+            "install_acp_agent",
+            "login_acp_agent",
+            "switch_acp_agent_account",
+            "open_acp_agent_login_url",
+            "submit_acp_agent_login_code",
         ] {
             assert!(
                 !policy.commands.contains(command),
@@ -4236,6 +4102,16 @@ mod tests {
             "web_access_read_conversation_attachment_chunk",
             "web_access_load_session_chunk",
             "web_access_start_skill_session",
+            "web_access_codex_acp_prompt",
+            "web_access_get_codex_acp_timeline",
+            "web_access_get_codex_acp_session_info",
+            "web_access_get_codex_acp_pending_permissions",
+            "web_access_get_codex_acp_pending_elicitations",
+            "web_access_list_acp_agents",
+            "web_access_get_acp_agent_status",
+            "web_access_set_codex_acp_model",
+            "web_access_set_codex_acp_mode",
+            "web_access_set_codex_acp_config_option",
         ] {
             assert!(
                 policy.commands.contains(command),
@@ -4256,6 +4132,8 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_delta"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_done"));
         assert!(policy.events.contains("chat:user_message"));
+        assert!(policy.events.contains("acp:event"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"acp:event"));
         assert!(policy.events.contains("chat:plan_resolved"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:plan_resolved"));
         assert!(policy.events.contains("chat:transcript_committed"));
@@ -4496,31 +4374,6 @@ mod tests {
         assert_eq!(
             completion.error.as_deref().unwrap_or_default().len(),
             16_384
-        );
-    }
-
-    #[test]
-    fn native_active_session_fallbacks_are_not_valid_web_scopes() {
-        for command in [
-            "cancel_generation",
-            "compact_now",
-            "edit_last_turn",
-            "get_session_pinvou_scene_events",
-            "get_session_timeline",
-            "kick_workflow",
-            "save_session_pinvou_scene_events",
-            "stop_workflow",
-            "web_access_chat",
-        ] {
-            assert_eq!(
-                web_session_scope(command),
-                Some(WebSessionScope::Required("sessionId")),
-                "{command} must require the browser-selected Session"
-            );
-        }
-        assert_eq!(
-            web_session_scope("start_workflow"),
-            Some(WebSessionScope::Optional("sessionId"))
         );
     }
 
