@@ -27,6 +27,7 @@ const conversationEn = {
   attachment:'Attachment', operations:(count,failedCount)=>`${count} operations${failedCount?` · ${failedCount} failed`:''}`, copyReply:'Copy response', copyReplySuccess:'Copied', copyReplyFailed:'Copy failed',
   exportReply:'Export', exportReplyTitle:'Export response', exportMarkdown:'Markdown document', exportMarkdownHint:'Default; preserves source formatting', exportHtml:'HTML document', exportHtmlHint:'Best for viewing in a browser', exportSuccess:'Exported', exportFailed:'Export failed', exportTooLarge:'The response exceeds the export size limit',
   shareReply:'Share', shareReplyTitle:'Share response', shareSystem:'System share', shareSystemHint:'Choose an installed communication app', shareApps:'Copy content and open app', shareSuccess:'Shared', shareCopiedOpen:app=>`Content copied. ${app} was opened when available; paste to send.`, shareCopiedWeb:app=>`Content copied. Open ${app} and paste to send.`, shareFailed:'Share failed', shareUnavailable:'System share is unavailable; content was copied', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'},
+  technicalDetails:'Technical details',
 };
 
 const codexEn = {
@@ -915,7 +916,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   addProvider:provider=>`Add ${provider}`, editProvider:provider=>`Edit ${provider}`,
   autoDetectLocalModel:'Automatically detect local models',
   codingPlanTestUnavailable:'This provider endpoint cannot be tested right now, but you can still save the configuration',
-  connectionMessages:{ ok:'Connection successful; service available', auth_invalid:'Invalid API Key. Check it and try again', auth_forbidden:'This API Key does not have access', rate_limited:'Too many requests or insufficient quota. Try again later', endpoint_not_found:'Endpoint unavailable', method_not_allowed:'The endpoint does not support test requests', http_error:'Connection failed. Check the configuration and retry', unknown:'Connection failed. Try again later' },
+  connectionMessages:{ ok:'Connection successful; service available', auth_invalid:'Invalid API Key. Check it and try again', auth_forbidden:'This API Key does not have access', billing:'Account balance is insufficient. Add balance or switch to another model', rate_limited:'Too many requests or insufficient quota. Try again later', endpoint_not_found:'Endpoint unavailable', method_not_allowed:'The endpoint does not support test requests', http_error:'Connection failed. Check the configuration and retry', unknown:'Connection failed. Try again later' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'Official APIs', custom:'Custom compatible endpoints' },
   providerCatalog:{
     local:{title:'Local Model',desc:'Default model for the local service'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'Dedicated endpoint for coding and agent tasks'},

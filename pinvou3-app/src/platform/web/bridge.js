@@ -6310,17 +6310,19 @@
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       if (error) {
-        const finalNotice = "⚠️ " + error;
-        const finalNoticeItem = state.chatItems.find(function (item) {
-          return item && item.turnErrorNotice && item.text === finalNotice;
-        });
-        if (finalNoticeItem) {
-          finalNoticeItem.legacyConversationOnly = true;
-        } else {
-          addSystemItem(finalNotice, {
-            turnErrorNotice: true,
-            legacyConversationOnly: true,
+        if (!window.PinvouBridgeMessages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true)) {
+          const finalNotice = "⚠️ " + error;
+          const finalNoticeItem = state.chatItems.find(function (item) {
+            return item && item.turnErrorNotice && item.text === finalNotice;
           });
+          if (finalNoticeItem) {
+            finalNoticeItem.legacyConversationOnly = true;
+          } else {
+            addSystemItem(finalNotice, {
+              turnErrorNotice: true,
+              legacyConversationOnly: true,
+            });
+          }
         }
       }
       window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
@@ -6494,11 +6496,13 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     const error = e.payload && e.payload.error;
     if (error) {
-      const notice = "⚠️ " + error;
-      const duplicate = state.chatItems.some(function (item) {
-        return item && item.turnErrorNotice && item.text === notice;
-      });
-      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      if (!window.PinvouBridgeMessages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false)) {
+        const notice = "⚠️ " + error;
+        const duplicate = state.chatItems.some(function (item) {
+          return item && item.turnErrorNotice && item.text === notice;
+        });
+        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      }
     }
     // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
     // 兜底启动检测被绕过/中途删 key 的场景。

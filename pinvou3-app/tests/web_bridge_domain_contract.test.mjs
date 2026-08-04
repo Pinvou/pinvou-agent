@@ -298,6 +298,10 @@ assert.equal(memoryState.warnings[0].code, 'memory_topic_cleanup_required');
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 assert.ok(
+  indexSource.indexOf('shared/model-service-errors.js') < indexSource.indexOf('shared/bridge-messages.js'),
+  'model service error classifier must load before shared bridge messages',
+);
+assert.ok(
   indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/web/bridge.js'),
   'shared bridge messages must load before the web bridge',
 );

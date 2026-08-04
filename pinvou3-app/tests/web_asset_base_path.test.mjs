@@ -73,5 +73,10 @@ assert.match(
   /'shared\/chunked-file-upload\.js'/,
   'the shared chunk uploader must be copied into built UI assets',
 );
+assert.match(
+  viteConfig,
+  /'shared\/model-service-errors\.js'/,
+  'model service error classifier must be copied into built UI assets',
+);
 
 console.log('web asset base-path tests passed');

@@ -29,6 +29,7 @@ export const staticRuntimeScripts = new Set([
   'shared/format-utils.js',
   'shared/legacy-polyfills.js',
   'shared/markdown-bridge-fallback.js',
+  'shared/model-service-errors.js',
   'vendor/tailwind.js',
 ]);
 export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];

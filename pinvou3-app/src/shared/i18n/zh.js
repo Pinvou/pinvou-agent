@@ -26,6 +26,7 @@ const conversationZh = {
   attachment:'附件', operations:(count,failedCount)=>`执行 ${count} 项${failedCount?` · ${failedCount} 项失败`:''}`, copyReply:'复制回复', copyReplySuccess:'已复制', copyReplyFailed:'复制失败',
   exportReply:'导出', exportReplyTitle:'导出回复', exportMarkdown:'Markdown 文档', exportMarkdownHint:'默认，保留原始排版', exportHtml:'HTML 文档', exportHtmlHint:'适合在浏览器中查看', exportSuccess:'导出成功', exportFailed:'导出失败', exportTooLarge:'回复内容超出导出大小限制',
   shareReply:'分享', shareReplyTitle:'分享回复', shareSystem:'系统分享', shareSystemHint:'选择系统中已安装的通信应用', shareApps:'复制内容并打开应用', shareSuccess:'已分享', shareCopiedOpen:app=>`内容已复制，已尝试打开${app}，请粘贴发送`, shareCopiedWeb:app=>`内容已复制，请打开${app}粘贴发送`, shareFailed:'分享失败', shareUnavailable:'系统分享不可用，内容已复制', shareTargets:{wechat:'微信',wecom:'企业微信',feishu:'飞书',dingtalk:'钉钉',qq:'QQ'},
+  technicalDetails:'技术详情',
 };
 
 const codexZh = {
@@ -950,7 +951,7 @@ Object.assign(dictZh.uiSettingsDetail, {
   addProvider:provider=>`添加 ${provider}`, editProvider:provider=>`编辑 ${provider}`,
   autoDetectLocalModel:'自动检测本地模型',
   codingPlanTestUnavailable:'当前厂商接口暂时无法完成测试，但不影响保存配置',
-  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
+  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', billing:'账户余额不足，请充值后重试，或切换到其他模型', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'官方 API', custom:'自定义兼容接口' },
   providerCatalog:{},
   imageCapability:'图片输入能力', imageCapabilityEnabled:'支持图片', imageCapabilityDisabled:'不支持图片', imageCapabilityPinvou:'自动处理',

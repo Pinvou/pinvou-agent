@@ -638,6 +638,13 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
             detail,
             Some(status_code),
         ),
+        402 => model_connection_result(
+            false,
+            "billing",
+            "账户余额不足，请充值后重试，或切换到其他模型",
+            detail,
+            Some(status_code),
+        ),
         429 => model_connection_result(
             false,
             "rate_limited",

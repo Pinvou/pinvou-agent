@@ -875,11 +875,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           const status = Number(httpMatch[1]);
           const legacy = {
             ok: status >= 200 && status < 300,
-            code: status === 401 ? 'auth_invalid' : status === 403 ? 'auth_forbidden' : status === 429 ? 'rate_limited' : 'http_error',
+            code: status === 401 ? 'auth_invalid' : status === 402 ? 'billing' : status === 403 ? 'auth_forbidden' : status === 429 ? 'rate_limited' : 'http_error',
             message: status === 401 ? settingsCopy.connectionMessages.auth_invalid
-              : status === 403 ? settingsCopy.connectionMessages.auth_forbidden
-                : status === 429 ? settingsCopy.connectionMessages.rate_limited
-                  : (status >= 200 && status < 300 ? settingsCopy.connectionMessages.ok : settingsCopy.connectionMessages.http_error),
+              : status === 402 ? settingsCopy.connectionMessages.billing
+                : status === 403 ? settingsCopy.connectionMessages.auth_forbidden
+                  : status === 429 ? settingsCopy.connectionMessages.rate_limited
+                    : (status >= 200 && status < 300 ? settingsCopy.connectionMessages.ok : settingsCopy.connectionMessages.http_error),
             detail: `HTTP ${status}`,
           };
           if (isCodingPlanProvider && (status === 404 || status === 405)) {
