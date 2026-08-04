@@ -463,7 +463,7 @@ async fn web_access_chat_for_session(
 ) -> Result<(), String> {
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
-    ensure_web_chat_session_supported(&session_id, store.mode_state(&session_id).multi_agent)?;
+    ensure_web_chat_session_supported(store.mode_state(&session_id).multi_agent)?;
     store
         .load(&session_id)
         .map_err(|error| format!("load Session {session_id}: {error:#}"))?;
@@ -526,10 +526,9 @@ async fn web_access_chat_for_session(
     result
 }
 
-/// Web 端只能续写普通对话。多智能体会话（开关开启的普通 id，或旧 `wf-`
-/// 形态）一律拒绝：Web 界面没有专家卡/只读面板，放行会让浏览器启动它
-/// 看不到、也停不掉的子智能体。
-fn ensure_web_chat_session_supported(_session_id: &str, multi_agent: bool) -> Result<(), String> {
+/// Web 端只能续写未开启多智能体模式的会话。Web 界面没有专家卡/只读面板，
+/// 放行会让浏览器启动它看不到、也停不掉的子智能体。
+fn ensure_web_chat_session_supported(multi_agent: bool) -> Result<(), String> {
     if multi_agent {
         return Err(
             "multi-agent sessions are desktop-only; continue them in the desktop app".to_string(),
@@ -871,9 +870,8 @@ mod tests {
 
     #[test]
     fn web_chat_rejects_desktop_only_multiagent_sessions() {
-        assert!(ensure_web_chat_session_supported("wf-abc", false).is_err());
-        assert!(ensure_web_chat_session_supported("session-abc", false).is_ok());
+        assert!(ensure_web_chat_session_supported(false).is_ok());
         // 桌面开了多智能体开关的普通会话同样拒绝：Web 看不到也停不掉子智能体。
-        assert!(ensure_web_chat_session_supported("session-abc", true).is_err());
+        assert!(ensure_web_chat_session_supported(true).is_err());
     }
 }

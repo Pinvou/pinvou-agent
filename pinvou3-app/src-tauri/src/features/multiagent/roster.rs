@@ -2,7 +2,8 @@
 //!
 //! 名册由底座从会话工作区的 `.codewhale/agents/*.toml` 加载（见
 //! `fleet::roster::FleetRoster::load`），本模块的职责就是把文件摆对：把
-//! 用户专家池的自创卡装配成只读专家角色。**不播种内置默认角色**（用户
+//! 用户专家池的自创卡装配成专家角色。角色文件只承载身份与人设，不定义
+//! 工具权限；子智能体的运行权限继承父会话 Plan / Yolo。**不播种内置默认角色**（用户
 //! 决策：委派本质是写提示词——有合适专家用 `profile` 指定，没有就让模型
 //! 自拟任务说明裸派；旧版播种过的默认角色文件属"文件即真身"的用户可
 //! 编辑遗留，不清理）。谁来把这些文件交给底座（构造 EngineConfig）是
@@ -14,7 +15,7 @@ fn roles_dir(workspace: &std::path::Path) -> std::path::PathBuf {
 
 // ── 专家池入册 ────────────────────────────────────────────────────────────
 //
-// 专家池的**用户自创卡**入册为只读专家角色（数据通路版）：模型编排时可以把
+// 专家池的**用户自创卡**入册为专家角色（数据通路版）：模型编排时可以把
 // 子任务派给"某某专家"，被派中的子智能体拿到整张卡的人设正文。内置面具卡不
 // 自动入册——那是聊天用的通用卡池，几十张全塞既撑名册又未必是用户想要的
 // "我的专家"；选择性入册留给以后的界面。
@@ -83,8 +84,8 @@ fn expert_profile_toml(
     // **不写 base_role**：底座 role_name 会回落到成员 id（exp-*），随后
     // apply_spawn_profile 把它写进 assignment.role → worker ledger 的
     // spec.role 就是专家 id，面板据此解析出专家池头像与名字。运行语义
-    // 不变：未知 role 名在 fleet_role_to_agent_type 回落 General，工具
-    // 姿态仍由下面的显式只读 posture 决定。
+    // 不变：未知 role 名在 fleet_role_to_agent_type 回落 General；角色文件
+    // 不写工具姿态，实际权限继续由父会话 Plan / Yolo 与底座运行时约束决定。
     root.insert(
         "display_name".into(),
         toml::Value::String(card.name.clone()),
@@ -93,13 +94,23 @@ fn expert_profile_toml(
         "description".into(),
         toml::Value::String(format!("专家：{}", card.description)),
     );
-    let mut tools = toml::map::Map::new();
-    tools.insert("posture".into(), toml::Value::String("read-only".into()));
-    root.insert("tools".into(), toml::Value::Table(tools));
     let mut instructions = toml::map::Map::new();
     instructions.insert("text".into(), toml::Value::String(card.body.clone()));
     root.insert("instructions".into(), toml::Value::Table(instructions));
     toml::to_string_pretty(&toml::Value::Table(root)).ok()
+}
+
+/// 工作区是否曾装配过专家池投影。多智能体开关关闭时文件会保留，专家池
+/// 后续增删改仍需刷新这些旧投影及其在跑引擎，避免已删除专家继续可用。
+pub fn has_expert_role_projection(workspace: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(roles_dir(workspace)) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("exp-") && name.ends_with(".toml")
+    })
 }
 
 /// 把专家池入册进工作区名册。每次装配**全量重写** `exp-*.toml` 并清掉已删卡
@@ -170,10 +181,10 @@ mod tests {
         guard
     }
 
-    /// 专家池用户卡入册为只读专家角色；正文经 toml 序列化不被特殊字符炸开；
-    /// 删卡后残留清掉；整册必须能被**底座名册真实解析**（id/姿态全部过校验）。
+    /// 专家池用户卡入册为继承父会话权限的专家角色；正文经 toml 序列化不被
+    /// 特殊字符炸开；删卡后残留清掉；整册必须能被**底座名册真实解析**。
     #[test]
-    fn user_personas_enroll_as_read_only_expert_roles() {
+    fn user_personas_enroll_as_session_authority_expert_roles() {
         let _guard = isolated_home();
         let card = crate::features::personas::PersonaCard {
             id: "行业分析师".into(),
@@ -204,6 +215,12 @@ mod tests {
             "一张用户卡应入册一名专家: {expert_files:?}"
         );
         let expert_id = expert_files[0].trim_end_matches(".toml").to_string();
+        let profile_body = std::fs::read_to_string(dir.join(&expert_files[0])).unwrap();
+        assert!(
+            !profile_body.contains("posture") && !profile_body.contains("[tools]"),
+            "专家人设不得另设工具权限；应继承父会话 Plan/Yolo: {profile_body}"
+        );
+        assert!(has_expert_role_projection(&workspace));
 
         // 底座名册必须能真实解析这份 TOML——手拼字符串遇到卡片正文里的引号
         // 就会在这里现形。
@@ -245,6 +262,7 @@ mod tests {
             .filter(|n| n.starts_with("exp-"))
             .collect();
         assert!(after.is_empty(), "删卡后的专家文件应被清掉: {after:?}");
+        assert!(!has_expert_role_projection(&workspace));
         assert!(dir.join("scout.toml").exists(), "遗留角色文件不受清理影响");
     }
 }

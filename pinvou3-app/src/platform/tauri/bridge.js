@@ -294,15 +294,6 @@
         selectedRole: null,  // 右抽屉选中的角色
       },
     },
-    // 多智能体工作流运行（建在底座 Workflow + Fleet 之上，见 docs/adr/0004-*）。
-    // 与上方 workflow.run 无关：那是既有 Python 调度器的看板态，本域只跟踪
-    // 「工作流运行」——发起中、可派角色、以及每条运行的状态。
-    multiAgent: {
-      starting: false,
-      error: null,
-      activeRunId: null,
-      runs: [],         // [{ runId, brief, status, error }]
-    },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
@@ -1222,7 +1213,6 @@
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     personas: ["activePersona", "personaEvents", "personaPool"],
     workflow: ["workflow"],
-    multiAgent: ["multiAgent"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],

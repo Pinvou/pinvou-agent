@@ -3,15 +3,18 @@
 //! 底座把每个子智能体的完整对话落在工作区
 //! `.codewhale/state/subagent-transcripts/<sha256(agent_id)>.jsonl`：首行是
 //! `{"kind":"subagent_transcript_header","agent_id":...}`，其后每行
-//! `{"kind":"message","index":N,"message":{...}}`。文件名是摘要，无法反推
-//! agent_id，所以枚举与定位都靠读表头——单个文件几十行，扫一遍很便宜。
+//! `{"kind":"message","index":N,"message":{...}}`。列表枚举时读取固定大小的
+//! 表头识别身份，详情则按 agent_id 摘要直接定位；只为旧记录保留表头扫描回退。
 //!
 //! 这里只做**只读呈现**：Codex 式右侧面板按 agent 点开看它干了什么。消息体
 //! 原样交给前端（role + content blocks），渲染取舍留在界面层。
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SubagentTranscriptSummary {
@@ -42,6 +45,14 @@ fn transcripts_dir(workspace: &Path) -> PathBuf {
         .join("subagent-transcripts")
 }
 
+fn transcript_path(workspace: &Path, agent_id: &str) -> PathBuf {
+    let digest = Sha256::digest(agent_id.as_bytes());
+    transcripts_dir(workspace).join(format!(
+        "{}.jsonl",
+        crate::platform::encoding::hex_lower(&digest)
+    ))
+}
+
 fn header_agent_id(first_line: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(first_line).ok()?;
     if value.get("kind").and_then(|k| k.as_str()) != Some("subagent_transcript_header") {
@@ -66,12 +77,49 @@ fn read_header_agent_id(path: &Path) -> Option<String> {
     header_agent_id(&first)
 }
 
-/// 整读正文判受阻——只有"成功完成"的行调用（终态少且有限）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TranscriptStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+const BLOCKED_CACHE_LIMIT: usize = 1024;
+static BLOCKED_CACHE: OnceLock<Mutex<HashMap<PathBuf, (TranscriptStamp, bool)>>> = OnceLock::new();
+
+/// 整读正文判受阻。成功终态不会再追加内容，因此按文件长度与修改时间缓存；
+/// 列表轮询期间只付一次正文解析成本。
 fn transcript_is_blocked(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let stamp = TranscriptStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    };
+    let cache = BLOCKED_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let guard = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached_stamp, blocked)) = guard.get(path) {
+            if *cached_stamp == stamp {
+                return *blocked;
+            }
+        }
+    }
     let Ok(body) = std::fs::read_to_string(path) else {
         return false;
     };
-    last_assistant_reply_is_blocked(body.lines().skip(1).filter(|l| !l.trim().is_empty()))
+    let blocked =
+        last_assistant_reply_is_blocked(body.lines().skip(1).filter(|l| !l.trim().is_empty()));
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.len() >= BLOCKED_CACHE_LIMIT && !guard.contains_key(path) {
+        guard.clear();
+    }
+    guard.insert(path.to_path_buf(), (stamp, blocked));
+    blocked
 }
 
 /// 最后一条带正文的 assistant 消息是否以受阻标记开头。
@@ -226,8 +274,38 @@ pub fn list(
     Ok(out)
 }
 
-/// 读某个子智能体的完整消息列表（按记录顺序）。找不到该 agent 时返回 Err。
+fn read_transcript_file(
+    path: &Path,
+    agent_id: &str,
+) -> Result<Option<Vec<serde_json::Value>>, String> {
+    let body = std::fs::read_to_string(path)
+        .map_err(|err| format!("读取子智能体记录 {} 失败: {err}", path.display()))?;
+    let mut lines = body.lines();
+    let Some(header) = lines.next() else {
+        return Ok(None);
+    };
+    if header_agent_id(header).as_deref() != Some(agent_id) {
+        return Ok(None);
+    }
+    // 逐行独立解析：坏一行跳一行，别让一条损坏记录毁掉整个面板。
+    Ok(Some(
+        lines
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("message"))
+            .filter_map(|mut value| value.get_mut("message").map(serde_json::Value::take))
+            .collect(),
+    ))
+}
+
+/// 读某个子智能体的完整消息列表（按记录顺序）。正常记录按 agent_id 摘要直接
+/// 定位；旧版非标准文件名才枚举表头。找不到该 agent 时返回 Err。
 pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, String> {
+    let direct = transcript_path(workspace, agent_id);
+    if direct.is_file() {
+        return read_transcript_file(&direct, agent_id)?
+            .ok_or_else(|| format!("子智能体记录表头与文件名不一致: {}", direct.display()));
+    }
+
     let entries = match std::fs::read_dir(transcripts_dir(workspace)) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -240,20 +318,11 @@ pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, 
         if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let mut lines = body.lines();
-        let Some(header) = lines.next() else { continue };
-        if header_agent_id(header).as_deref() != Some(agent_id) {
-            continue;
+        // 兼容旧记录：非标准文件名仍按表头定位。单个损坏文件不妨碍寻找
+        // 其它 agent；标准摘要路径的读取错误已在上面明确上报。
+        if let Ok(Some(messages)) = read_transcript_file(&path, agent_id) {
+            return Ok(messages);
         }
-        // 逐行独立解析：坏一行跳一行，别让一条损坏记录毁掉整个面板。
-        return Ok(lines
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some("message"))
-            .filter_map(|mut v| v.get_mut("message").map(serde_json::Value::take))
-            .collect());
     }
     Err(format!("找不到子智能体的对话记录: {agent_id}"))
 }
@@ -262,6 +331,9 @@ pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, 
 mod tests {
     use super::projected_worker_status;
     use deepseek_tui::tools::subagent::AgentWorkerStatus;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
     /// 重启后父会话重建引擎：上一进程遗留的 running 记录（活动时间早于
     /// 本纪元）必须继续判 interrupted，不得因"引擎存在"而复活成工作中。
@@ -308,9 +380,10 @@ mod tests {
 
     fn fixture_workspace(files: &[(&str, &str)]) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "pinvou3-transcripts-{}-{:?}",
+            "pinvou3-transcripts-{}-{:?}-{}",
             std::process::id(),
-            std::thread::current().id()
+            std::thread::current().id(),
+            FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&root);
         let dir = transcripts_dir(&root);
@@ -460,12 +533,32 @@ mod tests {
             r#"{"kind":"message","index":0,"message":{"role":"user","content":[]}}"#,
             "\n",
         );
-        let ws = fixture_workspace(&[("aaaa.jsonl", GOOD), ("bbbb.jsonl", other)]);
+        let ws = fixture_workspace(&[("bbbb.jsonl", other)]);
+        std::fs::write(transcript_path(&ws, "agent_a"), GOOD).unwrap();
         let messages = read(&ws, "agent_a").expect("read agent_a");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
         assert_eq!(messages[1]["content"][0]["text"], "结果");
+    }
+
+    #[test]
+    fn blocked_cache_invalidates_when_terminal_transcript_changes() {
+        let ws = fixture_workspace(&[("aaaa.jsonl", GOOD)]);
+        write_worker_state(&ws, "completed", None);
+        assert!(!list(&ws, None).expect("first list")[0].blocked);
+
+        let blocked_body = concat!(
+            r#"{"kind":"subagent_transcript_header","agent_id":"agent_a"}"#,
+            "\n",
+            r#"{"kind":"message","index":0,"message":{"role":"assistant","content":[{"type":"text","text":"[BLOCKED] 权限不足"}]}}"#,
+            "\n",
+        );
+        std::fs::write(transcripts_dir(&ws).join("aaaa.jsonl"), blocked_body).unwrap();
+        assert!(
+            list(&ws, None).expect("list after rewrite")[0].blocked,
+            "文件签名变化后不得复用旧缓存"
+        );
     }
 
     #[test]

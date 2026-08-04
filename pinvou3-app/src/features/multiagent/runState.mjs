@@ -1,6 +1,7 @@
 /**
  * 串行刷新一份运行中的 transcript：任一时刻最多一个读取请求；agent 结束后
- * 调用方以 active=false 重建轮询，只做最后一次读取，不再安排 timer。
+ * `active` 可为布尔值或按本次结果判断的函数；终态只做最后一次读取，不再
+ * 安排 timer。
  *
  * 落盘与实时状态的合并不在前端做：底座 worker ledger 是终态权威，
  * `transcripts::list`（Rust）已按它投影，面板轮询拿到的就是合并结果。
@@ -28,7 +29,8 @@ export function startTranscriptPolling({
     }
     if (stopped) return;
     onMessages(result);
-    if (active) timer = schedule(refresh, intervalMs);
+    const keepPolling = typeof active === 'function' ? active(result) : active;
+    if (keepPolling) timer = schedule(refresh, intervalMs);
   }
 
   void refresh();
