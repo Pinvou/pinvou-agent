@@ -2348,7 +2348,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
     // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
     function htmlUnescape(s) {
-      return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
+      return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#(?:39|x27);/gi,"'").replace(/&amp;/g,'&');
     }
     function highlightedCodeText(s) {
       return htmlUnescape(String(s).replace(/<\/?span\b[^>]*>/gi, ''));
