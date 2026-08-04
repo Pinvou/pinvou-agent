@@ -39,12 +39,49 @@ pub struct DownloadRequest<'a> {
     /// 进度回调 `(downloaded, total)`。`total` 为 `Content-Length`(缺省/为 0 时由调用方
     /// 在构造请求时填入估算值)。
     pub on_progress: Box<dyn Fn(u64, u64) + Send + 'a>,
+    /// 下载流完成(`sync_all` 后)、sha256 校验**开始前**触发的一次性回调。
+    /// 用于在原始时点(下载完成 → verify 事件 → 校验)emit `verify` 进度事件,恢复
+    /// 「下载 0–95% → verify → done」的 frontend 事件顺序。`None` = 不触发。
+    pub on_pre_verify: Option<Box<dyn FnOnce() + Send + 'a>>,
+}
+
+/// `.part` 清理守卫:覆盖所有非成功退出路径(取消 / 网络错误 / 超长 / sha256 不匹配 /
+/// 目录创建失败 / rename 失败)的 `.part` 删除。成功路径(`rename` 已消费 `.part`)调用
+/// [`PartGuard::disarm`] 解除,Drop 时不再删除。
+///
+/// 必须声明在使用 `.part` 的 `File` 句柄**之前**,以保证 Drop 顺序为 file 先于 guard
+/// (Windows 上文件句柄未关闭会导致 `remove_file` 失败)。
+struct PartGuard<'a> {
+    part: &'a Path,
+    armed: bool,
+}
+
+impl<'a> PartGuard<'a> {
+    fn new(part: &'a Path) -> Self {
+        Self { part, armed: true }
+    }
+    /// 标记成功:`.part` 已被 `rename` 消费为 `dest`,Drop 时跳过删除。
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<'a> Drop for PartGuard<'a> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(self.part);
+        }
+    }
 }
 
 /// 下载到 `.part` → 校验 sha256 → 原子 `rename` 到 `dest`。
 ///
-/// 失败语义:取消 / 网络错误 / 超长 / sha256 不匹配 时删除 `.part` 后返回 `Err`。
-/// 成功时 `dest` 就绪、`.part` 已被 `rename` 消费。
+/// 失败语义:取消 / 网络错误 / 超长 / sha256 不匹配 / 目录创建失败 / rename 失败 时,
+/// 由 [`PartGuard`] 删除 `.part` 后返回 `Err`。成功时 `dest` 就绪、`.part` 已被 `rename`
+/// 消费(守卫已 `disarm`,不会误删)。
+///
+/// 事件顺序:`on_progress`(下载中,0–95%)→ `on_pre_verify`(下载完成、校验开始前,
+/// 用于 emit `verify`)→ 校验 → rename → done。该顺序恢复重构前的 frontend 事件时序。
 pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Result<(), String> {
     // 下载开始前先查一次取消(与 voice 原循环语义一致)。
     if (req.is_cancelled)() {
@@ -65,7 +102,8 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
         .error_for_status()
         .map_err(|e| format!("下载源响应异常: {e}"))?;
 
-    // 上限以 max_bytes 为准:Content-Length 申报超限直接拒。
+    // 上限以 max_bytes 为准:Content-Length 申报超限直接拒(此时 `.part` 尚未创建,
+    // 仍清理一次以兜底历史残留)。
     let total = response
         .content_length()
         .filter(|n| *n > 0)
@@ -77,6 +115,9 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
 
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
+    // 清理守卫:从此处起任何 `Err` 退出都会删除 `.part`。声明在 `file` 之前,使 Drop
+    // 顺序为 file 先于 guard(Windows 文件句柄未关闭时 remove 会失败)。
+    let mut guard = PartGuard::new(req.part);
     let mut file =
         std::fs::File::create(req.part).map_err(|e| format!("创建下载暂存文件失败: {e}"))?;
     let mut downloaded: u64 = 0;
@@ -92,14 +133,10 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
             .map_err(|e| format!("写盘失败: {e}"))?;
         downloaded = downloaded.saturating_add(chunk.len() as u64);
         if downloaded > req.max_bytes {
-            drop(file);
-            let _ = std::fs::remove_file(req.part);
             return Err(format!("下载内容超过 {} 字节上限", req.max_bytes));
         }
         (req.on_progress)(downloaded, total);
         if (req.is_cancelled)() {
-            drop(file);
-            let _ = std::fs::remove_file(req.part);
             return Err("已取消".to_string());
         }
     }
@@ -108,12 +145,17 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
         .map_err(|e| format!("同步下载文件失败: {e}"))?;
     drop(file);
 
+    // 下载流已完成、校验即将开始:触发调用方的 `verify` 进度事件,恢复重构前的
+    // frontend 事件顺序(下载 0–95% → verify → 校验 → done)。
+    if let Some(on_pre_verify) = req.on_pre_verify {
+        on_pre_verify();
+    }
+
     // sha256 校验:空串跳过(与 knowledge/voice 的 dev 兜底一致)。
     if !req.expected_sha256.trim().is_empty() {
         let got = crate::platform::hashing::sha256_file(req.part)
             .map_err(|e| format!("读取下载文件失败: {e}"))?;
         if !got.eq_ignore_ascii_case(req.expected_sha256) {
-            let _ = std::fs::remove_file(req.part);
             return Err(format!(
                 "下载校验失败(expected {}, got {})",
                 req.expected_sha256, got
@@ -123,7 +165,6 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
 
     // 校验后再查一次取消(rename 是不可逆的最后一步)。
     if (req.is_cancelled)() {
-        let _ = std::fs::remove_file(req.part);
         return Err("已取消".to_string());
     }
 
@@ -134,6 +175,8 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
         let _ = std::fs::remove_file(req.dest);
     }
     std::fs::rename(req.part, req.dest).map_err(|e| format!("保存下载文件失败: {e}"))?;
+    // rename 成功:`.part` 已被消费为 `dest`,解除守卫,避免 Drop 时误删。
+    guard.disarm();
     Ok(())
 }
 
@@ -182,6 +225,34 @@ mod tests {
         (url, handle)
     }
 
+    /// 起 HTTP/1.1 fixture,但声明的 `Content-Length` 大于实际发送字节数后立即断连,
+    /// 使 reqwest 流式读取中途报错(下载中断)。用于验证 `.part` 在网络中途错误时被清理
+    /// (Finding 2 的 Drop 守卫契约)。
+    fn serve_truncated(
+        declared_len: usize,
+        send_bytes: usize,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let url = format!("http://{addr}/payload");
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    declared_len
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let body = vec![0u8; send_bytes];
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+                // 故意不发完声明的字节数就关闭连接 → hyper 报 IncompleteMessage。
+            }
+        });
+        (url, handle)
+    }
+
     fn never_cancel<'a>() -> Box<dyn Fn() -> bool + Send + 'a> {
         Box::new(|| false)
     }
@@ -207,6 +278,7 @@ mod tests {
             max_bytes: 1024,
             is_cancelled: never_cancel(),
             on_progress: noop_progress(),
+            on_pre_verify: None,
         };
         let result = download_to_part_with_verify(req).await;
 
@@ -235,6 +307,7 @@ mod tests {
             max_bytes: 1024,
             is_cancelled: never_cancel(),
             on_progress: noop_progress(),
+            on_pre_verify: None,
         };
         let result = download_to_part_with_verify(req).await;
 
@@ -263,6 +336,7 @@ mod tests {
             max_bytes: 1024,
             is_cancelled: never_cancel(),
             on_progress: noop_progress(),
+            on_pre_verify: None,
         };
         let result = download_to_part_with_verify(req).await;
 
@@ -302,6 +376,7 @@ mod tests {
             max_bytes: 10 * 1024 * 1024,
             is_cancelled,
             on_progress,
+            on_pre_verify: None,
         };
         let result = download_to_part_with_verify(req).await;
 
@@ -331,6 +406,7 @@ mod tests {
             max_bytes: 1024, // body 2048 > 上限 → Content-Length 即拒
             is_cancelled: never_cancel(),
             on_progress: noop_progress(),
+            on_pre_verify: None,
         };
         let result = download_to_part_with_verify(req).await;
 
@@ -341,6 +417,93 @@ mod tests {
         );
         assert!(!part.exists());
         assert!(!dest.exists());
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn network_error_mid_download_cleans_part() {
+        let dir = scratch_dir("neterr");
+        // 声明 8 KiB 但只发 1 KiB 就断连 → reqwest 流式读取中途报错(下载中断)。
+        let (url, handle) = serve_truncated(8 * 1024, 1024);
+        let part = dir.join("payload.part");
+        let dest = dir.join("payload");
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&dest);
+
+        let req = DownloadRequest {
+            url: &url,
+            dest: &dest,
+            part: &part,
+            expected_sha256: "",
+            max_bytes: 1024 * 1024,
+            is_cancelled: never_cancel(),
+            on_progress: noop_progress(),
+            on_pre_verify: None,
+        };
+        let result = download_to_part_with_verify(req).await;
+
+        assert!(result.is_err(), "err = {:?}", result.err());
+        assert!(
+            !part.exists(),
+            "part must be cleaned on mid-download network error (Finding 2)"
+        );
+        assert!(!dest.exists());
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn on_pre_verify_fires_after_download_before_rename() {
+        // Finding 1:`verify` 必须在下载完成后、校验/rename 前触发(恢复重构前时序)。
+        // 用共享 Vec 记录事件顺序,断言 verify 出现在最后一条 download 进度之后、
+        // 且 helper 返回 Ok(rename 成功)。
+        let dir = scratch_dir("preverify");
+        let body = vec![0u8; 64 * 1024];
+        let (url, handle) = serve_once(body.clone());
+        let part = dir.join("payload.part");
+        let dest = dir.join("payload");
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&dest);
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let total_hint = body.len() as u64;
+        let ev_progress = Arc::clone(&events);
+        let on_progress: Box<dyn Fn(u64, u64) + Send> = Box::new(move |d, t| {
+            if d >= t || d >= total_hint {
+                ev_progress.lock().unwrap().push(format!("progress:{d}"));
+            }
+        });
+        let ev_verify = Arc::clone(&events);
+        let on_pre_verify: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            ev_verify.lock().unwrap().push("verify".to_string());
+        }));
+
+        let req = DownloadRequest {
+            url: &url,
+            dest: &dest,
+            part: &part,
+            expected_sha256: "",
+            max_bytes: 1024 * 1024,
+            is_cancelled: never_cancel(),
+            on_progress,
+            on_pre_verify,
+        };
+        let result = download_to_part_with_verify(req).await;
+
+        assert!(result.is_ok(), "err = {:?}", result.err());
+        let events = events.lock().unwrap();
+        let last_progress = events.iter().rposition(|e| e.starts_with("progress"));
+        let verify_idx = events.iter().position(|e| e == "verify");
+        assert!(
+            last_progress.is_some(),
+            "should have emitted download progress"
+        );
+        assert!(
+            verify_idx.is_some_and(|v| v > last_progress.unwrap()),
+            "verify must fire AFTER last download progress, got events = {:?}",
+            *events
+        );
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -258,10 +258,6 @@ pub async fn kb_model_download(
         .or_else(|| (!MODEL_SHA256.is_empty()).then(|| MODEL_SHA256.to_string()));
     // helper 的 expected_sha256 空串=跳过校验(dev 本地包),与原逻辑一致。
     let expected_sha256: &str = expected.as_deref().unwrap_or("");
-    let _ = app.emit(
-        "kb_model:progress",
-        serde_json::json!({ "stage": "verify" }),
-    );
     // 进度节流:每 2 MiB 或到达 total 才 emit(与原实现一致)。helper 的 on_progress
     // 是 `Fn`,节流状态用 Arc<Mutex> 承载;total 由 helper 透传(真实 Content-Length
     // 或缺失时回退 max_bytes=MODEL_TARGZ_SIZE)。
@@ -283,6 +279,20 @@ pub async fn kb_model_download(
         }
     });
     let is_cancelled: Box<dyn Fn() -> bool + Send> = Box::new(|| CANCEL.load(Ordering::Relaxed));
+    // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
+    // sync_all 后、sha256_file 前调用此闭包)。原实现仅在 sha256 存在时 emit
+    // (空串跳过校验的 dev 兜底不发 verify),这里保持一致。frontend 据此从下载进度
+    // (0–95%)切到「校验中」(96%),不再出现 96%→0% 倒退。
+    let on_pre_verify: Option<Box<dyn FnOnce() + Send>> =
+        expected.as_ref().filter(|s| !s.trim().is_empty()).map(|_| {
+            let app_for_verify = app.clone();
+            Box::new(move || {
+                let _ = app_for_verify.emit(
+                    "kb_model:progress",
+                    serde_json::json!({ "stage": "verify" }),
+                );
+            }) as Box<dyn FnOnce() + Send>
+        });
     let req = crate::platform::download::DownloadRequest {
         url: &url,
         dest: &archive,
@@ -291,6 +301,7 @@ pub async fn kb_model_download(
         max_bytes: MODEL_TARGZ_SIZE,
         is_cancelled,
         on_progress,
+        on_pre_verify,
     };
     crate::platform::download::download_to_part_with_verify(req)
         .await
