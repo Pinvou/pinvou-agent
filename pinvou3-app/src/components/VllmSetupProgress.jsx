@@ -24,7 +24,7 @@ const VllmSetupProgress = ({ phase, attempt, isDark, t }) => {
                   {done ? (
                     <span className="w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-white text-[11px]" style={{ background: accent }}>✓</span>
                   ) : active ? (
-                    <span className={`w-5 h-5 shrink-0 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
+                    <span className={`w-5 h-5 shrink-0 rounded-full border-[2.5px] border-t-transparent border-[#007AFF] dark:border-[#0A84FF]`}
                       style={{ animation: 'tsSpinner .8s linear infinite' }} />
                   ) : (
                     <span className="w-5 h-5 shrink-0 rounded-full border-2" style={{ borderColor: muted, opacity: .35 }} />
