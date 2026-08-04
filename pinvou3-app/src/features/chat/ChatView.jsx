@@ -1206,6 +1206,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           sessionId: activeSessionId,
           timelineEvents: turnTimeline,
           allowScheduledTaskDraft: isScheduledTaskCreationChat,
+          language: bs && bs.settings && bs.settings.language,
+          modelServiceState: bs,
         });
         // Equivalent to [...turns].reverse().find(turn => turn.status === 'running'):
         // scan backwards for the last running turn, skipping the full reversed copy.
@@ -1215,7 +1217,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
         return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
-      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
+      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId, bs]);
       const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
