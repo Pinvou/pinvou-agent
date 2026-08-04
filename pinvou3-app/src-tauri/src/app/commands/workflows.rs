@@ -365,9 +365,7 @@ pub async fn kick_workflow(
 ) -> Result<String, String> {
     // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
     // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let ws = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -500,9 +498,7 @@ pub async fn retry_workflow_role(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let ws = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1089,9 +1085,7 @@ pub async fn cancel_workflow_role(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1152,9 +1146,7 @@ pub async fn stop_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1204,9 +1196,7 @@ pub async fn approve_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1250,9 +1240,7 @@ pub async fn reject_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1292,9 +1280,7 @@ pub async fn get_workflow_state(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
