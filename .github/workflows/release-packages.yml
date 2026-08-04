@@ -358,8 +358,9 @@ jobs:
     needs: check-version-bump
     if: needs.check-version-bump.outputs.build_required == 'true'
     runs-on: macos-15
-    # 首次双 target + fat LTO 实跑约 48 分钟，50 分钟几乎无 runner 抖动余量。
-    timeout-minutes: 90
+    # 冷缓存双 target + fat LTO 实测可能超过 90 分钟（0.7.4 发布构建曾逼近上限），
+    # 放宽至 150 分钟以覆盖冷缓存与 runner 抖动，避免发布构建被超时取消。
+    timeout-minutes: 150
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
