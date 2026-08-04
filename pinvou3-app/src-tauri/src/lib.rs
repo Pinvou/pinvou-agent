@@ -447,9 +447,16 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.code_project_workspace(session_id)
                     }));
-                    pool.bridge.set_code_session_predicate(std::sync::Arc::new(
-                        move |session_id: &str| code_session_agents.is_code_session(session_id),
-                    ));
+                    pool.bridge.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
+                    // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
+                    // bridge 共用同一份 SessionAgentStore 判定）。
+                    remote_control_manager.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
                             &pool.bridge,

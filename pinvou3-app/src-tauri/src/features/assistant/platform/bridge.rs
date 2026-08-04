@@ -101,6 +101,20 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// 持有的同一份 store（clone 共享 Arc，运行时读到最新绑定）。
 pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
+/// 一个会话的两个根：
+/// - `execution`：Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目
+///   目录；其余会话 = 会话私有目录。
+/// - `ledger`：应用账本根（附件/审计/产物/远程授权）。绑了项目目录的原生代码会话
+///   恒为会话私有目录（不污染用户项目）；其余会话与 execution 相同。
+///
+/// 由 [`Pinvou3Bridge::session_roots`] 统一解析，调用方显式选择用哪个根，
+/// 避免新增调用点时把执行根误当账本根写盘（或反之）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRoots {
+    pub execution: PathBuf,
+    pub ledger: PathBuf,
+}
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -368,15 +382,41 @@ impl Pinvou3Bridge {
         rendered
     }
 
+    /// 统一解析一个会话的两个根（执行根 + 账本根）。调用方按用途显式选择
+    /// [`SessionRoots::execution`] 或 [`SessionRoots::ledger`]，避免把执行根误当
+    /// 账本根写盘（或反之）。
+    ///
+    /// - `execution`：原生代码会话绑定了项目目录时返回项目目录（engine cwd 与
+    ///   shell 执行目录由此同源），其余会话返回会话私有目录。
+    /// - `ledger`：绑定了项目目录的原生代码会话恒为会话私有目录（附件/审计/产物
+    ///   不污染用户项目）；其余会话与 execution 相同。
+    pub fn session_roots(&self, session_id: &str) -> SessionRoots {
+        let execution = if let Some(resolver) = &self.execution_root_resolver {
+            if let Some(root) = resolver(session_id) {
+                root
+            } else {
+                paths::session_workspace_dir(session_id)
+            }
+        } else {
+            paths::session_workspace_dir(session_id)
+        };
+        let ledger = if self
+            .execution_root_resolver
+            .as_ref()
+            .is_some_and(|resolver| resolver(session_id).is_some())
+        {
+            paths::session_workspace_dir(session_id)
+        } else {
+            execution.clone()
+        };
+        SessionRoots { execution, ledger }
+    }
+
     /// 当前 active session 的执行根目录：原生代码会话绑定了项目目录时返回项目目录
     /// （engine cwd 与 shell 执行目录由此同源），其余会话返回会话私有目录。
+    /// 等价于 [`Self::session_roots`] 的 `execution` 字段。
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
-        if let Some(resolver) = &self.execution_root_resolver {
-            if let Some(root) = resolver(session_id) {
-                return root;
-            }
-        }
-        paths::session_workspace_dir(session_id)
+        self.session_roots(session_id).execution
     }
 
     /// 注入原生代码会话的执行根解析器；由 app 组合根在 AcpPool 就绪后调用一次。
@@ -399,12 +439,30 @@ impl Pinvou3Bridge {
             .is_some_and(|predicate| predicate(session_id))
     }
 
-    /// 会话级工具整形：原生代码会话没有产出物面板/成品卡语义（提示词也不再提及），
-    /// 隐藏 present_artifact；其他会话原样返回。spawn 初值与全局热刷都经此整形。
+    /// 会话级工具整形:原生代码会话没有产出物面板/成品卡语义(提示词也不再提及),
+    /// 隐藏 present_artifact;其他会话原样返回。spawn 初值与全局热刷都经此整形。
+    ///
+    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
+    /// 不再沿用 plain scope 的禁用集,而是改用 code scope 的禁用集 —— 两个 scope
+    /// 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非连接器禁用
+    /// (kb_search 等)仍保留。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
         const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
-        if self.is_code_session(session_id) && !tools.iter().any(|tool| tool == PRESENT_ARTIFACT) {
-            tools.push(PRESENT_ARTIFACT.to_string());
+        if self.is_code_session(session_id) {
+            // 用 code scope 的连接器禁用集替换 plain scope 的连接器禁用集。
+            let plain_connector = crate::features::marketplace::disabled_tool_names();
+            let code_connector = crate::features::marketplace::disabled_tool_names_for(
+                crate::features::marketplace::ConnectorScope::Code,
+            );
+            tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
+            for blocked in code_connector {
+                if !tools.iter().any(|tool| tool == &blocked) {
+                    tools.push(blocked);
+                }
+            }
+            if !tools.iter().any(|tool| tool == PRESENT_ARTIFACT) {
+                tools.push(PRESENT_ARTIFACT.to_string());
+            }
         }
         tools
     }
@@ -412,17 +470,19 @@ impl Pinvou3Bridge {
     /// 应用账本根：审计等应用自有文件的落盘根。绑了项目目录的原生代码会话恒为
     /// 会话私有目录（不污染用户项目）；其余会话与传入的执行根相同——普通会话两
     /// 根本来一致，scheduled 会话继续写其项目目录，行为逐字节不变。
+    ///
+    /// `execution_workspace` 必须来自 [`Self::session_workspace`]（或
+    /// [`Self::session_roots`] 的 `execution` 字段）。对 ledger 与 execution 相同的
+    /// 会话（普通/临时代码/scheduled），直接返回调用方传入的执行根，保持
+    /// scheduled 会话写其项目目录的既有行为。
     pub fn audit_workspace(
         &self,
         session_id: &str,
         execution_workspace: &std::path::Path,
     ) -> std::path::PathBuf {
-        if self
-            .execution_root_resolver
-            .as_ref()
-            .is_some_and(|resolver| resolver(session_id).is_some())
-        {
-            paths::session_workspace_dir(session_id)
+        let roots = self.session_roots(session_id);
+        if roots.ledger != roots.execution {
+            roots.ledger
         } else {
             execution_workspace.to_path_buf()
         }
@@ -431,7 +491,10 @@ impl Pinvou3Bridge {
     /// session 专属 `EngineConfig.instructions` 注入:
     ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
     ///      不写 disk — 见 C 方案 P-no-disk 决策);
-    ///   2. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
+    ///   2. 受限项目规则:绑定了项目目录的原生代码会话,注入项目根 → 文件系统根
+    ///      路径上的 `AGENTS.md`(审阅建议③a;底座 C5 fork 已砍空
+    ///      `PROJECT_CONTEXT_FILES`,不再自动扫描,这里按安全边界在 app 侧补齐);
+    ///   3. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
     ///
     /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
     /// `Vec<PathBuf>` 给底座 — 改用 `InstructionSource::Inline` 后:
@@ -445,6 +508,9 @@ impl Pinvou3Bridge {
             name: format!("pinvou3:sessions/{session_id}/instructions"),
             content: rendered,
         });
+        for project_rule in self.code_session_project_rules(session_id) {
+            out.push(InstructionSource::File(project_rule));
+        }
         let user = paths::user_instructions();
         if user.is_file() {
             out.push(InstructionSource::File(user));
@@ -456,6 +522,48 @@ impl Pinvou3Bridge {
             ),
         }
         out
+    }
+
+    /// 受限项目规则（审阅建议③a）：仅对**绑定了项目目录的原生代码会话**注入
+    /// `AGENTS.md`，覆盖项目根 → 文件系统根路径（不含用户家目录及以上的全局
+    /// 上下文，避免泄露桌面/用户上下文）。
+    ///
+    /// 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描），这里在 app 侧
+    /// 按安全边界补齐：只注入绑项目代码会话的项目根及以上各层目录的 `AGENTS.md`，
+    /// 到达用户家目录即停止（家目录本身的 `~/.AGENTS.md` 不注入），文件不存在或
+    /// 不可读时跳过。普通会话/临时代码会话不注入（行为不变）。
+    fn code_session_project_rules(&self, session_id: &str) -> Vec<PathBuf> {
+        let Some(project_root) = self
+            .execution_root_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(session_id))
+        else {
+            return Vec::new();
+        };
+        if !self.is_code_session(session_id) {
+            return Vec::new();
+        }
+        let home = crate::platform::paths::user_home_dir().canonicalize().ok();
+        let mut rules = Vec::new();
+        let mut current = Some(project_root.as_path());
+        while let Some(dir) = current {
+            // 项目根及各祖先层（不含家目录本身）的 AGENTS.md 都注入，支持
+            // monorepo 根规则覆盖子目录的既有语义。
+            let agents = dir.join("AGENTS.md");
+            if agents.is_file() {
+                rules.push(agents);
+            }
+            // 下一层到达用户家目录即停止：家目录及以上的 AGENTS.md（如
+            // ~/.AGENTS.md / ~/AGENTS.md）不注入，避免泄露桌面/用户全局上下文。
+            if home
+                .as_deref()
+                .is_some_and(|home| dir.parent() == Some(home))
+            {
+                break;
+            }
+            current = dir.parent();
+        }
+        rules
     }
 
     /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
@@ -1609,6 +1717,145 @@ mod tests {
     }
 
     #[test]
+    fn session_roots_exposes_both_roots_for_every_session_kind() {
+        let mut bridge = fixture_bridge();
+        let private_plain = crate::platform::paths::session_workspace_dir("sess-plain");
+        // 未注入 resolver：普通会话两个根一致，均为会话私有目录。
+        let roots = bridge.session_roots("sess-plain");
+        assert_eq!(roots.execution, private_plain);
+        assert_eq!(roots.ledger, private_plain);
+
+        let project = std::env::temp_dir().join("pinvou3-session-roots-test-project");
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+
+        // 绑项目的原生代码会话：执行根 = 项目目录，账本根 = 会话私有目录。
+        let roots = bridge.session_roots("sess-code-project");
+        assert_eq!(roots.execution, project);
+        assert_eq!(
+            roots.ledger,
+            crate::platform::paths::session_workspace_dir("sess-code-project")
+        );
+        // 未命中（普通 / 临时代码）：执行根与账本根一致，均为会话私有目录。
+        for sid in ["sess-plain", "sess-code-temp"] {
+            let roots = bridge.session_roots(sid);
+            let private = crate::platform::paths::session_workspace_dir(sid);
+            assert_eq!(roots.execution, private);
+            assert_eq!(roots.ledger, private);
+        }
+    }
+
+    #[test]
+    fn code_session_project_rules_inject_root_agents_only_for_bound_code_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-inject-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // 布局：base/project/AGENTS.md（项目根规则）、base/AGENTS.md（monorepo 根规则）。
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
+        std::fs::write(base.join("AGENTS.md"), "monorepo root rules").unwrap();
+        // 注意：Windows 上 temp 目录位于用户家目录之下，本测试的家目录边界
+        // 由实现按真实 user_home_dir() 计算，无需（也无法）在测试中伪造。
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+                || session_id == "sess-code-temp"
+                || session_id == "sess-code-project2"
+        }));
+
+        // 绑项目的代码会话：注入 project/AGENTS.md 与 base/AGENTS.md（monorepo 根）。
+        let rules = bridge.code_session_project_rules("sess-code-project");
+        assert!(
+            rules.iter().any(|p| p == &project.join("AGENTS.md")),
+            "应注入项目根 AGENTS.md: {rules:?}"
+        );
+        assert!(
+            rules.iter().any(|p| p == &base.join("AGENTS.md")),
+            "应注入 monorepo 根 AGENTS.md: {rules:?}"
+        );
+
+        // 临时代码会话 / 普通会话：resolver 未命中 → 不注入。
+        assert!(bridge
+            .code_session_project_rules("sess-code-temp")
+            .is_empty());
+        assert!(bridge.code_session_project_rules("sess-plain").is_empty());
+
+        // 没有 AGENTS.md 的目录链不注入（project2 无规则文件）。
+        let project2 = base.join("project2");
+        std::fs::create_dir_all(&project2).unwrap();
+        let hit2 = project2.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project2").then(|| hit2.clone())
+        }));
+        assert!(
+            !bridge
+                .code_session_project_rules("sess-code-project2")
+                .is_empty(),
+            "project2 位于 base 下,base/AGENTS.md 应仍注入"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn session_instructions_append_project_rules_for_bound_code_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-instr-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+
+        let instr = bridge.session_instructions("sess-code-project");
+        // 第一项 Inline（自家 prompt），随后是项目规则 File 项。
+        assert!(matches!(instr[0], InstructionSource::Inline { .. }));
+        let files: Vec<_> = instr
+            .iter()
+            .filter_map(|s| match s {
+                InstructionSource::File(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            files.iter().any(|p| p == &project.join("AGENTS.md")),
+            "session instructions 应含项目 AGENTS.md: {files:?}"
+        );
+
+        // 普通会话不注入项目规则。
+        let plain_instr = bridge.session_instructions("sess-plain");
+        let plain_files: Vec<_> = plain_instr
+            .iter()
+            .filter_map(|s| match s {
+                InstructionSource::File(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !plain_files.iter().any(|p| p.ends_with("AGENTS.md")),
+            "普通会话不应注入 AGENTS.md: {plain_files:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn code_session_tool_shaping_hides_present_artifact_only_for_code_sessions() {
         let mut bridge = fixture_bridge();
         // 未注入 predicate：一律按非代码会话处理。
@@ -1644,6 +1891,80 @@ mod tests {
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
             plain
         );
+    }
+
+    /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
+    /// plain 禁用 weather 但 code 未初始化(默认全禁已装连接器)时,weather 仍被禁;
+    /// code 显式只禁用 pptx 时,weather 恢复可用、pptx 保持禁用;非连接器禁用不受影响。
+    #[test]
+    fn code_session_tool_shaping_uses_code_scope_for_connectors() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-bridge-shape-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        // 模拟已装 weather/pptx 两个连接器(code 未初始化 → 默认全禁)。
+        let installed = dir.join("marketplace").join("installed.json");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(
+            &installed,
+            serde_json::to_string(&["weather".to_string(), "pptx".to_string()]).unwrap(),
+        )
+        .unwrap();
+        // model_tool_names 依赖 servers_dir 下的 manifest 才能把连接器 id 映射成工具全名。
+        let servers_dir = crate::platform::paths::bundle_mcp_servers_dir();
+        for (id, tool) in [("weather", "get_weather"), ("pptx", "make_pptx")] {
+            let mdir = servers_dir.join(id);
+            std::fs::create_dir_all(&mdir).unwrap();
+            std::fs::write(
+                mdir.join("manifest.json"),
+                format!(
+                    r#"{{"id":"{id}","name":"{id}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":["{tool}"],"command":"python","args":["server.py"]}}"#
+                ),
+            )
+            .unwrap();
+        }
+        // 每 scope 已装连接器映射成模型可见全名。
+        let weather = crate::features::marketplace::MarketplaceManager::new()
+            .model_tool_names(&["weather".to_string()]);
+        let pptx = crate::features::marketplace::MarketplaceManager::new()
+            .model_tool_names(&["pptx".to_string()]);
+        assert_eq!(weather.len(), 1);
+        assert_eq!(pptx.len(), 1);
+
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+
+        use crate::features::marketplace::ConnectorScope;
+        // plain 禁 weather(模拟普通会话里用户关了天气)。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Plain,
+            &["weather".to_string()],
+        );
+        // code scope 未初始化 → 默认全禁已装连接器。
+        let tools = vec!["kb_search".to_string()];
+        let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
+        assert!(shaped.contains(&weather[0]));
+        assert!(shaped.contains(&pptx[0]));
+        assert!(shaped.contains(&"kb_search".to_string()));
+
+        // code 显式只禁 pptx → weather 恢复,pptx 仍禁;plain 的 weather 禁用不再影响代码会话。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Code,
+            &["pptx".to_string()],
+        );
+        let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
+        assert!(!shaped.contains(&weather[0]));
+        assert!(shaped.contains(&pptx[0]));
+
+        // 普通会话不整形:原样返回传入的全局禁用集(全局禁用集由 EnginePool 按 plain scope 计算)。
+        let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
+        assert_eq!(shaped, tools);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

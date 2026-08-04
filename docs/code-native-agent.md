@@ -153,22 +153,90 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - `npm test` 全量通过；`npm run build:ui` 通过；`python3 scripts/architecture-guard.py` exit 0；`./scripts/fork-guard.sh --fast` 指纹层全过（未改 CodeWhale submodule，fork-modifications 无需登记）。
 - 实机验证（Windows 10 + Watt Toolkit 网络环境）：应用启动、原生会话创建/对话、项目目录绑定、标题自动命名、四控件生效均通过；过程中发现的缺陷均已修复（见第 4 节阶段三）。
 
-## 8. 已知限制与遗留风险
+## 8. 安全默认边界（审阅收口后）
+
+> 本节省略收口前默认态的描述，直接记录当前（PR #138 审阅修复后）的行为。
+
+### 8.1 持久化真相源（sidecar）
+
+- 原生代码会话的类型（`code_session`）与项目目录绑定以 per-session 权威 sidecar
+  `~/.pinvou3/sessions/<sid>/code-session.json` 持久化（`CodeSessionSidecar`：
+  `workspace_kind` / `workspace_path` / `bound_at` / `version`）。
+- 写入时机：`bind_code_native_session` 成功时原子写入；`set_acp_workspace` 绑定
+  ACP 时清除 `code_session` 标志并删除 sidecar（防止 ACP 会话被误判/误恢复）；
+  `remove` 删除会话时同步清理。
+- 恢复时机：`AcpPool::new` 启动时 `restore_code_native_sessions_from_sidecars` 扫描
+  各 session 私有目录，辅助索引缺失但 sidecar 存在时恢复 `SessionAgentRecord`
+  （仿 ACP 的 `restore_missing_acp_record`）。恢复会拒绝覆盖已被 ACP 占用的会话，
+  并校验 kind/path 组合合法性。
+- `session-agents.json` 仍是运行期主索引（加速），sidecar 是权威持久层（可重建）。
+
+### 8.2 两个根统一接口（SessionRoots）
+
+- `Pinvou3Bridge::session_roots(session_id) -> SessionRoots { execution, ledger }`
+  是单一解析入口：`execution`（Engine cwd / shell 执行目录）= 项目目录（绑项目）
+  或会话私有目录；`ledger`（附件/审计/产物/远程授权）= 绑项目会话恒为会话私有
+  目录，其余会话与 execution 相同。
+- `session_workspace()` 与 `audit_workspace()` 收敛为该接口的字段，调用方按用途
+  显式选择，避免新增调用点时把执行根误当账本根写盘（或反之）。
+
+### 8.3 代码会话工具开关（双 scope）
+
+- 连接器禁用列表按会话类型分开持久化（`disabled_connectors.json` 存
+  `{ plain, code, code_initialized }`，旧版裸数组兼容迁移为 plain）。
+- **安全默认**：code scope 未初始化时（用户从未改过代码会话开关），代码会话默认
+  禁用**所有已安装连接器**（外部能力显式开启）；一旦用户改过 code 开关
+  （`code_initialized=true`），以落盘列表为准。
+- 安装连接器后：code 已初始化时新装连接器默认仍关闭（自动加入 code 禁用集）；
+  未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载连接器时从
+  plain/code 两个禁用集移除残留 id（含运行时清理路径）。
+- 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
+  scope；`shape_disallowed_tools` 对代码会话用 code scope 的连接器禁用集替换
+  plain scope 的（非连接器禁用如 `kb_search` 保留），并继续隐藏
+  `present_artifact`。
+
+### 8.4 远程端过滤原生代码会话事件
+
+- 远程控制端正式支持代码会话列表/授权/UI 之前，`publish_event_inner` 对携带
+  `session_id` / `id` / `sessionId` 的原生代码会话事件一律不转发（与 Engine
+  bridge 共用同一份 `SessionAgentStore` 判定，`lib.rs` 注入）。普通会话事件不受
+  影响；predicate 未注入时行为与注入前一致。
+
+### 8.5 受限项目规则注入（AGENTS.md）
+
+- 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描 AGENTS.md），
+  `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
+  在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
+- **注入范围**：仅对**绑定了项目目录的原生代码会话**（execution root resolver
+  命中且 `is_code_session`）注入 `AGENTS.md`，覆盖项目根 → 文件系统根路径上的
+  各层 `AGENTS.md`（支持 monorepo 根规则）；到达用户家目录即停止（家目录及
+  以上的 `~/.AGENTS.md` / 全局上下文不注入，避免泄露桌面/用户全局配置）。
+- 普通会话、临时代码会话（resolver 未命中）不注入，行为与之前一致。
+- 注入方式：`session_instructions` 中追加 `InstructionSource::File`，由底座
+  `render_instructions_block` 处理 100KB 截断与缺失文件跳过，文件不存在或
+  不可读时静默跳过。
+- 取舍：AGENTS.md 内容计入每次请求的 token 成本；仅绑项目会话注入 + 家目录
+  边界，是「不引入全局上下文风险」与「项目规则可用」之间的折中。
+
+## 9. 已知限制与遗留风险
 
 - Plan 模式降级：方案以文本/普通工具卡呈现，无 `accept_plan` 审批卡，需手动切回 Yolo（后续专项）。
 - `chat:usage` 无 context 上限字段，用量 chip 不显示（`tokens.max` 恒 0）。
-- 底座 `project_context_pack_enabled` 被 pinvou3 显式关闭（bridge.rs:953），项目 AGENTS.md 不会自动注入代码会话提示词（开启是独立决策，涉 token 成本）。
+- 项目规则注入（审阅建议③a）仅覆盖绑项目代码会话的 root→cwd 各层 `AGENTS.md`，
+  不注入用户家目录/全局上下文；规则文件内容计入 token 成本（100KB 截断由底座
+  处理）。
 - 确认卡/busy 恢复依赖进程内登记表，进程重启后挂起 input 随旧 engine 消亡（与 ACP orphaned turn 语义一致）。
 - 原生会话无模型 API key 前置 gate，未配置凭据时错误在对话流内联展示。
 - 回声去重为启发式（文本一致或 30 秒窗口），极端时序理论可能双气泡。
 - 工作区基线对大型非 git 项目为全量指纹（与 ACP 项目会话同语义）。
 
-## 9. 待决策事项（已记录，未实施）
+## 10. 待决策事项（已记录，未实施）
 
-1. 远程控制端能收到原生代码会话的消息/工具输出转发（ACP 不会）——是否按 code_session 过滤，待产品决策。
-2. 原生代码会话默认继承工作模式全集工具（记忆/goal/定时任务/连接器）——是否默认裁剪外部连接器。
-3. `session-agents.json` 丢失/损坏时原生代码会话静默掉回普通列表且项目绑定失效——是否加持久兜底标记（ACP 有 model 标签兜底，原生没有）。
+1. 渐进重构：`codex_acp` / `CodexAcpView` 同时承载 ACP 与 Native 两种运行时，
+   建议逐步上提为 `code_sessions` / `CodeView`，两条链路分别做 adapter/hook。
+2. CI 增强：正式 `rust-test` 目前 skipped（Windows 只 `--no-run`），建议加
+   `ci:full-rust` 让完整测试成为该 head 的正式 check。
 
-## 10. 过程产物
+## 11. 过程产物
 
 实施各阶段交接笔记与全过程总结（含每阶段验证原始记录）存于贡献者本地 `.luzeyang/code-native-agent-实施总结.md`（不入库）。本文件为归档版单一真相源。

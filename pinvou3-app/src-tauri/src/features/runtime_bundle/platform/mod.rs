@@ -545,6 +545,8 @@ impl Pinvou3Bundle {
             if disabled.len() != before {
                 crate::features::marketplace::save_disabled_connectors(&disabled);
             }
+            // 代码会话的 code scope 同样清理残留。
+            crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
 
             let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
         }

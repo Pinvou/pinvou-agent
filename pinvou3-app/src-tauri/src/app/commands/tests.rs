@@ -1483,10 +1483,12 @@ fn remote_artifact_authorization_stays_on_private_ledger_root() {
     let outside = project.join("secret.txt");
     std::fs::write(&outside, "secret").expect("project file");
 
-    crate::features::remote_control::manager::resolve_session_artifact_path(&store, &sid, "ok.txt")
-        .expect("账本根内的文件必须可下载");
+    crate::features::remote_control::file_access::resolve_session_artifact_path(
+        &store, &sid, "ok.txt",
+    )
+    .expect("账本根内的文件必须可下载");
     assert!(
-        crate::features::remote_control::manager::resolve_session_artifact_path(
+        crate::features::remote_control::file_access::resolve_session_artifact_path(
             &store,
             &sid,
             outside.to_str().expect("utf8 path"),

@@ -86,6 +86,11 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "session:persona_changed",
 ];
 
+/// 原生代码会话判定（与 Engine bridge 共用 AcpPool 那份 SessionAgentStore 注入）。
+/// 远程端正式支持代码会话列表/授权/UI 之前，带 session_id 的原生代码会话事件
+/// 一律不转发。
+pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RemoteControlManager {
     app: AppHandle,
@@ -118,6 +123,8 @@ struct Inner {
     web_session_downloads: HashMap<String, WebSessionDownload>,
     web_session_download_order: VecDeque<String>,
     pending_revocations_in_flight: HashSet<String>,
+    /// 原生代码会话判定；None = 未注入（不过滤，启动早期行为不变）。
+    code_session_predicate: Option<CodeSessionPredicate>,
 }
 
 impl Default for Inner {
@@ -142,6 +149,7 @@ impl Default for Inner {
             web_session_downloads: HashMap::new(),
             web_session_download_order: VecDeque::new(),
             pending_revocations_in_flight: HashSet::new(),
+            code_session_predicate: None,
         }
     }
 }
@@ -489,6 +497,13 @@ impl RemoteControlManager {
             policy: Arc::new(policy),
             policy_error,
         }
+    }
+
+    /// 注入原生代码会话判定；由 app 组合根在 AcpPool 就绪后调用一次，与 Engine
+    /// bridge 共用同一份 SessionAgentStore。存放在共享 `Inner` 里，所有 clone
+    /// （含已 manage 进 Tauri 的那份）都能读到。
+    pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
+        self.inner.lock().code_session_predicate = Some(predicate);
     }
 
     /// Resume the persistent endpoint after all authoritative application
@@ -2287,6 +2302,18 @@ impl RemoteControlManager {
         if source == EventSource::Frontend && RUST_FORWARDED_EVENTS.contains(&event) {
             return Ok(());
         }
+        // 远程端正式支持代码会话列表/授权/UI 之前，先过滤原生代码会话事件：事件
+        // payload 携带的会话 id（`session_id` 用于 chat:* / artifact:disk，
+        // `id` 用于 session:*，`sessionId` 用于 scheduled_task:run_updated）指向
+        // 原生代码会话（ACP/品悟）时不转发。远程 WebUI 不会收到它无法展示/授权
+        // 的代码会话消息流；predicate 只对真实代码会话 id 返回 true，普通会话
+        // 不受影响。
+        if should_filter_code_session_event(
+            self.inner.lock().code_session_predicate.as_ref(),
+            &payload,
+        ) {
+            return Ok(());
+        }
         {
             let mut inner = self.inner.lock();
             let endpoint = inner
@@ -2419,6 +2446,29 @@ impl RemoteControlManager {
 enum EventSource {
     Rust,
     Frontend,
+}
+
+/// 从事件 payload 提取会话 id（不同事件用不同字段名）。
+fn event_session_id(payload: &Value) -> Option<&str> {
+    payload
+        .get("session_id")
+        .or_else(|| payload.get("id"))
+        .or_else(|| payload.get("sessionId"))
+        .and_then(Value::as_str)
+}
+
+/// 远程端正式支持代码会话之前，过滤原生代码会话事件。predicate 为 None（未注入）
+/// 时不过滤，行为与注入前一致。
+fn should_filter_code_session_event(
+    predicate: Option<&CodeSessionPredicate>,
+    payload: &Value,
+) -> bool {
+    match predicate {
+        Some(predicate) => {
+            event_session_id(payload).is_some_and(|session_id| predicate(session_id))
+        }
+        None => false,
+    }
 }
 
 fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {

@@ -2571,6 +2571,7 @@ export function CodexAcpView({
                         activeSkill={null}
                         triggerVariant="pill"
                         triggerTestId="native-tools"
+                        scope="code"
                       />
                       <CodexComposerConfigSelect
                         id="native-kb"

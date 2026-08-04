@@ -910,13 +910,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
     //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
     // 下拉内容不变；不传变体时聊天页外观逐字节不变。
-    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId }) => {
+    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
+      // scope: 'code' = 原生代码会话(独立开关,默认全关),缺省 = 普通会话(plain)。
+      const toolScope = scope === 'code' ? 'code' : 'plain';
       const [marketplaceTools, setMarketplaceTools] = useState([]);
       const [marketplaceSkills, setMarketplaceSkills] = useState([]);
-      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
@@ -936,7 +938,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch (e) { /* ignore */ }
         try {
-          const dis = await invokeTauri('get_disabled_connectors');
+          const dis = await invokeTauri('get_disabled_connectors', { scope: toolScope });
           if (isAlive()) setDisabled(new Set(dis || []));
         } catch (e) { /* ignore */ }
         try {
@@ -969,10 +971,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
-        // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
+        // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
         if (bridge.available) {
           invokeTauri('set_disabled_connectors',
-            { connectorIds: Array.from(next) }).catch(() => {});
+            { connectorIds: Array.from(next), scope: toolScope }).catch(() => {});
         }
       }
       const menuState = buildComposerToolMenuState({

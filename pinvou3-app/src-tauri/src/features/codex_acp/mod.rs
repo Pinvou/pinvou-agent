@@ -280,6 +280,47 @@ fn load_acp_recovery_record(
     )
 }
 
+/// 扫描 session 私有目录中的原生代码会话权威 sidecar，恢复辅助索引缺失的
+/// 原生代码会话记录。
+///
+/// sidecar（`code-session.json`）随会话存续，是跨进程的权威真相源；辅助索引
+/// `session-agents.json` 可损坏/丢失后据此重建。对每个 sidecar，若辅助索引里
+/// 没有对应的 code_session 记录（或已被 ACP 占用），则恢复之。
+fn restore_code_native_sessions_from_sidecars(agents: &SessionAgentStore) {
+    let sessions_root = crate::platform::paths::sessions_root();
+    let Ok(entries) = std::fs::read_dir(&sessions_root) else {
+        // sessions 根不存在 = 没有任何会话，无需恢复。
+        return;
+    };
+    let mut restored = 0usize;
+    for entry in entries.flatten() {
+        let session_dir = entry.path();
+        if !session_dir.is_dir() {
+            continue;
+        }
+        let Some(session_id) = session_dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(sidecar) = store::read_code_session_sidecar(agents.path(), session_id) else {
+            continue;
+        };
+        match agents.restore_missing_code_session_record(session_id, sidecar) {
+            Ok(()) => {
+                restored += 1;
+                eprintln!("[pinvou3-app] recovered native code session index for {session_id}");
+            }
+            Err(error) => eprintln!(
+                "[pinvou3-app] native code session {session_id} remains degraded: {error:#}"
+            ),
+        }
+    }
+    if restored > 0 {
+        eprintln!(
+            "[pinvou3-app] recovered {restored} native code session index record(s) from sidecars"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexAcpStatus {
     pub agent_id: &'static str,
@@ -764,6 +805,10 @@ impl AcpPool {
                 ),
             }
         }
+        // 原生代码会话的权威 sidecar 恢复：sidecar 随 session 私有目录存续，辅助
+        // 索引（session-agents.json）损坏/丢失后，据 sidecar 恢复原生代码会话类型
+        // 与项目目录绑定，避免会话静默掉回普通聊天、执行根退回私有目录。
+        restore_code_native_sessions_from_sidecars(&agents);
         let config_defaults = AcpConfigDefaultsStore::load_or_empty();
         // 旧版本只保存了 session 级状态。按更新时间从新到旧，为每个 Agent
         // 迁移最近一次成功配置，使升级后的第一个新会话也能继承用户选择。
