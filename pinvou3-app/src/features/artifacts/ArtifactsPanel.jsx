@@ -461,11 +461,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (designAiTimerRef.current) window.clearTimeout(designAiTimerRef.current);
       }, []);
 
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
       const dependencyCheckButton = (message) => (
         needsDependencyCheck(message) && onGotoSettings
-          ? <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20 text-[#E3E3E3]' : 'bg-black/5 hover:bg-black/10 text-[#1F1F1F]'}`}>{t.depGoInstall || t.depInstallBtn}</button>
+          ? <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium bg-black/5 hover:bg-black/10 text-[#1F1F1F] dark:bg-white/10 dark:hover:bg-white/20 dark:text-[#E3E3E3]`}>{t.depGoInstall || t.depInstallBtn}</button>
           : null
       );
       const tabBtn = (key, label) => {
@@ -475,9 +475,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           <button key={key} disabled={disabled}
             onClick={() => !disabled && handleTabSelect(key)}
             className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors
-              ${active ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E8EDF2] text-[#1F1F1F]')
-                : disabled ? (isDark ? 'text-[#5F6368]' : 'text-[#BDC1C6]') + ' cursor-not-allowed'
-                : (isDark ? 'text-[#C4C7C5] hover:bg-[#282A2C]' : 'text-[#444746] hover:bg-[#F0F4F9]')}`}>
+              ${active ? 'bg-[#E8EDF2] text-[#1F1F1F] dark:bg-[#333537] dark:text-[#E3E3E3]'
+                : disabled ? 'text-[#BDC1C6] dark:text-[#5F6368] cursor-not-allowed'
+                : 'text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#282A2C]'}`}>
             {label}
           </button>
         );
@@ -485,7 +485,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const renderArtifactSwitcher = () => {
         if (tab !== 'preview' || !sel) {
           return (
-            <div className={`flex items-center gap-1 rounded-full p-0.5 ${isDark ? 'bg-[#141517]' : 'bg-[#F0F4F9]'}`}>
+            <div className={`flex items-center gap-1 rounded-full p-0.5 bg-[#F0F4F9] dark:bg-[#141517]`}>
               {tabBtn('list', t.apTabList)}
               {tabBtn('preview', t.apTabPreview)}
             </div>
@@ -498,29 +498,23 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               type="button"
               data-testid="artifact-switcher-button"
               onClick={() => setArtifactMenuOpen((open) => !open)}
-              className={`flex h-9 max-w-[360px] items-center gap-2 rounded-full border px-3 text-left text-[13px] font-semibold shadow-sm transition-colors ${
-                isDark
-                  ? 'border-white/10 bg-[#2C2C2E] text-[#F5F5F7] hover:bg-[#3A3A3C]'
-                  : 'border-black/[0.06] bg-white text-[#1D1D1F] hover:bg-[#F5F5F7]'
-              }`}
+              className={`flex h-9 max-w-[360px] items-center gap-2 rounded-full border px-3 text-left text-[13px] font-semibold shadow-sm transition-colors border-black/[0.06] bg-white text-[#1D1D1F] hover:bg-[#F5F5F7] dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:hover:bg-[#3A3A3C]`}
               aria-haspopup="menu"
               aria-expanded={artifactMenuOpen ? 'true' : 'false'}
               title={sel.basename}
             >
               <ArtifactTileIcon name={sel.basename} tileCls="w-6 h-6 rounded-[8px]" glyphCls="w-3.5 h-3.5" />
               <span className="min-w-0 truncate">{sel.basename}</span>
-              {artifacts.length > 1 && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] ${isDark ? 'bg-white/10 text-[#D1D1D6]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>{artifacts.length}</span>}
-              <span className={`shrink-0 text-[10px] ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>▼</span>
+              {artifacts.length > 1 && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] bg-[#F2F2F7] text-[#6E6E73] dark:bg-white/10 dark:text-[#D1D1D6]`}>{artifacts.length}</span>}
+              <span className={`shrink-0 text-[10px] text-[#8E8E93] dark:text-[#A1A1AA]`}>▼</span>
             </button>
             {artifactMenuOpen && (
               <div
                 data-testid="artifact-switcher-menu"
                 role="menu"
-                className={`absolute left-0 top-11 z-40 w-[320px] max-w-[calc(100vw-48px)] rounded-[18px] border p-1.5 shadow-2xl backdrop-blur-2xl ${
-                  isDark ? 'border-white/10 bg-[#2C2C2E]/95 text-[#F5F5F7]' : 'border-black/10 bg-white/95 text-[#1D1D1F]'
-                }`}
+                className={`absolute left-0 top-11 z-40 w-[320px] max-w-[calc(100vw-48px)] rounded-[18px] border p-1.5 shadow-2xl backdrop-blur-2xl border-black/10 bg-white/95 text-[#1D1D1F] dark:border-white/10 dark:bg-[#2C2C2E]/95 dark:text-[#F5F5F7]`}
               >
-                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>
+                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium text-[#8E8E93] dark:text-[#A1A1AA]`}>
                   {uiA.switchArtifact}
                 </div>
                 {artifacts.map((a) => {
@@ -532,8 +526,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       role="menuitem"
                       className={`group flex w-full items-center gap-1 rounded-[12px] transition-colors ${
                         active
-                          ? (isDark ? 'bg-[#0A84FF]/24' : 'bg-[#E5F0FF]')
-                          : (isDark ? 'hover:bg-white/10' : 'hover:bg-black/[0.05]')
+                          ? 'bg-[#E5F0FF] dark:bg-[#0A84FF]/24'
+                          : 'hover:bg-black/[0.05] dark:hover:bg-white/10'
                       }`}
                       title={a.path}
                     >
@@ -545,8 +539,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       >
                         <ArtifactTileIcon name={a.basename} tileCls="w-8 h-8 rounded-[10px]" glyphCls="w-4 h-4" />
                         <span className="min-w-0 flex-1">
-                          <span className={`block truncate text-[13px] font-medium ${isDark ? 'text-[#F5F5F7]' : 'text-[#1D1D1F]'}`}>{a.basename}</span>
-                          <span className={`block truncate text-[11px] ${isDark ? 'text-[#A1A1AA]' : 'text-[#8E8E93]'}`}>
+                          <span className={`block truncate text-[13px] font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{a.basename}</span>
+                          <span className={`block truncate text-[11px] text-[#8E8E93] dark:text-[#A1A1AA]`}>
                             {itemInfo ? apFormatMtime(itemInfo.modified) : '—'}
                           </span>
                         </span>
@@ -557,9 +551,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                           type="button"
                           title={t.apBtnLocate}
                           onClick={(event) => { event.preventDefault(); event.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
-                          className={`mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 ${
-                            isDark ? 'hover:bg-white/10 text-[#D1D1D6]' : 'hover:bg-white text-[#6E6E73]'
-                          }`}
+                          className={`mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white text-[#6E6E73] dark:hover:bg-white/10 dark:text-[#D1D1D6]`}
                         >
                           <FolderOpen size={14} />
                         </button>
@@ -568,7 +560,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   );
                 })}
                 {info && (
-                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] ${isDark ? 'border-white/10 text-[#A1A1AA]' : 'border-black/10 text-[#8E8E93]'}`}>
+                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] border-black/10 text-[#8E8E93] dark:border-white/10 dark:text-[#A1A1AA]`}>
                     {uiA.currentMtime(apFormatMtime(info.modified))}
                   </div>
                 )}
@@ -582,12 +574,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const renderContent = () => {
         if (pv.loading) return <div className={`text-[13px] ${muted}`}>{t.apConverting}</div>;
         if (pv.missing) return <div className={`text-[13px] ${muted}`}>{t.apMissing}</div>;
-        if (pv.error) return <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.apReadFail(pv.error)}</div>;
+        if (pv.error) return <div className={`text-[13px] text-[#C5221F] dark:text-[#F28B82]`}>{t.apReadFail(pv.error)}</div>;
         if (pv.kind === 'md') {
           return (
             <div className="flex flex-col gap-2">
               {externalUpdateBlocked && (
-                <div className={`rounded-lg px-3 py-2 text-[12px] ${isDark ? 'bg-[#3A2F16] text-[#FDD663]' : 'bg-[#FFF7E0] text-[#8A5A00]'}`}>
+                <div className={`rounded-lg px-3 py-2 text-[12px] bg-[#FFF7E0] text-[#8A5A00] dark:bg-[#3A2F16] dark:text-[#FDD663]`}>
                   {externalUpdateBlocked === 'removed'
                     ? t.apMdExternalRemovalBlocked
                     : t.apMdExternalUpdateBlocked}
@@ -622,14 +614,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           );
         }
         if (pv.kind === 'text') {
-          return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>;
+          return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono text-[#444746] dark:text-[#C4C7C5]`}>{pv.text}</pre>;
         }
         // 可视化结果
         const vis = pv.visual;
         if (vis && vis.mode === 'html') {
           return (
             <div className="flex flex-col gap-2 h-full">
-              {vis.warning && <div className={`flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
+              {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
                 data-testid="artifact-html-preview-frame"
                 onLoad={(e) => handlePreviewFrameLoad(e.currentTarget)}
@@ -640,7 +632,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'images') {
           return (
             <div className="flex flex-col items-center gap-3">
-              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] ${isDark ? 'text-[#FDD663]' : 'text-[#E37400]'}`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
+              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               {(vis.images || []).map((src, i) => (
                 <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />
               ))}
@@ -653,7 +645,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             {sel
               ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" />
               : <FileTypeIcon kind="other" className="h-11 w-11" />}
-            <span className={`text-[14px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel && sel.basename}</span>
+            <span className={`text-[14px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]`}>{sel && sel.basename}</span>
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
             {(!isWeb || canDownloadArtifacts) && (
@@ -668,9 +660,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       return (
         <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
           {!isWide && <div className="absolute inset-0 bg-black/40" onClick={handleClose}></div>}
-          <div className={`relative h-full flex flex-col ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} ${isWide ? 'w-full border-l ' + (isDark ? 'border-white/10' : 'border-black/10') : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
+          <div className={`relative h-full flex flex-col bg-white dark:bg-[#1E1F20] ${isWide ? 'w-full border-l border-black/10 dark:border-white/10' : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
-            <div className={`flex items-center justify-between px-3 py-2.5 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
+            <div className={`flex items-center justify-between px-3 py-2.5 border-b border-black/10 dark:border-white/10`}>
               {renderArtifactSwitcher()}
               <div className="flex items-center gap-1.5">
                 {onToggleFullscreen && (
@@ -687,11 +679,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       ? `h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-sm ${
                           isFullscreen
                             ? 'bg-[#007AFF] text-white hover:bg-[#0066D6]'
-                            : isDark
-                              ? 'bg-white/10 text-[#F5F5F7] hover:bg-white/15 ring-1 ring-white/10'
-                              : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/[0.04]'
+                            : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-[#F5F5F7] dark:hover:bg-white/15 dark:ring-white/10'
                         }`
-                      : `w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>
+                      : `w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F0F4F9] text-[#444746] dark:hover:bg-[#333537] dark:text-[#C4C7C5]`}>
                     {isFullscreen ? <Minimize2 size={designMode ? 15 : 17} /> : <Maximize2 size={designMode ? 15 : 17} />}
                     {designMode && <span>{isFullscreen ? uiA.fsExitEditShort : uiA.fsEditMode}</span>}
                   </button>
@@ -701,7 +691,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   data-testid="artifact-close"
                   aria-label={uiA.closePreviewAria}
                   title={uiA.closePreviewTitle}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>
+                  className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F0F4F9] text-[#444746] dark:hover:bg-[#333537] dark:text-[#C4C7C5]`}>
                   <XCircle size={18} />
                 </button>
               </div>
@@ -718,16 +708,16 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     return (
                       <div key={a.path} onClick={() => preview(a)}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
-                          ${sel && sel.path === a.path ? (isDark ? 'bg-[#333537]' : 'bg-[#E8EDF2]') : (isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#F0F4F9]')}`}>
+                          ${sel && sel.path === a.path ? 'bg-[#E8EDF2] dark:bg-[#333537]' : 'hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'}`}>
                         <ArtifactTileIcon name={a.basename} />
                         <div className="flex-1 min-w-0">
-                          <div className={`text-[14px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={a.path}>{a.basename}</div>
+                          <div className={`text-[14px] truncate text-[#1F1F1F] dark:text-[#E3E3E3]`} title={a.path}>{a.basename}</div>
                           <div className={`text-[12px] truncate ${muted}`}>
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
                         {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
-                          className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#1E1F20] text-[#C4C7C5]' : 'hover:bg-white text-[#444746]'}`}><FolderOpen size={16} /></button>
+                          className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center hover:bg-white text-[#444746] dark:hover:bg-[#1E1F20] dark:text-[#C4C7C5]`}><FolderOpen size={16} /></button>
                         }
                       </div>
                     );
@@ -742,13 +732,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     <div className="relative flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0" data-testid="artifact-preview-content">
                       {renderContent()}
                       {showDesignWorkbench && pv.kind === 'html' && (
-                        <div data-testid="artifact-html-zoom-controls" className={`absolute bottom-4 right-4 z-20 flex items-center gap-1 rounded-full border p-1 text-[12px] shadow-lg backdrop-blur-2xl ${isDark ? 'border-white/10 bg-[#1E1F20]/95 text-[#E3E3E3]' : 'border-black/10 bg-white/95 text-[#1F1F1F]'}`}>
+                        <div data-testid="artifact-html-zoom-controls" className={`absolute bottom-4 right-4 z-20 flex items-center gap-1 rounded-full border p-1 text-[12px] shadow-lg backdrop-blur-2xl border-black/10 bg-white/95 text-[#1F1F1F] dark:border-white/10 dark:bg-[#1E1F20]/95 dark:text-[#E3E3E3]`}>
                           <div className="relative">
                             <button
                               type="button"
                               data-testid="artifact-html-zoom-mode"
                               onClick={() => setHtmlZoomMenuOpen((open) => !open)}
-                              className={`h-8 rounded-full px-3 font-semibold transition-colors ${isDark ? 'bg-[#0A84FF] text-white hover:bg-[#409CFF]' : 'bg-[#007AFF] text-white hover:bg-[#006EE6]'}`}
+                              className={`h-8 rounded-full px-3 font-semibold transition-colors bg-[#007AFF] text-white hover:bg-[#006EE6] dark:bg-[#0A84FF] dark:hover:bg-[#409CFF]`}
                               aria-haspopup="menu"
                               aria-expanded={htmlZoomMenuOpen ? 'true' : 'false'}
                             >
@@ -758,9 +748,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {htmlZoomMenuOpen && (
                               <div
                                 data-testid="artifact-html-zoom-menu"
-                                className={`absolute bottom-10 left-0 min-w-[128px] rounded-[14px] border p-1.5 text-[13px] shadow-xl ${
-                                  isDark ? 'border-white/10 bg-[#2C2C2E] text-[#F5F5F7]' : 'border-black/10 bg-white text-[#1D1D1F]'
-                                }`}
+                                className={`absolute bottom-10 left-0 min-w-[128px] rounded-[14px] border p-1.5 text-[13px] shadow-xl border-black/10 bg-white text-[#1D1D1F] dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7]`}
                               >
                                 {HTML_ZOOM_OPTIONS.map((option) => (
                                   <button
@@ -770,8 +758,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                     onClick={() => setPresetZoomMode(option.key)}
                                     className={`flex h-9 w-full items-center justify-between rounded-[10px] px-3 text-left font-medium transition-colors ${
                                       htmlZoomMode === option.key
-                                        ? (isDark ? 'bg-[#0A84FF]/25 text-[#F5F5F7]' : 'bg-[#E5F0FF] text-[#0057D9]')
-                                        : (isDark ? 'hover:bg-white/10' : 'hover:bg-black/[0.05]')
+                                        ? 'bg-[#E5F0FF] text-[#0057D9] dark:bg-[#0A84FF]/25 dark:text-[#F5F5F7]'
+                                        : 'hover:bg-black/[0.05] dark:hover:bg-white/10'
                                     }`}
                                   >
                                     <span>{uiA[option.labelKey]}</span>
@@ -781,12 +769,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                               </div>
                             )}
                           </div>
-                          <span data-testid="artifact-html-zoom-scale" className={`min-w-[42px] px-2 text-center font-medium ${isDark ? 'text-[#F5F5F7]' : 'text-[#1D1D1F]'}`}>{Math.round(htmlScale * 100)}%</span>
+                          <span data-testid="artifact-html-zoom-scale" className={`min-w-[42px] px-2 text-center font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{Math.round(htmlScale * 100)}%</span>
                           <button
                             type="button"
                             data-testid="artifact-html-zoom-out"
                             onClick={() => adjustHtmlCustomScale(-0.1)}
-                            className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                            className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors hover:bg-black/5 dark:hover:bg-white/10`}
                             aria-label={uiA.zoomOut}
                             title={uiA.zoomOut}
                           >
@@ -796,7 +784,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             type="button"
                             data-testid="artifact-html-zoom-in"
                             onClick={() => adjustHtmlCustomScale(0.1)}
-                            className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                            className={`h-8 w-8 rounded-full text-[17px] font-semibold transition-colors hover:bg-black/5 dark:hover:bg-white/10`}
                             aria-label={uiA.zoomIn}
                             title={uiA.zoomIn}
                           >
@@ -814,9 +802,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <form
                           data-testid="artifact-design-ai-composer"
                           onSubmit={submitDesignAiText}
-                          className={`absolute bottom-16 left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-[22px] border px-2.5 py-1.5 shadow-[0_14px_38px_rgba(0,0,0,.24)] backdrop-blur-2xl ${
-                            isDark ? 'border-white/15 bg-[#1C1C1E]/95 text-[#F5F5F7]' : 'border-white/80 bg-white/[0.96] text-[#1D1D1F]'
-                          }`}
+                          className={`absolute bottom-16 left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-[22px] border px-2.5 py-1.5 shadow-[0_14px_38px_rgba(0,0,0,.24)] backdrop-blur-2xl border-white/80 bg-white/[0.96] text-[#1D1D1F] dark:border-white/15 dark:bg-[#1C1C1E]/95 dark:text-[#F5F5F7]`}
                           style={{ width: 'min(520px, calc(100% - 260px))' }}
                         >
                           {designAiStatus === 'idle' ? (
@@ -826,9 +812,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 onChange={(event) => setDesignAiStatePatch({ text: event.target.value })}
                                 data-testid="artifact-design-ai-input"
                                 placeholder={selectedDesignElement ? uiA.aiPhElement : uiA.aiPhDesign}
-                                className={`min-w-0 flex-1 bg-transparent text-[13px] outline-none ${
-                                  isDark ? 'placeholder:text-[#C7C7CC]' : 'placeholder:text-[#6E6E73]'
-                                }`}
+                                className={`min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[#6E6E73] dark:placeholder:text-[#C7C7CC]`}
                               />
                               <button
                                 type="submit"
@@ -837,7 +821,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 className={`h-8 rounded-full px-3 text-[12px] font-semibold transition-colors ${
                                   designAiText.trim()
                                     ? 'bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6]'
-                                    : (isDark ? 'bg-white/14 text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#8E8E93]')
+                                    : 'bg-[#E5E5EA] text-[#8E8E93] dark:bg-white/14 dark:text-[#C7C7CC]'
                                 }`}
                               >
                                 {uiA.send}
@@ -852,13 +836,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                   <span>{designAiStatusTitle}</span>
                                   </div>
                                   {designAiStatusDetail && (
-                                    <div className={`truncate text-[11px] leading-4 ${isDark ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'}`}>
+                                    <div className={`truncate text-[11px] leading-4 text-[#6E6E73] dark:text-[#C7C7CC]`}>
                                       {designAiStatusDetail}
                                     </div>
                                   )}
                                 </div>
                                 {(designAiStatus === 'updated' || designAiStatus === 'no-update') && (
-                                  <div className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium ${isDark ? 'bg-white/10 text-[#D1D1D6]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
+                                  <div className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium bg-[#F2F2F7] text-[#6E6E73] dark:bg-white/10 dark:text-[#D1D1D6]`}>
                                     {designAiStatus === 'updated' ? uiA.previewRefreshed : uiA.canContinue}
                                   </div>
                                 )}
@@ -868,9 +852,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                   type="button"
                                   data-testid="artifact-design-ai-stop"
                                   onClick={cancelDesignAi}
-                                  className={`h-7 shrink-0 rounded-full px-2.5 text-[12px] font-semibold transition-colors ${
-                                    isDark ? 'bg-white text-[#1D1D1F] hover:bg-[#F2F2F7]' : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA]'
-                                  }`}
+                                  className={`h-7 shrink-0 rounded-full px-2.5 text-[12px] font-semibold transition-colors bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] dark:bg-white dark:text-[#1D1D1F] dark:hover:bg-[#F2F2F7]`}
                                 >
                                   {uiA.stop}
                                 </button>
@@ -882,7 +864,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     </div>
                     {showDesignWorkbench && (
                       <div
-                        className={`w-[300px] shrink-0 overflow-hidden border-l ${isDark ? 'border-white/10 bg-[#1E1F20]' : 'border-black/10 bg-white'}`}
+                        className={`w-[300px] shrink-0 overflow-hidden border-l border-black/10 bg-white dark:border-white/10 dark:bg-[#1E1F20]`}
                         data-testid="artifact-design-inspector-host">
                         <DesignInspectorPanel
                           isDark={isDark}
@@ -897,8 +879,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     )}
                   </div>
                   {/* meta footer */}
-                  {!isFullscreen && <div className={`shrink-0 border-t px-4 py-3 ${isDark ? 'border-white/10 bg-[#1A1B1D]' : 'border-black/10 bg-[#F8FAFD]'}`} data-testid="artifact-meta-footer">
-                    <div className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{sel.basename}</div>
+                  {!isFullscreen && <div className={`shrink-0 border-t px-4 py-3 border-black/10 bg-[#F8FAFD] dark:border-white/10 dark:bg-[#1A1B1D]`} data-testid="artifact-meta-footer">
+                    <div className={`text-[14px] font-medium truncate text-[#1F1F1F] dark:text-[#E3E3E3]`}>{sel.basename}</div>
                     <div className={`mt-0.5 text-[12px] ${muted}`}>
                       {apKindLabel(t, pv.info && pv.info.kind, sel.basename)}
                       {pv.info && pv.info.size ? ' · ' + apFormatBytes(pv.info.size) : ''}
