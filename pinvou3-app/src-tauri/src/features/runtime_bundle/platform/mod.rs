@@ -87,8 +87,9 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.17: 接入腾讯 ima OpenAPI Skill（原生受控工具）
 /// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
 /// 0.19: 增加多智能体深度护栏 hook，防止模型用单次 `max_depth` 覆盖会话上限
+/// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.19-",
+    "0.20-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -305,8 +306,9 @@ pub const DENY_SENSITIVE_PATHS_SH: &str =
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
     include_str!("../../../../resources/common/bundle/deny_sensitive_paths.ps1");
 
-/// 多智能体会话的直属子智能体护栏。仅在多智能体 EngineConfig 中挂载，
-/// 普通对话不使用。拦截模型显式传入正数深度覆盖字段；Workflow 的
+/// 多智能体会话的两层深度护栏。仅在多智能体 EngineConfig 中挂载，
+/// 普通对话不使用。会话上限允许一级代理再派生一层，同时拦截模型显式传入
+/// 正数深度覆盖字段，避免逐层抬高上限；Workflow 的
 /// `source_path` 要求改用 inline script/plan，避免 hook 无法检查文件内参数。
 pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
     include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");
@@ -1050,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn multiagent_depth_guard_enforces_direct_child_inputs() {
+    fn multiagent_depth_guard_enforces_two_level_inputs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
         std::env::set_var("PINVOU3_HOME", &tmp);
@@ -1060,12 +1062,26 @@ mod tests {
         let positive = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
         assert_eq!(positive.status.code(), Some(2));
         assert!(
-            String::from_utf8_lossy(&positive.stderr).contains("direct child agents only"),
+            String::from_utf8_lossy(&positive.stderr).contains("at most two child levels"),
             "拒绝原因必须能指导模型重试: {positive:?}"
+        );
+
+        let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
+        assert!(
+            inherited.status.success(),
+            "复杂一级委派省略深度参数时应继承会话两层上限: {inherited:?}"
         );
 
         let leaf = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":0}"#);
         assert!(leaf.status.success(), "叶子委派应通过: {leaf:?}");
+
+        let positive_one =
+            run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":1}"#);
+        assert_eq!(
+            positive_one.status.code(),
+            Some(2),
+            "正数覆盖会让嵌套代理逐层扩大上限，必须拒绝"
+        );
 
         let alias = run_depth_guard(
             &bundle,

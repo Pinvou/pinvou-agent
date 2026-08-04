@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Multi-agent mode keeps orchestration in the root conversation.  CodeWhale's
-# per-call maxDepth/max_depth option may widen the inherited runtime budget, so
-# reject positive overrides and let EngineConfig(max_spawn_depth = 1) remain the
-# authoritative ceiling.  This hook is attached only to multi-agent sessions.
+# The main conversation remains the overall coordinator.  The inherited
+# EngineConfig(max_spawn_depth = 2) permits one nested child layer, while a
+# positive per-call maxDepth/max_depth override could widen that ceiling again
+# at each level.  Reject positive overrides and keep the session cap authoritative.
+# This hook is attached only to multi-agent sessions.
 
 set -u
 
@@ -34,7 +35,7 @@ esac
 
 if printf '%s' "$tool_args" | grep -Eq "$pattern"; then
   printf '%s\n' \
-    'Multi-agent mode allows direct child agents only. Remove the depth override or set it to 0.' \
+    'Multi-agent mode allows at most two child levels. Positive depth overrides can widen the inherited cap; omit max_depth to inherit the session limit, or set it to 0 for a leaf.' \
     >&2
   exit 2
 fi
