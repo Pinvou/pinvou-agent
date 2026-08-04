@@ -44,10 +44,105 @@ function consumeListPrefix(line, start) {
     const match = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/.exec(line.slice(cursor));
     if (!match) break;
     cursor += match[0].length;
-    indent += match[0].length;
+    indent = visualWidth(line.slice(start, cursor));
     depth += 1;
   }
   return { cursor, indent, depth };
+}
+
+function visualWidth(value) {
+  let width = 0;
+  for (const char of String(value || '')) {
+    width += char === '\t' ? 4 - (width % 4) : 1;
+  }
+  return width;
+}
+
+function leadingIndentWidth(value) {
+  const match = /^[ \t]*/.exec(String(value || ''));
+  return visualWidth(match[0]);
+}
+
+function stripIndent(value, width) {
+  const source = String(value || '');
+  let cursor = 0;
+  let consumed = 0;
+  while (cursor < source.length && consumed < width) {
+    const char = source.charAt(cursor);
+    if (char !== ' ' && char !== '\t') break;
+    consumed += char === '\t' ? 4 - (consumed % 4) : 1;
+    cursor += 1;
+  }
+  return consumed >= width ? source.slice(cursor) : null;
+}
+
+function listMarker(line) {
+  const match = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/.exec(line);
+  if (!match) return null;
+  return {
+    markerIndent: visualWidth(match[1]),
+    contentIndent: visualWidth(match[0]),
+  };
+}
+
+const LIST_INTERRUPTING_HTML_TAGS = new Set([
+  'address', 'article', 'aside', 'base', 'basefont', 'blockquote', 'body', 'caption', 'center',
+  'col', 'colgroup', 'dd', 'details', 'dialog', 'dir', 'div', 'dl', 'dt', 'fieldset',
+  'figcaption', 'figure', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2', 'h3', 'h4',
+  'h5', 'h6', 'head', 'header', 'hr', 'html', 'legend', 'li', 'main', 'menu', 'menuitem',
+  'nav', 'noframes', 'ol', 'optgroup', 'option', 'p', 'param', 'search', 'section', 'summary',
+  'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'title', 'tr', 'track', 'ul',
+]);
+
+function startsListInterruptingBlock(content) {
+  const line = String(content || '');
+  if (/^(?: {0,3})(?:#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})/.test(line)) {
+    return true;
+  }
+  const html = /^(?: {0,3})<([a-z][\w-]*)(?:[ \t\n/>]|$)/i.exec(line);
+  return Boolean(html && LIST_INTERRUPTING_HTML_TAGS.has(html[1].toLowerCase()));
+}
+
+function updateListContexts(line, contexts) {
+  const quote = consumeBlockquotePrefix(line, 0);
+  const content = line.slice(quote.cursor);
+  const marker = listMarker(content);
+  let next = contexts.filter(context => context.quoteDepth <= quote.depth);
+  if (marker) {
+    next = next.filter(context => context.markerIndent < marker.markerIndent);
+    next.push({ ...marker, quoteDepth: quote.depth, afterBlank: false });
+    return next;
+  }
+  if (!content.trim()) {
+    return next.map(context => ({ ...context, afterBlank: true }));
+  }
+  const indent = leadingIndentWidth(content);
+  if (startsListInterruptingBlock(content)) {
+    next = next.filter(context => indent >= context.contentIndent);
+  }
+  return next.filter(context => indent >= context.contentIndent || !context.afterBlank)
+    .map(context => ({ ...context, afterBlank: false }));
+}
+
+function listContinuationOpening(line, contexts) {
+  const quote = consumeBlockquotePrefix(line, 0);
+  const candidates = contexts
+    .filter(context => context.quoteDepth <= quote.depth)
+    .sort((left, right) => right.contentIndent - left.contentIndent);
+  for (const context of candidates) {
+    const content = stripIndent(line.slice(quote.cursor), context.contentIndent);
+    if (content == null) continue;
+    const opening = openingFence(content);
+    if (opening) {
+      return {
+        ...opening,
+        quoteDepth: quote.depth,
+        listIndent: context.contentIndent,
+        nested: true,
+      };
+    }
+  }
+  return null;
 }
 
 function containerFenceOpening(line) {
@@ -67,10 +162,9 @@ function containerLineContent(line, opening) {
   if (!quote) return null;
   let cursor = quote.cursor;
   if (opening.listIndent > 0 && line.slice(cursor).trim()) {
-    let spaces = 0;
-    while (spaces < opening.listIndent && line.charAt(cursor + spaces) === ' ') spaces += 1;
-    if (spaces < opening.listIndent) return null;
-    cursor += spaces;
+    const stripped = stripIndent(line.slice(cursor), opening.listIndent);
+    if (stripped == null) return null;
+    return stripped;
   }
   return line.slice(cursor);
 }
@@ -99,8 +193,11 @@ export function scanMarkdownFences(value) {
   const source = String(value || '');
   const lines = sourceLines(source);
   const fences = [];
+  let listContexts = [];
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const opening = containerFenceOpening(lines[lineIndex].text);
+    listContexts = updateListContexts(lines[lineIndex].text, listContexts);
+    const opening = containerFenceOpening(lines[lineIndex].text)
+      || listContinuationOpening(lines[lineIndex].text, listContexts);
     if (!opening) continue;
     let closingIndex = -1;
     let boundaryIndex = lines.length;

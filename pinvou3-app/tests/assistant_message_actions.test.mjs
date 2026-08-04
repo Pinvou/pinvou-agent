@@ -8,6 +8,7 @@ import {
   normalizeAssistantMessageText,
 } from '../src/features/conversation/message-clipboard.js';
 import { dict } from '../src/shared/i18n.js';
+import { renderMarkdownMarkup } from '../src/shared/markdown-renderer.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 
@@ -191,6 +192,38 @@ assert.equal(
   `> 引用前文\nReviewer\n\nVisible card\n> 引用后文\n\n${secondQuotedPersona}`,
   'only the nested structured fence selected by the UI should be serialized',
 );
+
+for (const [label, variant] of [
+  ['ordered-list continuation', `10. item\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+  ['unordered-list continuation', `- item\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+  ['list paragraph then fence', `- item\n  more context\n  \`\`\`persona-card\n  ${personaPayload}\n  \`\`\``],
+  ['list blockquote then fence', `- item\n> note\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+  ['tab-indented list continuation', `- item\n\t\`\`\`persona-card\n\t${personaPayload}\n\t\`\`\``],
+  ['nested-list continuation', `- outer\n  1. inner\n     \`\`\`persona-card\n     ${personaPayload}\n     \`\`\``],
+]) {
+  const rendered = renderMarkdownMarkup(variant);
+  const copied = assistantMarkdownCopyText(variant);
+  assert.ok(
+    rendered.includes('data-language="PERSONA-CARD"'),
+    `${label} must render the same structured fence selected for copying`,
+  );
+  assert.ok(copied.includes('Reviewer\n\nVisible card'), `${label} must serialize the rendered card`);
+  assert.ok(!copied.includes('hidden prompt'), `${label} must not expose the hidden payload`);
+}
+
+for (const [label, variant] of [
+  ['heading ends list', `- item\n# heading\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+  ['thematic break ends list', `- item\n---\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+  ['HTML block ends list', `- item\n<div>block</div>\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+]) {
+  const rendered = renderMarkdownMarkup(variant);
+  const copied = assistantMarkdownCopyText(variant);
+  assert.ok(
+    !rendered.includes('data-language="PERSONA-CARD"'),
+    `${label} must leave the indented backticks as ordinary code`,
+  );
+  assert.ok(copied.includes('hidden prompt'), `${label} must preserve content not rendered as a card`);
+}
 
 const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
 assert.equal(
