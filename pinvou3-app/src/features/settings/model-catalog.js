@@ -506,7 +506,7 @@ function findCloudProviderForModel(model) {
   return CLOUD_MODEL_PROVIDERS.find(provider => {
     if (providerKind && provider.providerKind !== providerKind) return false;
     if (vendor && provider.vendor !== vendor) return false;
-    const urls = [provider.baseUrl, ...(provider.endpointAliases || [])]
+    const urls = [providerBaseUrl(provider), ...(provider.endpointAliases || [])]
       .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
     const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
     if (compareBase && urls.includes(compareBase)) return true;
@@ -527,6 +527,67 @@ function isCodingPlanModel(model) {
   return providerKind === PROVIDER_KIND_CODING_PLAN || !!(model && findCloudProviderForModel(model)?.providerKind === PROVIDER_KIND_CODING_PLAN);
 }
 
+// ── 模型选择器:预设/自定义分组与可区分标注(纯函数,显示期计算) ─────
+// 分类判据:模型是否命中其实际 provider 的非 custom 目录项。自定义兼容接口即使
+// 使用目录中已有的模型 ID,也必须保持为自定义,避免多个聚合服务模型再次同名。
+function isPresetModel(m) {
+  if (!m || !m.model) return false;
+  if (m.preset === 'local_vllm') {
+    return (MODEL_CATALOG.local || []).some(group =>
+      (group.items || []).some(item => !item.custom && item.model === m.model));
+  }
+  const providerKind = m.provider_kind || m.providerKind;
+  if (providerKind === PROVIDER_KIND_CUSTOM) return false;
+  const provider = findCloudProviderForModel(m);
+  return !!provider && provider.providerKind !== PROVIDER_KIND_CUSTOM
+    && (provider.items || []).some(item => !item.custom && item.model === m.model);
+}
+
+// 保留各组在入参中的原顺序。
+function groupModelsForSelector(models) {
+  const preset = [];
+  const custom = [];
+  (models || []).forEach(m => { (isPresetModel(m) ? preset : custom).push(m); });
+  return { preset, custom };
+}
+
+// 本地模型默认名会持久化。切换界面语言后仍须识别中英日历史默认值,不能把它
+// 误判为用户命名;这些字符串只用于兼容已持久化值,不会直接渲染。
+function localUserNamed(m, localModelNameFn) {
+  if (!m || m.preset !== 'local_vllm') return false;
+  if (typeof localModelNameFn !== 'function') return false;
+  if (!m.name) return false;
+  const model = String(m.model || '');
+  const defaults = new Set([
+    localModelNameFn(model),
+    model ? `本地 ${model}` : '本地模型',
+    model ? `Local ${model}` : 'Local model',
+    model ? `ローカル ${model}` : 'ローカルモデル',
+  ]);
+  return !defaults.has(m.name);
+}
+
+function selectorMainLabel(m, t) {
+  if (!m) return '';
+  const localModelNameFn = t && t.uiSettingsDetail && t.uiSettingsDetail.localModelName;
+  if (localUserNamed(m, localModelNameFn)) return m.name;
+  if (m.preset === 'local_vllm' && isPresetModel(m) && typeof localModelNameFn === 'function') {
+    return localModelNameFn(m.model);
+  }
+  return isPresetModel(m) ? (m.name || m.model) : (m.model || m.name);
+}
+
+function selectorSubLabel(m, t) {
+  if (!m) return '';
+  const localModelNameFn = t && t.uiSettingsDetail && t.uiSettingsDetail.localModelName;
+  if (localUserNamed(m, localModelNameFn)) return m.model;   // 主=name -> 副=model
+  if (isPresetModel(m)) return providerLabelForModel(m, t);  // 主=name/title -> 副=provider 归属
+  // 自定义:主=model -> 副=provider 归属
+  if (m.preset === 'local_vllm') return localModelNameFn ? localModelNameFn(m.model) : m.model;
+  const provider = findCloudProviderForModel(m);
+  return provider ? providerLabelForModel(m, t) : presetProviderLabel('openai_compatible', t);
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -543,4 +604,9 @@ export {
   findCloudProviderForModel,
   providerLabelForModel,
   isCodingPlanModel,
+  isPresetModel,
+  groupModelsForSelector,
+  localUserNamed,
+  selectorMainLabel,
+  selectorSubLabel,
 };
