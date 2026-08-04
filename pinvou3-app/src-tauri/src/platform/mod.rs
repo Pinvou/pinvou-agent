@@ -1,5 +1,6 @@
 pub mod app_events;
 pub(crate) mod capabilities;
+pub mod connector_state;
 pub mod credential_store;
 pub(crate) mod download;
 pub(crate) mod encoding;
