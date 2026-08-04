@@ -19,8 +19,11 @@ function buildComposerToolMenuState({
   serviceStates = [],
   activeSkill = null,
   builtinSkills = DEFAULT_BUILTIN_SKILLS,
+  scope = 'plain',
 } = {}) {
   const disabled = new Set(disabledIds || []);
+  // code scope: 代码会话已整体禁用技能加载,技能行只读展示且不计入启用数。
+  const skillsUnavailable = scope === 'code';
   const installedTools = (marketplaceTools || []).filter(tool => tool && tool.installed);
   const companionSkillIds = new Set(installedTools.flatMap(tool => tool.companion_skills || []));
 
@@ -57,7 +60,8 @@ function buildComposerToolMenuState({
         description: skill.description || skill.subtitle || '',
         enabled: !disabled.has(rowId),
         active: activeSkill === skill.id || activeSkill === rowId,
-        switchable: true,
+        switchable: !skillsUnavailable,
+        unavailable: skillsUnavailable,
       };
     });
 
@@ -70,13 +74,14 @@ function buildComposerToolMenuState({
     enabled: true,
     active: activeSkill === skill.id,
     switchable: false,
+    unavailable: skillsUnavailable,
   }));
 
   const allSkillRows = [...skillRows, ...builtinRows];
   const enabledCount =
     connectedServices.filter(row => row.enabled).length +
     toolRows.filter(row => row.enabled).length +
-    allSkillRows.filter(row => row.enabled).length;
+    (skillsUnavailable ? 0 : allSkillRows.filter(row => row.enabled).length);
 
   return {
     connectedServices,

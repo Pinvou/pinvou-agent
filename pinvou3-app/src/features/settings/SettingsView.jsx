@@ -1014,6 +1014,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         marketplaceSkills,
         disabledIds: Array.from(disabled),
         activeSkill,
+        scope: toolScope,
         serviceStates: [
           { id: 'feishu', title: t.uiSettingsView.serviceFeishu, connected: feishuOn, enabled: feishuEnabled },
           { id: 'wecom', title: t.uiSettingsView.serviceWecom, connected: wecomOn, enabled: wecomEnabled },
@@ -1049,6 +1050,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
           </span>
           {statusBadge(label, tone)}
+        </div>
+      );
+      // code scope: 技能在代码会话中整体不可用,只读灰显且不可 toggle。
+      const unavailableRow = (row) => (
+        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium opacity-50">
+          <span className="min-w-0">
+            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
+          </span>
         </div>
       );
       return (
@@ -1098,9 +1107,18 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 {toolRows.map(switchRow)}
                 {localizedSkillRows.length === 0 ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>
-                ) : localizedSkillRows.map(row => row.switchable
-                  ? switchRow(row)
-                  : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                ) : (
+                  <>
+                    {toolScope === 'code' && (
+                      <div className="px-3 pt-2 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillCodeDisabled}</div>
+                    )}
+                    {localizedSkillRows.map(row => row.unavailable
+                      ? unavailableRow(row)
+                      : row.switchable
+                        ? switchRow(row)
+                        : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                  </>
+                )}
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                 <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
