@@ -980,7 +980,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }, []);
       // 子智能体只读执行记录面板（Codex 式右侧列，ADR-0006）。任何会话可开
       // （裸 agent 在普通对话同样可用）；与产物面板互斥，否则窄窗下聊天列被挤没。
-      // null=关闭；{ agentId: string|null } = 打开（agentId 为空进列表页）。
+      // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
+      // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
       const [subagentPanel, setSubagentPanel] = useState(null);
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
@@ -1011,7 +1012,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const onOpen = (event) => {
           const detail = event && event.detail;
           rememberScrollBeforeSubagentPanelChange();
-          setSubagentPanel({ agentId: (detail && detail.agentId) || null });
+          setSubagentPanel((current) => ({
+            agentId: (detail && detail.agentId) || null,
+            selectionRequestId: (current?.selectionRequestId || 0) + 1,
+          }));
           closeArtifactsPanel();
         };
         window.addEventListener('pinvou:open-subagent', onOpen);
@@ -1981,6 +1985,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <SubagentTranscriptPanel
               sessionId={activeSessionId}
               initialAgentId={subagentPanel.agentId}
+              selectionRequestId={subagentPanel.selectionRequestId}
               t={t}
               theme={theme}
               onClose={closeSubagentPanel}

@@ -842,6 +842,37 @@ impl EnginePool {
 
     // ── 高层路由(commands.rs 调用)─────────────────────────────────
 
+    /// 原子切换多智能体资源策略：先占用与发送相同的 lifecycle 槽位，再在
+    /// session turn gate 内持久化状态并回收旧引擎。这样发送与切换不可能交错成
+    /// “新开关 + 旧引擎”或“旧开关 + 新引擎”。未提交 reservation 会在回收时
+    /// 静默失效，不产生伪造的 chat:done。
+    pub(crate) async fn reconfigure_multi_agent_mode(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        if enabled {
+            // 先占 lifecycle 再写名册：慢磁盘期间若允许发送抢先 reserve，首轮会
+            // 落进旧引擎，随后切换失败并回滚，形成界面已开但该轮未受限的竞态。
+            let workspace = crate::platform::paths::session_workspace_dir(session_id);
+            let sid = session_id.to_string();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                std::fs::create_dir_all(&workspace)
+                    .with_context(|| format!("set_multi_agent_mode({sid}): 建工作区失败"))?;
+                crate::features::multiagent::roster::enroll_expert_roles(&workspace)
+                    .map_err(anyhow::Error::msg)
+            })
+            .await
+            .with_context(|| format!("set_multi_agent_mode({session_id}): 后台任务失败"))??;
+        }
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        self.store.set_multi_agent(session_id, enabled)?;
+        self.evict_locked(session_id).await;
+        Ok(())
+    }
+
     /// Atomically reserve the single turn slot for a session before callers
     /// consume one-shot state, stage attachments, or perform other side effects.
     /// Dropping the returned guard before submission restores the slot.

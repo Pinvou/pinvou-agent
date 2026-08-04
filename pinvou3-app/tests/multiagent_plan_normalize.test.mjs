@@ -12,10 +12,12 @@ import {
   projectSubagentTranscript,
   resolveSubagentIdentity,
   resolveSubagentPresentation,
+  subagentAncestorIds,
   subagentObjectiveName,
   splitSubagentTitle,
   subagentOrdinalLabel,
   subagentRoleOrdinals,
+  visibleSubagentTreeRows,
 } from '../src/features/multiagent/subagent-conversation.mjs';
 import {
   captureConversationScrollPosition,
@@ -169,18 +171,23 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     interactionCommandSource,
-    /validate_session_id\(&session_id\)[\s\S]{0,900}create_dir_all/,
+    /validate_session_id\(&session_id\)[\s\S]{0,900}reconfigure_multi_agent_mode/,
     '任何副作用之前必须先做 id 形状校验（paths 只是 join，防 ../ 穿越）',
   );
   assert.match(
     interactionCommandSource,
-    /\.load\(&session_id\)[\s\S]{0,600}create_dir_all/,
+    /\.load\(&session_id\)[\s\S]{0,900}reconfigure_multi_agent_mode/,
     '会话必须确实存在才允许做副作用（防孤儿目录）',
   );
   assert.match(
     interactionCommandSource,
-    /refresh_multi_agent_roster\(&session_id\)/,
-    '开启时把名册整册即时推给在跑引擎',
+    /reconfigure_multi_agent_mode\(&session_id, enabled\)/,
+    '开关切换必须走资源策略重配入口',
+  );
+  assert.match(
+    poolSource,
+    /reconfigure_multi_agent_mode[\s\S]{0,500}\.reserve\(\)[\s\S]{0,700}create_dir_all[\s\S]{0,900}set_multi_agent\(session_id, enabled\)[\s\S]{0,300}evict_locked\(session_id\)/,
+    '生成中拒绝切换；名册装配、状态持久化与旧引擎回收必须和发送原子串行',
   );
   assert.match(
     poolSource,
@@ -201,6 +208,22 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     poolSource,
     /workflow_host_disallowed_tools/,
     '广播/回收不再按会话形态改写禁用列表——工具面与主线持平',
+  );
+
+  const assistantBridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
+  const engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
+  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*1/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_CONCURRENT:\s*usize\s*=\s*4/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_ADMITTED:\s*usize\s*=\s*8/);
+  assert.match(
+    assistantBridgeSource,
+    /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
+    'SendMessage 每轮覆盖 engine hook，因此多智能体发送路径必须重新携带深度护栏',
+  );
+  assert.match(
+    engineSource,
+    /if self\.multi_agent_enabled[\s\S]{0,500}build_multi_agent_send_message_op/,
+    '只有多智能体引擎使用受限发送路径，普通对话保持底座行为',
   );
   assert.match(
     poolSource,
@@ -230,7 +253,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     '不再播种内置默认角色——名册只来自专家池（用户决策：委派本质是写提示词）',
   );
   assert.match(
-    interactionCommandSource,
+    poolSource,
     /enroll_expert_roles\(&workspace\)[\s\S]{0,80}\.map_err/,
     '专家名册写盘失败必须让开启失败，不得静默成功',
   );
@@ -266,9 +289,9 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     '启动加载必须对账剔除幽灵 id 并重写清单',
   );
   assert.match(
-    interactionCommandSource,
-    /refresh_multi_agent_roster\(&session_id\)\.await[\s\S]{0,300}set_multi_agent\(&session_id, false\)/,
-    '名册推送失败必须回滚开关并报错，不得谎报开启成功',
+    poolSource,
+    /set_multi_agent\(session_id, enabled\)[\s\S]{0,300}evict_locked\(session_id\)/,
+    '开关持久化成功后必须回收旧引擎，下一轮按权威状态重建，不得保留旧资源策略',
   );
   assert.match(
     sessionsSource,
@@ -392,8 +415,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     settingsSource,
-    /disabled=\{multiAgentBusy\}/,
-    '切换期间必须禁用开关按钮',
+    /disabled=\{multiAgentBusy \|\| busy\}/,
+    '切换期间或当前回复生成中必须禁用开关按钮',
   );
   assert.match(
     interactionBridgeSource,
@@ -415,6 +438,16 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     transcriptsSource,
     /pub has_transcript: bool/,
     '清单以 worker ledger 为主表：排队/刚启动（无 transcript）的子智能体必须可见（复核 P1）',
+  );
+  assert.match(
+    transcriptsSource,
+    /pub parent_run_id: Option<String>/,
+    '清单必须携带直接父代理，不能把多级代理全部伪装成同级成员',
+  );
+  assert.match(
+    transcriptsSource,
+    /pub spawn_depth: Option<u32>/,
+    '清单必须保留底座派生深度，遗留记录允许未知',
   );
   const multiagentBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'multiagent.js');
   assert.match(
@@ -625,6 +658,39 @@ test('无 role 的普通 agent 按 agent_type 分组编号', () => {
   assert.equal(subagentOrdinalLabel(ordinals.get('agent_bbbbbbb1')), '');
 });
 
+test('多级代理树：默认只列直属根，按父节点逐级展开并保留孤儿记录', () => {
+  const list = [
+    { agent_id: 'agent_root_a', parent_run_id: null, spawn_depth: 1 },
+    { agent_id: 'agent_child_a', parent_run_id: 'agent_root_a', spawn_depth: 2 },
+    { agent_id: 'agent_grandchild_a', parent_run_id: 'agent_child_a', spawn_depth: 3 },
+    { agent_id: 'agent_root_b', parent_run_id: null, spawn_depth: 1 },
+    { agent_id: 'agent_orphan', parent_run_id: 'agent_evicted', spawn_depth: 3 },
+  ];
+  const ids = rows => rows.map(row => row.entry.agent_id);
+
+  const collapsed = visibleSubagentTreeRows(list, new Set());
+  assert.deepEqual(ids(collapsed), ['agent_root_a', 'agent_root_b', 'agent_orphan']);
+  assert.equal(collapsed[0].childCount, 1);
+
+  const firstLevel = visibleSubagentTreeRows(list, new Set(['agent_root_a']));
+  assert.deepEqual(ids(firstLevel), ['agent_root_a', 'agent_child_a', 'agent_root_b', 'agent_orphan']);
+  assert.equal(firstLevel[1].depth, 1);
+
+  const secondLevel = visibleSubagentTreeRows(
+    list,
+    new Set(['agent_root_a', 'agent_child_a']),
+  );
+  assert.deepEqual(
+    ids(secondLevel),
+    ['agent_root_a', 'agent_child_a', 'agent_grandchild_a', 'agent_root_b', 'agent_orphan'],
+  );
+  assert.equal(secondLevel[2].depth, 2);
+  assert.deepEqual(
+    subagentAncestorIds(list, 'agent_grandchild_a'),
+    ['agent_root_a', 'agent_child_a'],
+  );
+});
+
 // ── 行内专家卡（消息流内的委派可视化） ───────────────────────────────────────
 
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
@@ -681,6 +747,16 @@ test('ChatView 监听打开事件并挂载只读面板（任意会话可用）�
   assert.match(chatViewSource, /<SubagentTranscriptPanel/);
   assert.match(chatViewSource, /captureConversationScrollPosition\(/);
   assert.match(chatViewSource, /restoreConversationScrollPosition\(/);
+  assert.match(
+    chatViewSource,
+    /selectionRequestId: \(current\?\.selectionRequestId \|\| 0\) \+ 1/,
+    '重复点击同一代理卡也必须产生新的详情选择请求',
+  );
+  assert.match(
+    panelSource,
+    /\[sessionId, initialAgentId, selectionRequestId\]/,
+    '详情返回列表后，相同 agentId 的新请求仍必须重新选中',
+  );
   assert.doesNotMatch(chatViewSource, /MultiAgentRunStrip/, '阶段条/确认卡随台账退役');
 });
 
@@ -711,6 +787,16 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');
   assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/, '列表来自底座落盘投影');
   assert.match(panelSource, /setSelectedAgentId\(null\)/, '详情可返回列表');
+  assert.match(panelSource, /data-testid="main-conversation-node"/, '主对话必须作为协作树的显式根节点');
+  assert.match(panelSource, /<PinvouLogo[^>]*copy\.mainConversation/, '主对话根节点复用 Pinvou 品牌标识');
+  assert.match(panelSource, /rootExpanded[\s\S]*setRootExpanded/, '主对话根节点必须能统一折叠直属代理');
+  assert.match(panelSource, /Math\.min\(depth \+ 1, 5\) \* 14/, '直属代理必须在主对话根节点下缩进');
+  assert.ok(
+    panelSource.indexOf('data-testid="main-conversation-node"') < panelSource.indexOf('treeRows.map'),
+    '主对话根节点必须位于所有代理节点之前',
+  );
+  assert.match(panelSource, /visibleSubagentTreeRows/, '多级代理清单必须按父子树折叠展示');
+  assert.match(panelSource, /copy\.childAgentCount/, '有下级的代理必须显示数量提示');
   assert.match(panelSource, /copy\.agentsEmpty/, '空列表有说明');
   assert.match(panelSource, /copy\.blockedTag/, '受阻标注保留（仅展示提示）');
   assert.doesNotMatch(panelSource, /fixed inset-y-0/, '面板是 flex 内嵌列，不是浮层抽屉');

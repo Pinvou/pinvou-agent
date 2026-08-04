@@ -26,6 +26,11 @@ pub struct SubagentTranscriptSummary {
     /// 底座执行类型（general/explore/plan/review/implementer/verifier/custom）。
     /// 普通对话通常不传 role/profile，界面靠它避免全部显示成“通用执行者”。
     pub agent_type: Option<String>,
+    /// 直接父代理 ID；None 表示由主对话直接派出。用于把多级代理恢复成树，
+    /// 避免 UI 把所有后代伪装成同级成员。
+    pub parent_run_id: Option<String>,
+    /// 底座记录的派生深度（主对话直派为 1）；无 ledger 的遗留记录为 None。
+    pub spawn_depth: Option<u32>,
     pub status: Option<String>,
     pub error: Option<String>,
     pub done: bool,
@@ -242,11 +247,20 @@ pub fn list(
         let objective = record.spec.objective.trim();
         let session_name = record.spec.session_name.clone();
         let agent_type = record.spec.agent_type.as_str().to_string();
+        // 新记录在 spec 与 record 顶层都带父链；旧版只写过顶层，兼容读取。
+        let parent_run_id = record
+            .spec
+            .parent_run_id
+            .clone()
+            .or_else(|| record.parent_run_id.clone());
+        let spawn_depth = record.spec.spawn_depth;
         out.push(SubagentTranscriptSummary {
             agent_id,
             session_name,
             role: record.spec.role.clone(),
             agent_type: Some(agent_type),
+            parent_run_id,
+            spawn_depth: Some(spawn_depth),
             status: Some(
                 deepseek_tui::tools::subagent::agent_worker_status_name(status).to_string(),
             ),
@@ -267,6 +281,8 @@ pub fn list(
             session_name: None,
             role: None,
             agent_type: None,
+            parent_run_id: None,
+            spawn_depth: None,
             status: None,
             error: None,
             done: false,
@@ -463,6 +479,8 @@ mod tests {
                 session_name: None,
                 role: None,
                 agent_type: None,
+                parent_run_id: None,
+                spawn_depth: None,
                 status: None,
                 error: None,
                 done: false,
@@ -608,6 +626,8 @@ mod tests {
         assert_eq!(listed[0].agent_id, "agent_a");
         assert_eq!(listed[0].session_name.as_deref(), Some("build-report"));
         assert_eq!(listed[0].agent_type.as_deref(), Some("general"));
+        assert_eq!(listed[0].parent_run_id, None);
+        assert_eq!(listed[0].spawn_depth, Some(1));
         assert_eq!(listed[0].status.as_deref(), Some("starting"));
         assert_eq!(listed[0].objective.as_deref(), Some("执行任务"));
         assert!(!listed[0].has_transcript, "面板据此显示排队中而不是空任务");
@@ -616,23 +636,24 @@ mod tests {
     }
 
     fn write_two_worker_state(workspace: &Path) {
-        let spec = |id: &str, objective: &str| {
+        let spec = |id: &str, objective: &str, parent_run_id: Option<&str>, spawn_depth: u32| {
             serde_json::json!({
                 "worker_id": id, "run_id": "workflow-run", "objective": objective,
+                "parent_run_id": parent_run_id,
                 "session_name": format!("lane-{id}"),
                 "role": "builder", "agent_type": "general", "model": "test-model",
                 "workspace": workspace, "context_mode": "isolated", "fork_context": false,
-                "tool_profile": "inherited", "max_steps": 4, "spawn_depth": 1,
-                "max_spawn_depth": 1
+                "tool_profile": "inherited", "max_steps": 4, "spawn_depth": spawn_depth,
+                "max_spawn_depth": 3
             })
         };
         let state = serde_json::json!({
             "schema_version": 1,
             "agents": [],
             "workers": [
-                { "spec": spec("agent_late", "晚登记"), "status": "running",
+                { "spec": spec("agent_late", "晚登记", Some("agent_early"), 2), "status": "running",
                   "created_at_ms": 50, "updated_at_ms": 60, "error": null },
-                { "spec": spec("agent_early", "早登记"), "status": "running",
+                { "spec": spec("agent_early", "早登记", None, 1), "status": "running",
                   "created_at_ms": 10, "updated_at_ms": 20, "error": null }
             ]
         });
@@ -652,12 +673,13 @@ mod tests {
         // GOOD 表头是 agent_a，但 ledger 里没有它 → 遗留行。
         let ws = fixture_workspace(&[("aaaa.jsonl", GOOD)]);
         write_two_worker_state(&ws);
-        let ids: Vec<String> = list(&ws, Some(0))
-            .expect("list")
-            .into_iter()
-            .map(|s| s.agent_id)
-            .collect();
+        let rows = list(&ws, Some(0)).expect("list");
+        let ids: Vec<String> = rows.iter().map(|s| s.agent_id.clone()).collect();
         assert_eq!(ids, vec!["agent_early", "agent_late", "agent_a"]);
+        assert_eq!(rows[0].parent_run_id, None);
+        assert_eq!(rows[0].spawn_depth, Some(1));
+        assert_eq!(rows[1].parent_run_id.as_deref(), Some("agent_early"));
+        assert_eq!(rows[1].spawn_depth, Some(2));
     }
 
     /// 权限/非目录等 I/O 错误不得伪装成"还没有记录"（复核边缘）。
