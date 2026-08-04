@@ -153,6 +153,16 @@ const doneSection = chatEventsSource.slice(
 assert.match(doneSection, /legacyConversationOnly: true/);
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(doneSection, /PinvouBridgeMessages\.showShellCleanupFailure/);
+assert.match(
+  doneSection,
+  /refreshAuthoritativeTurnTimeline\(sid\)/,
+  '终态必须重新读取权威时间线，补齐后台或恢复会话漏掉的完成状态',
+);
+assert.match(
+  chatEventsSource,
+  /invoke\("get_session_timeline", \{ sessionId: sessionId \}\)/,
+  '时间线补偿必须读取当前完成会话，而不是依赖全局 active session',
+);
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
 assert.match(chatEventsSource, /addSystemItem\(notice, \{ turnErrorNotice: true \}\)/);
 assert.match(
@@ -179,6 +189,81 @@ assert.equal(
   (bridgeMessagesSource.match(/^    (zh|en|ja):/gm) || []).length,
   3,
   'Shell cleanup warning must provide zh/en/ja translations',
+);
+
+const engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
+const turnCompleteStart = engineSource.indexOf('Event::TurnComplete');
+const turnCompleteSection = engineSource.slice(
+  turnCompleteStart,
+  engineSource.indexOf('Event::CompactionStarted', turnCompleteStart),
+);
+assert.ok(
+  turnCompleteSection.indexOf('timing::finish_turn_with_usage')
+    < turnCompleteSection.indexOf('emit_chat_terminal'),
+  '正常完成必须先落权威时间线，再向前端发送 chat:done',
+);
+const reclaimedSection = engineSource.slice(
+  engineSource.indexOf('async fn finish_reclaimed_lifecycle_turn'),
+  engineSource.indexOf('impl AppEngine'),
+);
+assert.ok(
+  reclaimedSection.indexOf('timing::finish_turn')
+    < reclaimedSection.indexOf('emit_chat_terminal'),
+  '回收/中断同样必须先落时间线，再向前端发送终态',
+);
+
+vm.runInNewContext(chatEventsSource, sandbox, { filename: 'chat-events.js' });
+const installChatEvents = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__['chat-events'];
+const authoritativeTimeline = [
+  { turn_id: 'disk-old', event: 'user_start', timestamp: 1000 },
+  { turn_id: 'disk-old', event: 'assistant_done', timestamp: 4000, status: 'Completed' },
+  { turn_id: 'disk-current', event: 'user_start', timestamp: 10000 },
+  { turn_id: 'disk-current', event: 'assistant_done', timestamp: 16000, status: 'Completed' },
+];
+const recoveredTimelineState = {
+  turnTimeline: [
+    { turn_id: 'ui-current', event: 'user_start', timestamp: 10020, ui_turn_index: 1 },
+    { turn_id: 'ui-current', event: 'assistant_done', timestamp: 16020, status: 'Completed', ui_turn_index: 1 },
+  ],
+};
+let timelineNotifyCount = 0;
+const chatEvents = installChatEvents({
+  state: recoveredTimelineState,
+  listen() {},
+  invoke(command, args) {
+    assert.equal(command, 'get_session_timeline');
+    assert.equal(args.sessionId, 'session-recovered');
+    return Promise.resolve(authoritativeTimeline);
+  },
+  runSyncOnSession(sessionId, action) {
+    assert.equal(sessionId, 'session-recovered');
+    action();
+  },
+  notify() { timelineNotifyCount += 1; },
+  safeConsoleInfo() {},
+});
+assert.equal(
+  await chatEvents.refreshAuthoritativeTurnTimeline('session-recovered'),
+  true,
+  '后台/恢复会话完成后应接受权威时间线',
+);
+assert.deepEqual(
+  recoveredTimelineState.turnTimeline,
+  authoritativeTimeline,
+  '权威时间线必须补回本地未见过的早期完成轮次',
+);
+assert.equal(timelineNotifyCount, 1);
+
+assert.equal(
+  chatEvents.authoritativeTimelineMissesKnownCompletion(
+    [
+      { turn_id: 'turn-current', event: 'user_start', timestamp: 10000 },
+      { turn_id: 'turn-current', event: 'assistant_done', timestamp: 11000, status: 'Completed' },
+    ],
+    [{ turn_id: 'turn-current', event: 'user_start', timestamp: 10000 }],
+  ),
+  true,
+  '短暂滞后的权威快照不得把已完成回合覆盖回执行中',
 );
 
 console.log('chat turn error isolation: ok');

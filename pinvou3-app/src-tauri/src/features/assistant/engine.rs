@@ -930,6 +930,14 @@ async fn finish_reclaimed_lifecycle_turn(
             }
         }
     }
+    // 时间线必须先于 chat:done 落盘。前端收到终态后会重新读取权威时间线；
+    // 若先 emit 再写文件，后台/恢复会话会读到旧快照并漏掉完成状态与耗时。
+    let status_text = format!("{terminal_status:?}");
+    crate::features::assistant::timing::finish_turn(
+        session_id,
+        &status_text,
+        terminal_error.as_deref(),
+    );
     emit_chat_terminal(
         app,
         session_id,
@@ -2697,6 +2705,27 @@ fn spawn_event_forwarder(
                         (plan_used, plan_snapshot, todos_snapshot)
                     };
 
+                    // 先完成权威时间线，再发 chat:done。前端终态事件会据此重新
+                    // 读取整份时间线，补齐后台运行/页面恢复期间漏掉的本地事件。
+                    let status_text = format!("{terminal_status:?}");
+                    crate::features::assistant::timing::finish_turn_with_usage(
+                        &session_id,
+                        &status_text,
+                        terminal_error.as_deref(),
+                        Some(crate::features::assistant::timing::TurnUsage {
+                            input_tokens: u64::from(usage.input_tokens),
+                            output_tokens: u64::from(usage.output_tokens),
+                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+                            cache_miss_tokens: u64::from(
+                                usage.prompt_cache_miss_tokens.unwrap_or(0),
+                            ),
+                            cache_write_tokens: u64::from(
+                                usage.prompt_cache_write_tokens.unwrap_or(0),
+                            ),
+                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+                        }),
+                    );
+
                     {
                         // 多引擎:mode 判据基于本 forwarder 的 session_id,不读全局 active。
                         let active_id = session_id.clone();
@@ -2798,31 +2827,6 @@ fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
-                    let status_text = format!("{terminal_status:?}");
-                    // 落 usage 进 timing_events.jsonl,作为模型耗时/失败/上下文消耗的
-                    // 内部诊断数据源。usage.input/output_tokens 是 u32,
-                    // prompt_cache_*_tokens / reasoning_tokens 是 Option<u32>,
-                    // 统一 unwrap_or(0) + u64 转换落盘。
-                    // [F3] 转发 cache_write_tokens(Anthropic cache-write 按 1.25x 计费)
-                    // 与 reasoning_tokens(DeepSeek V4 思考模型主要成本),否则字段一旦缺
-                    // 持久化就回填不了,影响将来真实 cost 估算。
-                    crate::features::assistant::timing::finish_turn_with_usage(
-                        &session_id,
-                        &status_text,
-                        terminal_error.as_deref(),
-                        Some(crate::features::assistant::timing::TurnUsage {
-                            input_tokens: u64::from(usage.input_tokens),
-                            output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
-                            cache_miss_tokens: u64::from(
-                                usage.prompt_cache_miss_tokens.unwrap_or(0),
-                            ),
-                            cache_write_tokens: u64::from(
-                                usage.prompt_cache_write_tokens.unwrap_or(0),
-                            ),
-                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
-                        }),
-                    );
                     if crate::features::memory::memory_enabled() {
                         if let Some(capture) =
                             crate::features::memory::take_turn_capture(&session_id)
