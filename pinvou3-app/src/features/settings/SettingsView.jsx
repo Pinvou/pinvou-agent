@@ -531,20 +531,27 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     };
 
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
-    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
+    // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
+    // busy/onSwitchModel 传入时绕开 bridge 聊天 active 绑定；不传走原 bs/bridge 路径。
+    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact, sessionId: sessionIdProp, sessionModelId: sessionModelIdProp, busy: busyProp, onSwitchModel }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canManageModels = can('modelManagement');
       const canSwitchModels = can('sessionModelSwitch');
       const savedModels = visibleUserModels((bs && bs.savedModels) || []);
-      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeSessionId = sessionIdProp !== undefined ? sessionIdProp : (bs ? bs.activeSessionId : null);
       const activeModelId = bs && bs.activeModelId;
-      const currentSessionModelId = bs && bs.currentSessionModelId;
-      const busy = bs ? bs.busy : false;
+      const currentSessionModelId = sessionModelIdProp !== undefined ? sessionModelIdProp : (bs && bs.currentSessionModelId);
+      const busy = busyProp !== undefined ? busyProp : (bs ? bs.busy : false);
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
       if (!savedModels.length) return null;
-      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.models.switchModel(activeSessionId, id); }
+      function pick(id) {
+        setOpen(false);
+        if (id === effectiveId) return;
+        if (onSwitchModel) { onSwitchModel(activeSessionId, id); return; }
+        if (bridge.available) bridge.models.switchModel(activeSessionId, id);
+      }
       return (
         <div className="relative min-w-0">
           <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
@@ -900,13 +907,18 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill }) => {
+    // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
+    //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
+    // 下拉内容不变；不传变体时聊天页外观逐字节不变。
+    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
+      // scope: 'code' = 原生代码会话(独立开关,默认全关),缺省 = 普通会话(plain)。
+      const toolScope = scope === 'code' ? 'code' : 'plain';
       const [marketplaceTools, setMarketplaceTools] = useState([]);
       const [marketplaceSkills, setMarketplaceSkills] = useState([]);
-      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
@@ -926,7 +938,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch (e) { /* ignore */ }
         try {
-          const dis = await invokeTauri('get_disabled_connectors');
+          const dis = await invokeTauri('get_disabled_connectors', { scope: toolScope });
           if (isAlive()) setDisabled(new Set(dis || []));
         } catch (e) { /* ignore */ }
         try {
@@ -959,10 +971,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
-        // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
+        // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
         if (bridge.available) {
           invokeTauri('set_disabled_connectors',
-            { connectorIds: Array.from(next) }).catch(() => {});
+            { connectorIds: Array.from(next), scope: toolScope }).catch(() => {});
         }
       }
       const menuState = buildComposerToolMenuState({
@@ -1009,7 +1021,35 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       return (
         <div className="relative shrink-0">
-          <button ref={triggerRef} data-testid="composer-tool-menu-trigger" onClick={() => setOpen(o => !o)} title={t.composerTools}
+          {triggerVariant === 'pill' ? (
+            <button
+              ref={triggerRef}
+              type="button"
+              data-testid={triggerTestId || 'composer-tool-menu-trigger'}
+              onClick={() => setOpen(o => !o)}
+              title={t.composerTools}
+              aria-expanded={open}
+              className="inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10 border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+            >
+              {triggerLabel && (
+                <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
+                  {triggerLabel}
+                </span>
+              )}
+              <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
+                {t.composerTools}
+              </span>
+              {enabledCount > 0 && (
+                <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>
+              )}
+              <ChevronDown
+                size={12}
+                aria-hidden="true"
+                className={`pointer-events-none ml-auto shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
+              />
+            </button>
+          ) : (
+          <button ref={triggerRef} data-testid={triggerTestId || 'composer-tool-menu-trigger'} onClick={() => setOpen(o => !o)} title={t.composerTools}
             className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold whitespace-nowrap bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             <Wrench size={compact ? 18 : 13} className="opacity-80" />
             {!compact && t.composerTools}
@@ -1018,6 +1058,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               : <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>)}
             {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
           </button>
+          )}
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             menuProps={{ 'data-testid': 'composer-tool-menu' }}
             desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">

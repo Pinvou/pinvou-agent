@@ -329,6 +329,8 @@ pub(crate) fn emit_chat_terminal(
     error: Option<String>,
     shell_cleanup_failed: bool,
 ) {
+    // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
+    crate::features::assistant::pending_user_input::clear_session(session_id);
     let payload = json!({
         "session_id": session_id,
         "status": format!("{status:?}"),
@@ -349,6 +351,12 @@ fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmissi
 }
 
 impl TurnLifecycle {
+    /// 该 session 当前是否有进行中的 turn（reserve 占用或终态收口未完成）。
+    pub(crate) fn is_active(&self) -> bool {
+        let state = self.state.lock();
+        state.active || state.terminal_closing
+    }
+
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
         let reservation_id = {
             let mut state = self.state.lock();
@@ -1727,6 +1735,10 @@ fn spawn_event_forwarder(
                         "success": success,
                         "metadata": metadata,
                     });
+                    // request_user_input 收口：submit/cancel 已由底座转为工具结果。
+                    if name == "request_user_input" {
+                        crate::features::assistant::pending_user_input::clear(&session_id, &id);
+                    }
                     let _ = app.emit("chat:tool_end", payload.clone());
                     crate::features::remote_control::forward_app_event(
                         &app,
@@ -1746,12 +1758,18 @@ fn spawn_event_forwarder(
                             }
                         });
                     } else {
-                        // 普通对话继续交给前端或远程控制端处理。
+                        // 普通对话继续交给前端或远程控制端处理。登记 pending，
+                        // 供前端 remount 后经 get_pending_user_inputs 恢复确认卡。
                         let payload = json!({
                             "session_id": session_id,
                             "id": id,
                             "questions": request.questions,
                         });
+                        crate::features::assistant::pending_user_input::record(
+                            &session_id,
+                            &id,
+                            payload["questions"].clone(),
+                        );
                         let _ = app.emit("chat:user_input_required", payload.clone());
                         crate::features::remote_control::forward_app_event(
                             &app,
@@ -1922,7 +1940,9 @@ fn spawn_event_forwarder(
                 // 不值得为它 spawn_blocking(forwarder 本身不在 LLM 关键路径上)。
                 Event::SubAgentMailbox { message, .. } => {
                     use deepseek_tui::tools::subagent::MailboxMessage as MM;
-                    let ws = execution_workspace.clone();
+                    // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
+                    // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
+                    let ws = bridge.audit_workspace(&session_id, &execution_workspace);
                     match message {
                         MM::Started { agent_id, .. } => {
                             if let Some(turn_id) = current_turn_id.as_deref() {

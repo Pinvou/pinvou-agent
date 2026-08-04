@@ -277,6 +277,8 @@ fn attachment_preview(md: &str) -> (String, usize) {
 
 /// 超限附件的注入段:落盘(text 类直接用原始路径)+ 预览 + 工具引导。
 /// 显式声明「只看到预览」——否则小模型会拿前 20 行当全量数据静默作答。
+/// `reference_absolute`：落盘根与引擎 cwd 不同根（原生代码会话绑项目目录）时
+/// 引用绝对路径，避免引擎按项目目录解析私有目录的相对路径而落空。
 fn push_large_attachment_section(
     out: &mut String,
     a: &crate::features::files::file_ingest::IngestResult,
@@ -284,6 +286,7 @@ fn push_large_attachment_section(
     workspace: &std::path::Path,
     attachment_dir: &str,
     stage_original_text: bool,
+    reference_absolute: bool,
 ) {
     let read_path = if a.kind == "text" && !stage_original_text {
         a.path.clone()
@@ -295,7 +298,7 @@ fn push_large_attachment_section(
             workspace,
             attachment_dir,
         ) {
-            Some(rel) => rel,
+            Some(rel) => staged_reference(workspace, &rel, reference_absolute),
             None => {
                 out.push_str(
                     "⚠️ 此文件过大无法内嵌,且转换产物落盘失败。请告知用户该附件无法处理,\
@@ -318,14 +321,30 @@ fn push_large_attachment_section(
     ));
 }
 
+/// 落盘附件在消息里的引用形式：默认 workspace 相对路径（引擎 cwd 即落盘根）；
+/// 落盘根与引擎 cwd 不同根时（原生代码会话绑项目目录）引用绝对路径。
+fn staged_reference(
+    workspace: &std::path::Path,
+    relative: &str,
+    reference_absolute: bool,
+) -> String {
+    if reference_absolute {
+        workspace.join(relative).to_string_lossy().into_owned()
+    } else {
+        relative.to_string()
+    }
+}
+
 /// 按指定 workspace 相对目录拼接 user 文本 + 附件 markdown。
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
+/// `reference_absolute` 见 `staged_reference`；普通对话与 scheduled 传 false。
 pub(super) fn build_message_with_attachments_in_dir(
     text: String,
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
     attachment_dir: &str,
+    reference_absolute: bool,
 ) -> String {
     if attachments.is_empty() {
         return text;
@@ -359,6 +378,7 @@ pub(super) fn build_message_with_attachments_in_dir(
                 stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
             }) {
                 Some(rel) => {
+                    let rel = staged_reference(workspace, &rel, reference_absolute);
                     out.push_str(&format!(
                         "🖼 用户附了一张图片,存在 workspace 的 `{rel}`。\n\
                         ⚠️ 你现在**看不到这张图的任何内容**,对图里有什么**一无所知**。\
@@ -401,6 +421,7 @@ pub(super) fn build_message_with_attachments_in_dir(
                     workspace,
                     attachment_dir,
                     attachment_dir != "attachments",
+                    reference_absolute,
                 );
             }
         } else if let Some(warning) = &a.warning {
@@ -419,5 +440,5 @@ pub fn build_message_with_attachments(
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
 ) -> String {
-    build_message_with_attachments_in_dir(text, attachments, workspace, "attachments")
+    build_message_with_attachments_in_dir(text, attachments, workspace, "attachments", false)
 }

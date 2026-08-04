@@ -391,16 +391,21 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
-            match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
-            {
-                Ok(pool) => {
-                    handle.manage(pool);
-                    eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
-                }
-                Err(error) => {
-                    panic!("failed to init Codex ACP pool: {error:#}");
-                }
-            }
+            // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
+            // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
+            let code_session_agents =
+                match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
+                {
+                    Ok(pool) => {
+                        let agents = pool.agents().clone();
+                        handle.manage(pool);
+                        eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
+                        agents
+                    }
+                    Err(error) => {
+                        panic!("failed to init Codex ACP pool: {error:#}");
+                    }
+                };
             startup::mark("engine_pool:start");
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
                 std::sync::Arc::new(|app, session_id| {
@@ -434,7 +439,24 @@ pub fn run() {
                 tool_factory,
                 tool_policy,
             ) {
-                Ok(pool) => {
+                Ok(mut pool) => {
+                    // 两个根：执行根（engine cwd/shell）对绑了项目目录的原生代码会话
+                    // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录，
+                    // SessionStore::execution_workspace 不动。
+                    pool.bridge.set_execution_root_resolver(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.code_project_workspace(session_id)
+                    }));
+                    pool.bridge.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
+                    // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
+                    // bridge 共用同一份 SessionAgentStore 判定）。
+                    remote_control_manager.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
                             &pool.bridge,
@@ -828,6 +850,7 @@ pub fn run() {
             commands::interaction::submit_user_input,
             commands::interaction::add_run_materials,
             commands::interaction::cancel_user_input,
+            commands::interaction::get_pending_user_inputs,
             commands::interaction::restart_engine,
             commands::interaction::summon_pinvou,
             commands::personas::save_session_pinvou_reviews,

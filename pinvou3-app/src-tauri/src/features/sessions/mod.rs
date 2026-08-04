@@ -544,9 +544,17 @@ impl SessionStore {
         Ok(self.scheduled_root.join(task_id).join("workspace"))
     }
 
-    /// Workspace used by the engine and by every path-producing command for a
-    /// session. Each scheduled run has an independent conversation, while all
-    /// runs owned by the same automation share that automation's workspace.
+    /// The ledger root (attachments/audit/artifacts) for a session's own files,
+    /// and the execution root for ordinary/scheduled sessions.
+    ///
+    /// For project-bound native code sessions this is NOT the engine execution
+    /// root — the engine runs in the bound project directory via the bridge's
+    /// `session_roots` resolution (assistant/platform/bridge.rs). Prefer that
+    /// single resolution entry when the caller needs to pick a root explicitly;
+    /// this helper remains the ledger root and the fallback execution root for
+    /// non-project sessions. Each scheduled run has an independent conversation,
+    /// while all runs owned by the same automation share that automation's
+    /// workspace.
     pub fn execution_workspace(&self, id: &str) -> Result<PathBuf> {
         // This helper is a path authority boundary, not merely a convenience
         // accessor. Validate before any join so callers can never turn a

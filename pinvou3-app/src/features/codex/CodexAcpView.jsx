@@ -21,9 +21,25 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
-import { ConversationActivityIndicator, ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
+import {
+  applyNativeChatEvent,
+  appendLocalUserMessage,
+  createNativeLane,
+  hydrateNativeLane,
+  projectNativeLane,
+  removeLocalUserMessage,
+} from './code-native-lane.js';
+import {
+  ConversationActivityIndicator,
+  ConversationMarkdown,
+  ConversationTurn,
+} from '../conversation/ConversationTimeline.jsx';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
+import {
+  ComposerToolMenu,
+} from '../settings/SettingsView.jsx';
+import { visibleUserModels } from '../../shared/model-options.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -144,6 +160,7 @@ function CodexComposerConfigSelect({
   disabled = false,
   title,
   unsetLabel,
+  testId,
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -154,7 +171,7 @@ function CodexComposerConfigSelect({
     if (String(choiceValue) !== String(value)) onChange(choiceValue);
   };
   return (
-    <div className="relative min-w-0" data-testid={`codex-config-${id}`}>
+    <div className="relative min-w-0" data-testid={testId || `codex-config-${id}`}>
       <button
         ref={triggerRef}
         type="button"
@@ -546,6 +563,81 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
   );
 }
 
+// 原生（品悟 Engine）会话的选择确认卡：chat:user_input_required → submit_user_input。
+// 选项归一化逻辑与主聊天 UserInputCard 对齐（allow_free_text / multi_select），
+// 但提交走显式 sessionId，不依赖 bridge 全局 activeSession。
+const NATIVE_CHAT_EVENTS = [
+  'chat:user_message',
+  'chat:turn_started',
+  'chat:reasoning_start',
+  'chat:reasoning_delta',
+  'chat:reasoning_done',
+  'chat:delta',
+  'chat:tool_start',
+  'chat:tool_delta',
+  'chat:tool_end',
+  'chat:shell_task_status',
+  'chat:compaction',
+  'chat:usage',
+  'chat:user_input_required',
+  'chat:transient_error',
+  'chat:done',
+];
+
+function isFreeTextPlaceholderOption(option) {
+  const label = String(option?.label || '').trim();
+  return /^(?:其他|其它|other)(?:\s*[\(（][^()（）]*[\)）])?$/i.test(label);
+}
+
+function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput, copy, conversationCopy }) {
+  const questions = (item.questions || []).map((question, index) => {
+    const allowOther = question.allow_free_text !== false;
+    return {
+      id: question.id || `question-${index + 1}`,
+      header: question.header || `Q${index + 1}`,
+      question: question.question || '',
+      options: (question.options || [])
+        .filter(option => !allowOther || !isFreeTextPlaceholderOption(option))
+        .map(option => ({
+          value: option.label,
+          label: option.label,
+          description: option.description || '',
+        })),
+      allowOther,
+      multiSelect: Boolean(question.multi_select),
+      required: !question.multi_select,
+    };
+  });
+  const actionable = !item.resolved;
+
+  function submit(groups) {
+    const answers = groups.flatMap(group => group.answers.map(answer => ({
+      id: group.questionId,
+      label: answer.other ? (conversationCopy && conversationCopy.otherAnswer) || answer.label : answer.label,
+      value: String(answer.value),
+    })));
+    onSubmitAnswers(item.toolCallId, answers);
+  }
+
+  return (
+    <QuestionChoiceCard
+      title={copy.choiceTitle}
+      questions={questions}
+      resolved={!actionable}
+      submitting={responding}
+      submitLabel={copy.submit}
+      cancelLabel={copy.cancel}
+      otherAnswerLabel={conversationCopy && conversationCopy.otherAnswer}
+      inputPlaceholder={conversationCopy && conversationCopy.inputPlaceholder}
+      statusText={!actionable
+        ? (item.cardState === 'cancelled' ? copy.canceled : copy.submitted)
+        : ''}
+      onSubmit={submit}
+      onCancel={actionable ? () => onCancelInput(item.toolCallId) : undefined}
+    />
+  );
+}
+
 function TurnItem({
   item,
   now,
@@ -911,6 +1003,8 @@ export function CodexAcpView({
   onActiveSessionChange,
   onSessionsChange,
   onSwitchHomeMode,
+  bs = null,
+  onGotoTools,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState([]);
@@ -996,18 +1090,100 @@ export function CodexAcpView({
     () => Object.fromEntries(pendingElicitations.map(item => [item.elicitationId, item])),
     [pendingElicitations],
   );
-  const busy = projection.turns.some(turn => turn.status === 'running');
-  const activeConversationTurn = [...projection.turns]
-    .reverse()
-    .find(turn => turn.status === 'running') || null;
   const activeSession = useMemo(
     () => sessions.find(session => session.id === activeId) || null,
     [sessions, activeId],
   );
   const activeAgentId = activeSession?.agent_id || draftAgentId;
+  // 原生（品悟 Engine）代码会话：发消息走 chat 命令 + chat:* 事件，会话状态按
+  // session 缓存在 lane Map 里（后台会话的 turn 也能继续推进，切回不丢流式内容）。
+  const isNativeAgent = activeAgentId === 'pinvou';
+  const nativeLanesRef = useRef(new Map());
+  const [nativeLaneTick, setNativeLaneTick] = useState(0);
+  const nativeSessionIdsRef = useRef(new Set());
+  useEffect(() => {
+    const ids = new Set(
+      sessions
+        .filter(session => session && session.agent_id === 'pinvou')
+        .map(session => session.id),
+    );
+    nativeSessionIdsRef.current = ids;
+    // 清理已删除会话的 lane，避免 nativeLanesRef 无界增长（只 set 不 delete）。
+    for (const id of nativeLanesRef.current.keys()) {
+      if (!ids.has(id)) nativeLanesRef.current.delete(id);
+    }
+  }, [sessions]);
+
+  // 原生车道才加载知识库集合与 embedding 安装态；embedding 明确未装时选择器禁用。
+  useEffect(() => {
+    if (!isNativeAgent) return undefined;
+    let alive = true;
+    invoke('kb_collection_list')
+      .then(list => { if (alive) setNativeKbCollections(Array.isArray(list) ? list : []); })
+      .catch(() => { if (alive) setNativeKbCollections([]); });
+    invoke('kb_model_status')
+      .then(status => { if (alive) setNativeKbInstalled(status ? Boolean(status.installed) : true); })
+      .catch(() => { if (alive) setNativeKbInstalled(true); });
+    return () => { alive = false; };
+  }, [isNativeAgent]);
+  function getNativeLane(sessionId) {
+    let lane = nativeLanesRef.current.get(sessionId);
+    if (!lane) {
+      lane = createNativeLane();
+      nativeLanesRef.current.set(sessionId, lane);
+    }
+    return lane;
+  }
+  const activeNativeLane = isNativeAgent && activeId
+    ? nativeLanesRef.current.get(activeId) || null
+    : null;
+  // 原生车道底栏控件（模型/工具/知识库/模式）的会话态：按 activeId 经 invoke 自查，
+  // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
+  // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
+  const [nativeControls, setNativeControls] = useState({ modelId: null, mountedId: null, mode: 'yolo' });
+  const [nativeDraftControls, setNativeDraftControls] = useState({});
+  // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
+  const nativeControlsSessionRef = useRef(null);
+  // 知识库选择器的集合列表与 embedding 安装态（全局只读查询，不带会话）。
+  const [nativeKbCollections, setNativeKbCollections] = useState([]);
+  const [nativeKbInstalled, setNativeKbInstalled] = useState(null); // null=未知(不门控)
+  const nativeProjection = useMemo(
+    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
+    // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
+    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
+  );
+  const visibleTurns = isNativeAgent
+    ? (nativeProjection ? nativeProjection.turns : [])
+    : projection.turns;
+  const busy = isNativeAgent
+    ? Boolean(activeNativeLane && activeNativeLane.busy)
+    : projection.turns.some(turn => turn.status === 'running');
+  const activeConversationTurn = [...visibleTurns]
+    .reverse()
+    .find(turn => turn.status === 'running') || null;
+  // 原生车道底栏控件的展示值（归属保护：refresh 返回前按默认/暂存显示）。
+  const nativeModeValue = activeId && nativeControlsSessionRef.current === activeId
+    ? nativeControls.mode
+    : (activeId ? 'yolo' : (nativeDraftControls.mode || 'yolo'));
+  const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
+    .map(model => ({ value: model.id, name: model.name || model.id }));
+  const nativeSessionModelId = activeId
+    ? (nativeControlsSessionRef.current === activeId ? nativeControls.modelId : null)
+    : (nativeDraftControls.modelId || null);
+  const nativeModelValue = nativeSessionModelId || (bs && bs.activeModelId) || '';
+  const nativeMountedId = activeId
+    ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
+    : (nativeDraftControls.mountedId ?? null);
+  const nativeKbChoices = [
+    { value: '', name: t.kbMountRemove },
+    ...nativeKbCollections.map(collection => ({
+      value: String(collection.id),
+      name: collection.name,
+    })),
+  ];
   const activeAgentName = activeSession?.agent_name
     || agents.find(agent => agent.agent_id === activeAgentId)?.agent_name
-    || (activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
+    || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
@@ -1031,9 +1207,9 @@ export function CodexAcpView({
   const attachmentKey = activeId || DRAFT_ATTACHMENT_KEY;
   const attachments = attachmentDrafts[attachmentKey] || [];
   const workspaceReferences = workspaceReferenceDrafts[attachmentKey] || [];
-  const sessionReady = !activeId || (
-    sessionInfoSessionId === activeId && Boolean(sessionInfo)
-  );
+  const sessionReady = isNativeAgent
+    ? (!activeId || Boolean(activeNativeLane && activeNativeLane.hydrated))
+    : (!activeId || (sessionInfoSessionId === activeId && Boolean(sessionInfo)));
   const sessionSyncing = Boolean(activeId && !sessionReady && sessionLoading);
 
   function applySessionInfo(info, sessionId = activeIdRef.current) {
@@ -1106,6 +1282,98 @@ export function CodexAcpView({
     return current;
   }
 
+  /// 拉取原生会话的模型/知识库/模式状态（全部 per-session 命令，显式 sessionId）。
+  async function refreshNativeControls(sessionId) {
+    const [modelId, mountedId, modeState] = await Promise.all([
+      invoke('get_session_model_id', { sessionId }).catch(() => null),
+      invoke('session_mounted_collection', { sessionId }).catch(() => null),
+      invoke('get_mode_state', { sessionId }).catch(() => null),
+    ]);
+    setNativeControls({
+      modelId: modelId || null,
+      mountedId: mountedId ?? null,
+      mode: (modeState && modeState.mode) || 'yolo',
+    });
+    nativeControlsSessionRef.current = sessionId;
+  }
+
+  /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，mode 最后）。
+  async function applyNativeDraftControls(sessionId) {
+    const staged = nativeDraftControls;
+    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode;
+    if (!hasStaged) return;
+    try {
+      if (staged.modelId) {
+        await invoke('set_session_model', { sessionId, modelId: staged.modelId });
+      }
+      if (staged.mountedId != null) {
+        await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
+      }
+      if (staged.mode === 'plan') {
+        await invoke('set_plan_mode_next', { sessionId });
+      }
+      setNativeDraftControls({});
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  /// 切模型：set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
+  async function switchNativeModel(sessionId, modelId) {
+    if (!sessionId) {
+      setNativeDraftControls(current => ({ ...current, modelId }));
+      return;
+    }
+    setError('');
+    try {
+      await invoke('set_session_model', { sessionId, modelId });
+      await refreshNativeControls(sessionId);
+    } catch (err) { showError(err); }
+  }
+
+  async function mountNativeKb(collectionId) {
+    if (!activeId) {
+      setNativeDraftControls(current => ({ ...current, mountedId: collectionId }));
+      return;
+    }
+    setError('');
+    try {
+      await invoke('session_mount_collection', { sessionId: activeId, collectionId });
+      await refreshNativeControls(activeId);
+    } catch (err) { showError(err); }
+  }
+
+  async function unmountNativeKb() {
+    if (!activeId) {
+      setNativeDraftControls(current => ({ ...current, mountedId: null }));
+      return;
+    }
+    setError('');
+    try {
+      await invoke('session_unmount_collection', { sessionId: activeId });
+      await refreshNativeControls(activeId);
+    } catch (err) { showError(err); }
+  }
+
+  /// Plan↔Yolo：对齐聊天页语义——切回 Yolo 时若 turn 在跑先取消
+  /// （用代码车道已有的 cancel_generation 显式 sessionId 调用，不经 bridge）。
+  async function switchNativeMode(target, { isPlan, busy: chipBusy } = {}) {
+    if (!activeId) {
+      setNativeDraftControls(current => ({ ...current, mode: target }));
+      return;
+    }
+    setError('');
+    try {
+      if (target === 'plan' && !isPlan) {
+        await invoke('set_plan_mode_next', { sessionId: activeId });
+      } else if (target === 'yolo' && isPlan) {
+        if (chipBusy) await invoke('cancel_generation', { sessionId: activeId });
+        await invoke('exit_plan_to_yolo', { sessionId: activeId });
+      }
+      await refreshNativeControls(activeId);
+    } catch (err) { showError(err); }
+  }
+
   async function refreshSessions() {
     const next = await invoke('list_codex_acp_sessions');
     const list = next || [];
@@ -1143,6 +1411,40 @@ export function CodexAcpView({
     setSessionInfoSessionId(null);
     setSessionLoading(true);
     try {
+      // 原生（品悟）会话：历史与 turn timeline 来自 SavedSession / timing_events，
+      // 不走 ACP 的 timeline / pending / session_info 命令。
+      if (nativeSessionIdsRef.current.has(id)) {
+        const [saved, sessionTimeline] = await Promise.all([
+          invoke('load_session', { id, setActive: false }),
+          invoke('get_session_timeline', { sessionId: id }).catch(() => []),
+        ]);
+        if (sessionLoadRequestRef.current !== requestId) return null;
+        const lane = getNativeLane(id);
+        hydrateNativeLane(lane, saved, sessionTimeline || []);
+        // lane 随组件卸载销毁，chat:user_input_required 不重发：经后端 pending
+        // 登记还原挂起的确认卡（applyNativeChatEvent 按 toolCallId 幂等去重），
+        // 并顺带恢复 turn 进行中的 busy 展示。
+        const pendingState = await invoke('get_pending_user_inputs', { sessionId: id })
+          .catch(() => null);
+        if (sessionLoadRequestRef.current !== requestId) return null;
+        if (pendingState) {
+          (pendingState.pending || []).forEach(request => {
+            applyNativeChatEvent(lane, 'chat:user_input_required', {
+              session_id: id,
+              id: request.id,
+              questions: request.questions,
+            });
+          });
+          if (pendingState.busy && !lane.busy) {
+            lane.busy = true;
+            lane.thinking = { active: true, startedAt: Date.now(), phase: 'thinking', toolName: null };
+          }
+        }
+        await refreshNativeControls(id);
+        if (sessionLoadRequestRef.current !== requestId) return null;
+        setNativeLaneTick(tick => tick + 1);
+        return null;
+      }
       const [timeline, permissions, elicitations] = await Promise.all([
         invoke('get_codex_acp_timeline', { sessionId: id }),
         invoke('get_codex_acp_pending_permissions', { sessionId: id }),
@@ -1180,6 +1482,8 @@ export function CodexAcpView({
       workspacePath,
       agentId: draftAgentId,
     });
+    // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
+    if (draftAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
     if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
     await refreshSessions();
     skipNextActiveLoadRef.current = metadata.id;
@@ -1376,7 +1680,39 @@ export function CodexAcpView({
     return () => { if (unlisten) unlisten(); };
   }, []);
 
+  // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
+  // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
   useEffect(() => {
+    let disposed = false;
+    let unlisteners = [];
+    Promise.all(NATIVE_CHAT_EVENTS.map(name => listenTauri(name, message => {
+      const payload = (message && message.payload) || {};
+      const sessionId = payload.session_id;
+      if (!sessionId || !nativeSessionIdsRef.current.has(sessionId)) return;
+      const lane = getNativeLane(sessionId);
+      const changed = applyNativeChatEvent(lane, name, payload);
+      if (name === 'chat:turn_started' || name === 'chat:done') {
+        refreshSessions().catch(() => {});
+      }
+      if (changed && sessionId === activeIdRef.current) {
+        setNativeLaneTick(tick => tick + 1);
+      }
+    }))).then(fns => {
+      if (disposed) fns.forEach(fn => fn());
+      else unlisteners = fns;
+    }).catch(error => console.warn('[codex] native chat events unavailable', error));
+    return () => {
+      disposed = true;
+      unlisteners.forEach(fn => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    // 原生（品悟）会话没有 ACP 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
+    if (activeAgentId === 'pinvou') {
+      setStatus(null);
+      return;
+    }
     // 用户主动切换 Agent 后必须绕过进程内探测缓存，立即反映 App 外的安装/卸载。
     refreshStatus(activeAgentId, true).catch(showError);
   }, [activeAgentId]);
@@ -1464,7 +1800,7 @@ export function CodexAcpView({
     }
     const shouldShow = element.scrollHeight > element.clientHeight + 4;
     setShowScrollBottom(current => current === shouldShow ? current : shouldShow);
-  }, [events.length, projection.turns.length]);
+  }, [events.length, visibleTurns.length, nativeLaneTick]);
 
   useEffect(() => {
     autoScrollRef.current = true;
@@ -1580,7 +1916,7 @@ export function CodexAcpView({
     ));
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
       || busy || working || activeRuntimeBusy) return;
-    if (!activeStatus?.authenticated) {
+    if (!isNativeAgent && !activeStatus?.authenticated) {
       setError(codexCopy.loginRequiredBeforeSend);
       return;
     }
@@ -1590,6 +1926,10 @@ export function CodexAcpView({
     }
     if (workspaceUnavailable) return;
     if (activeId && !sessionReady) return;
+    if (isNativeAgent) {
+      await sendNative(message, readyAttachments);
+      return;
+    }
     setWorking(true); setError('');
     try {
       let targetId = activeId;
@@ -1637,9 +1977,157 @@ export function CodexAcpView({
     }
   }
 
+  /// 原生（品悟 Engine）发送：草稿态先建会话（强制临时工作区），随后走 chat 命令；
+  /// 用户气泡乐观插入 lane，chat 命令同步失败（空消息 / turn 占用等）时回滚。
+  async function sendNative(message, readyAttachments) {
+    setWorking(true); setError('');
+    try {
+      let targetId = activeId;
+      if (!targetId) {
+        const created = await createSession(draftWorkspacePath);
+        targetId = created.id;
+        // 草稿态暂存的模型/知识库/模式选择先落到新会话（失败会显式报错）。
+        await applyNativeDraftControls(targetId);
+        setAttachmentDrafts(current => {
+          const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
+          const next = { ...current, [targetId]: draftAttachments };
+          delete next[DRAFT_ATTACHMENT_KEY];
+          return next;
+        });
+        setWorkspaceReferenceDrafts(current => {
+          const draftReferences = current[DRAFT_ATTACHMENT_KEY] || [];
+          const next = { ...current, [targetId]: draftReferences };
+          delete next[DRAFT_ATTACHMENT_KEY];
+          return next;
+        });
+      }
+      const referencePrefix = workspaceReferences.length
+        ? `${workspaceReferences.map(path => `@${path}`).join(' ')}\n\n`
+        : '';
+      const displayText = message + (readyAttachments.length
+        ? `${message ? '\n' : ''}📎 ${readyAttachments.map(attachment => attachment.basename).join(', ')}`
+        : '');
+      const lane = getNativeLane(targetId);
+      const optimisticId = appendLocalUserMessage(lane, displayText);
+      setNativeLaneTick(tick => tick + 1);
+      autoScrollRef.current = true;
+      setShowScrollBottom(false);
+      setDraft('');
+      try {
+        await invoke('chat', {
+          message: referencePrefix + message,
+          attachments: readyAttachments.map(attachment => attachment.result),
+          sessionId: targetId,
+          restrictTools: false,
+        });
+      } catch (sendError) {
+        removeLocalUserMessage(lane, optimisticId);
+        setNativeLaneTick(tick => tick + 1);
+        throw sendError;
+      }
+      updateAttachments(targetId, current => current.filter(
+        attachment => !readyAttachments.some(ready => ready.id === attachment.id),
+      ));
+      setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
+    } catch (err) {
+      showError(err);
+      setDraft(message);
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function cancel() {
     if (!activeId) return;
+    if (isNativeAgent) {
+      await invoke('cancel_generation', { sessionId: activeId }).catch(showError);
+      return;
+    }
     await invoke('cancel_codex_acp', { sessionId: activeId }).catch(showError);
+  }
+
+  /// 原生会话的选择确认卡提交/取消：chat:user_input_required → submit_user_input /
+  /// cancel_user_input（显式 sessionId，不经过 bridge 全局 activeSession）。
+  async function respondNativeInput(toolCallId, answers) {
+    if (!activeId) return;
+    setResponding(true); setError('');
+    try {
+      await invoke('submit_user_input', { toolCallId, answers, sessionId: activeId });
+      markNativeInputResolved(toolCallId, 'submitted');
+    } catch (err) { showError(err); }
+    finally { setResponding(false); }
+  }
+
+  async function cancelNativeInput(toolCallId) {
+    if (!activeId) return;
+    setResponding(true); setError('');
+    try {
+      await invoke('cancel_user_input', { toolCallId, sessionId: activeId });
+      markNativeInputResolved(toolCallId, 'cancelled');
+    } catch (err) { showError(err); }
+    finally { setResponding(false); }
+  }
+
+  function markNativeInputResolved(toolCallId, cardState) {
+    const lane = getNativeLane(activeId);
+    const card = [...lane.items].reverse().find(item => (
+      item && item.type === 'user_input' && item.toolCallId === toolCallId && !item.resolved
+    ));
+    if (card) {
+      card.resolved = true;
+      card.cardState = cardState;
+    }
+    setNativeLaneTick(tick => tick + 1);
+  }
+
+  // 原生（品悟）车道 deepseek 投影项渲染：agent_message 用 lane 保存的原始 markdown；
+  // user_input 走选择确认卡；careful_blocked 是拦截提示（无需交互）；system 是引擎
+  // 透传提示。reasoning / tool_group 由 ConversationTimeline 默认渲染。
+  function renderNativeItem(item) {
+    if (item.type === 'agent_message' && item.legacyItem) {
+      return (
+        <ConversationMarkdown
+          text={item.legacyItem.text}
+          onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+        />
+      );
+    }
+    if (item.type === 'user_input' && item.legacyItem) {
+      return (
+        <NativeUserInputCard
+          item={item.legacyItem}
+          responding={responding}
+          onSubmitAnswers={respondNativeInput}
+          onCancelInput={cancelNativeInput}
+          copy={codexCopy}
+          conversationCopy={t.uiConversation}
+        />
+      );
+    }
+    if (item.type === 'permission' && item.extensionType === 'careful_blocked') {
+      return (
+        <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[12px] text-red-600 dark:text-red-300">
+          {codexCopy.nativeBlockedNotice}
+        </div>
+      );
+    }
+    if (item.type === 'system_notice' && item.legacyItem) {
+      const legacy = item.legacyItem;
+      if (legacy.compactPhase) {
+        const label = legacy.compactPhase === 'start'
+          ? codexCopy.compactStart
+          : legacy.compactPhase === 'fail'
+            ? codexCopy.compactFail
+            : codexCopy.compactDone;
+        return (
+          <div className="px-1 text-[11px] text-gray-400">
+            {label}{legacy.text ? ` · ${legacy.text}` : ''}
+          </div>
+        );
+      }
+      return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
+    }
+    return undefined;
   }
 
   async function respond(toolCallId, optionId) {
@@ -1781,6 +2269,9 @@ export function CodexAcpView({
                   {codexCopy.recreate}
                 </button>
               </div>
+            ) : isNativeAgent ? (
+              // 原生（品悟）会话没有 ACP 登录/安装状态机；错误由 chat:done 事件内联展示。
+              null
             ) : (
               <>
                 <RuntimeNotice
@@ -1809,7 +2300,7 @@ export function CodexAcpView({
                 )}
               </>
             )}
-            {!projection.turns.length && (
+            {!visibleTurns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
                 <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><AcpAgentLogo agentId={activeAgentId} className="h-8 w-8" title={activeAgentName} /></div>
                 <div className="mt-5 text-[20px] font-semibold">
@@ -1817,12 +2308,14 @@ export function CodexAcpView({
                 </div>
                 <div className="mt-2 max-w-md text-[13px] leading-6 text-gray-500 dark:text-gray-400">
                   {activeSession
-                    ? codexCopy.activeHint
-                    : codexCopy.draftHint}
+                    ? (isNativeAgent ? codexCopy.nativeActiveHint : codexCopy.activeHint)
+                    : isNativeAgent
+                      ? codexCopy.nativeDraftHint
+                      : codexCopy.draftHint}
                 </div>
               </div>
             )}
-            {projection.turns.map(turn => useUnifiedConversationUi
+            {visibleTurns.map(turn => (useUnifiedConversationUi || isNativeAgent)
               ? (
                   <ConversationTurn
                     key={turn.id}
@@ -1837,18 +2330,20 @@ export function CodexAcpView({
                         <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
                       </div>
                     )}
-                    renderItem={(item) => item.type === 'elicitation'
-                      ? (
-                          <ElicitationCard
-                            elicitation={item.elicitation}
-                            pending={pendingByElicitation[item.elicitation.elicitationId]}
-                            onRespond={respondElicitation}
-                            responding={responding}
-                            copy={codexCopy}
-                            conversationCopy={t.uiConversation}
-                          />
-                        )
-                      : undefined}
+                    renderItem={isNativeAgent
+                      ? (item) => renderNativeItem(item)
+                      : (item) => item.type === 'elicitation'
+                        ? (
+                            <ElicitationCard
+                              elicitation={item.elicitation}
+                              pending={pendingByElicitation[item.elicitation.elicitationId]}
+                              onRespond={respondElicitation}
+                              responding={responding}
+                              copy={codexCopy}
+                              conversationCopy={t.uiConversation}
+                            />
+                          )
+                        : undefined}
                     agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
                   />
@@ -1898,7 +2393,7 @@ export function CodexAcpView({
                 copy={t.uiHomeMode}
               />
             )}
-            {sessionSyncing && (
+            {sessionSyncing && !isNativeAgent && (
               <div data-testid="acp-session-loading" className="mb-2 flex items-center gap-2 px-3 text-[11px] text-blue-600 dark:text-blue-300">
                 <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-500/20 border-t-blue-500" />
                 <span>{codexCopy.sessionSyncing}</span>
@@ -2036,6 +2531,63 @@ export function CodexAcpView({
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
                     title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
+                  {isNativeAgent && (
+                    // 原生（品悟）车道的底栏控件：与 ACP 配置组同一套
+                    // CodexComposerConfigSelect 视觉语言；行为（直调 per-session 命令、
+                    // 草稿暂存、busy 禁用、归属保护）不变。Plan 降级说明：本期不接
+                    // plan_snapshot/accept_plan，切 Plan 后方案以文本/普通工具卡呈现。
+                    <div data-testid="native-composer-controls" className="flex min-w-0 flex-wrap items-center gap-2">
+                      <CodexComposerConfigSelect
+                        id="native-mode"
+                        testId="native-mode"
+                        label={codexCopy.permissionMode}
+                        value={nativeModeValue}
+                        choices={[
+                          { value: 'yolo', name: t.modeYolo },
+                          { value: 'plan', name: t.modePlan },
+                        ]}
+                        onChange={target => switchNativeMode(String(target), {
+                          isPlan: nativeModeValue === 'plan',
+                          busy,
+                        })}
+                        title={`${t.modeSwitchTitle} · ${nativeModeValue === 'plan' ? t.modePlan : t.modeYolo}`}
+                      />
+                      {nativeModelChoices.length > 0 && (
+                        <CodexComposerConfigSelect
+                          id="native-model"
+                          testId="native-model"
+                          label={codexCopy.model}
+                          value={nativeModelValue}
+                          choices={nativeModelChoices}
+                          onChange={modelId => switchNativeModel(activeId, String(modelId))}
+                          disabled={busy || working}
+                          title={busy || working ? t.modelSwitchBusy : undefined}
+                        />
+                      )}
+                      <ComposerToolMenu
+                        t={t}
+                        onGotoTools={onGotoTools}
+                        compact={false}
+                        activeSkill={null}
+                        triggerVariant="pill"
+                        triggerTestId="native-tools"
+                        scope="code"
+                      />
+                      <CodexComposerConfigSelect
+                        id="native-kb"
+                        testId="native-kb"
+                        label={t.kbMount}
+                        value={nativeMountedId == null ? '' : String(nativeMountedId)}
+                        choices={nativeKbChoices}
+                        onChange={value => (
+                          String(value) === '' ? unmountNativeKb() : mountNativeKb(Number(value))
+                        )}
+                        disabled={nativeKbInstalled === false}
+                        title={nativeKbInstalled === false ? t.kbMountNoModel : t.kbMountTitle}
+                      />
+                    </div>
+                  )}
+                  {!isNativeAgent && (
                   <div className="relative min-w-0">
                     <button
                       type="button"
@@ -2115,7 +2667,8 @@ export function CodexAcpView({
                       </>
                     )}
                   </div>
-                  {composerControlsVisible && (
+                  )}
+                  {composerControlsVisible && !isNativeAgent && (
                     <div data-testid="codex-composer-configs" className="flex flex-wrap items-center gap-2">
                       {controls.fallbackModels.length > 0 && (
                         <CodexComposerConfigSelect
@@ -2165,7 +2718,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || !activeStatus || !activeStatus.installed || !activeStatus.authenticated}
+                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>
@@ -2183,7 +2736,7 @@ export function CodexAcpView({
             onClose={() => setWorkspaceOpen(false)}
             references={workspaceReferences}
             onAddReference={addWorkspaceReference}
-            refreshToken={events.length}
+            refreshToken={isNativeAgent ? nativeLaneTick : events.length}
             onChangeCount={setWorkspaceChangeCount}
             copy={t.uiCodexWorkspace}
           />

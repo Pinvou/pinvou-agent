@@ -1002,6 +1002,13 @@
   async function persistMessagesFor(sid) {
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
+    // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
+    // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
+    // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
+    // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
+    // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。
+    var meta = state.sessions.find(function (s) { return s.id === sid; });
+    if (!meta) return;
     var buf = sid === state.activeSessionId ? null : sessionStates[sid];
     var msgs = buf ? buf.messages : state.messages;
     var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
@@ -1009,14 +1016,13 @@
     else state.artifacts = arts;
     try {
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
-      var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!meta || isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
+      if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
-          if (meta) meta.title = newTitle;
+          meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }

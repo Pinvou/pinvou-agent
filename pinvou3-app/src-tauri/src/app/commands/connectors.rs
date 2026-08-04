@@ -1,13 +1,17 @@
-/// pinvou3 工具开关(全局持久):设置当前被关掉的连接器(connector_ids = 市场工具 id)。
-/// 落盘 → 推算成模型可见工具全名广播给所有在跑引擎 → 隐藏这些工具。空 = 全开。
-/// 持久:用户关一次,所有新对话/新窗口都继承,直到手动开回。
+/// pinvou3 工具开关(按会话类型 scope 持久):设置当前被关掉的连接器
+/// (connector_ids = 市场工具 id)。落盘 → 推算成模型可见工具全名广播给所有在跑
+/// 引擎 → 隐藏这些工具。空 = 全开。
+/// 持久:用户关一次,该 scope 所有新对话/新窗口都继承,直到手动开回。
+/// `scope` = "plain"(普通会话,缺省)或 "code"(原生代码会话);两个 scope 独立。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
+    scope: Option<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::apply_disabled_connectors(connector_ids).await?;
+    let scope = parse_connector_scope(scope.as_deref());
+    crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids).await?;
     pool.refresh_disallowed_tools().await;
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
@@ -19,10 +23,21 @@ pub async fn set_disabled_connectors(
     Ok(())
 }
 
-/// pinvou3 工具开关:读全局被禁用的连接器 id 列表(前端启动时加载,初始化开关状态)。
+/// pinvou3 工具开关:读某 scope 被禁用的连接器 id 列表(前端启动时加载,初始化开关状态)。
+/// `scope` = "plain"(缺省)或 "code"。
 #[tauri::command]
-pub async fn get_disabled_connectors() -> Result<Vec<String>, String> {
-    Ok(crate::features::marketplace::load_disabled_connectors())
+pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
+    let scope = parse_connector_scope(scope.as_deref());
+    Ok(crate::features::marketplace::load_disabled_connectors_for(
+        scope,
+    ))
+}
+
+fn parse_connector_scope(scope: Option<&str>) -> crate::features::marketplace::ConnectorScope {
+    match scope {
+        Some("code") => crate::features::marketplace::ConnectorScope::Code,
+        _ => crate::features::marketplace::ConnectorScope::Plain,
+    }
 }
 
 use crate::features::connectors::{

@@ -149,6 +149,11 @@ function workspaceDisplayName(path) {
         }
       });
       const [codexBusyBySession, setCodexBusyBySession] = useState({});
+      // 全局事件监听器按 id 判断是否为代码会话（监听器注册一次，不能闭包旧列表）。
+      const codexSessionIdsRef = useRef(new Set());
+      useEffect(() => {
+        codexSessionIdsRef.current = new Set(codexSessions.map(session => session && session.id));
+      }, [codexSessions]);
       const refreshCodexSessions = useCallback(async () => {
         if (!codexAcpSupported || !isTauriAvailable()) {
           setCodexSessions([]);
@@ -202,6 +207,20 @@ function workspaceDisplayName(path) {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);
         }).catch(() => {});
+        // 原生（品悟）代码会话的 turn 走 chat:* 事件：busy 徽标与 ACP 会话同机制，
+        // 只跟踪代码会话列表内的 session，普通聊天会话不影响。
+        ['chat:turn_started', 'chat:done'].forEach(eventName => {
+          tauriEvents.listen(eventName, (message) => {
+            if (disposed) return;
+            const sessionId = message && message.payload && message.payload.session_id;
+            if (!sessionId || !codexSessionIdsRef.current.has(sessionId)) return;
+            setCodexBusyBySession(current => ({ ...current, [sessionId]: eventName === 'chat:turn_started' }));
+            refreshCodexSessions().catch(() => {});
+          }).then(unlisten => {
+            if (disposed) unlisten();
+            else unlisteners.push(unlisten);
+          }).catch(() => {});
+        });
         return () => {
           disposed = true;
           unlisteners.forEach(unlisten => unlisten());
@@ -2030,6 +2049,8 @@ function workspaceDisplayName(path) {
                 onActiveSessionChange={updateActiveCodexSession}
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
+                bs={bs}
+                onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (

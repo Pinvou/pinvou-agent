@@ -121,7 +121,7 @@ assert.doesNotMatch(
 // Kimi 不经过独立 Bridge；CLI 缺失时必须继续进入 installed=false 的安装分支，
 // 不能被前端 !bridge_ready 的错误提示提前截断。
 const kimiStatus = feature.match(
-  /if backend == AgentBackend::KimiAcp \{([\s\S]*?)\n        \}\n\n        let \(agent_id/,
+  /if backend == AgentBackend::KimiAcp \{([\s\S]*?)\r?\n        \}\r?\n\r?\n        let \(agent_id/,
 );
 assert.ok(kimiStatus, "Kimi status branch must remain explicit");
 assert.match(kimiStatus[1], /bridge_ready: true/);

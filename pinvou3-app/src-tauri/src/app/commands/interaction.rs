@@ -297,6 +297,27 @@ pub async fn cancel_user_input(
         .map_err(|e| format!("cancel_user_input: {e:?}"))
 }
 
+/// 会话当前的挂起输入请求与 turn 状态。
+///
+/// 代码页（CodexAcpView）的会话 lane 随组件卸载销毁，`chat:user_input_required`
+/// 事件不重发；remount 加载会话时调本命令还原确认卡并恢复 busy 展示。
+#[derive(serde::Serialize)]
+pub struct PendingUserInputState {
+    pub busy: bool,
+    pub pending: Vec<crate::features::assistant::pending_user_input::PendingUserInput>,
+}
+
+#[tauri::command]
+pub async fn get_pending_user_inputs(
+    session_id: String,
+    pool: State<'_, EnginePool>,
+) -> Result<PendingUserInputState, String> {
+    Ok(PendingUserInputState {
+        busy: pool.is_turn_active(&session_id),
+        pending: crate::features::assistant::pending_user_input::list(&session_id),
+    })
+}
+
 // (render_surface 回流 / cloud_keys 云模型配置是独立 feature,不在本 PR——
 //  本 PR 只含工作流基座 + 三省六部)
 

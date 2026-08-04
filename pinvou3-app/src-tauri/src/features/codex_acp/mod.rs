@@ -236,6 +236,7 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
+        code_session: false,
     })
 }
 
@@ -277,6 +278,47 @@ fn load_acp_recovery_record(
         workspace_path,
         &temporary_workspace,
     )
+}
+
+/// 扫描 session 私有目录中的原生代码会话权威 sidecar，恢复辅助索引缺失的
+/// 原生代码会话记录。
+///
+/// sidecar（`code-session.json`）随会话存续，是跨进程的权威真相源；辅助索引
+/// `session-agents.json` 可损坏/丢失后据此重建。对每个 sidecar，若辅助索引里
+/// 没有对应的 code_session 记录（或已被 ACP 占用），则恢复之。
+fn restore_code_native_sessions_from_sidecars(agents: &SessionAgentStore) {
+    let sessions_root = crate::platform::paths::sessions_root();
+    let Ok(entries) = std::fs::read_dir(&sessions_root) else {
+        // sessions 根不存在 = 没有任何会话，无需恢复。
+        return;
+    };
+    let mut restored = 0usize;
+    for entry in entries.flatten() {
+        let session_dir = entry.path();
+        if !session_dir.is_dir() {
+            continue;
+        }
+        let Some(session_id) = session_dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(sidecar) = store::read_code_session_sidecar(agents.path(), session_id) else {
+            continue;
+        };
+        match agents.restore_missing_code_session_record(session_id, sidecar) {
+            Ok(()) => {
+                restored += 1;
+                eprintln!("[pinvou3-app] recovered native code session index for {session_id}");
+            }
+            Err(error) => eprintln!(
+                "[pinvou3-app] native code session {session_id} remains degraded: {error:#}"
+            ),
+        }
+    }
+    if restored > 0 {
+        eprintln!(
+            "[pinvou3-app] recovered {restored} native code session index record(s) from sidecars"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -591,6 +633,36 @@ impl AcpSession {
     }
 }
 
+/// “代码”模块原生（品悟 Engine）会话的工作区信息。
+///
+/// 临时会话执行目录与 ACP 临时会话一样由 `SessionStore::execution_workspace` 推导；
+/// 项目会话返回绑定的项目目录，available 语义与 ACP 项目分支一致（目录存在即可用）。
+fn code_native_workspace_info(
+    session_store: &SessionStore,
+    session_id: &str,
+    record: &SessionAgentRecord,
+) -> Result<CodexAcpWorkspaceInfo> {
+    if record.workspace_kind == CodexWorkspaceKind::Project {
+        let path = record
+            .workspace_path
+            .clone()
+            .context("原生项目会话缺少工作目录记录")?;
+        return Ok(CodexAcpWorkspaceInfo {
+            workspace_kind: CodexWorkspaceKind::Project,
+            workspace_available: path.is_dir(),
+            workspace_path: path.to_string_lossy().into_owned(),
+        });
+    }
+    let path = session_store
+        .execution_workspace(session_id)
+        .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?;
+    Ok(CodexAcpWorkspaceInfo {
+        workspace_kind: CodexWorkspaceKind::Temporary,
+        workspace_path: path.to_string_lossy().into_owned(),
+        workspace_available: true,
+    })
+}
+
 #[derive(Clone)]
 pub struct AcpPool {
     app: AppHandle,
@@ -733,6 +805,10 @@ impl AcpPool {
                 ),
             }
         }
+        // 原生代码会话的权威 sidecar 恢复：sidecar 随 session 私有目录存续，辅助
+        // 索引（session-agents.json）损坏/丢失后，据 sidecar 恢复原生代码会话类型
+        // 与项目目录绑定，避免会话静默掉回普通聊天、执行根退回私有目录。
+        restore_code_native_sessions_from_sidecars(&agents);
         let config_defaults = AcpConfigDefaultsStore::load_or_empty();
         // 旧版本只保存了 session 级状态。按更新时间从新到旧，为每个 Agent
         // 迁移最近一次成功配置，使升级后的第一个新会话也能继承用户选择。
@@ -851,6 +927,9 @@ impl AcpPool {
 
     pub fn workspace_info(&self, session_id: &str) -> Result<CodexAcpWorkspaceInfo> {
         let record = self.agents.get(session_id);
+        if record.code_session {
+            return code_native_workspace_info(&self.session_store, session_id, &record);
+        }
         if !record.backend.is_acp() {
             if self.acp_metadata_backends.read().contains_key(session_id) {
                 return Ok(CodexAcpWorkspaceInfo {
@@ -882,6 +961,28 @@ impl AcpPool {
     }
 
     fn execution_workspace(&self, session_id: &str) -> Result<PathBuf> {
+        let record = self.agents.get(session_id);
+        // 防御性保留，当前不可达：两个调用方（prompt / ensure ACP runtime）都在
+        // 上游通过 is_acp / acp_record 拒绝了原生代码会话；保留本分支是为了让
+        // 未来直接使用本方法的路径对 code_session 也有正确语义。
+        if record.code_session {
+            if record.workspace_kind == CodexWorkspaceKind::Project {
+                let path = record
+                    .workspace_path
+                    .clone()
+                    .context("原生项目会话缺少工作目录记录")?;
+                return validate_codex_project_workspace(&path).with_context(|| {
+                    format!(
+                        "品悟会话绑定的项目目录已不可用: {}。请恢复该目录，或新建会话选择其他项目",
+                        path.display()
+                    )
+                });
+            }
+            return self
+                .session_store
+                .execution_workspace(session_id)
+                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"));
+        }
         let record = self.acp_record(session_id)?;
         match record.workspace_kind {
             CodexWorkspaceKind::Temporary => self
@@ -4328,6 +4429,65 @@ fn cli_status_success(executable: &Path, args: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_native_workspace_info_returns_temporary_execution_workspace() {
+        let session_store = crate::features::sessions::SessionStore::boot().expect("session store");
+        let record = SessionAgentRecord {
+            code_session: true,
+            ..SessionAgentRecord::default()
+        };
+        let info =
+            code_native_workspace_info(&session_store, "code-native-unit-test", &record).unwrap();
+        assert_eq!(info.workspace_kind, CodexWorkspaceKind::Temporary);
+        assert!(info.workspace_available);
+        assert_eq!(
+            info.workspace_path,
+            session_store
+                .execution_workspace("code-native-unit-test")
+                .unwrap()
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn code_native_workspace_info_project_branch_tracks_directory_availability() {
+        let session_store = crate::features::sessions::SessionStore::boot().expect("session store");
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-project-info-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let record = SessionAgentRecord {
+            code_session: true,
+            workspace_kind: CodexWorkspaceKind::Project,
+            workspace_path: Some(root.clone()),
+            ..SessionAgentRecord::default()
+        };
+        let info =
+            code_native_workspace_info(&session_store, "code-native-proj-test", &record).unwrap();
+        assert_eq!(info.workspace_kind, CodexWorkspaceKind::Project);
+        assert!(info.workspace_available);
+        assert_eq!(info.workspace_path, root.to_string_lossy());
+
+        // 项目目录丢失时按 ACP 项目分支同一语义报告不可用（不静默退回临时目录）。
+        std::fs::remove_dir_all(&root).unwrap();
+        let info =
+            code_native_workspace_info(&session_store, "code-native-proj-test", &record).unwrap();
+        assert!(!info.workspace_available);
+
+        // 记录缺失目录属于数据损坏，必须显式报错。
+        let broken = SessionAgentRecord {
+            code_session: true,
+            workspace_kind: CodexWorkspaceKind::Project,
+            workspace_path: None,
+            ..SessionAgentRecord::default()
+        };
+        assert!(
+            code_native_workspace_info(&session_store, "code-native-proj-test", &broken).is_err()
+        );
+    }
 
     #[test]
     fn acp_session_classification_survives_missing_auxiliary_index() {

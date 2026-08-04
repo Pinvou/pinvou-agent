@@ -12,11 +12,14 @@ fn main() {
     // build.rs，hash 跟着变，ensure_extracted 自动覆写 disk 的 bundle 文件。
     //
     // 纳入哈希的资源（任一变化都要触发老安装重新解包）：
-    //   - instructions.md：system prompt 模板
+    //   - instructions-shared.md / instructions-work.md / instructions-code.md：
+    //     system prompt 骨架与各模式层
     //   - deny_sensitive_paths.sh：敏感目录/命令硬拦截 hook（只改它也要落盘）
     let mut hashed = Vec::new();
     for f in [
-        "resources/common/bundle/instructions.md",
+        "resources/common/bundle/instructions-shared.md",
+        "resources/common/bundle/instructions-work.md",
+        "resources/common/bundle/instructions-code.md",
         "resources/common/bundle/deny_sensitive_paths.sh",
     ] {
         println!("cargo:rerun-if-changed={f}");

@@ -133,6 +133,7 @@ pub async fn clear_session() -> Result<(), String> {
 /// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
 /// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
 /// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
+/// 代码会话(ACP 与品悟原生)同样不进 chat 侧栏,由 list_codex_acp_sessions 单独提供。
 #[tauri::command]
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
@@ -142,6 +143,8 @@ pub async fn list_sessions(
     metas.retain(|m| {
         matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
             && !acp_pool.is_acp_metadata(m)
+            // 原生代码会话（code_session 绑定）归属代码列表，不进 chat 侧栏
+            && !acp_pool.agents().is_code_session(&m.id)
             && !store.is_hidden(&m.id)
             && store
                 .active_skill(&m.id)
@@ -159,6 +162,31 @@ pub async fn list_sessions(
             }
         })
         .collect())
+}
+
+/// 标题仍为默认值「新对话」时，用首条消息（或附件名兜底）派生会话标题（前 28 字符）。
+///
+/// ACP（codex_acp_prompt）与原生（chat）两条发送链路统一经此自动命名；
+/// 用户已重命名过的会话不会被覆盖。`title_source` 为空时不动作。
+pub(crate) fn apply_default_session_title(
+    store: &SessionStore,
+    session_id: &str,
+    title_source: &str,
+) -> Result<(), String> {
+    let title_source = title_source.trim();
+    if title_source.is_empty() {
+        return Ok(());
+    }
+    let session = store
+        .load(session_id)
+        .map_err(|error| format!("读取会话 {session_id} 失败: {error:#}"))?;
+    if session.metadata.title != "新对话" {
+        return Ok(());
+    }
+    let title = title_source.chars().take(28).collect::<String>();
+    store
+        .set_title(session_id, title)
+        .map_err(|error| format!("更新会话标题失败: {error:#}"))
 }
 
 #[cfg(test)]
@@ -195,6 +223,77 @@ mod session_title_attachment_tests {
         assert!(attachment_names_from_display_message("正文\n\n📎 文件.md\n尾部").is_empty());
         assert!(!title_contains_attachment_marker("正文提到 📎 符号"));
         assert!(title_contains_attachment_marker("正文\n\n📎 文件"));
+    }
+}
+
+#[cfg(test)]
+mod default_session_title_tests {
+    use super::apply_default_session_title;
+
+    #[test]
+    fn default_title_is_derived_once_and_truncated() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-default-title-test-{}", std::process::id()));
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+
+        let session = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create session");
+        let id = session.metadata.id.clone();
+        assert_eq!(session.metadata.title, "新对话");
+
+        // 默认标题：用首条消息命名（去首尾空白）
+        apply_default_session_title(&store, &id, "  帮我review这段代码  ").expect("auto title");
+        assert_eq!(
+            store.load(&id).expect("reload").metadata.title,
+            "帮我review这段代码"
+        );
+
+        // 已命名后不再被后续消息覆盖
+        apply_default_session_title(&store, &id, "第二条消息不应覆盖").expect("second call");
+        assert_eq!(
+            store.load(&id).expect("reload").metadata.title,
+            "帮我review这段代码"
+        );
+
+        // 空来源不动作；超长来源截断到 28 字符
+        let session2 = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create session 2");
+        let id2 = session2.metadata.id.clone();
+        apply_default_session_title(&store, &id2, "   ").expect("empty source is a no-op");
+        assert_eq!(store.load(&id2).expect("reload").metadata.title, "新对话");
+        apply_default_session_title(
+            &store,
+            &id2,
+            "这是一个非常非常长的首条消息用来验证标题派生时会按字符数截断而不是全部保留",
+        )
+        .expect("auto title 2");
+        assert_eq!(
+            store
+                .load(&id2)
+                .expect("reload")
+                .metadata
+                .title
+                .chars()
+                .count(),
+            28
+        );
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
@@ -526,7 +625,13 @@ mod pinvou_scene_event_tests {
 pub async fn list_workspace_files(
     session_id: String,
     store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<String>, String> {
+    // 语义守卫:代码会话(品悟原生)没有“产物面板”概念——其文件浏览与变更 diff 走
+    // 代码模式的基线工作区面板,这里跳过顶层扫描,避免把工作区代码文件误当产物。
+    if acp_pool.agents().is_code_session(&session_id) {
+        return Ok(Vec::new());
+    }
     list_workspace_files_for_session(&session_id, &store)
 }
 

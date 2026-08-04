@@ -22,12 +22,20 @@ use crate::platform::paths;
 /// deliberately left to the caller, keeping marketplace independent from the
 /// assistant runtime.
 pub async fn apply_disabled_connectors(connector_ids: Vec<String>) -> Result<(), String> {
+    apply_disabled_connectors_for(ConnectorScope::Plain, connector_ids).await
+}
+
+/// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
+pub async fn apply_disabled_connectors_for(
+    scope: ConnectorScope,
+    connector_ids: Vec<String>,
+) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        save_disabled_connectors(&connector_ids);
+        save_disabled_connectors_for(scope, &connector_ids);
         skill_marketplace::refresh_disabled_skills();
     })
     .await
-    .map_err(|error| format!("apply_disabled_connectors join: {error}"))?;
+    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
     Ok(())
 }
 
@@ -373,26 +381,140 @@ pub struct MarketplaceToolValidation {
 }
 
 // ---------------------------------------------------------------------------
-// 会话工具开关:全局持久的"被禁用连接器"列表(用户关一次,所有新对话/窗口都继承,
-// 直到手动开回 —— 见「工具开关」方案,持久语义)。落盘到 ~/.pinvou3/disabled_connectors.json。
+// 会话工具开关:按会话类型(普通 `plain` / 原生代码 `code`)各自持久化的
+// "被禁用连接器"列表。用户在某类会话里关一次,该类型所有新对话/窗口都继承,
+// 直到手动开回 —— 见「工具开关」方案,持久语义。落盘到
+// ~/.pinvou3/disabled_connectors.json。
+//
+// 旧版本只存一个裸数组(即 plain 语义),读时兼容;写入总是写带命名空间的
+// 对象,避免两个 scope 互相覆盖。
 // ---------------------------------------------------------------------------
+
+/// 两个 scope 的禁用连接器列表。`plain` = 普通会话,`code` = 原生代码会话。
+///
+/// `code` scope 遵循「默认全关」安全默认:文件里还没有 code 记录时(首次读取),
+/// 代码会话默认禁用**所有已安装连接器**(外部能力显式开启);一旦用户改过 code
+/// 开关(`code_initialized=true`),就以落盘列表为准。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DisabledConnectorsFile {
+    #[serde(default)]
+    pub plain: Vec<String>,
+    #[serde(default)]
+    pub code: Vec<String>,
+    /// code scope 是否已被用户显式初始化过(改过开关)。false = 未初始化,按
+    /// 「默认全禁已装连接器」处理。
+    #[serde(default)]
+    pub code_initialized: bool,
+}
+
+/// 会话类型 scope;`plain` 是缺省值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorScope {
+    Plain,
+    Code,
+}
+
+impl ConnectorScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Code => "code",
+        }
+    }
+}
 
 fn disabled_connectors_path() -> std::path::PathBuf {
     paths::pinvou3_home().join("disabled_connectors.json")
 }
 
-/// 读全局被禁用的连接器 id 列表(读不到/空 → 空)。
-pub fn load_disabled_connectors() -> Vec<String> {
-    std::fs::read_to_string(disabled_connectors_path())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-        .unwrap_or_default()
+/// 读完整文件(兼容旧版裸数组格式 → plain)。
+fn load_disabled_connectors_file() -> DisabledConnectorsFile {
+    let content = match std::fs::read_to_string(disabled_connectors_path()) {
+        Ok(c) => c,
+        Err(_) => return DisabledConnectorsFile::default(),
+    };
+    // 旧格式:裸数组 `["a","b"]` → 视为 plain。
+    if let Ok(legacy) = serde_json::from_str::<Vec<String>>(&content) {
+        return DisabledConnectorsFile {
+            plain: legacy,
+            code: Vec::new(),
+            code_initialized: false,
+        };
+    }
+    serde_json::from_str(&content).unwrap_or_default()
 }
 
-/// 写全局被禁用的连接器 id 列表。
-pub fn save_disabled_connectors(ids: &[String]) {
-    if let Ok(json) = serde_json::to_string(ids) {
+/// 写完整文件(总是对象格式)。
+fn save_disabled_connectors_file(file: &DisabledConnectorsFile) {
+    if let Ok(json) = serde_json::to_string(file) {
         let _ = std::fs::write(disabled_connectors_path(), json);
+    }
+}
+
+/// 读某 scope 被禁用的连接器 id 列表(读不到/空 → 空)。
+///
+/// `code` scope 未初始化时(用户从未改过代码会话开关)返回全部已安装连接器 id,
+/// 即「代码会话默认全关,外部能力显式开启」的安全默认。
+pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
+    let file = load_disabled_connectors_file();
+    match scope {
+        ConnectorScope::Plain => file.plain,
+        ConnectorScope::Code => {
+            if file.code_initialized {
+                file.code
+            } else {
+                MarketplaceManager::new().installed_ids()
+            }
+        }
+    }
+}
+
+/// 写某 scope 被禁用的连接器 id 列表。
+pub fn save_disabled_connectors_for(scope: ConnectorScope, ids: &[String]) {
+    let mut file = load_disabled_connectors_file();
+    match scope {
+        ConnectorScope::Plain => file.plain = ids.to_vec(),
+        ConnectorScope::Code => {
+            file.code = ids.to_vec();
+            file.code_initialized = true;
+        }
+    }
+    save_disabled_connectors_file(&file);
+}
+
+/// 读全局(plain)被禁用的连接器 id 列表。兼容既有调用方。
+pub fn load_disabled_connectors() -> Vec<String> {
+    load_disabled_connectors_for(ConnectorScope::Plain)
+}
+
+/// 写全局(plain)被禁用的连接器 id 列表。兼容既有调用方。
+pub fn save_disabled_connectors(ids: &[String]) {
+    save_disabled_connectors_for(ConnectorScope::Plain, ids);
+}
+
+/// 连接器安装后同步 code scope:若用户已初始化过代码会话开关(改过),新装的
+/// 连接器默认仍保持关闭(加入 code 禁用集);未初始化时无需处理(load 会按
+/// 「默认全禁已装连接器」兜底)。
+pub fn sync_code_scope_after_install(tool_id: &str) {
+    let mut file = load_disabled_connectors_file();
+    if !file.code_initialized {
+        return;
+    }
+    if !file.code.iter().any(|id| id == tool_id) {
+        file.code.push(tool_id.to_string());
+        save_disabled_connectors_file(&file);
+    }
+}
+
+/// 连接器卸载后同步两个 scope:已卸载的连接器从 plain/code 禁用集移除,避免
+/// 残留 id 指向不存在的工具。
+pub fn remove_connector_from_disabled_scopes(tool_id: &str) {
+    let mut file = load_disabled_connectors_file();
+    let before = (file.plain.len(), file.code.len());
+    file.plain.retain(|id| id != tool_id);
+    file.code.retain(|id| id != tool_id);
+    if file.plain.len() != before.0 || file.code.len() != before.1 {
+        save_disabled_connectors_file(&file);
     }
 }
 
@@ -434,9 +556,14 @@ pub fn sync_mcp_secret_env_vars() -> Result<(), String> {
     MarketplaceManager::new().sync_secret_env_vars()
 }
 
-/// 当前被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+/// 当前(plain)被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
 pub fn disabled_tool_names() -> Vec<String> {
-    MarketplaceManager::new().model_tool_names(&load_disabled_connectors())
+    disabled_tool_names_for(ConnectorScope::Plain)
+}
+
+/// 按会话类型 scope:被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
+    MarketplaceManager::new().model_tool_names(&load_disabled_connectors_for(scope))
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,6 +1831,15 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
+    /// 直接写 installed.json 模拟已安装连接器(避免走完整 install 的远程校验)。
+    fn write_installed_ids(ids: &[String]) {
+        let path = crate::platform::paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(ids).unwrap()).unwrap();
+    }
+
     fn read_mcp_json() -> serde_json::Value {
         let content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
         serde_json::from_str(&content).unwrap()
@@ -1999,6 +2135,102 @@ mod tests {
             );
             save_disabled_connectors(&[]); // 全开回去
             assert!(load_disabled_connectors().is_empty());
+        });
+    }
+
+    /// 双 scope(plain/code)独立持久化:互不影响,code 首次写会标记已初始化。
+    #[test]
+    fn disabled_connectors_scope_isolation() {
+        with_temp_home(|| {
+            // 模拟已装 2 个连接器。
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            // 未初始化:code 默认全禁已装连接器;plain 仍按空处理。
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+            // plain 写 weather → code 不受影响(仍默认全禁)。
+            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+            // code 显式写 → 标记初始化,此后以落盘为准。
+            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["pptx".to_string()]
+            );
+            // plain 再写空,不影响 code。
+            save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["pptx".to_string()]
+            );
+        });
+    }
+
+    /// 旧版裸数组格式 `["a","b"]` 迁移到 plain scope,code 保持未初始化默认。
+    #[test]
+    fn disabled_connectors_legacy_array_migrates_to_plain() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, r#"["weather","pptx"]"#).unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+            // 旧格式不初始化 code scope → 仍默认全禁。
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+        });
+    }
+
+    /// 新装连接器:code 未初始化时无需落盘(load 已默认全禁);已初始化时自动加入禁用集(默认仍关)。
+    #[test]
+    fn sync_code_scope_after_install_keeps_new_connector_disabled_by_default() {
+        with_temp_home(|| {
+            write_installed_ids(&["pptx".to_string()]);
+            // 未初始化 → 不落盘,文件保持无/空。
+            sync_code_scope_after_install("weather");
+            assert!(load_disabled_connectors_file().code.is_empty());
+            // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
+            save_disabled_connectors_for(ConnectorScope::Code, &[]);
+            sync_code_scope_after_install("weather");
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string()]
+            );
+            // 已存在不重复。
+            sync_code_scope_after_install("weather");
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// 卸载连接器:从 plain/code 两个 scope 禁用集移除,避免残留 id。
+    #[test]
+    fn remove_connector_cleans_both_scopes() {
+        with_temp_home(|| {
+            save_disabled_connectors_for(
+                ConnectorScope::Plain,
+                &["weather".to_string(), "pptx".to_string()],
+            );
+            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]);
+            remove_connector_from_disabled_scopes("weather");
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()]
+            );
+            assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
         });
     }
 

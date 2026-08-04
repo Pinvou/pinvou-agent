@@ -1274,6 +1274,10 @@ mod tests {
 
     #[test]
     fn non_git_baseline_detects_added_modified_and_deleted_files() {
+        // baseline 文件路径派生自 PINVOU3_HOME，与改 home 的测试并发会互相误删目录。
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let root = TestDir::new("baseline");
         let session_id = format!("workspace-test-{}", std::process::id());
         fs::write(root.path().join("before.txt"), "before").unwrap();
