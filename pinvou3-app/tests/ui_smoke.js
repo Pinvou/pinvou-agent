@@ -72,7 +72,9 @@ function injectSource() {
       {role:'assistant',content:[{type:'tool_use',id:'t-shell-history',name:'exec_shell',input:{command:'history-shell'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
-      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
@@ -82,7 +84,12 @@ function injectSource() {
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
-        case 'get_codex_acp_timeline': return Promise.resolve([]);
+        case 'get_codex_acp_timeline': return Promise.resolve([
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:1,timestamp:'2026-08-04T01:00:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test copy layout'}]}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:3,timestamp:'2026-08-04T01:00:02Z',event:{type:'agent_message_chunk',data:{update:{content:{type:'text',text:'Codex copy layout'}}}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:4,timestamp:'2026-08-04T01:00:03Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
+        ]);
         case 'get_codex_acp_pending_permissions': return Promise.resolve([]);
         case 'get_codex_acp_pending_elicitations': return Promise.resolve([]);
         case 'list_codex_workspace': return Promise.resolve({entries:[]});
@@ -134,6 +141,10 @@ function injectSource() {
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
         case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
+        case 'get_session_timeline': return Promise.resolve([
+          {turn_id:'copy-deepseek',event:'user_start',timestamp:1000,ui_turn_index:0},
+          {turn_id:'copy-deepseek',event:'assistant_done',timestamp:3000,status:'Completed',usage:{input_tokens:12,output_tokens:4}},
+        ]);
         case 'list_shell_tasks': return Promise.resolve(window.__SHELL_JOBS__);
         case 'cancel_shell_task':
           window.__CANCEL_SHELL_ARGS__=args;
@@ -413,6 +424,46 @@ async function expand(page) {
     codexManagedOpen.found && codexManagedState.view === 'codex' && codexManagedState.activeId === 'codex-1',
     JSON.stringify({ ...codexManagedOpen, ...codexManagedState }));
 
+  const codexAssistantCopy = await page.evaluate(async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async text => { window.__CODEX_ASSISTANT_COPY_TEXT__ = text; } },
+    });
+    const turn = [...document.querySelectorAll('section')]
+      .find(node => node.innerText.includes('Codex copy layout'));
+    const action = turn?.querySelector('[data-testid="assistant-message-actions"]');
+    const button = action?.querySelector('[data-testid="assistant-message-copy"]');
+    const footer = action?.closest('[data-testid="assistant-message-footer"]');
+    const children = [...(footer?.children || [])];
+    if (!button || children.length < 2) return { found: false, childCount: children.length };
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async () => { throw new Error('clipboard denied'); } },
+    });
+    document.execCommand = () => false;
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const firstRect = children[0].getBoundingClientRect();
+    return {
+      found: true,
+      copied: window.__CODEX_ASSISTANT_COPY_TEXT__ || '',
+      failureFeedback: button.textContent.trim(),
+      failureTitle: button.getAttribute('title') || '',
+      childCount: children.length,
+      sameRow: children.every(node => {
+        const rect = node.getBoundingClientRect();
+        return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;
+      }),
+    };
+  });
+  rec('①a-3b Codex 复制操作与完成状态保持同一行',
+    codexAssistantCopy.found && codexAssistantCopy.copied === 'Codex copy layout' &&
+    codexAssistantCopy.failureFeedback === '复制失败' && codexAssistantCopy.failureTitle === '复制失败' &&
+    codexAssistantCopy.sameRow,
+    JSON.stringify(codexAssistantCopy));
+
   await clickText(page, '查看全部'); await sleep(400);
   const managedActiveState = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
@@ -691,6 +742,47 @@ async function expand(page) {
     restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));
+
+  const assistantCopy = await page.evaluate(async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async text => { window.__ASSISTANT_COPY_TEXT__ = text; } },
+    });
+    const action = [...document.querySelectorAll('[data-testid="assistant-message-actions"]')]
+      .find(node => node.closest('[data-conversation-turn]')?.innerText.includes('已生成会议纪要'));
+    const button = action?.querySelector('[data-testid="assistant-message-copy"]');
+    if (!button) return { found: false };
+    const turn = action.closest('[data-conversation-turn]');
+    const footer = action.closest('[data-testid="assistant-message-footer"]');
+    const footerChildren = [...(footer?.children || [])];
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return {
+      found: true,
+      copied: window.__ASSISTANT_COPY_TEXT__ || '',
+      renderedCard: turn?.innerText.includes("Reviewer's Agent") && turn?.innerText.includes("It's a highlighted JSON card"),
+      renderedQuestion: turn?.innerText.includes('继续执行？') && turn?.innerText.includes('继续') && turn?.innerText.includes('取消'),
+      hiddenPayloadAbsent: !turn?.innerText.includes('hidden-prompt') && !turn?.innerText.includes('"question"'),
+      feedback: button.textContent.trim(),
+      title: button.getAttribute('title') || '',
+      singleAction: turn?.querySelectorAll('[data-testid="assistant-message-actions"]').length === 1,
+      sharedFooter: Boolean(footer),
+      footerChildCount: footerChildren.length,
+      sameRow: footerChildren.length > 1 && footerChildren.every((node) => {
+        const firstRect = footerChildren[0].getBoundingClientRect();
+        const rect = node.getBoundingClientRect();
+        return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;
+      }),
+    };
+  });
+  rec('③a 每条完成态助手回复提供一键复制并显示成功反馈',
+    assistantCopy.found && assistantCopy.copied.includes('已生成会议纪要。') &&
+    assistantCopy.copied.includes("Reviewer's Agent\n\nIt's a highlighted JSON card") &&
+    assistantCopy.copied.includes('继续执行？\n\n1. 继续\n2. 取消') &&
+    assistantCopy.renderedCard && assistantCopy.renderedQuestion && assistantCopy.hiddenPayloadAbsent &&
+    assistantCopy.feedback === '已复制' && assistantCopy.title === '已复制' &&
+    assistantCopy.singleAction && assistantCopy.sharedFooter && assistantCopy.sameRow,
+    JSON.stringify(assistantCopy));
 
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
   // 必须恢复未发送内容，不得因组件重建清空。

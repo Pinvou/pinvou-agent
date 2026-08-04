@@ -957,14 +957,14 @@ async function scheduledRunningHydrationRaceBehavior() {
     artifacts: [],
   });
   assert.strictEqual(await opening, true);
-  var rendered = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
+  var hydratedItems = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems;
+  var rendered = JSON.stringify(hydratedItems);
   assert.ok(rendered.includes("persisted scheduled prompt"), "durable history should survive live hydration");
   assert.ok(rendered.includes("delta received during durable load"), "live deltas received during load should survive hydration");
-  assert.strictEqual(
-    (rendered.match(/delta received during durable load/g) || []).length,
-    1,
-    "durable and live overlap should render once"
-  );
+  var overlappingAssistantItems = hydratedItems.filter(function (item) {
+    return item.type === "assistant" && item.text === "delta received during durable load";
+  });
+  assert.strictEqual(overlappingAssistantItems.length, 1, "durable and live overlap should render once");
   assert.strictEqual(
     bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
       return item.type === "tool" && item.toolId === "tool-hydrate";
@@ -1225,8 +1225,13 @@ async function authoritativeHydrateDropsReplayedAssistantTail() {
   });
   assert.strictEqual(assistantItems.length, 1, "durable full answer must replace the replayed assistant tail");
   assert.strictEqual(
-    (JSON.stringify(assistantItems).match(/answer tail/g) || []).length,
-    1,
+    assistantItems[0].text,
+    "complete answer tail",
+    "the canonical assistant source must come from the authoritative full answer"
+  );
+  assert.strictEqual(
+    assistantItems.some(function (item) { return item.interruptedDisplayOnly === true; }),
+    false,
     "the mid-turn replay tail must not be appended after the authoritative full answer"
   );
 }

@@ -3281,7 +3281,7 @@
           textBuf += b.text;
         } else if (b.type === "thinking") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           var reasoningText = String(b.thinking || b.text || "");
@@ -3293,7 +3293,7 @@
           }
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
@@ -3377,7 +3377,7 @@
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+        addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {
@@ -3830,7 +3830,7 @@
       currentStreamText = "";
       currentStreamId = ++itemIdSeq;
       submittedStreamId = currentStreamId;
-      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+      state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
@@ -4776,6 +4776,7 @@
     // Update the streaming chat item
     var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
+      item.text = currentStreamText;
       item.html = renderMarkdown(currentStreamText);
       item.streaming = true;
     } else {
@@ -4784,6 +4785,7 @@
       state.chatItems.push({
         id: currentStreamId,
         type: "assistant",
+        text: currentStreamText,
         html: renderMarkdown(currentStreamText),
         time: timeStr(),
         streaming: true,
@@ -6657,7 +6659,7 @@
     startThinking();
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
-    state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     if (editBuffer) saveWorkingSetTo(editBuffer);
     notify();
     turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护

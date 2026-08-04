@@ -1528,7 +1528,7 @@
           textBuf += b.text;
         } else if (b.type === "thinking") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           var reasoningText = String(b.thinking || b.text || "");
@@ -1540,7 +1540,7 @@
           }
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
@@ -1624,7 +1624,7 @@
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+        addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {

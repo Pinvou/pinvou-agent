@@ -2,7 +2,6 @@ import {
   commandExecutionDetails,
   presentConversationItems,
 } from './conversation-model.js';
-
 const SHELL_TOOLS = new Set([
   'exec_shell',
   'exec_shell_wait',
@@ -29,12 +28,14 @@ function toolStatus(item) {
   return 'pending';
 }
 
-function projectItem(item, index) {
+function projectItem(item, index, copyOptions) {
   const id = stableItemId(item, index);
   if (item.type === 'assistant') {
     return {
       id,
       type: 'agent_message',
+      text: item.text || '',
+      copyOptions,
       status: item.streaming ? 'in_progress' : 'completed',
       legacyItem: item,
     };
@@ -184,6 +185,7 @@ export function projectDeepSeekConversation({
   tokens = null,
   sessionId = null,
   timelineEvents = [],
+  allowScheduledTaskDraft = false,
 } = {}) {
   const turns = [];
   const userTurns = [];
@@ -208,7 +210,7 @@ export function projectDeepSeekConversation({
       userTurns.push(current);
       continue;
     }
-    ensureTurn(index).items.push(projectItem(item, index));
+    ensureTurn(index).items.push(projectItem(item, index, { allowScheduledTaskDraft }));
   }
 
   for (const turn of turns) {

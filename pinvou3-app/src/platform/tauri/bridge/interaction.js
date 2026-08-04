@@ -286,7 +286,7 @@
     startThinking();
     context.currentStreamText = "";
     context.currentStreamId = ++context.itemIdSeq;
-    state.chatItems.push({ id: context.currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    state.chatItems.push({ id: context.currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     notify();
     turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
     try {

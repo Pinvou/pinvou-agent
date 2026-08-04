@@ -21,11 +21,9 @@ import {
   projectAcpTimeline,
   resolveAcpSessionControls,
 } from './acp-state.js';
-import {
-  ConversationActivityIndicator,
-  ConversationMarkdown,
-  ConversationTurn,
-} from '../conversation/ConversationTimeline.jsx';
+import { ConversationActivityIndicator, ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
+import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
+import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -607,6 +605,7 @@ function Turn({
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
   const running = turn.status === 'running';
   const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const assistantAvailable = assistantResponseAvailable(turn);
   return (
     <section className="space-y-4">
       {(turn.userText || turn.userAttachments.length > 0) && (
@@ -645,14 +644,17 @@ function Turn({
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
           ))}
-          {(turn.completedAt || turn.error) && (
-            <div className="flex items-center gap-2 pt-2">
+          {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
+            {assistantAvailable && (
+              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={copy} />
+            )}
+            {(turn.completedAt || turn.error) && <>
               <StatusBadge status={turn.status} />
               <span className="text-[11px] text-gray-400">{duration}</span>
               {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
-            </div>
-          )}
+            </>}
+          </AssistantMessageFooter>}
         </div>
       </div>
     </section>

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
-const conversationDir = path.join(temp, 'conversation');
+const conversationDir = path.join(temp, 'features', 'conversation');
 mkdirSync(conversationDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
@@ -131,6 +131,49 @@ try {
   assert.equal(projected.turns[2].waitingPermission, false);
   assert.equal(projected.turns[2].waitingInput, true);
   assert.deepEqual(projected.turns[2].usage, { used: 320, size: 4096 });
+
+  const rawMarkdownProjection = projectDeepSeekConversation({
+    sessionId: 'copy-contract',
+    chatItems: [
+      { id: 1, type: 'user', text: 'copy' },
+      { id: 2, type: 'assistant', text: '## Result\n\n- item', html: '<h2>Result</h2><ul><li>item</li></ul>' },
+    ],
+  });
+  assert.equal(rawMarkdownProjection.turns[0].items[0].text, '## Result\n\n- item');
+  assert.equal(rawMarkdownProjection.turns[0].items[0].copyText, undefined);
+  assert.deepEqual(
+    rawMarkdownProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: false },
+    'DeepSeek projection must defer canonical copy conversion until the user clicks copy',
+  );
+
+  const scheduledMarkdown = '```json\n{"name":"Daily","prompt":"Summarize","rrule":"FREQ=DAILY"}\n```';
+  const ordinaryScheduledProjection = projectDeepSeekConversation({
+    sessionId: 'ordinary-copy-contract',
+    chatItems: [
+      { id: 1, type: 'user', text: 'show schema' },
+      { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
+    ],
+  });
+  assert.equal(ordinaryScheduledProjection.turns[0].items[0].text, scheduledMarkdown);
+  assert.deepEqual(
+    ordinaryScheduledProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: false },
+  );
+  const taskCreationProjection = projectDeepSeekConversation({
+    sessionId: 'scheduled-copy-contract',
+    allowScheduledTaskDraft: true,
+    chatItems: [
+      { id: 1, type: 'user', text: 'create task' },
+      { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
+    ],
+  });
+  assert.equal(taskCreationProjection.turns[0].items[0].text, scheduledMarkdown);
+  assert.deepEqual(
+    taskCreationProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: true },
+    'scheduled-task classification must remain available to the lazy copy resolver',
+  );
 
   const history = projectDeepSeekConversation({
     chatItems,
