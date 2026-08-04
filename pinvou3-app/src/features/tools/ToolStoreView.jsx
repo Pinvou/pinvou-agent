@@ -1028,29 +1028,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
       }, []);
 
-      const markOAuthPending = (backendId, message = '已写入 MCP 配置，但尚未完成 OAuth 授权。') => {
-        setToolAuthStates(prev => ({
-          ...prev,
-          [backendId]: {
-            ...(prev[backendId] || {}),
-            installed: true,
-            mcp_configured: true,
-            oauth_required: true,
-            oauth_token_present: false,
-            status: 'config_installed_auth_pending',
-            message,
-          },
-        }));
-        if (selectedTool && selectedTool.backendId === backendId) {
-          setSelectedTool(prev => ({
-            ...prev,
-            installed: false,
-            authStatus: 'config_installed_auth_pending',
-            authMessage: message,
-          }));
-        }
-      };
-
       const cancelOAuthLoading = async (activeAlert) => {
         const backendId = activeAlert?.toolId;
         const requestId = activeAlert?.requestId;
