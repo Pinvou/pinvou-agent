@@ -101,11 +101,6 @@ pub fn pdf_dependency_packages() -> &'static str {
     "poppler"
 }
 
-/// macOS 自带 git 桩（首次调用触发 CLT 安装引导），不提供一键安装包。
-pub fn git_dependency_packages() -> &'static str {
-    ""
-}
-
 pub fn ocr_dependency_packages() -> &'static str {
     // 包含 tesseract-lang:Homebrew 的 tesseract formula 默认只装英文语言数据,
     // pinvou3 面向国内政企(中文是刚需),缺 tesseract-lang 时中文 OCR 不可用。
