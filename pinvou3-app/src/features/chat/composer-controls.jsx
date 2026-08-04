@@ -27,7 +27,7 @@ const ComposerKbSelector = ({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   const [collections, setCollections] = useState(null); // null=未加载
-  const [installed, setInstalled] = useState(null); // embedding 模型是否已装:null=未知(不闪 gate,mock/旧后端当已装)
+  const [modelStatus, setModelStatus] = useState(null); // null=未知；新后端同时返回 installed/ready/loading
   // 显式会话态驱动（代码车道）优先；否则读 bridge 聊天 active 的挂载态。
   // 代码车道当前仍可只传 mountedId/onMount/onUnmount，保持原单库契约兼容。
   const explicitMountState = mountedIdProp !== undefined || mountedCollectionsProp !== undefined;
@@ -54,15 +54,21 @@ const ComposerKbSelector = ({
     try { setCollections((await bridge.knowledge.listCollections()) || []); }
     catch (e) { setCollections([]); }
   };
-  const refreshInstalled = async () => {
-    if (!bridge.available || !bridge.knowledge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
-    try { const m = await bridge.knowledge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
-    catch (e) { setInstalled(true); }
+  const refreshModelStatus = async () => {
+    if (!bridge.available || !bridge.knowledge.kbModelStatus) { setModelStatus({ installed: true }); return; } // mock/旧后端不 gate
+    try { const m = await bridge.knowledge.kbModelStatus(); setModelStatus(m || { installed: true }); }
+    catch (e) { setModelStatus({ installed: true }); }
   };
-  useEffect(() => { refreshInstalled(); }, []);
-  // 下载部署完成后 bs.kbModelSetup.status.installed 变 true → 立即开门,免重开菜单。
-  const setupInstalled = !!(bs && bs.kbModelSetup && bs.kbModelSetup.status && bs.kbModelSetup.status.installed);
-  useEffect(() => { if (setupInstalled) setInstalled(true); }, [setupInstalled]);
+  useEffect(() => { refreshModelStatus(); }, []);
+  // 首帧后台加载/下载完成后由 bridge 推送真实进程态，免重开菜单。
+  const modelSetup = (bs && bs.kbModelSetup) || {};
+  const setupStatus = modelSetup.status || null;
+  useEffect(() => {
+    if (setupStatus) setModelStatus(setupStatus);
+    else if (modelSetup.startupReady === true) {
+      setModelStatus(status => Object.assign({}, status || { installed: true }, { ready: true, loading: false }));
+    }
+  }, [setupStatus, modelSetup.startupReady]);
   // 已挂载但还没列表 → 拉一次用于显示名字。
   const mountedKey = mountedEntries.map(entry => `${entry.collectionId}:${entry.enabled}`).join('|');
   useEffect(() => {
@@ -85,11 +91,18 @@ const ComposerKbSelector = ({
     `${mountedNames[index]} (${entry.enabled ? t.kbMountEnabled : t.kbMountDisabled})`
   )).join(' · ');
   const active = mountedEntries.length > 0;
-  const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
+  const modelMissing = modelStatus && modelStatus.installed === false;
+  const runtimeReadyKnown = modelStatus && typeof modelStatus.ready === 'boolean';
+  const modelNotReady = !modelMissing && (
+    modelSetup.startupLoading === true
+    || (runtimeReadyKnown && modelStatus.ready === false && modelSetup.startupReady !== true)
+  );
+  const modelBlocked = modelMissing || modelNotReady;
+  const modelBlockedCopy = modelMissing ? t.kbMountNoModel : t.kbMountNotReady;
 
-  function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
+  function toggle() { const next = !open; setOpen(next); if (next) { refreshModelStatus(); if (collections === null) loadList(); } }
   function pick(id) {
-    if (modelMissing) return;
+    if (modelBlocked) return;
     if (mountedEntry(id)) return;
     if (explicitMountState) setOpen(false);
     if (onMount) { onMount(id); return; }
@@ -97,7 +110,7 @@ const ComposerKbSelector = ({
   }
   function toggleEnabled(id) {
     const entry = mountedEntry(id);
-    if (!entry || (modelMissing && !entry.enabled)) return;
+    if (!entry || (modelBlocked && !entry.enabled)) return;
     if (onSetCollectionEnabled) { onSetCollectionEnabled(id, !entry.enabled); return; }
     if (!explicitMountState && bridge.available) bridge.knowledge.setCollectionEnabled(id, !entry.enabled);
   }
@@ -114,10 +127,10 @@ const ComposerKbSelector = ({
 
   return (
     <div className="relative">
-      <button ref={triggerRef} onClick={toggle} data-testid="kb-mount-trigger" title={active ? mountedTitle : (modelMissing ? t.kbMountNoModel : t.kbMountTitle)}
+      <button ref={triggerRef} onClick={toggle} data-testid="kb-mount-trigger" title={active ? mountedTitle : (modelBlocked ? modelBlockedCopy : t.kbMountTitle)}
         className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold'} ${active
           ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#007AFF]/10 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/25')
-          : modelMissing
+          : modelBlocked
             ? 'bg-transparent text-gray-400 dark:text-gray-600 border-transparent opacity-70'
             : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]')}`}>
         <BookOpen size={compact ? 18 : 13} className="opacity-70 shrink-0" />
@@ -127,8 +140,8 @@ const ComposerKbSelector = ({
       </button>
       <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
         desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-            {modelMissing && (
-              <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
+            {modelBlocked && (
+              <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{modelBlockedCopy}</div>
             )}
             {collections === null ? (
               <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">…</div>
@@ -136,7 +149,7 @@ const ComposerKbSelector = ({
               <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNone}</div>
             ) : displayedCollections.map(c => {
               const entry = mountedEntry(c.id);
-              const disabled = modelMissing && (!entry || !entry.enabled);
+              const disabled = modelBlocked && (!entry || !entry.enabled);
               return (
                 <div key={c.id} data-testid="kb-mount-row"
                   className="flex items-center rounded-xl text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white transition-colors group">

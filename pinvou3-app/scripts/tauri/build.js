@@ -89,15 +89,21 @@ function prepareTauriArgs(
   return prepared;
 }
 
-function runTauri(preparedArgs, spawn = spawnSync) {
+function runTauri(preparedArgs, spawn = spawnSync, environment = process.env) {
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
   const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
     cwd: APP_ROOT,
-    env: { ...process.env, [WRAPPER_ENV]: "1" },
+    env: { ...environment, [WRAPPER_ENV]: "1" },
     stdio: "inherit",
   });
   if (child.error) throw child.error;
   return child.status === null ? 1 : child.status;
+}
+
+function tauriRuntimeEnvironment(runtime, environment = process.env) {
+  return runtime
+    ? { ...environment, ORT_DYLIB_PATH: runtime.onnxRuntimeDylib }
+    : environment;
 }
 
 function main() {
@@ -110,9 +116,14 @@ function main() {
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
   const additionalConfigs = [];
+  // Windows 的 fastembed 使用动态 ONNX Runtime。正式包通过 resource overlay 携带 DLL；
+  // dev 不会复制 bundle resources，因此也要完成同一份固定运行时 staging，并通过环境变量
+  // 把 DLL 的绝对路径交给后端。否则磁盘模型虽已安装，进程仍会一直处于 not-ready。
   const windowsRuntime =
-    hasTauriBuildCommand && process.platform === "win32" ? stageWindowsRuntime() : null;
-  if (windowsRuntime) {
+    (hasTauriBuildCommand || isDev) && process.platform === "win32"
+      ? stageWindowsRuntime()
+      : null;
+  if (windowsRuntime && hasTauriBuildCommand) {
     stageWindowsInstaller({
       bundleTargets: windowsBundleTargets(args),
       runtime: windowsRuntime,
@@ -149,7 +160,8 @@ function main() {
     );
   }
 
-  process.exitCode = runTauri(preparedArgs);
+  const tauriEnvironment = tauriRuntimeEnvironment(windowsRuntime);
+  process.exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
 }
 
 if (require.main === module) {
@@ -170,6 +182,7 @@ module.exports = {
   stageWindowsRuntime,
   prepareTauriArgs,
   runTauri,
+  tauriRuntimeEnvironment,
   tauriCommandIndex,
   windowsBundleTargets,
 };

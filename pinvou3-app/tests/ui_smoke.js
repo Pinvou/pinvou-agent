@@ -47,6 +47,7 @@ function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
+    window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false};
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
@@ -155,7 +156,7 @@ function injectSource() {
         }
         case 'session_remove_mounted_collection': MOUNTED_COLLECTIONS=MOUNTED_COLLECTIONS.filter(function(item){return item.collectionId!==args.collectionId;}); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
         case 'session_unmount_collection': MOUNTED_COLLECTIONS=[]; MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
-        case 'kb_model_status': return Promise.resolve({installed:true});
+        case 'kb_model_status': return Promise.resolve(window.__KB_MODEL_STATUS__);
         case 'kb_collection_list': return Promise.resolve([
           {id:7,name:'项目资料',docCount:3},
           {id:8,name:'团队规范',docCount:5},
@@ -804,6 +805,31 @@ async function expand(page) {
     multiKb.mountedCollection === null &&
     multiKb.menuText.includes('项目资料') && multiKb.menuText.includes('已停用'),
     JSON.stringify(multiKb));
+  const kbRuntimeGate = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    window.__KB_MODEL_STATUS__ = { installed: true, ready: false, loading: true };
+    const trigger = document.querySelector('[data-testid="kb-mount-trigger"]');
+    // 上一个场景结束时菜单仍展开：先关闭，再打开以刷新运行时状态。
+    trigger?.click();
+    await wait(50);
+    trigger?.click();
+    await wait(100);
+    const row = [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
+      .find(node => (node.textContent || '').includes('团队规范'));
+    const toggle = row?.querySelector('[data-testid="kb-mount-toggle"]');
+    const before = window.__TAURI_INVOKES__.filter(call => call.cmd === 'session_add_mounted_collection').length;
+    toggle?.click();
+    await wait(50);
+    const after = window.__TAURI_INVOKES__.filter(call => call.cmd === 'session_add_mounted_collection').length;
+    return {
+      disabled: Boolean(toggle && toggle.disabled),
+      blockedCopy: document.body.innerText.includes('Embedding 模型正在加载或加载失败'),
+      mountCallsUnchanged: before === after,
+    };
+  });
+  rec('③a-2 模型文件已安装但运行时未就绪时不允许挂载',
+    kbRuntimeGate.disabled && kbRuntimeGate.blockedCopy && kbRuntimeGate.mountCallsUnchanged,
+    JSON.stringify(kbRuntimeGate));
   const assistantCopy = await page.evaluate(async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

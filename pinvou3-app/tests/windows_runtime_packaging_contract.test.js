@@ -104,6 +104,7 @@ for (const contract of [
   "Test-StageInventory",
   ".verified-stage.json",
   "Get-RuntimeDescriptorContent",
+  "onnxRuntimeDylib",
   'delivery = "download-on-first-use"',
 ]) {
   assert.ok(runtimeScript.includes(contract), `runtime staging must retain ${contract}`);
@@ -145,6 +146,7 @@ assert.match(initScript, /if \(\$exitCode -ne 0\)/);
 assert.match(runtimeWrapper, /runtime-descriptor\.json/);
 assert.match(runtimeWrapper, /cleanupLegacyWindowsNodeStaging/);
 assert.match(runtimeWrapper, /download-on-first-use/);
+assert.match(runtimeWrapper, /onnxRuntimeDylib/);
 assert.match(installerAdapter, /bundleTargets\.includes\("nsis"\)/);
 assert.equal(
   windowsConfig.bundle.windows.nsis.installerHooks,
@@ -220,6 +222,16 @@ assert.ok(
   buildScript.indexOf("stageWindowsRuntime()") <
     buildScript.indexOf("stageWindowsInstaller({"),
   "runtime resolver must run before the installer adapter",
+);
+assert.match(
+  buildScript,
+  /\(hasTauriBuildCommand \|\| isDev\)[\s\S]*?stageWindowsRuntime\(\)/,
+  "Windows dev must stage the pinned runtime before starting Tauri",
+);
+assert.match(
+  buildScript,
+  /ORT_DYLIB_PATH:\s*runtime\.onnxRuntimeDylib/,
+  "Windows dev must expose the staged ONNX Runtime to fastembed",
 );
 assert.ok(
   buildScript.indexOf("stageWindowsInstaller({") <

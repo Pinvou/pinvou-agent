@@ -256,7 +256,9 @@
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
-      status: null,       // kb_model_status 返回 { installed, downloading, sizeBytes, installedBytes, version }
+      startupLoading: false,
+      startupReady: null,
+      status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
       error: null,
     },

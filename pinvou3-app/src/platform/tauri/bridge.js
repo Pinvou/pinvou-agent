@@ -79,14 +79,29 @@
 
   async function loadKnowledgeEmbedderAfterFirstFrame() {
     startupMark("bridge:knowledge_embedder_async:start");
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: true,
+      startupReady: null,
+      error: null,
+    });
+    notify();
     try {
       var ready = await invoke("kb_model_load_after_first_frame");
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { startupReady: !!ready });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        startupLoading: false,
+        startupReady: !!ready,
+      });
       notify();
       startupMark("bridge:knowledge_embedder_async:done", "ready=" + !!ready);
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       return !!ready;
     } catch (error) {
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        startupLoading: false,
+        startupReady: false,
+        error: String(error),
+      });
+      notify();
       startupMark("bridge:knowledge_embedder_async:error", String(error));
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       console.warn("[knowledge] embedding 后台加载失败", error);
@@ -326,7 +341,9 @@
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
-      status: null,       // kb_model_status 返回 { installed, downloading, sizeBytes, installedBytes, version }
+      startupLoading: false, // 已安装模型在首帧后的后台加载状态
+      startupReady: null, // null=未知；true=当前进程可用；false=未安装或加载失败
+      status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
       error: null,
     },

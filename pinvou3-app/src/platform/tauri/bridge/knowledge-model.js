@@ -17,7 +17,13 @@
     notify();
     try {
       var st = await invoke("kb_model_download");
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, status: st, progress: { stage: "done" } });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        downloading: false,
+        startupLoading: false,
+        startupReady: st && typeof st.ready === "boolean" ? st.ready : true,
+        status: st,
+        progress: { stage: "done" },
+      });
       notify();
       return st;
     } catch (e) {

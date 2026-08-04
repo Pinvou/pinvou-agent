@@ -56,6 +56,10 @@ function describeWindowsRuntime(descriptorPath = WINDOWS_RUNTIME_DESCRIPTOR_PATH
     "nodeExecutable",
   );
   const npmExecPath = resolveDescriptorPath(descriptor.npmExecPath, "npmExecPath");
+  const onnxRuntimeDylib = resolveDescriptorPath(
+    descriptor.onnxRuntimeDylib,
+    "onnxRuntimeDylib",
+  );
   const vcRedistSource = resolveDescriptorPath(
     descriptor.vcRedist?.source,
     "vcRedist.source",
@@ -64,6 +68,7 @@ function describeWindowsRuntime(descriptorPath = WINDOWS_RUNTIME_DESCRIPTOR_PATH
     [configPath, " Tauri overlay"],
     [nodeExecutable, " Codex Bridge Node"],
     [npmExecPath, " Codex Bridge npm CLI"],
+    [onnxRuntimeDylib, " ONNX Runtime"],
     [vcRedistSource, " VC++ Runtime"],
   ]) {
     requireFile(filePath, label);
@@ -92,6 +97,7 @@ function describeWindowsRuntime(descriptorPath = WINDOWS_RUNTIME_DESCRIPTOR_PATH
     descriptorPath,
     nodeExecutable,
     npmExecPath,
+    onnxRuntimeDylib,
     vcRedist: {
       sourcePath: vcRedistSource,
       bytes: descriptor.vcRedist.bytes,

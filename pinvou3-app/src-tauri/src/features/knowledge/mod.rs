@@ -121,29 +121,26 @@ impl KnowledgeService {
 
     /// 构建 embedding 模型。调用方必须把它放进 `spawn_blocking`，该过程会同步读取约
     /// 558 MiB 的 ONNX/Tokenizer 文件并创建推理会话。
-    fn load_embedder(model_dir: Option<&Path>) -> Option<Arc<embed::Embedder>> {
+    fn load_embedder(model_dir: Option<&Path>) -> Result<Arc<embed::Embedder>, String> {
         embed::Embedder::from_env_or_dir(model_dir).map(Arc::new)
     }
 
     /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
-    fn install_embedder(&self, embedder: Option<Arc<embed::Embedder>>) -> bool {
-        let ready = embedder.is_some();
-        if let Some(e) = &embedder {
-            eprintln!(
-                "[knowledge] L1 embedding 已启用: {} ({})",
-                e.model(),
-                e.source()
-            );
-        }
-        self.l1.set_embedder(embedder);
-        ready
+    fn install_embedder(&self, embedder: Arc<embed::Embedder>) -> bool {
+        eprintln!(
+            "[knowledge] L1 embedding 已启用: {} ({})",
+            embedder.model(),
+            embedder.source()
+        );
+        self.l1.set_embedder(Some(embedder));
+        true
     }
 
     /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
     /// 换进所有在跑会话/后台线程共享的 embedder 槽，**免重启**。返回是否就绪。
-    pub fn reload_embedder(&self) -> bool {
-        let embedder = Self::load_embedder(Some(&model_dir()));
-        self.install_embedder(embedder)
+    pub fn reload_embedder(&self) -> Result<bool, String> {
+        let embedder = Self::load_embedder(Some(&model_dir()))?;
+        Ok(self.install_embedder(embedder))
     }
 
     /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search/kb_open_source

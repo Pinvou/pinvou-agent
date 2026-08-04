@@ -58,28 +58,21 @@ impl Embedder {
     }
 
     /// 定位模型目录并加载。优先 env `PINVOU3_KB_EMBED_MODEL_DIR`(开发用 run-dev.sh 设);
-    /// env 缺失则用 `fallback`(生产=随 deb 打包的资源目录,见 lib.rs)。两者都无 → None(fts-only)。
-    /// 名称 env `PINVOU3_KB_EMBED_MODEL`(默认 bge-m3)。加载失败也 → None,不阻断,上层退全文检索。
-    pub fn from_env_or_dir(fallback: Option<&Path>) -> Option<Self> {
+    /// env 缺失则用 `fallback`。名称 env `PINVOU3_KB_EMBED_MODEL`(默认 bge-m3)。
+    /// 保留具体加载错误交给服务层记录/返回，避免把“文件已安装但运行时加载失败”误报成未配置。
+    pub fn from_env_or_dir(fallback: Option<&Path>) -> Result<Self, String> {
         let dir: PathBuf = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from)
-            .or_else(|| fallback.map(|p| p.to_path_buf()))?;
+            .or_else(|| fallback.map(|p| p.to_path_buf()))
+            .ok_or_else(|| "未配置 embedding 模型目录".to_string())?;
         let name = std::env::var("PINVOU3_KB_EMBED_MODEL")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "bge-m3".into());
-        match Self::from_dir(&dir, &name) {
-            Ok(e) => Some(e),
-            Err(err) => {
-                eprintln!(
-                    "[knowledge] embedding 模型加载失败({}): {err}",
-                    dir.display()
-                );
-                None
-            }
-        }
+        Self::from_dir(&dir, &name)
+            .map_err(|err| format!("embedding 模型加载失败({}): {err}", dir.display()))
     }
 
     pub fn model(&self) -> &str {
@@ -115,8 +108,8 @@ impl Embedder {
 
 #[cfg(not(feature = "local-embed"))]
 impl Embedder {
-    pub fn from_env_or_dir(_fallback: Option<&Path>) -> Option<Self> {
-        None
+    pub fn from_env_or_dir(_fallback: Option<&Path>) -> Result<Self, String> {
+        Err("local embedding feature disabled".to_string())
     }
 
     pub fn model(&self) -> &str {
@@ -181,11 +174,12 @@ mod tests {
     #[ignore]
     fn embed_smoke() {
         let emb = match Embedder::from_env_or_dir(None) {
-            Some(e) => e,
-            None => {
+            Ok(e) => e,
+            Err(_) if std::env::var_os("PINVOU3_KB_EMBED_MODEL_DIR").is_none() => {
                 eprintln!("SKIP: 未设 PINVOU3_KB_EMBED_MODEL_DIR");
                 return;
             }
+            Err(err) => panic!("embedding 模型加载失败: {err}"),
         };
         let v = emb.embed_one("汽车保险报价流程").expect("embed 失败");
         eprintln!("dim = {}", v.len());

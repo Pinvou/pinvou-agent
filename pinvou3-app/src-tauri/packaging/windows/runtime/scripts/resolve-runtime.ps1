@@ -326,6 +326,7 @@ function Get-RuntimeDescriptorContent {
     configPath = "target/windows-runtime/tauri.generated.conf.json"
     nodeExecutable = "$relativeRoot/expanded/node/node.exe"
     npmExecPath = "$relativeRoot/expanded/node/node_modules/npm/bin/npm-cli.js"
+    onnxRuntimeDylib = "$relativeRoot/expanded/onnxruntime/onnxruntime.dll"
     vcRedist = [ordered]@{
       source = "$relativeRoot/expanded/vc_redist/VC_redist.x64.exe"
       bytes = [long](Get-Item -LiteralPath $vcRedistPath).Length

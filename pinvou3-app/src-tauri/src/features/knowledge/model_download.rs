@@ -46,8 +46,12 @@ fn installed() -> bool {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbModelStatus {
-    /// 模型已部署（语义检索可用）。
+    /// 模型文件已部署到磁盘；不等同于进程内推理已就绪。
     pub installed: bool,
+    /// 模型已成功加载进当前进程，可执行语义检索和挂载。
+    pub ready: bool,
+    /// 启动后的后台模型加载仍在进行。
+    pub loading: bool,
     /// 正在下载/部署中。
     pub downloading: bool,
     /// 下载包近似大小（展示用）。
@@ -57,9 +61,11 @@ pub struct KbModelStatus {
     pub version: String,
 }
 
-fn current_status() -> KbModelStatus {
+fn current_status(service: &KnowledgeService) -> KbModelStatus {
     KbModelStatus {
         installed: installed(),
+        ready: service.semantic_ready(),
+        loading: STARTUP_LOADING.load(Ordering::Relaxed),
         downloading: DOWNLOADING.load(Ordering::Relaxed),
         size_bytes: DISPLAY_DOWNLOAD_BYTES,
         installed_bytes: DISPLAY_INSTALLED_BYTES,
@@ -68,8 +74,8 @@ fn current_status() -> KbModelStatus {
 }
 
 /// 前端查询模型状态（offline，不联网）。
-pub fn kb_model_status() -> KbModelStatus {
-    current_status()
+pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelStatus {
+    current_status(&service)
 }
 
 /// 取消进行中的下载（下次 chunk / 解压前生效）。
@@ -87,6 +93,9 @@ pub async fn kb_model_load_after_first_frame(
     if service.semantic_ready() {
         return Ok(true);
     }
+    if !installed() {
+        return Ok(false);
+    }
     if STARTUP_LOADING.swap(true, Ordering::SeqCst) {
         return Ok(false);
     }
@@ -96,7 +105,15 @@ pub async fn kb_model_load_after_first_frame(
     let dir = super::model_dir();
     let embedder = tokio::task::spawn_blocking(move || KnowledgeService::load_embedder(Some(&dir)))
         .await
-        .map_err(|e| format!("embedding 后台加载任务失败: {e}"))?;
+        .map_err(|e| format!("embedding 后台加载任务失败: {e}"))?
+        .map_err(|e| {
+            crate::platform::startup::mark_with_detail(
+                "rust",
+                "knowledge_embedder_async:error",
+                &e,
+            );
+            e
+        })?;
 
     // 若另一路热加载已抢先完成，不用较旧的构建结果覆盖它。
     if !service.semantic_ready() {
@@ -123,7 +140,22 @@ pub async fn kb_model_download(
     use tauri::Emitter;
 
     if installed() {
-        return Ok(current_status());
+        if service.semantic_ready() {
+            return Ok(current_status(&service));
+        }
+        if STARTUP_LOADING.load(Ordering::SeqCst) {
+            return Err("模型正在加载中".into());
+        }
+        let dir = super::model_dir();
+        let embedder =
+            tokio::task::spawn_blocking(move || KnowledgeService::load_embedder(Some(&dir)))
+                .await
+                .map_err(|e| format!("embedding 后台加载任务失败: {e}"))??;
+        if !service.semantic_ready() {
+            service.install_embedder(embedder);
+        }
+        super::refresh_kb_tool_gate(&pool).await;
+        return Ok(current_status(&service));
     }
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
@@ -225,13 +257,17 @@ pub async fn kb_model_download(
     .map_err(|e| format!("解压任务失败: {e}"))??;
 
     // ── 4. 热加载 + 刷新工具门控（免重启）─────────────────────────
-    let ready = service.reload_embedder();
+    let dir = super::model_dir();
+    let embedder = tokio::task::spawn_blocking(move || KnowledgeService::load_embedder(Some(&dir)))
+        .await
+        .map_err(|e| format!("embedding 后台加载任务失败: {e}"))??;
+    let ready = service.install_embedder(embedder);
     super::refresh_kb_tool_gate(&pool).await;
     let _ = app.emit(
         "kb_model:progress",
         serde_json::json!({ "stage": "done", "ready": ready }),
     );
-    Ok(current_status())
+    Ok(current_status(&service))
 }
 
 /// `DOWNLOADING` 复位守卫（任何提前 return 都复位，含 `?` 早退与取消）。

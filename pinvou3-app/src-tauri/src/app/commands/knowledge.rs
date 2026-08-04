@@ -233,7 +233,7 @@ sync_command_passthrough!(knowledge_domain, kb_embed_info(state: State<'_, Knowl
 async_command_passthrough!(knowledge_domain, kb_search(state: State<'_, KnowledgeService>, query: SearchQueryDto) -> Result<Vec<FileHit>, String>);
 async_command_passthrough!(knowledge_domain, kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String>);
 
-sync_command_passthrough!(model_domain, kb_model_status() -> KbModelStatus);
+sync_command_passthrough!(model_domain, kb_model_status(service: State<'_, KnowledgeService>) -> KbModelStatus);
 sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
 async_command_passthrough!(model_domain, kb_model_download(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<KbModelStatus, String>);
