@@ -296,7 +296,7 @@ impl Pinvou3Bundle {
     /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
     /// 半套目录却被 SkillRegistry 当成已连接。实时真相在首屏后的 CLI 探测中刷新。
     pub(super) fn cached_feishu_skills_visible(&self) -> bool {
-        crate::platform::connector_state::feishu_skills_visible()
+        crate::features::connectors::connector_state::feishu_skills_visible()
             && LARK_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
@@ -322,7 +322,7 @@ impl Pinvou3Bundle {
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的企微技能目录作为启动缓存。
     pub(super) fn cached_wecom_skills_visible(&self) -> bool {
-        crate::platform::connector_state::wecom_skills_visible()
+        crate::features::connectors::connector_state::wecom_skills_visible()
             && WECOM_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
@@ -344,7 +344,7 @@ impl Pinvou3Bundle {
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的钉钉技能目录作为启动缓存。
     pub(super) fn cached_dingtalk_skills_visible(&self) -> bool {
-        crate::platform::connector_state::dingtalk_skills_visible()
+        crate::features::connectors::connector_state::dingtalk_skills_visible()
             && DINGTALK_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
@@ -366,7 +366,7 @@ impl Pinvou3Bundle {
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的腾讯会议技能目录作为启动缓存。
     pub(super) fn cached_tmeet_skills_visible(&self) -> bool {
-        crate::platform::connector_state::tmeet_skills_visible()
+        crate::features::connectors::connector_state::tmeet_skills_visible()
             && TMEET_SKILL_DIRS
                 .iter()
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
