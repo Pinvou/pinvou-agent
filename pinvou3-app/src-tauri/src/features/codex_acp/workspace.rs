@@ -325,8 +325,10 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
 
 /// diff 内存缓存：键 = (session_id, 相对路径)，值 = 文件指纹 + diff 文本。
 /// 指纹覆盖工作区文件（size + mtime 纳秒 + 头尾采样 hash——内容变而 size/mtime
-/// 未变（同尺寸覆盖写）也能失效）与 `.git/index`（git add/reset 等暂存区变化
-/// 会更新 index），任一变化即失效；仅进程内存、不落盘，重启即清空。
+/// 未变（同尺寸覆盖写）也能失效）、`.git/index`（git add/reset 等暂存区变化
+/// 会更新 index）与 HEAD 指向的 ref 文件（reset --soft / update-ref / commit 只
+/// 移动 HEAD、可能不更新 index 或工作区——而 git diff --cached 依赖 HEAD），
+/// 任一变化即失效；仅进程内存、不落盘，重启即清空。
 const DIFF_CACHE_MAX_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,6 +338,8 @@ struct DiffFingerprint {
     head_tail_hash: u64,
     index_size: u64,
     index_modified: u128,
+    head_ref_size: u64,
+    head_ref_modified: u128,
 }
 
 #[derive(Clone)]
@@ -393,6 +397,8 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         head_tail_hash: 0,
         index_size: 0,
         index_modified: 0,
+        head_ref_size: 0,
+        head_ref_modified: 0,
     };
     if let Ok(metadata) = root.join(relative).metadata() {
         fingerprint.file_size = metadata.len();
@@ -404,7 +410,29 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         fingerprint.index_size = metadata.len();
         fingerprint.index_modified = modified_nanos(&metadata);
     }
+    // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref / commit 只移动
+    // HEAD（改写其指向的 ref 文件），可能不更新 .git/index 或工作区。解析 .git/HEAD
+    // （多为 symref: ref: refs/heads/<branch>）后 stat 目标文件，使此类改动也能失效。
+    if let Some(head_ref) = head_ref_path(root) {
+        if let Ok(metadata) = head_ref.metadata() {
+            fingerprint.head_ref_size = metadata.len();
+            fingerprint.head_ref_modified = modified_nanos(&metadata);
+        }
+    }
     fingerprint
+}
+
+// 解析 .git/HEAD：symref（`ref: refs/heads/<branch>`）→ `.git/` 下的 ref 文件路径；
+// 分离头（直接存 commit SHA）→ .git/HEAD 本身。reset --soft / update-ref 改写后者，
+// stat 它即可让指纹失效。非 git 工作区无 .git/HEAD 时返回 None。
+fn head_ref_path(root: &Path) -> Option<PathBuf> {
+    let git_dir = root.join(".git");
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    match head.trim().strip_prefix("ref:") {
+        // symref 目标相对 .git/（如 refs/heads/main），需在 git_dir 下解析。
+        Some(target) => Some(git_dir.join(target.trim())),
+        None => Some(git_dir.join("HEAD")),
+    }
 }
 
 fn diff_cache_get(session_id: &str, root: &Path, relative: &str) -> Option<CachedDiff> {
@@ -1155,6 +1183,29 @@ mod tests {
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
         // 暂存区变化（.git/index 重写）→ 指纹变化。
         fs::write(root.path().join(".git/index"), b"idx2").unwrap();
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+    }
+
+    #[test]
+    fn diff_fingerprint_invalidates_on_head_change() {
+        // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref 只改写 HEAD
+        // 指向的 ref 文件、不更新 .git/index 或工作区——指纹必须覆盖此场景，否则缓存
+        // 会返回陈旧差异。.git/HEAD 多为 symref（ref: refs/heads/<branch>），目标文件
+        // 是 41 字节的 SHA（不同提交同尺寸），故此处以同尺寸重写验证 mtime 失效。
+        let root = TestDir::new("diff-fingerprint-head");
+        fs::create_dir_all(root.path().join(".git/refs/heads")).unwrap();
+        let head_ref = root.path().join(".git/refs/heads/main");
+        fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(&head_ref, format!("{}\n", "a".repeat(40))).unwrap();
+        fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
+
+        let baseline = diff_fingerprint(root.path(), "main.py");
+        // 等价 reset --soft <other-commit>：分支 ref 同尺寸改写（index 与工作区不变）。
+        fs::write(&head_ref, format!("{}\n", "b".repeat(40))).unwrap();
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+
+        // symref 目标切换（checkout）也算 HEAD 变化：HEAD 文件内容改写即失效。
+        fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
 

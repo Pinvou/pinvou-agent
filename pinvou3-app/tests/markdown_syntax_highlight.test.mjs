@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { renderMarkdownMarkup } from '../src/shared/markdown-renderer.js';
 import {
   highlightCode,
+  highlightDiffCode,
   MAX_HIGHLIGHT_SOURCE_BYTES,
   normalizeSyntaxLanguage,
   supportedSyntaxLanguages,
@@ -130,6 +131,18 @@ const oversizedUtf8 = highlightCode(
 );
 assert.equal(oversizedUtf8.language, 'plaintext');
 assert.equal(oversizedUtf8.oversized, true);
+
+// diff 视图走逐行前缀着色（highlightDiffCode），刻意绕过 MAX_HIGHLIGHT_SOURCE_BYTES：
+// 超过普通回落阈值的 diff 仍必须保留行级高亮（+/-/@@/文件头），否则该优化路径会静默
+// 退化为无高亮纯文本。此处对照上面的 oversizedJavaScript（回退 plaintext）验证差异。
+const oversizedDiff = highlightDiffCode(
+  `+${'a'.repeat(MAX_HIGHLIGHT_SOURCE_BYTES)}\n-${'b'.repeat(MAX_HIGHLIGHT_SOURCE_BYTES)}\n`,
+);
+assert.equal(oversizedDiff.highlighted, true);
+assert.equal(oversizedDiff.language, 'diff');
+assert.match(oversizedDiff.html, /hljs-addition">/u);
+assert.match(oversizedDiff.html, /hljs-deletion">/u);
+assert.equal(oversizedDiff.oversized, undefined);
 
 const cachedSource = 'const cacheProbe = () => 42;';
 const cachedFirst = highlightCode(cachedSource, 'javascript');
