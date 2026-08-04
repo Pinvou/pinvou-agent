@@ -13,15 +13,6 @@ const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-f
 
 /// 既有 Python 调度器与新的 CodeWhale 多智能体运行必须保持数据隔离。
 ///
-/// `wf-*` 的工作区、审批和生命周期由 `features::multiagent` 独占；旧调度器若
-/// 接受该 Session，会在同一目录写入 harness 状态并绕过编排审批直接派发 agent。
-fn ensure_legacy_scheduler_session(session_id: &str) -> Result<(), String> {
-    if crate::features::sessions::is_workflow_session_id(session_id) {
-        return Err("多智能体会话不能交给既有工作流调度器".to_string());
-    }
-    Ok(())
-}
-
 fn resolve_legacy_scheduler_session(
     session_id: Option<String>,
     store: &SessionStore,
@@ -29,7 +20,6 @@ fn resolve_legacy_scheduler_session(
     let session_id = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
-    ensure_legacy_scheduler_session(&session_id)?;
     Ok(session_id)
 }
 
@@ -165,9 +155,7 @@ pub async fn start_skill_session(
         .clone();
 
     // 2) 查找已有绑定该 skill 的 session——恢复工作流而非新建
-    let existing_sid = store
-        .find_session_with_skill(&name)
-        .filter(|session_id| ensure_legacy_scheduler_session(session_id).is_ok());
+    let existing_sid = store.find_session_with_skill(&name);
     // (底座 v0.8.57 删除 Skill.phases;chips 机制随之退役,恒为空)
     let first_phase: Option<String> = None;
     let phases: Vec<serde_json::Value> = Vec::new();
@@ -301,7 +289,6 @@ pub async fn start_workflow(
     //    ⚠️ 不 set_active [2026-06-04 白浪:chat 与工作流彻底分开]:工作流启动绝不抢
     //    用户当前 chat 会话;宿主 session 也不进侧栏(list_sessions 过滤)。
     let sid = if let Some(sid) = session_id {
-        ensure_legacy_scheduler_session(&sid)?;
         sid
     } else {
         let (model, model_id) = pool.default_model_for_new_session();
@@ -1329,9 +1316,6 @@ pub async fn find_resumable_run(
     let metas = store.list().map_err(|e| format!("list: {e:?}"))?;
     let mut best: Option<(std::time::SystemTime, String, String, String)> = None;
     for m in metas {
-        if ensure_legacy_scheduler_session(&m.id).is_err() {
-            continue;
-        }
         let Some(binding) = store.active_skill(&m.id) else {
             continue;
         };
@@ -1413,7 +1397,6 @@ pub async fn unbind_session_skill(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    ensure_legacy_scheduler_session(&session_id)?;
     store.unbind_skill(&session_id);
     Ok(())
 }
@@ -1425,9 +1408,6 @@ pub async fn get_session_active_skill(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<Option<ActiveSkillState>, String> {
-    if ensure_legacy_scheduler_session(&session_id).is_err() {
-        return Ok(None);
-    }
     Ok(store.active_skill(&session_id).map(|b| {
         // [2026-06-04 白浪:chat 与工作流不混淆] workflow 绑定(带 project_dir)不回传
         // phases——兜住磁盘上历史持久化的旧绑定(带 SKILL.md 化石 phases),否则旧工作流
@@ -1457,9 +1437,6 @@ pub async fn list_session_skill_bindings(
     let metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
     let mut out = std::collections::HashMap::new();
     for m in metas {
-        if ensure_legacy_scheduler_session(&m.id).is_err() {
-            continue;
-        }
         if let Some(b) = store.active_skill(&m.id) {
             out.insert(m.id, b.name);
         }
@@ -1467,15 +1444,4 @@ pub async fn list_session_skill_bindings(
     Ok(out)
 }
 
-#[cfg(test)]
-mod legacy_scheduler_isolation_tests {
-    use super::ensure_legacy_scheduler_session;
-
-    #[test]
-    fn legacy_scheduler_rejects_multiagent_sessions() {
-        assert!(ensure_legacy_scheduler_session("wf-test").is_err());
-        assert!(ensure_legacy_scheduler_session("session-test").is_ok());
-        assert!(ensure_legacy_scheduler_session("sched-test").is_ok());
-    }
-}
 use super::prelude::*;

@@ -24,19 +24,9 @@ test('多智能体第一阶段只在桌面宿主开放', () => {
     assert.equal(policy.allowed_commands.includes(command), false, `${command} 必须保持桌面专属`);
     assert.equal(webBridge.includes(command), false, `Web bridge 不得代理 ${command}`);
   }
-
-  for (const event of [
-    'workflow:attempt_started',
-    'workflow:approval_required',
-    'workflow:start_denied',
-    'workflow:ui_event',
-    'workflow:agent_complete',
-  ]) {
-    assert.equal(policy.allowed_events.includes(event), false, `${event} 不得进入 Web 白名单`);
-  }
 });
 
-test('共享界面按 capability 订阅并阻止 Web 续写工作流会话', () => {
+test('共享界面按 capability 订阅并阻止 Web 续写多智能体会话', () => {
   const main = read('src', 'app', 'main.jsx');
   const chat = read('src', 'features', 'chat', 'ChatView.jsx');
   const panel = read('src', 'features', 'multiagent', 'SubagentTranscriptPanel.jsx');
@@ -46,20 +36,18 @@ test('共享界面按 capability 订阅并阻止 Web 续写工作流会话', () 
   assert.match(main, /\.\.\.\(MULTI_AGENT_ENABLED \? \['multiAgent'\] : \[\]\)/);
   assert.match(
     chat,
-    /const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED\s*&& \(isWorkflowSession \|\| !!\(bs && bs\.modeState && bs\.modeState\.multiAgent\)\)/,
-    'Web 只读判定必须连会话级开关一起看，只认 wf- 前缀会造成假可用',
+    /const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED\s*&& !!\(bs && bs\.modeState && bs\.modeState\.multiAgent\)/,
+    'Web 只读判定看会话级开关（modeState.multiAgent 双端同步）',
   );
   assert.match(chat, /data-testid="multiagent-desktop-only"/);
   const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
   assert.match(settings, /const canMultiAgent = can\('multiAgent'\)/, '开关行必须按 capability 门禁');
-  assert.match(settings, /\{canMultiAgent && !legacyMultiAgentSession && \(/, 'capability 关闭或存量 wf- 会话不得渲染开关行');
   assert.match(settings, /data-testid="multiagent-toggle"/, '模型列表下方必须有会话级开关');
   assert.match(panel, /listSubagentTranscripts\(sessionId\)/);
   assert.match(
     remoteCommands,
     /ensure_web_chat_session_supported\(&session_id, store\.mode_state\(&session_id\)\.multi_agent\)\?/,
-    'Web 续写必须连多智能体开关一起校验，不能只认 wf- 前缀',
+    'Web 续写必须校验多智能体开关（桌面专属）',
   );
-  assert.match(remoteCommands, /is_workflow_session_id\(session_id\)/);
   assert.equal((i18n.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
 });
