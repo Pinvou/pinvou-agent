@@ -1,14 +1,13 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// Unix 通用 helper 从 posix.rs 继承（Wave 3 去重）。
+pub use super::super::posix::{path_component_eq, platform_compat_path, python_command};
 
 pub fn user_home_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home)
-}
-
-pub fn platform_compat_path(value: &str) -> PathBuf {
-    PathBuf::from(value)
 }
 
 pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
@@ -22,24 +21,6 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
         return Err(format!("path {} not under $HOME", canon.display()));
     }
     Ok(())
-}
-
-pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
-    component == OsStr::new(expected)
-}
-
-pub fn filesystem_path_identity_key(path: &str) -> String {
-    path.to_string()
-}
-
-pub fn python_command() -> String {
-    if which_in_path("python3") {
-        return "python3".to_string();
-    }
-    if which_in_path("python") {
-        return "python".to_string();
-    }
-    "python3".to_string()
 }
 
 pub fn configure_onnxruntime_dylib() -> Result<(), String> {
@@ -143,17 +124,6 @@ fn prepend_connector_path_entries(cmd: &mut Command, dirs: impl IntoIterator<Ite
     if let Ok(joined) = std::env::join_paths(paths) {
         cmd.env("PATH", joined);
     }
-}
-
-fn which_in_path(cmd: &str) -> bool {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            if dir.join(cmd).is_file() {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 pub fn pdf_tool_path(command: &str) -> PathBuf {
