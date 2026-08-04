@@ -98,6 +98,51 @@ assert.equal(
   'Codex must retain ordinary JSON that is not rendered through the DeepSeek task-card protocol',
 );
 
+const secondPersonaFence = [
+  '```json',
+  '{"name":"第二位审查员","body":"第二段可见提示词","description":"第二段完整 JSON 必须保留"}',
+  '```',
+].join('\n');
+assert.equal(
+  assistantMarkdownCopyText(`${personaOnly}\n\n${secondPersonaFence}`),
+  `🔎 代码审查员\n\n检查设计与副作用\n\n${secondPersonaFence}`,
+  'only the persona fence selected by the UI should be serialized',
+);
+
+const genericPersonaFence = personaOnly.replace('persona-card', 'json');
+assert.equal(
+  assistantMarkdownCopyText(`${genericPersonaFence}\n\n${personaOnly}`),
+  `${genericPersonaFence}\n\n🔎 代码审查员\n\n检查设计与副作用`,
+  'an explicitly tagged persona must win over an earlier generic candidate like the UI parser',
+);
+
+const secondScheduledFence = [
+  '```json',
+  '{"name":"每周简报","prompt":"汇总本周进展","rrule":"FREQ=WEEKLY"}',
+  '```',
+].join('\n');
+assert.equal(
+  assistantMarkdownCopyText(`${ordinaryScheduledJson}\n\n${secondScheduledFence}`, { allowScheduledTaskDraft: true }),
+  `每日简报\n\n汇总今日进展\n\nFREQ=DAILY;BYHOUR=9\n\n${secondScheduledFence}`,
+  'only the scheduled-task fence selected by the UI should be serialized',
+);
+
+const secondQuestionFence = cardQuestion.replace('请选择部署方式：\n\n', '')
+  .replace('部署到哪里？', '是否继续？')
+  .replace('["本机","测试环境"]', '["继续","取消"]');
+assert.equal(
+  assistantMarkdownCopyText(`${cardQuestion}\n\n${secondQuestionFence}`),
+  `请选择部署方式：\n\n部署到哪里？\n\n1. 本机\n2. 测试环境\n\n${secondQuestionFence}`,
+  'only the first valid card-question fence should be serialized',
+);
+
+const prefixedJsonFence = '```persona-card\n说明：{"name":"不可见卡片","body":"不应被解析"}\n```';
+assert.equal(
+  assistantMarkdownCopyText(prefixedJsonFence),
+  prefixedJsonFence,
+  'copy classification must reject fenced content that the UI parser does not treat as JSON',
+);
+
 const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
 assert.equal(
   assistantItemCopyText({ text: injectedMarker }),

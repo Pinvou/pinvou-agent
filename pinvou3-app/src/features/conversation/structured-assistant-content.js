@@ -84,17 +84,40 @@ function scheduledTaskCopyText(payload) {
     .join('\n\n');
 }
 
-function structuredFenceCopyText(info, body, { allowScheduledTaskDraft = false } = {}) {
-  const payload = parseLooseJson(String(body || '').trim());
-  if (!payload) return '';
-  const language = String(info || '').trim().toLowerCase();
-  if (language.includes('card-question')) return questionCopyText(payload);
-  if (language.includes('scheduled-task-draft')) {
-    return allowScheduledTaskDraft ? scheduledTaskCopyText(payload) : '';
+function fencePayload(body) {
+  const source = String(body || '').trim();
+  return source.startsWith('{') ? parseLooseJson(source) : null;
+}
+
+function selectStructuredFence(blocks, selected, serializer, explicitLanguage, allowGeneric) {
+  let fallback = null;
+  for (const block of blocks) {
+    if (selected.has(block.index)) continue;
+    const copyText = serializer(block.payload);
+    if (!copyText) continue;
+    if (block.language.includes(explicitLanguage)) return { block, copyText };
+    if (allowGeneric && !fallback) fallback = { block, copyText };
   }
-  if (language.includes('persona-card')) return personaCopyText(payload);
-  return personaCopyText(payload)
-    || (allowScheduledTaskDraft ? scheduledTaskCopyText(payload) : '');
+  return fallback;
+}
+
+function structuredFenceSelections(blocks, { allowScheduledTaskDraft = false } = {}) {
+  const selected = new Map();
+  const persona = selectStructuredFence(blocks, selected, personaCopyText, 'persona-card', true);
+  if (persona) selected.set(persona.block.index, persona.copyText);
+  if (allowScheduledTaskDraft) {
+    const scheduled = selectStructuredFence(
+      blocks,
+      selected,
+      scheduledTaskCopyText,
+      'scheduled-task-draft',
+      true,
+    );
+    if (scheduled) selected.set(scheduled.block.index, scheduled.copyText);
+  }
+  const question = selectStructuredFence(blocks, selected, questionCopyText, 'card-question', false);
+  if (question) selected.set(question.block.index, question.copyText);
+  return selected;
 }
 
 /**
@@ -105,9 +128,22 @@ export function assistantMarkdownCopyText(value, options) {
   const markdown = normalizeAssistantMessageText(value);
   if (!markdown) return '';
   const fencePattern = /(^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g;
-  const readable = markdown.replace(fencePattern, (match, prefix, _fence, info, body) => {
-    const structured = structuredFenceCopyText(info, body, options);
-    return structured ? `${prefix}${structured}` : match;
+  const blocks = [];
+  let match;
+  while ((match = fencePattern.exec(markdown))) {
+    blocks.push({
+      index: blocks.length,
+      language: String(match[3] || '').trim().toLowerCase(),
+      payload: fencePayload(match[4]),
+    });
+  }
+  const selections = structuredFenceSelections(blocks, options);
+  let blockIndex = 0;
+  fencePattern.lastIndex = 0;
+  const readable = markdown.replace(fencePattern, (fullMatch, prefix) => {
+    const structured = selections.get(blockIndex);
+    blockIndex += 1;
+    return structured ? `${prefix}${structured}` : fullMatch;
   });
   return normalizeAssistantMessageText(readable);
 }
