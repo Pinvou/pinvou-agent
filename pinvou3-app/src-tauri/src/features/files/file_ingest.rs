@@ -43,6 +43,69 @@ pub struct IngestResult {
     pub warning: Option<String>,
 }
 
+impl IngestResult {
+    /// 缺工具/不支持时的占位结果（warning 文案，无 markdown）。
+    ///
+    /// 字段默认与既有字面量逐字段一致：`markdown: None`、`token_estimate: 0`、
+    /// `warning: Some(warning)`，`path` 由 `path.to_string_lossy()` 还原（与各
+    /// ingest 函数顶部预计算的 `path_str` 等价）。
+    pub fn warning(
+        kind: &str,
+        basename: &str,
+        path: &Path,
+        byte_size: u64,
+        warning: impl Into<String>,
+    ) -> Self {
+        IngestResult {
+            kind: kind.into(),
+            basename: basename.into(),
+            path: path.to_string_lossy().into(),
+            markdown: None,
+            token_estimate: 0,
+            byte_size,
+            warning: Some(warning.into()),
+        }
+    }
+
+    /// 已生成 markdown 的正常结果。
+    ///
+    /// `token_estimate` 由 `estimate_tokens(&markdown)` 推导，`warning: None`。
+    /// 仅适用于「成功提取正文且无任何告警」的结果；同时带有正文和告警（如编码转换、
+    /// OCR 误差提示）的结果无法用本构造器表达，仍需保留字面量。
+    pub fn with_markdown(
+        kind: &str,
+        basename: &str,
+        path: &Path,
+        byte_size: u64,
+        markdown: String,
+    ) -> Self {
+        let token_estimate = estimate_tokens(&markdown);
+        IngestResult {
+            kind: kind.into(),
+            basename: basename.into(),
+            path: path.to_string_lossy().into(),
+            markdown: Some(markdown),
+            token_estimate,
+            byte_size,
+            warning: None,
+        }
+    }
+
+    /// 仅占位、无内容无警告（极少用）。`markdown: None`、`token_estimate: 0`、
+    /// `warning: None`。典型用例：图片附件登记元数据（kind="image"）。
+    pub fn placeholder(kind: &str, basename: &str, path: &Path, byte_size: u64) -> Self {
+        IngestResult {
+            kind: kind.into(),
+            basename: basename.into(),
+            path: path.to_string_lossy().into(),
+            markdown: None,
+            token_estimate: 0,
+            byte_size,
+            warning: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct SystemTools {
     pub pandoc: bool,
@@ -263,31 +326,27 @@ pub fn ingest(path: &Path) -> IngestResult {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => {
-            return IngestResult {
-                kind: "missing".into(),
-                basename,
-                path: path_str,
-                markdown: None,
-                token_estimate: 0,
-                byte_size: 0,
-                warning: Some(format!("文件不存在: {e}")),
-            };
+            return IngestResult::warning(
+                "missing",
+                &basename,
+                path,
+                0,
+                format!("文件不存在: {e}"),
+            );
         }
     };
     let byte_size = meta.len();
     if byte_size > MAX_FILE_BYTES {
-        return IngestResult {
-            kind: "oversize".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        return IngestResult::warning(
+            "oversize",
+            &basename,
+            path,
             byte_size,
-            warning: Some(format!(
+            format!(
                 "文件 {:.1} MB 超过 20 MB 上限,请拆分或裁剪",
                 byte_size as f64 / 1024.0 / 1024.0
-            )),
-        };
+            ),
+        );
     }
 
     let ext = path
@@ -301,11 +360,11 @@ pub fn ingest(path: &Path) -> IngestResult {
         "text" => ingest_text(path, basename, path_str, byte_size),
         "pdf" => ingest_pdf(path, basename, path_str, byte_size),
         // 文字文档：pandoc 原生支持 docx/odt。
-        "doc_pandoc" => ingest_pandoc(path, basename, path_str, byte_size, &ext),
+        "doc_pandoc" => ingest_pandoc(path, basename, byte_size, &ext),
         // 文字文档：pandoc 吃不下，LibreOffice 转纯文本（doc/rtf/wps）。
-        "doc_office" => ingest_office_text(path, basename, path_str, byte_size, &ext),
+        "doc_office" => ingest_office_text(path, basename, byte_size, &ext),
         // 演示：LibreOffice 转 PDF 再 pdftotext（pptx/ppt/odp/dps）。
-        "presentation" => ingest_presentation(path, basename, path_str, byte_size, &ext),
+        "presentation" => ingest_presentation(path, basename, byte_size, &ext),
         // 表格：LibreOffice 转 CSV（xlsx/ods/xls/et）—— pandoc 不支持表格输入。
         "spreadsheet" => ingest_spreadsheet(path, basename, path_str, byte_size, &ext),
         "image" => ingest_image(path, basename, path_str, byte_size),
@@ -384,15 +443,13 @@ fn ingest_text(path: &Path, basename: String, path_str: String, byte_size: u64) 
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
-            return IngestResult {
-                kind: "text".into(),
-                basename,
-                path: path_str,
-                markdown: None,
-                token_estimate: 0,
+            return IngestResult::warning(
+                "text",
+                &basename,
+                path,
                 byte_size,
-                warning: Some(format!("读取失败(可能不是文本): {e}")),
-            };
+                format!("读取失败(可能不是文本): {e}"),
+            );
         }
     };
     // 内容侧安全兜底:已知文本扩展名也可能被塞了私钥(如把 id_rsa 改名 id_rsa.txt),
@@ -416,15 +473,13 @@ fn ingest_text(path: &Path, basename: String, path_str: String, byte_size: u64) 
 fn ingest_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
     let tools = system_tools();
     if !tools.pdftotext {
-        return IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        return IngestResult::warning(
+            "pdf",
+            &basename,
+            path,
             byte_size,
-            warning: Some(crate::platform::os::pdf_text_missing_message().into()),
-        };
+            crate::platform::os::pdf_text_missing_message(),
+        );
     }
     // pdftotext -layout <path> -  → stdout
     let out = pdf_tool_command("pdftotext")
@@ -440,59 +495,38 @@ fn ingest_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -
             if content.trim().is_empty() {
                 return ocr_pdf(path, basename, path_str, byte_size);
             }
-            let tokens = estimate_tokens(&content);
-            IngestResult {
-                kind: "pdf".into(),
-                basename,
-                path: path_str,
-                markdown: Some(content),
-                token_estimate: tokens,
-                byte_size,
-                warning: None,
-            }
+            IngestResult::with_markdown("pdf", &basename, path, byte_size, content)
         }
-        Ok(o) => IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        Ok(o) => IngestResult::warning(
+            "pdf",
+            &basename,
+            path,
             byte_size,
-            warning: Some(format!(
+            format!(
                 "pdftotext 失败: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
-            )),
-        },
-        Err(e) => IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+            ),
+        ),
+        Err(e) => IngestResult::warning(
+            "pdf",
+            &basename,
+            path,
             byte_size,
-            warning: Some(format!("pdftotext 调用失败: {e}")),
-        },
+            format!("pdftotext 调用失败: {e}"),
+        ),
     }
 }
 
-fn ingest_pandoc(
-    path: &Path,
-    basename: String,
-    path_str: String,
-    byte_size: u64,
-    label: &str,
-) -> IngestResult {
+fn ingest_pandoc(path: &Path, basename: String, byte_size: u64, label: &str) -> IngestResult {
     let tools = system_tools();
     if !tools.pandoc {
-        return IngestResult {
-            kind: label.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        return IngestResult::warning(
+            label,
+            &basename,
+            path,
             byte_size,
-            warning: Some(crate::platform::os::pandoc_missing_message().into()),
-        };
+            crate::platform::os::pandoc_missing_message(),
+        );
     }
     let out = pandoc_tool_command()
         .arg("-t")
@@ -502,38 +536,22 @@ fn ingest_pandoc(
     match out {
         Ok(o) if o.status.success() => {
             let content = String::from_utf8_lossy(&o.stdout).into_owned();
-            let tokens = estimate_tokens(&content);
-            IngestResult {
-                kind: label.into(),
-                basename,
-                path: path_str,
-                markdown: Some(content),
-                token_estimate: tokens,
-                byte_size,
-                warning: None,
-            }
+            IngestResult::with_markdown(label, &basename, path, byte_size, content)
         }
-        Ok(o) => IngestResult {
-            kind: label.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        Ok(o) => IngestResult::warning(
+            label,
+            &basename,
+            path,
             byte_size,
-            warning: Some(format!(
-                "pandoc 失败: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            )),
-        },
-        Err(e) => IngestResult {
-            kind: label.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+            format!("pandoc 失败: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        ),
+        Err(e) => IngestResult::warning(
+            label,
+            &basename,
+            path,
             byte_size,
-            warning: Some(format!("pandoc 调用失败: {e}")),
-        },
+            format!("pandoc 调用失败: {e}"),
+        ),
     }
 }
 
@@ -906,35 +924,10 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
 }
 
 /// 文字类文档（.doc/.rtf + WPS .wps）：pandoc 吃不下，用 LibreOffice 转纯文本。
-fn ingest_office_text(
-    path: &Path,
-    basename: String,
-    path_str: String,
-    byte_size: u64,
-    kind: &str,
-) -> IngestResult {
+fn ingest_office_text(path: &Path, basename: String, byte_size: u64, kind: &str) -> IngestResult {
     match libreoffice_convert_text(path, "txt:Text (encoded):UTF8", "txt") {
-        Ok(content) => {
-            let tokens = estimate_tokens(&content);
-            IngestResult {
-                kind: kind.into(),
-                basename,
-                path: path_str,
-                markdown: Some(content),
-                token_estimate: tokens,
-                byte_size,
-                warning: None,
-            }
-        }
-        Err(e) => IngestResult {
-            kind: kind.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some(e),
-        },
+        Ok(content) => IngestResult::with_markdown(kind, &basename, path, byte_size, content),
+        Err(e) => IngestResult::warning(kind, &basename, path, byte_size, e),
     }
 }
 
@@ -1034,56 +1027,23 @@ fn spreadsheet_text_from_bytes(bytes: Vec<u8>) -> Result<String, String> {
 /// 演示类（.pptx/.ppt/.odp + WPS .dps）：LibreOffice **没有 Impress→txt 导出**
 /// （实测无产出），所以先转 PDF 再用 pdftotext 抽每页文字（标题/要点/中文都保留）。
 /// 自己转出的 PDF 必有文字层，不需要扫描件 OCR 兜底。
-fn ingest_presentation(
-    path: &Path,
-    basename: String,
-    path_str: String,
-    byte_size: u64,
-    kind: &str,
-) -> IngestResult {
+fn ingest_presentation(path: &Path, basename: String, byte_size: u64, kind: &str) -> IngestResult {
     let tools = system_tools();
     if !tools.libreoffice || !tools.pdftotext {
-        return IngestResult {
-            kind: kind.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        return IngestResult::warning(
+            kind,
+            &basename,
+            path,
             byte_size,
-            warning: Some(crate::platform::os::presentation_pdf_missing_message().into()),
-        };
+            crate::platform::os::presentation_pdf_missing_message(),
+        );
     }
     match libreoffice_presentation_text(path) {
         Ok(content) if !content.trim().is_empty() => {
-            let tokens = estimate_tokens(&content);
-            IngestResult {
-                kind: kind.into(),
-                basename,
-                path: path_str,
-                markdown: Some(content),
-                token_estimate: tokens,
-                byte_size,
-                warning: None,
-            }
+            IngestResult::with_markdown(kind, &basename, path, byte_size, content)
         }
-        Ok(_) => IngestResult {
-            kind: kind.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some("演示文稿未提取到文字".into()),
-        },
-        Err(e) => IngestResult {
-            kind: kind.into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
-            byte_size,
-            warning: Some(e),
-        },
+        Ok(_) => IngestResult::warning(kind, &basename, path, byte_size, "演示文稿未提取到文字"),
+        Err(e) => IngestResult::warning(kind, &basename, path, byte_size, e),
     }
 }
 
@@ -1146,15 +1106,7 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
 /// markdown 留空(不预解析像素),token_estimate=0(视觉 token 量取决于分辨率,
 /// 不在此处解码估算,UI 计数会略低,属已知局限)。
 fn ingest_image(_path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
-    IngestResult {
-        kind: "image".into(),
-        basename,
-        path: path_str,
-        markdown: None,
-        token_estimate: 0,
-        byte_size,
-        warning: None,
-    }
+    IngestResult::placeholder("image", &basename, Path::new(&path_str), byte_size)
 }
 
 /// 对单张图片跑 tesseract，识别文字到 stdout。`tesseract <img> - -l <langs>`。
@@ -1195,16 +1147,17 @@ pub fn ocr_image_for_kb(path: &Path) -> Option<String> {
 fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> IngestResult {
     const PDF_OCR_MAX_PAGES: u32 = 30;
     let tools = system_tools();
+    // 构造器从 &Path 还原 path 字符串；path_str 来自上游 path.to_string_lossy()，
+    // 用 Path::new(&path_str) 复用同一字符串视图，保证 path 字段逐字节一致。
+    let result_path = Path::new(&path_str);
     if !tools.tesseract || !tools.pdftoppm {
-        return IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        return IngestResult::warning(
+            "pdf",
+            &basename,
+            result_path,
             byte_size,
-            warning: Some(crate::platform::os::pdf_ocr_missing_message().into()),
-        };
+            crate::platform::os::pdf_ocr_missing_message(),
+        );
     }
 
     // 临时目录：每次唯一，避免并发冲突。
@@ -1214,15 +1167,13 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
         .unwrap_or(0);
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-pdfocr-{ts}"));
     if let Err(e) = std::fs::create_dir_all(&tmpdir) {
-        return IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str,
-            markdown: None,
-            token_estimate: 0,
+        return IngestResult::warning(
+            "pdf",
+            &basename,
+            result_path,
             byte_size,
-            warning: Some(format!("创建临时目录失败: {e}")),
-        };
+            format!("创建临时目录失败: {e}"),
+        );
     }
 
     let prefix = tmpdir.join("page");
@@ -1250,15 +1201,13 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
             pages.sort();
 
             if pages.is_empty() {
-                IngestResult {
-                    kind: "pdf".into(),
-                    basename,
-                    path: path_str.clone(),
-                    markdown: None,
-                    token_estimate: 0,
+                IngestResult::warning(
+                    "pdf",
+                    &basename,
+                    result_path,
                     byte_size,
-                    warning: Some("PDF 无文字层，且 pdftoppm 未产出可识别页".into()),
-                }
+                    "PDF 无文字层，且 pdftoppm 未产出可识别页",
+                )
             } else {
                 let mut parts = Vec::new();
                 for (idx, page) in pages.iter().enumerate() {
@@ -1276,16 +1225,16 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
                     ));
                 }
                 if content.trim().is_empty() {
-                    IngestResult {
-                        kind: "pdf".into(),
-                        basename,
-                        path: path_str.clone(),
-                        markdown: None,
-                        token_estimate: 0,
+                    IngestResult::warning(
+                        "pdf",
+                        &basename,
+                        result_path,
                         byte_size,
-                        warning: Some("扫描件 OCR 未识别到文字".into()),
-                    }
+                        "扫描件 OCR 未识别到文字",
+                    )
                 } else {
+                    // 同时带 markdown 与 warning（OCR 误差提示），不符合任何构造器，
+                    // 保留字面量 —— 这是「正文 + 告警」的特例。
                     let tokens = estimate_tokens(&content);
                     IngestResult {
                         kind: "pdf".into(),
@@ -1299,27 +1248,23 @@ fn ocr_pdf(path: &Path, basename: String, path_str: String, byte_size: u64) -> I
                 }
             }
         }
-        Ok(o) => IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str.clone(),
-            markdown: None,
-            token_estimate: 0,
+        Ok(o) => IngestResult::warning(
+            "pdf",
+            &basename,
+            result_path,
             byte_size,
-            warning: Some(format!(
+            format!(
                 "pdftoppm 转图失败: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
-            )),
-        },
-        Err(e) => IngestResult {
-            kind: "pdf".into(),
-            basename,
-            path: path_str.clone(),
-            markdown: None,
-            token_estimate: 0,
+            ),
+        ),
+        Err(e) => IngestResult::warning(
+            "pdf",
+            &basename,
+            result_path,
             byte_size,
-            warning: Some(format!("pdftoppm 调用失败: {e}")),
-        },
+            format!("pdftoppm 调用失败: {e}"),
+        ),
     };
 
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -1334,14 +1279,8 @@ fn ingest_archive(path: &Path, basename: String, path_str: String, byte_size: u6
     const MAX_ENTRIES: usize = 50;
     const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024; // 解压后总量上限，防压缩炸弹
 
-    let mk_err = |msg: String| IngestResult {
-        kind: "archive".into(),
-        basename: basename.clone(),
-        path: path_str.clone(),
-        markdown: None,
-        token_estimate: 0,
-        byte_size,
-        warning: Some(msg),
+    let mk_err = |msg: String| {
+        IngestResult::warning("archive", &basename, Path::new(&path_str), byte_size, msg)
     };
 
     if !system_tools().sevenzip {
@@ -1430,16 +1369,7 @@ fn ingest_archive(path: &Path, basename: String, path_str: String, byte_size: u6
         files.len(),
         sections.join("\n")
     );
-    let tokens = estimate_tokens(&content);
-    IngestResult {
-        kind: "archive".into(),
-        basename,
-        path: path_str,
-        markdown: Some(content),
-        token_estimate: tokens,
-        byte_size,
-        warning: None,
-    }
+    IngestResult::with_markdown("archive", &basename, path, byte_size, content)
 }
 
 /// `7z l -slt` 列出条目，返回 (文件数, 解压后总字节)。用于解压前的炸弹预检。
@@ -1937,46 +1867,37 @@ if atts:
 /// 音视频：本地语音转录（whisper 等）尚未部署到 GB10，先优雅降级，明确告知用户
 /// 「未处理」而非臆测内容。真正转录留作未来独立能力（见 process.md）。
 fn media_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
-    IngestResult {
-        kind: "media".into(),
-        basename,
-        path: path_str,
-        markdown: None,
-        token_estimate: 0,
+    IngestResult::warning(
+        "media",
+        &basename,
+        Path::new(&path_str),
         byte_size,
-        warning: Some(
-            "检测到音视频文件，当前暂不支持本地语音转录。\
-             可改为提供文字稿，或口述其中要点。"
-                .into(),
-        ),
-    }
+        "检测到音视频文件，当前暂不支持本地语音转录。\
+             可改为提供文字稿，或口述其中要点。",
+    )
 }
 
 fn binary_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
-    IngestResult {
-        kind: "binary".into(),
-        basename,
-        path: path_str,
-        markdown: None,
-        token_estimate: 0,
+    IngestResult::warning(
+        "binary",
+        &basename,
+        Path::new(&path_str),
         byte_size,
-        warning: Some("不支持的文件类型(二进制)".into()),
-    }
+        "不支持的文件类型(二进制)",
+    )
 }
 
 /// 私钥 / 密钥库文件的占位:与 binary_placeholder 同为 markdown=None,但文案明确说明
 /// 「为防泄露而拒绝读取」,便于用户理解为什么内容没被读入。kind 用 "binary" 以复用
 /// 前端既有分类展示(无需新增前端分支),靠 warning 区分原因。
 fn secret_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
-    IngestResult {
-        kind: "binary".into(),
-        basename,
-        path: path_str,
-        markdown: None,
-        token_estimate: 0,
+    IngestResult::warning(
+        "binary",
+        &basename,
+        Path::new(&path_str),
         byte_size,
-        warning: Some("检测到密钥/私钥文件,为防止泄露给 LLM 已拒绝读取内容".into()),
-    }
+        "检测到密钥/私钥文件,为防止泄露给 LLM 已拒绝读取内容",
+    )
 }
 
 /// 内容侧私钥检测:捕获改了名 / 无扩展名 / 套了 .txt 外壳的私钥(如 `id_rsa`、
@@ -2045,15 +1966,13 @@ fn sniff_text_or_binary(
         Ok(b) => b,
         // 读失败(权限/TOCTOU 等)如实上报,不要误报成「不支持的二进制类型」。
         Err(e) => {
-            return IngestResult {
-                kind: "binary".into(),
-                basename,
-                path: path_str,
-                markdown: None,
-                token_estimate: 0,
+            return IngestResult::warning(
+                "binary",
+                &basename,
+                path,
                 byte_size,
-                warning: Some(format!("文件读取失败: {e}")),
-            };
+                format!("文件读取失败: {e}"),
+            );
         }
     };
     // 内容侧安全兜底:无扩展名 / 改名的私钥(id_rsa、server-key 等)在此拦截。
@@ -2304,6 +2223,69 @@ fn normalize_validated_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingest_result_constructors_match_equivalent_literals() {
+        // 构造器产出必须与等价字面量逐字段相等（含 None 默认值）。
+        // 任一字段默认值被构造器静默改变即视为 bug。
+        let tmp = std::env::temp_dir().join("pinvou3-ctor-equiv-test.txt");
+        std::fs::write(&tmp, "hello").unwrap();
+        let basename = "ctor-equiv-test.txt".to_string();
+        let path_str = tmp.to_string_lossy().to_string();
+
+        // warning()：markdown None、token_estimate 0、warning Some。
+        let via_ctor = IngestResult::warning("text", &basename, &tmp, 5, "缺工具");
+        let literal = IngestResult {
+            kind: "text".into(),
+            basename: basename.clone(),
+            path: path_str.clone(),
+            markdown: None,
+            token_estimate: 0,
+            byte_size: 5,
+            warning: Some("缺工具".into()),
+        };
+        assert_eq!(via_ctor.kind, literal.kind);
+        assert_eq!(via_ctor.basename, literal.basename);
+        assert_eq!(
+            via_ctor.path, literal.path,
+            "path 必须由 to_string_lossy 还原"
+        );
+        assert_eq!(via_ctor.markdown, literal.markdown);
+        assert_eq!(via_ctor.token_estimate, literal.token_estimate);
+        assert_eq!(via_ctor.byte_size, literal.byte_size);
+        assert_eq!(via_ctor.warning, literal.warning);
+
+        // with_markdown()：markdown Some、token_estimate=estimate_tokens、warning None。
+        let md = "# 标题\n正文内容".to_string();
+        let via_ctor = IngestResult::with_markdown("pdf", &basename, &tmp, 5, md.clone());
+        let literal = IngestResult {
+            kind: "pdf".into(),
+            basename: basename.clone(),
+            path: path_str.clone(),
+            markdown: Some(md.clone()),
+            token_estimate: estimate_tokens(&md),
+            byte_size: 5,
+            warning: None,
+        };
+        assert_eq!(via_ctor.kind, literal.kind);
+        assert_eq!(via_ctor.path, literal.path);
+        assert_eq!(via_ctor.markdown, literal.markdown);
+        assert_eq!(via_ctor.token_estimate, literal.token_estimate);
+        assert_eq!(via_ctor.byte_size, literal.byte_size);
+        assert_eq!(via_ctor.warning, literal.warning);
+
+        // placeholder()：markdown None、token_estimate 0、warning None。
+        let via_ctor = IngestResult::placeholder("image", &basename, &tmp, 5);
+        assert_eq!(via_ctor.kind, "image");
+        assert_eq!(via_ctor.basename, basename);
+        assert_eq!(via_ctor.path, path_str);
+        assert!(via_ctor.markdown.is_none());
+        assert_eq!(via_ctor.token_estimate, 0);
+        assert_eq!(via_ctor.byte_size, 5);
+        assert!(via_ctor.warning.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
 
     #[test]
     fn classify_extensions() {
