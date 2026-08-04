@@ -55,7 +55,7 @@ function PreviewSprite({ atlasUrl }) {
  * 选中状态以 bridge 的 selectedPetId 为唯一真相——本组件不做乐观更新，
  * 切换失败时 UI 自然停留在旧宠物上。
  */
-export default function PetSettingsSection({ isDark, enabled, selectedPetId, t, onSelect }) {
+export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect }) {
   const reducedMotion = useReducedMotion();
   const [assets, setAssets] = useState({});
   const [hoveredId, setHoveredId] = useState(null);
@@ -137,9 +137,7 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, t, 
             <div
               key={id}
               data-pet-id={id}
-              className={`pet-card ${isSelected ? 'pet-card--selected' : ''} ${
-                isDark ? 'pet-card--dark' : 'pet-card--light'
-              }`}
+              className={`pet-card pet-card--light pet-card--dark ${isSelected ? 'pet-card--selected' : ''}`}
               style={{ '--pet-accent': pet.themeColor }}
             >
               <button
@@ -154,7 +152,7 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, t, 
                 onBlur={() => setHoveredId((value) => (value === id ? null : value))}
               >
                 {pet.placeholder && (
-                  <span className={`pet-card-flag ${isDark ? 'pet-card-flag--dark' : ''}`}>{t.uiPetSettings.placeholder}</span>
+                  <span className="pet-card-flag pet-card-flag--dark">{t.uiPetSettings.placeholder}</span>
                 )}
                 <span className="pet-card-figure">
                   {/* 预览出现时隐藏封面而不是卸载：若 mousedown 按住的节点在
@@ -177,7 +175,7 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, t, 
                   )}
                 </span>
                 <span className="pet-card-name">{localizedPet.name}</span>
-                <span className={`pet-card-desc ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                <span className="pet-card-desc text-[#5F6368] dark:text-[#9AA0A6]">
                   {localizedPet.description}
                 </span>
                 {entry.status === 'loading' && (
@@ -185,7 +183,7 @@ export default function PetSettingsSection({ isDark, enabled, selectedPetId, t, 
                 )}
               </button>
               {(entry.status === 'error' || entry.coverFailed) && (
-                <div className={`pet-card-error ${isDark ? 'pet-card-error--dark' : ''}`}>
+                <div className="pet-card-error pet-card-error--dark">
                   <AlertTriangle size={14} />
                   <span>{entry.status === 'error' ? t.uiPetSettings.animationFailed : t.uiPetSettings.coverFailed}</span>
                   <button type="button" className="pet-card-retry" onClick={() => loadPetAssets(id)}>
