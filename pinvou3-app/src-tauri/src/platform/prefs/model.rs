@@ -84,12 +84,6 @@ pub(super) fn identify_coding_plan_endpoint(
             Some(("glm", "https://api.z.ai/api/coding/paas/v4"))
         }
         "https://api.kimi.com/coding/v1" => Some(("kimi", "https://api.kimi.com/coding/v1")),
-        "https://api.lkeap.cloud.tencent.com/coding/v3" => {
-            Some(("tencent", "https://api.lkeap.cloud.tencent.com/coding/v3"))
-        }
-        "https://api.lkeap.cloud.tencent.com/plan/v3" => {
-            Some(("tencent", "https://api.lkeap.cloud.tencent.com/plan/v3"))
-        }
         _ => None,
     }
 }

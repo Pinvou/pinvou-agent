@@ -25,7 +25,6 @@ Object.assign(dict.en.uiSettingsDetail, {
   catalogSections:{ coding_plan:'Coding Plan', official_api:'Official APIs', custom:'Custom compatible endpoints' },
   providerCatalog:{
     local:{title:'Local Model',desc:'Default model for the local service'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'Dedicated endpoint for coding and agent tasks'},
-    tencent_coding_plan:{title:'Tencent Cloud Coding Plan',configTitle:'Tencent Cloud Coding Plan',desc:'Tencent Cloud coding-plan endpoint'},
     kimi_coding_plan:{title:'Kimi Coding Plan',configTitle:'Kimi Coding Plan',desc:'Dedicated endpoint for Kimi coding tasks'},
     deepseek:{title:'DeepSeek',configTitle:'DeepSeek',desc:'Official DeepSeek API'}, kimi:{title:'Kimi China',configTitle:'Kimi',desc:'Official Moonshot API'},
     glm:{title:'Zhipu Open Platform / GLM API',configTitle:'GLM API',desc:'Standard Zhipu Open Platform API'},
@@ -58,7 +57,6 @@ Object.assign(dict.ja.uiSettingsDetail, {
   catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', custom:'カスタム互換エンドポイント' },
   providerCatalog:{
     local:{title:'ローカルモデル',desc:'ローカルサービスのデフォルトモデル'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'コーディングと Agent 向けの専用エンドポイント'},
-    tencent_coding_plan:{title:'Tencent Cloud Coding Plan',configTitle:'Tencent Cloud Coding Plan',desc:'Tencent Cloud のコーディングプラン用エンドポイント'},
     kimi_coding_plan:{title:'Kimi Coding Plan',configTitle:'Kimi Coding Plan',desc:'Kimi のコーディング向け専用エンドポイント'},
     deepseek:{title:'DeepSeek',configTitle:'DeepSeek',desc:'DeepSeek 公式 API'}, kimi:{title:'Kimi China',configTitle:'Kimi',desc:'Moonshot 公式 API'},
     glm:{title:'Zhipu Open Platform / GLM API',configTitle:'GLM API',desc:'Zhipu Open Platform の標準 API'},
@@ -80,7 +78,7 @@ Object.assign(dict.ja.uiSettingsDetail, {
 Object.assign(dict.en.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'Default model for the local service',
   '旗舰编码模型':'Flagship coding model', '高性能编码模型':'High-performance coding model',
-  '日常编码模型':'Everyday coding model', 'Coding Plan 自动模型':'Coding Plan automatic model',
+  '日常编码模型':'Everyday coding model',
   '标准编码模型':'Standard coding model', 'K3 256K 上下文模型':'K3 with 256K context',
   'K3 长上下文模型':'K3 long-context model', '高速编码模型':'High-speed coding model',
   '旗舰推理':'Flagship reasoning model',
@@ -104,7 +102,7 @@ Object.assign(dict.en.uiSettingsDetail.modelDescriptions, {
 Object.assign(dict.ja.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'ローカルサービスのデフォルトモデル',
   '旗舰编码模型':'フラッグシップコーディングモデル', '高性能编码模型':'高性能コーディングモデル',
-  '日常编码模型':'日常向けコーディングモデル', 'Coding Plan 自动模型':'Coding Plan 自動モデル',
+  '日常编码模型':'日常向けコーディングモデル',
   '标准编码模型':'標準コーディングモデル', 'K3 256K 上下文模型':'K3 256K コンテキストモデル',
   'K3 长上下文模型':'K3 長コンテキストモデル', '高速编码模型':'高速コーディングモデル',
   '旗舰推理':'フラッグシップ推論モデル',
@@ -132,15 +130,15 @@ dict.ja.uiSettingsDetail.customCodingPlanDesc = 'Coding Plan モデル ID を手
 dict.zh.uiSettingsDetail.customModelTitles = {
   glm:'自定义 GLM 模型', qwen:'自定义通义模型',
   openai_compatible:'自定义兼容模型', glm_coding_plan:'自定义 GLM Coding Plan 模型',
-  tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
+  kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
 };
 dict.en.uiSettingsDetail.customModelTitles = {
   glm:'Custom GLM model', qwen:'Custom Qwen model',
   openai_compatible:'Custom compatible model', glm_coding_plan:'Custom GLM Coding Plan model',
-  tencent_coding_plan:'Custom Tencent Cloud Coding Plan model', kimi_coding_plan:'Custom Kimi Coding Plan model',
+  kimi_coding_plan:'Custom Kimi Coding Plan model',
 };
 dict.ja.uiSettingsDetail.customModelTitles = {
   glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',
   openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
-  tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
+  kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
 };

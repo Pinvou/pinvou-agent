@@ -392,11 +392,10 @@ impl Pinvou3Bridge {
                 // x-api-key 鉴权),不能落入 OpenAI Chat Completions 路由。
                 "anthropic" | "claude" => Some("anthropic"),
                 "xai" | "grok" => Some("xai"),
-                // DashScope、腾讯 Coding Plan 和 Gemini 暂无对应内建 provider,
-                // 保留 OpenAI Chat Completions wire route(Gemini 官方提供
-                // OpenAI 兼容端点),另由下方显式 reasoning_stream_style 保留
-                // 独立思考字段。
-                "qwen" | "tencent" | "openai" | "gemini" | "google" => Some("openai"),
+                // DashScope 和 Gemini 暂无对应内建 provider,保留 OpenAI Chat
+                // Completions wire route(Gemini 官方提供 OpenAI 兼容端点),
+                // 另由下方显式 reasoning_stream_style 保留独立思考字段。
+                "qwen" | "openai" | "gemini" | "google" => Some("openai"),
                 _ => None,
             };
             if let Some(provider) = provider {
@@ -447,9 +446,7 @@ impl Pinvou3Bridge {
             .and_then(|model| model.vendor.as_deref())
             .map(str::trim);
         if provider == "openai"
-            && vendor.is_some_and(|vendor| {
-                matches!(vendor.to_ascii_lowercase().as_str(), "qwen" | "tencent")
-            })
+            && vendor.is_some_and(|vendor| matches!(vendor.to_ascii_lowercase().as_str(), "qwen"))
         {
             return Some(SEPARATE_REASONING_FIELD);
         }
@@ -2771,20 +2768,12 @@ mod tests {
             "DEEPSEEK_BASE_URL",
             "DEEPSEEK_API_KEY",
         ]);
-        let cases = [
-            (
-                "kimi-for-coding",
-                "https://api.kimi.com/coding/v1/chat/completions",
-                "moonshot",
-                ApiProvider::Moonshot,
-            ),
-            (
-                "tc-code-latest",
-                "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions",
-                "openai",
-                ApiProvider::Openai,
-            ),
-        ];
+        let cases = [(
+            "kimi-for-coding",
+            "https://api.kimi.com/coding/v1/chat/completions",
+            "moonshot",
+            ApiProvider::Moonshot,
+        )];
 
         for (model, base_url, expected_provider, expected_api_provider) in cases {
             let mut bridge = fixture_bridge();
@@ -2813,10 +2802,6 @@ mod tests {
                     .providers
                     .as_ref()
                     .and_then(|providers| providers.moonshot.reasoning_stream_style.as_deref()),
-                ApiProvider::Openai => cfg
-                    .providers
-                    .as_ref()
-                    .and_then(|providers| providers.openai.reasoning_stream_style.as_deref()),
                 _ => None,
             };
             assert_eq!(style, Some(SEPARATE_REASONING_FIELD), "{model}");
