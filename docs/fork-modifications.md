@@ -58,7 +58,7 @@
 - **核心文件**：`prompts.rs`、`project_context.rs`、`project_context_cache.rs`、`skills/mod.rs`、`tools/skill.rs`、`working_set.rs`。
 - **内容**：
   - 静态 prompt composer 由 app 接管，默认层和运行时策略按 composer gate 密封。
-  - 不再扫描仓库 constitution / AGENTS / CLAUDE 等外部 project context；pinvou3 只用 app 注入的 inline instructions，项目规则（`AGENTS.md`）由 app 侧受限注入（仅绑项目代码会话，root→cwd 各层，不越过用户家目录，见 `docs/code-native-agent.md` §8.5）。
+  - 不再扫描仓库 constitution / AGENTS / CLAUDE 等外部 project context；pinvou3 只用 app 注入的 inline instructions，项目规则（`AGENTS.md`）由 app 侧受限注入（仅绑项目代码会话，root→cwd 各层；不越过用户家目录——project_root 与 home 同函数归一化后比较，Windows 上边界真实生效；symlink/非普通文件拒读；归一化失败 fail-closed；见 `docs/code-native-agent.md` §8.5）。
   - skill 来源收敛到 `~/.pinvou3/bundle/skills`，并保留市场停用过滤。
   - 内部 `<system-reminder>` 不参与 Working Set 路径提取。
   - instructions/用户记忆 fragment 沿用 100KB 指令上限，避免被 v0.9 WorldState 默认 4KB 静默截断。
