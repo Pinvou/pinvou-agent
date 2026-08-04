@@ -11,9 +11,7 @@ pub async fn compact_now(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.compact_now(&sid)
         .await
         .map_err(|e| format!("compact_now: {e:?}"))
@@ -321,9 +319,7 @@ pub async fn submit_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let response = UserInputResponse { answers };
     pool.submit_user_input(&sid, tool_call_id, response)
         .await
@@ -339,9 +335,7 @@ pub async fn add_run_materials(
     paths: Vec<String>,
     store: State<'_, SessionStore>,
 ) -> Result<Vec<String>, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -383,9 +377,7 @@ pub async fn cancel_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.cancel_user_input(&sid, tool_call_id)
         .await
         .map_err(|e| format!("cancel_user_input: {e:?}"))
@@ -442,9 +434,7 @@ pub async fn summon_pinvou(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<crate::features::review::PinvouReview, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let session = store
         .load(&sid)
         .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;

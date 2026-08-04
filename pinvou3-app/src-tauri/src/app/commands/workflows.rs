@@ -10,18 +10,6 @@
 /// `EngineConfig.skills_dir` 注入。当前用 skiplist 软隔离，工作量小、效果一致。
 const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-final"];
 
-/// 既有 Python 调度器与新的 CodeWhale 多智能体运行必须保持数据隔离。
-///
-fn resolve_legacy_scheduler_session(
-    session_id: Option<String>,
-    store: &SessionStore,
-) -> Result<String, String> {
-    let session_id = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
-    Ok(session_id)
-}
-
 /// 工作流视图卡片渲染需要的 skill 摘要 — 跟 CodeWhale runtime_api 的
 /// `SkillEntry` 不同,这里额外把 phases / demo 元数据序列化给前端 (底座
 /// 没把这俩字段暴露到 REST,所以 pinvou3-app 自己读 SkillRegistry 拼)。
@@ -377,7 +365,7 @@ pub async fn kick_workflow(
 ) -> Result<String, String> {
     // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
     // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let ws = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -516,7 +504,7 @@ pub async fn retry_workflow_role(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let ws = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1109,7 +1097,7 @@ pub async fn cancel_workflow_role(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1170,7 +1158,7 @@ pub async fn stop_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1220,7 +1208,7 @@ pub async fn approve_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1264,7 +1252,7 @@ pub async fn reject_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1304,7 +1292,7 @@ pub async fn get_workflow_state(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;

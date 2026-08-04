@@ -53,9 +53,7 @@ pub async fn chat(
     }
     // 多 session 并发:消息显式路由到指定 session(前端传 session_id);兼容旧前端时
     // 回退到全局 active_id。每条消息按各自 session 取 mode/phase/skill,送到对应 engine。
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     if acp_pool.is_acp(&sid) {
         return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
     }
