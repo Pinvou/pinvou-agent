@@ -122,14 +122,6 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         crate::features::voice::asr_dependency_packages(),
     ));
     items.push(item("office_legacy", libreoffice, "libreoffice"));
-    // 多智能体的并行隔离（git worktree）依赖 git：普通对话不需要，缺失时
-    // 开关会安全失败并把用户指到这里。macOS 自带触发式安装引导（首次调用
-    // git 弹 CLT），不给一键按钮。
-    items.push(item(
-        "git",
-        crate::platform::os::command_exists("git"),
-        crate::platform::os::git_dependency_packages(),
-    ));
     if crate::platform::os::show_ocr_dependency_check() {
         items.push(item(
             "ocr",

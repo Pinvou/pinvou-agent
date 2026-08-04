@@ -149,6 +149,11 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(\)/, '委派提醒抽成函数供发送链注入');
   assert.match(commandSource, /roster::available_role_lines\(\)/, '名册必须随提醒带上');
   assert.match(
+    commandSource,
+    /workspace_policy=worktree/,
+    '提醒必须教一律共享工作区（工作区不做 git 化，worktree 会被底座拒绝）',
+  );
+  assert.match(
     chatCommandSource,
     /if mode_state\.multi_agent \{[\s\S]*?delegation_reminder\(\)/,
     '开关开启时 chat 发送链每轮拼提醒',
@@ -157,11 +162,6 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     interactionCommandSource,
     /pub async fn set_multi_agent_mode\(/,
     '开关命令在 interaction 域',
-  );
-  assert.match(
-    interactionCommandSource,
-    /ensure_git_repository\(&workspace\)/,
-    '开启时会话工作区必须 git 化（并行子智能体 spawn 的前置）',
   );
   assert.match(
     interactionCommandSource,
@@ -296,17 +296,6 @@ test('workflow 保持主线原状：不禁用；提醒不教它；快照供 work
     /deny_workflow_tool_for_chat/,
     '聊天侧禁用漏斗不得追加 workflow',
   );
-  const platformSource = read('src-tauri', 'src', 'features', 'multiagent', 'platform', 'mod.rs');
-  assert.match(
-    platformSource,
-    /fn snapshot_workspace\(/,
-    'worktree 子智能体只检出 HEAD，必须有工作区快照通道',
-  );
-  assert.match(
-    chatCommandSource,
-    /spawn_blocking\(move \|\| \{\s*crate::features::multiagent::platform::snapshot_workspace/,
-    '多智能体轮次发送前快照工作区（阻塞 git 走 spawn_blocking），否则本轮输入文件在 worktree 里不可见',
-  );
 });
 
 // ── spawn 判定与折叠豁免（P2-2） ─────────────────────────────────────────────
@@ -385,12 +374,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /previousMultiAgent[\s\S]{0,600}invoke\("set_multi_agent_mode"/,
     '点击必须乐观翻转（后端 git 化数百毫秒，等返回才翻拨杆像点了没反应），失败回滚',
   );
-  const platformSource2 = read('src-tauri', 'src', 'features', 'multiagent', 'platform', 'mod.rs');
-  assert.match(
-    platformSource2,
-    /join\("\.git"\)\.exists\(\)/,
-    '已初始化的工作区重复开关不得再 spawn git init（Windows 进程启动贵）',
-  );
   assert.match(
     interactionBridgeSource,
     /catch \(invokeError\) \{[\s\S]{0,300}runOnSession\(sid, function \(\) \{/,
@@ -406,16 +389,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     transcriptsSource,
     /pub has_transcript: bool/,
     '清单以 worker ledger 为主表：排队/刚启动（无 transcript）的子智能体必须可见（复核 P1）',
-  );
-  assert.match(
-    platformSource2,
-    /fn ensure_state_excluded/,
-    'worker ledger 与子智能体完整对话（.codewhale/state）不得进入工作区 git 快照（复核 P1）',
-  );
-  assert.match(
-    platformSource2,
-    /--ignore-unmatch/,
-    '历史遗留已被跟踪的运行状态要在下轮快照就地停跟踪',
   );
   const multiagentBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'multiagent.js');
   assert.match(
@@ -433,17 +406,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     panelSource,
     /\(usesCustomTitle \? title\.rest : entry\.objective\) \|\| entry\.agent_id/,
     '清单行展示任务目标（起了「」名时展示去名后的正文）；无 ledger 的遗留行回退 agent_id',
-  );
-  const fileIngestSource = read('src-tauri', 'src', 'features', 'files', 'file_ingest.rs');
-  assert.match(
-    fileIngestSource,
-    /item\(\s*"git",/,
-    'git 是多智能体的系统依赖，必须出现在依赖体检里（Windows 最常缺）',
-  );
-  assert.match(
-    platformSource2,
-    /依赖体检/,
-    '缺 git 的报错要给人话与出路（指到 设置 → 依赖体检），不甩原始 NotFound',
   );
   assert.match(
     transcriptsSource,
@@ -482,11 +444,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     managerSource,
     /validate_multi_agent_session_web_scope\(app, command, session_id\)/,
     '多智能体封禁必须挂在统一校验点，不散落各命令',
-  );
-  assert.match(
-    chatCommandSource,
-    /快照失败\*?\*?中止/,
-    '快照失败必须中止本轮（复核 P2：静默继续会让 worktree 子智能体基于旧文件出过期结果）',
   );
   assert.match(
     chatViewSource,

@@ -43,7 +43,10 @@ pub(crate) fn delegation_reminder() -> String {
          说明写完整，交付物说清楚；\n\
          2. 多阶段任务（并行调研再汇总等）：并行的部分各派一个子智能体\
          （`agent` 后台并行），用 agents 协调工具等待并收取结果，由你亲自\
-         汇总；需要接力时把上游结果放进下一个子智能体的任务说明里；\n\
+         汇总；需要接力时把上游结果放进下一个子智能体的任务说明里；一律\
+         用默认共享工作区，**不要**传 `workspace_policy=worktree`（工作区\
+         未 git 化会被底座拒绝）——并行产出让各子智能体在最终回复里带回，\
+         由你亲自落盘；\n\
          3. 很简单的事：不必委派，自己直接做；\n\
          4. 承担者：专家池有合适人选就用 `profile` 字段指定{roster_block}；\
          没有合适人选就不带 `profile` 直接派，此时给子智能体起个一目了然\
@@ -119,6 +122,10 @@ mod tests {
         assert!(
             msg.contains("由你亲自汇总"),
             "多阶段任务由父模型协调收束，结果经父上下文接力"
+        );
+        assert!(
+            msg.contains("workspace_policy=worktree") && msg.contains("不要"),
+            "必须教一律共享工作区：工作区不做 git 化，worktree 会被底座拒绝"
         );
         assert!(
             msg.contains("不必委派，自己直接做"),

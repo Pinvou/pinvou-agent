@@ -22,25 +22,12 @@ fn libreoffice_installed() -> bool {
         || crate::platform::os::command_exists("libreoffice")
 }
 
-fn git_installed() -> bool {
-    crate::platform::os::command_exists("git")
-}
-
-const WINGET_PACKAGES: &[WingetPackage] = &[
-    WingetPackage {
-        package: "libreoffice",
-        winget_id: "TheDocumentFoundation.LibreOffice",
-        display: "LibreOffice",
-        installed: libreoffice_installed,
-    },
-    // 多智能体的并行隔离（git worktree）依赖 git；Windows 是唯一常缺 git 的平台。
-    WingetPackage {
-        package: "git",
-        winget_id: "Git.Git",
-        display: "Git",
-        installed: git_installed,
-    },
-];
+const WINGET_PACKAGES: &[WingetPackage] = &[WingetPackage {
+    package: "libreoffice",
+    winget_id: "TheDocumentFoundation.LibreOffice",
+    display: "LibreOffice",
+    installed: libreoffice_installed,
+}];
 
 fn winget_install_script(winget_id: &str) -> String {
     // Keep the script itself ASCII-only. Windows PowerShell 5.1 writes redirected
@@ -207,14 +194,6 @@ mod tests {
             assert!(script.contains("NativeErrorCode"));
             assert!(script.contains(entry.winget_id));
         }
-    }
-
-    /// git 必须可一键安装：多智能体的并行隔离依赖它，而 Windows 最常缺。
-    #[test]
-    fn git_is_one_click_installable() {
-        assert!(WINGET_PACKAGES
-            .iter()
-            .any(|entry| entry.package == "git" && entry.winget_id == "Git.Git"));
     }
 
     #[test]

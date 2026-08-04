@@ -79,8 +79,8 @@ pub async fn exit_plan_to_yolo(
 
 // ===================== 多智能体模式开关（ADR-0006） =====================
 
-/// 模型列表下方的会话级开关。开启：装配专家名册到会话工作区、工作区 git 化
-/// （并行子智能体 worktree 依赖）、名册整册即时推给在跑引擎
+/// 模型列表下方的会话级开关。开启：装配专家名册到会话工作区、名册整册
+/// 即时推给在跑引擎
 /// （`Op::SetFleetRoster`，下一轮生效）；关闭：仅停止每轮委派提醒注入，
 /// 在跑的子智能体不打断。工具面不随开关变化——与主线完全一致：`workflow`
 /// 保持可用（委派提醒不教学不推荐），裸 `agent` 本就对所有会话可用。
@@ -100,17 +100,14 @@ pub async fn set_multi_agent_mode(
         .load(&session_id)
         .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
     if enabled {
-        // 副作用先行，全部成功才落开关——工作区不是仓库时，worktree 隔离
-        // 的并行派发会被底座整批拒绝（非 worktree 裸派不受影响）；提前
-        // git 化保证模型随时可用 worktree，"开着却用不了"比开启失败更糟。
-        // git 与文件都是阻塞调用，移出异步运行线程（复核 P2）。
+        // 副作用先行，全部成功才落开关；名册写盘是阻塞调用，移出异步运行
+        // 线程。不做工作区 git 化（2026-08-04 决策）：新集群默认共享工作
+        // 区，worktree 由委派提醒明确不教。
         let workspace = crate::platform::paths::session_workspace_dir(&session_id);
         let sid = session_id.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             std::fs::create_dir_all(&workspace)
                 .map_err(|e| format!("set_multi_agent_mode({sid}): 建工作区失败: {e}"))?;
-            crate::features::multiagent::platform::ensure_git_repository(&workspace)
-                .map_err(|e| format!("set_multi_agent_mode({sid}): 工作区 git 化失败: {e}"))?;
             crate::features::multiagent::roster::enroll_expert_roles(&workspace)
                 .map_err(|e| format!("set_multi_agent_mode({sid}): {e}"))
         })
