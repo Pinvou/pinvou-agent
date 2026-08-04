@@ -20,7 +20,7 @@ import {
   terminalStatus,
 } from './conversation-model.js';
 import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMessageActions.jsx';
-import { assistantResponseText } from './message-clipboard.js';
+import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 
 const DEFAULT_COPY = {
   completed: '已完成',
@@ -690,7 +690,7 @@ export function ConversationTurn({
       ? c.contextUsage(Number(turnUsage.used || 0).toLocaleString(), Number(turnUsage.size || 0).toLocaleString())
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
-  const assistantText = assistantResponseText(turn);
+  const assistantAvailable = assistantResponseAvailable(turn);
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length)
@@ -753,8 +753,10 @@ export function ConversationTurn({
               />
             );
           })}
-          {!running && (assistantText || turn.lifecycleKnown || turn.completedAt || turn.error) && <AssistantMessageFooter>
-            {assistantText && <AssistantMessageActions text={assistantText} copy={c} />}
+          {!running && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error) && <AssistantMessageFooter>
+            {assistantAvailable && (
+              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={c} />
+            )}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
               {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}

@@ -2473,7 +2473,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
-        const assistantCopyText = item.streaming ? '' : assistantItemCopyText(item, { allowScheduledTaskDraft });
+        const assistantCopyAvailable = !item.streaming
+          && [item.text, item.html].some(value => String(value || '').trim());
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.personas.getPersonas
           && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
@@ -2524,8 +2525,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: isDark ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
-              {showAssistantActions && assistantCopyText && <AssistantMessageFooter>
-                <AssistantMessageActions text={assistantCopyText} copy={t.uiConversation} />
+              {showAssistantActions && assistantCopyAvailable && <AssistantMessageFooter>
+                <AssistantMessageActions
+                  resolveText={() => assistantItemCopyText(item, { allowScheduledTaskDraft })}
+                  copy={t.uiConversation}
+                />
                 {item.time && <span className={`text-[11px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</span>}
               </AssistantMessageFooter>}
             </div>

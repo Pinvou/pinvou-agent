@@ -19,7 +19,7 @@ function legacyAssistantHtmlToMarkdown(html) {
     legacyHtmlConverter.keep(['kbd']);
     legacyHtmlConverter.remove(['script', 'style']);
   }
-  return legacyHtmlConverter.turndown(String(html));
+  return legacyHtmlConverter.turndown(String(html)).replace(/\u00a0/g, ' ');
 }
 
 export function fallbackCopyText(text) {
@@ -87,11 +87,33 @@ export function assistantResponseText(turn) {
   const agentMessages = items.filter(item => item?.type === 'agent_message');
   const messages = agentMessages
     .filter(item => item.phase !== 'commentary')
-    .map(item => (
-      normalizeAssistantMessageText(item.copyText ?? item.text)
-      || assistantItemCopyText(item.legacyItem, item.copyOptions)
-    ))
+    .map(item => {
+      if (item.copyText != null) return normalizeAssistantMessageText(item.copyText);
+      const source = normalizeAssistantMessageText(item.text);
+      if (source && item.copyOptions !== undefined) {
+        return assistantMarkdownCopyText(source, item.copyOptions);
+      }
+      return source || assistantItemCopyText(item.legacyItem, item.copyOptions);
+    })
     .filter(Boolean);
   if (agentMessages.length) return normalizeAssistantMessageText(messages.join('\n\n'));
   return normalizeAssistantMessageText(turn.assistantText);
+}
+
+export function assistantResponseAvailable(turn) {
+  if (!turn) return false;
+  const items = Array.isArray(turn.items) && turn.items.length
+    ? turn.items
+    : Array.isArray(turn.presentation)
+      ? turn.presentation
+      : [];
+  const agentMessages = items.filter(item => item?.type === 'agent_message');
+  if (agentMessages.length) {
+    return agentMessages.some(item => (
+      item.phase !== 'commentary'
+      && [item.copyText, item.text, item.legacyItem?.text, item.legacyItem?.html]
+        .some(value => String(value || '').trim())
+    ));
+  }
+  return Boolean(String(turn.assistantText || '').trim());
 }

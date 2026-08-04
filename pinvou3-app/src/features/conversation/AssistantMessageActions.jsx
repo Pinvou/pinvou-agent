@@ -10,7 +10,7 @@ export function AssistantMessageFooter({ children }) {
   );
 }
 
-export function AssistantMessageActions({ text, copy }) {
+export function AssistantMessageActions({ text, resolveText, copy }) {
   const [status, setStatus] = useState('idle');
   const resetTimerRef = useRef(null);
   const label = status === 'copied'
@@ -32,8 +32,15 @@ export function AssistantMessageActions({ text, copy }) {
   };
 
   const handleCopy = async () => {
-    const value = normalizeAssistantMessageText(text);
-    const copied = await copyClipboardText(value);
+    let copied = false;
+    try {
+      const value = normalizeAssistantMessageText(
+        typeof resolveText === 'function' ? resolveText() : text,
+      );
+      copied = await copyClipboardText(value);
+    } catch {
+      copied = false;
+    }
     setStatus(copied ? 'copied' : 'failed');
     resetStatusLater();
   };

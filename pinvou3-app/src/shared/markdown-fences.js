@@ -1,235 +1,176 @@
-function sourceLines(source) {
-  const lines = [];
-  let start = 0;
-  for (let index = 0; index <= source.length; index += 1) {
-    if (index !== source.length && source.charAt(index) !== '\n') continue;
-    const contentEnd = index > start && source.charAt(index - 1) === '\r' ? index - 1 : index;
-    lines.push({ start, end: index, text: source.slice(start, contentEnd) });
-    start = index + 1;
-  }
-  return lines;
-}
+import { Marked } from 'marked';
 
-function openingFence(line) {
-  const match = /^( {0,3})(`{3,}|~{3,})([^\n]*)$/.exec(line);
-  if (!match) return null;
-  const marker = match[2];
-  const info = match[3] || '';
-  if (marker.charAt(0) === '`' && info.includes('`')) return null;
-  return {
-    indent: match[1].length,
-    marker: marker.charAt(0),
-    length: marker.length,
-    info: info.trim(),
-  };
-}
+export const MARKDOWN_OPTIONS = Object.freeze({
+  gfm: true,
+  breaks: true,
+  headerIds: false,
+  mangle: false,
+});
+const markdownLexer = new Marked(MARKDOWN_OPTIONS);
 
-function consumeBlockquotePrefix(line, start, expectedDepth = null) {
-  let cursor = start;
-  let depth = 0;
-  while (expectedDepth == null || depth < expectedDepth) {
-    const match = /^( {0,3})>[ \t]?/.exec(line.slice(cursor));
-    if (!match) break;
-    cursor += match[0].length;
-    depth += 1;
-  }
-  return expectedDepth == null || depth === expectedDepth ? { cursor, depth } : null;
-}
-
-function consumeListPrefix(line, start) {
-  let cursor = start;
-  let indent = 0;
-  let depth = 0;
-  while (true) {
-    const match = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/.exec(line.slice(cursor));
-    if (!match) break;
-    cursor += match[0].length;
-    indent = visualWidth(line.slice(start, cursor));
-    depth += 1;
-  }
-  return { cursor, indent, depth };
-}
-
-function visualWidth(value) {
-  let width = 0;
-  for (const char of String(value || '')) {
-    width += char === '\t' ? 4 - (width % 4) : 1;
-  }
-  return width;
-}
-
-function leadingIndentWidth(value) {
-  const match = /^[ \t]*/.exec(String(value || ''));
-  return visualWidth(match[0]);
-}
-
-function stripIndent(value, width) {
-  const source = String(value || '');
-  let cursor = 0;
-  let consumed = 0;
-  while (cursor < source.length && consumed < width) {
-    const char = source.charAt(cursor);
-    if (char !== ' ' && char !== '\t') break;
-    consumed += char === '\t' ? 4 - (consumed % 4) : 1;
-    cursor += 1;
-  }
-  return consumed >= width ? source.slice(cursor) : null;
-}
-
-function listMarker(line) {
-  const match = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/.exec(line);
-  if (!match) return null;
-  return {
-    markerIndent: visualWidth(match[1]),
-    contentIndent: visualWidth(match[0]),
-  };
-}
-
-const LIST_INTERRUPTING_HTML_TAGS = new Set([
-  'address', 'article', 'aside', 'base', 'basefont', 'blockquote', 'body', 'caption', 'center',
-  'col', 'colgroup', 'dd', 'details', 'dialog', 'dir', 'div', 'dl', 'dt', 'fieldset',
-  'figcaption', 'figure', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2', 'h3', 'h4',
-  'h5', 'h6', 'head', 'header', 'hr', 'html', 'legend', 'li', 'main', 'menu', 'menuitem',
-  'nav', 'noframes', 'ol', 'optgroup', 'option', 'p', 'param', 'search', 'section', 'summary',
-  'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'title', 'tr', 'track', 'ul',
-]);
-
-function startsListInterruptingBlock(content) {
-  const line = String(content || '');
-  if (/^(?: {0,3})(?:#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})/.test(line)) {
-    return true;
-  }
-  const html = /^(?: {0,3})<([a-z][\w-]*)(?:[ \t\n/>]|$)/i.exec(line);
-  return Boolean(html && LIST_INTERRUPTING_HTML_TAGS.has(html[1].toLowerCase()));
-}
-
-function updateListContexts(line, contexts) {
-  const quote = consumeBlockquotePrefix(line, 0);
-  const content = line.slice(quote.cursor);
-  const marker = listMarker(content);
-  let next = contexts.filter(context => context.quoteDepth <= quote.depth);
-  if (marker) {
-    next = next.filter(context => context.markerIndent < marker.markerIndent);
-    next.push({ ...marker, quoteDepth: quote.depth, afterBlank: false });
-    return next;
-  }
-  if (!content.trim()) {
-    return next.map(context => ({ ...context, afterBlank: true }));
-  }
-  const indent = leadingIndentWidth(content);
-  if (startsListInterruptingBlock(content)) {
-    next = next.filter(context => indent >= context.contentIndent);
-  }
-  return next.filter(context => indent >= context.contentIndent || !context.afterBlank)
-    .map(context => ({ ...context, afterBlank: false }));
-}
-
-function listContinuationOpening(line, contexts) {
-  const quote = consumeBlockquotePrefix(line, 0);
-  const candidates = contexts
-    .filter(context => context.quoteDepth <= quote.depth)
-    .sort((left, right) => right.contentIndent - left.contentIndent);
-  for (const context of candidates) {
-    const content = stripIndent(line.slice(quote.cursor), context.contentIndent);
-    if (content == null) continue;
-    const opening = openingFence(content);
-    if (opening) {
-      return {
-        ...opening,
-        quoteDepth: quote.depth,
-        listIndent: context.contentIndent,
-        nested: true,
-      };
+function lexerSourceMap(source) {
+  let text = '';
+  const offsets = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source.charAt(index);
+    if (char === '\r') {
+      if (source.charAt(index + 1) === '\n') index += 1;
+      text += '\n';
+      offsets.push(index);
+    } else if (char === '\t') {
+      text += '    ';
+      offsets.push(index, index, index, index);
+    } else {
+      text += char;
+      offsets.push(index);
     }
   }
-  return null;
+  return { text, offsets };
 }
 
-function containerFenceOpening(line) {
-  const quote = consumeBlockquotePrefix(line, 0);
-  const list = consumeListPrefix(line, quote.cursor);
-  const opening = openingFence(line.slice(list.cursor));
-  return opening ? {
-    ...opening,
-    quoteDepth: quote.depth,
-    listIndent: list.indent,
-    nested: quote.depth > 0 || list.depth > 0,
-  } : null;
-}
-
-function containerLineContent(line, opening) {
-  const quote = consumeBlockquotePrefix(line, 0, opening.quoteDepth);
-  if (!quote) return null;
-  let cursor = quote.cursor;
-  if (opening.listIndent > 0 && line.slice(cursor).trim()) {
-    const stripped = stripIndent(line.slice(cursor), opening.listIndent);
-    if (stripped == null) return null;
-    return stripped;
+function subsequenceMap(derived, parent, start = 0) {
+  const offsets = [];
+  let cursor = start;
+  for (let index = 0; index < derived.length; index += 1) {
+    const char = derived.charAt(index);
+    while (cursor < parent.length && parent.charAt(cursor) !== char) cursor += 1;
+    if (cursor >= parent.length) return null;
+    offsets.push(cursor);
+    cursor += 1;
   }
-  return line.slice(cursor);
+  return offsets;
 }
 
-function closingFence(line, opening) {
-  const match = /^( {0,3})(`{3,}|~{3,})[ \t]*$/.exec(line);
+function composeMaps(inner, outer) {
+  return inner.map(index => outer[index]);
+}
+
+function lineStart(source, index) {
+  let cursor = index;
+  while (cursor > 0 && !['\r', '\n'].includes(source.charAt(cursor - 1))) cursor -= 1;
+  return cursor;
+}
+
+function lineEnd(source, index) {
+  let cursor = index;
+  while (cursor < source.length && !['\r', '\n'].includes(source.charAt(cursor))) cursor += 1;
+  return cursor;
+}
+
+function openingFence(raw) {
+  const firstLine = String(raw || '').split('\n', 1)[0];
+  const match = /^( {0,3})(`{3,}|~{3,})([^\n]*)$/.exec(firstLine);
+  if (!match) return null;
+  return {
+    indent: match[1].length,
+    marker: match[2].charAt(0),
+    length: match[2].length,
+  };
+}
+
+function fenceIsClosed(raw, opening) {
+  const lines = String(raw || '').replace(/\n$/, '').split('\n');
+  if (lines.length < 2) return false;
+  const closing = /^( {0,3})(`{3,}|~{3,})[ \t]*$/.exec(lines[lines.length - 1]);
   return Boolean(
-    match
-    && match[2].charAt(0) === opening.marker
-    && match[2].length >= opening.length,
+    closing
+    && closing[2].charAt(0) === opening.marker
+    && closing[2].length >= opening.length,
   );
 }
 
-function stripOpeningIndent(line, count) {
-  let removed = 0;
-  while (removed < count && line.charAt(removed) === ' ') removed += 1;
-  return line.slice(removed);
+function mappedFence(token, tokenMap, source) {
+  const opening = openingFence(token.raw);
+  if (!opening || !tokenMap.length) return null;
+  const markerOffset = opening.indent;
+  const markerSourceOffset = tokenMap[markerOffset];
+  if (!Number.isInteger(markerSourceOffset)) return null;
+  const start = lineStart(source, markerSourceOffset);
+  const end = lineEnd(source, tokenMap[tokenMap.length - 1]);
+  return {
+    start,
+    end,
+    info: String(token.lang || '').trim(),
+    content: String(token.text || ''),
+    marker: opening.marker,
+    markerLength: opening.length,
+    closed: fenceIsClosed(token.raw, opening),
+    nested: markerSourceOffset - start > opening.indent,
+  };
+}
+
+function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
+  let cursor = 0;
+  for (const token of tokens || []) {
+    if (!token?.raw) continue;
+    const relativeMap = subsequenceMap(token.raw, parentText, cursor);
+    if (!relativeMap) {
+      if (token.type === 'blockquote' && token.text && token.tokens) {
+        const mappedText = token.text.endsWith('\n') ? token.text.slice(0, -1) : token.text;
+        const textMap = subsequenceMap(mappedText, parentText, cursor);
+        if (textMap) {
+          cursor = textMap[textMap.length - 1] + 1;
+          walkTokenSequence(
+            token.tokens,
+            mappedText,
+            composeMaps(textMap, parentMap),
+            source,
+            fences,
+          );
+        }
+      }
+      continue;
+    }
+    cursor = relativeMap[relativeMap.length - 1] + 1;
+    const tokenMap = composeMaps(relativeMap, parentMap);
+
+    if (token.type === 'code' && token.codeBlockStyle !== 'indented') {
+      const fence = mappedFence(token, tokenMap, source);
+      if (fence) fences.push(fence);
+      continue;
+    }
+
+    if (token.type === 'blockquote' && token.text && token.tokens) {
+      const textMap = subsequenceMap(token.text, token.raw);
+      if (textMap) {
+        walkTokenSequence(token.tokens, token.text, composeMaps(textMap, tokenMap), source, fences);
+      }
+      continue;
+    }
+
+    if (token.type === 'list' && Array.isArray(token.items)) {
+      let itemCursor = 0;
+      for (const item of token.items) {
+        if (!item?.raw || !item.text) continue;
+        const itemRelativeMap = subsequenceMap(item.raw, token.raw, itemCursor);
+        if (!itemRelativeMap) continue;
+        itemCursor = itemRelativeMap[itemRelativeMap.length - 1] + 1;
+        const itemMap = composeMaps(itemRelativeMap, tokenMap);
+        const textMap = subsequenceMap(item.text, item.raw);
+        if (textMap) {
+          walkTokenSequence(item.tokens, item.text, composeMaps(textMap, itemMap), source, fences);
+        }
+      }
+    }
+  }
 }
 
 /**
- * Locate CommonMark fenced code blocks, including blockquote and list containers,
- * without rendering their content.
- * Offsets refer to the original string; content follows CommonMark's opening-indent removal.
+ * Return only fenced blocks recognized by the same Marked grammar used by the UI.
+ * The token tree is authoritative; subsequence maps recover offsets in the original
+ * Markdown after Marked removes blockquote/list prefixes and expands tabs.
  */
 export function scanMarkdownFences(value) {
   const source = String(value || '');
-  const lines = sourceLines(source);
+  if (!source) return [];
+  const mappedSource = lexerSourceMap(source);
   const fences = [];
-  let listContexts = [];
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    listContexts = updateListContexts(lines[lineIndex].text, listContexts);
-    const opening = containerFenceOpening(lines[lineIndex].text)
-      || listContinuationOpening(lines[lineIndex].text, listContexts);
-    if (!opening) continue;
-    let closingIndex = -1;
-    let boundaryIndex = lines.length;
-    const contentLines = [];
-    for (let candidate = lineIndex + 1; candidate < lines.length; candidate += 1) {
-      const content = containerLineContent(lines[candidate].text, opening);
-      if (content == null) {
-        boundaryIndex = candidate;
-        break;
-      }
-      if (closingFence(content, opening)) {
-        closingIndex = candidate;
-        break;
-      }
-      contentLines.push(stripOpeningIndent(content, opening.indent));
-    }
-    const lastContentIndex = boundaryIndex < lines.length ? boundaryIndex - 1 : lines.length - 1;
-    fences.push({
-      start: lines[lineIndex].start,
-      end: closingIndex >= 0
-        ? lines[closingIndex].end
-        : lastContentIndex > lineIndex ? lines[lastContentIndex].end : lines[lineIndex].end,
-      info: opening.info,
-      content: contentLines.join('\n'),
-      marker: opening.marker,
-      markerLength: opening.length,
-      closed: closingIndex >= 0,
-      nested: opening.nested,
-    });
-    lineIndex = closingIndex >= 0
-      ? closingIndex
-      : boundaryIndex < lines.length ? boundaryIndex - 1 : lines.length;
-  }
-  return fences;
+  walkTokenSequence(
+    markdownLexer.lexer(source),
+    mappedSource.text,
+    mappedSource.offsets,
+    source,
+    fences,
+  );
+  return fences.sort((left, right) => left.start - right.start);
 }

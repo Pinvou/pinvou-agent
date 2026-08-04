@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   assistantItemCopyText,
   assistantMarkdownCopyText,
+  assistantResponseAvailable,
   assistantResponseText,
   copyClipboardText,
   normalizeAssistantMessageText,
@@ -23,6 +24,12 @@ assert.equal(
   normalizeAssistantMessageText(`\n${indentedCode}\n`),
   indentedCode,
   'normalization must preserve indentation that defines a Markdown code block',
+);
+const nonBreakingMarkdown = 'Text\u00a0value\n\n```text\ncode\u00a0value\n```';
+assert.equal(
+  assistantMarkdownCopyText(nonBreakingMarkdown),
+  nonBreakingMarkdown,
+  'canonical source Markdown must preserve non-breaking spaces',
 );
 assert.equal(
   assistantItemCopyText({ text: markdown, html: '<h2>不应使用 HTML</h2>' }),
@@ -111,6 +118,12 @@ assert.equal(
 );
 
 const genericPersonaFence = personaOnly.replace('persona-card', 'json');
+const unlabeledPersonaFence = personaOnly.replace('persona-card', '');
+assert.equal(
+  assistantMarkdownCopyText(unlabeledPersonaFence),
+  assistantMarkdownCopyText(personaOnly),
+  'unlabelled fences classified as persona cards by the UI must use the same copy serializer',
+);
 assert.equal(
   assistantMarkdownCopyText(`${genericPersonaFence}\n\n${personaOnly}`),
   `${genericPersonaFence}\n\n🔎 代码审查员\n\n检查设计与副作用`,
@@ -200,6 +213,8 @@ for (const [label, variant] of [
   ['list blockquote then fence', `- item\n> note\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['tab-indented list continuation', `- item\n\t\`\`\`persona-card\n\t${personaPayload}\n\t\`\`\``],
   ['nested-list continuation', `- outer\n  1. inner\n     \`\`\`persona-card\n     ${personaPayload}\n     \`\`\``],
+  ['nested-list tab continuation', `- outer\n  1. inner\n  \t\`\`\`persona-card\n  \t${personaPayload}\n  \t\`\`\``],
+  ['lazy blockquote list continuation', `> - outer\n>   1. inner\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
 ]) {
   const rendered = renderMarkdownMarkup(variant);
   const copied = assistantMarkdownCopyText(variant);
@@ -215,6 +230,8 @@ for (const [label, variant] of [
   ['heading ends list', `- item\n# heading\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['thematic break ends list', `- item\n---\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['HTML block ends list', `- item\n<div>block</div>\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
+  ['HTML block owns apparent fence', `- item\n<div>block</div>\n  \`\`\`persona-card\n  ${personaPayload}\n  \`\`\``],
+  ['table block owns apparent fence', `- item\n<table><tr><td>block</td></tr></table>\n   \`\`\`persona-card\n   ${personaPayload}\n   \`\`\``],
 ]) {
   const rendered = renderMarkdownMarkup(variant);
   const copied = assistantMarkdownCopyText(variant);
@@ -262,6 +279,16 @@ assert.equal(
   assistantItemCopyText({ text: markdown }),
   'ordinary and Codex modes should expose the same canonical Markdown format',
 );
+assert.equal(
+  assistantResponseAvailable({ items: [{ type: 'agent_message', text: markdown }] }),
+  true,
+  'availability checks must not require eager copy conversion',
+);
+assert.equal(
+  assistantResponseAvailable({ items: [{ type: 'agent_message', phase: 'commentary', text: markdown }] }),
+  false,
+  'commentary-only turns must not expose a copy action',
+);
 
 const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -293,18 +320,19 @@ const timeline = source('features/conversation/ConversationTimeline.jsx');
 const codexView = source('features/codex/CodexAcpView.jsx');
 const actions = source('features/conversation/AssistantMessageActions.jsx');
 const clipboard = source('features/conversation/message-clipboard.js');
-assert.match(chatView, /showAssistantActions && assistantCopyText && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantCopyText\}/);
+assert.match(chatView, /showAssistantActions && assistantCopyAvailable && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions[\s\S]*?resolveText=\{\(\) => assistantItemCopyText/);
 assert.match(chatView, /allowScheduledTaskDraft=\{isScheduledTaskCreationChat\} showAssistantActions=\{false\}/);
 assert.match(chatView, /allowScheduledTaskDraft: isScheduledTaskCreationChat/);
 assert.doesNotMatch(chatView, /data-assistant-copy-source/);
 assert.match(actions, /data-testid="assistant-message-footer"/);
 assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
 assert.match(actions, /data-testid="assistant-message-actions"/);
+assert.match(actions, /typeof resolveText === 'function' \? resolveText\(\) : text/);
 assert.match(actions, /copyClipboardText\(value\)/);
 assert.match(actions, /aria-live="polite"/);
 assert.doesNotMatch(actions, /targetRef|querySelector/);
 assert.doesNotMatch(clipboard, /querySelectorAll|data-assistant-copy-source/);
-assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantText\} copy=\{c\}/);
-assert.match(codexView, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantText\} copy=\{copy\}/);
+assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{c\}/);
+assert.match(codexView, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{copy\}/);
 
 console.log('assistant message actions tests passed');

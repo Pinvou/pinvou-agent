@@ -1,7 +1,7 @@
 import createDOMPurify from 'dompurify';
 import { Marked } from 'marked';
 import { escapeCodeHtml, highlightCode } from './syntax-highlighter.js';
-import { scanMarkdownFences } from './markdown-fences.js';
+import { MARKDOWN_OPTIONS, scanMarkdownFences } from './markdown-fences.js';
 
 const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/giu;
 const SANITIZE_OPTIONS = {
@@ -30,12 +30,7 @@ function fencedCodeIsClosed(token) {
   return fences.length ? fences[0].closed : true;
 }
 
-const markdown = new Marked({
-  gfm: true,
-  breaks: true,
-  headerIds: false,
-  mangle: false,
-});
+const markdown = new Marked(MARKDOWN_OPTIONS);
 
 markdown.use({
   useNewRenderer: true,

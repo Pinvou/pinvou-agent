@@ -3,7 +3,6 @@ import { scanMarkdownFences } from '../../shared/markdown-fences.js';
 export function normalizeAssistantMessageText(value) {
   const lines = String(value || '')
     .replace(/\r\n?/g, '\n')
-    .replace(/\u00a0/g, ' ')
     .split('\n');
   while (lines.length && /^[ \t]*$/.test(lines[0])) lines.shift();
   while (lines.length && /^[ \t]*$/.test(lines[lines.length - 1])) lines.pop();

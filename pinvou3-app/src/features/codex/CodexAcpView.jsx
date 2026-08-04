@@ -23,7 +23,7 @@ import {
 } from './acp-state.js';
 import { ConversationActivityIndicator, ConversationMarkdown, ConversationTurn } from '../conversation/ConversationTimeline.jsx';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
-import { assistantResponseText } from '../conversation/message-clipboard.js';
+import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -605,7 +605,7 @@ function Turn({
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
   const running = turn.status === 'running';
   const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
-  const assistantText = assistantResponseText(turn);
+  const assistantAvailable = assistantResponseAvailable(turn);
   return (
     <section className="space-y-4">
       {(turn.userText || turn.userAttachments.length > 0) && (
@@ -644,8 +644,10 @@ function Turn({
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
               responding={responding} onOpenExternal={onOpenExternal} />
           ))}
-          {!running && (assistantText || turn.completedAt || turn.error) && <AssistantMessageFooter>
-            {assistantText && <AssistantMessageActions text={assistantText} copy={copy} />}
+          {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
+            {assistantAvailable && (
+              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={copy} />
+            )}
             {(turn.completedAt || turn.error) && <>
               <StatusBadge status={turn.status} />
               <span className="text-[11px] text-gray-400">{duration}</span>

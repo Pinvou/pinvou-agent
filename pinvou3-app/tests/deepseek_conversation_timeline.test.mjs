@@ -9,20 +9,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
 const conversationDir = path.join(temp, 'features', 'conversation');
-const sharedDir = path.join(temp, 'shared');
 mkdirSync(conversationDir, { recursive: true });
-mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
-for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'structured-assistant-content.js']) {
+for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
   copyFileSync(
     path.join(root, 'src', 'features', 'conversation', file),
     path.join(conversationDir, file),
   );
 }
-copyFileSync(
-  path.join(root, 'src', 'shared', 'markdown-fences.js'),
-  path.join(sharedDir, 'markdown-fences.js'),
-);
 
 try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
@@ -146,10 +140,11 @@ try {
     ],
   });
   assert.equal(rawMarkdownProjection.turns[0].items[0].text, '## Result\n\n- item');
-  assert.equal(
-    rawMarkdownProjection.turns[0].items[0].copyText,
-    '## Result\n\n- item',
-    'DeepSeek projection must expose canonical source Markdown instead of rendered HTML',
+  assert.equal(rawMarkdownProjection.turns[0].items[0].copyText, undefined);
+  assert.deepEqual(
+    rawMarkdownProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: false },
+    'DeepSeek projection must defer canonical copy conversion until the user clicks copy',
   );
 
   const scheduledMarkdown = '```json\n{"name":"Daily","prompt":"Summarize","rrule":"FREQ=DAILY"}\n```';
@@ -160,10 +155,10 @@ try {
       { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
     ],
   });
-  assert.equal(
-    ordinaryScheduledProjection.turns[0].items[0].copyText,
-    scheduledMarkdown,
-    'ordinary conversations must not infer scheduled-task cards from JSON shape alone',
+  assert.equal(ordinaryScheduledProjection.turns[0].items[0].text, scheduledMarkdown);
+  assert.deepEqual(
+    ordinaryScheduledProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: false },
   );
   const taskCreationProjection = projectDeepSeekConversation({
     sessionId: 'scheduled-copy-contract',
@@ -173,10 +168,11 @@ try {
       { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
     ],
   });
-  assert.equal(
-    taskCreationProjection.turns[0].items[0].copyText,
-    'Daily\n\nSummarize\n\nFREQ=DAILY',
-    'scheduled-task creation must serialize the payload that its UI classifies as a task card',
+  assert.equal(taskCreationProjection.turns[0].items[0].text, scheduledMarkdown);
+  assert.deepEqual(
+    taskCreationProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: true },
+    'scheduled-task classification must remain available to the lazy copy resolver',
   );
 
   const history = projectDeepSeekConversation({
