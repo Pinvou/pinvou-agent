@@ -2290,7 +2290,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       messageIndex={item.messageIndex}
                       attachmentIndex={index}
                       sessionId={sessionId}
-                      copyText={copyClipboardText}
+                       copyText={copyClipboardText}
                       labels={{
                         open: t.attachmentOpen,
                         download: t.attachmentDownload,
