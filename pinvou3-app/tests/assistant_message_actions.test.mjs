@@ -41,12 +41,37 @@ assert.equal(
   '## 历史标题\n\n历史内容',
   'legacy HTML-only messages should remain copyable through a Markdown compatibility conversion',
 );
+const legacyPersonaHtml = renderMarkdownMarkup(
+  '```persona-card\n{"name":"历史审查员","description":"可见卡","body":"隐藏提示词"}\n```',
+);
 assert.equal(
-  assistantItemCopyText({
-    html: '<pre><code class="language-card-question">{&quot;question&quot;:&quot;历史问题？&quot;,&quot;options&quot;:[&quot;甲&quot;,&quot;乙&quot;]}</code></pre>',
-  }),
+  assistantItemCopyText({ html: legacyPersonaHtml }),
+  '历史审查员\n\n可见卡',
+  'legacy HTML-only persona cards should keep the same semantic serializer',
+);
+assert.equal(
+  assistantItemCopyText({ html: renderMarkdownMarkup(
+    '```card-question\n{"question":"历史问题？","options":["甲","乙"]}\n```',
+  ) }),
   '历史问题？\n\n1. 甲\n2. 乙',
-  'legacy HTML-only cards should use the same semantic serializer',
+  'legacy HTML-only question cards should use the same semantic serializer',
+);
+assert.equal(
+  assistantItemCopyText(
+    { html: renderMarkdownMarkup(
+      '```scheduled-task-draft\n{"name":"历史简报","prompt":"汇总进展","rrule":"FREQ=DAILY"}\n```',
+    ) },
+    { allowScheduledTaskDraft: true },
+  ),
+  '历史简报\n\n汇总进展\n\nFREQ=DAILY',
+  'legacy HTML-only scheduled-task cards should serialize in task-creation context',
+);
+assert.equal(
+  assistantItemCopyText({ html: renderMarkdownMarkup(
+    '```card-question\n{"question":"历史问题？","options":["甲","乙"]}\n```',
+  ) }, { allowScheduledTaskDraft: false }),
+  '历史问题？\n\n1. 甲\n2. 乙',
+  'legacy question cards must not depend on the scheduled-task context',
 );
 
 const cardQuestion = [

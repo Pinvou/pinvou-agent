@@ -7,6 +7,25 @@ import {
 
 let legacyHtmlConverter = null;
 
+function legacyFencedCodeLanguage(node) {
+  const code = node && node.firstChild;
+  const className = String((code && code.getAttribute && code.getAttribute('class')) || '');
+  const classLanguage = (className.match(/language-(\S+)/) || [null, ''])[1];
+  const dataLanguageId = String((node && node.getAttribute && node.getAttribute('data-language-id')) || '')
+    .trim()
+    .toLowerCase();
+  const dataLanguage = String((node && node.getAttribute && node.getAttribute('data-language')) || '')
+    .trim();
+  // renderMarkdown 把无法被 hljs 识别的围栏语言（persona-card / card-question /
+  // scheduled-task-draft 等协议标签）记录在 pre 的 data-language 上，而 code 的
+  // class 只会是 language-plaintext。这里把这些协议标签还原回围栏信息，让旧 HTML
+  // 会话的复制与 UI 卡片分类保持一致；已知语言仍优先用 code class 的 language-*。
+  if ((!classLanguage || classLanguage === 'plaintext') && dataLanguageId === 'plaintext' && dataLanguage && dataLanguage.toLowerCase() !== 'text') {
+    return dataLanguage;
+  }
+  return classLanguage;
+}
+
 function legacyAssistantHtmlToMarkdown(html) {
   if (!html) return '';
   if (!legacyHtmlConverter) {
@@ -16,6 +35,28 @@ function legacyAssistantHtmlToMarkdown(html) {
       codeBlockStyle: 'fenced',
     });
     legacyHtmlConverter.use(gfm);
+    legacyHtmlConverter.addRule('pinvouFencedCodeLanguage', {
+      filter: (node, options) => (
+        options.codeBlockStyle === 'fenced'
+        && node.nodeName === 'PRE'
+        && node.firstChild
+        && node.firstChild.nodeName === 'CODE'
+        && node.getAttribute('data-language')
+      ),
+      replacement: (content, node, options) => {
+        const code = node.firstChild;
+        const language = legacyFencedCodeLanguage(node);
+        const fenceChar = options.fence.charAt(0);
+        let fenceSize = 3;
+        const fenceInCodeRegex = new RegExp(`^${fenceChar}{3,}`, 'gm');
+        let match;
+        while ((match = fenceInCodeRegex.exec(code.textContent))) {
+          if (match[0].length >= fenceSize) fenceSize = match[0].length + 1;
+        }
+        const fence = fenceChar.repeat(fenceSize);
+        return `\n\n${fence}${language}\n${String(code.textContent).replace(/\n$/, '')}\n${fence}\n\n`;
+      },
+    });
     legacyHtmlConverter.keep(['kbd']);
     legacyHtmlConverter.remove(['script', 'style']);
   }
