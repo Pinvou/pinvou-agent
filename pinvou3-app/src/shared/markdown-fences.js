@@ -24,6 +24,57 @@ function openingFence(line) {
   };
 }
 
+function consumeBlockquotePrefix(line, start, expectedDepth = null) {
+  let cursor = start;
+  let depth = 0;
+  while (expectedDepth == null || depth < expectedDepth) {
+    const match = /^( {0,3})>[ \t]?/.exec(line.slice(cursor));
+    if (!match) break;
+    cursor += match[0].length;
+    depth += 1;
+  }
+  return expectedDepth == null || depth === expectedDepth ? { cursor, depth } : null;
+}
+
+function consumeListPrefix(line, start) {
+  let cursor = start;
+  let indent = 0;
+  let depth = 0;
+  while (true) {
+    const match = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/.exec(line.slice(cursor));
+    if (!match) break;
+    cursor += match[0].length;
+    indent += match[0].length;
+    depth += 1;
+  }
+  return { cursor, indent, depth };
+}
+
+function containerFenceOpening(line) {
+  const quote = consumeBlockquotePrefix(line, 0);
+  const list = consumeListPrefix(line, quote.cursor);
+  const opening = openingFence(line.slice(list.cursor));
+  return opening ? {
+    ...opening,
+    quoteDepth: quote.depth,
+    listIndent: list.indent,
+    nested: quote.depth > 0 || list.depth > 0,
+  } : null;
+}
+
+function containerLineContent(line, opening) {
+  const quote = consumeBlockquotePrefix(line, 0, opening.quoteDepth);
+  if (!quote) return null;
+  let cursor = quote.cursor;
+  if (opening.listIndent > 0 && line.slice(cursor).trim()) {
+    let spaces = 0;
+    while (spaces < opening.listIndent && line.charAt(cursor + spaces) === ' ') spaces += 1;
+    if (spaces < opening.listIndent) return null;
+    cursor += spaces;
+  }
+  return line.slice(cursor);
+}
+
 function closingFence(line, opening) {
   const match = /^( {0,3})(`{3,}|~{3,})[ \t]*$/.exec(line);
   return Boolean(
@@ -40,7 +91,8 @@ function stripOpeningIndent(line, count) {
 }
 
 /**
- * Locate top-level CommonMark fenced code blocks without rendering their content.
+ * Locate CommonMark fenced code blocks, including blockquote and list containers,
+ * without rendering their content.
  * Offsets refer to the original string; content follows CommonMark's opening-indent removal.
  */
 export function scanMarkdownFences(value) {
@@ -48,30 +100,39 @@ export function scanMarkdownFences(value) {
   const lines = sourceLines(source);
   const fences = [];
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const opening = openingFence(lines[lineIndex].text);
+    const opening = containerFenceOpening(lines[lineIndex].text);
     if (!opening) continue;
     let closingIndex = -1;
+    let boundaryIndex = lines.length;
+    const contentLines = [];
     for (let candidate = lineIndex + 1; candidate < lines.length; candidate += 1) {
-      if (closingFence(lines[candidate].text, opening)) {
+      const content = containerLineContent(lines[candidate].text, opening);
+      if (content == null) {
+        boundaryIndex = candidate;
+        break;
+      }
+      if (closingFence(content, opening)) {
         closingIndex = candidate;
         break;
       }
+      contentLines.push(stripOpeningIndent(content, opening.indent));
     }
-    const contentEnd = closingIndex >= 0 ? closingIndex : lines.length;
-    const content = lines
-      .slice(lineIndex + 1, contentEnd)
-      .map(line => stripOpeningIndent(line.text, opening.indent))
-      .join('\n');
+    const lastContentIndex = boundaryIndex < lines.length ? boundaryIndex - 1 : lines.length - 1;
     fences.push({
       start: lines[lineIndex].start,
-      end: closingIndex >= 0 ? lines[closingIndex].end : source.length,
+      end: closingIndex >= 0
+        ? lines[closingIndex].end
+        : lastContentIndex > lineIndex ? lines[lastContentIndex].end : lines[lineIndex].end,
       info: opening.info,
-      content,
+      content: contentLines.join('\n'),
       marker: opening.marker,
       markerLength: opening.length,
       closed: closingIndex >= 0,
+      nested: opening.nested,
     });
-    lineIndex = closingIndex >= 0 ? closingIndex : lines.length;
+    lineIndex = closingIndex >= 0
+      ? closingIndex
+      : boundaryIndex < lines.length ? boundaryIndex - 1 : lines.length;
   }
   return fences;
 }

@@ -157,6 +157,41 @@ for (const [label, variant] of [
   );
 }
 
+for (const [label, variant] of [
+  ['blockquote fence', `> \`\`\`persona-card\n> ${personaPayload}\n> \`\`\``],
+  ['list fence', `- \`\`\`persona-card\n  ${personaPayload}\n  \`\`\``],
+  ['nested blockquote list fence', `> - \`\`\`persona-card\n>   ${personaPayload}\n>   \`\`\``],
+]) {
+  assert.equal(
+    assistantMarkdownCopyText(variant),
+    'Reviewer\n\nVisible card',
+    `${label} must not expose a structured payload hidden by the rendered UI`,
+  );
+}
+
+const quotedPersonaWithContext = [
+  '> 引用前文',
+  '> ```persona-card',
+  `> ${personaPayload}`,
+  '> ```',
+  '> 引用后文',
+].join('\n');
+assert.equal(
+  assistantMarkdownCopyText(quotedPersonaWithContext),
+  '> 引用前文\nReviewer\n\nVisible card\n> 引用后文',
+  'nested fence replacement must preserve source content outside the selected block',
+);
+
+const secondQuotedPersona = quotedPersonaWithContext.replaceAll('Reviewer', 'Second')
+  .replaceAll('Visible card', 'Second card')
+  .replace('> 引用前文\n', '')
+  .replace('\n> 引用后文', '');
+assert.equal(
+  assistantMarkdownCopyText(`${quotedPersonaWithContext}\n\n${secondQuotedPersona}`),
+  `> 引用前文\nReviewer\n\nVisible card\n> 引用后文\n\n${secondQuotedPersona}`,
+  'only the nested structured fence selected by the UI should be serialized',
+);
+
 const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
 assert.equal(
   assistantItemCopyText({ text: injectedMarker }),
