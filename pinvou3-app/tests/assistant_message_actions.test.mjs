@@ -5,6 +5,7 @@ import {
   assistantMarkdownCopyText,
   assistantResponseText,
   copyClipboardText,
+  normalizeAssistantMessageText,
 } from '../src/features/conversation/message-clipboard.js';
 import { dict } from '../src/shared/i18n.js';
 
@@ -15,6 +16,12 @@ assert.equal(
   assistantMarkdownCopyText(`  ${markdown}\r\n`),
   markdown,
   'canonical copy text should retain Markdown structure and normalize line endings',
+);
+const indentedCode = '    const first = 1;\n    const second = 2;';
+assert.equal(
+  normalizeAssistantMessageText(`\n${indentedCode}\n`),
+  indentedCode,
+  'normalization must preserve indentation that defines a Markdown code block',
 );
 assert.equal(
   assistantItemCopyText({ text: markdown, html: '<h2>不应使用 HTML</h2>' }),
@@ -64,9 +71,31 @@ const scheduledTaskOnly = [
   '```',
 ].join('\n');
 assert.equal(
-  assistantMarkdownCopyText(scheduledTaskOnly),
+  assistantMarkdownCopyText(scheduledTaskOnly, { allowScheduledTaskDraft: true }),
   '每日简报\n\n汇总今日进展\n\nFREQ=DAILY;BYHOUR=9',
   'scheduled-task cards should copy readable task content instead of hidden JSON',
+);
+assert.equal(
+  assistantMarkdownCopyText(scheduledTaskOnly),
+  scheduledTaskOnly,
+  'scheduled-task payloads must remain source Markdown outside the task-card context',
+);
+
+const ordinaryScheduledJson = scheduledTaskOnly.replace('scheduled-task-draft', 'json');
+assert.equal(
+  assistantItemCopyText({ text: ordinaryScheduledJson }),
+  ordinaryScheduledJson,
+  'ordinary JSON examples must not be inferred as scheduled-task cards',
+);
+assert.equal(
+  assistantItemCopyText({ text: ordinaryScheduledJson }, { allowScheduledTaskDraft: true }),
+  '每日简报\n\n汇总今日进展\n\nFREQ=DAILY;BYHOUR=9',
+  'task creation conversations should serialize the same generic payload that their UI renders as a card',
+);
+assert.equal(
+  assistantResponseText({ items: [{ type: 'agent_message', text: ordinaryScheduledJson }] }),
+  ordinaryScheduledJson,
+  'Codex must retain ordinary JSON that is not rendered through the DeepSeek task-card protocol',
 );
 
 const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
@@ -139,6 +168,7 @@ const actions = source('features/conversation/AssistantMessageActions.jsx');
 const clipboard = source('features/conversation/message-clipboard.js');
 assert.match(chatView, /showAssistantActions && assistantCopyText && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantCopyText\}/);
 assert.match(chatView, /allowScheduledTaskDraft=\{isScheduledTaskCreationChat\} showAssistantActions=\{false\}/);
+assert.match(chatView, /allowScheduledTaskDraft: isScheduledTaskCreationChat/);
 assert.doesNotMatch(chatView, /data-assistant-copy-source/);
 assert.match(actions, /data-testid="assistant-message-footer"/);
 assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);

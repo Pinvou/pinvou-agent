@@ -882,6 +882,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         tokens: ctxTokens,
         sessionId: bs && bs.activeSessionId,
         timelineEvents: bs && bs.turnTimeline,
+        allowScheduledTaskDraft: isScheduledTaskCreationChat,
       });
       const activeConversationTurn = [...conversationProjection.turns]
         .reverse()
@@ -2472,7 +2473,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
-        const assistantCopyText = item.streaming ? '' : assistantItemCopyText(item);
+        const assistantCopyText = item.streaming ? '' : assistantItemCopyText(item, { allowScheduledTaskDraft });
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.personas.getPersonas
           && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });

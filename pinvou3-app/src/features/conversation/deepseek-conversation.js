@@ -30,14 +30,15 @@ function toolStatus(item) {
   return 'pending';
 }
 
-function projectItem(item, index) {
+function projectItem(item, index, copyOptions) {
   const id = stableItemId(item, index);
   if (item.type === 'assistant') {
     return {
       id,
       type: 'agent_message',
       text: item.text || '',
-      copyText: assistantMarkdownCopyText(item.text),
+      copyText: assistantMarkdownCopyText(item.text, copyOptions),
+      copyOptions,
       status: item.streaming ? 'in_progress' : 'completed',
       legacyItem: item,
     };
@@ -187,6 +188,7 @@ export function projectDeepSeekConversation({
   tokens = null,
   sessionId = null,
   timelineEvents = [],
+  allowScheduledTaskDraft = false,
 } = {}) {
   const turns = [];
   const userTurns = [];
@@ -211,7 +213,7 @@ export function projectDeepSeekConversation({
       userTurns.push(current);
       continue;
     }
-    ensureTurn(index).items.push(projectItem(item, index));
+    ensureTurn(index).items.push(projectItem(item, index, { allowScheduledTaskDraft }));
   }
 
   for (const turn of turns) {

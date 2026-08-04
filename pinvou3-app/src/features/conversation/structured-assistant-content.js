@@ -1,8 +1,13 @@
 export function normalizeAssistantMessageText(value) {
-  return String(value || '')
+  const lines = String(value || '')
     .replace(/\r\n?/g, '\n')
     .replace(/\u00a0/g, ' ')
-    .trim();
+    .split('\n');
+  while (lines.length && /^[ \t]*$/.test(lines[0])) lines.shift();
+  while (lines.length && /^[ \t]*$/.test(lines[lines.length - 1])) lines.pop();
+  let normalized = lines.join('\n');
+  if (!/^(?: {4}|\t)/.test(normalized)) normalized = normalized.replace(/^[ \t]+/, '');
+  return normalized.replace(/[ \t]+$/, '');
 }
 
 export function extractBalancedJson(value) {
@@ -79,24 +84,29 @@ function scheduledTaskCopyText(payload) {
     .join('\n\n');
 }
 
-function structuredFenceCopyText(info, body) {
+function structuredFenceCopyText(info, body, { allowScheduledTaskDraft = false } = {}) {
   const payload = parseLooseJson(String(body || '').trim());
   if (!payload) return '';
   const language = String(info || '').trim().toLowerCase();
   if (language.includes('card-question')) return questionCopyText(payload);
-  return scheduledTaskCopyText(payload) || personaCopyText(payload);
+  if (language.includes('scheduled-task-draft')) {
+    return allowScheduledTaskDraft ? scheduledTaskCopyText(payload) : '';
+  }
+  if (language.includes('persona-card')) return personaCopyText(payload);
+  return personaCopyText(payload)
+    || (allowScheduledTaskDraft ? scheduledTaskCopyText(payload) : '');
 }
 
 /**
  * Preserve the assistant's Markdown as the canonical copy format while replacing
  * machine-facing structured payloads with the same semantic content shown by cards.
  */
-export function assistantMarkdownCopyText(value) {
+export function assistantMarkdownCopyText(value, options) {
   const markdown = normalizeAssistantMessageText(value);
   if (!markdown) return '';
   const fencePattern = /(^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g;
   const readable = markdown.replace(fencePattern, (match, prefix, _fence, info, body) => {
-    const structured = structuredFenceCopyText(info, body);
+    const structured = structuredFenceCopyText(info, body, options);
     return structured ? `${prefix}${structured}` : match;
   });
   return normalizeAssistantMessageText(readable);

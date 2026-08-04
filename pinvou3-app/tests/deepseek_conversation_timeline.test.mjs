@@ -146,6 +146,33 @@ try {
     'DeepSeek projection must expose canonical source Markdown instead of rendered HTML',
   );
 
+  const scheduledMarkdown = '```json\n{"name":"Daily","prompt":"Summarize","rrule":"FREQ=DAILY"}\n```';
+  const ordinaryScheduledProjection = projectDeepSeekConversation({
+    sessionId: 'ordinary-copy-contract',
+    chatItems: [
+      { id: 1, type: 'user', text: 'show schema' },
+      { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
+    ],
+  });
+  assert.equal(
+    ordinaryScheduledProjection.turns[0].items[0].copyText,
+    scheduledMarkdown,
+    'ordinary conversations must not infer scheduled-task cards from JSON shape alone',
+  );
+  const taskCreationProjection = projectDeepSeekConversation({
+    sessionId: 'scheduled-copy-contract',
+    allowScheduledTaskDraft: true,
+    chatItems: [
+      { id: 1, type: 'user', text: 'create task' },
+      { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
+    ],
+  });
+  assert.equal(
+    taskCreationProjection.turns[0].items[0].copyText,
+    'Daily\n\nSummarize\n\nFREQ=DAILY',
+    'scheduled-task creation must serialize the payload that its UI classifies as a task card',
+  );
+
   const history = projectDeepSeekConversation({
     chatItems,
     busy: false,

@@ -70,11 +70,11 @@ export function readClipboardText() {
 
 export { assistantMarkdownCopyText, normalizeAssistantMessageText };
 
-export function assistantItemCopyText(item) {
+export function assistantItemCopyText(item, options) {
   if (!item) return '';
   const markdown = normalizeAssistantMessageText(item.text);
-  if (markdown) return assistantMarkdownCopyText(markdown);
-  return assistantMarkdownCopyText(legacyAssistantHtmlToMarkdown(item.html));
+  if (markdown) return assistantMarkdownCopyText(markdown, options);
+  return assistantMarkdownCopyText(legacyAssistantHtmlToMarkdown(item.html), options);
 }
 
 export function assistantResponseText(turn) {
@@ -89,7 +89,7 @@ export function assistantResponseText(turn) {
     .filter(item => item.phase !== 'commentary')
     .map(item => (
       normalizeAssistantMessageText(item.copyText ?? item.text)
-      || assistantItemCopyText(item.legacyItem)
+      || assistantItemCopyText(item.legacyItem, item.copyOptions)
     ))
     .filter(Boolean);
   if (agentMessages.length) return normalizeAssistantMessageText(messages.join('\n\n'));
