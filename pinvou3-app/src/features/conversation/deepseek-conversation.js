@@ -133,20 +133,39 @@ function timelineUsage(usage) {
   };
 }
 
-function timelineUserError(event) {
+function timelineUserError(event, options = {}) {
   const existing = event && (event.user_error || event.userError);
   if (existing && typeof existing === 'object') return existing;
   const error = event && event.error;
   const helper = globalThis.PinvouModelServiceErrors;
   if (!error || !helper || typeof helper.build !== 'function') return null;
-  return helper.build(error, { providerLabel: '当前模型服务' });
+  if (typeof helper.isModelServiceError === 'function' && !helper.isModelServiceError(error)) return null;
+  const providerLabel = options.providerLabel
+    || (typeof helper.providerLabelFromState === 'function'
+      ? helper.providerLabelFromState(options.modelServiceState, null, options.language)
+      : '');
+  return helper.build(error, {
+    language: options.language,
+    providerLabel,
+  });
+}
+
+/// 时间线裸 error 是给红字兜底展示的:权威回读/历史会话里可能带网关或
+/// provider 原始报文,门控没接管(不建 user_error 卡)的也要先脱敏再展示
+/// ——分类允许漏判,凭证不允许漏。userError 卡走 build(),自身已脱敏;
+/// provider 信号提取(如 URL 里的 api.deepseek.com)在 build 内用原文,不受影响。
+function timelineDisplayError(error, options = {}) {
+  if (!error) return error || null;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
+  return helper.redactTechnicalDetail(String(error), options.language);
 }
 
 /**
  * timing_events.jsonl 是 DeepSeek 回合生命周期的事实源。这里把
  * user_start / assistant_done 配成只读 Turn 元数据，不改写消息历史。
  */
-export function pairDeepSeekTimeline(events = []) {
+export function pairDeepSeekTimeline(events = [], options = {}) {
   const ordered = [...events]
     .filter(event => event && event.turn_id && ['user_start', 'assistant_done'].includes(event.event))
     .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0));
@@ -177,8 +196,8 @@ export function pairDeepSeekTimeline(events = []) {
       record.completedAt = Number(event.timestamp || 0) || event.ts || null;
       record.rawStatus = String(event.status || '');
       record.status = normalizeTurnStatus(event.status, true);
-      record.error = event.error || null;
-      record.userError = timelineUserError(event);
+      record.error = timelineDisplayError(event.error, options);
+      record.userError = timelineUserError(event, options);
       record.usage = timelineUsage(event.usage);
     }
   }
@@ -199,8 +218,8 @@ export function pairDeepSeekTimeline(events = []) {
 //     than turns the surplus is record noise (a parked-steer resume
 //     continuation whose assistant_done attached to the original turn id), so
 //     prefer records that actually carry a terminal.
-function assignDeepSeekTimelines(userTurns, timelineEvents, busy) {
-  const timeline = pairDeepSeekTimeline(timelineEvents);
+function assignDeepSeekTimelines(turns, userTurns, timelineEvents, busy, options) {
+  const timeline = pairDeepSeekTimeline(timelineEvents, options);
   const assigned = new Set();
   for (const record of timeline) {
     if (!Number.isSafeInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
@@ -293,6 +312,9 @@ export function projectDeepSeekConversation({
   sessionId = null,
   timelineEvents = [],
   allowScheduledTaskDraft = false,
+  language = 'zh-Hans',
+  providerLabel = '',
+  modelServiceState = null,
 } = {}) {
   const turns = [];
   const userTurns = [];
@@ -344,7 +366,7 @@ export function projectDeepSeekConversation({
     ));
   }
 
-  assignDeepSeekTimelines(userTurns, timelineEvents, busy);
+  assignDeepSeekTimelines(turns, userTurns, timelineEvents, busy, { language, providerLabel, modelServiceState });
   if (!busy) transferSteeredRunTerminals(turns);
 
   const activeTurn = turns[turns.length - 1];
