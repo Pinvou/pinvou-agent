@@ -152,13 +152,31 @@
     return normalized;
   }
   var mountedCollectionUpdate = Promise.resolve();
+  var mountedCollectionDraftTarget = null;
+  function mountedCollectionTargetAtEnqueue() {
+    if (state.activeSessionId) return { draft: false, promise: Promise.resolve(state.activeSessionId) };
+    var draftEpoch = Number(state.draftEpoch || 0);
+    if (!mountedCollectionDraftTarget || mountedCollectionDraftTarget.epoch !== draftEpoch || mountedCollectionDraftTarget.failed) {
+      var target = { draft: true, epoch: draftEpoch, failed: false, pending: 0, promise: null };
+      target.promise = Promise.resolve().then(async function () {
+        // Navigation before draft materialization cancels this batch instead of
+        // silently retargeting it to the newly active session.
+        if (state.activeSessionId) return null;
+        var sessionId = await ensureSession();
+        if (!sessionId) target.failed = true;
+        return sessionId;
+      });
+      mountedCollectionDraftTarget = target;
+    }
+    mountedCollectionDraftTarget.pending += 1;
+    return mountedCollectionDraftTarget;
+  }
   function updateMountedCollections(command, args) {
-    var requestedSessionId = state.activeSessionId;
+    var requestedTarget = mountedCollectionTargetAtEnqueue();
     mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
-      // Existing sessions are captured at click time so a later navigation cannot
-      // retarget a queued mutation. Draft materialization stays inside this queue,
-      // ensuring rapid multi-mount actions create exactly one session.
-      var sessionId = requestedSessionId || await ensureSession();
+      // The target is captured at click time. Rapid draft actions share one
+      // materialization promise and remain bound to that session after navigation.
+      var sessionId = await requestedTarget.promise;
       if (!sessionId) return null;
       try {
         var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
@@ -173,6 +191,14 @@
         return null;
       }
     });
+    if (requestedTarget.draft) {
+      mountedCollectionUpdate = mountedCollectionUpdate.finally(function () {
+        requestedTarget.pending -= 1;
+        if (requestedTarget.pending === 0 && mountedCollectionDraftTarget === requestedTarget) {
+          mountedCollectionDraftTarget = null;
+        }
+      });
+    }
     return mountedCollectionUpdate;
   }
   // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。

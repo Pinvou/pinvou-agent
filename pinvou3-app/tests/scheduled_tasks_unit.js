@@ -3552,11 +3552,54 @@ async function draftKnowledgeMountsCreateOneSession() {
   );
 }
 
+async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var firstMutation = deferred();
+  var firstMutationStarted = deferred();
+  var mutationCount = 0;
+  harness.handlers.session_add_mounted_collection = function (args) {
+    mutationCount += 1;
+    if (mutationCount === 1) {
+      firstMutationStarted.resolve();
+      return firstMutation.promise;
+    }
+    return {
+      revision: 2,
+      collections: [
+        { collectionId: 7, enabled: true },
+        { collectionId: args.collectionId, enabled: true },
+      ],
+    };
+  };
+
+  var first = bridge.knowledge.mountCollection(7);
+  var second = bridge.knowledge.mountCollection(8);
+  await firstMutationStarted.promise;
+  var materializedSessionId = harness.calls.find(function (call) {
+    return call.cmd === "session_add_mounted_collection";
+  }).args.sessionId;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-navigated"), true);
+  firstMutation.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
+  await Promise.all([first, second]);
+
+  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCalls.length, 2);
+  assert.ok(addCalls.every(function (call) { return call.args.sessionId === materializedSessionId; }),
+    "queued draft mounts must remain on their shared materialized session after navigation");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("knowledge").mountedCollections)),
+    [],
+    "background draft mutations must not leak into the newly active session"
+  );
+}
+
 Promise.resolve()
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
   .then(draftKnowledgeMountsCreateOneSession)
+  .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
