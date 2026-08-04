@@ -332,6 +332,59 @@ export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
   return rows;
 }
 
+/**
+ * 返回某个行内直属代理卡下面的可见后代，不包含该代理自身，也不混入其他
+ * 直属代理。直属子代 depth=0；只有当前节点在 expandedAgentIds 中时才继续
+ * 展开下一层。坏数据形成环时按首次出现截断，避免消息流渲染递归卡死。
+ */
+export function visibleSubagentDescendantRows(
+  summaries,
+  rootAgentId,
+  expandedAgentIds = [],
+) {
+  const rootId = String(rootAgentId || '').trim();
+  if (!rootId) return [];
+  const childrenByParent = new Map();
+  for (const entry of summaries || []) {
+    if (!entry || !entry.agent_id) continue;
+    const agentId = String(entry.agent_id);
+    const parentId = String(entry.parent_run_id || '').trim();
+    if (!parentId || parentId === agentId) continue;
+    const children = childrenByParent.get(parentId) || [];
+    children.push(entry);
+    childrenByParent.set(parentId, children);
+  }
+
+  const expanded = expandedAgentIds instanceof Set
+    ? expandedAgentIds
+    : new Set(expandedAgentIds || []);
+  const rows = [];
+  const seen = new Set([rootId]);
+  const append = (entry, depth) => {
+    const agentId = String(entry.agent_id);
+    if (seen.has(agentId)) return;
+    seen.add(agentId);
+    const children = childrenByParent.get(agentId) || [];
+    rows.push({ entry, depth, childCount: children.length });
+    if (!expanded.has(agentId)) return;
+    for (const child of children) append(child, depth + 1);
+  };
+  for (const child of childrenByParent.get(rootId) || []) append(child, 0);
+  return rows;
+}
+
+/** 直属代理及其全部可达后代是否都已终态；用于共享轮询安全停表。 */
+export function subagentTreeIsDone(summaries, rootAgentId) {
+  const rootId = String(rootAgentId || '').trim();
+  const root = (summaries || []).find(entry => String(entry?.agent_id || '') === rootId);
+  if (!root || !root.done) return false;
+  const expanded = new Set(
+    (summaries || []).filter(entry => entry?.agent_id).map(entry => String(entry.agent_id)),
+  );
+  return visibleSubagentDescendantRows(summaries, rootId, expanded)
+    .every(({ entry }) => !!entry.done);
+}
+
 /** 返回某代理从直属根到直接父级的祖先 ID，供详情返回列表时展开所在路径。 */
 export function subagentAncestorIds(summaries, agentId) {
   const byId = new Map(

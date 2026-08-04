@@ -17,6 +17,8 @@ import {
   splitSubagentTitle,
   subagentOrdinalLabel,
   subagentRoleOrdinals,
+  subagentTreeIsDone,
+  visibleSubagentDescendantRows,
   visibleSubagentTreeRows,
 } from '../src/features/multiagent/subagent-conversation.mjs';
 import {
@@ -212,7 +214,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
 
   const assistantBridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   const engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
-  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*1/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_CONCURRENT:\s*usize\s*=\s*4/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_ADMITTED:\s*usize\s*=\s*8/);
   assert.match(
@@ -691,6 +693,42 @@ test('多级代理树：默认只列直属根，按父节点逐级展开并保�
   );
 });
 
+test('主对话行内卡只投影自己的后代，按子节点逐级展开', () => {
+  const list = [
+    { agent_id: 'agent_root_a', parent_run_id: null },
+    { agent_id: 'agent_child_a', parent_run_id: 'agent_root_a' },
+    { agent_id: 'agent_grandchild_a', parent_run_id: 'agent_child_a' },
+    { agent_id: 'agent_root_b', parent_run_id: null },
+    { agent_id: 'agent_child_b', parent_run_id: 'agent_root_b' },
+    { agent_id: 'agent_cycle', parent_run_id: 'agent_cycle' },
+  ];
+  const ids = rows => rows.map(row => row.entry.agent_id);
+
+  const collapsed = visibleSubagentDescendantRows(list, 'agent_root_a', new Set());
+  assert.deepEqual(ids(collapsed), ['agent_child_a']);
+  assert.equal(collapsed[0].depth, 0);
+  assert.equal(collapsed[0].childCount, 1);
+
+  const expanded = visibleSubagentDescendantRows(
+    list,
+    'agent_root_a',
+    new Set(['agent_child_a']),
+  );
+  assert.deepEqual(ids(expanded), ['agent_child_a', 'agent_grandchild_a']);
+  assert.equal(expanded[1].depth, 1);
+  assert.deepEqual(
+    visibleSubagentDescendantRows(list, 'agent_missing', new Set()),
+    [],
+  );
+  assert.equal(subagentTreeIsDone(list, 'agent_root_a'), false, '运行中的后代必须保持轮询');
+  assert.equal(
+    subagentTreeIsDone(list.map(entry => ({ ...entry, done: true })), 'agent_root_a'),
+    true,
+    '父节点与全部后代终态后才能停表',
+  );
+  assert.equal(subagentTreeIsDone(list, 'agent_missing'), false, '根记录未出现时不得提前停表');
+});
+
 // ── 行内专家卡（消息流内的委派可视化） ───────────────────────────────────────
 
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
@@ -713,6 +751,21 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     toolRenderersSource,
     /watchExpertCard\(agentId\)/,
     '卡片必须接权威落盘轮询（实时事件会丢：拥塞/重启/停止级联）',
+  );
+  assert.match(
+    toolRenderersSource,
+    /pinvou:subagent-ledger-update/,
+    '一次会话级 ledger 轮询必须把完整父子投影共享给全部行内卡',
+  );
+  assert.match(
+    toolRenderersSource,
+    /visibleSubagentDescendantRows\(ledger, agentId, expandedChildIds\)/,
+    '主对话里的直属卡必须只显示自己的后代树',
+  );
+  assert.match(
+    toolRenderersSource,
+    /data-testid="expert-agent-child-card"/,
+    '后代节点必须是可点开的专家卡，不展示原始 JSON',
   );
   assert.match(
     toolRenderersSource,
@@ -787,14 +840,6 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');
   assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/, '列表来自底座落盘投影');
   assert.match(panelSource, /setSelectedAgentId\(null\)/, '详情可返回列表');
-  assert.match(panelSource, /data-testid="main-conversation-node"/, '主对话必须作为协作树的显式根节点');
-  assert.match(panelSource, /<PinvouLogo[^>]*copy\.mainConversation/, '主对话根节点复用 Pinvou 品牌标识');
-  assert.match(panelSource, /rootExpanded[\s\S]*setRootExpanded/, '主对话根节点必须能统一折叠直属代理');
-  assert.match(panelSource, /Math\.min\(depth \+ 1, 5\) \* 14/, '直属代理必须在主对话根节点下缩进');
-  assert.ok(
-    panelSource.indexOf('data-testid="main-conversation-node"') < panelSource.indexOf('treeRows.map'),
-    '主对话根节点必须位于所有代理节点之前',
-  );
   assert.match(panelSource, /visibleSubagentTreeRows/, '多级代理清单必须按父子树折叠展示');
   assert.match(panelSource, /copy\.childAgentCount/, '有下级的代理必须显示数量提示');
   assert.match(panelSource, /copy\.agentsEmpty/, '空列表有说明');
