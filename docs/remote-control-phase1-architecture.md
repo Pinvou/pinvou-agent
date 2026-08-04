@@ -43,7 +43,9 @@ Web 端在 <640px 紧凑视口启用移动壳层：隐藏侧栏窄轨，改为�
 
 - `pinvou3-app/src/`：共享 React UI、平台能力门控、浏览器 bridge；
 - `pinvou3-app/src/platform/web/access-policy.json`：Web 可调用命令和可订阅事件白名单；
-- `pinvou3-app/src-tauri/src/remote_control/`：持久 endpoint、RPC 去重、事件序列与重放；
+- `pinvou3-app/src-tauri/src/features/remote_control/`：`manager.rs` 编排 endpoint、Relay 与 RPC
+  生命周期，`event_stream.rs` 独占订阅、事件序列和重放状态，`file_access.rs` 负责宿主文件与
+  Session 产物授权读取；
 - `remote-control-relay/server.js`：静态站点和 WebSocket v2 Relay；
 - `remote-control-relay/PROTOCOL.md`：线上消息格式的单一协议说明。
 

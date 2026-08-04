@@ -1,3 +1,4 @@
+mod event_stream;
 pub(crate) mod file_access;
 pub(crate) mod manager;
 mod platform;
