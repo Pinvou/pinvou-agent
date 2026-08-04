@@ -58,10 +58,13 @@ for (const language of ['zh', 'en', 'ja']) {
   const multiAgent = dict[language].uiMultiAgent;
   assert.equal(typeof multiAgent.drawerTitle, 'function', `${language}.uiMultiAgent.drawerTitle must be a function`);
   assert.equal(typeof multiAgent.coordinationRow, 'function', `${language}.uiMultiAgent.coordinationRow must be a function`);
+  for (const key of ['agentsListSummary', 'childAgentCount', 'expandChildren', 'collapseChildren']) {
+    assert.equal(typeof multiAgent[key], 'function', `${language}.uiMultiAgent.${key} must be a function`);
+  }
   for (const role of ['scout', 'manager', 'builder', 'reviewer', 'general']) {
     assert.ok(multiAgent.roleCards[role], `${language}.uiMultiAgent.roleCards.${role} must exist`);
   }
-  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents', 'rosterSyncFailed']) {
+  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'mainConversation', 'coordinatorRole', 'expandMainConversation', 'collapseMainConversation', 'agentsEmpty', 'backToAgents', 'rosterSyncFailed']) {
     assert.ok(multiAgent[key], `${language}.uiMultiAgent.${key} must exist`);
   }
   for (const cardKey of ['spawning', 'working', 'completed', 'failed', 'spawnFailed', 'interrupted']) {

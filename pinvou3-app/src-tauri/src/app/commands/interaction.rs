@@ -60,11 +60,11 @@ pub async fn exit_plan_to_yolo(
 
 // ===================== 多智能体模式开关（ADR-0006） =====================
 
-/// 模型列表下方的会话级开关。开启：装配专家名册到会话工作区、名册整册
-/// 即时推给在跑引擎
-/// （`Op::SetFleetRoster`，下一轮生效）；关闭：仅停止每轮委派提醒注入，
-/// 在跑的子智能体不打断。工具面不随开关变化——与主线完全一致：`workflow`
-/// 保持可用（委派提醒不教学不推荐），裸 `agent` 本就对所有会话可用。
+/// 模型列表下方的会话级开关。开启：装配专家名册，并让下一次发送按多智能体
+/// 资源边界重建引擎；关闭：让下一次发送恢复普通对话的底座资源配置。切换时
+/// 回收空闲旧引擎，避免旧 hook / 深度 / 并发配置泄漏到新模式；正在生成时拒绝
+/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（委派提醒
+/// 不教学不推荐），裸 `agent` 本就对所有会话可用。
 #[tauri::command]
 pub async fn set_multi_agent_mode(
     session_id: String,
@@ -80,37 +80,13 @@ pub async fn set_multi_agent_mode(
     store
         .load(&session_id)
         .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
-    if enabled {
-        // 副作用先行，全部成功才落开关；名册写盘是阻塞调用，移出异步运行
-        // 线程。App 不强制工作区 git 化；Git 准备及 shared/worktree 选择由
-        // 父模型按任务、权限与环境自主完成（ADR-0006）。
-        let workspace = crate::platform::paths::session_workspace_dir(&session_id);
-        let sid = session_id.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            std::fs::create_dir_all(&workspace)
-                .map_err(|e| format!("set_multi_agent_mode({sid}): 建工作区失败: {e}"))?;
-            crate::features::multiagent::roster::enroll_expert_roles(&workspace)
-                .map_err(|e| format!("set_multi_agent_mode({sid}): {e}"))
-        })
+    // EngineConfig 的深度、并发、准入上限不能完整热切；同时 SendMessage 会覆盖
+    // engine 级 hook。名册装配、状态持久化与旧引擎回收必须和发送共用同一个
+    // lifecycle + turn gate，避免切换/发送竞态。关闭也必须回收，否则普通对话
+    // 会继续背着多智能体限制。生成中 reserve 会直接拒绝，不会打断当前回复。
+    pool.reconfigure_multi_agent_mode(&session_id, enabled)
         .await
-        .map_err(|join| format!("set_multi_agent_mode({session_id}): 后台任务失败: {join}"))??;
-    }
-    store
-        .set_multi_agent(&session_id, enabled)
         .map_err(|error| format!("set_multi_agent_mode({session_id}): {error:#}"))?;
-    if enabled {
-        // 名册即时推给在跑引擎；推送失败回滚开关并报错——界面显示已启用、
-        // 在跑引擎却用旧名单，是复核点名的谎报成功。关闭无需引擎操作
-        // （工具面不随开关变化，停止注入由 chat 发送链按 mode_state 判断）。
-        if let Err(error) = pool.refresh_multi_agent_roster(&session_id).await {
-            if let Err(rollback) = store.set_multi_agent(&session_id, false) {
-                return Err(format!(
-                    "set_multi_agent_mode({session_id}): {error}；回滚开关亦失败: {rollback:#}"
-                ));
-            }
-            return Err(format!("set_multi_agent_mode({session_id}): {error}"));
-        }
-    }
     Ok(store.mode_state(&session_id))
 }
 
