@@ -34,8 +34,8 @@ function visibleSortedModels(models) {
     .slice();
 }
 
-const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, style }, ref) => (
-      <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, ref) => (
+      <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 bg-[#F0F4F9] dark:bg-[#1E1F20]`}>
         <h2 className="text-[18px] font-medium mb-6 flex items-center gap-2">
           <span>{title}</span>
           {titleAdornment}
@@ -44,37 +44,34 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       </section>
     ));
 
-    const SRow = ({ isDark, label, desc, children }) => (
+    const SRow = ({ label, desc, children }) => (
       <div className="flex items-center justify-between gap-8">
         <div className="min-w-0">
           <span className="text-[16px] block mb-1">{label}</span>
-          {desc && <span className={`text-[13px] block ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{desc}</span>}
+          {desc && <span className={`text-[13px] block text-[#444746] dark:text-[#C4C7C5]`}>{desc}</span>}
         </div>
         <div className="shrink-0">{children}</div>
       </div>
     );
 
-    const SField = ({ isDark, label, ...inputProps }) => (
+    const SField = ({ label, ...inputProps }) => (
       <div>
-        <span className={`text-[14px] block mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{label}</span>
+        <span className={`text-[14px] block mb-2 text-[#444746] dark:text-[#C4C7C5]`}>{label}</span>
         <input
           {...inputProps}
-          className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-            isDark ? 'bg-[#131314] text-[#E3E3E3] border border-[#444746] focus:border-[#A8C7FA]'
-                   : 'bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0]'
-          }`}
+          className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:border-[#444746] dark:focus:border-[#A8C7FA]`}
         />
       </div>
     );
 
-    const SSegmented = ({ isDark, options, value, onChange }) => (
-      <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap ${isDark ? 'bg-[#131314]' : 'bg-[#E1E5EA]'}`}>
+    const SSegmented = ({ options, value, onChange }) => (
+      <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap bg-[#E1E5EA] dark:bg-[#131314]`}>
         {options.map(o => (
           <button
             key={o.key}
             onClick={() => onChange(o.key)}
             className={`min-w-[72px] px-4 py-2 rounded-full text-[14px] font-medium transition-colors max-sm:min-w-0 max-sm:flex-1 max-sm:px-2 ${
-              value === o.key ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#0B57D0] shadow-sm') : ''
+              value === o.key ? ('bg-white text-[#0B57D0] shadow-sm dark:bg-[#A8C7FA] dark:text-[#041E49]') : ''
             }`}
           >{o.label}</button>
         ))}
@@ -82,20 +79,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     );
 
     // 「需重启」统一表达：改动后才出现，一句说明 + 一个动作，替代常驻大按钮和斜体小字
-    const SActionBar = ({ isDark, message, actionLabel, onAction }) => (
-      <div className={`flex items-center justify-between gap-4 px-4 py-3 rounded-xl ${isDark ? 'bg-[#131314]' : 'bg-white'}`}>
-        <span className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{message}</span>
+    const SActionBar = ({ message, actionLabel, onAction }) => (
+      <div className={`flex items-center justify-between gap-4 px-4 py-3 rounded-xl bg-white dark:bg-[#131314]`}>
+        <span className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{message}</span>
         <button
           onClick={onAction}
-          className={`text-[13px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors ${
-            isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]'
-                   : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'
-          }`}
+          className={`text-[13px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]`}
         >{actionLabel}</button>
       </div>
     );
 
-    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange, t }) => {
+    const MemorySettingsCard = ({ bs, memoryEnabled, onMemoryEnabledChange, t }) => {
       const copy = t.uiSettingsView;
       const detailCopy = t.uiSettingsDetail;
       const memory = (bs && bs.memory) || {};
@@ -115,19 +109,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       });
       const [editing, setEditing] = useState(null);
       const [saving, setSaving] = useState(false);
-      const subText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-      const faintText = isDark ? 'text-[#8F969E]' : 'text-[#6B7280]';
-      const border = isDark ? 'border-[#333537]' : 'border-[#DDE3EA]';
-      const itemBg = isDark ? 'bg-[#131314]' : 'bg-white';
-      const cardBg = isDark ? 'bg-[#17191D] border-white/[0.08]' : 'bg-white border-[#DDE3EA]';
-      const panelBg = isDark ? 'bg-[#1F2023] text-[#E8EAED]' : 'bg-[#F8FAFD] text-[#1F1F1F]';
-      const inputBg = isDark ? 'bg-[#131314] border-[#3C4043] text-[#E8EAED] placeholder:text-[#777D86]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099]';
-      const ghostBtn = isDark ? 'bg-white/[0.07] text-[#E3E3E3] hover:bg-white/[0.11]' : 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0]';
-      const dangerBtn = isDark ? 'text-[#F28B82] hover:bg-[#3A2425]' : 'text-[#C5221F] hover:bg-[#FCE8E6]';
-      const primaryBtn = isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]';
-      const selectedTab = isDark
-        ? 'bg-[rgba(43,119,255,0.16)] border-[rgba(70,145,255,0.35)] text-[#D8E8FF]'
-        : 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0]';
+      const subText = 'text-[#444746] dark:text-[#C4C7C5]';
+      const faintText = 'text-[#6B7280] dark:text-[#8F969E]';
+      const border = 'border-[#DDE3EA] dark:border-[#333537]';
+      const itemBg = 'bg-white dark:bg-[#131314]';
+      const cardBg = 'bg-white border-[#DDE3EA] dark:bg-[#17191D] dark:border-white/[0.08]';
+      const panelBg = 'bg-[#F8FAFD] text-[#1F1F1F] dark:bg-[#1F2023] dark:text-[#E8EAED]';
+      const inputBg = 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099] dark:bg-[#131314] dark:border-[#3C4043] dark:text-[#E8EAED] dark:placeholder:text-[#777D86]';
+      const ghostBtn = 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0] dark:bg-white/[0.07] dark:text-[#E3E3E3] dark:hover:bg-white/[0.11]';
+      const dangerBtn = 'text-[#C5221F] hover:bg-[#FCE8E6] dark:text-[#F28B82] dark:hover:bg-[#3A2425]';
+      const primaryBtn = 'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]';
+      const selectedTab = 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0] dark:bg-[rgba(43,119,255,0.16)] dark:border-[rgba(70,145,255,0.35)] dark:text-[#D8E8FF]';
       const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
       const profileSummary = [
         identity.call_name ? copy.profileCallName(identity.call_name) : '',
@@ -270,16 +262,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   e.stopPropagation();
                   setMenuFor(menuFor === rowKey ? null : rowKey);
                 }}
-                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#AEB4BC] hover:bg-white/[0.08] hover:text-[#F2F3F5]' : 'text-[#5F6368] hover:bg-black/[0.06]'}`}
+                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-black/[0.06] dark:text-[#AEB4BC] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F3F5]`}
               >
                 <MoreHorizontal size={17} />
               </button>
             </div>
             {menuFor === rowKey && (
-              <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} ${isDark ? 'bg-[#24262B] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'} shadow-2xl overflow-hidden`}>
-                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />{detailCopy.edit}</button>
+              <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} bg-white text-[#1F1F1F] dark:bg-[#24262B] dark:text-[#E8EAED] shadow-2xl overflow-hidden`}>
+                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Edit2 size={14} />{detailCopy.edit}</button>
                 {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
-                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />{copy.memoryArchive}</button>
+                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Archive size={14} />{copy.memoryArchive}</button>
                 )}
                 <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />{detailCopy.delete}</button>
               </div>
@@ -290,10 +282,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       return (
         <>
-          <SCard isDark={isDark} title={copy.memoryCardTitle}>
+          <SCard title={copy.memoryCardTitle}>
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
+                <div className={`text-[14px] font-medium text-[#1F1F1F] dark:text-[#E8EAED]`}>
                   {memoryEnabled ? copy.memoryEnabled : copy.memoryDisabled}
                 </div>
                 <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
@@ -309,7 +301,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   role="switch"
                   aria-checked={!!memoryEnabled}
                   title={memoryEnabled ? copy.memoryTurnOff : copy.memoryTurnOn}
-                  className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
+                  className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start bg-[#DADCE0] dark:bg-[#3C4043]`}`}
                 >
                   <span className="block w-5 h-5 rounded-full bg-white shadow" />
                 </button>
@@ -343,7 +335,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                         <button
                           key={key}
                           onClick={() => setTab(key)}
-                          className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'}`}`}
+                          className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent hover:bg-black/[0.04] dark:hover:bg-white/[0.06]`}`}
                         >
                           <TabIcon size={15} className="shrink-0" />
                           <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -354,7 +346,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   </div>
                   <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
                     {!memoryEnabled && (
-                      <div className={`mb-4 rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.04] border-white/[0.08]' : 'bg-white border-[#DDE3EA]'}`}>
+                      <div className={`mb-4 rounded-2xl border px-4 py-3 bg-white border-[#DDE3EA] dark:bg-white/[0.04] dark:border-white/[0.08]`}>
                         <div className={`text-[13px] leading-relaxed ${subText}`}>{copy.memoryOffNotice}</div>
                       </div>
                     )}
@@ -372,8 +364,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     {tab === 'long_term' ? (
                       <div className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <SField isDark={isDark} label={copy.memoryCallNameLabel} value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder={copy.memoryCallNamePlaceholder} />
-                          <SField isDark={isDark} label={copy.memoryAssistantAliasLabel} value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder={copy.memoryAssistantAliasPlaceholder} />
+                          <SField label={copy.memoryCallNameLabel} value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder={copy.memoryCallNamePlaceholder} />
+                          <SField label={copy.memoryAssistantAliasLabel} value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder={copy.memoryAssistantAliasPlaceholder} />
                         </div>
                         <div className="flex justify-end">
                           <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
@@ -383,7 +375,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                         ) : (
                           <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
                         )}
-                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
+                        <div className={`rounded-2xl border px-4 py-3 bg-white/70 border-[#DDE3EA] dark:bg-white/[0.03] dark:border-white/[0.06]`}>
                           <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryLongTermHint}</div>
                         </div>
                       </div>
@@ -392,7 +384,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     ) : (
                       <div className="space-y-3">
                         {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
-                        <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
+                        <div className={`rounded-2xl border px-4 py-3 bg-white/70 border-[#DDE3EA] dark:bg-white/[0.03] dark:border-white/[0.06]`}>
                           <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryRecentHint}</div>
                         </div>
                       </div>
@@ -432,11 +424,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const ProviderIcon = ({ preset, vendor, providerKind, model, isDark, compact = false }) => {
+    const ProviderIcon = ({ preset, vendor, providerKind, model, compact = false }) => {
       const modelId = String(model || '').toLowerCase();
       if (preset === 'local_vllm' && modelId.includes('qwen')) {
         return (
-          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${isDark ? 'bg-white' : 'bg-white border border-black/[0.08]'}`}>
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-white border border-black/[0.08] dark:border-transparent`}>
             <img src={qwenIcon} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
           </span>
         );
@@ -446,20 +438,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (src) {
           const darkBacked = vendor === 'kimi';
           return (
-            <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : (isDark ? 'bg-white' : 'bg-white border border-black/[0.08]')}`}>
+            <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/[0.08] dark:border-transparent')}`}>
               <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
             </span>
           );
         }
         return (
-          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${isDark ? 'bg-[#0A84FF]/18 text-[#64B5F6]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/18 dark:text-[#64B5F6]`}>
             <Code size={compact ? 17 : 19} strokeWidth={2.2} />
           </span>
         );
       }
       if (preset === 'local_vllm') {
         return (
-          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${isDark ? 'bg-[#0A84FF]/18 text-[#64B5F6]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/18 dark:text-[#64B5F6]`}>
             <Cpu size={compact ? 18 : 20} strokeWidth={2.2} />
           </span>
         );
@@ -468,7 +460,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       if (!src) return null;
       const darkBacked = preset === 'kimi';
       return (
-        <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : (isDark ? 'bg-white' : 'bg-white border border-black/[0.08]')}`}>
+        <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/[0.08] dark:border-transparent')}`}>
           <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
         </span>
       );
@@ -628,7 +620,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     };
 
     const WebAccessModal = ({ theme, bs, t, onClose }) => {
-      const isDark = theme === 'dark';
       const canManageWebAccess = can('webAccessAdmin');
       const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
       const [actionBusy, setActionBusy] = useState(false);
@@ -683,48 +674,48 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
-          <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <div className="text-[17px] font-semibold">{remoteCopy.title}</div>
-                <div className={`text-[12px] mt-1 ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteCopy.desc}</div>
+                <div className={`text-[12px] mt-1 text-[#5F6368] dark:text-[#AEB4BC]`}>{remoteCopy.desc}</div>
               </div>
-              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}><X size={17} /></button>
+              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10`}><X size={17} /></button>
             </div>
-            <div className={`rounded-[16px] border p-3 mb-4 ${isDark ? 'border-white/10 bg-white/[0.035]' : 'border-black/10 bg-[#F8F9FA]'}`}>
+            <div className={`rounded-[16px] border p-3 mb-4 border-black/10 bg-[#F8F9FA] dark:border-white/10 dark:bg-white/[0.035]`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex items-start gap-3">
-                  <div className={`mt-0.5 w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}><Globe size={17} /></div>
+                  <div className={`mt-0.5 w-9 h-9 rounded-xl flex items-center justify-center shrink-0 bg-white text-[#5F6368] dark:bg-white/5 dark:text-[#C4C7C5]`}><Globe size={17} /></div>
                   <div className="min-w-0">
                     <div className="text-[14px] font-medium">{remoteCopy.browser}</div>
-                    <div className={`text-[12px] mt-1 leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{statusMeta.detail}</div>
+                    <div className={`text-[12px] mt-1 leading-relaxed text-[#6F7378] dark:text-[#9AA0A6]`}>{statusMeta.detail}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-white text-[#5F6368]'}`}>
+                  <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] bg-white text-[#5F6368] dark:bg-white/5 dark:text-[#C4C7C5]`}>
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: statusMeta.color }}></span>{statusMeta.label}
                   </span>
                   {webAccessActive && <button disabled={actionBusy} onClick={handleDisableWebAccess}
-                    className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 ${isDark ? 'border border-white/10 hover:bg-white/10' : 'border border-black/10 hover:bg-black/5'}`}>{remoteCopy.stop}</button>}
+                    className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 border border-black/10 hover:bg-black/5 dark:border dark:border-white/10 dark:hover:bg-white/10`}>{remoteCopy.stop}</button>}
                 </div>
               </div>
             </div>
             {webAccess.url ? (
-              <div className={`w-full rounded-[14px] border px-4 py-4 ${isDark ? 'border-white/10 bg-white/5' : 'border-black/10 bg-[#F8F9FA]'}`}>
+              <div className={`w-full rounded-[14px] border px-4 py-4 border-black/10 bg-[#F8F9FA] dark:border-white/10 dark:bg-white/5`}>
                 {webAccess.qr_data_url && (
                   <div className="flex flex-col items-center mb-4">
                     <div className="p-3 rounded-[16px] bg-white shadow-sm">
                       <img src={webAccess.qr_data_url} alt={remoteCopy.qrAlt} className="block w-[220px] h-[220px]" />
                     </div>
-                    <div className={`mt-2 text-[12px] ${isDark ? 'text-[#AEB4BC]' : 'text-[#5F6368]'}`}>{remoteCopy.qrHint}</div>
+                    <div className={`mt-2 text-[12px] text-[#5F6368] dark:text-[#AEB4BC]`}>{remoteCopy.qrHint}</div>
                   </div>
                 )}
-                <div className={`mb-1 text-[11px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#6F7378]'}`}>{remoteCopy.link}</div>
-                <div className={`select-all break-all text-[12px] leading-relaxed ${isDark ? 'text-[#D2E3FC]' : 'text-[#174EA6]'}`}>{webAccess.url}</div>
-                <div className={`mt-2 text-[11px] ${isDark ? 'text-[#8F959D]' : 'text-[#777C83]'}`}>{remoteCopy.linkHint}</div>
+                <div className={`mb-1 text-[11px] font-medium text-[#6F7378] dark:text-[#9AA0A6]`}>{remoteCopy.link}</div>
+                <div className={`select-all break-all text-[12px] leading-relaxed text-[#174EA6] dark:text-[#D2E3FC]`}>{webAccess.url}</div>
+                <div className={`mt-2 text-[11px] text-[#777C83] dark:text-[#8F959D]`}>{remoteCopy.linkHint}</div>
               </div>
             ) : (
-              <div className={`text-[13px] px-3 py-4 rounded-xl ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#F1F3F4] text-[#3C4043]'}`}>
+              <div className={`text-[13px] px-3 py-4 rounded-xl bg-[#F1F3F4] text-[#3C4043] dark:bg-white/5 dark:text-[#C4C7C5]`}>
                 {webAccess.starting ? remoteCopy.generating : (webAccess.last_error || remoteCopy.notStarted)}
               </div>
             )}
@@ -732,19 +723,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div className="mt-4 flex items-center justify-end gap-2">
               <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(webAccess.url || '')}
                 disabled={!webAccess.url}
-                className={`px-3.5 py-2 rounded-full text-[13px] ${isDark ? 'bg-white/10 hover:bg-white/15 disabled:opacity-40' : 'bg-black/5 hover:bg-black/10 disabled:opacity-40'}`}>{remoteCopy.copy}</button>
+                className={`px-3.5 py-2 rounded-full text-[13px] bg-black/5 hover:bg-black/10 disabled:opacity-40 dark:bg-white/10 dark:hover:bg-white/15 dark:disabled:opacity-40`}>{remoteCopy.copy}</button>
               {webAccessActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
-                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'}`}>{remoteCopy.refresh}</button>
+                className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15`}>{remoteCopy.refresh}</button>
                 : <button disabled={actionBusy} onClick={handleRetryWebAccess}
                   className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">{remoteCopy.enable}</button>}
             </div>
             {refreshConfirmOpen && (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
-                <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl ${isDark ? 'bg-[#2A2B2D]' : 'bg-white'}`}>
+                <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl bg-white dark:bg-[#2A2B2D]`}>
                   <div className="text-[16px] font-semibold">{remoteCopy.refreshTitle}</div>
-                  <div className={`text-[13px] leading-relaxed mt-2 ${isDark ? 'text-[#B7BBC0]' : 'text-[#5F6368]'}`}>{remoteCopy.refreshDesc}</div>
+                  <div className={`text-[13px] leading-relaxed mt-2 text-[#5F6368] dark:text-[#B7BBC0]`}>{remoteCopy.refreshDesc}</div>
                   <div className="mt-5 flex justify-end gap-2">
-                    <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] ${isDark ? 'bg-white/5 hover:bg-white/10' : 'bg-black/5 hover:bg-black/10'}`}>{t.cancel}</button>
+                    <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10`}>{t.cancel}</button>
                     <button disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-white text-[#202124] hover:bg-[#F1F3F4] disabled:opacity-60">{actionBusy ? remoteCopy.refreshing : remoteCopy.refresh}</button>
                   </div>
                 </div>
@@ -1187,7 +1178,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     };
 
     // 添加/编辑模型模态弹窗。
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs }) => {
+    const ModelFormModal = ({ t, initial, onCancel, onSave, bs }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
@@ -1501,11 +1492,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setCustomModel(true);
         setPickerOpen(false);
       }
-      const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`;
-      const catalogGroupClass = `overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`;
-      const formSectionTitle = `px-1 mb-1.5 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`;
-      const formGroup = `overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`;
-      const formDivider = isDark ? 'border-white/[0.10]' : 'border-black/[0.10]';
+      const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;
+      const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
+      const formSectionTitle = `px-1 mb-1.5 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;
+      const formGroup = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
+      const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
       const renderProviderModelField = () => {
         const items = activeProvider ? activeProvider.items : [];
         const known = items.some(item => !item.custom && item.model === model);
@@ -1530,11 +1521,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               onClick={() => setProviderModelPickerOpen(open => !open)}
               className={`w-full min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${formDivider}`}
             >
-              <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{t.uiSettingsView.modelLabel}</span>
-              <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{selectedLabel}</span>
+              <span className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{t.uiSettingsView.modelLabel}</span>
+              <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{selectedLabel}</span>
               <ChevronDown
                 size={16}
-                className={`shrink-0 transition-transform ${providerModelPickerOpen ? 'rotate-180' : ''} ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}
+                className={`shrink-0 transition-transform ${providerModelPickerOpen ? 'rotate-180' : ''} text-[#8A8A8E] dark:text-[#8E8E93]`}
               />
             </button>
             {providerModelPickerOpen && (
@@ -1546,15 +1537,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       type="button"
                       key={item.custom ? '__custom__' : item.model}
                       onClick={() => chooseModel(item)}
-                      className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'}`}
+                      className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 border-black/[0.08] hover:bg-black/[0.035] dark:border-white/[0.08] dark:hover:bg-white/[0.06]`}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{item.custom ? ((activeProvider && settingsCopy.customModelTitles[activeProvider.key]) || settingsCopy.customModelTitle(selectedProvider)) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
-                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{item.custom
+                        <span className={`block text-[14px] leading-5 truncate ${active ? ('text-[#007AFF] dark:text-[#64B5F6]') : ('text-[#1C1C1E] dark:text-[#F2F2F7]')}`}>{item.custom ? ((activeProvider && settingsCopy.customModelTitles[activeProvider.key]) || settingsCopy.customModelTitle(selectedProvider)) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
+                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate text-[#8A8A8E] dark:text-[#8E8E93]`}>{item.custom
                           ? (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (activeProvider.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (activeProvider.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc)))
                           : (settingsCopy.modelDescriptions[item.desc] || item.desc)}</span>}
                       </span>
-                      {active && <Check size={17} strokeWidth={2.4} className={isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]'} />}
+                      {active && <Check size={17} strokeWidth={2.4} className={'text-[#007AFF] dark:text-[#64B5F6]'} />}
                     </button>
                   );
                 })}
@@ -1571,14 +1562,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       };
       const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false }) => (
         <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-          <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{label}</label>
+          <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{label}</label>
           <input
             type={type}
             value={value}
             onChange={onChange}
             readOnly={readOnly}
             placeholder={placeholder}
-            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'} ${readOnly ? 'cursor-default' : ''}`}
+            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] ${readOnly ? 'cursor-default' : ''}`}
           />
           {trailing}
         </div>
@@ -1602,14 +1593,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                         type="button"
                         key={group.key}
                         onClick={() => applyCatalogItem(group, first)}
-                        className={`w-full min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}
+                        className={`w-full min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] hover:bg-black/[0.035] dark:border-white/[0.10] dark:hover:bg-white/[0.06]`}
                       >
-                        <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} isDark={isDark} compact />
+                        <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} compact />
                         <span className="min-w-0 flex-1">
-                          <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{group.title}</span>
-                          <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{group.desc || first.desc || ''}</span>
+                          <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{group.title}</span>
+                          <span className={`block mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{group.desc || first.desc || ''}</span>
                         </span>
-                        <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
+                        <ChevronDown size={16} className={`-rotate-90 shrink-0 text-[#C7C7CC] dark:text-[#636366]`} />
                       </button>
                     );
                   })}
@@ -1636,14 +1627,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       type="button"
                       key={`${group.key}-${itemTitle}`}
                       onClick={() => applyCatalogItem(group, item)}
-                      className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}
+                      className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} border-black/[0.10] hover:bg-black/[0.035] dark:border-white/[0.10] dark:hover:bg-white/[0.06]`}
                     >
-                      <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} isDark={isDark} compact />
+                      <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} compact />
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{itemTitle}</span>
-                        <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{itemDescription}</span>
+                        <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{itemTitle}</span>
+                        <span className={`block mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{itemDescription}</span>
                       </span>
-                      {active ? <Check size={16} className="shrink-0 text-[#007AFF]" /> : <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />}
+                      {active ? <Check size={16} className="shrink-0 text-[#007AFF]" /> : <ChevronDown size={16} className={`-rotate-90 shrink-0 text-[#C7C7CC] dark:text-[#636366]`} />}
                     </button>
                   );
                 })}
@@ -1654,35 +1645,35 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       const renderLocalPicker = () => {
         const rows = localCandidateRows(localDetectResult);
-        const mutedText = isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]';
-        const actionClass = `shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`;
+        const mutedText = 'text-[#8A8A8E] dark:text-[#98989D]';
+        const actionClass = `shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/28`;
         return (
           <div className="space-y-4">
             <section>
               <div className={catalogGroupClass}>
-                <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
-                  <ProviderIcon preset="local_vllm" isDark={isDark} compact />
+                <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
+                  <ProviderIcon preset="local_vllm" compact />
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.autoDetectLocalModel}</span>
+                    <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.autoDetectLocalModel}</span>
                     <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.localDetectionTargets}</span>
                   </span>
                   <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
                     className={`${actionClass} disabled:opacity-45`}>{localDetecting ? t.detectingLocalVllm : (localDetectResult ? settingsCopy.redetect : settingsCopy.detect)}</button>
                 </div>
                 {localDetectResult && localDetectResult.error && (
-                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#F28B82]' : 'border-black/[0.10] text-[#C5221F]'}`}>{localDetectResult.error}</div>
+                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localDetectResult.error}</div>
                 )}
                 {localDetectResult && !localDetectResult.error && rows.length === 0 && (
-                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10] text-[#98989D]' : 'border-black/[0.10] text-[#8A8A8E]'}`}>{settingsCopy.noRunningLocalModel}</div>
+                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
                 {rows.map(row => (
-                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
-                    <ProviderIcon preset="local_vllm" isDark={isDark} compact />
+                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
+                    <ProviderIcon preset="local_vllm" compact />
                     <span className="min-w-0 flex-1">
-                      <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>
+                      <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]`}>
                         <span className="truncate">{row.model}</span>
                         {row.loaded === false && (
-                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>{settingsCopy.modelNotLoadedTag}</span>
+                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}>{settingsCopy.modelNotLoadedTag}</span>
                         )}
                       </span>
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
@@ -1698,13 +1689,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <section>
               <div className={catalogGroupClass}>
                 <button type="button" onClick={startManualLocalModel}
-                  className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'}`}>
-                  <ProviderIcon preset="local_vllm" isDark={isDark} compact />
+                  className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.035] dark:hover:bg-white/[0.06]`}>
+                  <ProviderIcon preset="local_vllm" compact />
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.manualLocalModel}</span>
+                    <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.manualLocalModel}</span>
                     <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.manualLocalModelDesc}</span>
                   </span>
-                  <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
+                  <ChevronDown size={16} className={`-rotate-90 shrink-0 text-[#C7C7CC] dark:text-[#636366]`} />
                 </button>
               </div>
             </section>
@@ -1716,22 +1707,22 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
             <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
               onClick={e => e.stopPropagation()}
-              className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
-              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+              className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
-                  <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.chooseModelDesc}</p>
+                  <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.chooseModelDesc}</p>
                 </div>
-                <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
               </div>
               <div className="px-5 pt-4">
-                <div className={`p-1 rounded-full grid grid-cols-2 gap-1 ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                <div className={`p-1 rounded-full grid grid-cols-2 gap-1 bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
                   {[
                     { key: 'cloud', label: settingsCopy.cloudModels },
                     { key: 'local', label: settingsCopy.localModels },
                   ].map(tab => (
                     <button key={tab.key} type="button" onClick={() => setPickerTab(tab.key)}
-                      className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? (isDark ? 'bg-[#3A3A3C] text-[#F2F2F7]' : 'bg-white text-[#007AFF] shadow-sm') : (isDark ? 'text-[#C7C7CC]' : 'text-[#636366]')}`}>
+                      className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#636366] dark:text-[#C7C7CC]')}`}>
                       {tab.label}
                     </button>
                   ))}
@@ -1745,40 +1736,40 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return (
         <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
           <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
-            className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+            className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{modalTitle}</h2>
-                <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? `Coding Plan · ${settingsCopy.toolCalling}` : selectedProvider + ' · ' + selectedModelLabel}`}</p>
+                <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? `Coding Plan · ${settingsCopy.toolCalling}` : selectedProvider + ' · ' + selectedModelLabel}`}</p>
               </div>
-              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
             </div>
             <div className="space-y-4 px-5 py-4">
-              <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'border-white/[0.10] bg-[#2C2C2E]' : 'border-black/[0.08] bg-white'}`}>
+              <div className={`overflow-hidden rounded-[18px] border border-black/[0.08] bg-white dark:border-white/[0.10] dark:bg-[#2C2C2E]`}>
                 {isLocalPreset ? (
                   <div className="w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left">
-                    <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} isDark={isDark} compact />
+                    <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} compact />
                     <span className="min-w-0 flex-1">
                       <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
-                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{selectedModelLabel}</span>
                     </span>
                   </div>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setPickerOpen(v => !v)}
-                    className={`w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left ${isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.035]'}`}
+                    className={`w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left hover:bg-black/[0.035] dark:hover:bg-white/[0.05]`}
                   >
-                    <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} isDark={isDark} compact />
+                    <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} compact />
                     <span className="min-w-0 flex-1">
                       <span className="block text-[15px] leading-5 font-normal truncate">{selectedProvider}</span>
-                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{selectedModelLabel}</span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{selectedModelLabel}</span>
                     </span>
                     <span className="shrink-0 text-[14px] text-[#007AFF]">{pickerOpen ? settingsCopy.collapse : settingsCopy.change}</span>
                   </button>
                 )}
                 {pickerOpen && !isLocalPreset && (
-                  <div className={`border-t px-4 py-4 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+                  <div className={`border-t px-4 py-4 border-black/[0.12] dark:border-white/[0.10]`}>
                     {renderCatalogPicker()}
                   </div>
                 )}
@@ -1787,10 +1778,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <section>
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
-                      <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
+                      <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
                       <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                         placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
+                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
                       <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                     </div>
                   </div>
@@ -1810,19 +1801,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
+                        <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                           placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
+                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
                         <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{settingsCopy.apiKeyRequired}</label>
+                        <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.apiKeyRequired}</label>
                         <button type="button" onClick={() => setLocalKeyEnabled(v => !v)}
-                          className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : (isDark ? 'bg-[#3A3A3C]' : 'bg-[#D1D1D6]')}`}
+                          className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : ('bg-[#D1D1D6] dark:bg-[#3A3A3C]')}`}
                           aria-pressed={localKeyEnabled}>
                           <span className={`block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${localKeyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
                         </button>
@@ -1830,10 +1821,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     )}
                     {showLocalKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>API Key</label>
+                        <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                           placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'text-[#F2F2F7] placeholder:text-[#636366]' : 'text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`} />
+                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
                         <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
@@ -1845,11 +1836,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 <section>
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
-                      <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : 'text-[#FF3B30]') : (isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]')}`}>
+                      <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? ('text-[#137333] dark:text-[#93D5A6]') : 'text-[#FF3B30]') : ('text-[#8A8A8E] dark:text-[#98989D]')}`}>
                         {testResult ? testResult.message : settingsCopy.testBeforeSave}
                       </span>
                       <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
-                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`}>
+                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/28`}>
                         {testing ? t.testingConn : t.testConnection}
                       </button>
                     </div>
@@ -1857,21 +1848,21 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </section>
               )}
               {preset === 'local_vllm' && detectResult && (
-                <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
+                <div className={`rounded-xl border p-3 space-y-2 border-[#E0E3E7] bg-[#F8F9FB] dark:border-[#333537] dark:bg-[#131314]`}>
                   {detectResult.error ? (
-                    <span className={`text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.vllmDetectError(detectResult.error)}</span>
+                    <span className={`text-[12px] text-[#C5221F] dark:text-[#F28B82]`}>{t.vllmDetectError(detectResult.error)}</span>
                   ) : detectResult.engineState === 'starting' ? (
-                    <span className={`text-[12px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.vllmDetectStarting}</span>
+                    <span className={`text-[12px] text-[#0B57D0] dark:text-[#A8C7FA]`}>{t.vllmDetectStarting}</span>
                   ) : detectResult.candidates.length === 0 ? (
-                    <span className={`text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{t.vllmDetectNone}</span>
+                    <span className={`text-[12px] text-[#5F6368] dark:text-[#9AA0A6]`}>{t.vllmDetectNone}</span>
                   ) : (
                     <>
-                      <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{t.vllmDetectFound(detectResult.candidates.length)}</span>
+                      <span className={`text-[12px] text-[#137333] dark:text-[#93D5A6]`}>{t.vllmDetectFound(detectResult.candidates.length)}</span>
                       {detectResult.candidates.map(c => (
                         <button key={c.base_url} onClick={() => applyCandidate(c)}
-                          className={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${isDark ? 'border-[#333537] hover:bg-[#2A2B2D]' : 'border-[#E0E3E7] hover:bg-[#F0F4F9]'}`}>
-                          <div className={`text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{c.base_url}</div>
-                          <div className={`text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                          className={`w-full text-left rounded-lg border px-3 py-2 transition-colors border-[#E0E3E7] hover:bg-[#F0F4F9] dark:border-[#333537] dark:hover:bg-[#2A2B2D]`}>
+                          <div className={`text-[13px] truncate text-[#1F1F1F] dark:text-[#E3E3E3]`}>{c.base_url}</div>
+                          <div className={`text-[11px] truncate text-[#5F6368] dark:text-[#9AA0A6]`}>
                             {vllmStatusLabel(c.status)}
                             {c.model ? ` · ${t.vllmDetectedModel}: ${c.model}` : ''}
                             {c.max_model_len ? ` · ${t.vllmDetectedContext}: ${c.max_model_len}` : ''}
@@ -1880,11 +1871,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       ))}
                     </>
                   )}
-                  <span className={`text-[11px] block ${isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]'}`}>{t.vllmDetectHint}</span>
+                  <span className={`text-[11px] block text-[#9AA0A6] dark:text-[#5F6368]`}>{t.vllmDetectHint}</span>
                 </div>
               )}
               {preset === 'local_vllm' && canSetUpLocalModel && (offerSetup || bootstrapHere) && (
-                <div className={`rounded-xl border p-3 ${isDark ? 'border-[#333537] bg-[#131314]' : 'border-[#E0E3E7] bg-[#F8F9FB]'}`}>
+                <div className={`rounded-xl border p-3 border-[#E0E3E7] bg-[#F8F9FB] dark:border-[#333537] dark:bg-[#131314]`}>
                   {bootstrapHere ? (
                     bs && bs.vllmBootstrapDone ? (
                       <div>
@@ -1900,20 +1891,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                         <div className="text-[12px] leading-relaxed mb-3 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
                         <div className="flex justify-end gap-2">
                           <button onClick={() => { setBootstrapHere(false); setOfferSetup(false); }}
-                            className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
+                            className={`h-8 px-4 rounded-lg text-[13px] bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2B2C2F] dark:text-[#E3E3E3]`}>{t.cpCancel}</button>
                           <button onClick={() => bridge.vllm.bootstrapLocalVllm()}
                             className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
                         </div>
                       </div>
                     ) : (
-                      <VllmSetupProgress phase={bs && bs.vllmSetupPhase} attempt={(bs && bs.vllmSetupAttempt) || 0} isDark={isDark} t={t} />
+                      <VllmSetupProgress phase={bs && bs.vllmSetupPhase} attempt={(bs && bs.vllmSetupAttempt) || 0} t={t} />
                     )
                   ) : (
                     <div>
                       <div className="text-[13px] leading-relaxed mb-3">{t.vllmReentryOffer}</div>
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setOfferSetup(false)}
-                          className={`h-8 px-4 rounded-lg text-[13px] ${isDark ? 'bg-[#2B2C2F] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>{t.cpCancel}</button>
+                          className={`h-8 px-4 rounded-lg text-[13px] bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2B2C2F] dark:text-[#E3E3E3]`}>{t.cpCancel}</button>
                         <button onClick={() => { setBootstrapHere(true); bridge.vllm.bootstrapLocalVllm(); }}
                           className="h-8 px-4 rounded-lg text-[13px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
                       </div>
@@ -1923,7 +1914,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               )}
             </div>
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
-              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cpCancel}</button>
+              <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
               <button onClick={doSave} disabled={!canSave}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{t.modelSaveBtn}</button>
             </div>
@@ -1933,7 +1924,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     };
 
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, searchApiKey, setSearchApiKey, searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, searchNeedsRestart, languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
-      const isDark = activeTheme === 'dark';
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
@@ -2080,9 +2070,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       }, []);
       const IOSSection = ({ title, children, footer }) => (
         <section className="mb-6">
-          {title && <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{title}</div>}
-          <div className={`overflow-hidden rounded-[18px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>{children}</div>
-          {footer && <div className={`px-3 mt-2 text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{footer}</div>}
+          {title && <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{title}</div>}
+          <div className={`overflow-hidden rounded-[18px] bg-white dark:bg-[#2C2C2E]`}>{children}</div>
+          {footer && <div className={`px-3 mt-2 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>{footer}</div>}
         </section>
       );
       const IOSRow = ({ label, desc, value, children, onClick, danger }) => {
@@ -2092,14 +2082,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           type={onClick ? 'button' : undefined}
           onClick={onClick}
           className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 max-sm:flex-col max-sm:items-stretch ${
-            isDark ? 'border-white/[0.10] text-[#F2F2F7]' : 'border-black/[0.12] text-[#1C1C1E]'
-          } ${onClick ? (isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.035]') : ''}`}
+            'border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]'
+          } ${onClick ? ('hover:bg-black/[0.035] dark:hover:bg-white/[0.05]') : ''}`}
         >
           <div className="flex-1 min-w-[120px] max-sm:min-w-0">
             <div className={`text-[15px] leading-5 font-normal whitespace-nowrap ${danger ? 'text-[#FF3B30]' : ''}`}>{label}</div>
-            {desc && <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{desc}</div>}
+            {desc && <div className={`mt-0.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</div>}
           </div>
-          {value && <div className={`text-[14px] shrink-0 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{value}</div>}
+          {value && <div className={`text-[14px] shrink-0 text-[#8A8A8E] dark:text-[#98989D]`}>{value}</div>}
           {children}
         </RowTag>
         );
@@ -2110,7 +2100,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           role="switch"
           aria-checked={checked}
           onClick={() => onChange(!checked)}
-          className={`relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors ${checked ? 'bg-[#34C759]' : (isDark ? 'bg-[#3A3A3C]' : 'bg-[#E5E5EA]')}`}
+          className={`relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors ${checked ? 'bg-[#34C759]' : ('bg-[#E5E5EA] dark:bg-[#3A3A3C]')}`}
         >
           <span className={`absolute left-0 top-[2px] h-[22px] w-[22px] rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
         </button>
@@ -2121,11 +2111,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           onClick={() => setActiveSection(id)}
           className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors max-sm:w-auto max-sm:shrink-0 ${
             activeSection === id
-              ? (isDark ? 'bg-[#173A5E] text-[#64B5F6]' : 'bg-[#D8EAFE] text-[#007AFF]')
-              : (isDark ? 'text-[#F2F2F7] hover:bg-white/[0.06]' : 'text-[#1C1C1E] hover:bg-black/[0.04]')
+              ? ('bg-[#D8EAFE] text-[#007AFF] dark:bg-[#173A5E] dark:text-[#64B5F6]')
+              : ('text-[#1C1C1E] hover:bg-black/[0.04] dark:text-[#F2F2F7] dark:hover:bg-white/[0.06]')
           }`}
         >
-          <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${activeSection === id ? 'bg-[#007AFF]/10' : (isDark ? 'bg-white/[0.08]' : 'bg-black/[0.05]')}`}>{icon}</span>
+          <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${activeSection === id ? 'bg-[#007AFF]/10' : ('bg-black/[0.05] dark:bg-white/[0.08]')}`}>{icon}</span>
           <span className="font-semibold truncate">{label}</span>
           {dot && <span className="ml-auto w-2.5 h-2.5 rounded-full bg-[#FF3B30]" />}
         </button>
@@ -2136,20 +2126,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return 'text-[#007AFF] hover:bg-[#007AFF]/10';
       };
       const Group = ({ children }) => (
-        <div className={`overflow-hidden rounded-[18px] border ${isDark ? 'bg-[#2C2C2E] border-white/[0.04]' : 'bg-white border-black/[0.03]'}`}>{children}</div>
+        <div className={`overflow-hidden rounded-[18px] border bg-white border-black/[0.03] dark:bg-[#2C2C2E] dark:border-white/[0.04]`}>{children}</div>
       );
       const SectionTitle = ({ children }) => (
-        <div className={`px-3 mb-2 text-[12px] leading-4 font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{children}</div>
+        <div className={`px-3 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{children}</div>
       );
       const RadioDot = ({ active }) => (
-        <span className={`block w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : (isDark ? 'border-[#636366]' : 'border-[#AEAEB2]')}`}>
+        <span className={`block w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : ('border-[#AEAEB2] dark:border-[#636366]')}`}>
           {active && <span className="block w-2 h-2 rounded-full bg-[#007AFF] mx-auto mt-[3px]" />}
         </span>
       );
       const Tag = ({ children, tone = 'green' }) => (
         <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${
           tone === 'gray'
-            ? (isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]')
+            ? ('bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]')
             : 'bg-[#34C759]/15 text-[#248A3D]'
         }`}>{children}</span>
       );
@@ -2258,19 +2248,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const providerLabel = providerLabelForModel(m, t);
         const title = m.model || m.name;
         return (
-          <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+          <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
             <button onClick={() => !isActive && onSetActiveModel(m.id)} className="shrink-0" title={t.setActiveModel}>
               <RadioDot active={isActive} />
             </button>
-            <ProviderIcon preset={m.preset || (isLocal ? 'local_vllm' : 'openai_compatible')} vendor={m.vendor} providerKind={m.provider_kind} model={m.model} isDark={isDark} compact />
+            <ProviderIcon preset={m.preset || (isLocal ? 'local_vllm' : 'openai_compatible')} vendor={m.vendor} providerKind={m.provider_kind} model={m.model} compact />
             <div className="min-w-0">
               <div className="flex items-center gap-2 min-w-0">
-                <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</span>
+                <span className={`text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{title}</span>
                 {isLocal && <Tag tone="gray">{settingsCopy.localModel}</Tag>}
                 {codingPlan && <Tag tone="gray">Coding Plan</Tag>}
                 {isActive && <Tag>{settingsCopy.defaultTag}</Tag>}
               </div>
-              <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{providerLabel} · {m.model}</div>
+              <div className={`mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{providerLabel} · {m.model}</div>
             </div>
             <div className="shrink-0 flex items-center gap-2">
               {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>{settingsCopy.edit}</button>}
@@ -2278,7 +2268,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </div>
           </div>
         );
-      }) : <div className={`px-4 py-4 text-[14px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.noModels}</div>;
+      }) : <div className={`px-4 py-4 text-[14px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.noModels}</div>;
       const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
       const selectedPetId = (bs && typeof bs.selectedPet === 'string' && bs.selectedPet) || DEFAULT_PET_ID;
       const handlePetSelect = id => {
@@ -2289,10 +2279,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <>
           <IOSSection title={t.uiSettings.appearance}>
             <IOSRow label={t.uiSettings.language} desc={t.uiSettings.languageDesc}>
-              <SSegmented isDark={isDark} value={language} onChange={v => { setLanguage(v); setRestartDialog('language'); }} options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
+              <SSegmented value={language} onChange={v => { setLanguage(v); setRestartDialog('language'); }} options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
             </IOSRow>
             <IOSRow label={t.uiSettings.theme} desc={t.uiSettings.themeDesc}>
-              <SSegmented isDark={isDark} value={activeTheme} onChange={setActiveTheme} options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
+              <SSegmented value={activeTheme} onChange={setActiveTheme} options={[{ key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />
             </IOSRow>
           </IOSSection>
           <IOSSection title={t.sidebarSection}>
@@ -2309,21 +2299,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           )}
           {canUsePet && (
           <section className="mb-6">
-            <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.desktopAssistant}</div>
-            <div className={`overflow-hidden rounded-[18px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>
+            <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.desktopAssistant}</div>
+            <div className={`overflow-hidden rounded-[18px] bg-white dark:bg-[#2C2C2E]`}>
               <div className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b ${
-                isDark ? 'border-white/[0.10] text-[#F2F2F7]' : 'border-black/[0.12] text-[#1C1C1E]'
+                'border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]'
               } ${petEnabled ? '' : 'last:border-b-0'}`}>
                 <div className="flex-1 min-w-[120px]">
                   <div className="text-[15px] leading-5 font-normal whitespace-nowrap">{t.uiSettings.pet}</div>
-                  <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.petDesc}</div>
+                  <div className={`mt-0.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{t.uiSettings.petDesc}</div>
                 </div>
                 <IOSSwitch checked={petEnabled} onChange={onPetEnabledChange} />
               </div>
               {petEnabled && (
-                <div className={`px-4 pb-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+                <div className={`px-4 pb-4 border-t border-black/[0.12] dark:border-white/[0.10]`}>
                   <PetSettingsSection
-                    isDark={isDark}
                     enabled={petEnabled}
                     selectedPetId={selectedPetId}
                     t={t}
@@ -2363,12 +2352,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 );
               })()}
               <button data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
-                className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
+                className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035] dark:border-white/[0.10] dark:text-[#0A84FF] dark:hover:bg-white/[0.05]`}>
                 <Plus size={18} />
                 <span>{settingsCopy.addModel}</span>
               </button>
             </Group>
-            {modelEnvLocked.length > 0 && <div className={`px-3 mt-2 text-[12px] leading-relaxed ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.envManaged}</div>}
+            {modelEnvLocked.length > 0 && <div className={`px-3 mt-2 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>{settingsCopy.envManaged}</div>}
           </section>
         </>
       );
@@ -2379,16 +2368,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <Group>
             {enabledSearchList.map(item => {
               return (
-                <div key={item.key} className={`min-h-[60px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-[14px] px-4 py-3 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+                <div key={item.key} className={`min-h-[60px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-[14px] px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
                   <button onClick={() => { setSearchProvider(item.key); setRestartDialog('search'); }} className="shrink-0" title={settingsCopy.setDefault}>
                     <RadioDot active={searchProvider === item.key} />
                   </button>
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className={`text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.label}</span>
+                      <span className={`text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{item.label}</span>
                       {item.key === searchProvider && <Tag>{settingsCopy.defaultTag}</Tag>}
                     </div>
-                    <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</div>
+                    <div className={`mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{item.desc}</div>
                   </div>
                   <div className="flex items-center gap-2">
                     {item.key !== 'bing' && <button onClick={() => { setPendingSearchProvider(null); setEditingSearch(item.key); }} className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>{settingsCopy.edit}</button>}
@@ -2398,7 +2387,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               );
             })}
             <button onClick={() => setSearchPickerOpen(true)}
-              className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
+              className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035] dark:border-white/[0.10] dark:text-[#0A84FF] dark:hover:bg-white/[0.05]`}>
               <Plus size={18} />
               <span>{settingsCopy.addSearch}</span>
             </button>
@@ -2409,9 +2398,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const renderMemoryList = (items, empty) => items.length ? items.map(item => {
         const text = item.text || item.content || settingsCopy.unnamedMemory;
         return (
-          <div key={`${item.kind}-${item.id}`} className={`min-h-[92px] flex items-start gap-4 px-4 py-3.5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>
+          <div key={`${item.kind}-${item.id}`} className={`min-h-[92px] flex items-start gap-4 px-4 py-3.5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
             <div className="min-w-0 flex-1">
-              <div className={`text-[15px] leading-6 whitespace-pre-wrap break-words line-clamp-3 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{text}</div>
+              <div className={`text-[15px] leading-6 whitespace-pre-wrap break-words line-clamp-3 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{text}</div>
             </div>
             <button onClick={() => openMemoryItemViewer(item)} className={`shrink-0 mt-0.5 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.view}</button>
           </div>
@@ -2489,8 +2478,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] break-words">{String(updateError)}</div>
             )}
             <section className="mb-6">
-              <div className={`px-3 mb-2 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.releaseNotes}</div>
-              <div className={`rounded-[18px] px-4 py-3.5 text-[14px] leading-6 whitespace-pre-line ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>{notes}</div>
+              <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.releaseNotes}</div>
+              <div className={`rounded-[18px] px-4 py-3.5 text-[14px] leading-6 whitespace-pre-line bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>{notes}</div>
             </section>
           </div>
         );
@@ -2531,7 +2520,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <button
                     onClick={() => bridge.available && bridge.dependencies.checkDependencies()}
                     disabled={!bridge.available || busy}
-                    className={`h-9 px-4 rounded-full text-[14px] font-semibold disabled:opacity-50 ${isDark ? 'bg-white/[0.08] text-[#0A84FF]' : 'bg-[#E5E5EA] text-[#007AFF]'}`}
+                    className={`h-9 px-4 rounded-full text-[14px] font-semibold disabled:opacity-50 bg-[#E5E5EA] text-[#007AFF] dark:bg-white/[0.08] dark:text-[#0A84FF]`}
                   >{checking ? t.depChecking : t.depRecheck}</button>
                 </IOSRow>
                 {missing.map(dep => (
@@ -2591,31 +2580,31 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         return (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
             <div onClick={e => e.stopPropagation()}
-              className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
-              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+              className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.editSearch}</h2>
-                  <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{option ? option.label : provider}</p>
+                  <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{option ? option.label : provider}</p>
                 </div>
-                <button onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                <button onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
               </div>
               <div className="space-y-4 px-5 py-4">
                 <section>
-                  <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
-                    <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>
+                  <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
+                    <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>
                     <label className="shrink-0 text-[14px] leading-5">API Key</label>
                     <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
                       autoFocus
                       placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                       style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
-                      className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
+                      className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
                     <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? settingsCopy.hide : settingsCopy.show}</button>
                     </div>
                   </div>
                 </section>
               </div>
-              <div className={`flex justify-end gap-2 px-5 py-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
-                <button onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{settingsCopy.cancel}</button>
+              <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/[0.10] dark:border-white/[0.10]`}>
+                <button onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{settingsCopy.cancel}</button>
                 <button onClick={() => {
                   if (!canSaveSearch) return;
                   if (isNew) onAddSearchProvider && onAddSearchProvider(provider);
@@ -2630,19 +2619,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       };
       const RestartDialog = ({ type }) => (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-          <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+          <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
             <div className="px-6 pt-6 pb-5 text-center">
               <h3 className="text-[18px] font-semibold">{type === 'search' ? settingsCopy.restartSearchTitle : settingsCopy.restartLanguageTitle}</h3>
-              <p className={`mt-2 text-[14px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{type === 'search' ? settingsCopy.restartSearchDesc : settingsCopy.restartLanguageDesc}</p>
+              <p className={`mt-2 text-[14px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{type === 'search' ? settingsCopy.restartSearchDesc : settingsCopy.restartLanguageDesc}</p>
             </div>
-            <div className={`grid grid-cols-2 border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+            <div className={`grid grid-cols-2 border-t border-black/[0.12] dark:border-white/[0.12]`}>
               <button onClick={async () => {
                 if (type === 'search' && onSaveSearchConfig) {
                   const saved = await onSaveSearchConfig();
                   if (saved === false) return;
                 }
                 setRestartDialog(null);
-              }} className={`h-12 text-[17px] font-semibold border-r ${isDark ? 'border-white/[0.12] text-[#0A84FF]' : 'border-black/[0.12] text-[#007AFF]'}`}>{settingsCopy.later}</button>
+              }} className={`h-12 text-[17px] font-semibold border-r border-black/[0.12] text-[#007AFF] dark:border-white/[0.12] dark:text-[#0A84FF]`}>{settingsCopy.later}</button>
               <button onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.restartNow}</button>
             </div>
           </div>
@@ -2650,13 +2639,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       const ModelDeleteDialog = ({ model }) => (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
             <div className="px-5 pt-5 pb-4 text-center">
               <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteModelTitle}</h3>
-              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.deleteModelDesc}</p>
+              <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteModelDesc}</p>
             </div>
-            <div className={`border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
-              <button onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>{settingsCopy.deleteModel}</button>
+            <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+              <button onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteModel}</button>
               <button onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
             </div>
           </div>
@@ -2664,13 +2653,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       const SearchDeleteDialog = ({ source }) => (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
+          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
             <div className="px-5 pt-5 pb-4 text-center">
               <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteSearchTitle}</h3>
-              <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.deleteSearchDesc(source.label)}</p>
+              <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteSearchDesc(source.label)}</p>
             </div>
-            <div className={`border-t ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
-              <button onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>{settingsCopy.deleteSearch}</button>
+            <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+              <button onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteSearch}</button>
               <button onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
             </div>
           </div>
@@ -2689,23 +2678,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             data-testid="settings-dialog"
             style={{ width: 'min(920px, calc(100vw - 24px))', height: 'min(620px, calc(100vh - 24px))' }}
             onClick={(event) => event.stopPropagation()}
-            className={`relative flex flex-col sm:flex-row overflow-hidden rounded-[24px] border shadow-[0_22px_58px_rgba(0,0,0,0.34)] ${isDark ? 'border-white/[0.14] bg-[#1C1C1E] text-[#F2F2F7]' : 'border-white/70 bg-[#F2F2F7] text-[#1C1C1E]'}`}
+            className={`relative flex flex-col sm:flex-row overflow-hidden rounded-[24px] border shadow-[0_22px_58px_rgba(0,0,0,0.34)] border-white/70 bg-[#F2F2F7] text-[#1C1C1E] dark:border-white/[0.14] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}
           >
             {/* 窄屏:Tab 条与关闭键同排,X 在滚动区外侧,Tab 滚动不会穿到它底下;
                 桌面:包裹层 display:contents 不参与布局,维持左栏 + 悬浮 X 不变 */}
-            <div className={`sm:contents max-sm:flex max-sm:items-center max-sm:shrink-0 max-sm:border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+            <div className={`sm:contents max-sm:flex max-sm:items-center max-sm:shrink-0 max-sm:border-b border-black/[0.12] dark:border-white/[0.12]`}>
             <aside
               data-testid="settings-nav"
-              className={`w-full sm:w-[clamp(150px,24vw,210px)] shrink-0 max-sm:flex-1 max-sm:min-w-0 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto custom-scrollbar max-sm-hide-scrollbar sm:border-r px-3 sm:px-4 py-3 sm:py-7 max-sm:flex max-sm:items-center max-sm:gap-2 ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}
+              className={`w-full sm:w-[clamp(150px,24vw,210px)] shrink-0 max-sm:flex-1 max-sm:min-w-0 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto custom-scrollbar max-sm-hide-scrollbar sm:border-r px-3 sm:px-4 py-3 sm:py-7 max-sm:flex max-sm:items-center max-sm:gap-2 border-black/[0.12] dark:border-white/[0.12]`}
             >
-              <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.common}</div>
+              <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.common}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
                 <SectionButton id="general" icon={<Sparkles size={17} />} label={t.uiSettings.general} />
                 <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} />
                 <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
                 {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
               </div>
-              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.system}</div>
+              <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
@@ -2713,7 +2702,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
             </aside>
             {onCloseSettings && (
-              <button data-testid="settings-close" onClick={onCloseSettings} aria-label={settingsCopy.closeSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
+              <button data-testid="settings-close" onClick={onCloseSettings} aria-label={settingsCopy.closeSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}>
                 <X size={18} />
               </button>
             )}
@@ -2728,7 +2717,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </main>
           </div>
           {canManageModels && editingModel && (
-            <ModelFormModal isDark={isDark} t={t} initial={editingModel} bs={bs}
+            <ModelFormModal t={t} initial={editingModel} bs={bs}
               onCancel={() => setEditingModel(null)}
               onSave={m => { onSaveModel(m); setEditingModel(null); }} />
           )}
@@ -2737,16 +2726,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           {searchPickerOpen && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={() => setSearchPickerOpen(false)}>
               <div onClick={e => e.stopPropagation()}
-                className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
-                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                   <div>
                     <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.addSearch}</h2>
-                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.addSearchDesc}</p>
+                    <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.addSearchDesc}</p>
                   </div>
-                  <button onClick={() => setSearchPickerOpen(false)} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                  <button onClick={() => setSearchPickerOpen(false)} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
                 </div>
                 <div className="px-5 py-4">
-                  <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                  <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
                     {searchOptions.filter(item => !enabledSearchSet.has(item.key)).map(item => (
                       <button key={item.key} type="button" onClick={() => {
                           setSearchPickerOpen(false);
@@ -2758,12 +2747,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                             setRestartDialog('search');
                           }
                         }}
-                        className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10] hover:bg-white/[0.06]' : 'border-black/[0.10] hover:bg-black/[0.035]'}`}>
+                        className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] hover:bg-black/[0.035] dark:border-white/[0.10] dark:hover:bg-white/[0.06]`}>
                         <span className="min-w-0 flex-1">
-                          <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{item.label}</span>
-                          <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>
+                          <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{item.label}</span>
+                          <span className={`block mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{item.desc}</span>
                         </span>
-                        <ChevronDown size={16} className={`-rotate-90 shrink-0 ${isDark ? 'text-[#636366]' : 'text-[#C7C7CC]'}`} />
+                        <ChevronDown size={16} className={`-rotate-90 shrink-0 text-[#C7C7CC] dark:text-[#636366]`} />
                       </button>
                     ))}
                   </div>
@@ -2774,34 +2763,34 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           {editingSearch && <SearchSourceModal provider={editingSearch} isNew={pendingSearchProvider === editingSearch} onClose={() => { setEditingSearch(null); setPendingSearchProvider(null); }} />}
           {memoryEditor && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4" onClick={() => setMemoryEditor(null)}>
-              <div onClick={e => e.stopPropagation()} className={`w-full max-w-[500px] rounded-[24px] shadow-2xl ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}>
-                <div className={`px-6 py-4 flex items-start justify-between border-b ${isDark ? 'border-white/[0.12]' : 'border-black/[0.12]'}`}>
+              <div onClick={e => e.stopPropagation()} className={`w-full max-w-[500px] rounded-[24px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+                <div className={`px-6 py-4 flex items-start justify-between border-b border-black/[0.12] dark:border-white/[0.12]`}>
                   <div>
                     <h2 className="text-[22px] leading-7 font-semibold">{memoryEditor.title}</h2>
-                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{memoryEditor.subtitle}</p>
+                    <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{memoryEditor.subtitle}</p>
                   </div>
-                  <button onClick={() => setMemoryEditor(null)} className={`h-10 w-10 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08]' : 'bg-[#E5E5EA]'}`}><X size={20} /></button>
+                  <button onClick={() => setMemoryEditor(null)} className={`h-10 w-10 rounded-full flex items-center justify-center bg-[#E5E5EA] dark:bg-white/[0.08]`}><X size={20} /></button>
                 </div>
                 <div className="px-6 py-5">
                   <label className="block">
-                    <span className={`block px-1 mb-2 text-[13px] font-semibold ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{memoryEditor.label}</span>
+                    <span className={`block px-1 mb-2 text-[13px] font-semibold text-[#8A8A8E] dark:text-[#98989D]`}>{memoryEditor.label}</span>
                     {memoryEditor.multiline ? (
                       <textarea
                         value={memoryEditor.value}
                         onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
                         rows={5}
-                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] leading-6 outline-none resize-none ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7] placeholder:text-[#636366]' : 'bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`}
+                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] leading-6 outline-none resize-none bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
                       />
                     ) : (
                       <input
                         value={memoryEditor.value}
                         onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
-                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] outline-none ${isDark ? 'bg-[#2C2C2E] text-[#F2F2F7] placeholder:text-[#636366]' : 'bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E]'}`}
+                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] outline-none bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
                       />
                     )}
                   </label>
                   <div className="mt-6 flex justify-end gap-2.5">
-                    <button onClick={() => setMemoryEditor(null)} className={`h-10 px-4 rounded-full text-[14px] font-semibold ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#E5E5EA]'}`}>{settingsCopy.cancel}</button>
+                    <button onClick={() => setMemoryEditor(null)} className={`h-10 px-4 rounded-full text-[14px] font-semibold bg-[#E5E5EA] dark:bg-[#2C2C2E]`}>{settingsCopy.cancel}</button>
                     <button onClick={saveMemoryEditor} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">{settingsCopy.save}</button>
                   </div>
                 </div>
@@ -2814,46 +2803,46 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div
                 onClick={e => e.stopPropagation()}
                 data-feedback-dialog="true"
-                className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto rounded-[22px] shadow-2xl custom-scrollbar ${isDark ? 'bg-[#1C1C1E] text-[#F2F2F7]' : 'bg-white text-[#1C1C1E]'}`}
+                className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto rounded-[22px] shadow-2xl custom-scrollbar bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}
               >
-                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                   <div className="min-w-0">
                     <h2 className="text-[20px] leading-6 font-semibold">{t.feedbackDialogTitle}</h2>
-                    <p className={`mt-1 text-[13px] leading-[18px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.feedbackDesc}</p>
+                    <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{t.feedbackDesc}</p>
                   </div>
-                  <button onClick={closeFeedback} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}><X size={18} /></button>
+                  <button onClick={closeFeedback} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
                 </div>
                 <div className="space-y-4 px-5 py-4">
                   <section>
-                    <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
+                    <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
                       <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
-                        <label className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{t.feedbackType}</label>
-                        <SSegmented isDark={isDark} value={feedbackDraft.type} onChange={type => setFeedbackDraft(prev => ({ ...prev, type }))} options={feedbackTypes} />
+                        <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{t.feedbackType}</label>
+                        <SSegmented value={feedbackDraft.type} onChange={type => setFeedbackDraft(prev => ({ ...prev, type }))} options={feedbackTypes} />
                       </div>
                     </div>
                   </section>
                   <section>
-                    <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
-                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
+                    <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                         <label className="shrink-0 text-[14px] leading-5">{t.feedbackSubject}</label>
                         <input value={feedbackDraft.title} maxLength={120} onChange={e => setFeedbackDraft(prev => ({ ...prev, title: e.target.value }))}
                         placeholder={t.feedbackSubjectPh}
-                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
+                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
                       </div>
                       <div className="px-4 py-3">
                         <div className="mb-2 text-[14px] leading-5">{t.feedbackBody}</div>
                         <textarea value={feedbackDraft.description} maxLength={5000} onChange={e => setFeedbackDraft(prev => ({ ...prev, description: e.target.value }))}
                         placeholder={t.feedbackBodyPh} rows={5}
-                        className={`w-full resize-none bg-transparent text-[14px] leading-6 outline-none ${isDark ? 'placeholder:text-[#636366]' : 'placeholder:text-[#8A8A8E]'}`} />
+                        className={`w-full resize-none bg-transparent text-[14px] leading-6 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
                       </div>
                     </div>
                   </section>
                   <section>
-                    <div className={`overflow-hidden rounded-[16px] ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`}>
-                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${feedbackDraft.attachments.length > 0 ? (isDark ? 'border-white/[0.10]' : 'border-black/[0.10]') : 'border-transparent'}`}>
+                    <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${feedbackDraft.attachments.length > 0 ? ('border-black/[0.10] dark:border-white/[0.10]') : 'border-transparent'}`}>
                         <div className="min-w-0 flex-1">
                           <div className="text-[14px] leading-5">{t.feedbackAttachments}</div>
-                          <div className={`mt-0.5 text-[12px] leading-[17px] truncate ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>
+                          <div className={`mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>
                             {feedbackDraft.attachments.length > 0 ? `${feedbackDraft.attachments.length}/5` : t.feedbackNoAttachments}
                           </div>
                         </div>
@@ -2862,27 +2851,27 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       {feedbackDraft.attachments.length > 0 && (
                         <div>
                         {feedbackDraft.attachments.map((a, idx) => (
-                          <div key={`${a.path}-${idx}`} className={`min-h-[48px] flex items-center justify-between gap-3 px-4 py-2.5 border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
-                            <span className={`min-w-0 truncate text-[13px] ${isDark ? 'text-[#C7C7CC]' : 'text-[#636366]'}`}>{a.name}</span>
+                          <div key={`${a.path}-${idx}`} className={`min-h-[48px] flex items-center justify-between gap-3 px-4 py-2.5 border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
+                            <span className={`min-w-0 truncate text-[13px] text-[#636366] dark:text-[#C7C7CC]`}>{a.name}</span>
                             <button onClick={() => setFeedbackDraft(prev => ({ ...prev, attachments: prev.attachments.filter((_, i) => i !== idx) }))} className="shrink-0 text-[14px] text-[#FF3B30]">{t.cpDelete}</button>
                           </div>
                         ))}
                         </div>
                       )}
                     </div>
-                    <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.feedbackAttachmentHint}</div>
+                    <div className={`px-1 mt-1.5 text-[12px] leading-4 text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.feedbackAttachmentHint}</div>
                   </section>
-                  <div className={`px-1 text-[12px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.feedbackPrivacy}</div>
+                  <div className={`px-1 text-[12px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{t.feedbackPrivacy}</div>
                   {feedbackStatus.message && (
                     <div className={`rounded-[14px] px-4 py-3 text-[14px] ${feedbackStatus.state === 'submitted' ? 'bg-[#34C759]/15 text-[#248A3D]' : 'bg-[#FF3B30]/15 text-[#FF3B30]'}`}>
                       {feedbackStatus.message}
                     </div>
                   )}
                 </div>
-                <div className={`flex justify-end gap-2 px-5 py-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
-                    <button onClick={closeFeedback} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.cancel}</button>
+                <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/[0.10] dark:border-white/[0.10]`}>
+                    <button onClick={closeFeedback} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cancel}</button>
                     {feedbackStatus.state === 'failed_retryable' && (
-                      <button onClick={submitFeedbackDraft} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors ${isDark ? 'text-[#0A84FF] hover:bg-white/[0.06]' : 'text-[#007AFF] hover:bg-black/[0.04]'}`}>{t.feedbackRetry}</button>
+                      <button onClick={submitFeedbackDraft} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.feedbackRetry}</button>
                     )}
                     <button onClick={submitFeedbackDraft} disabled={feedbackStatus.state === 'submitting'} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold disabled:opacity-35">
                       {feedbackStatus.state === 'submitting' ? t.feedbackSubmitting : t.feedbackSubmit}
