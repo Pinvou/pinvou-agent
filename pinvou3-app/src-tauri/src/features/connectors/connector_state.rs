@@ -1,10 +1,12 @@
-//! Persistent connector marker files shared by bundle staging and connector UI.
+//! 连接器技能可见性标记文件。
+//!
+//! Wave 3 从 `platform/connector_state.rs` 迁入——这些标记文件是连接器域
+//! 概念（feishu/wecom/dingtalk/tmeet 技能 gate），不是跨功能平台原语。
+//! 唯一消费者：`features/runtime_bundle/platform/extraction.rs`。
 
-use std::path::PathBuf;
+use crate::platform::paths;
 
-use super::paths;
-
-fn marker(name: &str) -> PathBuf {
+fn marker(name: &str) -> std::path::PathBuf {
     paths::pinvou3_home().join(name)
 }
 
