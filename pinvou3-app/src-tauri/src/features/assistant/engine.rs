@@ -847,10 +847,13 @@ impl AppEngine {
         } else {
             None
         };
-        let workspace = scheduled_profile
-            .as_ref()
-            .map(|profile| profile.workspace.clone())
-            .unwrap_or_else(|| bridge.session_workspace(session_id));
+        // 执行根统一由 SessionStore::session_roots 解析（scheduled = automation
+        // workspace，原生代码绑项目会话 = 项目目录，其余 = 会话私有目录）。
+        // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
+        let workspace = store
+            .session_roots(session_id)
+            .map(|roots| roots.execution)
+            .unwrap_or_else(|_| bridge.session_workspace(session_id));
         let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持

@@ -585,7 +585,8 @@ pub async fn create_codex_acp_session(
     };
     if kind == CodexWorkspaceKind::Temporary {
         let temporary_workspace = store
-            .execution_workspace(&session.metadata.id)
+            .session_roots(&session.metadata.id)
+            .map(|roots| roots.execution)
             .map_err(|error| format!("解析 Codex 临时工作目录失败: {error:#}"))?;
         if let Err(error) = ensure_codex_workspace_root(kind, &temporary_workspace) {
             let _ = store.delete(&session.metadata.id);
@@ -621,9 +622,10 @@ pub async fn create_codex_acp_session(
 
 /// 创建“代码”模块原生（品悟 Engine）会话。
 ///
-/// 临时会话执行目录与 ACP 临时会话共用 `SessionStore::execution_workspace`；
-/// 项目会话绑定调用方选定的目录（经 `validate_codex_project_workspace` 校验），
-/// 执行根由 bridge 的 resolver 在 engine/shell 启动时解析，发消息走现有 `chat` 命令。
+/// 临时会话执行目录与 ACP 临时会话共用 `SessionStore::session_roots` 推导
+/// （两根一致，均为会话私有目录）；项目会话绑定调用方选定的目录（经
+/// `validate_codex_project_workspace` 校验），执行根由 resolver 在
+/// engine/shell 启动时解析，发消息走现有 `chat` 命令。
 async fn create_code_native_session(
     workspace_path: Option<String>,
     pool: &EnginePool,
@@ -663,7 +665,10 @@ async fn create_code_native_session(
     let baseline_root = match kind {
         CodexWorkspaceKind::Project => project_workspace.expect("项目会话必有工作目录"),
         CodexWorkspaceKind::Temporary => {
-            let temporary_workspace = match store.execution_workspace(&session.metadata.id) {
+            let temporary_workspace = match store
+                .session_roots(&session.metadata.id)
+                .map(|roots| roots.execution)
+            {
                 Ok(path) => path,
                 Err(error) => {
                     let _ = acp_pool.agents().remove(&session.metadata.id);

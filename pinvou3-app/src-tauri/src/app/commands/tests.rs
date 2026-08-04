@@ -948,7 +948,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         .expect_err("scheduled runs must reject UI transcript overwrites");
     assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
     let locked = store
-        .execution_workspace(&scheduled.metadata.id)
+        .ledger_root(&scheduled.metadata.id)
         .expect("locked scheduled workspace");
     // 每次运行对话独立，同一 automation 共享自己的工作间；输入路径不会生效。
     assert_eq!(
@@ -1087,7 +1087,7 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
 }
 
 #[test]
-fn ordinary_execution_workspace_behavior_is_unchanged() {
+fn ordinary_ledger_root_behavior_is_unchanged() {
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1110,8 +1110,8 @@ fn ordinary_execution_workspace_behavior_is_unchanged() {
 
     assert_eq!(
         store
-            .execution_workspace(&chat.metadata.id)
-            .expect("ordinary execution workspace"),
+            .ledger_root(&chat.metadata.id)
+            .expect("ordinary ledger root"),
         expected
     );
     assert_eq!(
@@ -1469,14 +1469,14 @@ fn project_bound_code_session_references_staged_attachments_by_absolute_path() {
 fn remote_artifact_authorization_stays_on_private_ledger_root() {
     // 红线回归：即使原生代码会话把执行根绑到用户项目目录，远程下载授权根也必须
     // 是会话私有目录——resolve_session_artifact_path 的 workspace_root 来自
-    // SessionStore::execution_workspace（账本语义，M1 未改），项目内文件不可下载。
+    // SessionStore::ledger_root（账本语义），项目内文件不可下载。
     let _home = test_pinvou_home("pinvou3-remote-authz-test");
     let store = SessionStore::boot().expect("session store");
     let chat = store
         .create_new("remote-authz-test".to_string(), None, std::env::temp_dir())
         .expect("chat session");
     let sid = chat.metadata.id.clone();
-    let ledger = store.execution_workspace(&sid).expect("ledger workspace");
+    let ledger = store.ledger_root(&sid).expect("ledger workspace");
     std::fs::create_dir_all(&ledger).expect("ledger dir");
     std::fs::write(ledger.join("ok.txt"), "ok").expect("ledger file");
 

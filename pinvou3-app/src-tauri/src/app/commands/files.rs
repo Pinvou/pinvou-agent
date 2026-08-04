@@ -18,7 +18,7 @@ fn conversation_attachment_context(
         .session_kind(session_id)
         .map_err(|error| format!("解析会话类型失败：{error:#}"))?;
     let workspace = store
-        .execution_workspace(session_id)
+        .ledger_root(session_id)
         .map_err(|error| format!("解析会话附件工作区失败：{error:#}"))?;
     Ok((workspace, kind))
 }

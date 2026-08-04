@@ -191,6 +191,49 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// 原生代码会话绑定的项目目录解析器,由 app 组合根(lib.rs)在 AcpPool 就绪
+    /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
+    /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。
+    execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
+}
+
+/// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
+/// 返回 `Some(项目目录)`;其余会话返回 `None`,调用方回退到会话私有目录。
+///
+/// 用闭包而非直接依赖 `codex_acp::SessionAgentStore`:`sessions` 与 `codex_acp`
+/// 两个 feature 互相引用会成环,解析器由 app 组合根(lib.rs)注入并共享 AcpPool
+/// 持有的同一份 store(clone 共享 Arc,运行时读到最新绑定)。
+pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
+/// 一个会话的两个根:
+/// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目
+///   目录;其余会话 = 会话私有目录(scheduled 会话 = 其 automation workspace)。
+/// - `ledger`:应用账本根(附件/审计/产物/远程授权)。绑了项目目录的原生代码会话
+///   恒为会话私有目录(不污染用户项目);其余会话与 execution 相同。
+///
+/// 由 [`SessionStore::session_roots`] 统一解析,调用方按用途显式选择用哪个根,
+/// 避免把执行根误当账本根写盘(或反之)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRoots {
+    pub execution: PathBuf,
+    pub ledger: PathBuf,
+}
+
+/// 两个根的纯解析:给定原生代码会话绑定的项目目录(无绑定传 `None`),返回
+/// 执行根与账本根。不感知 scheduled 会话——scheduled 的两个根都是其
+/// automation workspace,由 [`SessionStore::session_roots`] 在上层处理。
+pub fn session_roots_for(session_id: &str, bound_project_root: Option<PathBuf>) -> SessionRoots {
+    let private = paths::session_workspace_dir(session_id);
+    match bound_project_root {
+        Some(project) => SessionRoots {
+            execution: project,
+            ledger: private,
+        },
+        None => SessionRoots {
+            execution: private.clone(),
+            ledger: private,
+        },
+    }
 }
 
 /// Transactional checkout of the two per-session one-shot prompt injections.
@@ -400,6 +443,7 @@ impl SessionStore {
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
+            execution_root_resolver: Arc::new(RwLock::new(None)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -544,29 +588,53 @@ impl SessionStore {
         Ok(self.scheduled_root.join(task_id).join("workspace"))
     }
 
-    /// The ledger root (attachments/audit/artifacts) for a session's own files,
-    /// and the execution root for ordinary/scheduled sessions.
+    /// 注入原生代码会话的执行根解析器;由 app 组合根在 AcpPool 就绪后调用一次。
+    /// 与 Engine bridge 共用同一份 `SessionAgentStore` 闭包,两侧解析结果一致。
+    pub fn set_execution_root_resolver(&self, resolver: ExecutionRootResolver) {
+        *self.execution_root_resolver.write() = Some(resolver);
+    }
+
+    /// 统一解析一个会话的两个根(执行根 + 账本根)。调用方按用途显式选择
+    /// [`SessionRoots::execution`] 或 [`SessionRoots::ledger`],避免把执行根误当
+    /// 账本根写盘(或反之)。
     ///
-    /// For project-bound native code sessions this is NOT the engine execution
-    /// root — the engine runs in the bound project directory via the bridge's
-    /// `session_roots` resolution (assistant/platform/bridge.rs). Prefer that
-    /// single resolution entry when the caller needs to pick a root explicitly;
-    /// this helper remains the ledger root and the fallback execution root for
-    /// non-project sessions. Each scheduled run has an independent conversation,
-    /// while all runs owned by the same automation share that automation's
-    /// workspace.
-    pub fn execution_workspace(&self, id: &str) -> Result<PathBuf> {
+    /// - scheduled 会话两个根都是其 automation workspace;
+    /// - 绑了项目目录的原生代码会话:execution = 项目目录,ledger = 会话私有目录;
+    /// - 其余会话两个根都是会话私有目录。
+    pub fn session_roots(&self, id: &str) -> Result<SessionRoots> {
         // This helper is a path authority boundary, not merely a convenience
         // accessor. Validate before any join so callers can never turn a
         // Session id such as `../outside` into an escaping workspace path.
         validate_session_id(id)?;
         if let Some(profile) = self.scheduled_profile(id) {
-            return Ok(profile.workspace);
+            return Ok(SessionRoots {
+                execution: profile.workspace.clone(),
+                ledger: profile.workspace,
+            });
         }
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
         }
-        Ok(paths::session_workspace_dir(id))
+        let bound_project_root = self
+            .execution_root_resolver
+            .read()
+            .as_ref()
+            .and_then(|resolver| resolver(id));
+        Ok(session_roots_for(id, bound_project_root))
+    }
+
+    /// The ledger root (attachments/audit/artifacts) for a session's own files,
+    /// and the execution root for ordinary/scheduled sessions.
+    ///
+    /// For project-bound native code sessions this is NOT the engine execution
+    /// root — the engine runs in the bound project directory. Use
+    /// [`Self::session_roots`] when the caller needs to pick a root explicitly;
+    /// this helper remains the ledger root and the fallback execution root for
+    /// non-project sessions. Each scheduled run has an independent conversation,
+    /// while all runs owned by the same automation share that automation's
+    /// workspace.
+    pub fn ledger_root(&self, id: &str) -> Result<PathBuf> {
+        Ok(self.session_roots(id)?.ledger)
     }
 
     pub fn scheduled_session_ids_for_task(&self, task_id: &str) -> Vec<String> {
@@ -2229,6 +2297,69 @@ mod tests {
             .expect("create");
         let list = store.list().expect("list");
         assert!(list.iter().any(|m| m.id == s.metadata.id));
+    }
+
+    #[test]
+    fn session_roots_plain_session_shares_private_root() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let private = paths::session_workspace_dir(&s.metadata.id);
+        let roots = store.session_roots(&s.metadata.id).expect("roots");
+        assert_eq!(roots.execution, private);
+        assert_eq!(roots.ledger, private);
+        assert_eq!(
+            store.ledger_root(&s.metadata.id).expect("ledger root"),
+            private
+        );
+    }
+
+    #[test]
+    fn session_roots_bound_project_keeps_ledger_on_private_root() {
+        let (store, _g) = isolated_store();
+        let s = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let bound_id = s.metadata.id.clone();
+        let project = std::env::temp_dir().join("pinvou3-bound-project-roots-test");
+        store.set_execution_root_resolver(Arc::new(move |id: &str| {
+            (id == bound_id).then(|| project.clone())
+        }));
+        let roots = store.session_roots(&s.metadata.id).expect("roots");
+        assert_eq!(
+            roots.execution,
+            std::env::temp_dir().join("pinvou3-bound-project-roots-test")
+        );
+        // 绑了项目目录的原生代码会话：账本根恒为会话私有目录，不污染用户项目。
+        let private = paths::session_workspace_dir(&s.metadata.id);
+        assert_eq!(roots.ledger, private);
+        assert_eq!(
+            store.ledger_root(&s.metadata.id).expect("ledger root"),
+            private
+        );
+        // 未绑定的会话不受 resolver 影响，两根仍一致。
+        let other = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create other");
+        let other_roots = store.session_roots(&other.metadata.id).expect("roots");
+        assert_eq!(other_roots.execution, other_roots.ledger);
+    }
+
+    #[test]
+    fn session_roots_scheduled_run_uses_automation_workspace_for_both_roots() {
+        let (store, _g) = isolated_store();
+        let saved = store
+            .create_scheduled_run(scheduled_profile("task-roots"))
+            .expect("scheduled run");
+        let workspace = task_workspace(&store, "task-roots");
+        let roots = store.session_roots(&saved.metadata.id).expect("roots");
+        assert_eq!(roots.execution, workspace);
+        assert_eq!(roots.ledger, workspace);
+        assert_eq!(
+            store.ledger_root(&saved.metadata.id).expect("ledger root"),
+            workspace
+        );
     }
 
     fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {

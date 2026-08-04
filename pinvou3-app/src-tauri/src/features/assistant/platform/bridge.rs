@@ -93,27 +93,10 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
-/// 代码模块原生（品悟 Engine）会话的执行根解析器：绑定了项目目录的原生代码会话
-/// 返回 `Some(项目目录)`；其余会话返回 `None`，调用方回退到会话私有目录。
-///
-/// 用闭包而非直接依赖 `codex_acp::SessionAgentStore`：`assistant` 与 `codex_acp`
-/// 两个 feature 互相引用会成环，解析器由 app 组合根（lib.rs）注入并共享 AcpPool
-/// 持有的同一份 store（clone 共享 Arc，运行时读到最新绑定）。
-pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
-
-/// 一个会话的两个根：
-/// - `execution`：Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目
-///   目录；其余会话 = 会话私有目录。
-/// - `ledger`：应用账本根（附件/审计/产物/远程授权）。绑了项目目录的原生代码会话
-///   恒为会话私有目录（不污染用户项目）；其余会话与 execution 相同。
-///
-/// 由 [`Pinvou3Bridge::session_roots`] 统一解析，调用方显式选择用哪个根，
-/// 避免新增调用点时把执行根误当账本根写盘（或反之）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionRoots {
-    pub execution: PathBuf,
-    pub ledger: PathBuf,
-}
+/// 原生代码会话的执行根解析器与「两个根」类型统一由
+/// [`crate::features::sessions`] 定义(SessionStore 与 bridge 共用同一实现),
+/// 此处 re-export 保持既有调用路径不变。
+pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
@@ -132,7 +115,7 @@ pub struct Pinvou3Bridge {
     pub probed_context_tokens: Option<u32>,
     /// 原生代码会话的执行根（engine cwd / shell 目录）解析器；None = 无代码会话
     /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
-    /// 仍由 `SessionStore::execution_workspace` 统一决定。
+    /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
     pub execution_root_resolver: Option<ExecutionRootResolver>,
     /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
     /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
@@ -390,26 +373,16 @@ impl Pinvou3Bridge {
     ///   shell 执行目录由此同源），其余会话返回会话私有目录。
     /// - `ledger`：绑定了项目目录的原生代码会话恒为会话私有目录（附件/审计/产物
     ///   不污染用户项目）；其余会话与 execution 相同。
+    ///
+    /// 本入口不感知 scheduled 会话（bridge 拿不到 SessionStore）；scheduled 的
+    /// 两个根由调用方经 [`crate::features::sessions::SessionStore::session_roots`]
+    /// 解析。与 SessionStore 入口共用 [`sessions::session_roots_for`] 同一实现。
     pub fn session_roots(&self, session_id: &str) -> SessionRoots {
-        let execution = if let Some(resolver) = &self.execution_root_resolver {
-            if let Some(root) = resolver(session_id) {
-                root
-            } else {
-                paths::session_workspace_dir(session_id)
-            }
-        } else {
-            paths::session_workspace_dir(session_id)
-        };
-        let ledger = if self
+        let bound_project_root = self
             .execution_root_resolver
             .as_ref()
-            .is_some_and(|resolver| resolver(session_id).is_some())
-        {
-            paths::session_workspace_dir(session_id)
-        } else {
-            execution.clone()
-        };
-        SessionRoots { execution, ledger }
+            .and_then(|resolver| resolver(session_id));
+        sessions::session_roots_for(session_id, bound_project_root)
     }
 
     /// 当前 active session 的执行根目录：原生代码会话绑定了项目目录时返回项目目录
@@ -442,12 +415,19 @@ impl Pinvou3Bridge {
     /// 会话级工具整形:原生代码会话没有产出物面板/成品卡语义(提示词也不再提及),
     /// 隐藏 present_artifact;其他会话原样返回。spawn 初值与全局热刷都经此整形。
     ///
+    /// 代码会话同时禁用 load_skill(skill 触达模型的唯一工具通道):skill 开关是
+    /// 进程级全局状态,无法按会话生效,代码页开关只落盘不生效即成"假开关";
+    /// 在底座支持按会话禁用单个 skill 之前,代码会话整体禁用 load_skill 作为
+    /// 过渡方案(catalogue 路径泄露的残留口径见
+    /// docs/code-native-agent-会话能力档案设计.md)。
+    ///
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
     /// 不再沿用 plain scope 的禁用集,而是改用 code scope 的禁用集 —— 两个 scope
     /// 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非连接器禁用
     /// (kb_search 等)仍保留。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
         const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
+        const LOAD_SKILL: &str = "load_skill";
         if self.is_code_session(session_id) {
             // 用 code scope 的连接器禁用集替换 plain scope 的连接器禁用集。
             let plain_connector = crate::features::marketplace::disabled_tool_names();
@@ -462,6 +442,9 @@ impl Pinvou3Bridge {
             }
             if !tools.iter().any(|tool| tool == PRESENT_ARTIFACT) {
                 tools.push(PRESENT_ARTIFACT.to_string());
+            }
+            if !tools.iter().any(|tool| tool == LOAD_SKILL) {
+                tools.push(LOAD_SKILL.to_string());
             }
         }
         tools
@@ -491,9 +474,9 @@ impl Pinvou3Bridge {
     /// session 专属 `EngineConfig.instructions` 注入:
     ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
     ///      不写 disk — 见 C 方案 P-no-disk 决策);
-    ///   2. 受限项目规则:绑定了项目目录的原生代码会话,注入项目根 → 文件系统根
-    ///      路径上的 `AGENTS.md`(审阅建议③a;底座 C5 fork 已砍空
-    ///      `PROJECT_CONTEXT_FILES`,不再自动扫描,这里按安全边界在 app 侧补齐);
+    ///   2. 受限项目规则:绑定了项目目录的原生代码会话,注入项目根 → 用户家目录
+    ///      (不含)路径上的 `AGENTS.md`,root→cwd 顺序(审阅建议③a;底座 C5 fork
+    ///      已砍空 `PROJECT_CONTEXT_FILES`,不再自动扫描,这里按安全边界在 app 侧补齐);
     ///   3. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
     ///
     /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
@@ -525,13 +508,22 @@ impl Pinvou3Bridge {
     }
 
     /// 受限项目规则（审阅建议③a）：仅对**绑定了项目目录的原生代码会话**注入
-    /// `AGENTS.md`，覆盖项目根 → 文件系统根路径（不含用户家目录及以上的全局
-    /// 上下文，避免泄露桌面/用户上下文）。
+    /// `AGENTS.md`，覆盖项目根向上到用户家目录（不含）的路径——项目根即家目录时
+    /// 一层都不注入；项目不在家目录之下时覆盖到文件系统根。
     ///
     /// 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描），这里在 app 侧
-    /// 按安全边界补齐：只注入绑项目代码会话的项目根及以上各层目录的 `AGENTS.md`，
-    /// 到达用户家目录即停止（家目录本身的 `~/.AGENTS.md` 不注入），文件不存在或
-    /// 不可读时跳过。普通会话/临时代码会话不注入（行为不变）。
+    /// 按安全边界补齐。行为语义：
+    ///   - 注入顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 惯例一致，
+    ///     越靠近项目根的规则在提示词中越靠后；
+    ///   - 家目录边界：home 与项目路径走同一归一化（canonicalize + 去 Windows
+    ///     `\\?\` verbatim 前缀，与绑定入口 `validate_codex_project_workspace`
+    ///     同源），`~/AGENTS.md` 等家目录及以上层不注入；归一化失败 fail-closed
+    ///     ——项目根无法归一化时不注入，家目录无法归一化时只注入项目根本层、
+    ///     不上溯祖先；
+    ///   - symlink 拒读：`AGENTS.md` 是 symlink（可指向工作区外任意文件，如
+    ///     ~/.ssh/id_rsa）时跳过，与底座 `project_context::load_context_file`
+    ///     的防御范式对齐；
+    ///   - 文件不存在或不可读时跳过。普通会话/临时代码会话不注入（行为不变）。
     fn code_session_project_rules(&self, session_id: &str) -> Vec<PathBuf> {
         let Some(project_root) = self
             .execution_root_resolver
@@ -543,25 +535,20 @@ impl Pinvou3Bridge {
         if !self.is_code_session(session_id) {
             return Vec::new();
         }
-        let home = crate::platform::paths::user_home_dir().canonicalize().ok();
+        // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
+        let Some(project_root) = normalize_rule_boundary_path(&project_root) else {
+            return Vec::new();
+        };
+        // 家目录归一化失败 → 无法确定上溯边界，fail-closed：只注入项目根本层。
+        let home = normalize_rule_boundary_path(&crate::platform::paths::user_home_dir());
         let mut rules = Vec::new();
-        let mut current = Some(project_root.as_path());
-        while let Some(dir) = current {
+        for dir in collect_project_rule_chain(&project_root, home.as_deref()) {
             // 项目根及各祖先层（不含家目录本身）的 AGENTS.md 都注入，支持
             // monorepo 根规则覆盖子目录的既有语义。
             let agents = dir.join("AGENTS.md");
-            if agents.is_file() {
+            if is_plain_file(&agents) {
                 rules.push(agents);
             }
-            // 下一层到达用户家目录即停止：家目录及以上的 AGENTS.md（如
-            // ~/.AGENTS.md / ~/AGENTS.md）不注入，避免泄露桌面/用户全局上下文。
-            if home
-                .as_deref()
-                .is_some_and(|home| dir.parent() == Some(home))
-            {
-                break;
-            }
-            current = dir.parent();
         }
         rules
     }
@@ -1597,6 +1584,58 @@ impl Pinvou3Bridge {
     }
 }
 
+/// 项目规则注入链的路径归一化：canonicalize（解析 symlink/8.3 短名、统一大小写）
+/// 后去掉 Windows `\\?\` verbatim 前缀——与绑定入口 `validate_codex_project_workspace`
+/// 的 `platform_compat_path` 归一化同源，保证 home 与项目路径按同一形式比较
+/// （`canonicalize` 的 verbatim 路径与绑定链的常规盘符路径按组件比较永不相等，
+/// 不做这层归一化，家目录边界在 Windows 上是死代码）。归一化失败（路径不存在/
+/// 不可访问）返回 None，调用方按 fail-closed 处理。
+fn normalize_rule_boundary_path(path: &std::path::Path) -> Option<PathBuf> {
+    path.canonicalize()
+        .ok()
+        .map(|canonical| crate::platform::os::platform_compat_path(&canonical.to_string_lossy()))
+}
+
+/// 项目规则注入的目录链（纯函数，home 可注入以便单测）：从 `project_root` 逐级
+/// 向上，到达用户家目录即停止——家目录本身不入链（`~/AGENTS.md` 等全局上下文
+/// 不注入），项目根即家目录时整链为空；项目不在家目录之下时上溯到文件系统根。
+/// `home` 为 None（家目录归一化失败）时 fail-closed：只返回项目根本层、不上溯。
+///
+/// 返回顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 的项目规则注入
+/// 惯例一致。
+fn collect_project_rule_chain(
+    project_root: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return vec![project_root.to_path_buf()];
+    };
+    let mut chain = Vec::new();
+    let mut current = Some(project_root);
+    while let Some(dir) = current {
+        if dir == home {
+            break;
+        }
+        chain.push(dir.to_path_buf());
+        current = dir.parent();
+    }
+    chain.reverse();
+    chain
+}
+
+/// `AGENTS.md` 注入前的文件类型检查：只接受普通文件，拒绝 symlink——symlink
+/// 可指向工作区外任意文件（如 ~/.ssh/id_rsa），`is_file()` 会跟随 symlink，
+/// 不能用于安全边界。与底座 `project_context::load_context_file` 的
+/// `symlink_metadata` 防御范式对齐；文件不存在或不可读时返回 false（跳过）。
+fn is_plain_file(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| {
+            let file_type = metadata.file_type();
+            file_type.is_file() && !file_type.is_symlink()
+        })
+        .unwrap_or(false)
+}
+
 /// Plan 模式 per-turn reminder:命令式、短、列禁令(Qwen3.6 友好)。写保护真防线是底座
 /// 只读工具集 + ReadOnly sandbox,禁写条只是减少弱模型撞墙的引导(消融证非 load-bearing)。
 const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
@@ -1757,8 +1796,16 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
         std::fs::write(base.join("AGENTS.md"), "monorepo root rules").unwrap();
-        // 注意：Windows 上 temp 目录位于用户家目录之下，本测试的家目录边界
-        // 由实现按真实 user_home_dir() 计算，无需（也无法）在测试中伪造。
+        // 家目录边界的纯函数语义（含伪造家目录、项目根==家目录、归一化失败
+        // fail-closed）由 project_rule_chain_stops_at_home_boundary 覆盖；
+        // 这里走真实 user_home_dir() 做端到端注入验证。返回的路径已按
+        // normalize_rule_boundary_path 归一化，期望值同样归一化后再比较。
+        let expected_base = normalize_rule_boundary_path(&base)
+            .unwrap()
+            .join("AGENTS.md");
+        let expected_project = normalize_rule_boundary_path(&project)
+            .unwrap()
+            .join("AGENTS.md");
 
         let mut bridge = fixture_bridge();
         let hit = project.clone();
@@ -1774,12 +1821,20 @@ mod tests {
         // 绑项目的代码会话：注入 project/AGENTS.md 与 base/AGENTS.md（monorepo 根）。
         let rules = bridge.code_session_project_rules("sess-code-project");
         assert!(
-            rules.iter().any(|p| p == &project.join("AGENTS.md")),
+            rules.iter().any(|p| p == &expected_project),
             "应注入项目根 AGENTS.md: {rules:?}"
         );
         assert!(
-            rules.iter().any(|p| p == &base.join("AGENTS.md")),
+            rules.iter().any(|p| p == &expected_base),
             "应注入 monorepo 根 AGENTS.md: {rules:?}"
+        );
+        // 注入顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 惯例一致。
+        let position = |target: &std::path::Path| rules.iter().position(|p| p == target);
+        assert!(
+            position(&expected_base)
+                .zip(position(&expected_project))
+                .is_some_and(|(base_pos, project_pos)| base_pos < project_pos),
+            "注入顺序应为 root→cwd（monorepo 根在前、项目根最后）: {rules:?}"
         );
 
         // 临时代码会话 / 普通会话：resolver 未命中 → 不注入。
@@ -1800,6 +1855,171 @@ mod tests {
                 .code_session_project_rules("sess-code-project2")
                 .is_empty(),
             "project2 位于 base 下,base/AGENTS.md 应仍注入"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 家目录边界的纯函数语义：伪造 home 注入，覆盖项目在家目录之下、
+    /// 项目根==家目录、家目录归一化失败（fail-closed）、项目不在家目录之下
+    /// 四种情形（原实现自认「无法伪造家目录」而无边界测试，抽纯函数后可测）。
+    #[test]
+    fn project_rule_chain_stops_at_home_boundary() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-rule-chain-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // 布局：home/project/sub，另有不相关目录 other。
+        let home = base.join("home");
+        let project = home.join("project");
+        let sub = project.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        // 纯函数假定入参已归一化；测试侧自行 canonicalize（Windows 的 temp_dir
+        // 可能含 8.3 短名，不归一化会与生产侧 canonicalize 结果比歪）。
+        let home = home.canonicalize().unwrap();
+        let project = project.canonicalize().unwrap();
+        let sub = sub.canonicalize().unwrap();
+
+        // 项目在家目录之下：链不含家目录本身，root→cwd（祖先在前）。
+        assert_eq!(
+            collect_project_rule_chain(&sub, Some(&home)),
+            vec![project.clone(), sub.clone()]
+        );
+        // 项目根即家目录：整链为空（~/AGENTS.md 不注入）。
+        assert!(collect_project_rule_chain(&home, Some(&home)).is_empty());
+        // 家目录归一化失败（None）：fail-closed，只留项目根本层、不上溯。
+        assert_eq!(collect_project_rule_chain(&sub, None), vec![sub.clone()]);
+        // 项目不在家目录之下：上溯到文件系统根，仍不含 home。
+        let other = base.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let other = other.canonicalize().unwrap();
+        let chain = collect_project_rule_chain(&other, Some(&home));
+        assert_eq!(chain.last(), Some(&other));
+        assert_eq!(
+            chain.first().map(std::path::PathBuf::as_path),
+            other.ancestors().last()
+        );
+        assert!(!chain.contains(&home));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// symlink 拒读：恶意仓库把 AGENTS.md 指到工作区外文件时不得注入
+    /// （与底座 load_context_file 的 symlink_metadata 防御对齐）。
+    /// Windows 创建 symlink 需管理员/开发者模式，无权限时优雅跳过而非失败。
+    #[test]
+    fn code_session_project_rules_rejects_symlinked_agents_md() {
+        #[cfg(not(any(unix, windows)))]
+        {
+            eprintln!("[test] 该平台不支持创建 symlink，跳过 symlink 拒绝断言");
+            return;
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let base = std::env::temp_dir()
+                .join(format!("pinvou3-agents-symlink-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let project = base.join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            // 工作区外的"敏感文件"与指向它的 AGENTS.md symlink。
+            let outside = base.join("outside-secret.md");
+            std::fs::write(&outside, "secret content").unwrap();
+            let link = project.join("AGENTS.md");
+            #[cfg(unix)]
+            let link_result = std::os::unix::fs::symlink(&outside, &link);
+            #[cfg(windows)]
+            let link_result = std::os::windows::fs::symlink_file(&outside, &link);
+            if let Err(err) = link_result {
+                eprintln!("[test] symlink 创建失败（{err}，Windows 需管理员/开发者模式），跳过");
+                let _ = std::fs::remove_dir_all(&base);
+                return;
+            }
+
+            let mut bridge = fixture_bridge();
+            let hit = project.clone();
+            bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+                (session_id == "sess-code-project").then(|| hit.clone())
+            }));
+            bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+                session_id == "sess-code-project"
+            }));
+
+            // symlink 的 AGENTS.md 不得注入（项目目录下唯一的 AGENTS.md 即该 symlink）。
+            let rules = bridge.code_session_project_rules("sess-code-project");
+            let marker = base.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                !rules.iter().any(|p| p.to_string_lossy().contains(&marker)),
+                "symlink 的 AGENTS.md 不得注入: {rules:?}"
+            );
+
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    /// 双门控：resolver 命中（存在绑定的项目目录）但 predicate 判定非原生代码
+    /// 会话（如索引在、sidecar 缺失的降级会话）→ 不注入，避免项目规则泄进
+    /// 普通会话提示词。
+    #[test]
+    fn code_session_project_rules_skip_when_resolver_hits_but_not_code_session() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-gate-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-degraded").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
+
+        assert!(
+            bridge.code_session_project_rules("sess-degraded").is_empty(),
+            "resolver 命中但非代码会话时不应注入项目规则"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 100KB 截断端到端：bridge 注入的超限 AGENTS.md 经底座渲染系统提示词时
+    /// 按 INSTRUCTIONS_FILE_MAX_BYTES（100KB）截断并带标记。
+    #[test]
+    fn session_instructions_oversize_agents_md_truncated_end_to_end() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-trunc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        // 超过底座 100KB 上限的项目规则。
+        let oversized = "a".repeat(120 * 1024);
+        std::fs::write(project.join("AGENTS.md"), &oversized).unwrap();
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+
+        let instructions = bridge.session_instructions("sess-code-project");
+        let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+            &project,
+            None,
+            None,
+            Some(&instructions),
+            None,
+        );
+        let flat = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
+        assert!(
+            flat.contains("[…truncated"),
+            "超过 100KB 的 AGENTS.md 应被截断并带标记"
+        );
+        assert!(
+            !flat.contains(&oversized),
+            "截断后的提示词不应包含完整 120KB 内容"
         );
 
         let _ = std::fs::remove_dir_all(&base);
@@ -1834,7 +2054,9 @@ mod tests {
             })
             .collect();
         assert!(
-            files.iter().any(|p| p == &project.join("AGENTS.md")),
+            files.iter().any(|p| p == &normalize_rule_boundary_path(&project)
+                .unwrap()
+                .join("AGENTS.md")),
             "session instructions 应含项目 AGENTS.md: {files:?}"
         );
 
@@ -1872,10 +2094,11 @@ mod tests {
         assert!(bridge.is_code_session("sess-code-project"));
         assert!(!bridge.is_code_session("sess-plain"));
 
-        // 临时与绑项目的代码会话都隐藏成品卡工具；普通会话不受影响。
+        // 临时与绑项目的代码会话都隐藏成品卡工具并禁用 load_skill；普通会话不受影响。
         for sid in ["sess-code-temp", "sess-code-project"] {
             let shaped = bridge.shape_disallowed_tools(sid, plain.clone());
             assert!(shaped.contains(&"mcp_pinvou3_present_artifact".to_string()));
+            assert!(shaped.contains(&"load_skill".to_string()));
             assert!(shaped.contains(&"kb_search".to_string()));
             // 幂等：不重复追加。
             let twice = bridge.shape_disallowed_tools(sid, shaped);
@@ -1884,6 +2107,10 @@ mod tests {
                     .iter()
                     .filter(|tool| *tool == "mcp_pinvou3_present_artifact")
                     .count(),
+                1
+            );
+            assert_eq!(
+                twice.iter().filter(|tool| *tool == "load_skill").count(),
                 1
             );
         }
@@ -1950,6 +2177,8 @@ mod tests {
         assert!(shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"kb_search".to_string()));
+        // 代码会话整体禁用 load_skill(skill 开关是进程级全局,无法按会话生效的过渡方案)。
+        assert!(shaped.contains(&"load_skill".to_string()));
 
         // code 显式只禁 pptx → weather 恢复,pptx 仍禁;plain 的 weather 禁用不再影响代码会话。
         crate::features::marketplace::save_disabled_connectors_for(
@@ -1959,6 +2188,7 @@ mod tests {
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         assert!(!shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
+        assert!(shaped.contains(&"load_skill".to_string()));
 
         // 普通会话不整形:原样返回传入的全局禁用集(全局禁用集由 EnginePool 按 plain scope 计算)。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());

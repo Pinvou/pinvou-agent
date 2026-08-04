@@ -97,9 +97,12 @@ pub(crate) async fn chat_with_reservation(
         message_len,
         attachment_count
     );
-    let execution_workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+    let roots = store
+        .session_roots(&sid)
+        .map_err(|error| format!("resolve session roots for {sid}: {error:#}"))?;
+    // 附件引用与落盘都走账本根（scheduled 会话 = 其 automation workspace，其余
+    // 会话 = 会话私有目录），与引擎执行根解耦。
+    let ledger_root = roots.ledger.clone();
     let attachment_record =
         prepare_conversation_attachment_record(attachments.as_deref().unwrap_or_default(), || {
             store
@@ -131,15 +134,12 @@ pub(crate) async fn chat_with_reservation(
     let raw_message = message.clone();
     // 原生代码会话绑项目目录时，落盘根（会话私有目录）与引擎 cwd（项目目录）
     // 不同根，附件引用必须绝对路径；其余会话两根一致，维持相对路径引用。
-    // 经 app.state 判定以保持本函数签名稳定（web access 也经此入口）。
-    let reference_absolute = app
-        .try_state::<crate::features::codex_acp::AcpPool>()
-        .map(|acp_pool| acp_pool.agents().code_project_workspace(&sid).is_some())
-        .unwrap_or(false);
+    // 两个根由 SessionStore::session_roots 统一解析（与引擎执行根同一来源）。
+    let reference_absolute = roots.ledger != roots.execution;
     let mut full = build_message_with_attachments_in_dir(
         message,
         attachments.unwrap_or_default(),
-        &execution_workspace,
+        &ledger_root,
         &attachment_dir,
         reference_absolute,
     );
@@ -239,7 +239,7 @@ pub(crate) async fn chat_with_reservation(
             if let Some((message_index, attachment_references)) = attachment_record {
                 if let Err(error) =
                     crate::features::files::attachment_upload::record_conversation_attachments(
-                        &execution_workspace,
+                        &ledger_root,
                         &sid,
                         message_index,
                         &display_content,
