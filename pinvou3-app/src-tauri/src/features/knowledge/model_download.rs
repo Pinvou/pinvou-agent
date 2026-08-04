@@ -7,13 +7,12 @@
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|extract|done, downloaded, total, ready }`。
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use super::KnowledgeService;
 
@@ -303,7 +302,8 @@ pub async fn kb_model_download(
                 "kb_model:progress",
                 serde_json::json!({ "stage": "verify" }),
             );
-            let got = sha256_file(&part2)?;
+            let got = crate::platform::hashing::sha256_file(&part2)
+                .map_err(|e| format!("读校验文件失败: {e}"))?;
             if !got.eq_ignore_ascii_case(&exp) {
                 let _ = std::fs::remove_file(&part2);
                 return Err(format!(
@@ -484,23 +484,6 @@ impl Drop for DownloadGuard {
     fn drop(&mut self) {
         DOWNLOADING.store(false, Ordering::SeqCst);
     }
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut f = std::fs::File::open(path).map_err(|e| format!("打开校验文件失败: {e}"))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1024 * 1024];
-    loop {
-        let n = f
-            .read(&mut buf)
-            .map_err(|e| format!("读校验文件失败: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 fn extract_targz(targz: &Path, dest: &Path) -> Result<(), String> {
