@@ -95,6 +95,15 @@ try {
   const newWindowCalls = await page.evaluate(() => window.__newWindowCalls || 0);
   assert(newWindowCalls === 1, '「在新窗口打开」回调未被调用', { newWindowCalls });
 
+  // 深色模式：diff 弹窗裸文本（上下文行/分段标题）文字色跟随主题，不得黑字黑底。
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.waitForFunction(() => {
+    const pre = document.querySelector('[data-testid="code-viewer-modal"] pre.pinvou-code-block');
+    return pre && getComputedStyle(pre).color !== 'rgb(0, 0, 0)';
+  });
+  const darkPreColor = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="code-viewer-modal"] pre.pinvou-code-block')).color);
+  assert(darkPreColor !== 'rgb(0, 0, 0)', '深色模式下 diff 弹窗文字应为浅色', { darkPreColor });
+
   assert(pageErrors.length === 0, '浏览器运行时异常', pageErrors);
 
   console.log('code_viewer_diff_smoke: ok');

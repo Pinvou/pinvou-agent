@@ -191,7 +191,7 @@ export function CodeViewerModal({
         aria-modal="true"
         aria-label={fileName}
         style={{ width: size.width, height: size.height }}
-        className="relative flex flex-col overflow-hidden rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#1E1E20] shadow-2xl"
+        className="relative flex flex-col overflow-hidden rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#1E1E20] text-gray-900 dark:text-gray-100 shadow-2xl"
       >
         <div className="h-12 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
           <FileColoredIcon name={fileName} size={15} />
