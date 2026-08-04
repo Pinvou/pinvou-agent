@@ -16,6 +16,7 @@ import {
   BRAND_ICON_BY_PRESET, BRAND_ICON_BY_VENDOR,
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
+  groupModelsForSelector, selectorMainLabel, selectorSubLabel,
 } from './model-catalog.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -555,7 +556,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       return (
         <div className="relative min-w-0">
           <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
-            title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
+            title={(current ? selectorMainLabel(current, t) : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
             className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             {compact ? (
               <>
@@ -565,23 +566,41 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             ) : (
               <>
                 <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
-                <span className="max-w-[116px] truncate">{t.composerModelLabel(current ? current.name : t.modelNonePick)}</span>
+                <span className="max-w-[116px] truncate">{t.composerModelLabel(current ? selectorMainLabel(current, t) : t.modelNonePick)}</span>
                 <ChevronDown size={13} className="opacity-50 shrink-0" />
               </>
             )}
           </button>
           <ComposerPopover open={open && canSwitchModels} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {savedModels.map(m => (
-                  <button key={m.id} onClick={() => pick(m.id)}
-                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-                      <span className="truncate">{m.name}</span>
-                    </span>
-                    {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
-                  </button>
-                ))}
+                {(() => {
+                  const { preset, custom } = groupModelsForSelector(savedModels);
+                  const renderGroup = (label, items, withDivider) => items.length > 0 && (
+                    <>
+                      {withDivider && <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />}
+                      <div className="px-3 pt-1.5 pb-1 text-[11px] font-semibold text-gray-400 dark:text-gray-500">{label}</div>
+                      {items.map(m => (
+                        <button key={m.id} onClick={() => pick(m.id)}
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl transition-colors group hover:bg-[#007AFF] hover:text-white">
+                          <span className="flex items-center gap-2.5 min-w-0">
+                            <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                            <span className="min-w-0">
+                              <span className="block text-[13px] truncate text-gray-700 dark:text-gray-200 group-hover:text-white">{selectorMainLabel(m, t)}</span>
+                              <span className="block text-[11px] truncate text-gray-400 dark:text-gray-500 group-hover:text-white/80">{selectorSubLabel(m, t)}</span>
+                            </span>
+                          </span>
+                          {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                        </button>
+                      ))}
+                    </>
+                  );
+                  return (
+                    <>
+                      {renderGroup(t.modelGroupPreset, preset, false)}
+                      {renderGroup(t.modelGroupCustom, custom, preset.length > 0)}
+                    </>
+                  );
+                })()}
                 {canManageModels && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
@@ -2140,7 +2159,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           multiline: false,
         });
       };
-      const renderModelRows = models => models.length ? models.map(m => {
+      const renderModelRows = (models, totalCount) => models.length ? models.map(m => {
+        const total = totalCount != null ? totalCount : models.length;
         const isActive = m.id === activeModelId;
         const isLocal = isLocalModel(m);
         const isReadonly = isReadonlyModel(m);
@@ -2164,7 +2184,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </div>
             <div className="shrink-0 flex items-center gap-2">
               {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>{settingsCopy.edit}</button>}
-              {!isReadonly && models.length > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>{settingsCopy.delete}</button>}
+              {!isReadonly && total > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>{settingsCopy.delete}</button>}
             </div>
           </div>
         );
@@ -2231,7 +2251,27 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <section className="mb-6">
             <SectionTitle>{settingsCopy.modelSection}</SectionTitle>
             <Group>
-              {renderModelRows(userModels)}
+              {(() => {
+                const { preset, custom } = groupModelsForSelector(userModels);
+                const any = preset.length > 0 || custom.length > 0;
+                return (
+                  <>
+                    {!any && renderModelRows([], userModels.length)}
+                    {preset.length > 0 && (
+                      <>
+                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.modelGroupPreset}</div>
+                        {renderModelRows(preset, userModels.length)}
+                      </>
+                    )}
+                    {custom.length > 0 && (
+                      <>
+                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold ${preset.length > 0 ? `border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'} ` : ''}${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.modelGroupCustom}</div>
+                        {renderModelRows(custom, userModels.length)}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
               <button data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
                 className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
                 <Plus size={18} />

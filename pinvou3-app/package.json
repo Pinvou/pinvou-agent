@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -31,6 +31,7 @@
     "test:update-notice": "node tests/update_notice_logic.test.js",
     "test:diff-parser": "node tests/unified_diff_parser.test.js",
     "test:file-icon-theme": "node tests/file_icon_theme.test.js",
+    "test:model-catalog-grouping": "node tests/model_catalog_grouping.test.js",
     "test:diff-ui": "node tests/diff_viewer_ui_smoke.mjs",
     "test:code-viewer-ui": "node tests/code_viewer_modal_smoke.mjs",
     "test:code-viewer-diff-ui": "node tests/code_viewer_diff_smoke.mjs",
@@ -80,7 +81,7 @@
     "test:design-runtime": "node tests/design_runtime_logic.test.js",
     "test:design-changes": "node tests/design_changes_logic.test.js",
     "test:scene-capabilities": "node tests/scene_capabilities_logic.test.js",
-    "test": "npm run test:update-notice && npm run test:diff-parser && npm run test:file-icon-theme && npm run test:markdown && npm run test:marketplace-oauth && npm run test:composer-tools && npm run test:codex-acp && npm run test:model-reasoning && npm run test:session-management && npm run test:pinvou-mode-state && npm run test:pinvou-scene-sidecar && npm run test:design-runtime && npm run test:design-changes && npm run test:scene-capabilities && npm run test:chat-input-limit && npm run test:assistant-message-actions && npm run test:chat-error-isolation && npm run test:attachment-drop && npm run test:voice-input && npm run test:voice-asr-cancel && npm run test:bridge-protocol && npm run test:web-access-contract && npm run test:web-access-desktop-proxy && npm run test:web-asset-base-path && npm run test:ui-language && npm run test:web-bootstrap && npm run test:api-key-gate && npm run test:artifact-deliverable && npm run test:artifact-preview && npm run test:scheduled && npm run test:windows-runtime && npm run test:workflow-scheduler-contract && npm run test:tauri-layout && npm run test:tauri-effective-config && npm run test:connector-online-install && npm run test:web-template-packaging && npm run test:macos-phase2 && npm run test:pet-animation && npm run test:pet-registry && npm run test:pet-active && npm run test:pet-selector-contract && npm run test:pet-state && npm run test:pet-card-state && npm run test:pet-reply && npm run test:pet-scheduled-notice && npm run test:pet-interaction && npm run test:pet-activation-guard && npm run test:pet-navigation && npm run test:pet-bootstrap && npm run validate:pet-assets",
+    "test": "npm run test:update-notice && npm run test:diff-parser && npm run test:file-icon-theme && npm run test:markdown && npm run test:marketplace-oauth && npm run test:composer-tools && npm run test:codex-acp && npm run test:model-reasoning && npm run test:session-management && npm run test:pinvou-mode-state && npm run test:pinvou-scene-sidecar && npm run test:design-runtime && npm run test:design-changes && npm run test:scene-capabilities && npm run test:chat-input-limit && npm run test:assistant-message-actions && npm run test:chat-error-isolation && npm run test:attachment-drop && npm run test:voice-input && npm run test:voice-asr-cancel && npm run test:bridge-protocol && npm run test:web-access-contract && npm run test:web-access-desktop-proxy && npm run test:web-asset-base-path && npm run test:ui-language && npm run test:web-bootstrap && npm run test:api-key-gate && npm run test:artifact-deliverable && npm run test:artifact-preview && npm run test:scheduled && npm run test:windows-runtime && npm run test:workflow-scheduler-contract && npm run test:tauri-layout && npm run test:tauri-effective-config && npm run test:connector-online-install && npm run test:web-template-packaging && npm run test:macos-phase2 && npm run test:pet-animation && npm run test:pet-registry && npm run test:pet-active && npm run test:pet-selector-contract && npm run test:pet-state && npm run test:pet-card-state && npm run test:pet-reply && npm run test:pet-scheduled-notice && npm run test:pet-interaction && npm run test:pet-activation-guard && npm run test:pet-navigation && npm run test:pet-bootstrap && npm run validate:pet-assets && npm run test:model-catalog-grouping",
     "test:ui-smoke": "node tests/ui_smoke.js",
     "test:settings-ui": "node tests/settings_ui_smoke.js",
     "test:kb-smoke": "node tests/kb_smoke.js",
