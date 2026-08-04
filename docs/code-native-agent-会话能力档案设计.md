@@ -38,13 +38,15 @@ SessionCapabilities {
 `SkillPolicy` 由 app 侧在 `build_engine_config` 时按 scope 解析：
 
 - plain 会话：`已装 − plain 禁用集`（现状语义不变）
-- 代码会话：`已装 − plain 禁用集 − code 禁用集 − code 禁用连接器的 companion skills`
+- 代码会话：`已装 − code 禁用集 − code 禁用连接器的 companion skills`
+
+语义采用**替换**而非减法（评审已敲定）：code scope 的 skill 禁用集独立于 plain，与连接器工具现有的 scope 语义（`shape_disallowed_tools` 替换式）对齐——「plain 关、code 开」成立，code 侧开关不反向污染 plain。安全默认由「code 未初始化时连接器（含 companion skills）全禁」承担，不依赖 plain 打底。code scope 中普通 skill 的初始默认：未操作过即为启用（`skill:` 条目只在用户显式关闭时落盘）。
 
 ### 2.1 fork 侧改动（均为 fork 私有代码，无上游同步负担）
 
 1. **catalogue 按档案过滤**：`render_skills_block` 接受会话级禁用集（经 EngineConfig / session context 携带），会话未列出的 skill 不渲染进 `## Skills`。模型不知路径，`read_file` 侧路自然封死——**这是封口点**。
 2. **`load_skill` 按档案判定**：`ToolContext` 携带会话上下文，执行时查会话档案而非全局 RwLock（纵深防御，防路径被猜测）。
-3. **全局 `DISABLED_SKILLS` 退役为默认值**：无档案的会话（ACP、既有链路）维持现状语义，兼容不破坏。
+3. **全局 `DISABLED_SKILLS` 退役为默认值**：无档案的会话（ACP、既有链路）维持现状语义，兼容不破坏。有档案的会话**以会话禁用集为准（替换全局，非并集）**——若取并集，plain 禁用集会穿透回代码会话，「plain 关、code 开」不成立（§2 替换语义）。
 
 ### 2.2 app 侧改动
 
