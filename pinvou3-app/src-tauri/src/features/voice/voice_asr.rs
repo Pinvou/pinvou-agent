@@ -3,20 +3,19 @@
 //! Platform runtime policy is owned by the sibling `platform` module. This module keeps
 //! platform-neutral status, transcription, model download, and Tauri command glue.
 //!
-//! 其中 model_available、download_current_model、transcribe、sha256_file、
+//! 其中 model_available、download_current_model、transcribe、
 //! model_file_verified 等函数仅被 `platform/{windows,linux}.rs` 调用;macOS 用系统
 //! Speech 框架(见 `platform/voice_asr_speech.rs`),不引用这些函数。因此它们在 macOS
 //! 编译目标下被 clippy 误报为 dead code,但删除会破坏 Windows/Linux 构建。
 #![allow(dead_code)]
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tauri::Emitter;
 
 use crate::platform::paths;
@@ -369,7 +368,7 @@ pub fn model_file_verified(path: &Path, spec: &AsrModelSpec) -> bool {
         remember_model_verification_with_metadata(path, spec, &metadata, true);
         return true;
     }
-    let verified = sha256_file(path)
+    let verified = crate::platform::hashing::sha256_file(path)
         .map(|got| got.eq_ignore_ascii_case(spec.sha256))
         .unwrap_or(false);
     remember_model_verification_with_metadata(path, spec, &metadata, verified);
@@ -402,23 +401,6 @@ fn remember_model_verification_with_metadata(
             verified,
         });
     }
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("打开校验文件失败: {e}"))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1024 * 1024];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .map_err(|e| format!("读取校验文件失败: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 /// 转码到 16k 单声道 → 调 sense-voice-main → 清洗输出。供 transcribe_voice_audio 调用。
@@ -607,7 +589,7 @@ mod tests {
         std::fs::write(&file, b"abc").unwrap();
 
         assert_eq!(
-            sha256_file(&file).unwrap(),
+            crate::platform::hashing::sha256_file(&file).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
 
