@@ -190,11 +190,6 @@ pub async fn download_asr_model(
             emit_download_cancelled(app);
             return Err("已取消".to_string());
         }
-        // 校验阶段事件:helper 内部完成下载→sha256 校验→原子 rename。
-        let _ = app.emit(
-            "voice_asr:progress",
-            serde_json::json!({ "stage": "verify" }),
-        );
         // 进度节流:每 1 MiB 或到达 total 才 emit(与原 download_model_from_url 一致)。
         // helper 把真实 Content-Length(或缺失时回退到 max_bytes=expected_size)作为
         // 进度 total 传入闭包,这里直接透传,不改写。helper 的 on_progress 是
@@ -222,6 +217,16 @@ pub async fn download_asr_model(
         // 这里给一个 generous 上限(预期大小的 2 倍,且不少于 16 MiB),仅挡离谱大文件,
         // 不影响真实模型(expected_size 即其精确大小)。
         let max_bytes = spec.expected_size.max(16 * 1024 * 1024) * 2;
+        // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
+        // sync_all 后、sha256_file 前调用此闭包)。frontend 据此从下载进度(0–95%)
+        // 切到「校验中」(96%),不再出现 96%→0% 倒退。
+        let app_for_verify = app.clone();
+        let on_pre_verify: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            let _ = app_for_verify.emit(
+                "voice_asr:progress",
+                serde_json::json!({ "stage": "verify" }),
+            );
+        }));
         let req = crate::platform::download::DownloadRequest {
             url: &url,
             dest: &dest,
@@ -230,6 +235,7 @@ pub async fn download_asr_model(
             max_bytes,
             is_cancelled,
             on_progress,
+            on_pre_verify,
         };
         match crate::platform::download::download_to_part_with_verify(req).await {
             Ok(()) => {
