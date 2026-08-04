@@ -6,7 +6,7 @@ import { CodeViewerModal } from '../../src/features/codex/CodeViewerModal.jsx';
 // diff 模式：只传 WorkspaceDiff，preview 为空；弹窗内部适配为文本预览并强制 diff 高亮。
 const diff = {
   relativePath: 'src/main.py',
-  text: '# 已暂存\ndiff --git a/src/main.py b/src/main.py\n@@ -1,2 +1,3 @@\n-print(1)\n+print(2)\n',
+  text: '# 已暂存\ndiff --git a/src/main.py b/src/main.py\n--- a/src/main.py\n+++ b/src/main.py\n@@ -1,2 +1,3 @@\n-print(1)\n+print(2)\n',
   truncated: true,
 };
 

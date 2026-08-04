@@ -71,6 +71,17 @@ try {
       additionCount: body.querySelectorAll('.hljs-addition').length,
       deletionCount: body.querySelectorAll('.hljs-deletion').length,
       metaCount: body.querySelectorAll('.hljs-meta').length,
+      commentCount: body.querySelectorAll('.hljs-comment').length,
+      commentText: [...body.querySelectorAll('.hljs-comment')].map(el => el.textContent).join('\n'),
+      headerOld: [...body.querySelectorAll('.hljs-diff-file-header.old')].map(el => el.textContent).join('\n'),
+      headerNew: [...body.querySelectorAll('.hljs-diff-file-header.new')].map(el => el.textContent).join('\n'),
+      headerColors: {
+        old: getComputedStyle(body.querySelector('.hljs-diff-file-header.old')).color,
+        new: getComputedStyle(body.querySelector('.hljs-diff-file-header.new')).color,
+        oldBg: getComputedStyle(body.querySelector('.hljs-diff-file-header.old')).backgroundColor,
+        addRow: getComputedStyle(body.querySelector('.hljs-addition')).color,
+        delRow: getComputedStyle(body.querySelector('.hljs-deletion')).color,
+      },
       truncatedBanner: body.innerText.includes('内容过大'),
       revealButtons: [...modal.querySelectorAll('button[title="在文件管理器中显示"]')].length,
       openButtons: [...modal.querySelectorAll('button[title="用系统应用打开"]')].length,
@@ -84,7 +95,23 @@ try {
   assert(initial.languageBadge === 'Diff', '语言徽标应为 Diff', initial.languageBadge);
   assert(initial.hasDiffCode, 'diff 高亮 code.hljs.language-diff 未渲染', initial);
   assert(initial.additionCount > 0 && initial.deletionCount > 0, 'diff 语法高亮 +/− token 缺失', initial);
-  assert(initial.metaCount > 0, 'diff 头/hunk 行 meta 着色缺失', initial);
+  assert(initial.metaCount > 0, 'diff hunk 行 meta 着色缺失', initial);
+  assert(initial.commentCount > 0, 'diff --git/index 头行应为 comment', initial);
+  assert(
+    initial.headerOld.includes('--- a/src/main.py') && initial.headerNew.includes('+++ b/src/main.py'),
+    '---/+++ 文件头行应渲染为红绿文件头（hljs-diff-file-header old/new）',
+    { headerOld: initial.headerOld, headerNew: initial.headerNew },
+  );
+  assert(
+    initial.headerColors.old === initial.headerColors.delRow && initial.headerColors.new === initial.headerColors.addRow,
+    '文件头文字色应与修改行一致（--- 红 / +++ 绿），且无背景块',
+    initial.headerColors,
+  );
+  assert(
+    initial.headerColors.oldBg === 'rgba(0, 0, 0, 0)' || initial.headerColors.oldBg === 'transparent',
+    '文件头行不得带修改块背景',
+    initial.headerColors.oldBg,
+  );
   assert(initial.truncatedBanner, '截断提示条缺失', initial);
   assert(initial.revealButtons === 0 && initial.openButtons === 0, 'diff 模式不应有 reveal/open 按钮', initial);
   assert(initial.hasNewWindowButton, '「在新窗口打开」按钮缺失', initial);
