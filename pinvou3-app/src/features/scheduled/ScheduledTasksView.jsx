@@ -195,7 +195,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const menu = open && effectiveMenuStyle && typeof document !== 'undefined' ? createPortal(
         <div ref={menuRef} role="listbox" aria-label={ariaLabel} aria-multiselectable={multiple || undefined}
           className={`fixed z-[1000] overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 border-[#DFE1E5] bg-white dark:border-[#3A3B3E] dark:bg-[#242528]`}
-          style={{ ...effectiveMenuStyle, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
+          style={{ ...effectiveMenuStyle, // isDark dynamic-value: 保留 — boxShadow 复杂多停 + effectiveMenuStyle 运行时定位
+            boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
           {(options || []).map(option => {
             const active = multiple ? selectedValues.includes(option.value) : option.value === value;
             const lastRequiredSelection = multiple && active && selectedValues.length <= minSelected;
@@ -335,11 +336,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         };
       }, [open]);
 
+      // isDark dynamic-value: 保留 — surface 供 linear-gradient(模板插值)用;boxShadow 复杂多停保留。
       const surface = isDark ? '#242528' : '#FFFFFF';
       const wheel = open && menuStyle && typeof document !== 'undefined' ? createPortal(
         <div ref={menuRef} data-testid={`${testId}-wheel`} role="dialog" aria-label={ariaLabel}
-          className={`fixed z-[1000] flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 border-[#DFE1E5] dark:border-[#3A3B3E]`}
-          style={{ ...menuStyle, background: surface, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
+          className={`fixed z-[1000] flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 border-[#DFE1E5] bg-[#FFFFFF] dark:border-[#3A3B3E] dark:bg-[#242528]`}
+          style={{ ...menuStyle, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
           <style>{'[data-wheel-col]::-webkit-scrollbar{display:none}'}</style>
           <div aria-hidden="true" className={`pointer-events-none absolute inset-x-2 z-0 rounded-[9px] bg-black/[0.05] dark:bg-white/[0.08]`}
             style={{ top: 8 + (WHEEL_VISIBLE_H - WHEEL_ITEM_H) / 2, height: WHEEL_ITEM_H }} />
@@ -378,7 +380,6 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const loading = !!appState.scheduledTaskLoading;
       const busyAction = appState.scheduledTaskBusyAction || null;
       const error = appState.scheduledTaskError || null;
-      const isDark = theme === 'dark';
       const scheduledCopy = t.uiScheduled;
       const weekdayOptions = WEEKDAY_OPTIONS.map((option, index) => ({
         ...option,
@@ -471,7 +472,6 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }));
       const selected = tasks.find(task => task.id === effectiveSelectedId) || null;
       const detail = selectedDetail && selected && selectedDetail.id === selected.id ? selectedDetail : selected;
-      const accent = isDark ? '#0A84FF' : '#007AFF';
       const bodyText = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
       const fmtDateTime = (value) => {
         if (!value) return scheduledCopy.notScheduled;
@@ -1235,12 +1235,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     </span>
                     {task.isRunning && (
                       <span data-testid="scheduled-task-running" aria-label={scheduledCopy.running}
-                        className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2"
-                        style={{ borderColor: accent, borderTopColor: 'transparent' }} />
+                        className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[#007AFF] border-t-transparent dark:border-[#0A84FF]" />
                     )}
                     {task.hasUnreadRuns && (
                       <span data-testid="scheduled-task-unread" aria-label={scheduledCopy.unread}
-                        className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+                        className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
                     )}
                   </span>
                 </span>
@@ -1413,11 +1412,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                           <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center">
                             {['queued', 'running'].includes(item.status) ? (
                               <span data-testid="scheduled-run-running" aria-label={scheduledCopy.runInProgress}
-                                className="h-3 w-3 shrink-0 animate-spin rounded-full border-2"
-                                style={{ borderColor: accent, borderTopColor: 'transparent' }} />
+                                className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[#007AFF] border-t-transparent dark:border-[#0A84FF]" />
                             ) : item.unread ? (
                               <span data-testid="scheduled-run-unread" aria-label={scheduledCopy.unread}
-                                className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+                                className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
                             ) : (
                               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.status === 'failed' ? '#FF3B30' : '#8E8E93' }} />
                             )}

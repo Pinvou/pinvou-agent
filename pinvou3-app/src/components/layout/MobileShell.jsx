@@ -48,7 +48,6 @@ const MobileTabBar = ({ theme, tabs }) => {
 };
 
 const MobileMoreSheet = ({ theme, title, items, onClose }) => {
-  const isDark = theme === 'dark';
   return createPortal(
     <div data-testid="mobile-more-sheet" className="fixed inset-0 z-[70] flex flex-col justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
@@ -64,7 +63,7 @@ const MobileMoreSheet = ({ theme, title, items, onClose }) => {
                 : 'active:bg-black/[0.06] dark:active:bg-white/10'}`}>
               <span className="relative flex h-11 w-11 items-center justify-center rounded-full bg-[#F0F4F9] text-[#444746] dark:bg-[#333537] dark:text-[#E3E3E3]">
                 {item.icon}
-                {item.dot && <span className="absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 bg-[#EA4335]" style={{ borderColor: isDark ? '#1E1F20' : '#ffffff' }} />}
+                {item.dot && <span className="absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#ffffff] bg-[#EA4335] dark:border-[#1E1F20]" />}
               </span>
               <span className="text-[11px] leading-tight text-center">{item.label}</span>
             </button>

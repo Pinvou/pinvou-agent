@@ -8,7 +8,6 @@ import { ListRow, ProgressBar, WidgetCard } from '../workflow/WorkflowView.jsx';
 const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
 
 const ClearStatsHold = ({ theme, t, onClear }) => {
-      const isDark = theme === 'dark';
       const HOLD_MS = 850;
       const [fillPct, setFillPct] = useState(0);
       const [phase, setPhase] = useState('idle');  // idle | holding | done
@@ -55,7 +54,6 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       useEffect(() => () => { cancelAnimationFrame(rafRef.current); clearTimeout(resetTimerRef.current); }, []);
 
       const label = phase === 'done' ? t.clearDone : phase === 'holding' ? t.clearHolding : t.clearHold;
-      const fillColor = isDark ? 'rgba(220,47,68,0.24)' : '#fce7ea';
       const toneClass = phase === 'done'
         ? 'text-[#1f9d51] border-[#bfe7cc] dark:text-[#93D5A6] dark:border-[#2c5234]'
         : phase === 'holding'
@@ -77,8 +75,8 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
           className={`relative overflow-hidden flex-shrink-0 inline-flex items-center text-[13px] font-medium px-4 py-2 rounded-[9px] border select-none transition-colors ${toneClass} bg-white dark:bg-[#1a1b1c]`}
         >
           <span
-            className="absolute left-0 top-0 bottom-0 z-0"
-            style={{ width: fillPct + '%', background: fillColor, transition: activeRef.current ? 'none' : 'width .22s ease' }}
+            className="absolute left-0 top-0 bottom-0 z-0 bg-[#fce7ea] dark:bg-[rgba(220,47,68,0.24)]"
+            style={{ width: fillPct + '%', transition: activeRef.current ? 'none' : 'width .22s ease' }}
           ></span>
           <span className="relative z-[1] inline-flex items-center gap-1.5">
             <RotateCcw size={15} style={{ animation: phase === 'done' ? 'tsSpinner .5s ease' : 'none' }} />
@@ -459,6 +457,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
         if (modelClearTimerRef.current) clearTimeout(modelClearTimerRef.current);
       }, []);
 
+      // isDark dynamic-value: 保留 — 配色作为 color prop 喂给图表子组件(SVG/ring/bar),非 inline-style 三元式。
       const monitorColors = {
         blue: isDark ? '#0A84FF' : '#007AFF',
         green: isDark ? '#30D158' : '#34C759',
@@ -497,8 +496,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
           <div className="min-h-full bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] p-4 sm:p-6 lg:p-10 font-sans selection:bg-blue-500/30 relative overflow-hidden transition-colors duration-500">
             <div className="max-w-[1400px] mx-auto relative z-10 space-y-6">
               <header
-                className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 pb-6 mb-4 border-b"
-                style={{ borderColor: isDark ? 'rgba(255,255,255,.10)' : 'rgba(198,198,200,.55)' }}
+                className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 pb-6 mb-4 border-b border-[rgba(198,198,200,.55)] dark:border-[rgba(255,255,255,.10)]"
               >
                 <div>
                   <h1 className="text-[26px] font-normal tracking-tight text-black/90 dark:text-white/90 max-sm:hidden">{t.sysStatus}</h1>
