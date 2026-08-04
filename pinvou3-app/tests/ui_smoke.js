@@ -48,6 +48,7 @@ function injectSource() {
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
     window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false};
+    window.__KB_MODEL_DOWNLOAD_ARGS__=[];
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
@@ -157,6 +158,11 @@ function injectSource() {
         case 'session_remove_mounted_collection': MOUNTED_COLLECTIONS=MOUNTED_COLLECTIONS.filter(function(item){return item.collectionId!==args.collectionId;}); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
         case 'session_unmount_collection': MOUNTED_COLLECTIONS=[]; MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
         case 'kb_model_status': return Promise.resolve(window.__KB_MODEL_STATUS__);
+        case 'kb_model_download':
+          window.__KB_MODEL_DOWNLOAD_ARGS__.push(args||{});
+          if(!(args&&args.repair)) return Promise.reject(new Error('mock embedding load failed'));
+          window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false,failed:false,error:null};
+          return Promise.resolve(window.__KB_MODEL_STATUS__);
         case 'kb_collection_list': return Promise.resolve([
           {id:7,name:'项目资料',docCount:3},
           {id:8,name:'团队规范',docCount:5},
@@ -830,6 +836,36 @@ async function expand(page) {
   rec('③a-2 模型文件已安装但运行时未就绪时不允许挂载',
     kbRuntimeGate.disabled && kbRuntimeGate.blockedCopy && kbRuntimeGate.mountCallsUnchanged,
     JSON.stringify(kbRuntimeGate));
+  const kbRepairFlow = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    window.__KB_MODEL_STATUS__ = {
+      installed: true,
+      ready: false,
+      loading: false,
+      failed: true,
+      error: 'mock embedding load failed',
+    };
+    await window.TauriBridge.knowledge.downloadKbModel(false).catch(() => {});
+    document.querySelector('[data-nav="knowledge"]')?.click();
+    await wait(300);
+    const failedVisible = document.body.innerText.includes('Embedding 模型加载失败');
+    const repairButton = [...document.querySelectorAll('button')]
+      .find(button => (button.textContent || '').includes('重新下载并修复'));
+    repairButton?.click();
+    await wait(250);
+    const calls = window.__KB_MODEL_DOWNLOAD_ARGS__.slice();
+    return {
+      failedVisible,
+      repairFound: Boolean(repairButton),
+      repairRequested: calls.some(args => args && args.repair === true),
+      recovered: document.body.innerText.includes('AI 知识库'),
+    };
+  });
+  rec('③a-3 模型加载失败时可重新下载、验证并恢复知识库',
+    kbRepairFlow.failedVisible && kbRepairFlow.repairFound && kbRepairFlow.repairRequested && kbRepairFlow.recovered,
+    JSON.stringify(kbRepairFlow));
+  await clickText(page, '第三季度财报分析');
+  await sleep(300);
   const assistantCopy = await page.evaluate(async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

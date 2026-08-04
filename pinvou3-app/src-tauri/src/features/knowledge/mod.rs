@@ -125,6 +125,18 @@ impl KnowledgeService {
         embed::Embedder::from_env_or_dir(model_dir).map(Arc::new)
     }
 
+    /// 严格从调用方指定目录构建 embedding，不读取开发环境的模型目录覆盖。
+    /// 下载修复必须使用该入口验证候选目录，避免验证了外部目录却替换托管目录。
+    fn load_embedder_from_dir(model_dir: &Path) -> Result<Arc<embed::Embedder>, String> {
+        let name = std::env::var("PINVOU3_KB_EMBED_MODEL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| model_download::MODEL_VERSION.to_string());
+        embed::Embedder::from_dir(model_dir, &name)
+            .map(Arc::new)
+            .map_err(|error| format!("embedding 模型加载失败({}): {error}", model_dir.display()))
+    }
+
     /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
     fn install_embedder(&self, embedder: Arc<embed::Embedder>) -> bool {
         eprintln!(

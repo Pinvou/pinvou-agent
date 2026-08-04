@@ -87,18 +87,22 @@
     notify();
     try {
       var ready = await invoke("kb_model_load_after_first_frame");
+      var modelStatus = await invoke("kb_model_status").catch(function () { return null; });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         startupLoading: false,
         startupReady: !!ready,
+        status: modelStatus,
       });
       notify();
       startupMark("bridge:knowledge_embedder_async:done", "ready=" + !!ready);
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       return !!ready;
     } catch (error) {
+      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         startupLoading: false,
         startupReady: false,
+        status: failedStatus,
         error: String(error),
       });
       notify();

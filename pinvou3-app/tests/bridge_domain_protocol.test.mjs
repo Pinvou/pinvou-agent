@@ -79,12 +79,12 @@ const protocolSources = {
 };
 
 const expectedProtocolHashes = {
-  orchestration: '6d8e2a818ea4edbae35035903c5322a500ff4ede75158b8038cd2a172755c853',
+  orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
   chat: 'b03b2d41eda4498cc3b3238de18e7c6396ad5899729f62eaeecaed26a240cd91',
   dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
-  knowledge: 'f1e6bf2e21474ba5573e9411e5c5e32d63ecdb0517b42320232ccd0940a59b69',
+  knowledge: '3ae1fb7f8b4909601edb91ec1b2df83d37a3a6cc302911517c5913b557b716ca',
   memory: 'd92cbabf27c277a64b743e7af25b48d8b8b65513e33aeb0f38c906d4b300616b',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
   personas: '51ad533c7ce6147b7e66e73e41def066df1113a72001c7037be694c975900630',

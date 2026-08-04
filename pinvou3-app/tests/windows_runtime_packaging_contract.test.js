@@ -44,6 +44,22 @@ const runtimeScript = readApp(
   "scripts",
   "resolve-runtime.ps1",
 );
+const onnxRuntimeScript = readApp(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "runtime",
+  "scripts",
+  "stage-onnx-runtime.ps1",
+);
+const onnxRuntimeSmoke = readApp(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "runtime",
+  "scripts",
+  "test-onnx-runtime.ps1",
+);
 const installerHook = readApp(
   "src-tauri",
   "packaging",
@@ -136,6 +152,9 @@ assert.doesNotMatch(
 assert.doesNotMatch(runtimeScript, /Stage-NsisBootstrapper/u);
 assert.match(initScript, /git lfs pull/);
 assert.match(initScript, /--include=/);
+assert.match(initScript, /\[switch\]\$OnnxOnly/);
+assert.match(initScript, /GIT_LFS_SKIP_SMUDGE/);
+assert.match(initScript, /onnxruntime-win-x64-\*-runtime\.zip/);
 assert.match(initScript, /pinvou3-windows-runtime-\$expectedCommit/);
 assert.match(initScript, /\$previousErrorActionPreference = \$ErrorActionPreference/);
 assert.match(initScript, /\$ErrorActionPreference = "Continue"/);
@@ -147,6 +166,13 @@ assert.match(runtimeWrapper, /runtime-descriptor\.json/);
 assert.match(runtimeWrapper, /cleanupLegacyWindowsNodeStaging/);
 assert.match(runtimeWrapper, /download-on-first-use/);
 assert.match(runtimeWrapper, /onnxRuntimeDylib/);
+assert.match(runtimeWrapper, /stageWindowsOnnxRuntime/);
+assert.match(onnxRuntimeScript, /-Mode StageOnnx/);
+assert.match(runtimeScript, /Get-VerifiedOnnxManifest/);
+assert.match(runtimeScript, /Stage-OnnxRuntime/);
+assert.match(onnxRuntimeSmoke, /LoadLibraryEx/);
+assert.match(onnxRuntimeSmoke, /OrtGetApiBase/);
+assert.match(releaseWorkflow, /npm run runtime:windows:onnx-smoke/);
 assert.match(installerAdapter, /bundleTargets\.includes\("nsis"\)/);
 assert.equal(
   windowsConfig.bundle.windows.nsis.installerHooks,
@@ -225,8 +251,13 @@ assert.ok(
 );
 assert.match(
   buildScript,
+  /isDev && process\.platform === "win32" \? stageWindowsOnnxRuntime\(\) : null/,
+  "Windows dev must stage only the pinned ONNX Runtime before starting Tauri",
+);
+assert.doesNotMatch(
+  buildScript,
   /\(hasTauriBuildCommand \|\| isDev\)[\s\S]*?stageWindowsRuntime\(\)/,
-  "Windows dev must stage the pinned runtime before starting Tauri",
+  "Windows dev must not stage the complete packaging runtime",
 );
 assert.match(
   buildScript,

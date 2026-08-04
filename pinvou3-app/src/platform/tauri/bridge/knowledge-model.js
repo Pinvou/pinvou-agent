@@ -10,13 +10,13 @@
     var notify = context.notify;
     var invoke = context.invoke;
   // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
-  // kb_model:progress 事件。resolve 时模型已就绪，调用方据 status.installed 收起 gate。
-  async function downloadKbModel() {
+  // kb_model:progress 事件。repair=true 时重新下载并验证候选模型，成功后原子替换旧目录。
+  async function downloadKbModel(repair) {
     if (state.kbModelSetup.downloading) return state.kbModelSetup.status;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
     notify();
     try {
-      var st = await invoke("kb_model_download");
+      var st = await invoke("kb_model_download", { repair: !!repair });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         downloading: false,
         startupLoading: false,
@@ -27,7 +27,14 @@
       notify();
       return st;
     } catch (e) {
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, error: String(e) });
+      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        downloading: false,
+        startupLoading: false,
+        startupReady: failedStatus && typeof failedStatus.ready === "boolean" ? failedStatus.ready : false,
+        status: failedStatus || state.kbModelSetup.status,
+        error: String(e),
+      });
       notify();
       throw e;
     }
