@@ -11,6 +11,8 @@ import {
   fileChangeStat,
   projectSubagentTranscript,
   resolveSubagentIdentity,
+  resolveSubagentPresentation,
+  subagentObjectiveName,
   splitSubagentTitle,
   subagentOrdinalLabel,
   subagentRoleOrdinals,
@@ -428,7 +430,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     panelSource,
-    /\(usesCustomTitle \? title\.rest : entry\.objective\) \|\| entry\.agent_id/,
+    /presentation\.task \|\| entry\.agent_id/,
     '清单行展示任务目标（起了「」名时展示去名后的正文）；无 ledger 的遗留行回退 agent_id',
   );
   assert.match(
@@ -539,6 +541,57 @@ test('模型起名：任务说明第一行「」提取为子智能体显示名',
   );
 });
 
+test('子智能体名称投影：专家池、模型 name、任务标题、agent type 依次兜底', () => {
+  const roleCards = {
+    scout: '调研专家', manager: '规划专家', builder: '执行专家', reviewer: '审查专家', general: '通用执行者',
+  };
+  const personas = [{ id: 'market', name: '市场分析师', dept: 'market' }];
+  const present = (input) => resolveSubagentPresentation({
+    personas, roleCards, agentId: 'agent_12345678', ...input,
+  });
+
+  assert.equal(
+    present({ role: 'exp-market', sessionName: 'ignored-model-name' }).name,
+    '市场分析师',
+    '专家池真名优先于模型 session name',
+  );
+  assert.equal(
+    present({ sessionName: 'research-ai-news', objective: '「提示词名称」任务' }).name,
+    'research-ai-news',
+    '模型显式 name/session_name 优先于任务首行约定',
+  );
+  assert.equal(
+    present({ sessionName: 'agent_12345678', objective: '「资料核验员」任务' }).name,
+    '资料核验员',
+    '底座用 agent_id 回填的 session_name 是占位值，继续使用任务标题',
+  );
+  assert.equal(
+    present({ agentType: 'explore', objective: '普通调研任务' }).name,
+    '普通调研任务',
+    '普通对话没起名时从模型写出的任务目标提炼名称',
+  );
+  assert.equal(present({ agentType: 'implementer', objective: '' }).name, '执行专家');
+  assert.equal(present({ agentType: 'verifier', objective: '' }).name, '审查专家');
+});
+
+test('子智能体任务名提炼：优先结构化目标、清理标签并按字符安全截断', () => {
+  assert.equal(
+    subagentObjectiveName('SCOPE: 背景\nQUESTION: 深挖两个 AI 安全事件的完整时间线'),
+    '深挖两个 AI 安全事件的完整时间线',
+  );
+  assert.equal(subagentObjectiveName('  - TASK: 核查桥接字段  '), '核查桥接字段');
+  assert.equal(
+    subagentObjectiveName('请检查这是一个非常非常长而且需要被压缩展示的子智能体任务名称', 12),
+    '请检查这是一个非常非常长…',
+  );
+});
+
+test('底座内置 role 别名映射成可读角色，不冒充自定义专家', () => {
+  assert.equal(resolveSubagentIdentity('explorer', [], 'agent_a').roleKey, 'scout');
+  assert.equal(resolveSubagentIdentity('verifier', [], 'agent_b').roleKey, 'reviewer');
+  assert.equal(resolveSubagentIdentity('builder', [], 'agent_c').roleKey, 'builder');
+});
+
 test('同角色多实例：头像按实例散列，名字按登记序编号', () => {
   const list = [
     { agent_id: 'agent_aaaaaaa1', role: 'scout' },
@@ -558,6 +611,18 @@ test('同角色多实例：头像按实例散列，名字按登记序编号', ()
     'wf-role-scout',
     '没有实例 id（如 spawn 尚未返回）时回退角色头像',
   );
+});
+
+test('无 role 的普通 agent 按 agent_type 分组编号', () => {
+  const list = [
+    { agent_id: 'agent_aaaaaaa1', agent_type: 'explore' },
+    { agent_id: 'agent_aaaaaaa2', agent_type: 'explore' },
+    { agent_id: 'agent_bbbbbbb1', agent_type: 'implementer' },
+  ];
+  const ordinals = subagentRoleOrdinals(list);
+  assert.equal(subagentOrdinalLabel(ordinals.get('agent_aaaaaaa1')), ' ①');
+  assert.equal(subagentOrdinalLabel(ordinals.get('agent_aaaaaaa2')), ' ②');
+  assert.equal(subagentOrdinalLabel(ordinals.get('agent_bbbbbbb1')), '');
 });
 
 // ── 行内专家卡（消息流内的委派可视化） ───────────────────────────────────────

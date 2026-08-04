@@ -19,7 +19,13 @@ use std::time::SystemTime;
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SubagentTranscriptSummary {
     pub agent_id: String,
+    /// 模型调用 `agent` 时可选的稳定名称。未显式起名时底座会回填 agent_id，
+    /// 前端据此忽略占位值并继续走任务标题/类型兜底。
+    pub session_name: Option<String>,
     pub role: Option<String>,
+    /// 底座执行类型（general/explore/plan/review/implementer/verifier/custom）。
+    /// 普通对话通常不传 role/profile，界面靠它避免全部显示成“通用执行者”。
+    pub agent_type: Option<String>,
     pub status: Option<String>,
     pub error: Option<String>,
     pub done: bool,
@@ -234,9 +240,13 @@ pub fn list(
         // 展示语义已经准确，清单轮询不为它们付整读成本。
         let blocked = done && !failed && transcript.as_deref().is_some_and(transcript_is_blocked);
         let objective = record.spec.objective.trim();
+        let session_name = record.spec.session_name.clone();
+        let agent_type = record.spec.agent_type.as_str().to_string();
         out.push(SubagentTranscriptSummary {
             agent_id,
+            session_name,
             role: record.spec.role.clone(),
+            agent_type: Some(agent_type),
             status: Some(
                 deepseek_tui::tools::subagent::agent_worker_status_name(status).to_string(),
             ),
@@ -254,7 +264,9 @@ pub fn list(
     for (agent_id, _path) in transcripts {
         out.push(SubagentTranscriptSummary {
             agent_id,
+            session_name: None,
             role: None,
+            agent_type: None,
             status: None,
             error: None,
             done: false,
@@ -411,6 +423,7 @@ mod tests {
                 "spec": {
                     "worker_id": "agent_a",
                     "run_id": "workflow-run",
+                    "session_name": "build-report",
                     "objective": "执行任务",
                     "role": "builder",
                     "agent_type": "general",
@@ -447,7 +460,9 @@ mod tests {
             listed,
             vec![SubagentTranscriptSummary {
                 agent_id: "agent_a".to_string(),
+                session_name: None,
                 role: None,
+                agent_type: None,
                 status: None,
                 error: None,
                 done: false,
@@ -591,6 +606,8 @@ mod tests {
         let listed = list(&ws, Some(0)).expect("list");
         assert_eq!(listed.len(), 1, "没有 transcript 也必须出现在清单里");
         assert_eq!(listed[0].agent_id, "agent_a");
+        assert_eq!(listed[0].session_name.as_deref(), Some("build-report"));
+        assert_eq!(listed[0].agent_type.as_deref(), Some("general"));
         assert_eq!(listed[0].status.as_deref(), Some("starting"));
         assert_eq!(listed[0].objective.as_deref(), Some("执行任务"));
         assert!(!listed[0].has_transcript, "面板据此显示排队中而不是空任务");
@@ -602,6 +619,7 @@ mod tests {
         let spec = |id: &str, objective: &str| {
             serde_json::json!({
                 "worker_id": id, "run_id": "workflow-run", "objective": objective,
+                "session_name": format!("lane-{id}"),
                 "role": "builder", "agent_type": "general", "model": "test-model",
                 "workspace": workspace, "context_mode": "isolated", "fork_context": false,
                 "tool_profile": "inherited", "max_steps": 4, "spawn_depth": 1,
