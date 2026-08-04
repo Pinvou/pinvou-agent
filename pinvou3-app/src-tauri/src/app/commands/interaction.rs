@@ -101,8 +101,8 @@ pub async fn set_multi_agent_mode(
         .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
     if enabled {
         // 副作用先行，全部成功才落开关；名册写盘是阻塞调用，移出异步运行
-        // 线程。不做工作区 git 化（2026-08-04 决策）：新集群默认共享工作
-        // 区，worktree 由委派提醒明确不教。
+        // 线程。App 不强制工作区 git 化；Git 准备及 shared/worktree 选择由
+        // 父模型按任务、权限与环境自主完成（ADR-0006）。
         let workspace = crate::platform::paths::session_workspace_dir(&session_id);
         let sid = session_id.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
