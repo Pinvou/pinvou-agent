@@ -96,13 +96,6 @@ pub async fn set_multi_agent_mode(
     // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
-    // 存量 `wf-` 会话（旧入口遗留形态）在引擎侧恒为开启，且工作区在专属
-    // 运行目录——这里若放行会把名册/git 化落到错误目录。前端同样隐藏开关行。
-    if crate::features::sessions::is_workflow_session_id(&session_id) {
-        return Err(format!(
-            "set_multi_agent_mode({session_id}): 旧多智能体会话恒为开启，不支持切换"
-        ));
-    }
     store
         .load(&session_id)
         .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;

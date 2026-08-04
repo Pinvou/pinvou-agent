@@ -947,15 +947,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const welcomeSessionKeyRef = useRef(null);
-      // 多智能体对话（Codex 式）：宿主会话就是当前聊天，运行面板叠加在时间线上。
-      const isWorkflowSession = !!(
-        activeSessionId && String(activeSessionId).indexOf('wf-') === 0
-      );
-      // Web 只读判定必须连会话级开关一起看：新形态多智能体会话是普通 id，
-      // 只认 wf- 前缀会让 Web 端输入框可用、发送却被后端门禁拒绝（假可用）。
+      // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
-        && (isWorkflowSession || !!(bs && bs.modeState && bs.modeState.multiAgent));
+        && !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {

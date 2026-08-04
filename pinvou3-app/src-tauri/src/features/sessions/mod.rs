@@ -376,10 +376,10 @@ impl SessionStore {
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
         for metadata in sessions {
-            // Scheduled sessions and workflow sessions both own additional
-            // records outside sessions/. Generic chat cleanup must not delete
-            // only the transcript and strand the other half of their history.
-            if metadata.id.starts_with("sched-") || is_workflow_session_id(&metadata.id) {
+            // Scheduled sessions own additional records outside sessions/.
+            // Generic chat cleanup must not delete only the transcript and
+            // strand the other half of their history.
+            if metadata.id.starts_with("sched-") {
                 continue;
             }
             chat_count += 1;
@@ -697,14 +697,6 @@ impl SessionStore {
         }
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
-        }
-        // 旧 wf- 运行继续使用独立工作区；执行根与账本根保持一致。
-        if is_workflow_session_id(id) {
-            let workspace = paths::agent_run_workspace_dir(id);
-            return Ok(SessionRoots {
-                execution: workspace.clone(),
-                ledger: workspace,
-            });
         }
         let bound_project_root = self
             .execution_root_resolver
@@ -1304,52 +1296,6 @@ impl SessionStore {
                 Ok(()) => error,
                 Err(rollback_error) => {
                     anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
-                }
-            });
-        }
-        Ok(session)
-    }
-
-    /// 新建一次工作流运行的宿主会话（对话列表里的「多智能体对话」）。
-    ///
-    /// 与 [`Self::create_new`] 的区别只有两点：id 带 `wf-` 前缀（据此让 engine
-    /// 走工作流配置、列表加徽标、删除级联清运行目录），工作区路径落在该 run
-    /// 自己的目录下，实际目录由 multiagent 台账创建，避免 Session 保存失败时
-    /// 先留下孤儿目录。标题直接用用户诉求——它在列表里就是这次运行的名字。
-    #[cfg(test)]
-    pub(crate) fn create_workflow_run(
-        &self,
-        brief: &str,
-        model: String,
-        model_id: Option<String>,
-    ) -> Result<SavedSession> {
-        let id = format!("{WORKFLOW_SESSION_PREFIX}{}", generate_session_id());
-        let workspace = paths::agent_run_workspace_dir(&id);
-        let mut session = create_saved_session_with_id_and_mode(
-            id.clone(),
-            &[],
-            &model,
-            &workspace,
-            0,
-            None,
-            None,
-        );
-        let mut title: String = brief.trim().chars().take(24).collect();
-        if title.is_empty() {
-            title = "多智能体对话".to_string();
-        }
-        session.metadata.title = title;
-        // 先提交模型 sidecar、再公开 Session JSON：进程若在两次原子写之间退出，
-        // 最多留下会被启动清理的无主 sidecar，不会留下重启后静默换模型的会话。
-        if let Some(mid) = model_id {
-            self.set_session_model_id(&id, Some(mid))?;
-        }
-        if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback workflow Session {id}: {rollback_error:#}")
                 }
             });
         }
@@ -2538,14 +2484,6 @@ impl SessionStore {
 ///
 /// 与 `sched-` 同源的隔离手法：宿主会话存在持久层并进入对话列表，但仍由
 /// 工作流入口拥有；前缀驱动专用引擎配置、徽标与级联清理。
-pub const WORKFLOW_SESSION_PREFIX: &str = "wf-";
-
-/// 该 id 是否属于一次工作流运行的宿主会话。
-#[must_use]
-pub fn is_workflow_session_id(id: &str) -> bool {
-    id.starts_with(WORKFLOW_SESSION_PREFIX)
-}
-
 pub(crate) fn validate_session_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {
@@ -3690,46 +3628,6 @@ mod tests {
         assert!(store.scheduled_session_exists(&scheduled.metadata.id));
         assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
         assert_eq!(store.list().expect("chat list").len(), 50);
-    }
-
-    #[test]
-    fn chat_retention_does_not_orphan_workflow_storage() {
-        let (store, _g) = isolated_store();
-        let workflow_id = "wf-retained";
-        let workflow = create_saved_session_with_id_and_mode(
-            workflow_id.to_string(),
-            &[],
-            "/chat-model",
-            &std::env::temp_dir(),
-            0,
-            None,
-            Some("yolo"),
-        );
-        store
-            .save_session_atomic(&workflow)
-            .expect("persist workflow transcript");
-
-        for index in 0..51 {
-            let mut chat = store
-                .create_new(
-                    "/chat-model".to_string(),
-                    None,
-                    std::env::temp_dir().join(format!("chat-{index}")),
-                )
-                .expect("create chat");
-            chat.metadata.title = format!("chat {index}");
-            store.save(&chat).expect("persist chat");
-        }
-
-        assert!(
-            store.load(workflow_id).is_ok(),
-            "generic chat retention must not delete only the workflow transcript"
-        );
-        assert_eq!(
-            store.list().expect("conversation list").len(),
-            MAX_SESSIONS_PER_KIND + 1,
-            "workflow history has its own retention lifecycle"
-        );
     }
 
     #[test]
@@ -5027,59 +4925,8 @@ mod tests {
     ///
     /// 这是「工作流运行」术语（docs/multiagent/glossary.md）在存储层的落点：
     /// 宿主会话是运行的入口与档案，历史、重开、删除全部复用会话列表交互。
-    #[test]
-    fn workflow_run_appears_in_the_conversation_list_titled_by_brief() {
-        let (store, _guard) = isolated_store();
-        let chat = store
-            .create_new("m".into(), None, std::env::temp_dir())
-            .expect("create chat");
-        let run = store
-            .create_workflow_run("调研一下国内竞品格局", "m".into(), None)
-            .expect("create workflow run");
-
-        assert!(is_workflow_session_id(&run.metadata.id));
-        let listed = store.list().expect("list");
-        let ids: Vec<&str> = listed.iter().map(|m| m.id.as_str()).collect();
-        assert!(
-            ids.contains(&chat.metadata.id.as_str()),
-            "普通对话应出现在列表里"
-        );
-        assert!(
-            ids.contains(&run.metadata.id.as_str()),
-            "多智能体对话必须出现在对话列表里，实际: {ids:?}"
-        );
-        let entry = listed.iter().find(|m| m.id == run.metadata.id).unwrap();
-        assert_eq!(
-            entry.title, "调研一下国内竞品格局",
-            "列表里的名字必须是用户诉求，而不是千篇一律的占位标题"
-        );
-        assert!(store.load(&run.metadata.id).is_ok(), "宿主会话可正常加载");
-        // 定时任务会话仍然不进列表——它归定时任务界面所有。
-        assert!(!ids.iter().any(|id| id.starts_with("sched-")));
-    }
 
     /// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
-    #[test]
-    fn workflow_run_workspace_is_owned_by_the_run() {
-        let (store, _guard) = isolated_store();
-        let run = store
-            .create_workflow_run("测试运行", "m".into(), None)
-            .expect("create workflow run");
-        let id = run.metadata.id.clone();
-
-        let workspace = store.execution_workspace(&id).expect("execution workspace");
-        assert_eq!(workspace, paths::agent_run_workspace_dir(&id));
-        assert!(
-            !workspace.exists(),
-            "Session 只声明归属路径，工作区必须由运行台账事务创建: {}",
-            workspace.display()
-        );
-        assert!(
-            !workspace.starts_with(paths::sessions_root()),
-            "工作流运行的工作区不应落在 sessions/ 下: {}",
-            workspace.display()
-        );
-    }
 
     #[test]
     fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
@@ -5103,14 +4950,5 @@ mod tests {
             Some("old-model"),
             "failed persistence must not leave a memory-only model choice"
         );
-    }
-
-    /// 前缀判定只认工作流运行，不误伤普通会话与定时运行。
-    #[test]
-    fn workflow_session_prefix_does_not_capture_other_kinds() {
-        assert!(is_workflow_session_id("wf-abc123"));
-        assert!(!is_workflow_session_id("sched-abc123"));
-        assert!(!is_workflow_session_id("abc123"));
-        assert!(!is_workflow_session_id(""));
     }
 }

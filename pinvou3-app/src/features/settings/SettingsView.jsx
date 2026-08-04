@@ -484,9 +484,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const canSwitchModels = can('sessionModelSwitch');
       // 多智能体模式 = 模型列表下方的会话级开关（ADR-0006）。状态权威在
       // 后端 mode_state，这里只读 bs 镜像；翻转后 bridge 回写权威状态。
-      // 存量 wf- 会话（旧入口遗留形态）恒为开启且不支持切换，不渲染开关行。
       const canMultiAgent = can('multiAgent');
-      const legacyMultiAgentSession = !!(bs && bs.activeSessionId && String(bs.activeSessionId).indexOf('wf-') === 0);
       const multiAgentOn = !!(bs && bs.modeState && bs.modeState.multiAgent);
       const multiAgentCopy = (t && t.uiMultiAgent) || {};
       // 防重入（复核点名）：后端事务完成前再点会带着旧状态重复提交，
@@ -574,7 +572,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     </>
                   );
                 })()}
-                {canMultiAgent && !legacyMultiAgentSession && (
+                {canMultiAgent && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                     <button type="button" data-testid="multiagent-toggle" onClick={toggleMultiAgent}

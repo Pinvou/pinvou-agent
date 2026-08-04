@@ -400,15 +400,10 @@ pub async fn delete_session(
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
-            let result = if crate::features::sessions::is_workflow_session_id(&id) {
-                pool.delete_workflow_session(&id)
-                    .await
-                    .map_err(|error| format!("清理工作流失败（{error:#}），可重试"))
-            } else {
-                pool.delete_chat_session(&id)
-                    .await
-                    .map_err(|error| format!("delete_session({id}): {error:#}"))
-            };
+            let result = pool
+                .delete_chat_session(&id)
+                .await
+                .map_err(|error| format!("delete_session({id}): {error:#}"));
             if result.is_ok() {
                 acp_pool
                     .agents()

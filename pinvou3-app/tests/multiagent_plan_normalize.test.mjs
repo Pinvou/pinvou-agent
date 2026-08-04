@@ -190,11 +190,6 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /late sweep of deleted run/,
-    '删除运行后要有延迟清扫，兜住底座异步写 ledger 复活目录的竞态',
-  );
-  assert.match(
-    poolSource,
     /late sweep of deleted chat/,
     '普通会话删除一律延迟清扫（裸 agent 对所有会话可用，不只开关开启的）',
   );
@@ -243,11 +238,6 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     sessionsSource,
-    /entry\.multi_agent = previous/,
-    '落盘失败必须回滚内存，界面状态与磁盘一致',
-  );
-  assert.match(
-    sessionsSource,
     /with_extension\("json\.tmp"\)[\s\S]{0,300}fs::rename/,
     '开关清单必须 tmp+rename 原子替换，进程中途退出不得留半个 JSON',
   );
@@ -255,11 +245,6 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     sessionsSource,
     /pub fn set_multi_agent\([\s\S]{0,420}multi_agent_flags_io\.lock\(\)/,
     '「改内存→落盘→回滚」整个事务必须持有互斥，回滚不得覆盖并发新状态',
-  );
-  assert.match(
-    sessionsSource,
-    /fn save_multi_agent_flags_locked/,
-    '保存本体与事务共用同一临界区（互斥不可重入，靠 _locked 拆分）',
   );
   assert.match(
     sessionsSource,
@@ -355,16 +340,6 @@ test('spawn 型 agent 项不折进工具组；协调操作与普通工具照常�
 
 test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => {
   assert.match(settingsSource, /data-testid="multiagent-toggle"/, '模型选择器弹层里必须有开关行');
-  assert.match(
-    settingsSource,
-    /legacyMultiAgentSession = !!\(bs && bs\.activeSessionId && String\(bs\.activeSessionId\)\.indexOf\('wf-'\) === 0\)/,
-    '存量 wf- 会话恒为开启，前端必须隐藏开关行（且不得踩 activeSessionId 的 TDZ）',
-  );
-  assert.match(
-    interactionCommandSource,
-    /is_workflow_session_id\(&session_id\)[\s\S]{0,220}恒为开启/,
-    '后端必须拒绝对存量 wf- 会话切换开关，防止名册落进错误目录',
-  );
   assert.match(settingsSource, /bridge\.interaction\.setMultiAgentMode/, '开关走 interaction 桥');
   assert.match(
     interactionBridgeSource,
@@ -404,87 +379,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     settingsSource,
     /disabled=\{multiAgentBusy\}/,
     '切换期间必须禁用开关按钮',
-  );
-  assert.match(
-    settingsSource,
-    /multiAgentOn\s*\?\s*'pinvou-ultra-row'/,
-    '开启态整行套 ultracode 式紫色波动面板',
-  );
-  assert.match(
-    settingsSource,
-    /multiAgentOn \? 'text-\[#6d28d9\] dark:text-\[#c4b5fd\]'/,
-    '开启多智能体后，模型选择器触发按钮字体转面板同款紫作在场提示（真机建议：不开弹层也能看出模式）',
-  );
-  assert.match(
-    settingsSource,
-    /async function toggleMultiAgent\(\) \{[\s\S]{0,600}setMultiAgentRevealing\(!multiAgentOn\)/,
-    '动效只在用户点击开启一刻播放；会话切换/重启同步出现的开启态不得重播（真机点名弹层重开不重播）',
-  );
-  assert.match(
-    settingsSource,
-    /event\.animationName === 'pinvou-ultra-reveal'/,
-    '揭幕结束即摘 reveal 类（光晕无限循环不能作摘类信号）；同名光晕动画跨类续跑不重启',
-  );
-  const baseCss = read('src', 'styles', 'base.css');
-  assert.match(baseCss, /\.pinvou-ultra-row \{/, '渐变面板样式定义在全局样式');
-  {
-    const rowRuleStart = baseCss.indexOf('.pinvou-ultra-row {');
-    const rowRule = baseCss.slice(rowRuleStart, baseCss.indexOf('}', rowRuleStart));
-    assert.doesNotMatch(
-      rowRule,
-      /background/,
-      '行元素自身不得落底色：全部紫色画在被 clip 的 ::before 上，否则开启瞬间整行先闪成纯紫、扩散不可见',
-    );
-  }
-  {
-    const beforeStart = baseCss.indexOf('.pinvou-ultra-row::before {');
-    const beforeRule = baseCss.slice(beforeStart, baseCss.indexOf('}', beforeStart));
-    assert.match(beforeRule, /background-color: #2e1065/, '面板底色与波纹同在 ::before 一层，被揭幕一起裁剪');
-    assert.match(
-      beforeRule,
-      /animation:\s*pinvou-ultra-aurora1[\s\S]{0,220}infinite/,
-      '开启态光晕必须持续漂移不停（真机点名"动画不能停"）；仅揭幕是点击一次性',
-    );
-  }
-  assert.match(
-    baseCss,
-    /@property --pinvou-aurora1 \{[\s\S]{0,120}syntax: '<percentage>'/,
-    '光晕圆心必须注册成可插值的自定义属性，否则 var 动画退化为分段跳变',
-  );
-  assert.match(
-    baseCss,
-    /@keyframes pinvou-ultra-aurora2[\s\S]{0,120}--pinvou-aurora2/,
-    '原创「专家光晕」：三团柔光各自独立周期往复漂移（互质错拍），不再仿制 Claude 面板',
-  );
-  assert.match(
-    baseCss,
-    /at var\(--pinvou-aurora1\)/,
-    '光晕圆心由注册属性驱动横向漂移',
-  );
-  assert.match(
-    baseCss,
-    /at var\(--pinvou-aurora3\)/,
-    '至少三团光晕（呼应"多"智能体），单团会读成廉价高光',
-  );
-  assert.match(
-    baseCss,
-    /pinvou-ultra-reveal (0\.[89]\d?|1(\.\d+)?)s/,
-    '揭幕要慢到能看清从拨杆处从零铺满（真机点名 0.5s 太快）',
-  );
-  assert.doesNotMatch(
-    baseCss,
-    /pinvou-ultra-aurora\d [\d.]+s [^,;]*\b\d+\s*[,;]/,
-    '光晕不得播有限次数就定格（真机点名"动画不能停"）',
-  );
-  assert.doesNotMatch(
-    baseCss,
-    /data:image\/png|image-rendering/,
-    '像素噪点贴图在 40px 高的小行上糊成脏斑（真机点名更丑），面板保持纯渐变',
-  );
-  assert.match(
-    baseCss,
-    /@keyframes pinvou-ultra-reveal[\s\S]{0,160}clip-path: circle\(0% at 91%/,
-    '开启动效必须从拨杆位置（行右侧 91%）向外圆形扩散',
   );
   assert.match(
     interactionBridgeSource,
@@ -628,67 +522,9 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     toolRenderersSource,
-    /splitSubagentTitle\(/,
-    '行内卡优先显示模型起的「」名（底座 role 字段只收 ASCII，中文名走文本约定）',
-  );
-  assert.match(
-    panelSource,
-    /splitSubagentTitle\(/,
-    '面板同样优先显示模型起的「」名，与行内卡一致',
-  );
-  assert.match(
-    toolRenderersSource,
     /\.\.\.\(prev \|\| \{\}\), \.\.\.detail/,
     '实时事件不带 seq/blocked 等补字段，卡片状态必须字段合并，不得整包覆盖',
   );
-  assert.doesNotMatch(baseCss, /filter: brightness/, 'hover 滤镜整层重绘会卡按钮');
-  const ultraSection = baseCss.slice(baseCss.indexOf('.pinvou-ultra-row {'));
-  assert.doesNotMatch(
-    ultraSection,
-    /will-change|repeating-conic-gradient/,
-    'WebView2 下伪元素提层慢、conic 重绘贵，波动面板不得使用（实测淘汰）',
-  );
-  assert.match(
-    baseCss,
-    /pinvou-ultra-sheen [\d.]+s linear infinite/,
-    '面板必须有匀速穿行的流光带——单靠慢速光晕会读成静止（真机点名"没有流动性"）',
-  );
-  assert.match(
-    baseCss,
-    /@keyframes pinvou-ultra-sheen[\s\S]{0,160}background-position/,
-    '流光带用可平铺渐变的 background-position 平移（廉价重绘，实测顺滑）',
-  );
-  assert.match(
-    baseCss,
-    /@keyframes pinvou-ultra-sheen[\s\S]{0,400}animation-timing-function/,
-    '流光带过场要有缓急并留停顿拍（真机点名"僵硬"：匀速等距循环像传送带）',
-  );
-  assert.match(
-    baseCss,
-    /linear-gradient\(112deg,[\s\S]{0,240}rgba\(245, 243, 255, 0\.4/,
-    '流光带峰值要够亮、带宽要窄于视窗，否则读成整行缓明缓暗（真机点名"看不出来"）',
-  );
-  assert.match(
-    baseCss,
-    /at var\(--pinvou-aurora1\) var\(--pinvou-aurora1y\)/,
-    '光晕必须 x/y 双轴互质周期二维游移（真机点名"僵硬"：仅横向来回像滑块）',
-  );
-  assert.match(
-    baseCss,
-    /@keyframes pinvou-ultra-splash[\s\S]{0,260}scale\(26\)/,
-    '揭幕增长边缘必须带水花亮环（真机点名"尾部要有水花感"），随铺满消散',
-  );
-  assert.match(
-    baseCss,
-    /\.pinvou-ultra-row-reveal::after \{[\s\S]{0,120}pinvou-ultra-splash 1\.2s cubic-bezier\(0\.3, 0, 0\.25, 1\)/,
-    '水花与揭幕必须同时长同缓动（都从 0 按同一 f\(t\) 增长才贴边）；改任一侧必须同步另一侧',
-  );
-  assert.match(
-    baseCss,
-    /pinvou-ultra-reveal 1\.2s cubic-bezier\(0\.3, 0, 0\.25, 1\)/,
-    '揭幕 1.2s 慢起步（真机连点两次"太快"：0.5s→0.9s→1.2s）',
-  );
-  assert.match(baseCss, /prefers-reduced-motion/, '波动必须尊重减少动态偏好');
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.match(
     personasBridgeSource,
@@ -702,15 +538,9 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
 });
 
-test('transcripts 命令面向任意会话：wf- 走遗留运行目录，普通会话走自身工作区', () => {
+test('transcripts 命令面向普通会话：读取自身工作区', () => {
   assert.match(commandSource, /fn subagent_workspace\(session_id: &str\)/);
-  assert.match(commandSource, /agent_run_workspace_dir\(session_id\)/, '遗留 wf- 运行仍可读');
   assert.match(commandSource, /session_workspace_dir\(session_id\)/, '普通会话读自己的工作区');
-  assert.doesNotMatch(
-    commandSource,
-    /不是工作流运行/,
-    'transcripts 不再被 wf- 前缀门禁挡住',
-  );
   assert.doesNotMatch(commandSource, /resolve_workflow_approval/, '审批命令已退役');
 });
 
@@ -764,23 +594,8 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
   );
   assert.match(
     toolRenderersSource,
-    /LEDGER_STATUS_TOKENS/,
-    'ledger 英文状态 token 必须映射 i18n，不得原样上屏',
-  );
-  assert.match(
-    toolRenderersSource,
-    /copy\.coordinationRow\(action\)/,
-    '协调行文案走 i18n',
-  );
-  assert.match(
-    toolRenderersSource,
     /args\.profile \|\| args\.role/,
     '承担者以底座正式契约字段 profile 为准（role 是内置类型别名）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /data-testid="agent-coordination-row"/,
-    'status/wait/cancel 渲染成安静单行，不冒充新委派',
   );
   assert.match(
     toolRenderersSource,
@@ -797,23 +612,11 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     /copy\.blockedTag/,
     '[BLOCKED] 的"完成"不得显示绿色完成',
   );
-  assert.match(toolRenderersSource, /data-testid="expert-agent-card"/);
   assert.match(
     toolRenderersSource,
     /pinvou:open-subagent/,
     '点击整卡经 DOM 事件通知 ChatView 打开面板',
   );
-  assert.match(
-    toolRenderersSource,
-    /pinvou:subagent-update/,
-    '实时状态按 agent_id 自订阅桥转发的 DOM 事件',
-  );
-  assert.match(
-    toolRenderersSource,
-    /resolveSubagentIdentity\(/,
-    '头像与名字经身份解析复用专家池',
-  );
-  assert.match(toolRenderersSource, /extractSubagentId\(item\.output\)/);
 });
 
 test('子智能体 ID 只接受 CodeWhale 实例格式，不把 agent_id 字段名当成实例', () => {

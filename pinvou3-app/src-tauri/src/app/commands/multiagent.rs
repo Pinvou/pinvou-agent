@@ -4,7 +4,7 @@
 //! 见 `docs/adr/0004-多智能体编排建在底座而非既有调度器.md`。这里只剩两类东西：
 //! 子智能体执行记录的只读投影命令（行内专家卡 + 只读面板的数据源），以及
 //! 开关开启时每轮拼进用户消息前的委派提醒（`delegation_reminder`，chat 发送
-//! 链注入）。旧的独立发起命令已随会话级开关上线退役（开关在 interaction.rs）。
+//! 链注入）。旧的独立发起命令与 wf- 会话形态已整体退役（开关在 interaction.rs）。
 
 use super::prelude::*;
 
@@ -58,15 +58,8 @@ pub(crate) fn delegation_reminder() -> String {
     )
 }
 
-/// 任意会话的子智能体工作区：旧 `wf-` 运行在专属运行目录，普通会话在
-/// 自己的 session 工作区（底座 transcripts / worker ledger 都落在这里）。
+/// 会话的子智能体工作区（底座 transcripts / worker ledger 都落在这里）。
 fn subagent_workspace(session_id: &str) -> Result<std::path::PathBuf, String> {
-    if crate::features::sessions::is_workflow_session_id(session_id) {
-        if !multiagent::is_valid_run_id(session_id) {
-            return Err(format!("非法会话 id: {session_id}"));
-        }
-        return Ok(crate::platform::paths::agent_run_workspace_dir(session_id));
-    }
     if session_id.is_empty()
         || !session_id
             .chars()
