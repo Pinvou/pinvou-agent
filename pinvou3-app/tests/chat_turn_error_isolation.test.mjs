@@ -30,8 +30,13 @@ vm.runInNewContext(bridgeMessagesSource, messageSandbox, { filename: 'bridge-mes
 const modelErrors = messageSandbox.window.PinvouModelServiceErrors;
 assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
 assert.equal(modelErrors.classify('HTTP 429 quota exceeded').kind, 'quota');
+assert.equal(modelErrors.classify('HTTP 429 insufficient_quota').kind, 'quota');
+assert.equal(modelErrors.classify('insufficient_quota').kind, 'quota');
 assert.equal(modelErrors.classify('HTTP 429 too many requests').kind, 'rate_limit');
 assert.equal(modelErrors.classify('HTTP 500 insufficient balance').kind, 'billing');
+assert.equal(modelErrors.classify('permission denied while reading local file').kind, 'unknown');
+assert.equal(modelErrors.isModelServiceError('permission denied while reading local file'), false);
+assert.equal(modelErrors.isModelServiceError('insufficient_quota'), true);
 assert.match(
   modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
   /\[敏感信息已隐藏\]/,
@@ -81,6 +86,17 @@ messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   true,
 );
 assert.equal(modelErrorState.chatItems.length, 1, 'model service notices must be deduplicated');
+assert.equal(
+  messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+    { error: 'permission denied while reading local file' },
+    modelErrorState,
+    addModelErrorItem,
+    false,
+  ),
+  false,
+  'non-model-service errors must fall back to the raw chat error notice',
+);
+assert.equal(modelErrorState.chatItems.length, 1, 'non-model-service errors must not add model service notices');
 
 const terminalSandbox = { window: {}, Date };
 vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });

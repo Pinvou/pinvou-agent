@@ -24,6 +24,9 @@
       if (!raw && !error) return null;
       var helper = window.PinvouModelServiceErrors;
       if (!helper || typeof helper.build !== "function") return null;
+      if (!raw && typeof helper.isModelServiceError === "function" && !helper.isModelServiceError(error)) {
+        return null;
+      }
       return helper.build(raw || error, {
         language: state.settings && state.settings.language,
         providerLabel: helper.providerLabelFromState(state),

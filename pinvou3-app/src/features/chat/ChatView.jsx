@@ -757,6 +757,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         sessionId: bs && bs.activeSessionId,
         timelineEvents: bs && bs.turnTimeline,
         allowScheduledTaskDraft: isScheduledTaskCreationChat,
+        language: bs && bs.settings && bs.settings.language,
+        modelServiceState: bs,
       });
       const activeConversationTurn = [...conversationProjection.turns]
         .reverse()

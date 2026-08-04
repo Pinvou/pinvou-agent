@@ -199,6 +199,11 @@ try {
     chatItems,
     busy: false,
     sessionId: 'session-1',
+    language: 'en',
+    modelServiceState: {
+      currentSessionModelId: 'deepseek-main',
+      savedModels: [{ id: 'deepseek-main', preset: 'deepseek', model: 'deepseek-chat' }],
+    },
     timelineEvents: [
       { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
       {
@@ -212,7 +217,25 @@ try {
     ],
   });
   assert.equal(billingHistory.turns[2].userError.kind, 'billing');
-  assert.match(billingHistory.turns[2].userError.title, /账户余额不足/);
+  assert.match(billingHistory.turns[2].userError.title, /DeepSeek account balance is insufficient/);
+
+  const localPermissionHistory = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      {
+        turn_id: 'turn-live',
+        event: 'assistant_done',
+        timestamp: 125456,
+        ts: '1970-01-01T00:02:05Z',
+        status: 'Failed',
+        error: 'permission denied while reading local file',
+      },
+    ],
+  });
+  assert.equal(localPermissionHistory.turns[2].userError, null);
 
   const paired = pairDeepSeekTimeline([
     { turn_id: 'not-admitted', event: 'user_start', timestamp: 1, ts: '1970-01-01T00:00:00Z' },

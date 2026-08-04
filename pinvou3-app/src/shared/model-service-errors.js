@@ -99,37 +99,95 @@
     return match ? Number(match[1]) : null;
   }
 
-  function hasAny(lower, words) {
-    return words.some(function (word) { return lower.indexOf(word) >= 0; });
+  function normalizeForMatch(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function hasAny(lower, normalized, words) {
+    return words.some(function (word) {
+      var normalizedWord = normalizeForMatch(word);
+      return lower.indexOf(String(word).toLowerCase()) >= 0
+        || normalized.indexOf(normalizedWord) >= 0;
+    });
+  }
+
+  function hasProviderOrApiSignal(lower, normalized) {
+    return hasAny(lower, normalized, [
+      "api key", "model service", "language model", "llm", "sse stream request failed",
+      "openai", "deepseek", "anthropic", "claude", "moonshot", "kimi",
+      "dashscope", "qwen", "doubao", "volcengine", "glm", "zhipu", "gemini", "xai",
+    ]);
+  }
+
+  function isModelServiceError(raw) {
+    if (raw && typeof raw === "object" && raw.kind && raw.title && raw.message) return true;
+    var text = String(raw || "");
+    var lower = text.toLowerCase();
+    var normalized = normalizeForMatch(text);
+    var status = extractHttpStatus(text);
+    if ([401, 402, 403, 429].indexOf(status) >= 0) return true;
+    if (status >= 500 && status <= 599 && hasProviderOrApiSignal(lower, normalized)) return true;
+    return hasAny(lower, normalized, [
+      "sse stream request failed",
+      "api key",
+      "invalid api key",
+      "invalid token",
+      "payment required",
+      "insufficient balance",
+      "insufficient quota",
+      "quota exceeded",
+      "quota has been exceeded",
+      "exceeded your current quota",
+      "rate limit",
+      "too many requests",
+      "context length",
+      "context window",
+      "maximum context",
+      "prompt is too long",
+      "模型服务",
+      "账户余额",
+      "余额不足",
+      "欠费",
+      "额度不足",
+      "额度用尽",
+      "用量超出",
+      "请求过于频繁",
+    ]) || hasProviderOrApiSignal(lower, normalized);
   }
 
   function classify(raw) {
     var text = String(raw || "");
     var lower = text.toLowerCase();
+    var normalized = normalizeForMatch(text);
     var status = extractHttpStatus(text);
 
-    if (hasAny(lower, ["context length", "context_length", "maximum context", "prompt is too long", "context window"])) {
+    if (hasAny(lower, normalized, ["context length", "maximum context", "prompt is too long", "context window"])) {
       return { kind: "context", httpStatus: status };
     }
-    if (status === 401 || hasAny(lower, ["unauthorized", "authentication", "invalid api key", "invalid key", "invalid token", "bearer token"])) {
+    if (status === 401 || hasAny(lower, normalized, ["unauthorized", "authentication", "invalid api key", "invalid key", "invalid token", "bearer token"])) {
       return { kind: "auth", httpStatus: status };
     }
-    if (status === 403 || hasAny(lower, ["forbidden", "permission denied", "authorization", "没有访问权限", "没有权限"])) {
+    if (status === 403 || hasAny(lower, normalized, ["forbidden", "没有访问权限", "没有权限"])
+        || (hasProviderOrApiSignal(lower, normalized) && hasAny(lower, normalized, ["permission denied", "authorization", "access denied"]))) {
       return { kind: "permission", httpStatus: status };
     }
-    if (status === 402 || hasAny(lower, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
+    if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
       return { kind: "billing", httpStatus: status };
     }
-    if (hasAny(lower, ["quota exceeded", "insufficient quota", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "用量超出", "耗尽"])) {
+    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "用量超出", "耗尽"])) {
       return { kind: "quota", httpStatus: status };
     }
-    if (status === 429 || hasAny(lower, ["rate limit", "rate_limit", "too many requests", "请求过于频繁"])) {
+    if (status === 429 || hasAny(lower, normalized, ["rate limit", "too many requests", "请求过于频繁"])) {
       return { kind: "rate_limit", httpStatus: status };
     }
-    if (status >= 500 && status <= 599 || hasAny(lower, ["server error", "temporarily unavailable", "service unavailable"])) {
+    if (status >= 500 && status <= 599 || hasAny(lower, normalized, ["server error", "temporarily unavailable", "service unavailable"])) {
       return { kind: "server", httpStatus: status };
     }
-    if (hasAny(lower, ["timeout", "timed out", "dns", "connection", "network", "tls", "stream read error", "chunk decode", "连接失败"])) {
+    if (hasAny(lower, normalized, ["timeout", "timed out", "dns", "connection", "network", "tls", "stream read error", "chunk decode", "连接失败"])) {
       return { kind: "network", httpStatus: status };
     }
     return { kind: "unknown", httpStatus: status };
@@ -177,7 +235,12 @@
       || providerLabelFrom(saved)
       || providerLabelFrom(state && state.effectiveModelConfig)
       || providerLabelFrom(state && state.activeProvider)
-      || "当前模型服务";
+      || "";
+  }
+
+  function defaultProviderLabel(language) {
+    var lang = languageTag(language);
+    return lang === "en" ? "current model service" : lang === "ja" ? "現在のモデルサービス" : "当前模型服务";
   }
 
   function build(raw, options) {
@@ -189,8 +252,8 @@
     }
     var technicalDetail = redactTechnicalDetail(raw);
     var classified = classify(raw);
-    var provider = options.providerLabel || providerLabelFrom(options.provider) || "当前模型服务";
     var language = options.language || "zh-Hans";
+    var provider = options.providerLabel || providerLabelFrom(options.provider) || defaultProviderLabel(language);
     var key = {
       billing: ["billingTitle", "billingMessage", false],
       quota: ["quotaTitle", "quotaMessage", false],
@@ -221,6 +284,7 @@
   var api = {
     classify: classify,
     build: build,
+    isModelServiceError: isModelServiceError,
     noticeText: noticeText,
     redactTechnicalDetail: redactTechnicalDetail,
     providerLabelFromState: providerLabelFromState,
