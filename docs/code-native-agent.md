@@ -1,7 +1,7 @@
 # 代码模块品悟原生会话（code-native-agent）技术文档
 
-> 分支：`feat/code-native-agent`（基于 `feat/code-viewer-popup` HEAD `2c1b7d03`）
-> 周期：2026-08-01 单日完成，共 19 个节点提交。
+> 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
+> 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
 > 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
 
 ## 1. 背景与目标
@@ -64,6 +64,15 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 聊天页输入框底栏四控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode），失败显式报错。
 
 ## 4. 开发节点记录（19 个提交）
+
+> 说明：下表 hash 为作者开发期（2026-08-01）的本地节点，squash 后**不存在于本
+> 仓库**，仅供追溯阶段内容与评审思路；PR #138 实际提交为 6 个（自上而下）：
+> `feat(codex): 原生代码会话后端链路、两个根与确认卡恢复` →
+> `feat(codex): 原生代码会话前端双车道与四配置控件` →
+> `feat(codex): 原生代码会话编码专用系统提示词` →
+> `docs(codex): 归档原生代码会话技术文档` →
+> `fix(codex): 清理原生代码会话车道内存泄漏并删除重复文档注释` →
+> `fix(codex): 按审阅意见收口原生代码会话三项架构建议`。
 
 ### 阶段一：原生会话基线（方案 A）
 
