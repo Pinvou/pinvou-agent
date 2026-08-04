@@ -1,3 +1,27 @@
+import TurndownService from 'turndown';
+import { gfm } from 'turndown-plugin-gfm';
+import {
+  assistantMarkdownCopyText,
+  normalizeAssistantMessageText,
+} from './structured-assistant-content.js';
+
+let legacyHtmlConverter = null;
+
+function legacyAssistantHtmlToMarkdown(html) {
+  if (!html) return '';
+  if (!legacyHtmlConverter) {
+    legacyHtmlConverter = new TurndownService({
+      headingStyle: 'atx',
+      bulletListMarker: '-',
+      codeBlockStyle: 'fenced',
+    });
+    legacyHtmlConverter.use(gfm);
+    legacyHtmlConverter.keep(['kbd']);
+    legacyHtmlConverter.remove(['script', 'style']);
+  }
+  return legacyHtmlConverter.turndown(String(html));
+}
+
 export function fallbackCopyText(text) {
   return new Promise((resolve) => {
     if (typeof document === 'undefined' || !document.body) {
@@ -44,23 +68,13 @@ export function readClipboardText() {
   return Promise.resolve('');
 }
 
-export function normalizeAssistantMessageText(value) {
-  return String(value || '')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+export { assistantMarkdownCopyText, normalizeAssistantMessageText };
 
-export function assistantMessageText(target) {
-  if (!target) return '';
-  const sources = typeof target.querySelectorAll === 'function'
-    ? Array.from(target.querySelectorAll('[data-assistant-copy-source="true"]'))
-    : [];
-  const rendered = sources.length
-    ? sources.map(source => typeof source.innerText === 'string' ? source.innerText : source.textContent).join('\n\n')
-    : typeof target.innerText === 'string' ? target.innerText : target.textContent;
-  return normalizeAssistantMessageText(rendered);
+export function assistantItemCopyText(item) {
+  if (!item) return '';
+  const markdown = normalizeAssistantMessageText(item.text);
+  if (markdown) return assistantMarkdownCopyText(markdown);
+  return assistantMarkdownCopyText(legacyAssistantHtmlToMarkdown(item.html));
 }
 
 export function assistantResponseText(turn) {
@@ -70,9 +84,14 @@ export function assistantResponseText(turn) {
     : Array.isArray(turn.presentation)
       ? turn.presentation
       : [];
-  const messages = items
-    .filter(item => item?.type === 'agent_message' && item.phase !== 'commentary')
-    .map(item => normalizeAssistantMessageText(item.text))
+  const agentMessages = items.filter(item => item?.type === 'agent_message');
+  const messages = agentMessages
+    .filter(item => item.phase !== 'commentary')
+    .map(item => (
+      normalizeAssistantMessageText(item.copyText ?? item.text)
+      || assistantItemCopyText(item.legacyItem)
+    ))
     .filter(Boolean);
-  return normalizeAssistantMessageText(messages.length ? messages.join('\n\n') : turn.assistantText);
+  if (agentMessages.length) return normalizeAssistantMessageText(messages.join('\n\n'));
+  return normalizeAssistantMessageText(turn.assistantText);
 }

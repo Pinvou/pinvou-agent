@@ -389,6 +389,7 @@
     // Update the streaming chat item
     var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
+      item.text = context.currentStreamText;
       item.html = renderMarkdown(context.currentStreamText);
       item.streaming = true;
     } else {
@@ -397,6 +398,7 @@
       state.chatItems.push({
         id: context.currentStreamId,
         type: "assistant",
+        text: context.currentStreamText,
         html: renderMarkdown(context.currentStreamText),
         time: timeStr(),
         streaming: true,

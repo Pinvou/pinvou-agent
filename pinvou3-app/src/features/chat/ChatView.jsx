@@ -30,7 +30,17 @@ import { ConversationAttachmentBubble } from '../attachments/ConversationAttachm
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
-import { copyClipboardText, fallbackCopyText, readClipboardText } from '../conversation/message-clipboard.js';
+import {
+  assistantItemCopyText,
+  copyClipboardText,
+  fallbackCopyText,
+  readClipboardText,
+} from '../conversation/message-clipboard.js';
+import {
+  extractBalancedJson,
+  parseJsonChain,
+  parseLooseJson,
+} from '../conversation/structured-assistant-content.js';
 import {
   createPinvouModeScopeKey,
   loadPinvouModeState,
@@ -2354,49 +2364,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         paused: !!d.paused,
       };
     }
-    // 模型偶尔给 JSON 末尾多带一个逗号(trailing comma)等小瑕疵 → 严格 JSON.parse 会整段拒掉,
-    // 导致草稿卡解析失败、不出「存入卡牌池」按钮。宽松解析:先严格,失败再去掉对象/数组结尾多余
-    // 逗号重试(去尾逗号对合法 JSON 无副作用)。失败返回 null(不抛)。
-    // 从第一个 { 起按括号配平截取一个完整 JSON 对象(尊重字符串/转义),容忍对象后面多余的 }
-    // 或杂物(模型偶发多打一个右括号、或 ``` 块后还粘了别的字符)。截断(没闭合)则返回 null。
-    function extractBalancedJson(s) {
-      var i = s.indexOf('{');
-      if (i < 0) return null;
-      var depth = 0, inStr = false, esc = false;
-      for (var j = i; j < s.length; j++) {
-        var c = s.charAt(j);
-        if (inStr) {
-          if (esc) esc = false;
-          else if (c === '\\') esc = true;
-          else if (c === '"') inStr = false;
-        } else if (c === '"') inStr = true;
-        else if (c === '{') depth++;
-        else if (c === '}') { depth--; if (depth === 0) return s.slice(i, j + 1); }
-      }
-      return null;
-    }
-    // 一条完整解析链: 严格 → 去尾逗号 → 从首个 { 括号配平截取(+去尾逗号)。失败返回 null。
-    // (名字避开本文件里另一个 tryParseJson —— 那是工具结果视图用的简单版)
-    function parseJsonChain(s) {
-      try { return JSON.parse(s); } catch (e) {}
-      try { return JSON.parse(s.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
-      var bal = extractBalancedJson(s);                                        // 容忍多余右括号/尾部杂物
-      if (bal) {
-        try { return JSON.parse(bal); } catch (e) {}
-        try { return JSON.parse(bal.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {}
-      }
-      return null;
-    }
-    function parseLooseJson(raw) {
-      var v = parseJsonChain(raw);
-      if (v) return v;
-      // 最后手段: 模型偶尔把本该是普通 " 的地方(数组/对象边界处)打成转义 \",令整段 JSON 非法,
-      // 上面的链全兜不住(实例: card-question 的 options 后两项被写成 \"...\")。去掉多余转义引号
-      // 再走一遍完整链。仅对**已解析失败**的输入生效 —— 合法用了 \" 的 JSON 在 parseJsonChain(raw)
-      // 第一步就成功、走不到这里,故不受影响。
-      var deesc = raw.replace(/\\"/g, '"');
-      return deesc !== raw ? parseJsonChain(deesc) : null;
-    }
     // 扫所有 ```代码块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
     // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
@@ -2505,6 +2472,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+        const assistantCopyText = item.streaming ? '' : assistantItemCopyText(item);
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.personas.getPersonas
           && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
@@ -2513,7 +2481,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
               <div
                 ref={assistantSelectionTargetRef}
-                data-assistant-copy-source="true" className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
                 onClick={(e) => {
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
                   const a = e.target && e.target.closest && e.target.closest('a[href]');
@@ -2555,8 +2523,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: isDark ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
-              {showAssistantActions && !item.streaming && <AssistantMessageFooter>
-                <AssistantMessageActions targetRef={assistantSelectionTargetRef} copy={t.uiConversation} />
+              {showAssistantActions && assistantCopyText && <AssistantMessageFooter>
+                <AssistantMessageActions text={assistantCopyText} copy={t.uiConversation} />
                 {item.time && <span className={`text-[11px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</span>}
               </AssistantMessageFooter>}
             </div>

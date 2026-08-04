@@ -82,7 +82,12 @@ function injectSource() {
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
-        case 'get_codex_acp_timeline': return Promise.resolve([]);
+        case 'get_codex_acp_timeline': return Promise.resolve([
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:1,timestamp:'2026-08-04T01:00:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test copy layout'}]}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:3,timestamp:'2026-08-04T01:00:02Z',event:{type:'agent_message_chunk',data:{update:{content:{type:'text',text:'Codex copy layout'}}}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:4,timestamp:'2026-08-04T01:00:03Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
+        ]);
         case 'get_codex_acp_pending_permissions': return Promise.resolve([]);
         case 'get_codex_acp_pending_elicitations': return Promise.resolve([]);
         case 'list_codex_workspace': return Promise.resolve({entries:[]});
@@ -134,6 +139,10 @@ function injectSource() {
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
         case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
+        case 'get_session_timeline': return Promise.resolve([
+          {turn_id:'copy-deepseek',event:'user_start',timestamp:1000,ui_turn_index:0},
+          {turn_id:'copy-deepseek',event:'assistant_done',timestamp:3000,status:'Completed',usage:{input_tokens:12,output_tokens:4}},
+        ]);
         case 'list_shell_tasks': return Promise.resolve(window.__SHELL_JOBS__);
         case 'cancel_shell_task':
           window.__CANCEL_SHELL_ARGS__=args;
@@ -412,6 +421,46 @@ async function expand(page) {
   rec('①a-3 对话管理页正确打开 Codex 会话',
     codexManagedOpen.found && codexManagedState.view === 'codex' && codexManagedState.activeId === 'codex-1',
     JSON.stringify({ ...codexManagedOpen, ...codexManagedState }));
+
+  const codexAssistantCopy = await page.evaluate(async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async text => { window.__CODEX_ASSISTANT_COPY_TEXT__ = text; } },
+    });
+    const turn = [...document.querySelectorAll('section')]
+      .find(node => node.innerText.includes('Codex copy layout'));
+    const action = turn?.querySelector('[data-testid="assistant-message-actions"]');
+    const button = action?.querySelector('[data-testid="assistant-message-copy"]');
+    const footer = action?.closest('[data-testid="assistant-message-footer"]');
+    const children = [...(footer?.children || [])];
+    if (!button || children.length < 2) return { found: false, childCount: children.length };
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async () => { throw new Error('clipboard denied'); } },
+    });
+    document.execCommand = () => false;
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const firstRect = children[0].getBoundingClientRect();
+    return {
+      found: true,
+      copied: window.__CODEX_ASSISTANT_COPY_TEXT__ || '',
+      failureFeedback: button.textContent.trim(),
+      failureTitle: button.getAttribute('title') || '',
+      childCount: children.length,
+      sameRow: children.every(node => {
+        const rect = node.getBoundingClientRect();
+        return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;
+      }),
+    };
+  });
+  rec('①a-3b Codex 复制操作与完成状态保持同一行',
+    codexAssistantCopy.found && codexAssistantCopy.copied === 'Codex copy layout' &&
+    codexAssistantCopy.failureFeedback === '复制失败' && codexAssistantCopy.failureTitle === '复制失败' &&
+    codexAssistantCopy.sameRow,
+    JSON.stringify(codexAssistantCopy));
 
   await clickText(page, '查看全部'); await sleep(400);
   const managedActiveState = await page.evaluate(() => {
@@ -713,7 +762,8 @@ async function expand(page) {
       title: button.getAttribute('title') || '',
       singleAction: turn?.querySelectorAll('[data-testid="assistant-message-actions"]').length === 1,
       sharedFooter: Boolean(footer),
-      sameRow: footerChildren.length === 1 || footerChildren.slice(0, 2).every((node) => {
+      footerChildCount: footerChildren.length,
+      sameRow: footerChildren.length > 1 && footerChildren.every((node) => {
         const firstRect = footerChildren[0].getBoundingClientRect();
         const rect = node.getBoundingClientRect();
         return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;

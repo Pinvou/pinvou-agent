@@ -672,7 +672,6 @@ export function ConversationTurn({
   copy,
 }) {
   const c = conversationCopy(copy);
-  const assistantBodyRef = useRef(null);
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
   const waitingInput = turn.waitingInput
@@ -692,7 +691,6 @@ export function ConversationTurn({
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
   const assistantText = assistantResponseText(turn);
-  const hasAssistantResponse = Boolean(assistantText || presentation.some(item => item?.type === 'agent_message' && item.phase !== 'commentary'));
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length)
@@ -727,7 +725,7 @@ export function ConversationTurn({
             <Sparkles size={15} />
           </div>
         )}
-        <div ref={assistantBodyRef} className="min-w-0 flex-1 space-y-1">
+        <div className="min-w-0 flex-1 space-y-1">
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
@@ -755,8 +753,8 @@ export function ConversationTurn({
               />
             );
           })}
-          {!running && (hasAssistantResponse || turn.lifecycleKnown || turn.completedAt || turn.error) && <AssistantMessageFooter>
-            {hasAssistantResponse && <AssistantMessageActions targetRef={assistantText ? undefined : assistantBodyRef} text={assistantText || undefined} copy={c} />}
+          {!running && (assistantText || turn.lifecycleKnown || turn.completedAt || turn.error) && <AssistantMessageFooter>
+            {assistantText && <AssistantMessageActions text={assistantText} copy={c} />}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
               {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}

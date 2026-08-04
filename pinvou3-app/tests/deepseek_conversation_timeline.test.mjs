@@ -11,7 +11,7 @@ const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
 const conversationDir = path.join(temp, 'conversation');
 mkdirSync(conversationDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
-for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'structured-assistant-content.js']) {
   copyFileSync(
     path.join(root, 'src', 'features', 'conversation', file),
     path.join(conversationDir, file),
@@ -131,6 +131,20 @@ try {
   assert.equal(projected.turns[2].waitingPermission, false);
   assert.equal(projected.turns[2].waitingInput, true);
   assert.deepEqual(projected.turns[2].usage, { used: 320, size: 4096 });
+
+  const rawMarkdownProjection = projectDeepSeekConversation({
+    sessionId: 'copy-contract',
+    chatItems: [
+      { id: 1, type: 'user', text: 'copy' },
+      { id: 2, type: 'assistant', text: '## Result\n\n- item', html: '<h2>Result</h2><ul><li>item</li></ul>' },
+    ],
+  });
+  assert.equal(rawMarkdownProjection.turns[0].items[0].text, '## Result\n\n- item');
+  assert.equal(
+    rawMarkdownProjection.turns[0].items[0].copyText,
+    '## Result\n\n- item',
+    'DeepSeek projection must expose canonical source Markdown instead of rendered HTML',
+  );
 
   const history = projectDeepSeekConversation({
     chatItems,

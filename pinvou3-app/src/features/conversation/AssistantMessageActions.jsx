@@ -1,10 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, Copy, X } from '../../components/icons.jsx';
-import {
-  assistantMessageText,
-  copyClipboardText,
-  normalizeAssistantMessageText,
-} from './message-clipboard.js';
+import { copyClipboardText, normalizeAssistantMessageText } from './message-clipboard.js';
 
 export function AssistantMessageFooter({ children }) {
   return (
@@ -14,7 +10,7 @@ export function AssistantMessageFooter({ children }) {
   );
 }
 
-export function AssistantMessageActions({ targetRef, text, copy }) {
+export function AssistantMessageActions({ text, copy }) {
   const [status, setStatus] = useState('idle');
   const resetTimerRef = useRef(null);
   const label = status === 'copied'
@@ -36,9 +32,7 @@ export function AssistantMessageActions({ targetRef, text, copy }) {
   };
 
   const handleCopy = async () => {
-    const value = text == null
-      ? assistantMessageText(targetRef?.current)
-      : normalizeAssistantMessageText(text);
+    const value = normalizeAssistantMessageText(text);
     const copied = await copyClipboardText(value);
     setStatus(copied ? 'copied' : 'failed');
     resetStatusLater();

@@ -1,32 +1,81 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  assistantMessageText,
+  assistantItemCopyText,
+  assistantMarkdownCopyText,
   assistantResponseText,
+  copyClipboardText,
 } from '../src/features/conversation/message-clipboard.js';
 import { dict } from '../src/shared/i18n.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 
+const markdown = '## 结论\n\n- 第一项\n- 第二项\n\n```js\nconst value = 1;\n```';
 assert.equal(
-  assistantMessageText({ innerText: '  第一段\n\n\n第二段  \n' }),
-  '第一段\n\n第二段',
-  'copy text should preserve paragraph structure while trimming rendered whitespace',
+  assistantMarkdownCopyText(`  ${markdown}\r\n`),
+  markdown,
+  'canonical copy text should retain Markdown structure and normalize line endings',
 );
 assert.equal(
-  assistantMessageText({ textContent: '回答\u00a0内容' }),
-  '回答 内容',
-  'copy text should fall back to textContent and normalize non-breaking spaces',
+  assistantItemCopyText({ text: markdown, html: '<h2>不应使用 HTML</h2>' }),
+  markdown,
+  'new ordinary messages should copy their source Markdown instead of rendered DOM text',
 );
-assert.equal(assistantMessageText(null), '', 'missing rendered content should not copy placeholder text');
 assert.equal(
-  assistantMessageText({
-    innerText: '状态和工具输出不应被复制',
-    querySelectorAll: () => [{ innerText: '第一段回复' }, { textContent: '第二段回复' }],
+  assistantItemCopyText({ html: '<h2>历史标题</h2><p>历史内容</p>' }),
+  '## 历史标题\n\n历史内容',
+  'legacy HTML-only messages should remain copyable through a Markdown compatibility conversion',
+);
+assert.equal(
+  assistantItemCopyText({
+    html: '<pre><code class="language-card-question">{&quot;question&quot;:&quot;历史问题？&quot;,&quot;options&quot;:[&quot;甲&quot;,&quot;乙&quot;]}</code></pre>',
   }),
-  '第一段回复\n\n第二段回复',
-  'timeline copy should include only marked rendered assistant content',
+  '历史问题？\n\n1. 甲\n2. 乙',
+  'legacy HTML-only cards should use the same semantic serializer',
 );
+
+const cardQuestion = [
+  '请选择部署方式：',
+  '',
+  '```card-question',
+  '{"question":"部署到哪里？","options":["本机","测试环境"]}',
+  '```',
+].join('\n');
+assert.equal(
+  assistantMarkdownCopyText(cardQuestion),
+  '请选择部署方式：\n\n部署到哪里？\n\n1. 本机\n2. 测试环境',
+  'question cards should copy their visible question and numbered options instead of hidden JSON',
+);
+
+const personaOnly = [
+  '```persona-card',
+  '{"name":"代码审查员","emoji":"🔎","description":"检查设计与副作用","body":"完整内部提示词"}',
+  '```',
+].join('\n');
+assert.equal(
+  assistantMarkdownCopyText(personaOnly),
+  '🔎 代码审查员\n\n检查设计与副作用',
+  'card-only replies should still produce meaningful copy text',
+);
+
+const scheduledTaskOnly = [
+  '```scheduled-task-draft',
+  '{"name":"每日简报","prompt":"汇总今日进展","rrule":"FREQ=DAILY;BYHOUR=9"}',
+  '```',
+].join('\n');
+assert.equal(
+  assistantMarkdownCopyText(scheduledTaskOnly),
+  '每日简报\n\n汇总今日进展\n\nFREQ=DAILY;BYHOUR=9',
+  'scheduled-task cards should copy readable task content instead of hidden JSON',
+);
+
+const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
+assert.equal(
+  assistantItemCopyText({ text: injectedMarker }),
+  injectedMarker,
+  'model-provided data attributes must not influence the copy boundary',
+);
+
 assert.equal(
   assistantResponseText({
     items: [
@@ -40,10 +89,42 @@ assert.equal(
   'turn copy should include final assistant messages without commentary or tool output',
 );
 assert.equal(
+  assistantResponseText({
+    items: [{ type: 'agent_message', phase: 'commentary', text: '内部处理过程' }],
+    assistantText: '内部处理过程',
+  }),
+  '',
+  'commentary-only turns must not fall back to the accumulated internal text',
+);
+assert.equal(
   assistantResponseText({ items: [], assistantText: '  兼容旧会话回复  ' }),
   '兼容旧会话回复',
-  'legacy turns should fall back to their accumulated assistant text',
+  'turns without structured agent messages should retain the legacy fallback',
 );
+assert.equal(
+  assistantResponseText({ items: [{ type: 'agent_message', text: markdown }] }),
+  assistantItemCopyText({ text: markdown }),
+  'ordinary and Codex modes should expose the same canonical Markdown format',
+);
+
+const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+try {
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { clipboard: { writeText: async () => { throw new Error('denied'); } } },
+  });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { body: null },
+  });
+  assert.equal(await copyClipboardText('无法复制'), false, 'clipboard and fallback failures should be reported');
+} finally {
+  if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+  else delete globalThis.navigator;
+  if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor);
+  else delete globalThis.document;
+}
 
 for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiConversation.copyReply, `${language}.uiConversation.copyReply must exist`);
@@ -55,15 +136,18 @@ const chatView = source('features/chat/ChatView.jsx');
 const timeline = source('features/conversation/ConversationTimeline.jsx');
 const codexView = source('features/codex/CodexAcpView.jsx');
 const actions = source('features/conversation/AssistantMessageActions.jsx');
-assert.match(chatView, /showAssistantActions && !item\.streaming && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions[^>]+targetRef=\{assistantSelectionTargetRef\}/);
+const clipboard = source('features/conversation/message-clipboard.js');
+assert.match(chatView, /showAssistantActions && assistantCopyText && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantCopyText\}/);
 assert.match(chatView, /allowScheduledTaskDraft=\{isScheduledTaskCreationChat\} showAssistantActions=\{false\}/);
-assert.match(chatView, /data-assistant-copy-source="true"/);
+assert.doesNotMatch(chatView, /data-assistant-copy-source/);
 assert.match(actions, /data-testid="assistant-message-footer"/);
 assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
 assert.match(actions, /data-testid="assistant-message-actions"/);
 assert.match(actions, /copyClipboardText\(value\)/);
 assert.match(actions, /aria-live="polite"/);
-assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions targetRef=\{assistantText \? undefined : assistantBodyRef\} text=\{assistantText \|\| undefined\} copy=\{c\}/);
+assert.doesNotMatch(actions, /targetRef|querySelector/);
+assert.doesNotMatch(clipboard, /querySelectorAll|data-assistant-copy-source/);
+assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantText\} copy=\{c\}/);
 assert.match(codexView, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions text=\{assistantText\} copy=\{copy\}/);
 
 console.log('assistant message actions tests passed');

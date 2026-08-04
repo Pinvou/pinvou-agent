@@ -2,6 +2,7 @@ import {
   commandExecutionDetails,
   presentConversationItems,
 } from './conversation-model.js';
+import { assistantMarkdownCopyText } from './structured-assistant-content.js';
 
 const SHELL_TOOLS = new Set([
   'exec_shell',
@@ -35,6 +36,8 @@ function projectItem(item, index) {
     return {
       id,
       type: 'agent_message',
+      text: item.text || '',
+      copyText: assistantMarkdownCopyText(item.text),
       status: item.streaming ? 'in_progress' : 'completed',
       legacyItem: item,
     };
