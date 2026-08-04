@@ -11,18 +11,26 @@ const markdownLexer = new Marked(MARKDOWN_OPTIONS);
 function lexerSourceMap(source) {
   let text = '';
   const offsets = [];
+  let indentPhase = 'spaces';
   for (let index = 0; index < source.length; index += 1) {
     const char = source.charAt(index);
     if (char === '\r') {
       if (source.charAt(index + 1) === '\n') index += 1;
       text += '\n';
       offsets.push(index);
-    } else if (char === '\t') {
+      indentPhase = 'spaces';
+    } else if (char === '\n') {
+      text += char;
+      offsets.push(index);
+      indentPhase = 'spaces';
+    } else if (char === '\t' && indentPhase !== 'done') {
       text += '    ';
       offsets.push(index, index, index, index);
+      indentPhase = 'tabs';
     } else {
       text += char;
       offsets.push(index);
+      if (indentPhase === 'tabs' || char !== ' ') indentPhase = 'done';
     }
   }
   return { text, offsets };

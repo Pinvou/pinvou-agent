@@ -163,6 +163,7 @@ for (const [label, variant] of [
   ['indented fence with trailing spaces', `  \`\`\`persona-card\n  ${personaPayload}\n  \`\`\`   `],
   ['unclosed fence', `\`\`\`persona-card\n${personaPayload}`],
   ['tilde fence', `~~~persona-card\n${personaPayload}\n~~~~`],
+  ['payload with inline tab', `\`\`\`persona-card\n{"name":\t"Reviewer","body":"hidden prompt","description":"Visible card"}\n\`\`\``],
 ]) {
   assert.equal(
     assistantMarkdownCopyText(variant),
@@ -182,6 +183,13 @@ for (const [label, variant] of [
     `${label} must not expose a structured payload hidden by the rendered UI`,
   );
 }
+
+const tabbedQuote = `> before\ttext\n>\n> \`\`\`persona-card\n> ${personaPayload}\n> \`\`\``;
+assert.equal(
+  assistantMarkdownCopyText(tabbedQuote),
+  '> before\ttext\n>\nReviewer\n\nVisible card',
+  'inline tabs in container text must not break structured fence mapping',
+);
 
 const quotedPersonaWithContext = [
   '> 引用前文',
