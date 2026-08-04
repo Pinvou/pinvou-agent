@@ -1,5 +1,4 @@
 pub(crate) mod connector_cli;
-pub(crate) mod connector_state;
 pub(crate) mod dingtalk;
 pub(crate) mod feishu;
 pub(crate) mod ima;
