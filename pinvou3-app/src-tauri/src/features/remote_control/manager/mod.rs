@@ -1,34 +1,83 @@
+mod persistence;
+mod rpc;
+mod transfer;
+
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fs2::FileExt as _;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
-use super::event_stream::{
-    snapshot_message, stream_reset_message, try_enqueue_message_batch, EventStreamState,
-    ReplayMessageContext, StreamRecordError, LEASE_ID_WIRE_PLACEHOLDER,
-};
 use super::platform;
 use super::protocol::{
     WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
-use crate::features::sessions::SessionStore;
 use crate::platform::paths;
+
+// Host filesystem browsing (`list_host_files` / `read_artifact_chunk` /
+// `ArtifactChunk` / `HostFileListing`) lives in `super::file_access`, extracted
+// upstream by the file-access boundary split. This module no longer re-exports
+// that surface; callers reach it via `remote_control::file_access`.
+
+// `RelaySettingsInfo` is part of the public `manager::` surface (re-exported by
+// the parent `remote_control` module); it now lives in `persistence`.
+pub use persistence::RelaySettingsInfo;
+
+// Persistent config / RPC ledger / pending revocation / relay settings helpers
+// are pure and stateless; the facade calls them by name.
+use persistence::{
+    acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
+    atomic_write_private_json, eligible_pending_revocations, fresh_config, load_config,
+    load_or_initialize_rpc_ledger, load_pending_revocations, load_relay_settings, new_stream_epoch,
+    normalize_relay_address, pairing_info, pending_revocation_ack, pending_revocation_key,
+    persist_config, persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
+    relay_settings_path, remote_public_base_url, remote_relay_ws_url, remove_config,
+    remove_private_file, remove_rpc_ledger, validate_config,
+};
+
+// RPC admission, response shaping, scope validation, and the stream/event
+// protocol message builders live in `rpc`. The facade dispatches against the
+// enums (`RpcRequestAction`, `RpcReadyAction`, `EventSource`, ...) and calls
+// the pure helpers, so the whole surface is imported by name.
+use rpc::{
+    bounded_rpc_completion, enqueue_stream_reset, event_message, is_event_subscribed,
+    prepare_bridge_generation, prepare_new_rpc_admission, prune_rpc_cache,
+    request_conflict_completion, rpc_admission_rejection, rpc_error_completion, rpc_fingerprint,
+    rpc_in_flight_expired, rpc_response, snapshot_message, stream_reset_message,
+    subscription_filtered_replay_messages, tombstone_completion, try_enqueue_message_batch,
+    validate_bridge_generation, validate_rpc_command, validate_web_rpc_scope, EventSource,
+    NewRpcAdmission, ReplayMessageContext, RpcReadyAction, RpcRequestAction,
+};
+
+// The transfer buffer helpers mutate `Inner` through borrowed guards. They are
+// imported by name so the facade calls compile unchanged, and the two
+// crate-level entry points stay available to the command layer via `manager::`.
+use transfer::{
+    append_web_attachment_upload_chunk, clear_web_attachments, discard_web_attachment_upload,
+    ensure_web_session_download_capacity, finish_web_attachment_reservation_inner,
+    prune_expired_web_session_transfers, remove_web_attachment_upload_dir,
+    request_web_attachment_discard,
+};
+pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
 
 // 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
 // remote-test 端点。用户保存的自定义 Relay 设置仍具有最高优先级。
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:8787/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "ws://127.0.0.1:8787/pinvou3/remote/ws";
 const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
+const JOURNAL_CAPACITY: usize = 1_024;
+const JOURNAL_BYTES_CAPACITY: usize = 16 * 1024 * 1024;
+// Relay-issued lease IDs are `lease_` plus 24 base64url characters. Use an
+// equal-length placeholder while no browser is connected so a journaled
+// event's complete replay envelope is still sized conservatively.
+const LEASE_ID_WIRE_PLACEHOLDER: &str = "lease_000000000000000000000000";
 const RPC_CACHE_CAPACITY: usize = 512;
 const RPC_CACHE_BYTES_CAPACITY: usize = 32 * 1024 * 1024;
 const MAX_RPC_IN_FLIGHT: usize = 32;
@@ -39,6 +88,8 @@ const MAX_RPC_COMMAND_BYTES: usize = 128;
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const RPC_LEDGER_VERSION: u8 = 1;
+const MAX_HOST_ENTRIES: usize = 5_000;
+pub const MAX_ARTIFACT_CHUNK_BYTES: usize = 256 * 1024;
 /// 会话分块单独放大：首开会话在高延迟链路上按 256KB 串行拉取过慢。
 /// 上限受 `MAX_RPC_RESPONSE_BYTES`（2MiB）约束，base64 膨胀后仍需留出 JSON 外壳余量。
 pub const MAX_SESSION_CHUNK_BYTES: usize = 1024 * 1024;
@@ -59,6 +110,29 @@ const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
 const MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// 从事件 payload 提取会话 id（不同事件用不同字段名）。
+fn event_session_id(payload: &Value) -> Option<&str> {
+    payload
+        .get("session_id")
+        .or_else(|| payload.get("id"))
+        .or_else(|| payload.get("sessionId"))
+        .and_then(Value::as_str)
+}
+
+/// 远程端正式支持代码会话之前，过滤原生代码会话事件。predicate 为 None（未注入）
+/// 时不过滤，行为与注入前一致。
+fn should_filter_code_session_event(
+    predicate: Option<&CodeSessionPredicate>,
+    payload: &Value,
+) -> bool {
+    match predicate {
+        Some(predicate) => {
+            event_session_id(payload).is_some_and(|session_id| predicate(session_id))
+        }
+        None => false,
+    }
+}
 
 const RUST_FORWARDED_EVENTS: &[&str] = &[
     "artifact:disk",
@@ -86,7 +160,6 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "session:persona_changed",
 ];
 
-/// 原生代码会话判定（与 Engine bridge 共用 AcpPool 那份 SessionAgentStore 注入）。
 /// 远程端正式支持代码会话列表/授权/UI 之前，带 session_id 的原生代码会话事件
 /// 一律不转发。
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -108,7 +181,8 @@ struct Inner {
     endpoint: Option<ActiveEndpoint>,
     idle_status: WebAccessStatusKind,
     idle_error: Option<String>,
-    event_stream: EventStreamState,
+    stream: StreamState,
+    subscriptions: HashSet<String>,
     bridge_generation: Option<String>,
     rpc_ledger: RpcLedger,
     rpc_cache: HashMap<String, RpcCacheEntry>,
@@ -134,7 +208,8 @@ impl Default for Inner {
             endpoint: None,
             idle_status: WebAccessStatusKind::Idle,
             idle_error: None,
-            event_stream: EventStreamState::new(),
+            stream: StreamState::new(),
+            subscriptions: HashSet::new(),
             bridge_generation: None,
             rpc_ledger: RpcLedger::default(),
             rpc_cache: HashMap::new(),
@@ -415,6 +490,142 @@ impl RpcLedger {
     }
 }
 
+#[derive(Debug, Clone)]
+struct StreamEvent {
+    seq: u64,
+    event: String,
+    payload: Value,
+    wire_bytes: usize,
+}
+
+#[derive(Debug)]
+struct StreamState {
+    epoch: String,
+    seq: u64,
+    journal: VecDeque<StreamEvent>,
+    journal_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StreamRecordError {
+    Serialize(String),
+    Oversized { wire_bytes: usize, limit: usize },
+}
+
+impl std::fmt::Display for StreamRecordError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serialize(error) => write!(formatter, "序列化远程控制事件帧失败：{error}"),
+            Self::Oversized { wire_bytes, limit } => write!(
+                formatter,
+                "远程控制事件帧过大（{wire_bytes} 字节；上限 {limit}）"
+            ),
+        }
+    }
+}
+
+impl StreamState {
+    fn new() -> Self {
+        Self {
+            epoch: new_stream_epoch(),
+            seq: 0,
+            journal: VecDeque::new(),
+            journal_bytes: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.epoch = new_stream_epoch();
+        self.seq = 0;
+        self.journal.clear();
+        self.journal_bytes = 0;
+    }
+
+    fn record(
+        &mut self,
+        endpoint_id: &str,
+        lease_id: &str,
+        event: String,
+        payload: Value,
+    ) -> Result<Value, StreamRecordError> {
+        self.record_with_limits(
+            endpoint_id,
+            lease_id,
+            event,
+            payload,
+            relay_client::MAX_RELAY_FRAME_BYTES,
+            JOURNAL_CAPACITY,
+            JOURNAL_BYTES_CAPACITY,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_with_limits(
+        &mut self,
+        endpoint_id: &str,
+        lease_id: &str,
+        event: String,
+        payload: Value,
+        max_wire_bytes: usize,
+        journal_capacity: usize,
+        journal_bytes_capacity: usize,
+    ) -> Result<Value, StreamRecordError> {
+        let mut recorded = StreamEvent {
+            seq: self.seq.saturating_add(1),
+            event,
+            payload,
+            wire_bytes: 0,
+        };
+        let message = event_message(endpoint_id, lease_id, &self.epoch, &recorded);
+        let wire_bytes = serde_json::to_vec(&message)
+            .map_err(|error| StreamRecordError::Serialize(error.to_string()))?
+            .len();
+        if wire_bytes > max_wire_bytes {
+            // The rejected event never advances seq or enters the journal. A
+            // fresh epoch makes every existing browser cursor explicitly
+            // invalid instead of leaving a permanent, unreplayable hole.
+            self.reset();
+            return Err(StreamRecordError::Oversized {
+                wire_bytes,
+                limit: max_wire_bytes,
+            });
+        }
+
+        recorded.wire_bytes = wire_bytes;
+        self.seq = recorded.seq;
+        self.journal_bytes = self.journal_bytes.saturating_add(wire_bytes);
+        self.journal.push_back(recorded);
+        while self.journal.len() > journal_capacity || self.journal_bytes > journal_bytes_capacity {
+            let Some(evicted) = self.journal.pop_front() else {
+                break;
+            };
+            self.journal_bytes = self.journal_bytes.saturating_sub(evicted.wire_bytes);
+        }
+        Ok(message)
+    }
+
+    /// `None` means the cursor cannot be satisfied from the bounded journal.
+    fn replay_after(&self, after_seq: u64) -> Option<Vec<StreamEvent>> {
+        if after_seq > self.seq {
+            return None;
+        }
+        if after_seq == self.seq {
+            return Some(Vec::new());
+        }
+        let oldest = self.journal.front()?.seq;
+        if after_seq.saturating_add(1) < oldest {
+            return None;
+        }
+        Some(
+            self.journal
+                .iter()
+                .filter(|entry| entry.seq > after_seq)
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct EmbeddedPolicy {
     protocol_version: u8,
@@ -433,7 +644,7 @@ struct AccessPolicy {
 impl AccessPolicy {
     fn load() -> Result<Self, String> {
         let parsed: EmbeddedPolicy = serde_json::from_str(include_str!(
-            "../../../../src/platform/web/access-policy.json"
+            "../../../../../src/platform/web/access-policy.json"
         ))
         .map_err(|error| format!("parse embedded Web access policy: {error}"))?;
         if parsed.protocol_version != PROTOCOL_VERSION {
@@ -497,13 +708,6 @@ impl RemoteControlManager {
             policy: Arc::new(policy),
             policy_error,
         }
-    }
-
-    /// 注入原生代码会话判定；由 app 组合根在 AcpPool 就绪后调用一次，与 Engine
-    /// bridge 共用同一份 SessionAgentStore。存放在共享 `Inner` 里，所有 clone
-    /// （含已 manage 进 Tauri 的那份）都能读到。
-    pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
-        self.inner.lock().code_session_predicate = Some(predicate);
     }
 
     /// Resume the persistent endpoint after all authoritative application
@@ -583,12 +787,12 @@ impl RemoteControlManager {
         persist_config(&config)?;
         let previous = {
             let mut inner = self.inner.lock();
-            inner.event_stream.clear_subscriptions();
+            inner.subscriptions.clear();
             inner.rpc_ledger = RpcLedger::default();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
-            inner.event_stream.reset();
+            inner.stream.reset();
             inner.endpoint.take()
         };
         if let Some(previous) = previous {
@@ -615,6 +819,12 @@ impl RemoteControlManager {
     /// 设置自定义 Relay 地址（域名/IP，见 `normalize_relay_address`）。
     /// 已有 endpoint 时走完整 refresh：旧 endpoint 的撤销意图先落盘（指向旧
     /// relay），新凭据注册到新 relay，分享链接与二维码随之更新。
+    /// 注入原生代码会话判定闭包；之后带代码会话 id 的事件不再转发到远程 WebUI。
+    /// （含已 manage 进 Tauri 的那份）都能读到。
+    pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
+        self.inner.lock().code_session_predicate = Some(predicate);
+    }
+
     pub fn set_relay_address(&self, input: &str) -> Result<RelaySettingsInfo, String> {
         let settings = normalize_relay_address(input)?;
         atomic_write_private_json(&relay_settings_path(), &settings, "Web relay settings")?;
@@ -655,12 +865,12 @@ impl RemoteControlManager {
         remove_config()?;
         let endpoint = {
             let mut inner = self.inner.lock();
-            inner.event_stream.clear_subscriptions();
+            inner.subscriptions.clear();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
             inner.rpc_ledger = RpcLedger::default();
-            inner.event_stream.reset();
+            inner.stream.reset();
             inner.idle_status = WebAccessStatusKind::Stopped;
             inner.idle_error = None;
             inner.endpoint.take()
@@ -1273,7 +1483,7 @@ impl RemoteControlManager {
         let (actions, subscriptions) = {
             let mut inner = self.inner.lock();
             let actions = prepare_bridge_generation(&mut inner, &generation);
-            let subscriptions = inner.event_stream.subscription_names();
+            let subscriptions = inner.subscriptions.iter().cloned().collect::<Vec<_>>();
             (actions, subscriptions)
         };
         let mut first_error = None;
@@ -1558,7 +1768,7 @@ impl RemoteControlManager {
                     .and_then(|endpoint| endpoint.last_lease_id.as_ref())
                     != lease_id.as_ref();
             if lease_changed {
-                inner.event_stream.clear_subscriptions();
+                inner.subscriptions.clear();
                 clear_web_attachments(&mut inner);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
@@ -1598,7 +1808,7 @@ impl RemoteControlManager {
                 .get("stream_epoch")
                 .and_then(Value::as_str)
                 .is_none_or(str::is_empty);
-            let fresh_baseline_seq = fresh_client.then_some(inner.event_stream.seq());
+            let fresh_baseline_seq = fresh_client.then_some(inner.stream.seq);
             let lease_changed = inner
                 .endpoint
                 .as_ref()
@@ -1609,7 +1819,7 @@ impl RemoteControlManager {
                 // reload must rebuild them before `client_ready` requests a
                 // replay, otherwise old subscriptions can advance the new
                 // client's event cursor before it is ready.
-                inner.event_stream.clear_subscriptions();
+                inner.subscriptions.clear();
                 clear_web_attachments(&mut inner);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
@@ -1664,12 +1874,12 @@ impl RemoteControlManager {
                 return;
             }
             let revoked = inner.endpoint.take();
-            inner.event_stream.clear_subscriptions();
+            inner.subscriptions.clear();
             inner.rpc_ledger = RpcLedger::default();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
-            inner.event_stream.reset();
+            inner.stream.reset();
             inner.idle_status = WebAccessStatusKind::Revoked;
             inner.idle_error = None;
             revoked
@@ -1704,7 +1914,7 @@ impl RemoteControlManager {
                 "this endpoint is active in another desktop process; rotate Web access to take a new endpoint"
                     .to_string(),
             );
-            inner.event_stream.clear_subscriptions();
+            inner.subscriptions.clear();
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
@@ -1721,7 +1931,11 @@ impl RemoteControlManager {
         }
         let changed = {
             let mut inner = self.inner.lock();
-            inner.event_stream.set_subscription(event, subscribe)
+            if subscribe {
+                inner.subscriptions.insert(event.to_string())
+            } else {
+                inner.subscriptions.remove(event)
+            }
         };
         if changed {
             let bridge_event = if subscribe {
@@ -2123,14 +2337,12 @@ impl RemoteControlManager {
             let sender = endpoint.sender.clone();
             let fresh_baseline_seq = endpoint.fresh_baseline_seq;
             let epoch_matches = requested_epoch
-                .map(|epoch| epoch == inner.event_stream.epoch())
+                .map(|epoch| epoch == inner.stream.epoch)
                 .unwrap_or(false);
             if !state_ready {
-                if requested_epoch.is_some()
-                    && (!epoch_matches || after_seq > inner.event_stream.seq())
-                {
-                    inner.event_stream.reset();
-                    let stream_epoch = inner.event_stream.epoch().to_string();
+                if requested_epoch.is_some() && (!epoch_matches || after_seq > inner.stream.seq) {
+                    inner.stream.reset();
+                    let stream_epoch = inner.stream.epoch.clone();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2147,21 +2359,21 @@ impl RemoteControlManager {
                     return;
                 }
                 let baseline = if requested_epoch.is_none() {
-                    fresh_baseline_seq.unwrap_or(inner.event_stream.seq())
+                    fresh_baseline_seq.unwrap_or(inner.stream.seq)
                 } else {
                     after_seq
                 };
                 let snapshot = snapshot_message(
                     &endpoint_id,
                     lease_id,
-                    inner.event_stream.epoch(),
+                    &inner.stream.epoch,
                     baseline,
                     &capability_commands,
                     &capability_events,
                 );
                 if sender.try_send(RelayOutbound::Message(snapshot)).is_err() {
-                    inner.event_stream.reset();
-                    let stream_epoch = inner.event_stream.epoch().to_string();
+                    inner.stream.reset();
+                    let stream_epoch = inner.stream.epoch.clone();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2183,42 +2395,51 @@ impl RemoteControlManager {
             // the current head so historical interactive events are never
             // replayed as if they had just happened.
             let fresh_client = requested_epoch.is_none();
-            let stream_epoch = inner.event_stream.epoch().to_string();
-            let replay_context = ReplayMessageContext {
-                endpoint_id: &endpoint_id,
-                lease_id,
-                stream_epoch: &stream_epoch,
-                capability_commands: &capability_commands,
-                capability_events: &capability_events,
-            };
             let replay = if fresh_client {
-                inner.event_stream.replay_messages_after(
-                    fresh_baseline_seq.unwrap_or(inner.event_stream.seq()),
-                    replay_context,
-                )
-            } else if epoch_matches {
                 inner
-                    .event_stream
-                    .replay_messages_after(after_seq, replay_context)
+                    .stream
+                    .replay_after(fresh_baseline_seq.unwrap_or(inner.stream.seq))
+            } else if epoch_matches {
+                inner.stream.replay_after(after_seq)
             } else {
                 None
             };
 
             let mut messages = match replay {
-                Some(replay_messages) if fresh_client => {
-                    let baseline = fresh_baseline_seq.unwrap_or(inner.event_stream.seq());
+                Some(events) if fresh_client => {
+                    let baseline = fresh_baseline_seq.unwrap_or(inner.stream.seq);
                     let mut messages = vec![snapshot_message(
                         &endpoint_id,
                         lease_id,
-                        inner.event_stream.epoch(),
+                        &inner.stream.epoch,
                         baseline,
                         &capability_commands,
                         &capability_events,
                     )];
-                    messages.extend(replay_messages);
+                    messages.extend(subscription_filtered_replay_messages(
+                        events,
+                        &inner.subscriptions,
+                        ReplayMessageContext {
+                            endpoint_id: &endpoint_id,
+                            lease_id,
+                            stream_epoch: &inner.stream.epoch,
+                            capability_commands: &capability_commands,
+                            capability_events: &capability_events,
+                        },
+                    ));
                     messages
                 }
-                Some(messages) => messages,
+                Some(events) => subscription_filtered_replay_messages(
+                    events,
+                    &inner.subscriptions,
+                    ReplayMessageContext {
+                        endpoint_id: &endpoint_id,
+                        lease_id,
+                        stream_epoch: &inner.stream.epoch,
+                        capability_commands: &capability_commands,
+                        capability_events: &capability_events,
+                    },
+                ),
                 None => {
                     // The browser reload behavior deliberately persists the new
                     // epoch with cursor zero. Resetting the journal here makes
@@ -2228,8 +2449,8 @@ impl RemoteControlManager {
                     } else {
                         "epoch_changed"
                     };
-                    inner.event_stream.reset();
-                    let stream_epoch = inner.event_stream.epoch().to_string();
+                    inner.stream.reset();
+                    let stream_epoch = inner.stream.epoch.clone();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2247,8 +2468,8 @@ impl RemoteControlManager {
                 messages.push(snapshot_message(
                     &endpoint_id,
                     lease_id,
-                    inner.event_stream.epoch(),
-                    inner.event_stream.seq(),
+                    &inner.stream.epoch,
+                    inner.stream.seq,
                     &capability_commands,
                     &capability_events,
                 ));
@@ -2261,8 +2482,8 @@ impl RemoteControlManager {
             }) {
                 // A partially enqueued suffix is always followed by a reset;
                 // never advertise readiness after silently losing its tail.
-                inner.event_stream.reset();
-                let stream_epoch = inner.event_stream.epoch().to_string();
+                inner.stream.reset();
+                let stream_epoch = inner.stream.epoch.clone();
                 if let Some(endpoint) = inner.endpoint.as_mut() {
                     endpoint.client_ready = false;
                     endpoint.fresh_baseline_seq = None;
@@ -2324,44 +2545,43 @@ impl RemoteControlManager {
             let lease_id = endpoint.lease_id.clone();
             let client_ready = endpoint.client_ready;
             let sender = endpoint.sender.clone();
-            let subscribed = inner.event_stream.is_subscribed(event);
+            let subscribed = is_event_subscribed(&inner.subscriptions, event);
             // Journal every allowlisted event independently of the current
             // lease's subscribe handshake. A reconnect can otherwise lose
             // deltas emitted between `web_client_connected` and the browser's
             // subscribe/client_ready messages without leaving a sequence gap.
             let sizing_lease_id = lease_id.as_deref().unwrap_or(LEASE_ID_WIRE_PLACEHOLDER);
-            let message = match inner.event_stream.record(
-                &endpoint_id,
-                sizing_lease_id,
-                event.to_string(),
-                payload,
-            ) {
-                Ok(message) => message,
-                Err(error @ StreamRecordError::Oversized { .. }) => {
-                    // `record` already rotated the epoch and cleared the
-                    // journal atomically. Stop live delivery until the WebUI
-                    // reloads and negotiates that new epoch, so no later event
-                    // can overtake this recovery barrier.
-                    let stream_epoch = inner.event_stream.epoch().to_string();
-                    if let Some(endpoint) = inner.endpoint.as_mut() {
-                        endpoint.client_ready = false;
-                        endpoint.fresh_baseline_seq = None;
+            let message =
+                match inner
+                    .stream
+                    .record(&endpoint_id, sizing_lease_id, event.to_string(), payload)
+                {
+                    Ok(message) => message,
+                    Err(error @ StreamRecordError::Oversized { .. }) => {
+                        // `record` already rotated the epoch and cleared the
+                        // journal atomically. Stop live delivery until the WebUI
+                        // reloads and negotiates that new epoch, so no later event
+                        // can overtake this recovery barrier.
+                        let stream_epoch = inner.stream.epoch.clone();
+                        if let Some(endpoint) = inner.endpoint.as_mut() {
+                            endpoint.client_ready = false;
+                            endpoint.fresh_baseline_seq = None;
+                        }
+                        if let Some(lease_id) = lease_id.as_deref() {
+                            enqueue_stream_reset(
+                                sender,
+                                stream_reset_message(
+                                    &endpoint_id,
+                                    lease_id,
+                                    &stream_epoch,
+                                    "event_too_large",
+                                ),
+                            );
+                        }
+                        return Err(error.to_string());
                     }
-                    if let Some(lease_id) = lease_id.as_deref() {
-                        enqueue_stream_reset(
-                            sender,
-                            stream_reset_message(
-                                &endpoint_id,
-                                lease_id,
-                                &stream_epoch,
-                                "event_too_large",
-                            ),
-                        );
-                    }
-                    return Err(error.to_string());
-                }
-                Err(error) => return Err(error.to_string()),
-            };
+                    Err(error) => return Err(error.to_string()),
+                };
             let Some(lease_id) = lease_id.as_deref() else {
                 // Keep the event in the journal for a reconnecting subscribed
                 // browser, but there is no valid destination at this instant.
@@ -2389,8 +2609,20 @@ impl RemoteControlManager {
                     // a full relay queue cannot strand a final `done` or
                     // `user_input_required` with no later gap to trigger a
                     // reconnect.
-                    let rebase_result = inner.event_stream.rebase_tail(&endpoint_id, lease_id);
-                    let stream_epoch = inner.event_stream.epoch().to_string();
+                    let failed_event = inner
+                        .stream
+                        .journal
+                        .back()
+                        .cloned()
+                        .ok_or_else(|| "远程控制事件流末尾数据丢失".to_string())?;
+                    inner.stream.reset();
+                    let rebase_result = inner.stream.record(
+                        &endpoint_id,
+                        lease_id,
+                        failed_event.event,
+                        failed_event.payload,
+                    );
+                    let stream_epoch = inner.stream.epoch.clone();
                     if let Some(endpoint) = inner.endpoint.as_mut() {
                         endpoint.client_ready = false;
                         endpoint.fresh_baseline_seq = None;
@@ -2442,1367 +2674,60 @@ impl RemoteControlManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EventSource {
-    Rust,
-    Frontend,
-}
-
-/// 从事件 payload 提取会话 id（不同事件用不同字段名）。
-fn event_session_id(payload: &Value) -> Option<&str> {
-    payload
-        .get("session_id")
-        .or_else(|| payload.get("id"))
-        .or_else(|| payload.get("sessionId"))
-        .and_then(Value::as_str)
-}
-
-/// 远程端正式支持代码会话之前，过滤原生代码会话事件。predicate 为 None（未注入）
-/// 时不过滤，行为与注入前一致。
-fn should_filter_code_session_event(
-    predicate: Option<&CodeSessionPredicate>,
-    payload: &Value,
-) -> bool {
-    match predicate {
-        Some(predicate) => {
-            event_session_id(payload).is_some_and(|session_id| predicate(session_id))
-        }
-        None => false,
-    }
-}
-
-fn rpc_in_flight_expired(dispatched_at: Instant, now: Instant) -> bool {
-    now.duration_since(dispatched_at) > RPC_IN_FLIGHT_TTL
-}
-
-enum RpcRequestAction {
-    None,
-    Respond(RelaySender, Value),
-    Dispatch(RpcDispatch),
-}
-
-enum NewRpcAdmission {
-    Rejected(RpcCompletion),
-    Durable(RpcLedger),
-}
-
-fn rpc_admission_rejection(
-    preflight_completion: Option<&RpcCompletion>,
-    allowed: bool,
-    in_flight_count: usize,
-) -> Option<RpcCompletion> {
-    if let Some(completion) = preflight_completion {
-        Some(completion.clone())
-    } else if !allowed {
-        Some(rpc_error_completion(
-            "command_not_allowed",
-            "远程控制不允许调用该命令",
-        ))
-    } else if in_flight_count >= MAX_RPC_IN_FLIGHT {
-        Some(rpc_error_completion(
-            "too_many_in_flight_requests",
-            "正在运行的远程控制请求过多",
-        ))
-    } else {
-        None
-    }
-}
-
-fn prepare_new_rpc_admission(
-    ledger: &RpcLedger,
-    request_id: &str,
-    fingerprint: &str,
-    preflight_completion: Option<&RpcCompletion>,
-    allowed: bool,
-    in_flight_count: usize,
-) -> Result<NewRpcAdmission, String> {
-    if let Some(completion) =
-        rpc_admission_rejection(preflight_completion, allowed, in_flight_count)
-    {
-        // Rejections are deterministic and side-effect free. Keep them only in
-        // the bounded in-memory response cache; they must never consume a
-        // durable idempotency slot or evict an acknowledged request tombstone.
-        return Ok(NewRpcAdmission::Rejected(completion));
-    }
-    let mut next_ledger = ledger.clone();
-    next_ledger.remember(request_id, fingerprint)?;
-    Ok(NewRpcAdmission::Durable(next_ledger))
-}
-
-enum RpcReadyAction {
-    Respond(RelaySender, Value),
-    Dispatch(RpcDispatch),
-}
-
-fn prepare_bridge_generation(inner: &mut Inner, generation: &str) -> Vec<RpcReadyAction> {
-    let generation_changed = inner.bridge_generation.as_deref() != Some(generation);
-    inner.bridge_generation = Some(generation.to_string());
-
-    let response_target = inner
-        .endpoint
-        .as_ref()
-        .map(|endpoint| (endpoint.config.endpoint_id.clone(), endpoint.sender.clone()));
-    let request_ids = inner.rpc_order.iter().cloned().collect::<Vec<_>>();
-    let mut actions = Vec::new();
-    for request_id in request_ids {
-        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get(&request_id) else {
-            continue;
-        };
-
-        if generation_changed && pending.acknowledged_generation.is_some() {
-            let lease_id = pending.lease_id.clone();
-            let fingerprint = pending.fingerprint.clone();
-            let completion = outcome_unknown_completion();
-            inner.rpc_cache.insert(
-                request_id.clone(),
-                RpcCacheEntry::Complete {
-                    fingerprint,
-                    completion: completion.clone(),
-                },
-            );
-            if let Some((endpoint_id, sender)) = &response_target {
-                actions.push(RpcReadyAction::Respond(
-                    sender.clone(),
-                    rpc_response(endpoint_id, &lease_id, &request_id, &completion),
-                ));
-            }
-            continue;
-        }
-
-        if pending.acknowledged_generation.is_some()
-            || pending.dispatched_generation.as_deref() == Some(generation)
-        {
-            continue;
-        }
-        let command = pending.command.clone();
-        let args = pending.args.clone();
-        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get_mut(&request_id) else {
-            continue;
-        };
-        pending.dispatched_generation = Some(generation.to_string());
-        actions.push(RpcReadyAction::Dispatch(RpcDispatch {
-            request_id,
-            command,
-            args,
-            bridge_generation: generation.to_string(),
-        }));
-    }
-    actions
-}
-
-fn prune_rpc_cache(inner: &mut Inner) {
-    while inner.rpc_cache.len() > RPC_CACHE_CAPACITY
-        || rpc_cache_bytes(inner) > RPC_CACHE_BYTES_CAPACITY
-    {
-        let Some(position) = inner.rpc_order.iter().position(|request_id| {
-            matches!(
-                inner.rpc_cache.get(request_id),
-                Some(RpcCacheEntry::Complete { .. })
-            )
-        }) else {
-            // Do not evict in-flight work. The cache falls back under the cap
-            // as those requests complete and later insertions prune it.
-            break;
-        };
-        if let Some(request_id) = inner.rpc_order.remove(position) {
-            inner.rpc_cache.remove(&request_id);
-        }
-    }
-}
-
-fn rpc_cache_bytes(inner: &Inner) -> usize {
-    inner
-        .rpc_cache
-        .iter()
-        .map(|(request_id, entry)| {
-            request_id.len()
-                + match entry {
-                    RpcCacheEntry::Pending(pending) => {
-                        pending.lease_id.len()
-                            + pending.command.len()
-                            + pending.fingerprint.len()
-                            + serde_json::to_vec(&pending.args)
-                                .map(|encoded| encoded.len())
-                                .unwrap_or(MAX_RPC_REQUEST_BYTES)
-                    }
-                    RpcCacheEntry::Complete {
-                        fingerprint,
-                        completion,
-                    } => {
-                        fingerprint.len()
-                            + serde_json::to_vec(&completion.result)
-                                .map(|encoded| encoded.len())
-                                .unwrap_or(MAX_RPC_RESPONSE_BYTES)
-                            + completion.error.as_ref().map_or(0, String::len)
-                            + completion.error_code.as_ref().map_or(0, String::len)
-                    }
-                }
-        })
-        .sum()
-}
-
-fn clear_web_attachments(inner: &mut Inner) {
-    for (_, cached) in inner.web_attachments.drain() {
-        remove_web_attachment_upload_dir(&cached);
-    }
-    inner.web_attachment_order.clear();
-    inner.web_attachment_bytes = 0;
-    inner.web_attachment_uploads.clear();
-    inner.web_attachment_upload_order.clear();
-    inner.web_session_uploads.clear();
-    inner.web_session_upload_order.clear();
-    for (_, download) in inner.web_session_downloads.drain() {
-        let _ = std::fs::remove_file(download.path);
-    }
-    inner.web_session_download_order.clear();
-}
-
-fn remove_cached_web_attachment(inner: &mut Inner, handle: &str) -> bool {
-    let Some(cached) = inner.web_attachments.remove(handle) else {
-        return false;
-    };
-    inner.web_attachment_bytes = inner.web_attachment_bytes.saturating_sub(cached.bytes);
-    inner
-        .web_attachment_order
-        .retain(|candidate| candidate != handle);
-    remove_web_attachment_upload_dir(&cached);
-    true
-}
-
-fn request_web_attachment_discard(inner: &mut Inner, handle: &str) {
-    if let Some(cached) = inner.web_attachments.get_mut(handle) {
-        if cached.reservation_id.is_some() {
-            cached.discard_requested = true;
-            return;
-        }
-    }
-    remove_cached_web_attachment(inner, handle);
-}
-
-fn finish_web_attachment_reservation_inner(
-    inner: &mut Inner,
-    reservation_id: &str,
-    handles: &[String],
-    consume: bool,
-) -> Result<(), String> {
-    for handle in handles {
-        let Some(cached) = inner.web_attachments.get(handle) else {
-            // Stop/rotate deliberately clears the whole lease cache.
-            continue;
-        };
-        if cached.reservation_id.as_deref() != Some(reservation_id) {
-            return Err(format!("远程控制附件预留已不再持有句柄：{handle}"));
-        }
-    }
-    for handle in handles {
-        let should_remove = consume
-            || inner
-                .web_attachments
-                .get(handle)
-                .is_some_and(|cached| cached.discard_requested);
-        if should_remove {
-            remove_cached_web_attachment(inner, handle);
-        } else if let Some(cached) = inner.web_attachments.get_mut(handle) {
-            cached.reservation_id = None;
-        }
-    }
-    Ok(())
-}
-
-fn append_web_attachment_upload_chunk(
-    inner: &mut Inner,
-    upload_id: &str,
-    file_name: &str,
-    offset: usize,
-    total: usize,
-    data: &[u8],
-    commit: bool,
-) -> Result<Option<(String, Vec<u8>)>, String> {
-    if upload_id.len() < 8
-        || upload_id.len() > 128
-        || !upload_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("远程控制附件上传 ID 无效".into());
-    }
-    let file_name = file_name.trim();
-    if file_name.is_empty() || file_name.chars().count() > 255 {
-        return Err("远程控制附件上传需要有效的文件名".into());
-    }
-    if total as u64 > crate::features::files::file_ingest::MAX_FILE_BYTES {
-        return Err(format!(
-            "文件超过附件 {} MB 上限",
-            crate::features::files::file_ingest::MAX_FILE_BYTES / (1024 * 1024)
-        ));
-    }
-    prune_expired_web_session_transfers(inner);
-    if offset == 0 {
-        inner.web_attachment_uploads.remove(upload_id);
-        while inner.web_attachment_uploads.len() >= MAX_WEB_ATTACHMENT_UPLOADS {
-            let Some(oldest) = inner.web_attachment_upload_order.pop_front() else {
-                break;
-            };
-            inner.web_attachment_uploads.remove(&oldest);
-        }
-        inner
-            .web_attachment_upload_order
-            .retain(|id| id != upload_id);
-        inner
-            .web_attachment_upload_order
-            .push_back(upload_id.to_string());
-        inner.web_attachment_uploads.insert(
-            upload_id.to_string(),
-            WebAttachmentUpload {
-                file_name: file_name.to_string(),
-                total,
-                data: Vec::with_capacity(total.min(4 * 1024 * 1024)),
-                last_touched: Instant::now(),
-            },
-        );
-    }
-    let retained_upload_bytes: usize = inner
-        .web_attachment_uploads
-        .iter()
-        .filter(|(id, _)| id.as_str() != upload_id)
-        .map(|(_, upload)| upload.data.len())
-        .sum();
-    if retained_upload_bytes
-        .saturating_add(offset)
-        .saturating_add(data.len())
-        > MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES
-    {
-        return Err("远程控制附件上传缓存超过总容量上限".into());
-    }
-    let upload = inner
-        .web_attachment_uploads
-        .get_mut(upload_id)
-        .ok_or_else(|| "远程控制附件上传不存在或已过期".to_string())?;
-    if upload.file_name != file_name || upload.total != total {
-        return Err("远程控制附件上传元数据已变化".into());
-    }
-    if upload.data.len() != offset {
-        return Err(format!(
-            "远程控制附件上传预期偏移量为 {}，实际为 {offset}",
-            upload.data.len()
-        ));
-    }
-    if upload.data.len().saturating_add(data.len()) > total {
-        return Err("远程控制附件上传超过声明大小".into());
-    }
-    upload.data.extend_from_slice(data);
-    upload.last_touched = Instant::now();
-    if !commit {
-        return Ok(None);
-    }
-    if upload.data.len() != total {
-        return Err(format!(
-            "远程控制附件上传不完整：已上传 {} / {total} 字节",
-            upload.data.len()
-        ));
-    }
-    let completed = inner
-        .web_attachment_uploads
-        .remove(upload_id)
-        .expect("upload exists above");
-    inner
-        .web_attachment_upload_order
-        .retain(|id| id != upload_id);
-    Ok(Some((completed.file_name, completed.data)))
-}
-
-fn discard_web_attachment_upload(inner: &mut Inner, upload_id: &str) {
-    inner.web_attachment_uploads.remove(upload_id);
-    inner
-        .web_attachment_upload_order
-        .retain(|id| id != upload_id);
-}
-
-/// 浏览器本机上传的桌面暂存根目录。目录布局 `uploads/webup_<token>/<file>`
-/// 与旧版远控上传一致，`verify_upload` E2E 命令可直接校验。
-pub(crate) fn web_attachment_uploads_base() -> PathBuf {
-    paths::pinvou3_home().join("uploads")
-}
-
-fn remove_web_attachment_upload_dir(cached: &CachedWebAttachment) {
-    if let Some(dir) = &cached.upload_dir {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-}
-
-/// 清理上一次进程遗留的上传暂存目录（崩溃或强杀时正常清理不会执行）。
-/// 只清 `webup_` 前缀，避免波及 uploads 下的其他历史内容。
-pub(crate) fn sweep_stale_web_attachment_uploads() {
-    let Ok(entries) = std::fs::read_dir(web_attachment_uploads_base()) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(WEB_ATTACHMENT_UPLOAD_DIR_PREFIX)
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-}
-
-fn prune_expired_web_session_transfers(inner: &mut Inner) {
-    let now = Instant::now();
-    inner.web_attachment_uploads.retain(|_, upload| {
-        now.saturating_duration_since(upload.last_touched) <= WEB_SESSION_TRANSFER_TTL
-    });
-    let active_attachment_uploads = inner
-        .web_attachment_uploads
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    inner
-        .web_attachment_upload_order
-        .retain(|id| active_attachment_uploads.contains(id));
-    inner.web_session_uploads.retain(|_, upload| {
-        now.saturating_duration_since(upload.last_touched) <= WEB_SESSION_TRANSFER_TTL
-    });
-    let active_uploads = inner
-        .web_session_uploads
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    inner
-        .web_session_upload_order
-        .retain(|id| active_uploads.contains(id));
-    let expired_downloads = inner
-        .web_session_downloads
-        .iter()
-        .filter(|(_, download)| {
-            now.saturating_duration_since(download.last_touched) > WEB_SESSION_TRANSFER_TTL
-        })
-        .map(|(id, _)| id.clone())
-        .collect::<Vec<_>>();
-    for id in expired_downloads {
-        if let Some(download) = inner.web_session_downloads.remove(&id) {
-            let _ = std::fs::remove_file(download.path);
-        }
-    }
-    let active_downloads = inner
-        .web_session_downloads
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    inner
-        .web_session_download_order
-        .retain(|id| active_downloads.contains(id));
-}
-
-fn ensure_web_session_download_capacity(
-    inner: &Inner,
-    reserved_bytes: usize,
-) -> Result<(), String> {
-    if inner.web_session_downloads.len() >= MAX_WEB_SESSION_DOWNLOADS {
-        return Err(format!(
-            "远程控制已有 {} 个进行中的会话下载，请等待完成或重试已有下载",
-            MAX_WEB_SESSION_DOWNLOADS
-        ));
-    }
-    let active_bytes = inner
-        .web_session_downloads
-        .values()
-        .map(|download| download.reserved_bytes)
-        .sum::<usize>();
-    if active_bytes.saturating_add(reserved_bytes) > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
-        return Err(format!(
-            "进行中的远程控制会话下载将超过 {} MiB 总上限",
-            MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
-        ));
-    }
-    Ok(())
-}
-
-fn rpc_response(
-    endpoint_id: &str,
-    lease_id: &str,
-    request_id: &str,
-    completion: &RpcCompletion,
-) -> Value {
-    json!({
-        "v": PROTOCOL_VERSION,
-        "type": "rpc_response",
-        "endpoint_id": endpoint_id,
-        "lease_id": lease_id,
-        "id": request_id,
-        "client_request_id": request_id,
-        "ok": completion.ok,
-        "result": completion.result,
-        "error": completion.error,
-        "error_code": completion.error_code,
-    })
-}
-
-fn rpc_error_completion(code: impl Into<String>, error: impl Into<String>) -> RpcCompletion {
-    RpcCompletion {
-        ok: false,
-        result: Value::Null,
-        error: Some(error.into().chars().take(16_384).collect()),
-        error_code: Some(code.into()),
-    }
-}
-
-fn bounded_rpc_completion(ok: bool, result: Option<Value>, error: Option<String>) -> RpcCompletion {
-    let result = result.unwrap_or(Value::Null);
-    let response_bytes = serde_json::to_vec(&result)
-        .map(|encoded| encoded.len())
-        .unwrap_or(usize::MAX);
-    if response_bytes > MAX_RPC_RESPONSE_BYTES {
-        return rpc_error_completion(
-            "response_too_large",
-            format!(
-                "远程控制响应超过 {} MiB 上限，请使用分页或分块命令",
-                MAX_RPC_RESPONSE_BYTES / (1024 * 1024)
-            ),
-        );
-    }
-    RpcCompletion {
-        ok,
-        result,
-        error: error.map(|message| message.chars().take(16_384).collect()),
-        error_code: None,
-    }
-}
-
-fn outcome_unknown_completion() -> RpcCompletion {
-    rpc_error_completion(
-        "outcome_unknown",
-        "the desktop may have started this request before its result was durably observed; it will not be run again",
-    )
-}
-
-fn request_conflict_completion() -> RpcCompletion {
-    rpc_error_completion(
-        "request_id_conflict",
-        "client_request_id was reused with different command or args",
-    )
-}
-
-fn tombstone_completion(tombstone: &RpcTombstone, fingerprint: &str) -> RpcCompletion {
-    if tombstone.fingerprint != fingerprint {
-        request_conflict_completion()
-    } else if tombstone.acknowledged {
-        outcome_unknown_completion()
-    } else {
-        rpc_error_completion(
-            "request_not_started",
-            "the request was durably accepted but not acknowledged for execution",
-        )
-    }
-}
-
-fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, String> {
-    let canonical = canonicalize_json(args);
-    let encoded = serde_json::to_vec(&(command, canonical))
-        .map_err(|error| format!("serialize Web RPC fingerprint: {error}"))?;
-    let digest = Sha256::digest(encoded);
-    Ok(crate::platform::encoding::hex_lower(&digest))
-}
-
-fn canonicalize_json(value: &Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
-        Value::Object(values) => {
-            let mut entries = values.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by_key(|(left, _)| *left);
-            Value::Object(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| (key.clone(), canonicalize_json(value)))
-                    .collect(),
-            )
-        }
-        _ => value.clone(),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WebSessionScope {
-    Required(&'static str),
-    Optional(&'static str),
-}
-
-fn web_session_scope(command: &str) -> Option<WebSessionScope> {
-    use WebSessionScope::{Optional, Required};
-    let scope = match command {
-        // Commands whose Rust API historically falls back to the desktop
-        // process-wide active Session must be explicit over WebUI.
-        "add_run_materials"
-        | "approve_workflow_gate"
-        | "archive_recent_work_memory"
-        | "cancel_generation"
-        | "cancel_user_input"
-        | "compact_now"
-        | "confirm_pending_memory"
-        | "delete_memory_preference"
-        | "delete_timed_memory"
-        | "delete_work_context_memory"
-        | "edit_last_turn"
-        | "get_memory_overview"
-        | "ignore_pending_memory"
-        | "kick_workflow"
-        | "never_pending_memory"
-        | "reject_workflow_gate"
-        | "retry_workflow_role"
-        | "stop_workflow"
-        | "submit_user_input"
-        | "summon_pinvou"
-        | "update_memory_profile"
-        | "update_memory_preference"
-        | "update_timed_memory"
-        | "update_work_context_memory" => Required("sessionId"),
-
-        "accept_plan"
-        | "cancel_shell_task"
-        | "discard_plan"
-        | "equip_persona"
-        | "exit_plan_to_yolo"
-        | "get_active_persona"
-        | "get_mode_state"
-        | "get_session_model_id"
-        | "get_session_persona_events"
-        | "get_session_pinvou_reviews"
-        | "get_session_pinvou_scene_events"
-        | "get_session_timeline"
-        | "get_workflow_state"
-        | "list_shell_tasks"
-        | "list_workspace_files"
-        | "save_session_persona_events"
-        | "save_session_pinvou_reviews"
-        | "save_session_pinvou_scene_events"
-        | "session_mount_collection"
-        | "session_add_mounted_collection"
-        | "session_mounted_collection"
-        | "session_mounted_collections"
-        | "session_mounted_collections_snapshot"
-        | "session_remove_mounted_collection"
-        | "session_set_mounted_collection_enabled"
-        | "session_set_mounted_collections"
-        | "session_unmount_collection"
-        | "set_plan_mode_next"
-        | "set_session_model"
-        | "unbind_session_skill"
-        | "unequip_persona"
-        | "web_access_artifact_info"
-        | "web_access_chat"
-        | "web_access_get_gate_report"
-        | "web_access_get_role_logs"
-        | "web_access_get_role_outputs"
-        | "web_access_get_role_prompt"
-        | "web_access_list_deliverables"
-        | "web_access_read_artifact_chunk"
-        | "web_access_read_artifact_image_b64"
-        | "web_access_read_artifact_text"
-        | "web_access_read_artifact_thumbnail"
-        | "web_access_render_artifact_visual"
-        | "web_access_read_conversation_attachment_chunk"
-        | "web_access_transcribe_voice_audio"
-        | "web_access_write_artifact_text" => Required("sessionId"),
-
-        "delete_session"
-        | "rename_session"
-        | "save_session_artifacts"
-        | "set_session_archived"
-        | "set_session_pinned"
-        | "web_access_load_session_chunk"
-        | "web_access_save_session_messages_chunk" => Required("id"),
-
-        // Omitting this one deliberately means "create a fresh workflow
-        // Session"; it never consults the desktop active pointer.
-        "start_workflow" => Optional("sessionId"),
-        _ => return None,
-    };
-    Some(scope)
-}
-
-// 已知残留面（安全审查清单 #11）：事件面已按 code_session_predicate 过滤品悟原生
-// 代码会话事件（见 publish_event_inner），但 web_access_* 这组 RPC 在此只校验会话
-// id 存在，不查 code_session_predicate——远程端凭代码会话 id 仍可读/写代码会话消息
-// （如 web_access_chat 写入、web_access_load_session_chunk /
-// web_access_save_session_messages_chunk 读/写）。暂不封堵的原因：该组命令与普通
-// 会话共用同一条会话读写通道，封堵策略（显式拒绝还是远程端正式支持代码会话）待审阅
-// 者确认；正式登记文字见 .luzeyang/code-plain-decoupling/code-native-agent-安全审查问题清单.md（已归档）。
-fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Result<(), String> {
-    let Some(scope) = web_session_scope(command) else {
-        return Ok(());
-    };
-    let (field, required) = match scope {
-        WebSessionScope::Required(field) => (field, true),
-        WebSessionScope::Optional(field) => (field, false),
-    };
-    let session_id = args
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let Some(session_id) = session_id else {
-        return if required {
-            Err(format!("{command} requires an explicit {field}"))
-        } else {
-            Ok(())
-        };
-    };
-    crate::features::sessions::validate_session_id(session_id)
-        .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
-    if (command == "web_access_load_session_chunk"
-        && args
-            .get("downloadId")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty()))
-        || (command == "web_access_save_session_messages_chunk"
-            && args.get("offset").and_then(Value::as_u64).unwrap_or(0) > 0)
-    {
-        // The opaque transfer token is already bound to the validated
-        // Session id in RemoteControlManager; avoid re-reading a large Session
-        // file for every 256 KiB chunk.
-        return Ok(());
-    }
-    let store = app
-        .try_state::<SessionStore>()
-        .ok_or_else(|| "Session store is not ready".to_string())?;
-    store
-        .load(session_id)
-        .map_err(|error| format!("远程控制会话 {session_id} 不存在：{error:#}"))?;
-    Ok(())
-}
-
-fn validate_bridge_generation(generation: &str) -> Result<(), String> {
-    let generation = generation.trim();
-    if generation.len() < 8 || generation.len() > 256 {
-        return Err("invalid WebView bridge generation".to_string());
-    }
-    if !generation
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("invalid WebView bridge generation".to_string());
-    }
-    Ok(())
-}
-
-fn validate_rpc_command(command: &str) -> Result<(), String> {
-    if command.is_empty() || command.len() > MAX_RPC_COMMAND_BYTES {
-        return Err("远程控制命令无效".to_string());
-    }
-    if !command
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
-    {
-        return Err("远程控制命令无效".to_string());
-    }
-    Ok(())
-}
-
-fn enqueue_stream_reset(sender: RelaySender, message: Value) {
-    // RelaySender owns a single bounded waiter and coalesces repeated recovery
-    // barriers to the latest lease/epoch while the data channel is saturated.
-    if sender.enqueue_stream_reset(message).is_err() {
-        eprintln!("[web-access] stream reset could not reach the relay task");
-    }
-}
-
-fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
-    WebAccessInfo {
-        endpoint_id: endpoint.config.endpoint_id.clone(),
-        url: endpoint.url.clone(),
-        qr_data_url: crate::features::connectors::connector_cli::make_qr(&endpoint.url),
-        status: endpoint.status,
-    }
-}
-
-fn fresh_config() -> WebAccessConfig {
-    WebAccessConfig {
-        relay_url: remote_relay_ws_url(),
-        endpoint_id: format!("ep_{}", crate::features::remote_control::short_token(24)),
-        access_token: crate::features::remote_control::short_token(48),
-        desktop_secret: crate::features::remote_control::short_token(48),
-    }
-}
-
-fn validate_config(config: &WebAccessConfig) -> Result<(), String> {
-    if config.relay_url.len() > 2_048
-        || !(config.relay_url.starts_with("ws://") || config.relay_url.starts_with("wss://"))
-        || config.relay_url.chars().any(char::is_whitespace)
-    {
-        return Err("Web access relay_url is invalid".to_string());
-    }
-    if config.endpoint_id.len() < 8
-        || config.endpoint_id.len() > 128
-        || !config
-            .endpoint_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err("Web access endpoint_id is invalid".to_string());
-    }
-    if !(24..=1_024).contains(&config.access_token.len())
-        || !(24..=1_024).contains(&config.desktop_secret.len())
-    {
-        return Err("Web access credentials are invalid".to_string());
-    }
-    Ok(())
-}
-
-fn config_path() -> PathBuf {
-    paths::pinvou3_home().join("web-access.json")
-}
-
-fn process_lock_path() -> PathBuf {
-    paths::pinvou3_home().join("web-access.lock")
-}
-
-fn pending_revocations_path() -> PathBuf {
-    paths::pinvou3_home().join("web-access-pending-revocations.json")
-}
-
-fn acquire_process_lock(path: &Path) -> Result<File, String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("invalid Web access lock path: {}", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true);
-    platform::configure_private_open_options(&mut options);
-    let file = options
-        .open(path)
-        .map_err(|error| format!("open {}: {error}", path.display()))?;
-    platform::enforce_private_permissions(&file, path)
-        .map_err(|error| format!("set private permissions on {}: {error}", path.display()))?;
-    file.try_lock_exclusive().map_err(|error| {
-        format!(
-            "Web access is already owned by another desktop process ({}): {error}",
-            path.display()
-        )
-    })?;
-    Ok(file)
-}
-
-fn rpc_ledger_path() -> PathBuf {
-    paths::pinvou3_home().join("web-access-rpc-ledger.json")
-}
-
-fn load_config() -> Result<Option<WebAccessConfig>, String> {
-    load_config_from(&config_path())
-}
-
-fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, String> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
-    };
-    let mut text = String::new();
-    file.take((MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
-        .read_to_string(&mut text)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
-    if text.len() > MAX_WEB_ACCESS_CONFIG_BYTES {
-        return Err(format!(
-            "Web access config is larger than {} KiB: {}",
-            MAX_WEB_ACCESS_CONFIG_BYTES / 1024,
-            path.display()
-        ));
-    }
-    let config: WebAccessConfig = serde_json::from_str(&text)
-        .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    validate_config(&config)?;
-    Ok(Some(config))
-}
-
-fn persist_config(config: &WebAccessConfig) -> Result<(), String> {
-    validate_config(config)?;
-    atomic_write_private_json(&config_path(), config, "Web access config")
-}
-
-fn remove_config() -> Result<(), String> {
-    remove_private_file(&config_path())
-}
-
-// ── 用户自定义 Relay 地址 ─────────────────────────────────────────────
-// 设置页填写的域名/IP 规范化为「WebSocket 地址 + 页面基址」一对后持久化；
-// 生效优先级：运行时 env 覆盖 > PINVOU_REMOTE_* env > 本设置 > 内置默认。
-
-const RELAY_DEFAULT_BASE_PATH: &str = "/pinvou3/remote";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelaySettings {
-    pub relay_url: String,
-    pub public_base_url: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RelaySettingsInfo {
-    pub relay_url: String,
-    pub public_base_url: String,
-    pub custom: bool,
-    pub default_relay_url: String,
-    pub default_public_base_url: String,
-}
-
-fn relay_settings_path() -> PathBuf {
-    paths::pinvou3_home().join("web-relay.json")
-}
-
-fn validate_relay_settings(settings: &RelaySettings) -> Result<(), String> {
-    if settings.relay_url.len() > 2_048
-        || !(settings.relay_url.starts_with("ws://") || settings.relay_url.starts_with("wss://"))
-        || settings.relay_url.chars().any(char::is_whitespace)
-    {
-        return Err("relay address does not normalize to a valid ws(s) URL".to_string());
-    }
-    if settings.public_base_url.len() > 2_048
-        || !(settings.public_base_url.starts_with("http://")
-            || settings.public_base_url.starts_with("https://"))
-        || settings.public_base_url.chars().any(char::is_whitespace)
-    {
-        return Err("relay address does not normalize to a valid http(s) base".to_string());
-    }
-    Ok(())
-}
-
-/// 把用户填写的 Relay 地址规范化。接受裸域名/IP（默认按 TLS 处理成 wss/https）、
-/// `ws(s)://`、`http(s)://` 前缀以及可选自定义路径；无 TLS 证书的环境需要显式
-/// 写 `ws://` 或 `http://` 前缀，不做静默降级。
-fn normalize_relay_address(input: &str) -> Result<RelaySettings, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("relay address is empty".to_string());
-    }
-    if trimmed.chars().any(char::is_whitespace) {
-        return Err("relay address must not contain whitespace".to_string());
-    }
-    if trimmed.len() > 1_024 {
-        return Err("relay address is too long".to_string());
-    }
-    let (ws_scheme, http_scheme, rest) = if let Some(rest) = trimmed.strip_prefix("wss://") {
-        ("wss", "https", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
-        ("ws", "http", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("https://") {
-        ("wss", "https", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        ("ws", "http", rest)
-    } else if trimmed.contains("://") {
-        return Err("relay address only supports ws/wss/http/https".to_string());
-    } else {
-        ("wss", "https", trimmed)
-    };
-    if rest.contains('?') || rest.contains('#') || rest.contains('@') {
-        return Err("relay address must not contain userinfo, query or fragment".to_string());
-    }
-    let (host, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], rest[index..].trim_end_matches('/')),
-        None => (rest, ""),
-    };
-    if host.is_empty() {
-        return Err("relay address is missing a host".to_string());
-    }
-    // 路径规则：不填 → 内置 /pinvou3/remote；填了 → 尊重自定义（容忍粘贴完整
-    // ws 地址时结尾多出的 /ws，避免「复制现有 relay_url 再保存」变成 /ws/ws）。
-    let base_path = if path.is_empty() {
-        RELAY_DEFAULT_BASE_PATH.to_string()
-    } else {
-        path.strip_suffix("/ws").unwrap_or(path).to_string()
-    };
-    let settings = RelaySettings {
-        relay_url: format!("{ws_scheme}://{host}{base_path}/ws"),
-        public_base_url: format!("{http_scheme}://{host}{base_path}"),
-    };
-    validate_relay_settings(&settings)?;
-    Ok(settings)
-}
-
-/// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可
-/// 降级也不把「启用 Web 访问」整个卡死；重新保存会原子覆盖坏文件。
-fn load_relay_settings() -> Option<RelaySettings> {
-    let file = File::open(relay_settings_path()).ok()?;
-    let mut text = String::new();
-    file.take((MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
-        .read_to_string(&mut text)
-        .ok()?;
-    if text.len() > MAX_WEB_ACCESS_CONFIG_BYTES {
-        return None;
-    }
-    let settings: RelaySettings = serde_json::from_str(&text).ok()?;
-    validate_relay_settings(&settings).ok()?;
-    Some(settings)
-}
-
-fn pending_revocation_key(pending: &PendingRevocation) -> String {
-    format!("{}\n{}", pending.relay_url, pending.endpoint_id)
-}
-
-fn validate_pending_revocation(pending: &PendingRevocation) -> Result<(), String> {
-    if pending.relay_url.len() > 2_048
-        || !(pending.relay_url.starts_with("ws://") || pending.relay_url.starts_with("wss://"))
-        || pending.relay_url.chars().any(char::is_whitespace)
-    {
-        return Err("pending Web revocation has an invalid relay_url".to_string());
-    }
-    if pending.endpoint_id.len() < 4
-        || pending.endpoint_id.len() > 128
-        || !pending
-            .endpoint_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err("pending Web revocation has an invalid endpoint_id".to_string());
-    }
-    if pending.desktop_secret.len() < 24 || pending.desktop_secret.len() > 1_024 {
-        return Err("pending Web revocation has an invalid desktop secret".to_string());
-    }
-    Ok(())
-}
-
-fn validate_pending_revocation_ledger(ledger: &PendingRevocationLedger) -> Result<(), String> {
-    if ledger.version != PENDING_REVOCATIONS_VERSION {
-        return Err(format!(
-            "unsupported pending Web revocation version {}",
-            ledger.version
-        ));
-    }
-    if ledger.entries.len() > MAX_PENDING_REVOCATIONS {
-        return Err(format!(
-            "pending Web revocation count exceeds {MAX_PENDING_REVOCATIONS}"
-        ));
-    }
-    let mut keys = HashSet::new();
-    for pending in &ledger.entries {
-        validate_pending_revocation(pending)?;
-        if !keys.insert(pending_revocation_key(pending)) {
-            return Err(format!(
-                "duplicate pending Web revocation for {}",
-                pending.endpoint_id
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn load_pending_revocations() -> Result<PendingRevocationLedger, String> {
-    load_pending_revocations_from(&pending_revocations_path())
-}
-
-fn load_pending_revocations_from(path: &Path) -> Result<PendingRevocationLedger, String> {
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PendingRevocationLedger::default());
-        }
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
-    };
-    if data.len() > MAX_PENDING_REVOCATIONS_FILE_BYTES {
-        return Err(format!(
-            "pending Web revocation file is larger than {} KiB: {}",
-            MAX_PENDING_REVOCATIONS_FILE_BYTES / 1024,
-            path.display()
-        ));
-    }
-    let ledger: PendingRevocationLedger = serde_json::from_slice(&data)
-        .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    validate_pending_revocation_ledger(&ledger)?;
-    Ok(ledger)
-}
-
-fn persist_pending_revocations_to(
-    path: &Path,
-    ledger: &PendingRevocationLedger,
-) -> Result<(), String> {
-    validate_pending_revocation_ledger(ledger)?;
-    if ledger.entries.is_empty() {
-        remove_private_file(path)
-    } else {
-        atomic_write_private_json(path, ledger, "pending Web revocations")
-    }
-}
-
-fn queue_pending_revocation(config: &WebAccessConfig) -> Result<(), String> {
-    queue_pending_revocation_at(&pending_revocations_path(), PendingRevocation::from(config))
-}
-
-fn queue_pending_revocation_at(path: &Path, pending: PendingRevocation) -> Result<(), String> {
-    validate_pending_revocation(&pending)?;
-    let mut ledger = load_pending_revocations_from(path)?;
-    let key = pending_revocation_key(&pending);
-    if let Some(existing) = ledger
-        .entries
-        .iter()
-        .find(|entry| pending_revocation_key(entry) == key)
-    {
-        return if existing == &pending {
-            Ok(())
-        } else {
-            Err(format!(
-                "conflicting pending Web revocation credentials for {}",
-                pending.endpoint_id
-            ))
-        };
-    }
-    if ledger.entries.len() >= MAX_PENDING_REVOCATIONS {
-        return Err(format!(
-            "pending Web revocation queue is full ({MAX_PENDING_REVOCATIONS})"
-        ));
-    }
-    ledger.entries.push_back(pending);
-    persist_pending_revocations_to(path, &ledger)
-}
-
-fn acknowledge_pending_revocation(pending: &PendingRevocation) -> Result<(), String> {
-    acknowledge_pending_revocation_at(&pending_revocations_path(), pending)
-}
-
-fn acknowledge_pending_revocation_at(
-    path: &Path,
-    pending: &PendingRevocation,
-) -> Result<(), String> {
-    let mut ledger = load_pending_revocations_from(path)?;
-    ledger.entries.retain(|entry| entry != pending);
-    persist_pending_revocations_to(path, &ledger)
-}
-
-fn eligible_pending_revocations(
-    ledger: &PendingRevocationLedger,
-    current: Option<&WebAccessConfig>,
-) -> Vec<PendingRevocation> {
-    ledger
-        .entries
-        .iter()
-        .filter(|pending| {
-            current.is_none_or(|config| {
-                pending.relay_url != config.relay_url
-                    || pending.endpoint_id != config.endpoint_id
-                    || pending.desktop_secret != config.desktop_secret
-            })
-        })
-        .cloned()
-        .collect()
-}
-
-fn pending_revocation_ack(value: &Value, endpoint_id: &str) -> bool {
-    let message_endpoint = value.get("endpoint_id").and_then(Value::as_str);
-    match value.get("type").and_then(Value::as_str) {
-        Some("desktop_endpoint_revoked") | Some("desktop_endpoint_replaced") => {
-            message_endpoint == Some(endpoint_id)
-        }
-        Some("error")
-            if value.get("code").and_then(Value::as_str) == Some("endpoint_not_found") =>
-        {
-            message_endpoint.is_none_or(|value| value == endpoint_id)
-        }
-        _ => false,
-    }
-}
-
-fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedger, String> {
-    let path = rpc_ledger_path();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let ledger = RpcLedger::for_endpoint(endpoint_id);
-            persist_rpc_ledger(&ledger)?;
-            return Ok(ledger);
-        }
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
-    };
-    let mut ledger: RpcLedger = serde_json::from_str(&text)
-        .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    if ledger.endpoint_id != endpoint_id {
-        let ledger = RpcLedger::for_endpoint(endpoint_id);
-        persist_rpc_ledger(&ledger)?;
-        return Ok(ledger);
-    }
-    if ledger.version != RPC_LEDGER_VERSION {
-        return Err(format!(
-            "unsupported Web RPC ledger version {} in {}",
-            ledger.version,
-            path.display()
-        ));
-    }
-    let mut request_ids = HashSet::new();
-    for entry in &ledger.entries {
-        if entry.request_id.is_empty()
-            || entry.request_id.len() > 256
-            || entry.fingerprint.len() != 64
-            || !entry
-                .fingerprint
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(format!(
-                "invalid Web RPC ledger entry in {}",
-                path.display()
-            ));
-        }
-        if !request_ids.insert(entry.request_id.as_str()) {
-            return Err(format!(
-                "duplicate Web RPC request id in {}: {}",
-                path.display(),
-                entry.request_id
-            ));
-        }
-    }
-    if ledger.entries.len() > RPC_CACHE_CAPACITY {
-        let overflow = ledger.entries.len() - RPC_CACHE_CAPACITY;
-        ledger.entries.drain(..overflow);
-        persist_rpc_ledger(&ledger)?;
-    }
-    Ok(ledger)
-}
-
-fn persist_rpc_ledger(ledger: &RpcLedger) -> Result<(), String> {
-    if ledger.version != RPC_LEDGER_VERSION || ledger.endpoint_id.is_empty() {
-        return Err("refusing to persist an invalid Web RPC ledger".to_string());
-    }
-    atomic_write_private_json(&rpc_ledger_path(), ledger, "Web RPC ledger")
-}
-
-fn remove_rpc_ledger() -> Result<(), String> {
-    remove_private_file(&rpc_ledger_path())
-}
-
-fn atomic_write_private_json<T: Serialize>(
-    path: &Path,
-    value: &T,
-    label: &str,
-) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("invalid {label} path: {}", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    let data =
-        serde_json::to_vec_pretty(value).map_err(|error| format!("serialize {label}: {error}"))?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("web-access");
-    let mut temporary = None;
-    for _ in 0..16 {
-        let candidate = parent.join(format!(
-            ".{file_name}.tmp-{}-{}",
-            std::process::id(),
-            crate::features::remote_control::short_token(12)
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        platform::configure_private_open_options(&mut options);
-        match options.open(&candidate) {
-            Ok(file) => {
-                platform::enforce_private_permissions(&file, &candidate).map_err(|error| {
-                    format!(
-                        "set private permissions on {}: {error}",
-                        candidate.display()
-                    )
-                })?;
-                temporary = Some((candidate, file));
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("create {}: {error}", candidate.display())),
-        }
-    }
-    let (temporary, mut file) =
-        temporary.ok_or_else(|| format!("allocate a temporary file next to {}", path.display()))?;
-    let result = (|| {
-        file.write_all(&data)
-            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("sync {}: {error}", temporary.display()))?;
-        drop(file);
-        platform::atomic_replace(&temporary, path)
-            .map_err(|error| format!("commit {}: {error}", path.display()))?;
-        platform::sync_parent_directory(parent)
-            .map_err(|error| format!("sync {}: {error}", parent.display()))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
-fn remove_private_file(path: &Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => {
-            if let Some(parent) = path.parent() {
-                platform::sync_parent_directory(parent)
-                    .map_err(|error| format!("sync {}: {error}", parent.display()))?;
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove {}: {error}", path.display())),
-    }
-}
-
-fn remote_public_base_url() -> String {
-    if let Ok(url) = std::env::var("PINVOU_REMOTE_PUBLIC_URL") {
-        return url;
-    }
-    if let Some(settings) = load_relay_settings() {
-        return settings.public_base_url;
-    }
-    DEFAULT_PUBLIC_BASE_URL.to_string()
-}
-
-fn remote_relay_ws_url() -> String {
-    if let Ok(url) = std::env::var("PINVOU_REMOTE_RELAY_WS_URL") {
-        return url;
-    }
-    if let Some(settings) = load_relay_settings() {
-        return settings.relay_url;
-    }
-    DEFAULT_RELAY_WS_URL.to_string()
-}
-
-/// Development/manual-test override for the active connection only. Unlike
-/// `PINVOU_REMOTE_RELAY_WS_URL`, this value is never written to the persistent
-/// Web access config, so testing a local relay cannot strand the normal link.
-fn apply_runtime_relay_override(mut config: WebAccessConfig) -> WebAccessConfig {
-    if let Ok(relay_url) = std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL") {
-        if !relay_url.trim().is_empty() {
-            config.relay_url = relay_url;
-        }
-    }
-    config
-}
-
-fn public_url(config: &WebAccessConfig) -> String {
-    let mut url = format!(
-        "{}/#endpoint={}&token={}",
-        remote_public_base_url().trim_end_matches('/'),
-        percent_encode(&config.endpoint_id),
-        percent_encode(&config.access_token),
-    );
-    if config.relay_url != DEFAULT_RELAY_WS_URL {
-        url.push_str("&relay=");
-        url.push_str(&percent_encode(&config.relay_url));
-    }
-    url
-}
-
-fn percent_encode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
-}
-
 #[cfg(test)]
 mod tests {
+    use super::persistence::{
+        acknowledge_pending_revocation_at, load_config_from, load_pending_revocations_from,
+        queue_pending_revocation_at,
+    };
+    use super::rpc::{web_session_scope, WebSessionScope};
     use super::*;
+
+    const TEST_ENDPOINT_ID: &str = "ep_test";
+    const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
+
+    #[test]
+    fn event_delivery_requires_current_web_subscription() {
+        let mut subscriptions = HashSet::new();
+        subscriptions.insert("session:deleted".to_string());
+
+        assert!(is_event_subscribed(&subscriptions, "session:deleted"));
+        assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
+    }
+
+    #[test]
+    fn replay_skips_unsubscribed_events_without_creating_sequence_gaps() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "session:deleted", json!({ "id": "one" }));
+        record_stream_event(&mut stream, "session:list_changed", json!({}));
+        record_stream_event(&mut stream, "chat:done", json!({ "id": "one" }));
+        let events = stream.replay_after(0).expect("replay");
+        let subscriptions = HashSet::from(["session:deleted".to_string(), "chat:done".to_string()]);
+        let commands = Vec::new();
+        let capabilities = Vec::new();
+
+        let messages = subscription_filtered_replay_messages(
+            events,
+            &subscriptions,
+            ReplayMessageContext {
+                endpoint_id: TEST_ENDPOINT_ID,
+                lease_id: TEST_LEASE_ID,
+                stream_epoch: &stream.epoch,
+                capability_commands: &commands,
+                capability_events: &capabilities,
+            },
+        );
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["type"], "event");
+        assert_eq!(messages[0]["seq"], 1);
+        assert_eq!(messages[0]["event"], "session:deleted");
+        assert_eq!(messages[1]["type"], "desktop_snapshot");
+        assert_eq!(messages[1]["seq"], 2);
+        assert_eq!(messages[2]["type"], "event");
+        assert_eq!(messages[2]["seq"], 3);
+        assert_eq!(messages[2]["event"], "chat:done");
+    }
 
     #[test]
     fn stalled_in_flight_rpc_expires_after_ttl_only() {
@@ -4169,6 +3094,12 @@ mod tests {
                 "should reject {input:?}"
             );
         }
+    }
+
+    fn record_stream_event(stream: &mut StreamState, event: &str, payload: Value) {
+        stream
+            .record(TEST_ENDPOINT_ID, TEST_LEASE_ID, event.to_string(), payload)
+            .expect("record stream event");
     }
 
     #[test]
@@ -4559,6 +3490,188 @@ mod tests {
             rpc_fingerprint("chat", &json!({ "a": 1, "b": { "x": 2, "y": 3 } })).unwrap(),
             rpc_fingerprint("chat", &json!({ "b": { "y": 3, "x": 2 }, "a": 1 })).unwrap()
         );
+    }
+
+    #[test]
+    fn stream_replays_an_exact_contiguous_suffix() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "a" }));
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "b" }));
+        let replay = stream.replay_after(1).expect("replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].seq, 2);
+        assert_eq!(replay[0].payload["text"], "b");
+        assert!(stream.replay_after(3).is_none());
+    }
+
+    #[test]
+    fn fresh_client_baseline_skips_history_but_keeps_ready_window_events() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:done", json!({ "turn": "historical" }));
+        let baseline_at_join = stream.seq;
+        record_stream_event(&mut stream, "chat:turn_started", json!({ "turn": "live" }));
+
+        let replay = stream.replay_after(baseline_at_join).expect("fresh replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].event, "chat:turn_started");
+        assert_eq!(replay[0].payload["turn"], "live");
+    }
+
+    #[test]
+    fn bounded_stream_rejects_a_cursor_older_than_the_journal() {
+        let mut stream = StreamState::new();
+        for seq in 0..=JOURNAL_CAPACITY {
+            record_stream_event(&mut stream, "chat:delta", json!(seq));
+        }
+        assert!(stream.replay_after(0).is_none());
+        assert!(stream.replay_after(1).is_some());
+    }
+
+    #[test]
+    fn oversized_complete_event_frame_rotates_epoch_without_recording_the_event() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "safe" }));
+        let previous_epoch = stream.epoch.clone();
+        let oversized_payload = json!({ "text": "x".repeat(400) });
+        let test_wire_limit = 512;
+        assert!(serde_json::to_vec(&oversized_payload).unwrap().len() < test_wire_limit);
+
+        let error = stream
+            .record_with_limits(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                "chat:delta".into(),
+                oversized_payload,
+                test_wire_limit,
+                JOURNAL_CAPACITY,
+                JOURNAL_BYTES_CAPACITY,
+            )
+            .expect_err("the complete envelope, not just payload, must be bounded");
+        assert!(matches!(
+            error,
+            StreamRecordError::Oversized {
+                wire_bytes,
+                limit: 512
+            } if wire_bytes > 512
+        ));
+        assert_ne!(stream.epoch, previous_epoch);
+        assert_eq!(stream.seq, 0);
+        assert!(stream.journal.is_empty());
+        assert_eq!(stream.journal_bytes, 0);
+        assert!(stream
+            .replay_after(0)
+            .is_some_and(|events| events.is_empty()));
+
+        stream
+            .record_with_limits(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                "chat:done".into(),
+                json!({ "status": "failed" }),
+                test_wire_limit,
+                JOURNAL_CAPACITY,
+                JOURNAL_BYTES_CAPACITY,
+            )
+            .expect("new epoch remains usable");
+        let replay = stream.replay_after(0).expect("reconnect replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].seq, 1);
+        assert_eq!(replay[0].event, "chat:done");
+    }
+
+    #[test]
+    fn stream_journal_evicts_oldest_complete_frames_by_total_bytes() {
+        let mut stream = StreamState::new();
+        stream
+            .record_with_limits(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                "chat:delta".into(),
+                json!({ "text": "same-size" }),
+                4 * 1024,
+                JOURNAL_CAPACITY,
+                usize::MAX,
+            )
+            .unwrap();
+        let frame_bytes = stream.journal.back().unwrap().wire_bytes;
+        let byte_capacity = frame_bytes * 2;
+        for _ in 0..2 {
+            stream
+                .record_with_limits(
+                    TEST_ENDPOINT_ID,
+                    TEST_LEASE_ID,
+                    "chat:delta".into(),
+                    json!({ "text": "same-size" }),
+                    4 * 1024,
+                    JOURNAL_CAPACITY,
+                    byte_capacity,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(stream.seq, 3);
+        assert_eq!(stream.journal.len(), 2);
+        assert_eq!(stream.journal.front().map(|event| event.seq), Some(2));
+        assert!(stream.journal_bytes <= byte_capacity);
+        assert!(stream.replay_after(0).is_none());
+        assert_eq!(stream.replay_after(1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn failed_live_enqueue_can_rebase_the_critical_tail_for_reconnect() {
+        let mut stream = StreamState::new();
+        record_stream_event(&mut stream, "chat:delta", json!({ "text": "prefix" }));
+        record_stream_event(
+            &mut stream,
+            "chat:user_input_required",
+            json!({ "request_id": "request-1" }),
+        );
+        let failed_event = stream.journal.back().unwrap().clone();
+        let previous_epoch = stream.epoch.clone();
+
+        stream.reset();
+        stream
+            .record(
+                TEST_ENDPOINT_ID,
+                TEST_LEASE_ID,
+                failed_event.event,
+                failed_event.payload,
+            )
+            .unwrap();
+
+        assert_ne!(stream.epoch, previous_epoch);
+        assert_eq!(stream.seq, 1);
+        let replay = stream.replay_after(0).unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].event, "chat:user_input_required");
+        assert_eq!(replay[0].payload["request_id"], "request-1");
+    }
+
+    #[test]
+    fn replay_batch_failure_stops_at_the_gap_instead_of_claiming_the_tail() {
+        let messages = vec![
+            json!({ "seq": 1 }),
+            json!({ "seq": 2 }),
+            json!({ "seq": 3 }),
+        ];
+        let mut attempted = Vec::new();
+        let complete = try_enqueue_message_batch(messages, |message| {
+            let seq = message["seq"].as_u64().unwrap();
+            attempted.push(seq);
+            seq != 2
+        });
+
+        assert!(!complete);
+        assert_eq!(attempted, vec![1, 2]);
+        let reset = stream_reset_message(
+            TEST_ENDPOINT_ID,
+            TEST_LEASE_ID,
+            "epoch_recovered",
+            "replay_enqueue_failed",
+        );
+        assert_eq!(reset["seq"], 0);
+        assert_eq!(reset["reason"], "replay_enqueue_failed");
+        assert!(serde_json::to_vec(&reset).unwrap().len() < relay_client::MAX_RELAY_FRAME_BYTES);
     }
 
     #[test]
