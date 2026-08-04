@@ -130,9 +130,12 @@ export function SubagentTranscriptPanel({ sessionId, initialAgentId, t, theme, o
   // 列表：面板打开期间串行轮询底座落盘投影（含状态与受阻标注）。
   const [agents, setAgents] = useState(null);
   const [listReadFailed, setListReadFailed] = useState(false);
+  const [listWake, setListWake] = useState(0);
   useEffect(() => {
     setAgents(null);
     setListReadFailed(false);
+  }, [sessionId]);
+  useEffect(() => {
     if (!bridge.available) return undefined;
     return startTranscriptPolling({
       read: () => bridge.multiAgent.listSubagentTranscripts(sessionId),
@@ -146,10 +149,26 @@ export function SubagentTranscriptPanel({ sessionId, initialAgentId, t, theme, o
           setListReadFailed(true);
         }
       },
-      active: true,
+      // 只在仍有运行中实例（或本次读取失败）时继续定时刷新。全部终态后
+      // 停表；下方实时事件监听会在新子智能体出现时唤醒一次读取。
+      active: (list) => !Array.isArray(list) || list.some((entry) => !entry.done),
       intervalMs: 2000,
     });
-  }, [sessionId]);
+  }, [sessionId, listWake]);
+
+  const listPollingDormant = Array.isArray(agents)
+    && !listReadFailed
+    && agents.every((entry) => entry.done);
+  useEffect(() => {
+    if (!listPollingDormant || typeof window === 'undefined') return undefined;
+    const wakeForNewAgent = (event) => {
+      const detail = event && event.detail;
+      if (!detail || detail.sessionId !== sessionId || !detail.agentId) return;
+      setListWake((value) => value + 1);
+    };
+    window.addEventListener('pinvou:subagent-update', wakeForNewAgent);
+    return () => window.removeEventListener('pinvou:subagent-update', wakeForNewAgent);
+  }, [sessionId, listPollingDormant]);
 
   const agent = useMemo(() => {
     if (!selectedAgentId) return null;

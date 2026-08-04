@@ -17,6 +17,7 @@ import {
 } from '../src/features/multiagent/subagent-conversation.mjs';
 import {
   captureConversationScrollPosition,
+  expertDelegationText,
   isExpertDelegationCall,
   presentConversationItems,
   restoreConversationScrollPosition,
@@ -34,6 +35,7 @@ const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'in
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
 const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
+const rosterSource = read('src-tauri', 'src', 'features', 'multiagent', 'roster.rs');
 
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
@@ -183,6 +185,16 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     /Op::SetFleetRoster \{ roster \}/,
     'live 名册刷新走底座 SetFleetRoster，而不是改写工具列表',
   );
+  assert.match(
+    poolSource,
+    /has_expert_role_projection\(&workspace\)[\s\S]{0,100}targets\.insert\(session_id\)/,
+    '已关闭开关但仍加载旧专家投影的在跑会话，也必须随专家增删改刷新',
+  );
+  assert.doesNotMatch(
+    rosterSource,
+    /tools\.insert\("posture"/,
+    '专家名册只承载身份与人设，不得另设专家级权限姿态',
+  );
   assert.doesNotMatch(
     poolSource,
     /workflow_host_disallowed_tools/,
@@ -309,6 +321,18 @@ test('只有 spawn 型 agent 调用算一次委派；协调操作不算', () => 
   assert.ok(!isExpertDelegationCall('agent', { action: 'cancel', agent_id: 'agent_1' }), 'cancel 不是委派');
   assert.ok(!isExpertDelegationCall('agent', {}), '无任务正文不算派工');
   assert.ok(!isExpertDelegationCall('web_search', { prompt: 'x' }), '其它工具不受影响');
+  assert.ok(!isExpertDelegationCall('agent', { items: [] }), '空 items 不是有效派工');
+});
+
+test('items 任务正文与底座同源归一，专家卡不会显示空摘要', () => {
+  assert.equal(
+    expertDelegationText({ items: [
+      { type: 'text', text: ' 调研市场规模 ' },
+      { type: 'mention', name: 'brief', path: '/tmp/brief.md' },
+    ] }),
+    '调研市场规模\n[mention:brief](/tmp/brief.md)',
+  );
+  assert.equal(expertDelegationText({ prompt: ' 直接任务 ', items: [{ type: 'text', text: 'ignored' }] }), '直接任务');
 });
 
 test('spawn 型 agent 项不折进工具组；协调操作与普通工具照常归组', () => {
@@ -372,7 +396,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   assert.match(
     interactionBridgeSource,
     /previousMultiAgent[\s\S]{0,600}invoke\("set_multi_agent_mode"/,
-    '点击必须乐观翻转（后端 git 化数百毫秒，等返回才翻拨杆像点了没反应），失败回滚',
+    '点击必须乐观翻转（名册装配与引擎同步可能耗时，等返回才翻拨杆像点了没反应），失败回滚',
   );
   assert.match(
     interactionBridgeSource,
@@ -614,6 +638,12 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /<ConversationTimeline/, '必须复用共享对话时间线组件');
   assert.match(panelSource, /projectSubagentTranscript\(\{/);
   assert.match(panelSource, /startTranscriptPolling\(\{[\s\S]*active: !\(agent && agent\.done\)/);
+  assert.match(
+    panelSource,
+    /active: \(list\) => !Array\.isArray\(list\) \|\| list\.some\(\(entry\) => !entry\.done\)/,
+    '清单全部终态后必须停止定时轮询',
+  );
+  assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');
   assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/, '列表来自底座落盘投影');
   assert.match(panelSource, /setSelectedAgentId\(null\)/, '详情可返回列表');
   assert.match(panelSource, /copy\.agentsEmpty/, '空列表有说明');
@@ -759,4 +789,16 @@ test('transcript 运行中串行轮询，停止后取消 timer；终态只做最
   });
   await Promise.resolve();
   assert.equal(finalReads.length, 1, '终态只做最后一次读取');
+
+  let dynamicSchedules = 0;
+  startTranscriptPolling({
+    read: async () => [{ agent_id: 'agent_done', done: true }],
+    onMessages: () => {},
+    active: (list) => !Array.isArray(list) || list.some((entry) => !entry.done),
+    schedule: () => { dynamicSchedules += 1; return dynamicSchedules; },
+    cancel: () => {},
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(dynamicSchedules, 0, '全部子智能体终态后停止列表轮询');
 });

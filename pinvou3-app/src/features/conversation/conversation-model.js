@@ -18,7 +18,31 @@ export function isExpertDelegationCall(name, args) {
   if (name !== 'agent') return false;
   const input = args && typeof args === 'object' ? args : {};
   if (String(input.action || 'start') !== 'start') return false;
-  return Boolean(input.prompt || input.message || input.objective || input.items);
+  return Boolean(expertDelegationText(input));
+}
+
+/**
+ * 把底座 `parse_text_or_items` 接受的任务正文归一成专家卡可展示的文本。
+ * 保持在 conversation 层，与 spawn 判定共用同一契约，避免出现“能派出、
+ * 卡片却没有任务摘要”的两套解析规则。
+ */
+export function expertDelegationText(args) {
+  const input = args && typeof args === 'object' ? args : {};
+  for (const key of ['prompt', 'message', 'objective']) {
+    if (typeof input[key] === 'string' && input[key].trim()) return input[key].trim();
+  }
+  if (!Array.isArray(input.items)) return '';
+  return input.items.map((item) => {
+    if (!item || typeof item !== 'object') return '';
+    const type = String(item.type || 'text').trim();
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (type === 'text') return text;
+    if (type === 'mention' && item.name && item.path) return `[mention:${item.name}](${item.path})`;
+    if (type === 'skill' && item.name && item.path) return `[skill:${item.name}](${item.path})`;
+    if (type === 'local_image' && item.path) return `[local_image:${item.path}]`;
+    if (type === 'image' && item.image_url) return `[image:${item.image_url}]`;
+    return text || '[input]';
+  }).filter(Boolean).join('\n');
 }
 
 const OPERATION_ITEM_TYPES = new Set(['command_execution', 'file_change', 'tool']);
