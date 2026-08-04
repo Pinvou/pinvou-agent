@@ -100,7 +100,7 @@ assert.match(chatView, /bridge\.attachments\.uploadDeviceFiles\(files\)/);
 assert.match(chatView, /bridge\.attachments\.pickAndAttach\(\)/,
   'the desktop-instance picker entry must keep using the existing remote browser');
 assert.match(webBridge, /DEVICE_UPLOAD_CHUNK_BYTES = 256 \* 1024/,
-  'upload chunks must stay aligned with the desktop MAX_ARTIFACT_CHUNK_BYTES limit');
+  'upload chunks must stay aligned with the desktop MAX_TRANSFER_CHUNK_BYTES limit');
 assert.match(webBridge, /DEVICE_UPLOAD_MAX_BYTES = 20 \* 1024 \* 1024/,
   'the browser preflight must mirror file_ingest::MAX_FILE_BYTES');
 assert.match(webBridge, /web_access_abort_attachment_upload/,

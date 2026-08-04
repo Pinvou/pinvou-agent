@@ -7091,7 +7091,7 @@
   // ── 浏览器本机文件上传 ──────────────────────────────────────────
   // 「从此设备上传」入口:文件按 256KB 分块经 Relay 转发(Relay 只转发不保存),
   // 桌面端最后一块落盘 + ingest 后返回与桌面文件附件相同的 WebAttachmentSummary。
-  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_ARTIFACT_CHUNK_BYTES
+  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_TRANSFER_CHUNK_BYTES
   var DEVICE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;  // 对齐 file_ingest::MAX_FILE_BYTES
   var DEVICE_UPLOAD_CANCELLED = new Error("device-upload-cancelled");
 
